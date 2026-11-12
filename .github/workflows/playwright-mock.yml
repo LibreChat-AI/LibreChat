@@ -424,8 +424,18 @@ jobs:
           CI: 'true'
           E2E_ALLOW_EMAIL_CHANGE: 'false'
 
+      # Reports and traces are debugging aids that no job downloads, so an upload that fails must
+      # not fail a shard whose tests passed. On 2026-11-11 the artifact service answered every
+      # request with an HTML page: each upload retried for 9 to 10.5 minutes before it failed,
+      # six shards whose tests had passed went red, and one of them ended within seconds of the
+      # job's 30 minute timeout. `continue-on-error` keeps a failed upload out of the job result,
+      # and the bound keeps a stalled one from running the job into that timeout: the slowest of
+      # 519 successful report uploads took 10 seconds. The runner still annotates the run with
+      # the upload's own error, or with the step timeout.
       - name: Upload Playwright HTML report
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: playwright-report-${{ matrix.artifact }}
@@ -435,6 +445,8 @@ jobs:
 
       - name: Upload traces & screenshots
         if: failure()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: playwright-test-results-${{ matrix.artifact }}
@@ -455,6 +467,8 @@ jobs:
 
       - name: Upload title ownership diagnostics
         if: ${{ always() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: playwright-title-ownership-${{ matrix.artifact }}
@@ -599,8 +613,12 @@ jobs:
           npx playwright test --config=e2e/playwright.config.mock.ts
           mcp-tool-list-changed.spec.ts --retries=0
 
+      # Debugging aids that no job downloads: non-fatal and bounded, as the note on the
+      # e2e_shards uploads explains.
       - name: Upload Playwright HTML report
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: playwright-mcp-list-changed-${{ matrix.replicas }}-replicas
@@ -610,6 +628,8 @@ jobs:
 
       - name: Upload traces & screenshots
         if: failure()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: playwright-mcp-list-changed-results-${{ matrix.replicas }}-replicas
@@ -686,8 +706,12 @@ jobs:
       - name: Run MCP Apps browser fixture (enabled, disabled, omitted, quota)
         run: node e2e/mcp-apps/run.mjs
 
+      # Debugging aids that no job downloads: non-fatal and bounded, as the note on the
+      # e2e_shards uploads explains.
       - name: Upload per-phase Playwright reports
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: playwright-mcp-apps-reports
@@ -699,6 +723,8 @@ jobs:
 
       - name: Upload MCP Apps traces and screenshots
         if: failure()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: playwright-mcp-apps-results

@@ -138,6 +138,27 @@ test('every gated workflow starts for a merge group and closes in one gate over 
   }
 });
 
+test('an artifact upload can fail a gated job only when another job downloads the artifact', () => {
+  const runs = (step, action) => step.uses?.startsWith(`actions/${action}-artifact@`);
+  for (const suite of SUITES) {
+    const steps = Object.entries(workflows[suite.workflow].jobs).flatMap(([job, definition]) =>
+      definition.steps.map((step) => ({ job, step })),
+    );
+    const downloaded = new Set(
+      steps.filter(({ step }) => runs(step, 'download')).map(({ step }) => step.with.name),
+    );
+    for (const { job, step } of steps.filter(({ step }) => runs(step, 'upload'))) {
+      const label = `${suite.workflow} ${job} uploads ${step.with.name}`;
+      if (downloaded.has(step.with.name)) {
+        assert.equal(step['continue-on-error'], undefined, `${label}, which a later job needs`);
+        continue;
+      }
+      assert.equal(step['continue-on-error'], true, `${label}, which no job downloads`);
+      assert.ok(step['timeout-minutes'] > 0, `${label} without a bound on a stalled upload`);
+    }
+  }
+});
+
 test('a required context is the name of exactly one gate job and of nothing else', () => {
   const contexts = SUITES.map((suite) => suite.context);
   assert.equal(new Set(contexts).size, contexts.length);

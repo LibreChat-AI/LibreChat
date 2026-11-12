@@ -28,6 +28,8 @@ interface Step {
   'working-directory'?: string;
   if?: string;
   env?: Record<string, string>;
+  'continue-on-error'?: boolean | string;
+  'timeout-minutes'?: number;
 }
 interface Job {
   name?: string;
@@ -98,10 +100,12 @@ test('workflow separates tooling, source, installs and artifacts without changin
     runner.run!,
     /--workspace "\$QUALITY_WORKSPACE" --check "\$QUALITY_CHECK" "\$\{args\[@\]\}"/,
   );
+  const upload = report.steps.find(({ uses }) => uses === 'actions/upload-artifact@v6');
   assert.equal(
-    report.steps.find(({ uses }) => uses === 'actions/upload-artifact@v6')?.with?.path,
+    upload?.with?.path,
     'source/coverage/changes/${{ matrix.workspace }}/${{ matrix.report.check }}/',
   );
+  assert.equal(upload?.['continue-on-error'], "${{ matrix.report.check == 'risk' }}");
 });
 
 test('mutation shards retain the fixed budget and aggregate all evidence before the existing gate passes', () => {
@@ -142,6 +146,8 @@ test('mutation shards retain the fixed budget and aggregate all evidence before 
   assert.equal(aggregate.steps[requireSuccess].run, 'test "$REPORT_RESULT" = success');
   const upload = aggregate.steps.find(({ uses }) => uses === 'actions/upload-artifact@v6');
   assert.equal(upload?.if, 'always()');
+  assert.equal(upload?.['continue-on-error'], true);
+  assert.equal(upload?.['timeout-minutes'], 3);
   assert.equal(
     upload?.with?.name,
     'change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}',

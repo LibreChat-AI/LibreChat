@@ -502,9 +502,11 @@ jobs:
           fi
         working-directory: packages/client
       # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
-      # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
+      # Never part of the gate: it cannot fail the job or stall it into its timeout, and a re-run
+      # overwrites its own artifact.
       - name: Upload Jest results
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
@@ -592,9 +594,11 @@ jobs:
           fi
         working-directory: client
       # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
-      # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
+      # Never part of the gate: it cannot fail the job or stall it into its timeout, and a re-run
+      # overwrites its own artifact.
       - name: Upload Jest results
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:

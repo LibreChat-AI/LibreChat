@@ -118,8 +118,12 @@ jobs:
             echo "[Open the full run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
           } > lighthouse-comment.md
           gh pr comment "$PR_NUMBER" --body-file lighthouse-comment.md
+      # A debugging aid that no job downloads, so a failed or stalled upload must not fail the
+      # audit: see the note on the e2e_shards uploads in playwright-mock.yml.
       - name: Upload Lighthouse reports
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: lighthouse

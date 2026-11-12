@@ -80,8 +80,12 @@ jobs:
         run: npm run test:quality:${{ matrix.suite }} --workspace packages/data-schemas
       - name: Mutate the real database implementation
         run: npm run test:mutations:${{ matrix.suite }} --workspace packages/data-schemas
+      # A debugging aid that no job downloads, so a failed or stalled upload must not fail the
+      # contracts: see the note on the e2e_shards uploads in playwright-mock.yml.
       - name: Upload advisory reports
         if: always()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.suite }}-quality-${{ github.sha }}
