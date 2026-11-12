@@ -299,11 +299,14 @@ export async function runAdminOpenIdRefreshGrant(
     };
   }
 
-  /** Only a coordination failure strictly before the grant starts maps to a `503`: once the
-   *  grant has run, the IdP has already rotated the refresh token, and an error from here on
-   *  (the grant itself, or the flight's bookkeeping below) must not be reported as a bare
-   *  coordination outage. */
+  /** Only a coordination failure strictly before the grant starts maps to a `503`. Once the
+   *  grant has run, the IdP has already rotated the refresh token. A failure from the grant
+   *  itself still reaches the caller as-is. A failure from the lease's own bookkeeping after a
+   *  successful grant — the flight-completion write above, or the lease's post-operation renewal
+   *  and ownership checks — must not drop the rotated tokenset; it is returned so the caller can
+   *  still persist it. */
   let grantStarted = false;
+  let grantedTokenset: RefreshTokenset | undefined;
   try {
     return await deps.withOpenIDRefreshFlightLease({
       key,
@@ -311,6 +314,7 @@ export async function runAdminOpenIdRefreshGrant(
       operation: async () => {
         grantStarted = true;
         const tokenset = await grant();
+        grantedTokenset = tokenset;
         let identityClaims: ReturnType<RefreshTokenset['claims']> | undefined;
         try {
           identityClaims = tokenset.claims();
@@ -348,6 +352,13 @@ export async function runAdminOpenIdRefreshGrant(
       },
     });
   } catch (error) {
+    if (grantedTokenset) {
+      logger.warn(
+        '[runAdminOpenIdRefreshGrant] Refresh flight lease failed after a successful grant; keeping the rotated tokenset',
+        { error },
+      );
+      return grantedTokenset;
+    }
     if (!grantStarted) {
       logger.warn(
         '[runAdminOpenIdRefreshGrant] Refresh flight coordination failed before the grant started',

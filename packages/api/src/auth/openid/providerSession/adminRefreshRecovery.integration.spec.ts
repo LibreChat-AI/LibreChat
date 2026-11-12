@@ -824,4 +824,54 @@ describe.each(['record', 'enforce'] as const)('admin refresh recovery (%s mode)'
     expect(retry.status).toBe(503);
     expect(retryGrant).not.toHaveBeenCalled();
   });
+
+  it('(m) keeps the rotated tokenset and repoints the bridge when the flight lease itself fails after the grant', async () => {
+    const bridgeService = await makeBridgeService();
+    const A = 'refresh-m';
+    await seedLoggedIn(A, ADMIN_USER_ID);
+    const grant = makeGrant();
+
+    const first = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: ADMIN_USER_ID,
+      grant,
+    });
+    expect(first.status).toBe(200);
+    // response "lost"; the bridge now points A -> `${A}-r`
+
+    const baseFlightDeps = makeFlightDeps();
+    const flightDeps: AdminRefreshGrantDeps = {
+      ...baseFlightDeps,
+      withOpenIDRefreshFlightLease: async ({ operation }) => {
+        await baseFlightDeps.withOpenIDRefreshFlightLease?.({ operation });
+        throw new Error('lease renewal failed after the operation settled');
+      },
+    };
+
+    const retry = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: ADMIN_USER_ID,
+      grant,
+      flightDeps,
+    });
+
+    // The IdP already rotated the token at this point; the response must still succeed with it.
+    expect(retry.status).toBe(200);
+    expect(grant).toHaveBeenNthCalledWith(2, `${A}-r`);
+
+    const newSession = await methods.findSession({ refreshToken: `${A}-r-r` }, { lean: true });
+    expect(newSession).not.toBeNull();
+
+    const bridge = await bridgeService.getRefreshTokenBridge({
+      oldRefreshToken: A,
+      userId: ADMIN_USER_ID,
+      openidIssuer: ISSUER,
+    });
+    // Repointed to the newly rotated token despite the lease itself failing after the grant.
+    expect(bridge?.refreshToken).toBe(`${A}-r-r`);
+  });
 });
