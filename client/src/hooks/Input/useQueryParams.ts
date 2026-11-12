@@ -478,12 +478,15 @@ export default function useQueryParams({
     );
   }, [methods, ownsRequest]);
 
-  /** Consumes an auto-submit once, leaving a refused submission in the composer. */
+  /**
+   * Consumes an auto-submit once, leaving a refused submission in the composer. Callers reach it
+   * only with the requested settings in place, so the settings wait ends here even when the send
+   * itself still waits for the composer or the history.
+   */
   const processSubmission = useCallback(() => {
     if (
       routePendingRef.current ||
       !targetReadyRef.current ||
-      awaitsComposerRelease() ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
       !promptTextRef.current ||
@@ -496,6 +499,9 @@ export default function useQueryParams({
     if (settingsTimeoutRef.current) {
       clearTimeout(settingsTimeoutRef.current);
       settingsTimeoutRef.current = null;
+    }
+    if (awaitsComposerRelease()) {
+      return;
     }
 
     awaitingHistoryRef.current = isHistoryPending();
@@ -556,6 +562,11 @@ export default function useQueryParams({
     settlePrompt,
   ]);
 
+  /**
+   * Bounds the wait for the requested settings, never the wait for the composer. The timer can
+   * fire between the commit that applied them and that commit's effects, so it reads them again
+   * before reporting a failure.
+   */
   const armSettingsTimeout = useCallback(() => {
     if (settingsTimeoutRef.current || routePendingRef.current || !targetReadyRef.current) return;
     const requestId = requestIdRef.current;
@@ -570,6 +581,10 @@ export default function useQueryParams({
         return;
       }
       if (!submissionHandledRef.current && pendingSubmitRef.current) {
+        if (areSettingsApplied()) {
+          processSubmission();
+          return;
+        }
         restoreUrlPrompt();
         pendingSubmitRef.current = false;
         submissionHandledRef.current = true;
@@ -579,7 +594,15 @@ export default function useQueryParams({
         clearConsumedSearchParams();
       }
     }, MAX_SETTINGS_WAIT_MS);
-  }, [ownsRequest, cancelRequest, restoreUrlPrompt, settlePrompt, clearConsumedSearchParams]);
+  }, [
+    ownsRequest,
+    cancelRequest,
+    areSettingsApplied,
+    processSubmission,
+    restoreUrlPrompt,
+    settlePrompt,
+    clearConsumedSearchParams,
+  ]);
 
   /** Observes the history the composer sends from, so a retry runs after the
    * render that derives the latest message from it, not during the cache write. */
