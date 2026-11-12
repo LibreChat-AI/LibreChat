@@ -864,6 +864,8 @@ interface PreparedSubscription {
   runtime: RuntimeJobState;
   jobData: SerializableJobData | null;
   deferDeliveryUntilActivated: boolean;
+  /** Only suppress created when the resume snapshot included its authoritative metadata. */
+  createdEventCovered?: boolean;
 }
 
 type DeferredDelivery =
@@ -5274,7 +5276,8 @@ class GenerationJobManagerClass {
     }
 
     let subscriptionActive = true;
-    let createdEventDelivered = options?.skipBufferReplay === true;
+    let createdEventDelivered =
+      options?.skipBufferReplay === true && (prepared?.createdEventCovered ?? true);
     let terminalEventDelivered = false;
     let terminalEventQueued = false;
     let terminalPersistenceTimer: NodeJS.Timeout | null = null;
@@ -6459,11 +6462,9 @@ class GenerationJobManagerClass {
     };
     let resumeState: t.ResumeState | null = null;
     let jobData: SerializableJobData | null = null;
-    let awaitingCreated = false;
-    const readInitializedTurn = (job: Readonly<SerializableJobData>): boolean => {
-      awaitingCreated =
-        this._isRedis && job.userMessage != null && job.createdEventEmitted !== true;
-      return !awaitingCreated;
+    let createdEventCovered = true;
+    const recordCreatedSnapshot = (covered: boolean): void => {
+      createdEventCovered = covered;
     };
     const removeCaptureHandler = (): void => {
       runtime.resumeCaptureHandlers.delete(capturePendingEvent);
@@ -6531,7 +6532,7 @@ class GenerationJobManagerClass {
           const [candidateState, candidateJob] = await Promise.all([
             this.getResumeState(streamId, options?.expectedCreatedAt, {
               durableOnly: false,
-              readIf: readInitializedTurn,
+              onCreatedSnapshot: recordCreatedSnapshot,
               onContentSnapshot: (snapshot) => {
                 recoveryContentSnapshot = snapshot;
               },
@@ -6564,34 +6565,13 @@ class GenerationJobManagerClass {
         [resumeState, jobData] = await Promise.all([
           this.getResumeState(streamId, options?.expectedCreatedAt, {
             durableOnly: pendingOverflow != null,
-            readIf: readInitializedTurn,
+            onCreatedSnapshot: recordCreatedSnapshot,
             onContentSnapshot: (snapshot) => {
               recoveryContentSnapshot = snapshot;
             },
           }),
           this.jobStore.getJob(streamId),
         ]);
-      }
-
-      if (awaitingCreated && pendingOverflow == null) {
-        /* No initialized turn to resume yet. Keep the first authoritative created
-           event, including skills, rather than marking it covered by this snapshot. */
-        removeCaptureHandler();
-        restoreCapturedEvents();
-        subscription = await this.attachSubscription(streamId, onChunk, onDone, onError, options, {
-          runtime,
-          jobData,
-          deferDeliveryUntilActivated: true,
-        });
-        if (!subscription?.activate) {
-          subscription?.unsubscribe();
-          return { subscription: null, resumeState: null, pendingEvents: [] };
-        }
-        return {
-          subscription: { ...subscription, activate: subscription.activate },
-          resumeState: null,
-          pendingEvents: [],
-        };
       }
 
       if (pendingOverflow != null && recoveryStartedAt != null) {
@@ -6732,6 +6712,7 @@ class GenerationJobManagerClass {
           runtime,
           jobData,
           deferDeliveryUntilActivated: true,
+          createdEventCovered,
         },
       );
       if (pendingEvents.length > 0) {
@@ -6768,6 +6749,11 @@ class GenerationJobManagerClass {
       }
       if (!liveJob || liveJob.createdAt !== runtime.createdAt) {
         return cancelResumeSubscription();
+      }
+      if (!createdEventCovered && liveJob.createdEventEmitted === true && resumeState != null) {
+        /* Created can commit between the metadata snapshot and SUBSCRIBE. Reuse this
+           fenced read so a missed publication still hydrates skills in the sync. */
+        resumeState.userMessage = liveJob.userMessage;
       }
       const liveOverflow = liveJob.earlyBufferOverflow;
       if (liveOverflow != null) {
@@ -9105,6 +9091,7 @@ class GenerationJobManagerClass {
       /** Synchronous eligibility guard on both canonical reads; false means no snapshot. */
       readIf?: (job: Readonly<SerializableJobData>) => boolean;
       onContentSnapshot?: (snapshot: Awaited<ReturnType<IJobStore['getContentParts']>>) => void;
+      onCreatedSnapshot?: (createdEventEmitted: boolean) => void;
     },
   ): Promise<t.ResumeState | null> {
     const recoveryStartedAt =
@@ -9155,6 +9142,8 @@ class GenerationJobManagerClass {
       await this.completeJob(streamId, GENERATION_RECOVERY_FAILED_ERROR, jobData.createdAt);
       throw new Error(GENERATION_RECOVERY_FAILED_ERROR);
     }
+
+    options?.onCreatedSnapshot?.(jobData.createdEventEmitted === true);
 
     /** Independent reads (streamId-only): parallel to collapse 3 Redis round trips into 1.
      *  Safe despite readCachedGraph's cache-drop side effect — each call catches its own
