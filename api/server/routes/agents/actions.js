@@ -225,11 +225,6 @@ router.post(
         return res.status(400).json({ message: error.message });
       }
 
-      if (plannedUpdate.deleteOAuthTokens && requestedActionId) {
-        // Keep the callback URL stable while preventing old OAuth tokens from following a new target.
-        await deleteActionOAuthTokens(requestedActionId);
-      }
-
       // Force version update since actions are changing
       const updatedAgent = await db.updateAgent(
         { id: agent_id },
@@ -240,6 +235,10 @@ router.post(
           preserveMCPAccess: true,
         },
       );
+      if (plannedUpdate.deleteOAuthTokens && requestedActionId) {
+        // A conflict must preserve tokens; invalidate them before publishing the new target.
+        await deleteActionOAuthTokens(requestedActionId);
+      }
       await attachOwnerContacts([updatedAgent]);
 
       // Only update user field for new actions

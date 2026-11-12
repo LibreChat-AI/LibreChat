@@ -1033,47 +1033,61 @@ describe('Agent Methods', () => {
       expect(updated!.mcpServerNames).toEqual([]);
     });
 
-    test('an Action write cannot restore MCP access revoked after its read', async () => {
-      const { agentId, authorId } = createTestIds();
-      const tools = ['search_mcp_existing-server'];
-      await createAgent({
-        id: agentId,
-        name: 'Concurrent Action Agent',
-        provider: 'test',
-        model: 'test-model',
-        author: authorId,
-        tools,
-        mcpServerNames: ['existing-server'],
-      });
-      const originalFindOne = Agent.findOne.bind(Agent);
-      const read = jest.spyOn(Agent, 'findOne').mockImplementationOnce((...args) => {
-        const query = originalFindOne(...args);
-        const originalExec = query.exec.bind(query);
-        jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
-          const snapshot = await originalExec();
-          await Agent.updateOne(
-            { id: agentId },
-            { $set: { tools: [], mcpServerNames: [], updatedAt: new Date(Date.now() + 1000) } },
-            { timestamps: false },
-          );
-          return snapshot;
+    test.each(['advanced', 'unchanged'])(
+      'an Action write cannot restore revoked MCP access with an %s timestamp',
+      async (revision) => {
+        const { agentId, authorId } = createTestIds();
+        const tools = ['search_mcp_existing-server'];
+        await createAgent({
+          id: agentId,
+          name: 'Concurrent Action Agent',
+          provider: 'test',
+          model: 'test-model',
+          author: authorId,
+          tools,
+          mcpServerNames: ['existing-server'],
         });
-        return query;
-      });
+        const originalFindOne = Agent.findOne.bind(Agent);
+        const read = jest.spyOn(Agent, 'findOne').mockImplementationOnce((...args) => {
+          const query = originalFindOne(...args);
+          const originalExec = query.exec.bind(query);
+          jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+            const snapshot = await originalExec();
+            const snapshotRevision = snapshot?.get('updatedAt');
+            if (!(snapshotRevision instanceof Date)) {
+              throw new Error('Agent fixture has no revision');
+            }
+            await Agent.updateOne(
+              { id: agentId },
+              {
+                $set: {
+                  tools: [],
+                  mcpServerNames: [],
+                  updatedAt:
+                    revision === 'unchanged' ? snapshotRevision : new Date(Date.now() + 1000),
+                },
+              },
+              { timestamps: false },
+            );
+            return snapshot;
+          });
+          return query;
+        });
 
-      try {
-        await expect(
-          updateAgent(
-            { id: agentId },
-            { tools: [...tools, 'lookup_action_api---example---com'] },
-            { preserveMCPAccess: true },
-          ),
-        ).rejects.toThrow('Agent changed during Action update');
-      } finally {
-        read.mockRestore();
-      }
-      expect((await getAgent({ id: agentId }))!.mcpServerNames).toEqual([]);
-    });
+        try {
+          await expect(
+            updateAgent(
+              { id: agentId },
+              { tools: [...tools, 'lookup_action_api---example---com'] },
+              { preserveMCPAccess: true },
+            ),
+          ).rejects.toThrow('Agent changed during Action update');
+        } finally {
+          read.mockRestore();
+        }
+        expect((await getAgent({ id: agentId }))!.mcpServerNames).toEqual([]);
+      },
+    );
 
     test('should prune nonexistent skill ids from the allowlist on create', async () => {
       const { agentId, authorId } = createTestIds();

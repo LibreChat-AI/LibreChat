@@ -92,7 +92,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  for (const model of ['Agent', 'MCPServer', 'Action', 'AclEntry', 'User']) {
+  for (const model of ['Agent', 'MCPServer', 'Action', 'AclEntry', 'User', 'Token']) {
     await mongoose.models[model].deleteMany({});
   }
   actorId = new mongoose.Types.ObjectId().toString();
@@ -142,6 +142,40 @@ beforeEach(async () => {
 });
 
 describe('Action writes and agent-mediated MCP access', () => {
+  const oauthMetadata = {
+    domain: 'https://api.example.test',
+    auth: {
+      type: 'oauth',
+      authorization_url: 'https://1.1.1.1/authorize',
+      client_url: 'https://1.1.1.1/token',
+    },
+    oauth_client_id: 'fixture-client',
+    oauth_client_secret: 'fixture-secret',
+  };
+
+  const updateOAuthAction = (actionId, metadata = oauthMetadata) =>
+    request(app)
+      .post(`/api/agents/actions/${agent.id}`)
+      .send({
+        action_id: actionId,
+        functions: [{ function: { name: 'lookup' } }],
+        metadata,
+      });
+
+  async function createOAuthAction() {
+    expect((await updateOAuthAction()).status).toBe(200);
+    const action = await mongoose.models.Action.findOne({ agent_id: agent.id });
+    await Promise.all(
+      [
+        { type: 'oauth', identifier: `${actorId}:${action.action_id}` },
+        { type: 'oauth_refresh', identifier: `${actorId}:${action.action_id}:refresh` },
+      ].map((token) =>
+        db.createToken({ ...token, userId: actorId, token: 'fixture-token', expiresIn: 3600 }),
+      ),
+    );
+    return action;
+  }
+
   it('does not grant an unrelated private MCP server through an Action key', async () => {
     const privateServer = await mongoose.models.MCPServer.findOne({ serverName });
     expect(
@@ -216,6 +250,68 @@ describe('Action writes and agent-mediated MCP access', () => {
       expect(await mongoose.models.Action.countDocuments({ agent_id: agent.id })).toBe(0);
     } finally {
       write.mockRestore();
+    }
+  });
+
+  it('preserves OAuth tokens and metadata when the agent write conflicts', async () => {
+    const action = await createOAuthAction();
+    const before = await db.getAgent({ id: agent.id });
+    const write = jest.spyOn(db, 'updateAgent').mockRejectedValueOnce({ statusCode: 409 });
+    try {
+      const response = await updateOAuthAction(action.action_id, {
+        ...oauthMetadata,
+        domain: 'https://new.example.test',
+      });
+      expect(response.status).toBe(409);
+      expect(await mongoose.models.Token.countDocuments({ userId: actorId })).toBe(2);
+      expect((await db.getAgent({ id: agent.id })).tools).toEqual(before.tools);
+      expect((await mongoose.models.Action.findById(action._id)).metadata).toEqual(action.metadata);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it.each([false, true])(
+    'invalidates OAuth tokens before publishing metadata only when the target changes: %s',
+    async (targetChanged) => {
+      const action = await createOAuthAction();
+      const metadata = {
+        ...oauthMetadata,
+        domain: targetChanged ? 'https://new.example.test' : oauthMetadata.domain,
+      };
+      const updateAction = db.updateAction;
+      const write = jest.spyOn(db, 'updateAction').mockImplementation(async (...args) => {
+        expect(await mongoose.models.Token.countDocuments({ userId: actorId })).toBe(
+          targetChanged ? 0 : 2,
+        );
+        return updateAction(...args);
+      });
+      try {
+        expect((await updateOAuthAction(action.action_id, metadata)).status).toBe(200);
+        expect(write).toHaveBeenCalledTimes(1);
+        expect((await mongoose.models.Action.findById(action._id)).metadata.domain).toBe(
+          metadata.domain,
+        );
+      } finally {
+        write.mockRestore();
+      }
+    },
+  );
+
+  it('does not publish new OAuth metadata when token invalidation fails', async () => {
+    const action = await createOAuthAction();
+    const remove = jest.spyOn(db, 'deleteTokens').mockRejectedValue(new Error('fixture failure'));
+    try {
+      const response = await updateOAuthAction(action.action_id, {
+        ...oauthMetadata,
+        domain: 'https://new.example.test',
+      });
+      expect(response.status).toBe(500);
+      expect(response.body).toEqual({ message: 'Trouble updating the Agent Action' });
+      expect(await mongoose.models.Token.countDocuments({ userId: actorId })).toBe(2);
+      expect((await mongoose.models.Action.findById(action._id)).metadata).toEqual(action.metadata);
+    } finally {
+      remove.mockRestore();
     }
   });
 

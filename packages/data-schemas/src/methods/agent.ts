@@ -1689,14 +1689,28 @@ export function createAgentMethods(
         }),
       );
     }
+    let updateFilter = searchParameter;
+    if (currentAgent && (nextEnvironmentIds.length > 0 || options.preserveMCPAccess)) {
+      updateFilter = { ...searchParameter, _id: currentAgent._id, updatedAt: currentRevision };
+    }
+    if (currentAgent && options.preserveMCPAccess) {
+      const priorNames = currentAgent.mcpServerNames ?? [];
+      /** Timestamps can collide within a millisecond; bind the actual grants being retained. */
+      updateFilter = {
+        $and: [
+          updateFilter,
+          priorNames.length > 0
+            ? { mcpServerNames: priorNames }
+            : { $or: [{ mcpServerNames: [] }, { mcpServerNames: null }] },
+        ],
+      };
+    }
     const updatedAgent = await withCodeEnvironmentReferences(
       mongoose,
       nextEnvironmentIds,
       async () =>
         (await Agent.findOneAndUpdate(
-          currentAgent == null || (nextEnvironmentIds.length === 0 && !options.preserveMCPAccess)
-            ? searchParameter
-            : { ...searchParameter, _id: currentAgent._id, updatedAt: currentRevision },
+          updateFilter,
           updateData,
           mongoOptions,
         ).lean()) as IAgent | null,
