@@ -349,6 +349,68 @@ describe('ChatForm URL submission', () => {
     expect(view.getLocation().search).toBe('');
   });
 
+  it.each([500, 3500])(
+    'keeps applied URL settings pending until composer release after %i ms',
+    async (releaseDelay) => {
+      const view = mountComposer(initialConversation, { liveRun: true });
+      await act(async () => jest.advanceTimersByTime(100));
+      const applied = {
+        ...initialConversation,
+        endpoint: EModelEndpoint.agents,
+        agent_id: 'agent_test',
+        model: undefined,
+      };
+      view.rerender(<Harness conversation={applied} refusesWhileSubmitting />);
+      await act(async () => jest.advanceTimersByTime(releaseDelay));
+      expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+      expect(screen.getByTestId('text-input')).toHaveValue('hi');
+      expect(view.getLocation().search).toContain('submit=true');
+      expect(ask).not.toHaveBeenCalled();
+
+      await act(async () => view.setSubmitting(false));
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+      expect(view.getLocation().search).toBe('');
+      await act(async () => jest.advanceTimersByTime(4000));
+      expect(ask).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('still expires unapplied URL settings while the composer is busy', async () => {
+    const view = mountComposer(initialConversation, { liveRun: true });
+    await act(async () => jest.advanceTimersByTime(100));
+    await act(async () => jest.advanceTimersByTime(3000));
+    expect(screen.getByText(/Chat settings could not be applied/)).toBeInTheDocument();
+    expect(screen.getByTestId('text-input')).toHaveValue('hi');
+    expect(view.getLocation().search).toBe('');
+    await act(async () => view.setSubmitting(false));
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('cancels an applied URL submission if its route changes before composer release', async () => {
+    const view = mountComposer(initialConversation, { liveRun: true });
+    await act(async () => jest.advanceTimersByTime(100));
+    const applied = {
+      ...initialConversation,
+      endpoint: EModelEndpoint.agents,
+      agent_id: 'agent_test',
+      model: undefined,
+    };
+    view.rerender(<Harness conversation={applied} refusesWhileSubmitting />);
+    await act(async () => jest.advanceTimersByTime(3500));
+    await act(async () => {
+      view.navigate('/c/other-chat');
+      view.rerender(
+        <Harness conversation={{ ...initialConversation, conversationId: 'other-chat' }} />,
+      );
+    });
+    await act(async () => view.setSubmitting(false));
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).not.toHaveBeenCalled();
+    expect(view.getLocation().pathname).toBe('/c/other-chat');
+    expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+  });
+
   it('processes a new agent URL once after a previous URL request has completed', async () => {
     const view = mountComposer(initialConversation, { query: 'q=first&submit=true' });
     await act(async () => jest.advanceTimersByTime(100));

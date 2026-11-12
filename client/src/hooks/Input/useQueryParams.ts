@@ -483,7 +483,6 @@ export default function useQueryParams({
     if (
       routePendingRef.current ||
       !targetReadyRef.current ||
-      awaitsComposerRelease() ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
       !promptTextRef.current ||
@@ -496,6 +495,9 @@ export default function useQueryParams({
     if (settingsTimeoutRef.current) {
       clearTimeout(settingsTimeoutRef.current);
       settingsTimeoutRef.current = null;
+    }
+    if (awaitsComposerRelease()) {
+      return;
     }
 
     awaitingHistoryRef.current = isHistoryPending();
@@ -570,6 +572,10 @@ export default function useQueryParams({
         return;
       }
       if (!submissionHandledRef.current && pendingSubmitRef.current) {
+        if (areSettingsApplied()) {
+          processSubmission();
+          return;
+        }
         restoreUrlPrompt();
         pendingSubmitRef.current = false;
         submissionHandledRef.current = true;
@@ -579,7 +585,15 @@ export default function useQueryParams({
         clearConsumedSearchParams();
       }
     }, MAX_SETTINGS_WAIT_MS);
-  }, [ownsRequest, cancelRequest, restoreUrlPrompt, settlePrompt, clearConsumedSearchParams]);
+  }, [
+    ownsRequest,
+    cancelRequest,
+    areSettingsApplied,
+    processSubmission,
+    restoreUrlPrompt,
+    settlePrompt,
+    clearConsumedSearchParams,
+  ]);
 
   /** Observes the history the composer sends from, so a retry runs after the
    * render that derives the latest message from it, not during the cache write. */
