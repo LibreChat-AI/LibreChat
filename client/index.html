@@ -26,6 +26,59 @@
         padding: 0;
         height: 100%;
       }
+
+      /* On a slow connection the bundle can take tens of seconds, and an empty canvas reads as
+       * a broken page. The indicator waits a second, so a fast load never shows it, and it is
+       * a border rather than an image or text, so it is never a contentful-paint candidate. */
+      .boot-indicator {
+        width: 28px;
+        height: 28px;
+        box-sizing: border-box;
+        border: 2.5px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 50%;
+        opacity: 0;
+        animation:
+          boot-indicator-in 0.3s ease-out 1s forwards,
+          boot-indicator-spin 0.8s linear infinite;
+      }
+
+      .boot-indicator-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+
+      @keyframes boot-indicator-in {
+        to {
+          opacity: 0.4;
+        }
+      }
+
+      @keyframes boot-indicator-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @keyframes boot-indicator-pulse {
+        from {
+          opacity: 0.15;
+        }
+        to {
+          opacity: 0.4;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .boot-indicator {
+          border-right-color: currentColor;
+          animation: boot-indicator-pulse 1.2s ease-in-out 1s infinite alternate;
+        }
+      }
     </style>
     <script>
       (function () {
@@ -242,6 +295,7 @@
             justify-content: center;
             height: 100vh;
             background-color: ${backgroundColor};
+            color: ${dark ? '#ececec' : '#0d0d0d'};
           }
         `;
         document.head.appendChild(loadingContainerStyle);
@@ -414,7 +468,11 @@
   </head>
   <body>
     <div id="root">
-      <div id="loading-container"></div>
+      <div id="loading-container">
+        <div class="boot-indicator" role="status">
+          <span class="boot-indicator-label">Loading</span>
+        </div>
+      </div>
     </div>
   </body>
 </html>

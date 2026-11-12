@@ -97,7 +97,11 @@ export default defineConfig(({ command }) => ({
     themeCacheVersion(),
     copyPublicAssets(),
     VitePWA({
-      injectRegister: 'auto', // 'auto' | 'manual' | 'disabled'
+      /** `auto` emits a parser-blocking `<script>` at the end of `<head>`. On a slow
+       *  HTTP/1.1 link it queues behind every modulepreload, so the body, and with it
+       *  the loading canvas, cannot paint until most of the bundle has downloaded.
+       *  Registration itself waits for `load` either way. */
+      injectRegister: 'script-defer',
       registerType: 'autoUpdate', // 'prompt' | 'autoUpdate'
       devOptions: {
         enabled: false, // disable service worker registration in development mode
