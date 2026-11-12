@@ -1,5 +1,6 @@
 import type { OpenIDRefreshRecoveryDeps } from './recovery';
 import { createOpenIDRefreshRecoveryService } from './recovery';
+import { isOpenIDSessionEndedError } from './errors';
 
 describe('OpenID authentication publication settlement', () => {
   function setup() {
@@ -194,6 +195,116 @@ describe('OpenID authentication publication settlement', () => {
         expect.objectContaining({ existingRefreshToken: 'stale-refresh' }),
       );
     });
+  });
+});
+
+/**
+ * A logout can land in the window between a successful IdP refresh grant and the authorizer's
+ * check on the provider session that grant is bound to. The prepared successor must not survive
+ * that denial, and only an Express session still carrying the denied ref should be wiped.
+ */
+describe('sendOpenIDAuthResponse: provider-session denial after a successful grant', () => {
+  function setup() {
+    const deps = {
+      jwt: { decode: jest.fn() },
+      cookies: { parse: jest.fn(() => ({})) },
+      getJwtRefreshSecret: () => 'refresh-secret',
+      findOpenIDUser: jest.fn(),
+      findUser: jest.fn(),
+      getOpenIdConfig: jest.fn(),
+      getOpenIdEmail: jest.fn(),
+      getOpenIdIssuer: jest.fn(),
+      createAuthIdentityContext: jest.fn(),
+      refreshOpenIDSession: jest.fn(),
+      clearOpenIDAuthTokens: jest.fn(),
+      deleteOpenIDSession: jest.fn(),
+      createOpenIDRefreshFlightKey: jest.fn(),
+      storeRefreshTokenBridge: jest.fn().mockResolvedValue('bridge-v1'),
+      deleteRefreshTokenBridges: jest.fn(),
+      waitForOpenIDRefreshFlight: jest.fn(),
+      assertOpenIDRefreshSessionGenerationAvailable: jest.fn(),
+      revokeOpenIDRefreshFlights: jest.fn(),
+      bridgeGraceMs: 1000,
+      logger: { debug: jest.fn(), warn: jest.fn() },
+      createRefreshTokenBridgeFlightKey: jest.fn(() => 'publication'),
+      acquireOpenIDRefreshFlight: jest.fn().mockResolvedValue({
+        acquired: true,
+        ownerId: 'owner',
+      }),
+      withOpenIDRefreshFlightLease: jest.fn(({ operation }) =>
+        operation({
+          assertLeaseOwned: jest.fn().mockResolvedValue(true),
+          markLeaseSettled: jest.fn(),
+        }),
+      ),
+      failOpenIDRefreshFlight: jest.fn().mockResolvedValue(null),
+      completeOpenIDRefreshFlight: jest.fn().mockResolvedValue({ status: 'completed' }),
+      getOpenIDAppAuthToken: jest.fn(() => 'app-token'),
+      storeOpenIDSession: jest.fn().mockResolvedValue(undefined),
+      assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue(true),
+      setOpenIDAuthTokens: jest.fn(() => 'app-token'),
+      math: jest.fn((_value: string | undefined, fallback: number) => fallback),
+      defaultRefreshTokenExpiry: 1000 * 60 * 60 * 24 * 90,
+      providerSessionAuthorizer: {
+        establish: jest.fn().mockResolvedValue({ ok: true }),
+        authorize: jest.fn().mockResolvedValue({ ok: false }),
+        preCheck: jest.fn().mockResolvedValue({ ok: true }),
+        getMode: jest.fn().mockResolvedValue('enforce'),
+      },
+      getProviderSessionClient: jest.fn(() => null),
+    } satisfies OpenIDRefreshRecoveryDeps;
+    const service = createOpenIDRefreshRecoveryService(deps);
+    const deniedRef = { issuer: 'https://idp.example.com', clientId: 'librechat', sid: 'sid-1' };
+    const input = {
+      tokenset: { access_token: 'access', id_token: 'id', refresh_token: 'new-refresh' },
+      user: { _id: 'user' },
+      existingRefreshToken: 'refresh',
+      providerSession: deniedRef,
+      req: {},
+      res: {},
+    };
+    return { deps, service, input, deniedRef };
+  }
+
+  it('deletes the prepared session and the rotated bridge, and clears a matching session ref', async () => {
+    const { deps, service, input, deniedRef } = setup();
+    const req = { session: { openidTokens: { providerSession: deniedRef } } };
+
+    const error = await service
+      .sendOpenIDAuthResponse({ ...input, req })
+      .catch((caught: unknown) => caught);
+
+    expect(isOpenIDSessionEndedError(error)).toBe(true);
+    expect(deps.deleteOpenIDSession).toHaveBeenCalledWith('new-refresh');
+    expect(deps.deleteRefreshTokenBridges).toHaveBeenCalledWith({
+      refreshTokens: ['refresh'],
+      userId: 'user',
+      tenantId: undefined,
+      version: 'bridge-v1',
+    });
+    expect(deps.setOpenIDAuthTokens).not.toHaveBeenCalled();
+    expect(req.session.openidTokens).toBeUndefined();
+  });
+
+  it('never wipes an Express session bound to a different provider session', async () => {
+    const { deps, service, input } = setup();
+    const otherRef = { issuer: 'https://idp.example.com', clientId: 'librechat', sid: 'sid-other' };
+    const req = { session: { openidTokens: { providerSession: otherRef } } };
+
+    const error = await service
+      .sendOpenIDAuthResponse({ ...input, req })
+      .catch((caught: unknown) => caught);
+
+    expect(isOpenIDSessionEndedError(error)).toBe(true);
+    expect(deps.deleteOpenIDSession).toHaveBeenCalledWith('new-refresh');
+    expect(deps.deleteRefreshTokenBridges).toHaveBeenCalledWith({
+      refreshTokens: ['refresh'],
+      userId: 'user',
+      tenantId: undefined,
+      version: 'bridge-v1',
+    });
+    expect(deps.setOpenIDAuthTokens).not.toHaveBeenCalled();
+    expect(req.session.openidTokens).toEqual({ providerSession: otherRef });
   });
 });
 

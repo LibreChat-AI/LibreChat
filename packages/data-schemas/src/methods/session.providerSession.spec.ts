@@ -39,6 +39,22 @@ beforeEach(async () => {
 });
 
 describe('Session providerSession association', () => {
+  it('defaults a new session expiration to roughly now plus expiresIn', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const expiresIn = 60_000;
+    const before = Date.now();
+
+    const { session } = await methods.createSession(userId, { expiresIn });
+
+    const after = Date.now();
+    const stored = await mongoose.models.Session.findById(session._id).lean<ISession>();
+    const expirationMs = stored?.expiration?.getTime();
+    expect(expirationMs).toBeDefined();
+    expect(expirationMs).toBeGreaterThan(before);
+    expect(expirationMs).toBeGreaterThanOrEqual(before + expiresIn);
+    expect(expirationMs).toBeLessThanOrEqual(after + expiresIn);
+  });
+
   it('persists providerSession and authMethod through createSession', async () => {
     const userId = new mongoose.Types.ObjectId().toString();
     const { session } = await methods.createSession(userId, {
@@ -72,5 +88,16 @@ describe('Session providerSession association', () => {
     expect(stored.providerSession?.clientId).toBe(providerSession.clientId);
     expect(stored.providerSession?.sid).toBe(providerSession.sid);
     expect(stored.authMethod).toBe('openid');
+  });
+
+  it('omits tenantId, providerSession, and authMethod from upsertSession when not supplied', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const stored = await methods.upsertSession(userId, 'external-refresh-token-absence', {
+      expiration: new Date(Date.now() + 60_000),
+    });
+
+    expect(stored.tenantId).toBeUndefined();
+    expect(stored.providerSession).toBeUndefined();
+    expect(stored.authMethod).toBeUndefined();
   });
 });
