@@ -1,6 +1,7 @@
 import { useRef, createContext, useContext } from 'react';
 import type {
   Agent,
+  AgentDisplay,
   TFile,
   TMessage,
   Assistant,
@@ -152,7 +153,7 @@ export type MessageIconData = { endpoint?: string | null; isCreatedByUser?: bool
 export type MessageIconProps = {
   iconData?: MessageIconData;
   assistant?: Assistant;
-  agent?: Agent;
+  agent?: AgentDisplay;
 };
 
 /** The button a read-aloud control draws, through the row's toolbar styling. */
