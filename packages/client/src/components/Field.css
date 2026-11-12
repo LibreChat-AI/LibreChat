@@ -143,3 +143,17 @@ html[data-input-modality='pointer'] .lc-field.webkit-dark-styles:focus-visible {
     }
   }
 }
+
+/* The browser's own number stepper is a light control the dark theme cannot restyle. It is
+   hidden on the shared field; the field stays a number input, so the arrow keys, the mobile
+   numeric keyboard and validation are unchanged. */
+.lc-field[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.lc-field[type='number']::-webkit-inner-spin-button,
+.lc-field[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
