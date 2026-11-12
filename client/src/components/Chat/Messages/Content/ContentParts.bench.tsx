@@ -1,10 +1,10 @@
 import React, { Profiler } from 'react';
-import { RecoilRoot } from 'recoil';
 import { act, render } from '@testing-library/react';
 import { ContentTypes, Tools } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import ContentParts from './ContentParts';
+import { AppStores } from 'test/harness';
 
 /**
  * Render benchmark for a live agent run: one recorded-shape stream (batches of
@@ -157,7 +157,7 @@ function replay(snapshots: Snapshot[]): Result {
   const queryClient = new QueryClient();
   const tree = (content: Snapshot, isSubmitting: boolean) => (
     <QueryClientProvider client={queryClient}>
-      <RecoilRoot>
+      <AppStores>
         <Profiler
           id="run"
           onRender={(_id, _phase, actualDuration) => {
@@ -176,7 +176,7 @@ function replay(snapshots: Snapshot[]): Result {
             showThinking={false}
           />
         </Profiler>
-      </RecoilRoot>
+      </AppStores>
     </QueryClientProvider>
   );
   jest.useFakeTimers();

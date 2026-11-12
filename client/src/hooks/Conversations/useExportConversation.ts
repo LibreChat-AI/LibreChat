@@ -1,7 +1,5 @@
 import { useCallback } from 'react';
-import download from 'downloadjs';
 import { useParams } from 'react-router-dom';
-import exportFromJSON from 'export-from-json';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { buildTree, Constants, dataService, QueryKeys } from 'librechat-data-provider';
@@ -13,6 +11,7 @@ import {
 } from '~/hooks/ScreenshotContext';
 import useBuildMessageTree from '~/hooks/Messages/useBuildMessageTree';
 import { isUnacknowledgedUserMessage } from '~/utils/messages';
+import { importWithRecovery } from '~/lib/assets/lazy';
 import { NotificationSeverity } from '~/common';
 import { formatMessageText } from './format';
 import { cleanupPreset } from '~/utils';
@@ -23,6 +22,11 @@ type ExportValues = {
   fieldValues: string[];
 };
 type ExportEntries = ExportValues[];
+
+/** Export and download helpers load on first use, since most sessions never export. */
+const loadDownload = () => importWithRecovery(() => import('downloadjs')).then((m) => m.default);
+const loadExportFromJSON = () =>
+  importWithRecovery(() => import('export-from-json')).then((m) => m.default);
 
 export default function useExportConversation({
   conversation,
@@ -123,6 +127,7 @@ export default function useExportConversation({
       });
       return;
     }
+    const download = await loadDownload();
     if (refuseUnsafeScreenshot()) {
       return;
     }
@@ -151,6 +156,7 @@ export default function useExportConversation({
       data.push(messages);
     }
 
+    const exportFromJSON = await loadExportFromJSON();
     exportFromJSON({
       data: data,
       fileName: filename,
@@ -240,6 +246,7 @@ export default function useExportConversation({
       }
     }
 
+    const exportFromJSON = await loadExportFromJSON();
     exportFromJSON({
       data: data,
       fileName: filename,
@@ -296,6 +303,7 @@ export default function useExportConversation({
       }
     }
 
+    const exportFromJSON = await loadExportFromJSON();
     exportFromJSON({
       data: data,
       fileName: filename,
@@ -335,6 +343,7 @@ export default function useExportConversation({
     /** Use JSON.stringify without indentation to minimize file size for deeply nested recursive exports */
     const jsonString = JSON.stringify(data);
     const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+    const download = await loadDownload();
     download(blob, `${filename}.json`, 'application/json');
   };
 

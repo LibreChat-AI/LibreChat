@@ -33,7 +33,7 @@ export default function Collapse({
       aria-hidden={!open || undefined}
       inert={!open ? '' : undefined}
       className={cn(
-        'grid transition-[grid-template-rows] [transition-duration:var(--resize-dur)] [transition-timing-function:var(--resize-ease)] motion-reduce:transition-none',
+        'grid transition-all duration-(--resize-dur) ease-(--resize-ease) motion-reduce:transition-none',
         open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
       )}
     >

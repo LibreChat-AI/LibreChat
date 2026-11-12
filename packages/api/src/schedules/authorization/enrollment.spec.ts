@@ -135,7 +135,7 @@ it('denies an owner/tenant mismatch and cancellation before resolving resources'
 it('honors capability-only root access without bypassing descendant VIEW checks', async () => {
   const { deps, resolve } = setup();
   const rootAccess = createResolveAgentFireAccess({
-    findAgentObjectId: async () => ({ _id: new Types.ObjectId() }),
+    findAgentObjectId: async () => ({ _id: new Types.ObjectId().toString() }),
     getRoleByName: async () => ({
       permissions: { [PermissionTypes.AGENTS]: { [Permissions.USE]: true } },
     }),

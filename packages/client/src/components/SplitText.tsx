@@ -2,6 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSprings, animated, SpringConfig } from '@react-spring/web';
 import useRemScale from '~/hooks/useRemScale';
 
+const TEXT_ALIGN: Record<NonNullable<SplitTextProps['textAlign']>, string> = {
+  left: 'text-left',
+  right: 'text-right',
+  center: 'text-center',
+  justify: 'text-justify',
+  start: 'text-start',
+  end: 'text-end',
+};
+
 interface SegmenterOptions {
   granularity?: 'grapheme' | 'word' | 'sentence';
   localeMatcher?: 'lookup' | 'best fit';
@@ -153,8 +162,7 @@ const SplitText: React.FC<SplitTextProps> = ({
       <p
         ref={ref}
         dir="auto"
-        className={`split-parent inline overflow-hidden ${className}`}
-        style={{ textAlign, whiteSpace: 'normal', wordWrap: 'break-word' }}
+        className={`split-parent inline overflow-hidden break-words whitespace-normal ${TEXT_ALIGN[textAlign]} ${className}`}
       >
         {/* The paragraph's auto direction ignores word boxes with their own dir. */}
         <span className="sr-only">{text}</span>
@@ -163,7 +171,7 @@ const SplitText: React.FC<SplitTextProps> = ({
             key={wordIndex}
             dir="auto"
             aria-hidden="true"
-            style={{ display: 'inline-block', whiteSpace: 'nowrap' }}
+            className="inline-block whitespace-nowrap"
           >
             {word.map((letter, letterIndex) => {
               const index = offsets[wordIndex] + letterIndex;
@@ -179,7 +187,9 @@ const SplitText: React.FC<SplitTextProps> = ({
               );
             })}
             {wordIndex < words.length - 1 && (
-              <span style={{ display: 'inline-block', width: '0.3em' }}>&nbsp;</span>
+              <span className="inline-block" style={{ width: '0.3em' }}>
+                &nbsp;
+              </span>
             )}
           </span>
         ))}

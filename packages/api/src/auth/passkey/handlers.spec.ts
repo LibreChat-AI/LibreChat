@@ -397,6 +397,33 @@ describe('passkey registration provider enforcement', () => {
     expect(await methods.countPasskeysByUser(user._id.toString())).toBe(0);
   });
 
+  it('audits a credential that survives a failed rollback', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+    const countPasskeysByUser = jest
+      .fn(methods.countPasskeysByUser)
+      .mockResolvedValueOnce(0)
+      .mockRejectedValueOnce(new Error('Count unavailable'));
+    const deletePasskey = jest.fn().mockRejectedValue(new Error('Delete unavailable'));
+    const handlers = createPasskeyHandlers(
+      buildDeps({ countPasskeysByUser, deletePasskey, recordAuditEntry }),
+    );
+    const user = await createUser();
+    const res = buildRes();
+
+    await handlers.registerPasskeyVerify(
+      authedReq(user, { credential: attestation, password: PASSWORD }),
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'passkey.registered',
+        metadata: expect.objectContaining({ rollback: 'failed' }),
+      }),
+    );
+  });
+
   it('rolls back a credential that wins the enrollment race past the cap', async () => {
     /** Both verifies observe the pre-enrollment count, as two concurrent
      *  ceremonies for the same account do, so both pass the early check. */
@@ -472,6 +499,45 @@ describe('passkey registration provider enforcement', () => {
         lastUsedAt: null,
       },
     });
+  });
+
+  it('records passkey.registered with the user as actor', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+    const handlers = createPasskeyHandlers(buildDeps({ recordAuditEntry }));
+    const user = await createUser();
+    const res = buildRes();
+
+    await handlers.registerPasskeyVerify(
+      authedReq(user, { credential: attestation, name: 'Work laptop', password: PASSWORD }),
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const [stored] = await methods.findPasskeysByUser(user._id.toString());
+    expect(recordAuditEntry).toHaveBeenCalledTimes(1);
+    expect(recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'passkey.registered',
+        actor: expect.objectContaining({ type: 'user', id: user._id.toString() }),
+        target: { type: 'passkey', id: stored.id, name: 'Work laptop' },
+        metadata: { deviceType: 'singleDevice', backedUp: false },
+      }),
+    );
+  });
+
+  it('does not record passkey.registered when registration is rejected', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+    const handlers = createPasskeyHandlers(buildDeps({ recordAuditEntry }));
+    const user = await createUser();
+    const res = buildRes();
+
+    await handlers.registerPasskeyVerify(
+      authedReq(user, { credential: attestation, name: 'Key', password: 'wrong' }),
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(recordAuditEntry).not.toHaveBeenCalled();
   });
 
   it('names an unnamed credential after its transports', async () => {
@@ -708,6 +774,33 @@ describe('passkey rename', () => {
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith({ message: 'Name is required' });
+  });
+
+  it('records passkey.removed only when a credential was deleted', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+    const handlers = createPasskeyHandlers(buildDeps({ recordAuditEntry }));
+    const owner = await createUser();
+    const other = await createUser();
+    const passkey = await createStoredPasskey(owner);
+
+    await handlers.removePasskey(
+      authedReq(other, { password: PASSWORD }, { passkeyId: passkey.id }),
+      buildRes(),
+    );
+    expect(recordAuditEntry).not.toHaveBeenCalled();
+
+    await handlers.removePasskey(
+      authedReq(owner, { password: PASSWORD }, { passkeyId: passkey.id }),
+      buildRes(),
+    );
+    expect(recordAuditEntry).toHaveBeenCalledTimes(1);
+    expect(recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'passkey.removed',
+        actor: expect.objectContaining({ type: 'user', id: owner._id.toString() }),
+        target: { type: 'passkey', id: passkey.id },
+      }),
+    );
   });
 
   it('answers 404 for a credential the caller does not own', async () => {

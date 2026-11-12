@@ -11,6 +11,11 @@ type GuardedMutationResult = 'updated' | 'stale' | 'missing';
 export interface FlowLease {
   generation: number;
   release: () => Promise<void>;
+  /**
+   * Extends the lease while this owner still holds it. Resolves false once anyone else acquired
+   * it after expiry, so a holder can tell an unbroken fence from a lapsed one.
+   */
+  renew?: () => Promise<boolean>;
 }
 
 /** The flow a waiter was monitoring disappeared before it settled. */
@@ -142,6 +147,16 @@ data.purpose = ARGV[7]
 data.leaseUntil = now + tonumber(ARGV[5])
 redis.call('SET', KEYS[1], cjson.encode(data), 'PX', ARGV[6])
 return data.generation
+`;
+
+const RENEW_LEASE = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return -1 end
+local data = cjson.decode(raw)
+if data.owner ~= ARGV[1] then return -1 end
+data.leaseUntil = tonumber(ARGV[2]) + tonumber(ARGV[3])
+redis.call('SET', KEYS[1], cjson.encode(data), 'PX', ARGV[4])
+return 1
 `;
 
 const RELEASE_LEASE = `
@@ -335,6 +350,30 @@ export class FlowStateManager<T = unknown> {
                 expiresAt: Date.now() + retentionMs,
               });
             }
+          },
+          renew: async () => {
+            const renewedAt = Date.now();
+            if (redisKey) {
+              const renewed = Number(
+                await this.evalRedisScript(RENEW_LEASE, redisKey, [
+                  owner,
+                  String(renewedAt),
+                  String(leaseMs),
+                  String(retentionMs),
+                ]),
+              );
+              return renewed === 1;
+            }
+            const current = FlowStateManager.inMemoryLeases.get(inMemoryKey);
+            if (current?.owner !== owner) {
+              return false;
+            }
+            FlowStateManager.inMemoryLeases.set(inMemoryKey, {
+              ...current,
+              leaseUntil: renewedAt + leaseMs,
+              expiresAt: renewedAt + retentionMs,
+            });
+            return true;
           },
         };
       }

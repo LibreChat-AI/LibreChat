@@ -67,6 +67,7 @@ export const useHealthCheck = (isAuthenticated = false) => {
     }, 500);
 
     return () => {
+      isInitialized.current = false;
       clearTimeout(initTimer);
       if (intervalRef.current) {
         clearInterval(intervalRef.current);

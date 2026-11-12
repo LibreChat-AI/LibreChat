@@ -1,6 +1,6 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { EndpointTokenConfig } from '~/types';
-import { getModelMaxTokens, getModelMaxOutputTokens, findMatchingPattern } from './tokens';
+import { getModelMaxTokens, findMatchingPattern } from './tokens';
 
 describe('Bedrock OpenAI context windows', () => {
   const models = [
@@ -52,6 +52,75 @@ describe('Bedrock OpenAI context windows', () => {
   });
 });
 
+describe('Bedrock NVIDIA Nemotron context windows', () => {
+  it.each([
+    ['nvidia.nemotron-super-3-120b', 256000],
+    ['nvidia.nemotron-nano-3-30b', 256000],
+    ['nvidia.nemotron-nano-9b-v2', 128000],
+    ['nvidia.nemotron-nano-12b-v2', 128000],
+  ])('resolves %s to its Bedrock context window', (model, context) => {
+    for (const prefix of ['', 'us.', 'global.']) {
+      expect(getModelMaxTokens(`${prefix}${model}`, EModelEndpoint.bedrock)).toBe(context);
+    }
+  });
+
+  it('keeps unknown NVIDIA models on the fallback and honors endpoint overrides', () => {
+    expect(getModelMaxTokens('nvidia.unknown-model', EModelEndpoint.bedrock)).toBeUndefined();
+    const override: EndpointTokenConfig = {
+      'nvidia.nemotron-super-3-120b': { context: 64000, prompt: 1, completion: 1 },
+    };
+    expect(
+      getModelMaxTokens('nvidia.nemotron-super-3-120b', EModelEndpoint.bedrock, override),
+    ).toBe(64000);
+  });
+});
+
+describe('Bedrock vendor-prefixed context windows', () => {
+  it.each([
+    ['ai21.jamba-1-5-large-v1:0', 256000],
+    ['ai21.jamba-1-5-mini-v1:0', 256000],
+    ['anthropic.claude-mythos-preview', 1000000],
+    ['google.gemma-3-4b-it', 128000],
+    ['google.gemma-3-12b-it', 128000],
+    ['google.gemma-3-27b-it', 128000],
+    ['minimax.minimax-m2', 1000000],
+    ['minimax.minimax-m2.1', 196000],
+    ['minimax.minimax-m2.5', 196000],
+    ['mistral.devstral-2-123b', 256000],
+    ['mistral.magistral-small-2509', 128000],
+    ['mistral.ministral-3-3b-instruct', 128000],
+    ['mistral.ministral-3-8b-instruct', 128000],
+    ['mistral.ministral-3-14b-instruct', 128000],
+    ['mistral.voxtral-mini-3b-2507', 32768],
+    ['mistral.voxtral-small-24b-2507', 32768],
+    ['openai.gpt-5.4', 950000],
+    ['openai.gpt-5.5', 950000],
+    ['openai.gpt-6.1-terra', 950000],
+    ['openai.gpt-oss-safeguard-20b', 128000],
+    ['openai.gpt-oss-safeguard-120b', 128000],
+    ['qwen.qwen3-32b-v1:0', 32768],
+    ['qwen.qwen3-235b-a22b-2507-v1:0', 262144],
+    ['qwen.qwen3-coder-30b-a3b-v1:0', 262144],
+    ['qwen.qwen3-coder-480b-a35b-v1:0', 262144],
+    ['qwen.qwen3-coder-next', 262144],
+    ['qwen.qwen3-next-80b-a3b', 256000],
+    ['qwen.qwen3-vl-235b-a22b', 256000],
+    ['writer.palmyra-vision-7b', 4096],
+    ['writer.palmyra-x4-v1:0', 128000],
+    ['writer.palmyra-x5-v1:0', 128000],
+    ['xai.grok-4.6', 500000],
+    ['xai.grok-4.7', 524288],
+    ['zai.glm-4.7', 203000],
+    ['zai.glm-4.7-flash', 203000],
+    ['zai.glm-5', 200000],
+    ['zai.glm-5.3', 1000000],
+  ])('resolves %s to its Bedrock context window', (model, context) => {
+    for (const prefix of ['', 'us.', 'global.']) {
+      expect(getModelMaxTokens(`${prefix}${model}`, EModelEndpoint.bedrock)).toBe(context);
+    }
+  });
+});
+
 describe('getModelMaxTokens partial-override fallback', () => {
   const partialOverride: EndpointTokenConfig = {
     'custom-model': { prompt: 1, completion: 2, context: 32000, output: 4096 },
@@ -87,24 +156,10 @@ describe('future Claude context windows', () => {
   });
 });
 
-describe('getModelMaxOutputTokens partial-override fallback', () => {
-  const partialOverride: EndpointTokenConfig = {
-    'custom-model': { prompt: 1, completion: 2, context: 32000, output: 4096 },
-  };
-
-  it('falls back to the built-in map for a model absent from a partial override', () => {
-    const fallback = getModelMaxOutputTokens('gpt-4o', EModelEndpoint.openAI, partialOverride);
-    const builtin = getModelMaxOutputTokens('gpt-4o', EModelEndpoint.openAI);
-    expect(fallback).toBe(builtin);
-    expect(fallback).toBeGreaterThan(0);
-  });
-});
-
 describe('gpt-5.6 tiers', () => {
-  it('resolves 1.05M context and 128K output for every tier and the sol alias', () => {
+  it('resolves 1.05M context for every tier and the sol alias', () => {
     for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
       expect(getModelMaxTokens(model, EModelEndpoint.openAI)).toBe(1050000);
-      expect(getModelMaxOutputTokens(model, EModelEndpoint.openAI)).toBe(128000);
     }
   });
 
@@ -142,10 +197,9 @@ describe('Gemini 3.8 Flash', () => {
 });
 
 describe('GPT point releases', () => {
-  it('inherit their family context window and output limit', () => {
+  it('inherit their family context window', () => {
     for (const model of ['gpt-6.1-sol', 'gpt-6.1-sol-2026-10-01', 'openai/gpt-6.1-sol']) {
       expect(getModelMaxTokens(model, EModelEndpoint.openAI)).toBe(1050000);
-      expect(getModelMaxOutputTokens(model, EModelEndpoint.openAI)).toBe(128000);
     }
     expect(getModelMaxTokens('gpt-6.2-astra', EModelEndpoint.openAI)).toBe(1050000);
     expect(getModelMaxTokens('us.openai.gpt-6.1-sol', EModelEndpoint.bedrock)).toBe(950000);
@@ -168,9 +222,8 @@ describe('GPT point releases', () => {
 });
 
 describe('GPT-6 Astra', () => {
-  it('resolves 1.05M context and 128K output', () => {
+  it('resolves 1.05M context', () => {
     expect(getModelMaxTokens('gpt-6-astra', EModelEndpoint.openAI)).toBe(1050000);
-    expect(getModelMaxOutputTokens('gpt-6-astra', EModelEndpoint.openAI)).toBe(128000);
   });
 
   it('matches its own key for snapshots and provider prefixes', () => {
@@ -180,8 +233,20 @@ describe('GPT-6 Astra', () => {
       'gpt-6-astra-2026-04-30/openai',
     ]) {
       expect(getModelMaxTokens(model, EModelEndpoint.openAI)).toBe(1050000);
-      expect(getModelMaxOutputTokens(model, EModelEndpoint.openAI)).toBe(128000);
     }
+  });
+});
+
+describe('Gemini 4 Argon', () => {
+  it('resolves the shared 1,048,576-token context window', () => {
+    expect(getModelMaxTokens('gemini-4-argon', EModelEndpoint.google)).toBe(1048576);
+  });
+
+  it('matches the Argon key for prefixed and variant ids', () => {
+    expect(getModelMaxTokens('models/gemini-4-argon', EModelEndpoint.google)).toBe(1048576);
+    expect(getModelMaxTokens('gemini-4-argon-cyber-permissive', EModelEndpoint.google)).toBe(
+      1048576,
+    );
   });
 });
 
@@ -319,7 +384,22 @@ describe('Opus 5.5 token limits', () => {
     'global.anthropic.claude-opus-5-5',
   ])('resolves %s to the existing modern Claude profile', (model) => {
     expect(getModelMaxTokens(model)).toBe(1000000);
-    expect(getModelMaxOutputTokens(model)).toBe(128000);
+  });
+});
+
+describe('Haiku 5.5 token limits', () => {
+  it.each([
+    'claude-haiku-5-5',
+    'claude-haiku-5.5',
+    'anthropic/claude-haiku-5-5',
+    'global.anthropic.claude-haiku-5-5',
+  ])('resolves %s to the modern Claude profile', (model) => {
+    expect(getModelMaxTokens(model)).toBe(1000000);
+    expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+  });
+
+  it('keeps Haiku 4.5 at a 200K context', () => {
+    expect(getModelMaxTokens('claude-haiku-4-5', EModelEndpoint.anthropic)).toBe(200000);
   });
 });
 
@@ -331,17 +411,96 @@ describe('Sonnet 5.5 token limits', () => {
     'global.anthropic.claude-sonnet-5-5',
   ])('resolves %s to the modern Claude profile', (model) => {
     expect(getModelMaxTokens(model)).toBe(1000000);
-    expect(getModelMaxOutputTokens(model)).toBe(128000);
     expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
-    expect(getModelMaxOutputTokens(model, EModelEndpoint.anthropic)).toBe(128000);
   });
 });
 
-describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s token limits', (model) => {
+describe.each(['gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna'])('%s token limits', (model) => {
   it('resolves exact, snapshot, and provider-prefixed IDs', () => {
     for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {
       expect(getModelMaxTokens(name, EModelEndpoint.openAI)).toBe(1050000);
-      expect(getModelMaxOutputTokens(name, EModelEndpoint.openAI)).toBe(128000);
     }
+  });
+});
+
+describe('Terra context overrides', () => {
+  const model = 'gpt-6.1-terra';
+  it('honors explicit overrides and falls back for unlisted native models', () => {
+    expect(
+      getModelMaxTokens(model, EModelEndpoint.openAI, {
+        [model]: { context: 64000, prompt: 1, completion: 5 },
+      }),
+    ).toBe(64000);
+    expect(
+      getModelMaxTokens(model, EModelEndpoint.openAI, {
+        'gpt-4.1': { context: 64000, prompt: 1, completion: 1 },
+      }),
+    ).toBe(1050000);
+  });
+  it('keeps the separate Bedrock context window', () => {
+    expect(getModelMaxTokens(`us.openai.${model}`, EModelEndpoint.bedrock)).toBe(950000);
+  });
+});
+
+describe('Claude Fable 5.2 context window', () => {
+  it.each(['claude-fable-5-2', 'anthropic/claude-fable-5-2'])(
+    'resolves the 1M context window for %s',
+    (model) => {
+      expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+      expect(getModelMaxTokens(model, EModelEndpoint.custom)).toBe(1000000);
+    },
+  );
+});
+
+describe('Claude version boundaries', () => {
+  const rates = { 'claude-fable-5': 10, 'claude-fable-5-1': 10, 'claude-fable-5-2': 8 };
+
+  it.each([
+    'claude-fable-5-20260609',
+    'anthropic/claude-fable-5-20260609',
+    'anthropic.claude-fable-5-20260609',
+  ])('does not mistake the date in %s for a minor version', (model) => {
+    expect(findMatchingPattern(model, rates)).toBe('claude-fable-5');
+  });
+
+  it.each(['claude-fable-5-2', 'claude-fable-5-2-20261109'])(
+    'still resolves a complete minor version in %s',
+    (model) => {
+      expect(findMatchingPattern(model, rates)).toBe('claude-fable-5-2');
+    },
+  );
+});
+
+describe('Claude Mythos 5.2 context window', () => {
+  it.each(['claude-mythos-5-2', 'anthropic/claude-mythos-5-2'])(
+    'resolves the 1M context window for %s',
+    (model) => {
+      expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+      expect(getModelMaxTokens(model, EModelEndpoint.custom)).toBe(1000000);
+    },
+  );
+});
+
+describe('Claude Mythos version boundaries', () => {
+  const rates = { 'claude-mythos-5': 10, 'claude-mythos-5-1': 10, 'claude-mythos-5-2': 8 };
+
+  it.each([
+    'claude-mythos-5-20260609',
+    'anthropic/claude-mythos-5-20260609',
+    'anthropic.claude-mythos-5-20260609',
+  ])('does not mistake the date in %s for a minor version', (model) => {
+    expect(findMatchingPattern(model, rates)).toBe('claude-mythos-5');
+  });
+
+  it.each(['claude-mythos-5-2', 'claude-mythos-5-2-20261109'])(
+    'still resolves a complete minor version in %s',
+    (model) => {
+      expect(findMatchingPattern(model, rates)).toBe('claude-mythos-5-2');
+    },
+  );
+});
+describe('GPT-6 Cyber', () => {
+  it('resolves the published context window for configured models', () => {
+    expect(getModelMaxTokens('gpt-6-cyber', EModelEndpoint.openAI)).toBe(1050000);
   });
 });

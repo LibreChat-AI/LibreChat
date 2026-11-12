@@ -38,17 +38,20 @@ type ToolCompletion = {
 type ChildTimingStamps = { observedAt?: number; dispatchedAt?: number };
 
 type ChildTimingAggregator = {
-  stepMap?: Map<string, { index: number }>;
-  contentParts?: Array<{
-    type?: string;
-    tool_call?: {
-      id?: string;
-      toolPreparationStartedAt?: number;
-      toolDispatchedAt?: number;
-      toolPreparationDurationMs?: number;
-      toolExecutionDurationMs?: number;
-    };
-  }>;
+  stepMap?: Map<string, { index: number } | undefined>;
+  contentParts?: Array<
+    | {
+        type?: string;
+        tool_call?: {
+          id?: string;
+          toolPreparationStartedAt?: number;
+          toolDispatchedAt?: number;
+          toolPreparationDurationMs?: number;
+          toolExecutionDurationMs?: number;
+        };
+      }
+    | undefined
+  >;
 };
 
 export type ToolTimingAdapter = {

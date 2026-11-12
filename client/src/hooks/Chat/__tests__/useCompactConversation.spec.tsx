@@ -1,9 +1,11 @@
 import React from 'react';
 import { getDefaultStore } from 'jotai';
+import { ChatContext } from '@librechat/chat/react';
 import { ContentTypes } from 'librechat-data-provider';
 import { renderHook, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
+import type { ChatContract } from '../contract';
 import useCompactConversation, { compactingConversationAtom } from '../useCompactConversation';
 
 const mockAsk = jest.fn();
@@ -16,19 +18,6 @@ let mockContext: {
 };
 let mockLatestMessage: TMessage | null;
 
-/** The hook reads status and submits through the real `useChat` facade over this contract. */
-jest.mock('~/Providers/ChatContext', () => ({
-  useChatContext: () => ({
-    ...mockContext,
-    ask: mockAsk,
-    getMessages: () => mockStoredMessages,
-    messagesKey: mockContext.conversation?.conversationId ?? '',
-    setMessages: jest.fn(),
-    latestMessageId: undefined,
-    regenerate: jest.fn(),
-    stopGenerating: jest.fn(),
-  }),
-}));
 jest.mock('~/hooks/Messages/useLatestMessage', () => ({
   useLatestMessage: () => mockLatestMessage,
 }));
@@ -53,9 +42,26 @@ const leaf = (overrides: Partial<TMessage> = {}): TMessage =>
     ...overrides,
   }) as TMessage;
 
+/** The hook reads status and submits through the real `useChat` facade over this contract. */
+const getContract = () =>
+  ({
+    ...mockContext,
+    ask: mockAsk,
+    getMessages: () => mockStoredMessages,
+    messagesKey: mockContext.conversation?.conversationId ?? '',
+    setMessages: jest.fn(),
+    subscribeMessages: () => () => undefined,
+    getMessagesRevision: () => 0,
+    latestMessageId: undefined,
+    regenerate: jest.fn(),
+    stopGenerating: jest.fn(),
+  }) as unknown as ChatContract;
+
 const queryClient = new QueryClient();
 const wrapper = ({ children }: { children: React.ReactNode }) => (
-  <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  <QueryClientProvider client={queryClient}>
+    <ChatContext.Provider value={getContract()}>{children}</ChatContext.Provider>
+  </QueryClientProvider>
 );
 
 describe('useCompactConversation', () => {

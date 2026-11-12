@@ -20,16 +20,19 @@ const settingsContext: SettingsContextValue = {
   emailEnabled: true,
   allowEmailChange: true,
   passkeyLoginEnabled: false,
+  hasPullRequestConnect: false,
   isTwoFactorPolicyProvider: true,
   twoFactorEnabled: false,
   allowAccountDeletion: true,
   aboutEnabled: false,
+  mascotAllowed: true,
   engineTTS: 'browser',
   langfuseConnectionAccess: false,
   adminPanelURL: '',
   replyTabBadgeAllowed: true,
   replyNotificationsAllowed: true,
   replyNotificationSoundAllowed: true,
+  analyticsConfigured: false,
 };
 
 const policyProviders = ['local', 'ldap', null, undefined];
@@ -64,6 +67,12 @@ describe('settings registry', () => {
     for (const entry of registry) {
       expect(isValidElementType(entry.Component)).toBe(true);
     }
+  });
+
+  it('offers the analytics consent toggle only when GTM is configured', () => {
+    const entry = registry.find((e) => e.id === 'analyticsConsent');
+    expect(entry?.show?.(settingsContext)).toBe(false);
+    expect(entry?.show?.({ ...settingsContext, analyticsConfigured: true })).toBe(true);
   });
 
   describe('two-factor security visibility', () => {
@@ -124,6 +133,16 @@ describe('settings registry', () => {
         langfuseEntry?.show?.({
           ...settingsContext,
           langfuseConnectionAccess: true,
+        }),
+      ).toBe(true);
+    });
+
+    it('shows prompt settings without connection access', () => {
+      expect(
+        langfuseEntry?.show?.({
+          ...settingsContext,
+          langfuseConnectionAccess: false,
+          langfusePromptSyncAccess: true,
         }),
       ).toBe(true);
     });

@@ -294,7 +294,7 @@ export default function ToolsSection({ agentId }: Props) {
           title={localize('com_ui_delete_action')}
           className="max-w-[28.125rem]"
           main={
-            <Label className="text-left text-sm font-medium">
+            <Label className="text-start text-sm font-medium">
               {localize('com_ui_delete_action_confirm')}
             </Label>
           }
@@ -319,7 +319,7 @@ export default function ToolsSection({ agentId }: Props) {
           title={localize('com_ui_delete_tool')}
           className="max-w-[28.125rem]"
           main={
-            <Label className="text-left text-sm font-medium">
+            <Label className="text-start text-sm font-medium">
               {localize('com_ui_delete_tool_confirm')}
             </Label>
           }
@@ -361,10 +361,10 @@ function SelectedSection({
   return (
     <div className="mb-3 flex flex-col">
       <div className="mb-1 flex items-center justify-between">
-        <label className="text-text-secondary block text-[11px] font-medium tracking-wide uppercase">
+        <label className="text-text-secondary text-2xs block font-medium tracking-wide uppercase">
           {title}
           {badge != null && (
-            <span className="bg-surface-tertiary text-text-secondary ml-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1.5 text-[10px] font-medium tracking-normal normal-case">
+            <span className="bg-surface-tertiary text-text-secondary text-3xs ms-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1.5 font-medium tracking-normal normal-case">
               {badge}
             </span>
           )}
@@ -387,7 +387,7 @@ function SelectedSection({
         >
           <Plus className="h-4 w-4" aria-hidden="true" />
           <span className="text-xs">{emptyLabel}</span>
-          <span className="text-text-secondary text-[11px]">{emptyHint}</span>
+          <span className="text-text-secondary text-2xs">{emptyHint}</span>
         </button>
       ) : (
         <ul className="flex flex-col gap-1.5">

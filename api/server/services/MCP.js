@@ -22,13 +22,14 @@ const {
   GenerationJobManager,
   resolveJsonSchemaRefs,
   sanitizeGeminiSchema,
-  buildMCPAuthStepId,
-  buildMCPAuthToolCall,
   processMCPEnv,
   preProcessGraphTokens,
-  buildMCPAuthRunStepEvent,
-  buildMCPAuthRunStepDeltaEvent,
-  buildMCPAuthRunStepEndDeltaEvent,
+  createMCPReauthenticationPrompt,
+  createMCPInitializationOAuthPrompts,
+  createMCPAuthStepEmitter,
+  createMCPAuthDeltaEmitter,
+  createMCPAuthEndEmitter,
+  createOAuthCallback,
   isUserSourced,
   hasCustomUserVars,
   checkAccessWithRequestCache,
@@ -521,11 +522,12 @@ async function resolveAllMcpConfigs(userId, user) {
   } catch {
     logger.warn('[resolveAllMcpConfigs] Config server resolution failed; continuing without');
   }
+  const lookup = { idOnTheSource: user?.idOnTheSource };
   if (user?.role) {
-    return await registry.getAllServerConfigs(userId, configServers, user.role);
+    return await registry.getAllServerConfigs(userId, configServers, user.role, lookup);
   }
 
-  return await registry.getAllServerConfigs(userId, configServers);
+  return await registry.getAllServerConfigs(userId, configServers, undefined, lookup);
 }
 
 /**
@@ -608,22 +610,8 @@ function isEmptyObjectSchema(jsonSchema) {
  * @param {string | null} [params.streamId] - The stream ID for resumable mode.
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  */
-function createRunStepDeltaEmitter({ res, stepId, toolCall, streamId = null, jobCreatedAt }) {
-  /**
-   * @param {string} authURL - The URL to redirect the user for OAuth authentication.
-   * @param {{ expiresAt?: number }} [options]
-   * @returns {Promise<void>}
-   */
-  return async function (authURL, options) {
-    const eventData = buildMCPAuthRunStepDeltaEvent({ authURL, stepId, toolCall, options });
-    if (streamId) {
-      await GenerationJobManager.emitChunk(streamId, eventData, {
-        expectedCreatedAt: jobCreatedAt,
-      });
-    } else {
-      sendEvent(res, eventData);
-    }
-  };
+function createRunStepDeltaEmitter(options) {
+  return createMCPAuthDeltaEmitter({ ...options, sendEvent, jobs: GenerationJobManager, logger });
 }
 
 /**
@@ -637,25 +625,8 @@ function createRunStepDeltaEmitter({ res, stepId, toolCall, streamId = null, job
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  * @returns {() => Promise<void>}
  */
-function createRunStepEmitter({
-  res,
-  runId,
-  stepId,
-  toolCall,
-  index,
-  streamId = null,
-  jobCreatedAt,
-}) {
-  return async function () {
-    const eventData = buildMCPAuthRunStepEvent({ runId, stepId, toolCall, index });
-    if (streamId) {
-      await GenerationJobManager.emitChunk(streamId, eventData, {
-        expectedCreatedAt: jobCreatedAt,
-      });
-    } else {
-      sendEvent(res, eventData);
-    }
-  };
+function createRunStepEmitter(options) {
+  return createMCPAuthStepEmitter({ ...options, sendEvent, jobs: GenerationJobManager, logger });
 }
 
 /**
@@ -711,18 +682,8 @@ function createOAuthStart({ flowId, flowManager, callback }) {
  * @param {string | null} [params.streamId] - The stream ID for resumable mode.
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  */
-function createOAuthEnd({ res, stepId, toolCall, streamId = null, jobCreatedAt }) {
-  return async function () {
-    const eventData = buildMCPAuthRunStepEndDeltaEvent({ stepId, toolCall });
-    if (streamId) {
-      await GenerationJobManager.emitChunk(streamId, eventData, {
-        expectedCreatedAt: jobCreatedAt,
-      });
-    } else {
-      sendEvent(res, eventData);
-    }
-    logger.debug('Sent OAuth login success to client');
-  };
+function createOAuthEnd(options) {
+  return createMCPAuthEndEmitter({ ...options, sendEvent, jobs: GenerationJobManager, logger });
 }
 
 /**
@@ -731,12 +692,6 @@ function createOAuthEnd({ res, stepId, toolCall, streamId = null, jobCreatedAt }
  * @param {(authURL: string, options?: { expiresAt?: number }) => Promise<void>} params.runStepDeltaEmitter
  * @returns {(authURL: string, options?: { expiresAt?: number }) => Promise<void>}
  */
-function createOAuthCallback({ runStepEmitter, runStepDeltaEmitter }) {
-  return async function (authURL, options) {
-    await runStepEmitter();
-    await runStepDeltaEmitter(authURL, options);
-  };
-}
 
 function resolveToolCallUserId({ effectiveUser, capturedUser, invocationUserId, serverConfig }) {
   const identityBoundCredential =
@@ -796,6 +751,7 @@ async function reconnectServer({
   oboIdentityContext,
   streamId = null,
   jobCreatedAt,
+  unattended,
   recoveryPolicy,
   mcpApps,
 }) {
@@ -820,59 +776,49 @@ async function reconnectServer({
     evictStale(lastReconnectAttempts, RECONNECT_THROTTLE_MS);
   }
 
-  const runId = Constants.USE_PRELIM_RESPONSE_MESSAGE_ID;
   const flowId = `${user.id}:${serverName}:${Date.now()}`;
   const flowManager = getFlowStateManager(getLogStores(CacheKeys.FLOWS));
-  const stepId = buildMCPAuthStepId(serverName);
-  const toolCall = buildMCPAuthToolCall({
-    id: flowId,
-    serverName,
-  });
-
-  const runStepEmitter = createRunStepEmitter({
+  const oauthPrompt = createMCPInitializationOAuthPrompts({
+    userId: user.id,
     res,
-    index,
-    runId,
-    stepId,
-    toolCall,
+    sendEvent,
+    jobs: GenerationJobManager,
     streamId,
     jobCreatedAt,
-  });
-  const runStepDeltaEmitter = createRunStepDeltaEmitter({
-    res,
-    stepId,
-    toolCall,
-    streamId,
-    jobCreatedAt,
-  });
-  const callback = createOAuthCallback({ runStepEmitter, runStepDeltaEmitter });
+    unattended,
+    logger,
+  }).forServer(serverName, index);
   const oauthStart = createOAuthStart({
     res,
     flowId,
-    callback,
+    callback: oauthPrompt.start,
     flowManager,
   });
-  return await reinitMCPServer({
-    user,
-    signal,
-    serverName,
-    configServers,
-    oauthStart,
-    flowManager,
-    userMCPAuthMap,
-    requestBody,
-    requestScopedConnections,
-    upstreamTokenProvider,
-    upstreamTokenProviderResolver,
-    recoveryPolicy,
-    mcpApps,
-    oboIdentityContext,
-    streamId,
-    jobCreatedAt,
-    forceNew: true,
-    returnOnOAuth: false,
-    connectionTimeout: Time.THIRTY_SECONDS,
-  });
+  return await oauthPrompt.run(() =>
+    reinitMCPServer({
+      user,
+      signal,
+      serverName,
+      configServers,
+      oauthStart,
+      oauthEnd: oauthPrompt.end,
+      flowManager,
+      userMCPAuthMap,
+      requestBody,
+      requestScopedConnections,
+      upstreamTokenProvider,
+      upstreamTokenProviderResolver,
+      recoveryPolicy,
+      mcpApps,
+      oboIdentityContext,
+      streamId,
+      jobCreatedAt,
+      unattended,
+      forceNew: true,
+      returnOnOAuth: false,
+      connectionTimeout: Time.THIRTY_SECONDS,
+    }),
+  );
 }
 
 /**
@@ -922,10 +868,20 @@ async function createMCPTools({
   mcpApps,
   streamId = null,
   jobCreatedAt,
+  unattended,
 }) {
   let recoveryPolicy;
   const serverConfig =
-    config ?? (await getMCPServersRegistry().getServerConfig(serverName, user?.id, configServers));
+    config ??
+    (await getMCPServersRegistry().getServerConfig(
+      serverName,
+      user?.id,
+      configServers,
+      user?.role,
+      {
+        idOnTheSource: user?.idOnTheSource,
+      },
+    ));
 
   if (serverConfig?.url) {
     const appConfig = await getAppConfig({
@@ -967,6 +923,7 @@ async function createMCPTools({
     oboIdentityContext,
     streamId,
     jobCreatedAt,
+    unattended,
     recoveryPolicy,
     mcpApps,
   });
@@ -996,6 +953,7 @@ async function createMCPTools({
       configServers,
       streamId,
       jobCreatedAt,
+      unattended,
       recoveryPolicy,
       availableTools: result.availableTools,
       serverName,
@@ -1067,6 +1025,7 @@ async function createMCPTool({
   onAvailableTools,
   streamId = null,
   jobCreatedAt,
+  unattended,
   recoveryPolicy,
 }) {
   const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
@@ -1083,8 +1042,16 @@ async function createMCPTool({
   let serverName = resolvedServerName ?? parsedServerName;
   const toolName = parsedToolName;
 
+  const lookup = { idOnTheSource: user?.idOnTheSource };
   let serverConfig =
-    config ?? (await getMCPServersRegistry().getServerConfig(serverName, user?.id, configServers));
+    config ??
+    (await getMCPServersRegistry().getServerConfig(
+      serverName,
+      user?.id,
+      configServers,
+      user?.role,
+      lookup,
+    ));
   /** DIRECT-FIRST alias fallback: only when the parsed name resolves to no
    *  server is it treated as the normalized spelling of a raw config name —
    *  a user-DB server named like an operator server's normalized form must
@@ -1098,6 +1065,8 @@ async function createMCPTool({
         aliasedName,
         user?.id,
         configServers,
+        user?.role,
+        lookup,
       );
       if (serverConfig) {
         serverName = aliasedName;
@@ -1200,6 +1169,7 @@ async function createMCPTool({
       oboIdentityContext,
       streamId,
       jobCreatedAt,
+      unattended,
       ...(recoveryPolicy && { recoveryPolicy }),
       mcpApps,
     });
@@ -1255,6 +1225,7 @@ async function createMCPTool({
     mcpApps,
     streamId,
     jobCreatedAt,
+    unattended,
     recoveryPolicy,
   });
 }
@@ -1281,6 +1252,7 @@ function createToolInstance({
   mcpApps: capturedMCPApps,
   streamId = null,
   jobCreatedAt,
+  unattended,
   recoveryPolicy,
 }) {
   /** @type {LCTool} */
@@ -1339,24 +1311,36 @@ function createToolInstance({
 
       const { args: _args, stepId, ...toolCall } = config.toolCall ?? {};
       const flowId = `${serverName}:oauth_login:${config.metadata.thread_id}:${config.metadata.run_id}`;
-      const runStepDeltaEmitter = createRunStepDeltaEmitter({
-        res,
+      const oauthPrompt = createMCPReauthenticationPrompt({
+        serverName,
+        logger,
+        toolCallId: toolCall.id,
         stepId,
-        toolCall,
-        streamId,
-        jobCreatedAt,
+        runId: config.metadata.run_id,
+        createStart: (step) =>
+          createOAuthCallback({
+            runStepEmitter: createRunStepEmitter({
+              res,
+              runId: config.metadata.run_id,
+              ...step,
+              streamId,
+              jobCreatedAt,
+              unattended,
+            }),
+            runStepDeltaEmitter: createRunStepDeltaEmitter({
+              res,
+              ...step,
+              streamId,
+              jobCreatedAt,
+              unattended,
+            }),
+          }),
+        createEnd: (step) => createOAuthEnd({ res, ...step, streamId, jobCreatedAt, unattended }),
       });
       const oauthStart = createOAuthStart({
         flowId,
         flowManager,
-        callback: runStepDeltaEmitter,
-      });
-      const oauthEnd = createOAuthEnd({
-        res,
-        stepId,
-        toolCall,
-        streamId,
-        jobCreatedAt,
+        callback: oauthPrompt.start,
       });
 
       const customUserVars =
@@ -1373,52 +1357,54 @@ function createToolInstance({
        * is required for OBO since the grant sends the access token to the IdP
        * as the jwt-bearer assertion.
        */
-      const result = await mcpManager.callTool({
-        scheduledBearerInvocation,
-        scheduledMCPInvocation,
-        serverName,
-        serverConfig: capturedServerConfig,
-        /** The upstream server never sees stripped names — a key that dropped
-         *  a redundant server-name prefix calls the ORIGINAL tool. */
-        toolName: serverToolName,
-        provider,
-        toolArguments,
-        options: {
-          signal: derivedSignal,
-        },
-        user: effectiveUser,
-        requestBody: config?.configurable?.requestBody ?? capturedRequestBody,
-        requestScopedConnections:
-          config?.configurable?.requestScopedConnections ?? capturedRequestScopedConnections,
-        customUserVars,
-        flowManager,
-        tokenMethods: {
-          findToken,
-          createToken,
-          updateToken,
-          deleteTokens,
-        },
-        onOAuthCredentialsChanging: (scope) =>
-          prepareMCPAuthorizationMutation(scope, {
-            invalidateRecoveryGeneration: invalidateCachedTools,
-            persistPublicationRetry: persistMCPAuthorizationFenceRetry,
-            clearPublicationRetry: clearMCPAuthorizationFenceRetry,
-            clearLocalRecovery: (userId, changedServerName) =>
-              mcpManager.clearCatalogRecoveryState?.(userId, changedServerName),
-            retryDelaysMs: recoveryPolicy?.authorizationFenceRetryMs,
-            attemptTimeoutMs: recoveryPolicy?.authorizationFenceTimeoutMs,
-          }),
-        oauthStart,
-        oauthEnd,
-        graphTokenResolver: getGraphApiToken,
-        oboTokenResolver: exchangeOboToken,
-        oboTrustChecker: createOboTrustChecker(),
-        upstreamTokenProvider: capturedUpstreamTokenProvider,
-        upstreamTokenProviderResolver: capturedUpstreamTokenProviderResolver,
-        oboIdentityContext: capturedOboIdentityContext,
-        mcpApps: capturedMCPApps,
-      });
-      return result;
+      return await oauthPrompt.run(() =>
+        mcpManager.callTool({
+          scheduledBearerInvocation,
+          scheduledMCPInvocation,
+          serverName,
+          serverConfig: capturedServerConfig,
+          /** The upstream server never sees stripped names — a key that dropped
+           *  a redundant server-name prefix calls the ORIGINAL tool. */
+          toolName: serverToolName,
+          provider,
+          toolArguments,
+          options: {
+            signal: derivedSignal,
+          },
+          user: effectiveUser,
+          requestBody: config?.configurable?.requestBody ?? capturedRequestBody,
+          requestScopedConnections:
+            config?.configurable?.requestScopedConnections ?? capturedRequestScopedConnections,
+          customUserVars,
+          flowManager,
+          tokenMethods: {
+            findToken,
+            createToken,
+            updateToken,
+            deleteTokens,
+          },
+          onOAuthCredentialsChanging: (scope) =>
+            prepareMCPAuthorizationMutation(scope, {
+              invalidateRecoveryGeneration: invalidateCachedTools,
+              persistPublicationRetry: persistMCPAuthorizationFenceRetry,
+              clearPublicationRetry: clearMCPAuthorizationFenceRetry,
+              clearLocalRecovery: (userId, changedServerName) =>
+                mcpManager.clearCatalogRecoveryState?.(userId, changedServerName),
+              retryDelaysMs: recoveryPolicy?.authorizationFenceRetryMs,
+              attemptTimeoutMs: recoveryPolicy?.authorizationFenceTimeoutMs,
+            }),
+          oauthStart,
+          oauthEnd: oauthPrompt.end,
+          unattended,
+          graphTokenResolver: getGraphApiToken,
+          oboTokenResolver: exchangeOboToken,
+          oboTrustChecker: createOboTrustChecker(),
+          upstreamTokenProvider: capturedUpstreamTokenProvider,
+          upstreamTokenProviderResolver: capturedUpstreamTokenProviderResolver,
+          oboIdentityContext: capturedOboIdentityContext,
+          mcpApps: capturedMCPApps,
+        }),
+      );
     } catch (error) {
       /** A user Stop aborts every in-flight call at once, and that rejection is
        *  the cancellation working, so it must not reach error-level operational
@@ -1541,12 +1527,12 @@ function createToolInstance({
  * Get MCP setup data including config, connections, and OAuth servers.
  * Resolves config-source servers from admin Config overrides when tenant context is available.
  * @param {string} userId - The user ID
- * @param {{ role?: string, tenantId?: string, appConfig?: object }} [options] - Optional request context
+ * @param {{ role?: string, idOnTheSource?: string | null, tenantId?: string, appConfig?: object }} [options] - Optional request context
  * @returns {Object} Object containing mcpConfig, appConnections, userConnections, and oauthServers
  */
 async function getMCPSetupData(userId, options = {}) {
   const registry = getMCPServersRegistry();
-  const { role, tenantId } = options;
+  const { role, tenantId, idOnTheSource } = options;
 
   const appConfig = options.appConfig ?? (await getAppConfig({ role, tenantId, userId }));
   const capabilityProfile = resolveMCPClientCapabilityProfile(
@@ -1562,9 +1548,9 @@ async function getMCPSetupData(userId, options = {}) {
     ),
   );
   const configServers = await registry.ensureConfigServers(appConfig?.mcpConfig || {});
-  const mcpConfig = role
-    ? await registry.getAllServerConfigs(userId, configServers, role)
-    : await registry.getAllServerConfigs(userId, configServers);
+  const mcpConfig = await registry.getAllServerConfigs(userId, configServers, role || undefined, {
+    idOnTheSource,
+  });
   const mcpManager = getMCPManager(userId);
   /** @type {Map<string, import('@librechat/api').MCPConnection>} */
   let appConnections = new Map();

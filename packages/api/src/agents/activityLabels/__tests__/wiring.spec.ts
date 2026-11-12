@@ -123,6 +123,22 @@ describe('captureActivityBlockContext', () => {
     const context = captureActivityBlockContext(parts, 'agent-a');
     expect(context.thinkingExcerpts).toEqual(['Agent A reasoning']);
   });
+
+  it('keeps encoded provider reasoning out of the label evidence', () => {
+    const encoded = Buffer.from(Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256)).toString(
+      'base64',
+    );
+    const parts: LooseContentPart[] = [
+      { type: 'think', think: 'Comparing both lockfiles before the upgrade.' },
+      { type: 'think', think: encoded },
+      { type: 'think', think: `Pinning the resolver.\n${encoded}` },
+    ];
+    const context = captureActivityBlockContext(parts);
+    expect(context.thinkingExcerpts).toEqual([
+      'Comparing both lockfiles before the upgrade.',
+      'Pinning the resolver.',
+    ]);
+  });
 });
 
 describe('stripActivityLabelParts', () => {

@@ -89,9 +89,7 @@ const BackupCodesItem: React.FC = () => {
           <Label className="font-light">{localize('com_ui_backup_codes')}</Label>
         </div>
         <OGDialogTrigger asChild>
-          <Button aria-label="Manage Backup Codes" variant="outline">
-            {localize('com_ui_manage')}
-          </Button>
+          <Button variant="outline">{localize('com_ui_manage')}</Button>
         </OGDialogTrigger>
       </div>
 
@@ -182,12 +180,12 @@ const BackupCodesItem: React.FC = () => {
                     onClick={handleRegenerate}
                     disabled={isLoading || !otpReady}
                     variant="default"
-                    className="px-8 py-3 transition-all disabled:opacity-50"
+                    size="wide"
                   >
                     {isLoading ? (
-                      <Spinner className="mr-2" />
+                      <Spinner className="me-2" />
                     ) : (
-                      <RefreshCcw className="mr-2 h-4 w-4" aria-hidden="true" />
+                      <RefreshCcw className="me-2 h-4 w-4" aria-hidden="true" />
                     )}
                     {isLoading
                       ? localize('com_ui_regenerating')
@@ -201,9 +199,9 @@ const BackupCodesItem: React.FC = () => {
                   onClick={handleRegenerate}
                   disabled={isLoading || !otpReady}
                   variant="default"
-                  className="px-8 py-3 transition-all disabled:opacity-50"
+                  size="wide"
                 >
-                  {isLoading && <Spinner className="mr-2" />}
+                  {isLoading && <Spinner className="me-2" />}
                   {localize('com_ui_regenerate_backup')}
                 </Button>
               </div>
@@ -222,7 +220,6 @@ const BackupCodesItem: React.FC = () => {
                       onChange={setOtpToken}
                       maxLength={6}
                       pattern={REGEXP_ONLY_DIGITS}
-                      className="gap-2"
                     >
                       <>
                         <InputOTPGroup>
@@ -247,7 +244,7 @@ const BackupCodesItem: React.FC = () => {
                     setUseBackup(!useBackup);
                     setOtpToken('');
                   }}
-                  className="text-text-primary h-auto p-0 text-sm hover:underline"
+                  size="bare"
                 >
                   {useBackup ? localize('com_ui_use_2fa_code') : localize('com_ui_use_backup_code')}
                 </Button>

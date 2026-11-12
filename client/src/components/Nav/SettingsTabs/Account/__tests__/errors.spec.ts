@@ -1,4 +1,4 @@
-import { getTwoFactorError } from '../errors';
+import { getTwoFactorError, isCredentialRetirementIncomplete } from '../errors';
 
 const limited = (retryAfter?: string | number) => ({
   isAxiosError: true,
@@ -42,5 +42,19 @@ describe('2FA error guidance', () => {
     expect(getTwoFactorError(new Error('secret'), 'com_ui_backup_codes_regenerate_error')).toEqual({
       key: 'com_ui_backup_codes_regenerate_error',
     });
+  });
+});
+
+describe('isCredentialRetirementIncomplete', () => {
+  it('recognizes only the coded incomplete-retirement response', () => {
+    const response = (code?: string) => ({
+      isAxiosError: true,
+      response: { status: 500, data: { code } },
+    });
+    expect(isCredentialRetirementIncomplete(response('CREDENTIAL_RETIREMENT_INCOMPLETE'))).toBe(
+      true,
+    );
+    expect(isCredentialRetirementIncomplete(response('OTHER'))).toBe(false);
+    expect(isCredentialRetirementIncomplete(new Error('network'))).toBe(false);
   });
 });

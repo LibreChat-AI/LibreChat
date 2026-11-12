@@ -1,5 +1,57 @@
-import { Constants } from 'librechat-data-provider';
+import { Constants, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { TFile, TMessage } from 'librechat-data-provider';
+
+/** Shared wire bounds, not deployment settings. */
+export const MAX_MESSAGE_ID_LENGTH: number = Constants.MAX_MESSAGE_ID_LENGTH;
+export const MAX_RESPONSE_MESSAGE_ID_LENGTH: number = Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH;
+
+export function isValidMessageId(
+  messageId: unknown,
+  maxLength: number = MAX_MESSAGE_ID_LENGTH,
+): messageId is string {
+  return (
+    typeof messageId === 'string' &&
+    messageId.length > 0 &&
+    messageId.length <= maxLength &&
+    !/[^A-Za-z0-9_:.-]/.test(messageId)
+  );
+}
+
+export function getPreliminaryResponseMessageId({
+  compact,
+  messageId,
+  responseMessageId,
+  liveResponseMessageId,
+}: {
+  messageId?: unknown;
+  responseMessageId?: unknown;
+  compact?: boolean;
+  liveResponseMessageId?: unknown;
+}): string | null {
+  if (responseMessageId != null) {
+    return isValidMessageId(responseMessageId, MAX_RESPONSE_MESSAGE_ID_LENGTH)
+      ? responseMessageId
+      : null;
+  }
+  /** Compaction uses a persisted response, not a fresh user identity. */
+  const maxLength = compact === true ? MAX_RESPONSE_MESSAGE_ID_LENGTH : MAX_MESSAGE_ID_LENGTH;
+  if (!isValidMessageId(messageId, maxLength)) {
+    return null;
+  }
+
+  let end = messageId.length;
+  while (end > 0 && messageId.charCodeAt(end - 1) === 95) {
+    end--;
+  }
+  /** A full-length compaction anchor leaves no room for the suffix. */
+  if (end >= MAX_RESPONSE_MESSAGE_ID_LENGTH) {
+    return isValidMessageId(liveResponseMessageId, MAX_RESPONSE_MESSAGE_ID_LENGTH) &&
+      liveResponseMessageId !== messageId
+      ? liveResponseMessageId
+      : null;
+  }
+  return `${messageId.slice(0, end)}_`;
+}
 
 /** Minimal shape for request file entries (from `req.body.files`) */
 type RequestFile = { file_id?: string };
@@ -9,22 +61,35 @@ type GetMessagesByParentId = (
   select: '_id',
 ) => Promise<unknown[]>;
 
-/** Fields to strip from files before client transmission */
-const FILE_STRIP_FIELDS = ['text', '_id', '__v'] as const;
+/** Fields to strip before deriving the display-only preview. */
+const FILE_STRIP_FIELDS = ['text', 'textPreview', '_id', '__v'] as const;
+
+type FilePreviewSource = Partial<
+  Pick<TFile, 'file_id' | 'filename' | 'type' | 'text' | 'textFormat' | 'textPreview'>
+>;
+
+type SanitizedFile<T extends FilePreviewSource> = Omit<T, (typeof FILE_STRIP_FIELDS)[number]> &
+  Pick<TFile, 'textPreview'>;
 
 /** Fields to strip from messages before client transmission.
- * Both are prompt-building inputs: `fileContext` is text extracted from
- * attachments and `image_urls` holds base64 image inputs. Terminal events are
+ * These are prompt-building inputs: extracted text and provider-encoded
+ * images, documents, videos and audio. Terminal events are
  * additionally projected centrally by `projectTerminalEvent`; this stays as
  * defense in depth for the non-terminal senders (`error.js`,
  * `abortMiddleware.js`). */
-const MESSAGE_STRIP_FIELDS = ['fileContext', 'image_urls'] as const;
+const MESSAGE_STRIP_FIELDS = [
+  'fileContext',
+  'image_urls',
+  'documents',
+  'videos',
+  'audios',
+] as const;
 
 /**
  * Strips large/unnecessary fields from a file object before transmitting to client.
  * Use this within existing loops when building file arrays to avoid extra iterations.
  *
- * @param file - The file object to sanitize
+ * @param file - A server-authorized attachment or persisted message file
  * @returns A new file object without the stripped fields
  *
  * @example
@@ -35,21 +100,25 @@ const MESSAGE_STRIP_FIELDS = ['fileContext', 'image_urls'] as const;
  *   }
  * }
  */
-export function sanitizeFileForTransmit<T extends Partial<TFile>>(
-  file: T,
-): Omit<T, (typeof FILE_STRIP_FIELDS)[number]> {
+export function sanitizeFileForTransmit<T extends FilePreviewSource>(file: T): SanitizedFile<T> {
   const sanitized = { ...file };
   for (const field of FILE_STRIP_FIELDS) {
     delete sanitized[field as keyof typeof sanitized];
   }
+  if (file.type === 'text/plain' && file.textFormat !== 'html') {
+    const text = typeof file.text === 'string' ? file.text : file.textPreview;
+    if (typeof text === 'string') {
+      sanitized.textPreview = text.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH);
+    }
+  }
   return sanitized;
 }
 
-/** Filters attachments to those whose `file_id` appears in `requestFiles`, then sanitizes each. */
-export function buildMessageFiles<T extends Partial<TFile>>(
+/** Filters server-authorized attachments by request file IDs; request metadata is never copied. */
+export function buildMessageFiles<T extends FilePreviewSource>(
   requestFiles: RequestFile[],
   attachments: T[],
-): Omit<T, (typeof FILE_STRIP_FIELDS)[number]>[] {
+): SanitizedFile<T>[] {
   const requestFileIds = new Set<string>();
   for (const f of requestFiles) {
     if (f.file_id) {
@@ -57,7 +126,7 @@ export function buildMessageFiles<T extends Partial<TFile>>(
     }
   }
 
-  const files: Omit<T, (typeof FILE_STRIP_FIELDS)[number]>[] = [];
+  const files: SanitizedFile<T>[] = [];
   for (const attachment of attachments) {
     if (attachment.file_id != null && requestFileIds.has(attachment.file_id)) {
       files.push(sanitizeFileForTransmit(attachment));
@@ -68,7 +137,7 @@ export function buildMessageFiles<T extends Partial<TFile>>(
 
 /**
  * Sanitizes a message object before transmitting to client.
- * Removes prompt-building fields (`fileContext`, `image_urls`) and strips
+ * Removes extracted text and provider-encoded attachment inputs, and strips
  * `text` from embedded files.
  *
  * @param message - The message object to sanitize

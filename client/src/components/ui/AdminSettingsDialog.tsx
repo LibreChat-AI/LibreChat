@@ -82,7 +82,7 @@ const LabelController: React.FC<LabelControllerProps> = ({
   <div className="flex items-center justify-between gap-4 px-4 py-3.5">
     <Label
       htmlFor={id}
-      className="text-text-primary w-auto cursor-pointer text-sm font-medium break-normal select-none"
+      className="w-auto cursor-pointer text-sm font-medium break-normal select-none"
     >
       {label}
     </Label>
@@ -186,7 +186,7 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
     <Button
       size="sm"
       variant="outline"
-      className="border-border-light relative h-9 w-full gap-2 rounded-lg font-medium"
+      className="relative h-9 w-full font-medium"
       aria-label={localize('com_ui_admin_settings')}
     >
       <ShieldEllipsis className="size-5 cursor-pointer" aria-hidden="true" />
@@ -201,7 +201,7 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
         <OGDialogContent
           className={dialogContentClassName ?? 'w-11/12 max-w-2xl gap-0 overflow-hidden p-0'}
         >
-          <OGDialogHeader className="px-5 py-5 pr-14 text-left sm:px-6">
+          <OGDialogHeader className="px-5 py-5 pe-14 text-start sm:px-6">
             <div className="flex items-center gap-3">
               <div className="border-border-light bg-surface-secondary text-text-secondary flex size-10 shrink-0 items-center justify-center rounded-xl border">
                 <ShieldEllipsis className="size-5" aria-hidden="true" />

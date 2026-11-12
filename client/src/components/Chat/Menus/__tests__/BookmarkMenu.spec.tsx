@@ -4,13 +4,11 @@ import { render, screen } from '@testing-library/react';
 import { RetentionMode } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import BookmarkMenu from '../BookmarkMenu';
 import store from '~/store';
 
-const mockUseGetStartupConfig = jest.fn();
-
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: (...args: unknown[]) => mockUseGetStartupConfig(...args),
   useConversationTagsQuery: () => ({ data: [] }),
   useTagConversationMutation: () => ({ mutate: jest.fn(), isLoading: false }),
 }));
@@ -52,10 +50,6 @@ function renderMenu({
   conversation: Partial<TConversation>;
   retentionMode?: RetentionMode;
 }) {
-  mockUseGetStartupConfig.mockReturnValue({
-    data: retentionMode ? { interface: { retentionMode } } : { interface: {} },
-  });
-
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot
@@ -63,7 +57,14 @@ function renderMenu({
           set(store.conversationByIndex(0), conversation as TConversation);
         }}
       >
-        <BookmarkMenu />
+        <ChatSettingsContext.Provider
+          value={{
+            ...defaultChatSettings,
+            config: { ...defaultChatSettings.config, retentionMode },
+          }}
+        >
+          <BookmarkMenu />
+        </ChatSettingsContext.Provider>
       </RecoilRoot>
     </QueryClientProvider>,
   );

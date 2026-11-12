@@ -7,3 +7,14 @@ export class UnsupportedProviderAudioError extends Error {
     this.name = 'UnsupportedProviderAudioError';
   }
 }
+
+/** Expected admission pressure, not a malformed document or an internal failure. */
+export class SpreadsheetBusyError extends Error {
+  readonly code = 'SPREADSHEET_BUSY';
+  readonly userErrorStatusCode = 503;
+
+  constructor() {
+    super('Spreadsheet processing is busy; retry later.');
+    this.name = 'SpreadsheetBusyError';
+  }
+}

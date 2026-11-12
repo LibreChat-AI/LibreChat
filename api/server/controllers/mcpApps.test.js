@@ -75,7 +75,7 @@ describe('MCP Apps controller wiring', () => {
   it('exports the typed controller handlers and binds server dependencies', async () => {
     process.env.MCP_SANDBOX_FRAME_ANCESTORS = 'https://host.example.com';
     const ensureConfigServers = jest.fn().mockResolvedValue({ srv: { type: 'sse' } });
-    const getAllServerConfigs = jest.fn().mockResolvedValue({ srv: { type: 'sse' } });
+    const getServerConfig = jest.fn().mockResolvedValue({ type: 'sse' });
     const recoverServerConfig = jest.fn().mockResolvedValue({ type: 'sse' });
     const isAppServerConfig = jest.fn().mockResolvedValue(true);
     const resolveCachedAppServerConfig = jest.fn().mockResolvedValue({
@@ -86,7 +86,7 @@ describe('MCP Apps controller wiring', () => {
     getFlowStateManager.mockReturnValue('flow-manager');
     getMCPServersRegistry.mockReturnValue({
       ensureConfigServers,
-      getAllServerConfigs,
+      getServerConfig,
       recoverServerConfig,
       isAppServerConfig,
       resolveCachedAppServerConfig,
@@ -142,9 +142,9 @@ describe('MCP Apps controller wiring', () => {
     });
     expect(ensureConfigServers).toHaveBeenCalledWith({ srv: { type: 'sse' } });
     await expect(
-      dependencies.getAllServerConfigs('user-1', { srv: { type: 'sse' } }, 'USER'),
-    ).resolves.toEqual({ srv: { type: 'sse' } });
-    expect(getAllServerConfigs).toHaveBeenCalledWith('user-1', { srv: { type: 'sse' } }, 'USER');
+      dependencies.getServerConfig('srv', 'user-1', { srv: { type: 'sse' } }, 'USER'),
+    ).resolves.toEqual({ type: 'sse' });
+    expect(getServerConfig).toHaveBeenCalledWith('srv', 'user-1', { srv: { type: 'sse' } }, 'USER');
     await expect(
       dependencies.recoverServerConfig('srv', { type: 'sse', inspectionFailed: true }, 'user-1'),
     ).resolves.toEqual({ type: 'sse' });

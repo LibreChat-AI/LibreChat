@@ -46,10 +46,13 @@ const DropdownVariableCard = ({ parsed }: { parsed: ParsedVariable }) => {
     >
       <div className="mb-2 flex items-center gap-2">
         <div className="bg-surface-tertiary flex size-6 items-center justify-center rounded-md">
-          <ChevronRight className="text-text-secondary size-3.5" aria-hidden="true" />
+          <ChevronRight
+            className="text-text-secondary size-3.5 rtl:-scale-x-100"
+            aria-hidden="true"
+          />
         </div>
         <span className="text-text-primary text-sm font-medium">{parsed.name}</span>
-        <span className="bg-surface-tertiary text-text-secondary rounded-full px-1.5 py-0.5 text-[10px] font-medium">
+        <span className="bg-surface-tertiary text-text-secondary text-3xs rounded-full px-1.5 py-0.5 font-medium">
           {parsed.options.length} {localize('com_ui_options')}
         </span>
       </div>
@@ -91,7 +94,7 @@ const SpecialVariableChip = ({ parsed }: { parsed: ParsedVariable }) => {
       </div>
       <div className="min-w-0 flex-1">
         <span className="text-text-primary text-xs font-medium">{displayLabel}</span>
-        {description && <p className="text-text-secondary mt-0.5 text-[11px]">{description}</p>}
+        {description && <p className="text-text-secondary text-2xs mt-0.5">{description}</p>}
       </div>
     </div>
   );
@@ -165,7 +168,7 @@ const PromptVariables = ({
       >
         {specialVars.length > 0 && (
           <section aria-label={localize('com_ui_special_variables')}>
-            <h5 className="text-text-secondary mb-2 text-[11px] font-medium tracking-wide uppercase">
+            <h5 className="text-text-secondary text-2xs mb-2 font-medium tracking-wide uppercase">
               {localize('com_ui_special_variables')}
             </h5>
             <div className="grid gap-2 sm:grid-cols-2">
@@ -178,7 +181,7 @@ const PromptVariables = ({
 
         {dropdownVariables.length > 0 && (
           <section aria-label={localize('com_ui_dropdown_variables')}>
-            <h5 className="text-text-secondary mb-2 text-[11px] font-medium tracking-wide uppercase">
+            <h5 className="text-text-secondary text-2xs mb-2 font-medium tracking-wide uppercase">
               {localize('com_ui_dropdown_variables')}
             </h5>
             <div className="flex flex-col gap-2">
@@ -191,7 +194,7 @@ const PromptVariables = ({
 
         {simpleVariables.length > 0 && (
           <section aria-label={localize('com_ui_text_variables')}>
-            <h5 className="text-text-secondary mb-2 text-[11px] font-medium tracking-wide uppercase">
+            <h5 className="text-text-secondary text-2xs mb-2 font-medium tracking-wide uppercase">
               {localize('com_ui_text_variables')}
             </h5>
             <div className="flex flex-wrap gap-2">

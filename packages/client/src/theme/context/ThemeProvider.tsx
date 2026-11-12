@@ -9,7 +9,16 @@ import React, {
   useState,
 } from 'react';
 import { JSX } from 'react/jsx-runtime';
-import type { IThemeRGB, ThemeDefinition, ThemeMode } from '../types';
+import {
+  darkTheme,
+  defaultTheme,
+  fromLegacyTheme,
+  highContrastTheme,
+  collectThemeWarnings,
+  resolveTheme,
+  validateThemeDefinition,
+} from 'librechat-data-provider';
+import type { IThemeRGB, ThemeDefinition, ThemeMode } from 'librechat-data-provider';
 import applyTheme, {
   applyResolvedTheme,
   clearAppliedTheme,
@@ -18,17 +27,9 @@ import applyTheme, {
   THEME_DISABLED_ATTRIBUTE,
   THEME_FIELD_FOCUS_ATTRIBUTE,
 } from '../utils/applyTheme';
-import {
-  fromLegacyTheme,
-  highContrastTheme,
-  collectThemeWarnings,
-  resolveTheme,
-  validateThemeDefinition,
-} from '../registry';
-import { defaultTheme } from '../themes/default';
-import { darkTheme } from '../themes/dark';
 import '../highContrast.css';
 import '../preflight.css';
+import '../parts.css';
 
 const THEME_KEY = 'color-theme';
 const THEME_COLORS_KEY = 'theme-colors';

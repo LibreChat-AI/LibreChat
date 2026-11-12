@@ -349,6 +349,26 @@ it('withholds provider completion when request cleanup closes the occurrence dur
   await expect(f.call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
 });
 
+it('closes scheduled authority at request cleanup without closing unscheduled calls', async () => {
+  const unscheduled = createMCPRequestContext();
+  const scheduled = createMCPRequestContext();
+  attachScheduledMCPBearer(scheduled, identity);
+  await cleanupMCPRequestContext(unscheduled);
+  await cleanupMCPRequestContext(scheduled);
+  expect(unscheduled.cleanupStarted).toBe(true);
+  expect(scheduled.cleanupStarted).toBe(true);
+  // A detached child's interactive call after its parent turn cleaned up keeps the declared config.
+  await expect(
+    resolveScheduledMCPBearerConfig({ context: unscheduled, config, user, serverName: 'Files' }),
+  ).resolves.toBe(config);
+  await expect(
+    resolveScheduledMCPBearerConfig({ context: scheduled, config, user, serverName: 'Files' }),
+  ).rejects.toMatchObject({
+    name: 'ScheduledMCPBearerError',
+    failure: { reason: 'binding_mismatch' },
+  });
+});
+
 it('does not let one cancelled waiter cancel shared minting for a sibling', async () => {
   const f = await bearerFixture();
   let resolve!: (result: ScheduledMCPBearerResult) => void;
@@ -657,6 +677,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
     const manager = new MCPManager();
     const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: async () => false,
+      isHiddenFromPrincipal: async () => false,
       resolveAllowlists: async () => ({
         allowedDomains: ['127.0.0.1'],
         allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -783,6 +804,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
       const upstreamTokenProvider = jest.fn(async () => ({ access_token: 'browser-only' }));
       const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
         isAppServerConfig: async () => false,
+        isHiddenFromPrincipal: async () => false,
         resolveAllowlists: async () => ({
           allowedDomains: ['127.0.0.1'],
           allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -874,6 +896,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
       const manager = new MCPManager();
       const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
         isAppServerConfig: async () => false,
+        isHiddenFromPrincipal: async () => false,
         resolveAllowlists: async () => ({
           allowedDomains: ['127.0.0.1'],
           allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -984,6 +1007,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
     const manager = new MCPManager();
     const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: async () => false,
+      isHiddenFromPrincipal: async () => false,
       resolveAllowlists: async () => ({
         allowedDomains: ['127.0.0.1'],
         allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -1030,6 +1054,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
     const manager = new MCPManager();
     const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: async () => false,
+      isHiddenFromPrincipal: async () => false,
       resolveAllowlists: async () => ({
         allowedDomains: ['127.0.0.1'],
         allowedAddresses: [`127.0.0.1:${server.port}`],

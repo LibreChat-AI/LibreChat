@@ -161,7 +161,7 @@ export async function resolveEffectiveAppServerConfig({
   user,
   mcpConfig,
   ensureConfigServers,
-  getAllServerConfigs,
+  getServerConfig,
   recoverServerConfig,
   isAppServerConfig,
 }: {
@@ -171,11 +171,12 @@ export async function resolveEffectiveAppServerConfig({
   ensureConfigServers: (
     config: Record<string, t.MCPOptions>,
   ) => Promise<Record<string, t.ParsedServerConfig>>;
-  getAllServerConfigs: (
+  getServerConfig: (
+    serverName: string,
     userId: string,
     configServers: Record<string, t.ParsedServerConfig>,
     role?: string,
-  ) => Promise<Record<string, t.ParsedServerConfig>>;
+  ) => Promise<t.ParsedServerConfig | undefined>;
   recoverServerConfig: (
     serverName: string,
     config: t.ParsedServerConfig,
@@ -185,8 +186,7 @@ export async function resolveEffectiveAppServerConfig({
 }): Promise<t.MCPConnectionTarget | undefined> {
   const rawConfig = mcpConfig[serverName];
   const configServers = await ensureConfigServers(rawConfig ? { [serverName]: rawConfig } : {});
-  const effectiveConfigs = await getAllServerConfigs(user.id, configServers, user.role);
-  const selectedConfig = effectiveConfigs[serverName];
+  const selectedConfig = await getServerConfig(serverName, user.id, configServers, user.role);
   const serverConfig = selectedConfig?.inspectionFailed
     ? await recoverServerConfig(serverName, selectedConfig, user.id)
     : selectedConfig;

@@ -179,7 +179,6 @@ function makeCreateDeps(over: Partial<SchedulesHandlersDeps> = {}): SchedulesHan
     createScheduleWithSlot: jest.fn(async (data: Partial<ISchedule>) => data as ISchedule),
     getScheduleByClientRequestId: jest.fn(async () => null),
     getScheduleById: jest.fn(async () => null),
-    deleteScheduleById: jest.fn(async () => true),
     deleteUnarmedSchedule: jest.fn(async () => 'deleted'),
     markScheduleDeleting: jest.fn(async () => ({ id: 'sched-1' }) as ISchedule),
     updateScheduleById: jest.fn(async () => ({ id: 'sched-1' }) as ISchedule),
@@ -225,7 +224,6 @@ describe('createSchedule late-create compensation', () => {
       'user-1',
       0,
     );
-    expect(deps.methods.deleteScheduleById).not.toHaveBeenCalled();
     expect(deps.methods.markScheduleDeleting).not.toHaveBeenCalled();
     expect(captured.status).toBe(410);
   });
@@ -271,7 +269,6 @@ describe('createSchedule late-create compensation', () => {
    */
   it('never inserts an armed row, so a failed compensation leaves an inert one', async () => {
     const deps = makeCreateDeps();
-    (deps.methods.deleteScheduleById as jest.Mock).mockRejectedValue(new Error('mongo down'));
     (deps.methods.markScheduleDeleting as jest.Mock).mockRejectedValue(new Error('mongo down'));
     const { res } = makeRes();
     await createSchedulesHandlers(deps).createSchedule(makeCreateReq(), res);
@@ -377,7 +374,6 @@ describe('createSchedule late-create compensation', () => {
       'user-1',
       0,
     );
-    expect(deps.methods.deleteScheduleById).not.toHaveBeenCalled();
   });
 
   it('answers 201 instead of deleting when the ambiguous arm actually committed', async () => {
@@ -619,7 +615,6 @@ describe('create idempotency', () => {
     expect(deps.methods.armSchedule).not.toHaveBeenCalled();
     expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
     expect(deps.methods.deleteUnarmedSchedule).not.toHaveBeenCalled();
-    expect(deps.methods.deleteScheduleById).not.toHaveBeenCalled();
   });
 
   /**
@@ -726,7 +721,6 @@ describe('create idempotency', () => {
 
     // The established row survives for the next retry; deleting it here is data loss.
     expect(captured.status).toBe(500);
-    expect(deps.methods.deleteScheduleById).not.toHaveBeenCalled();
     expect(deps.methods.deleteUnarmedSchedule).not.toHaveBeenCalled();
     expect(deps.methods.markScheduleDeleting).not.toHaveBeenCalled();
   });

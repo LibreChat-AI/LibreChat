@@ -37,14 +37,14 @@ export default function ItemDialog({ item, agentId, onClose }: Props) {
         focusOutline="hidden"
         onOpenAutoFocus={handleOpenAutoFocus}
         className={cn(
-          'w-11/12 gap-0 rounded-2xl p-0 md:max-h-[85dvh]',
+          'w-11/12 gap-0 p-0 md:max-h-[85dvh]',
           isOrchestration ? 'overflow-visible' : 'overflow-hidden',
           isAction ? 'max-w-5xl' : 'max-w-[35rem]',
         )}
         data-testid="item-dialog"
       >
         {item && (
-          <div className="flex max-h-[85dvh] flex-col">
+          <div className="flex max-h-[85dvh] min-w-0 flex-col">
             <ItemDialogHeader item={item} />
             <div
               className={cn(

@@ -51,6 +51,7 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
+  initializeChannelStorageConfig: jest.fn(),
   saveMessage: (...args) => mockSaveMessage(...args),
   getPersistedPrivateTextId: async (...args) =>
     (await mockHasPersistedPrivateText(...args)) ? 'protected-row-id' : null,
@@ -78,6 +79,7 @@ jest.mock('~/server/middleware', () => ({
   messageIpLimiter: (req, res, next) => next(),
   configMiddleware: (req, res, next) => next(),
   messageUserLimiter: (req, res, next) => next(),
+  requireTermsAcceptance: (req, res, next) => next(),
 }));
 
 // Mock the chat module - needs to be a router
@@ -99,6 +101,10 @@ describe('Agent Abort Endpoint', () => {
   beforeAll(() => {
     app = express();
     app.use(express.json());
+    app.use((req, _res, next) => {
+      req.config = { endpoints: { agents: { checkpointer: { type: 'memory' } } } };
+      next();
+    });
     app.use('/api/agents', agentRoutes);
   });
 

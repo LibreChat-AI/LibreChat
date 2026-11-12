@@ -8,6 +8,7 @@ import {
 import type { IChatProject, IConversation, IMongoFile } from '~/types';
 import {
   createChatProjectMethods,
+  refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
   type ChatProjectMethods,
 } from './chatProject';
@@ -263,7 +264,7 @@ describe('ChatProject methods', () => {
       },
     ]);
 
-    const refreshedProject = await methods.refreshChatProjectStats(user, chatProjectId);
+    const refreshedProject = await refreshChatProjectStatsForUser(mongoose, user, chatProjectId);
 
     expect(refreshedProject?.conversationCount).toBe(1);
     expect(refreshedProject?.lastConversationId).toBe('visible-convo');
@@ -321,7 +322,7 @@ describe('ChatProject methods', () => {
       });
 
     try {
-      const refreshed = await methods.refreshChatProjectStats(user, chatProjectId);
+      const refreshed = await refreshChatProjectStatsForUser(mongoose, user, chatProjectId);
 
       expect(refreshed?.conversationCount).toBe(2);
       expect(refreshed?.lastConversationId).toBe('newer-convo');
@@ -369,7 +370,7 @@ describe('ChatProject methods', () => {
       });
 
     try {
-      const refreshed = await methods.refreshChatProjectStats(user, chatProjectId);
+      const refreshed = await refreshChatProjectStatsForUser(mongoose, user, chatProjectId);
       expect(refreshed?.conversationCount).toBe(0);
       expect(refreshed?.lastConversationId).toBeNull();
       expect(casAttempts).toBeGreaterThan(3);
@@ -398,7 +399,7 @@ describe('ChatProject methods', () => {
     );
 
     try {
-      await expect(methods.refreshChatProjectStats(user, chatProjectId)).rejects.toThrow(
+      await expect(refreshChatProjectStatsForUser(mongoose, user, chatProjectId)).rejects.toThrow(
         /refresh chat project stats/i,
       );
     } finally {
@@ -424,7 +425,7 @@ describe('ChatProject methods', () => {
       updatedAt: createdAt,
     });
 
-    const refreshed = await methods.refreshChatProjectStats(user, chatProjectId);
+    const refreshed = await refreshChatProjectStatsForUser(mongoose, user, chatProjectId);
     expect(refreshed?.conversationCount).toBe(1);
     expect(refreshed?.lastConversationId).toBe('new-convo');
 
@@ -470,7 +471,7 @@ describe('ChatProject methods', () => {
           updatedAt: newerAt,
         },
       ]);
-      await methods.refreshChatProjectStats(user, chatProjectId);
+      await refreshChatProjectStatsForUser(mongoose, user, chatProjectId);
 
       await updateChatProjectLastConversationForUser(
         mongoose,
@@ -840,6 +841,25 @@ describe('persistent Project context', () => {
     attachSpy.mockRestore();
 
     expect((await methods.getChatProject(owner, id))?.file_ids).toEqual([]);
+  });
+
+  it('accepts a retained search destination without claiming its vectors exist', async () => {
+    const project = await methods.createChatProject(owner, { name: 'Repairable' });
+    await createReference('repairable', {
+      embedded: false,
+      metadata: { searchDestination: true },
+    });
+    const attached = await methods.addChatProjectFile(owner, project._id!.toString(), 'repairable');
+    expect(attached?.file_ids).toEqual(['repairable']);
+    expect((await File.findOne({ file_id: 'repairable' }).lean())?.embedded).toBe(false);
+    await createReference('foreign-repair', {
+      user: new mongoose.Types.ObjectId(otherOwner),
+      embedded: false,
+      metadata: { searchDestination: true },
+    });
+    await expect(
+      methods.addChatProjectFile(owner, project._id!.toString(), 'foreign-repair'),
+    ).rejects.toThrow('Project file unavailable');
   });
 
   it('rejects unauthorized, agent-scoped, unindexed, missing and expired references', async () => {

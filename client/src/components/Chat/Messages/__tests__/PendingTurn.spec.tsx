@@ -3,11 +3,11 @@ import { RecoilRoot } from 'recoil';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
+import { revealedQueuedTurnFamily } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation, TMessage } from 'librechat-data-provider';
-import type { RevealedQueuedTurn } from '~/store/steer';
+import type { RevealedQueuedTurn } from '@librechat/chat/react';
 import PendingTurn from '~/components/Chat/Messages/PendingTurn';
-import { revealedQueuedTurnFamily } from '~/store/steer';
 import { ChatContext } from '~/Providers';
 
 jest.mock('~/hooks', () => ({
@@ -84,7 +84,7 @@ describe('PendingTurn', () => {
     expect(row.querySelector('.message-render')).not.toBeNull();
     expect(row.querySelector('.user-turn')).not.toBeNull();
     expect(row).toHaveTextContent('queued follow-up');
-    expect(screen.getByRole('status')).toHaveTextContent('com_ui_queued_turn_starting');
+    expect(screen.getByRole('status')).toHaveTextContent('Starting as the next turn');
     expect(container.querySelectorAll('button')).toHaveLength(0);
   });
 

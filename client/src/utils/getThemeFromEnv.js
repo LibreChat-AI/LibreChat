@@ -1,4 +1,4 @@
-import { themeColorTokens } from '@librechat/client';
+import { renamedColorTokens, themeColorTokens } from '@librechat/client';
 
 const toEnvName = (token) => `REACT_APP_THEME_${token.slice(4).toUpperCase().replace(/-/g, '_')}`;
 
@@ -16,6 +16,12 @@ export function getThemeFromEnv(env = import.meta.env) {
     }
     return colors;
   }, {});
+  renamedColorTokens.forEach(([from, to]) => {
+    const value = env[toEnvName(from)];
+    if (value && theme[to] === undefined) {
+      theme[to] = value;
+    }
+  });
 
   return Object.keys(theme).length > 0 ? theme : undefined;
 }

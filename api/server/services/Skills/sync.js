@@ -1,6 +1,8 @@
-const { FileContext } = require('librechat-data-provider');
 const {
-  getStorageMetadata,
+  createTermsBlockCheck,
+  skipUntilTermsAccepted,
+  createSkillBlobReserver,
+  createSkillBufferWriter,
   createGitHubSkillSyncRunner,
   createSkillSyncTriggerOrchestrator,
   startGitHubSkillSyncScheduler,
@@ -10,8 +12,16 @@ const db = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { getFileStrategy } = require('~/server/utils/getFileStrategy');
+const { deleteSkillForLegacy } = require('./deletion');
+
+const isTermsAcceptanceRequired = createTermsBlockCheck({ getAppConfig });
 
 const SYSTEM_USER_ID = '000000000000000000000000';
+const reserveSkillBlobForConfig = createSkillBlobReserver({
+  getFileStrategy,
+  getStrategyFunctions,
+});
+const saveSkillBuffer = createSkillBufferWriter({ getStrategyFunctions });
 
 let appConfigRef;
 let runner;
@@ -33,16 +43,6 @@ async function loadCurrentAppConfig() {
 async function getSyncConfig(loadAppConfig = loadCurrentAppConfig) {
   const appConfig = await loadAppConfig();
   return appConfig?.skillSync;
-}
-
-async function resolveSkillStorage({ isImage = false, loadAppConfig = loadCurrentAppConfig } = {}) {
-  const appConfig = await loadAppConfig();
-  const source = getFileStrategy(appConfig, { context: FileContext.skill_file, isImage });
-  const strategy = getStrategyFunctions(source);
-  if (!strategy.saveBuffer) {
-    throw new Error(`Storage backend "${source}" does not support file writes`);
-  }
-  return { source, saveBuffer: strategy.saveBuffer };
 }
 
 async function getSyntheticReq({ userId = SYSTEM_USER_ID, tenantId, loadAppConfig } = {}) {
@@ -94,8 +94,14 @@ function createRunner({ getConfig, loadAppConfig, allowServerCredentials = true 
     listSkillFiles: db.listSkillFiles,
     getSkillFileByPath: db.getSkillFileByPath,
     upsertSkillFile: db.upsertSkillFile,
+    reserveSkillUploadIntent: db.reserveSkillUploadIntent,
+    transitionSkillUploadIntent: db.transitionSkillUploadIntent,
+    queueCommittedSkillUploadCleanup: db.queueCommittedSkillUploadCleanup,
+    markSkillUploadIntentCleaned: db.markSkillUploadIntentCleaned,
+    finishSkillUploadCleanupHold: db.finishSkillUploadCleanupHold,
     deleteSkillFile: db.deleteSkillFile,
-    deleteSkill: db.deleteSkill,
+    deleteSkill: deleteSkillForLegacy,
+    reserveBlob: (options) => reserveSkillBlobForConfig(resolveAppConfig(), options),
     grantPermission: async ({
       principalType,
       principalId,
@@ -128,25 +134,11 @@ function createRunner({ getConfig, loadAppConfig, allowServerCredentials = true 
         role._id,
       );
     },
-    saveBuffer: async ({ userId, buffer, fileName, basePath, isImage, tenantId }) => {
-      const storage = await resolveSkillStorage({ isImage, loadAppConfig: resolveAppConfig });
-      const filepath = await storage.saveBuffer({
-        userId: userId ?? SYSTEM_USER_ID,
-        buffer,
-        fileName,
-        basePath,
-        tenantId,
-      });
-      return {
-        filepath,
-        source: storage.source,
-        ...getStorageMetadata({ filepath, source: storage.source }),
-      };
-    },
+    saveBuffer: saveSkillBuffer,
     deleteFile: async (file) => {
       const strategy = getStrategyFunctions(file.source);
       if (!strategy.deleteFile) {
-        return;
+        throw new Error(`Skill storage backend ${file.source} cannot delete files`);
       }
       await strategy.deleteFile(
         await getSyntheticReq({
@@ -174,13 +166,20 @@ function getGitHubSkillSyncRunnerForRequest(req) {
   return triggerOrchestrator.getRunnerForAdminRequest(withBaseSkillSyncConfig(req, appConfigRef));
 }
 
-async function maybeRunGitHubSkillSyncForRequest(req) {
+async function runGitHubSkillSyncForRequest(req) {
   const baseConfig = await loadCurrentAppConfig();
   return triggerOrchestrator.maybeRunForRequest({
     ...withBaseSkillSyncConfig(req, baseConfig),
     skillSyncAllowServerCredentials: false,
   });
 }
+
+/** The list route is a read the terms gate lets through; the sync it starts is processing. */
+const maybeRunGitHubSkillSyncForRequest = skipUntilTermsAccepted(
+  isTermsAcceptanceRequired,
+  runGitHubSkillSyncForRequest,
+  false,
+);
 
 function initializeGitHubSkillSync(appConfig) {
   appConfigRef = appConfig;

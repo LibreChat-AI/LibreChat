@@ -82,7 +82,9 @@ test.describe('scheduled chat execution', () => {
    * where a broken loopback URL, a rejected fire token, or a lost schedule identity
    * surfaces. The smoke spec only proves the card renders.
    */
-  test('Run Now generates a conversation and records it on the schedule', async ({ page }) => {
+  test('Run Now generates a conversation and records it on the schedule @scenario:schedule-run-now', async ({
+    page,
+  }) => {
     test.setTimeout(120000);
     await page.goto('/c/new', { timeout: 15000 });
     const token = await getAccessToken(page);
@@ -231,7 +233,13 @@ test.describe('scheduled chat execution', () => {
     const save = editDialog.getByRole('button', { name: 'Save' });
     await save.scrollIntoViewIfNeeded();
     await expect(save).toBeInViewport();
+    /** The reload discards a request still in flight, so the save has to land before it. */
+    const saved = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'PATCH' && response.url().includes('/api/schedules/'),
+    );
     await save.click();
+    expect((await saved).ok()).toBeTruthy();
 
     await page.reload();
     await openSchedulesPanel(page);

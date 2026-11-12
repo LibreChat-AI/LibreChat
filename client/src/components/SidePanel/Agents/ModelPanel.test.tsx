@@ -61,13 +61,28 @@ jest.mock('@librechat/client', () => ({
   ),
 }));
 
-jest.mock('~/components/SidePanel/Parameters/components', () => ({
-  componentMapping: {},
-}));
+jest.mock('~/components/SidePanel/Parameters/components', () => {
+  const Stub = ({ settingKey }: { settingKey: string }) => (
+    <div data-testid={`param-${settingKey}`} />
+  );
+  return {
+    componentMapping: {
+      slider: Stub,
+      switch: Stub,
+      input: Stub,
+      tags: Stub,
+      textarea: Stub,
+      combobox: Stub,
+      dropdown: Stub,
+      checkbox: Stub,
+    },
+  };
+});
 
 jest.mock('~/data-provider', () => ({
   useGetEndpointsQuery: () => ({ data: {} }),
   useGetStartupConfig: () => ({ data: mockStartupConfig() }),
+  useReasoningCapabilitiesQuery: () => ({ data: undefined }),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -188,7 +203,7 @@ describe('ModelPanel', () => {
     expect(queryByRole('status')).toBeNull();
   });
 
-  it('disables model selection until the model catalogue is ready', () => {
+  it('keeps provider choice available while disabling models until their catalogue is ready', () => {
     const { getByTestId } = render(
       <TestForm
         defaultProvider="custom"
@@ -197,9 +212,38 @@ describe('ModelPanel', () => {
       />,
     );
 
-    expect(getByTestId('com_ui_provider-custom')).toBeDisabled();
+    expect(getByTestId('com_ui_provider-custom')).toBeEnabled();
     expect(getByTestId('com_ui_model-custom-model')).toBeDisabled();
   });
+
+  it.each([false, true])(
+    'switches to a healthy provider while selected catalog error is %s',
+    (failed) => {
+      const formRef: React.MutableRefObject<UseFormReturn<AgentForm> | null> = { current: null };
+      const props = {
+        defaultProvider: 'unavailable',
+        defaultModel: 'retained-model',
+        formRef,
+        providers: [
+          { label: 'Unavailable', value: 'unavailable' },
+          { label: 'Healthy', value: 'healthy' },
+        ],
+        models: { healthy: ['healthy-model'] },
+      };
+      const { getByTestId, getByRole, rerender } = render(
+        <TestForm {...props} modelsReady={false} modelsError={failed} />,
+      );
+      expect(getByRole('button', { name: 'com_ui_model' })).toBeDisabled();
+      expect(getByTestId('com_ui_provider-healthy')).toBeEnabled();
+      fireEvent.click(getByTestId('com_ui_provider-healthy'));
+      expect(formRef.current?.getValues('provider')).toBe('healthy');
+      expect(formRef.current?.getValues('model')).toBe('healthy-model');
+      rerender(<TestForm {...props} modelsReady={true} modelsError={false} />);
+      expect(getByTestId('com_ui_model-healthy-model')).toBeEnabled();
+      expect(localStorage.getItem('lastAgentProvider')).toBe('healthy');
+      expect(localStorage.getItem('lastAgentModel')).toBe('healthy-model');
+    },
+  );
 
   it('selects and saves the first model when the provider changes', () => {
     const providers = [
@@ -316,8 +360,8 @@ describe('ModelPanel', () => {
     );
 
     expect(getByRole('alert')).toHaveTextContent('com_error_models_not_loaded');
-    expect(queryByTestId('com_ui_model-placeholder')).toHaveTextContent('com_ui_select_model');
-    expect(getByTestId('com_ui_provider-custom')).toBeDisabled();
+    expect(queryByTestId('com_ui_model-placeholder')).toHaveTextContent('com_agents_select_model');
+    expect(getByTestId('com_ui_provider-custom')).toBeEnabled();
   });
 
   it('labels the provider and model controls', () => {
@@ -433,6 +477,58 @@ describe('ModelPanel', () => {
       temperature: 0.5,
       top_p: 0.9,
     });
+  });
+
+  it('gives a numeric parameter one of the two columns', () => {
+    const { getByTestId } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByTestId('param-maxContextTokens').parentElement).toHaveClass('col-span-1');
+  });
+
+  it('gives a toggle one of the two columns', () => {
+    const { getByTestId } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByTestId('param-resendFiles').parentElement).toHaveClass('col-span-1');
+  });
+
+  it('gives free text the whole row', () => {
+    const { getByTestId } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByTestId('param-stop').parentElement).toHaveClass('col-span-2');
+  });
+
+  it('files the parameters under the same headings as the chat panel', () => {
+    const { getByRole } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByRole('heading', { name: 'com_ui_params_limits' })).toBeInTheDocument();
   });
 
   it('prunes saved model_parameters when every known setting is dropped', async () => {

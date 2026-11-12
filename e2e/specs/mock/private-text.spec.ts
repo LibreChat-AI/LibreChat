@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { TMessage } from 'librechat-data-provider';
+import { unroute } from './fixtures';
 import { withMongo } from './db';
 import {
   loginAdmin,
@@ -50,9 +51,7 @@ test('owner sees original after reload while provider, sharing, and canonical re
     ).toBeVisible();
     const ownerText = messagesView(page).getByText(original, { exact: true });
     await expect(ownerText).toBeVisible();
-    const standardContainer = ownerText.locator(
-      'xpath=ancestor::div[contains(@class,"text-message")][1]',
-    );
+    const standardContainer = ownerText.locator('xpath=ancestor::div[@data-message-text][1]');
     await expect(standardContainer).toHaveAttribute('dir', 'auto');
     await expect(
       messagesView(page).getByText('Private details hidden from the model', { exact: true }),
@@ -82,9 +81,10 @@ test('owner sees original after reload while provider, sharing, and canonical re
 
     await page.reload();
     await expect(messagesView(page).getByText(original, { exact: true })).toBeVisible();
-    await expect(
-      ownerText.locator('xpath=ancestor::div[contains(@class,"text-message")][1]'),
-    ).toHaveAttribute('dir', 'auto');
+    await expect(ownerText.locator('xpath=ancestor::div[@data-message-text][1]')).toHaveAttribute(
+      'dir',
+      'auto',
+    );
     for (const theme of ['light', 'dark']) {
       await page.evaluate(
         (dark) => document.documentElement.classList.toggle('dark', dark),
@@ -184,7 +184,7 @@ test('owner sees original after reload while provider, sharing, and canonical re
     } finally {
       releasePending();
       await pendingResponse.catch(() => undefined);
-      await page.unroute(delayedPath);
+      await unroute(page, delayedPath);
     }
     expect((await pendingResponse).ok()).toBe(true);
     await expect

@@ -1,19 +1,28 @@
 import React, { useMemo, useState } from 'react';
+import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
-import { RecoilRoot, useRecoilState } from 'recoil';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useNavigate, useLocation } from 'react-router-dom';
+import { filesFamily, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
+import { Provider as JotaiProvider, createStore, getDefaultStore, useAtom } from 'jotai';
+import {
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+  showStopButtonByIndex,
+} from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { Transport } from '~/hooks/Chat/contract';
 import type { ChatFormValues } from '~/common';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import { getNewConversationDraftId, getDraft, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
+import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import { SteerHostTestProvider } from 'test/steerHost';
 import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
 import store from '~/store';
@@ -42,16 +51,21 @@ const transport: Transport = {
 function Harness({
   conversation,
   routePending = false,
+  targetReady = true,
   onAsk = ask,
+  refusesWhileSubmitting = false,
   speechSettingsInitialized = false,
 }: {
   conversation: TConversation;
   routePending?: boolean;
+  targetReady?: boolean;
   onAsk?: typeof ask;
+  /** Mirrors the real `ask`, which reads `isSubmitting` from the render it was created in. */
+  refusesWhileSubmitting?: boolean;
   speechSettingsInitialized?: boolean;
 }) {
-  const [files, setFiles] = useRecoilState(store.filesByIndex(0));
-  const [isSubmitting] = useRecoilState(store.isSubmittingFamily(0));
+  const [files, setFiles] = useAtom(filesFamily(0));
+  const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
   const methods = useForm<ChatFormValues>({ defaultValues: { text: '' } });
   const chatHelpers = useMemo<React.ContextType<typeof ChatContext>>(
@@ -72,13 +86,15 @@ function Harness({
       messagesKey: 'new',
       latestMessageId: undefined,
       latestMessageDepth: undefined,
+      subscribeMessages: () => () => undefined,
+      getMessagesRevision: () => 0,
+      useLiveAttachments: () => ({}),
+      getMappingOptions: () => ({}),
       feedbackEnabled: false,
       setMessages: () => undefined,
-      ask: onAsk,
+      ask: refusesWhileSubmitting && isSubmitting ? () => false : onAsk,
       regenerate: () => undefined,
       setSiblingIdx: () => undefined,
-      showPopover: false,
-      setShowPopover: () => undefined,
       abortScroll: false,
       setAbortScroll: () => undefined,
       preset: null,
@@ -88,21 +104,25 @@ function Harness({
       handleRegenerate: () => undefined,
       handleContinue: () => undefined,
     }),
-    [conversation, files, setFiles, isSubmitting, onAsk],
+    [conversation, files, setFiles, isSubmitting, onAsk, refusesWhileSubmitting],
   );
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
-        <ChatForm
-          index={0}
-          routePending={routePending}
-          isLandingPage
-          enterToSend
-          autoSendText={-1}
-          speechSettingsInitialized={speechSettingsInitialized}
-          footerBelow={false}
-          centerFormOnLanding={false}
-        />
+        <TargetContext.Provider
+          value={{ ready: targetReady, pending: !targetReady, failed: false, retry: () => {} }}
+        >
+          <ChatForm
+            index={0}
+            routePending={routePending}
+            isLandingPage
+            enterToSend
+            autoSendText={-1}
+            speechSettingsInitialized={speechSettingsInitialized}
+            footerBelow={false}
+            centerFormOnLanding={false}
+          />
+        </TargetContext.Provider>
       </ChatContext.Provider>
     </ChatFormProvider>
   );
@@ -114,6 +134,7 @@ function mountComposer(
     pathname = `/c/${conversation.conversationId}`,
     query = 'agent_id=agent_test&q=hi&submit=true',
     routePending = false,
+    targetReady = true,
     speechSettingsInitialized = false,
     liveRun = false,
   } = {},
@@ -161,48 +182,62 @@ function mountComposer(
     location = useLocation();
     return null;
   }
+  const jotaiStore = createStore();
+  if (liveRun) {
+    jotaiStore.set(showStopButtonByIndex(0), true);
+    jotaiStore.set(activeGenerationCreatedAtByConvoId(conversation.conversationId ?? ''), 1000);
+    jotaiStore.set(activeGenerationProtocolVersionByConvoId(conversation.conversationId ?? ''), 2);
+  }
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <RecoilRoot
-        initializeState={({ set }) => {
-          if (liveRun) {
-            set(store.isSubmittingFamily(0), true);
-            set(store.showStopButtonByIndex(0), true);
-            set(store.activeGenerationCreatedAtByConvoId(conversation.conversationId ?? ''), 1000);
-            set(
-              store.activeGenerationProtocolVersionByConvoId(conversation.conversationId ?? ''),
-              2,
-            );
-          }
-          if (speechSettingsInitialized) {
-            set(store.engineSTT, 'external');
-            set(store.autoTranscribeAudio, false);
-          }
-        }}
-      >
-        <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
-          <NavigationBridge />
-          <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <ChatTransportContext.Provider value={transport}>
-              <DndProvider backend={HTML5Backend}>{children}</DndProvider>
-            </ChatTransportContext.Provider>
-          </AuthContextProvider>
-        </MemoryRouter>
-      </RecoilRoot>
+      <JotaiProvider store={jotaiStore}>
+        <RecoilRoot
+          initializeState={({ set }) => {
+            if (liveRun) {
+              jotaiStore.set(isSubmittingFamily(0), true);
+            }
+            if (speechSettingsInitialized) {
+              set(store.engineSTT, 'external');
+              set(store.autoTranscribeAudio, false);
+            }
+          }}
+        >
+          <SteerHostTestProvider>
+            <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
+              <NavigationBridge />
+              <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+                <ChatTransportContext.Provider value={transport}>
+                  <DndProvider backend={HTML5Backend}>{children}</DndProvider>
+                </ChatTransportContext.Provider>
+              </AuthContextProvider>
+            </MemoryRouter>
+          </SteerHostTestProvider>
+        </RecoilRoot>
+      </JotaiProvider>
     </QueryClientProvider>
   );
   const view = render(
     <Harness
       conversation={conversation}
       routePending={routePending}
+      targetReady={targetReady}
       speechSettingsInitialized={speechSettingsInitialized}
     />,
     {
       wrapper,
     },
   );
-  return { ...view, navigate: (to: string) => navigate(to), getLocation: () => location };
+  return {
+    ...view,
+    navigate: (to: string) => navigate(to),
+    getLocation: () => location,
+    setSubmitting: (value: boolean) => jotaiStore.set(isSubmittingFamily(0), value),
+  };
 }
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('ChatForm URL submission', () => {
   beforeEach(() => {
@@ -213,6 +248,55 @@ describe('ChatForm URL submission', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('retargets an unavailable saved agent before waiting for replacement send readiness', async () => {
+    newConversation.mockClear();
+    const source = {
+      ...initialConversation,
+      conversationId: 'saved-chat',
+      endpoint: EModelEndpoint.agents,
+      agent_id: 'agent_deleted',
+      model: undefined,
+    };
+    const view = mountComposer(source, {
+      targetReady: false,
+      query: 'endpoint=openAI&model=gpt-4o&q=recover+this+chat&submit=true',
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(newConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preset: expect.objectContaining({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' }),
+      }),
+    );
+    expect(screen.getByTestId('text-input')).toHaveValue('recover this chat');
+    expect(ask).not.toHaveBeenCalled();
+    const destination = { ...initialConversation, conversationId: 'saved-chat' };
+    await act(async () =>
+      view.rerender(<Harness conversation={destination} targetReady={false} />),
+    );
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).not.toHaveBeenCalled();
+    expect(screen.getByTestId('text-input')).toHaveValue('recover this chat');
+    await act(async () => view.rerender(<Harness conversation={destination} targetReady />));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'recover this chat' }),
+      expect.anything(),
+    );
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('enables Send when an existing conversation restores a saved draft', async () => {
+    const conversation = { ...initialConversation, conversationId: 'existing-chat' };
+    setDraft({ id: conversation.conversationId, value: 'restored draft' });
+
+    mountComposer(conversation, { query: '' });
+    await act(async () => jest.advanceTimersByTime(100));
+
+    expect(screen.getByTestId('text-input')).toHaveValue('restored draft');
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
   });
 
   it('processes a queued prompt URL after ordinary conversation navigation without remounting', async () => {
@@ -237,6 +321,32 @@ describe('ChatForm URL submission', () => {
     );
     expect(view.getLocation().search).toBe('');
     expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('sends a queued prompt in a new chat only once the source run has released the composer', async () => {
+    const source = { ...initialConversation, conversationId: 'source-chat' };
+    const view = mountComposer(source, { query: '', liveRun: true });
+    await act(async () => jest.advanceTimersByTime(100));
+    const destinationAsk = jest.fn();
+    const destination = (
+      <Harness conversation={initialConversation} onAsk={destinationAsk} refusesWhileSubmitting />
+    );
+    await act(async () => {
+      view.navigate('/c/new?prompt=queued+words&submit=true');
+      view.rerender(destination);
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(destinationAsk).not.toHaveBeenCalled();
+    expect(view.getLocation().search).toBe('?prompt=queued+words&submit=true');
+    expect(screen.getByTestId('text-input')).toHaveValue('queued words');
+
+    await act(async () => view.setSubmitting(false));
+    expect(destinationAsk).toHaveBeenCalledTimes(1);
+    expect(destinationAsk).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'queued words' }),
+      expect.anything(),
+    );
+    expect(view.getLocation().search).toBe('');
   });
 
   it('processes a new agent URL once after a previous URL request has completed', async () => {

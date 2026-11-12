@@ -7,6 +7,7 @@ import {
   resolveCodeExecutionWorkspaceContext,
   supportsProgrammaticCodeExecution,
 } from './capabilities';
+import { requiresCodeWorkspaceCapabilities } from '~/agents/tools';
 
 const context: CodeExecutionContext = {
   baseUrl: 'https://bridge.example',
@@ -356,6 +357,7 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
     workspaces: unknown[],
     statefulWorkspace: boolean = true,
     maxCommandTimeoutMs?: number,
+    operations: string[] = ['read_file', 'list_files', 'execute_command'],
   ): Response {
     return new Response(
       JSON.stringify({
@@ -371,13 +373,81 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
           runtimes: ['bash'],
           workspaceTools: {
             protocolVersion: 1,
-            operations: ['read_file', 'list_files', 'execute_command'],
+            operations,
             workspaces,
           },
         },
       }),
     );
   }
+
+  it.each([
+    ['skill'],
+    ['tool_search'],
+    ['web_search'],
+    ['lookup_mcp_example'],
+    ['skill', 'lookup_mcp_example'],
+    [],
+  ])('does not probe worker status for host-only tools: %j', async (...toolNames) => {
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new DOMException('Status request timed out', 'TimeoutError'));
+
+    await expect(
+      resolveCodeExecutionWorkspaceContext({
+        context,
+        requiresLiveCapabilities: requiresCodeWorkspaceCapabilities(toolNames),
+        persistedSelections: [{ environmentId: 'personal', workspaceId: 'project-a' }],
+        environments,
+        getAppConfig,
+      }),
+    ).resolves.toBe(context);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(getAppConfig).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'bash_tool',
+    'execute_code',
+    'run_tools_with_bash',
+    'run_tools_with_code',
+    'read_file',
+    'create_file',
+    'edit_file',
+    'search_workspace',
+    'list_workspace_files',
+  ])('still validates live workspace capabilities for %s', async (toolName) => {
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new DOMException('Status request timed out', 'TimeoutError'));
+
+    await expect(
+      resolveCodeExecutionWorkspaceContext({
+        context,
+        requiresLiveCapabilities: requiresCodeWorkspaceCapabilities(['skill', toolName]),
+        persistedSelections: [{ environmentId: 'personal', workspaceId: 'project-a' }],
+        environments,
+        getAppConfig,
+      }),
+    ).rejects.toMatchObject({ reason: 'worker_unavailable' });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('still enforces the sealed selection for host-only tools', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch');
+
+    await expect(
+      resolveCodeExecutionWorkspaceContext({
+        context,
+        requiresLiveCapabilities: false,
+        requestedSelections: [{ environmentId: 'personal', workspaceId: 'project-b' }],
+        persistedSelections: [{ environmentId: 'personal', workspaceId: 'project-a' }],
+        environments,
+        getAppConfig,
+      }),
+    ).rejects.toMatchObject({ reason: 'locked' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 
   it('binds the exact advertised workspace and its operation ceiling', async () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -408,6 +478,33 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
         workspaceId: 'docs',
         operations: ['read_file', 'list_files'],
         maxCommandTimeoutMs: 120_000,
+      },
+    });
+  });
+
+  it('selects a workspace from a newer worker with only the operations this build knows', async () => {
+    jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        workspaceStatus(
+          [{ id: 'docs', operations: ['read_file', 'stream_logs', 'import_file', 'write_file'] }],
+          true,
+          undefined,
+          ['read_file', 'write_file', 'import_file', 'stream_logs', 'execute_command'],
+        ),
+      );
+
+    await expect(
+      resolveCodeExecutionWorkspaceContext({
+        context,
+        requestedSelections: [{ environmentId: 'personal', workspaceId: 'docs' }],
+        environments,
+        getAppConfig,
+      }),
+    ).resolves.toMatchObject({
+      codeWorkspace: {
+        workspaceId: 'docs',
+        operations: ['read_file', 'import_file', 'write_file'],
       },
     });
   });

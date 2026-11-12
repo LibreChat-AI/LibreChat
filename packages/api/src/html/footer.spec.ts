@@ -27,6 +27,24 @@ describe('injectConfiguredFooterBootstrap', () => {
     expect(flagOf(injectConfiguredFooterBootstrap(SHELL, { customFooter: '  ' }))).toBe(false);
   });
 
+  it('carries the welcome screen footer setting, on unless the deployment turned it off', () => {
+    const landingOf = (html: string): boolean | undefined => {
+      const match = /"landingFooter":(true|false)/.exec(html);
+      return match == null ? undefined : match[1] === 'true';
+    };
+
+    expect(landingOf(injectConfiguredFooterBootstrap(SHELL))).toBe(true);
+    expect(landingOf(injectConfiguredFooterBootstrap(SHELL, { landingFooter: null }))).toBe(true);
+    expect(landingOf(injectConfiguredFooterBootstrap(SHELL, { landingFooter: true }))).toBe(true);
+    expect(landingOf(injectConfiguredFooterBootstrap(SHELL, { landingFooter: false }))).toBe(false);
+  });
+
+  it('carries the footer placement, so a cold load lays the welcome screen out once', () => {
+    expect(injectConfiguredFooterBootstrap(SHELL, { landingFooter: 'composer' })).toContain(
+      '"landingFooter":"composer"',
+    );
+  });
+
   it('places the answer ahead of the app that reads it', () => {
     const html = injectConfiguredFooterBootstrap(SHELL, { customFooter: 'Operator' });
 

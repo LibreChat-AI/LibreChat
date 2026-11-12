@@ -1,5 +1,6 @@
 import type { FilterQuery, Model } from 'mongoose';
 import type { IConversation, IMessage } from '~/types';
+import { closeResponseScopes, eraseResponseRecords } from './responseScope';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
 import { refreshChatProjectStatsForUser } from './chatProject';
 
@@ -51,6 +52,13 @@ export function createConversationImportMethods(
     await runAsSystem(async () => {
       for (const conversationIds of chunkConversationIds(scope.conversationIds)) {
         await Message.deleteMany(createImportCleanupFilter<IMessage>(scope, conversationIds));
+        await mongoose.models.SubagentContent?.deleteMany({
+          user: scope.user,
+          conversationId: { $in: conversationIds },
+          ...(scope.tenantId == null
+            ? { tenantId: { $exists: false } }
+            : { tenantId: scope.tenantId }),
+        });
       }
     });
   }
@@ -70,7 +78,11 @@ export function createConversationImportMethods(
             affectedProjectIds.add(String(projectId));
           }
         }
+        const owner = { userId: scope.user, tenantId: scope.tenantId };
+        await closeResponseScopes(mongoose, owner, conversationIds);
+        await eraseResponseRecords(mongoose, owner, conversationIds);
         await Conversation.deleteMany(filter);
+        await mongoose.models.SubagentContent?.deleteMany(filter);
       }
       return [...affectedProjectIds];
     });

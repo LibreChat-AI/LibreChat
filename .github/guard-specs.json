@@ -1,0 +1,106 @@
+{
+  "description": "Specs that read repository files through fs instead of importing them. Codegraph test selection follows imports, so it cannot tell when a change makes one of these relevant; backend-review.yml and frontend-review.yml add them to every narrowed run (.github/scripts/guard-specs.mjs). Keys are spec paths. A guard lists the repository paths it reads: a directory ends with a slash and covers everything under it. An exempt spec matches the detector without reading tracked files and says why.",
+  "guards": {
+    "api/server/controllers/__tests__/deleteUserResourceCoverage.spec.js": [
+      "api/server/controllers/UserController.js",
+      "packages/api/src/user/erasure.ts"
+    ],
+    "api/server/experimental.spec.js": ["api/server/experimental.js", "api/server/index.js"],
+    "api/server/index.spec.js": ["api/server/index.js", "api/server/experimental.js"],
+    "api/server/persistence.spec.js": ["api/server/index.js", "api/server/experimental.js"],
+    "api/server/routes/agents/__tests__/openapi.contract.spec.js": [
+      "packages/api/openapi/agents.openapi.json"
+    ],
+    "api/server/services/__tests__/toolCapabilityGates.spec.js": [
+      "api/app/",
+      "api/server/",
+      "packages/api/src/",
+      "packages/data-provider/src/"
+    ],
+    "api/server/utils/import/importers.spec.js": ["api/server/utils/import/__data__/"],
+    "client/src/Providers/__tests__/bootDirection.spec.ts": ["client/index.html"],
+    "client/src/Providers/__tests__/bootScript.spec.tsx": ["client/index.html"],
+    "client/src/Providers/__tests__/handoff.spec.tsx": ["client/index.html"],
+    "client/src/__tests__/hosts.test.tsx": ["client/src/App.jsx"],
+    "client/src/__tests__/loadingCanvas.spec.ts": ["client/index.html"],
+    "client/src/components/Chat/Input/Composer/__tests__/semanticTokens.spec.ts": [
+      "client/src/components/Chat/",
+      "client/src/hooks/Input/usePaletteEntries.tsx",
+      "packages/chat/src/components/composer/"
+    ],
+    "client/src/components/Chat/Input/__tests__/appearanceTokens.spec.ts": [
+      "client/src/components/Chat/Input/",
+      "packages/chat/src/components/composer/"
+    ],
+    "client/src/components/Chat/Input/__tests__/panelRadius.spec.ts": [
+      "client/src/components/",
+      "packages/chat/src/components/",
+      "packages/client/src/components/"
+    ],
+    "client/src/lib/assets/__tests__/recovery.spec.tsx": ["client/index.html"],
+    "client/src/style.spec.ts": [
+      "client/src/style.css",
+      "client/tailwind.config.cjs",
+      "packages/client/src/theme/",
+      "packages/client/tailwind.preset.cjs",
+      "package-lock.json"
+    ],
+    "client/src/utils/__tests__/mcpSandbox.spec.ts": ["client/public/mcp-sandbox.html"],
+    "packages/api/src/admin/meta.spec.ts": ["packages/data-provider/package.json"],
+    "packages/api/src/admin/secrets.runtime.spec.ts": [
+      "packages/api/src/app/",
+      "packages/api/src/langfuse/utils.ts",
+      "packages/api/src/web/web.ts"
+    ],
+    "packages/api/src/agents/tools.spec.ts": ["e2e/setup/fake-model.js"],
+    "packages/api/src/channels/deployment.spec.ts": [".env.example"],
+    "packages/api/src/code/agent.spec.ts": ["api/", "packages/api/src/"],
+    "packages/api/src/code/setup/bridge.spec.ts": ["vendor/code/"],
+    "packages/api/src/files/documents/html.spec.ts": ["packages/api/src/files/documents/"],
+    "packages/api/src/files/documents/libreoffice.spec.ts": ["packages/api/src/files/documents/"],
+    "packages/api/src/files/documents/spreadsheet.spec.ts": ["packages/api/src/files/documents/"],
+    "packages/api/src/mcp/__tests__/sandbox.test.ts": ["client/public/mcp-sandbox.html"],
+    "packages/client/src/components/Progress.spec.tsx": ["packages/client/src/theme/tokens.css"],
+    "packages/client/src/components/SegmentedMeter.spec.tsx": [
+      "packages/client/src/theme/tokens.css"
+    ],
+    "packages/client/src/components/__tests__/radixLayers.spec.ts": ["package-lock.json"],
+    "packages/client/src/theme/defaults.spec.ts": ["packages/client/src/theme/defaults.css"],
+    "packages/client/src/theme/primitives.spec.ts": [
+      "eslint-suppressions.json",
+      "packages/client/src/components/"
+    ],
+    "packages/client/src/theme/registry.spec.ts": ["package-lock.json"],
+    "packages/client/src/theme/semanticTokens.spec.ts": [
+      "client/src/style.css",
+      "packages/client/src/components/",
+      "packages/client/src/theme/defaults.css"
+    ],
+    "packages/client/src/theme/tailwind.spec.js": [
+      "client/src/style.css",
+      "client/tailwind.config.cjs",
+      "packages/client/",
+      "package-lock.json"
+    ],
+    "packages/client/src/theme/themes/clickhouse.spec.tsx": ["packages/client/src/theme/fonts.css"],
+    "packages/client/src/theme/themes/clickui.spec.ts": [
+      "client/src/style.css",
+      "packages/client/src/"
+    ],
+    "packages/client/src/theme/tokens.spec.ts": [
+      "packages/client/src/theme/",
+      "packages/client/tailwind.preset.cjs",
+      "package-lock.json"
+    ],
+    "packages/data-provider/specs/config-schemas.spec.ts": ["librechat.example.yaml"],
+    "packages/data-schemas/src/methods/documentdb.spec.ts": [
+      "api/",
+      "packages/api/src/",
+      "packages/data-schemas/src/"
+    ]
+  },
+  "exempt": {
+    "packages/api/src/code/environment.live.spec.ts": "Skips unless LIBRECHAT_CODE_TEST_PACKAGE is set, and then reads only the temp directory it creates.",
+    "packages/api/src/plugins/runtime.spec.ts": "Reads only logs it writes under os.tmpdir(); process.cwd() appears inside an inline hook command."
+  }
+}

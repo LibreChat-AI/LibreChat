@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { condition, interpolate } from './expressions.mjs';
 
 const scriptsDir = fileURLToPath(new URL('.', import.meta.url));
 const workflow = yaml.load(
@@ -85,19 +86,68 @@ function decision(redis, mcp = true) {
   return { matrix: { 'playwright-mock': { redis_transport: redis, mcp_tool_list_changed: mcp } } };
 }
 
-test('PR selection and fail-open defaults use six memory shards and two Redis transport shards', () => {
+const REPOSITORY = 'LibreChat-AI/LibreChat';
+const event = (event_name, ref, payload = {}) => ({
+  event_name,
+  ref,
+  repository: REPOSITORY,
+  event: payload,
+});
+const pushToDev = event('push', 'refs/heads/dev');
+const nightly = event('schedule', 'refs/heads/main');
+const manual = event('workflow_dispatch', 'refs/heads/dev');
+const pullRequest = (action, association = 'MEMBER', head = REPOSITORY) =>
+  event('pull_request', 'refs/pull/1/merge', {
+    action,
+    pull_request: { author_association: association, head: { repo: { full_name: head } } },
+  });
+
+/** What the workflow's own expressions resolve to for one event, before any job has run. */
+function resolve(github, { inputs = {}, select = {} } = {}) {
+  const context = { github, inputs, vars: {}, needs: { codegraph_select: { outputs: select } } };
+  const functions = { cancelled: () => false };
+  const runs = (job) => condition(workflow.jobs[job].if, context, functions);
+  return {
+    jobs: {
+      select: runs('codegraph_select'),
+      shards: runs('e2e_shards'),
+      mcp: runs('mcp_tool_list_changed'),
+      apps: runs('mcp_apps'),
+      gate: runs('e2e'),
+    },
+    matrix: interpolate(shards.strategy.matrix, context, functions),
+    group: interpolate(workflow.concurrency.group, context, functions),
+    cancels: interpolate(workflow.concurrency['cancel-in-progress'], context, functions),
+  };
+}
+
+const everyLane = { select: true, shards: true, mcp: true, apps: true, gate: true };
+
+/** True when the gate's only step runs, which is the step that fails the required check. */
+function gateFails(results, mcpRun = '') {
+  return condition(workflow.jobs.e2e.steps[0].if, {
+    needs: {
+      e2e_shards: { result: results.shards ?? 'success' },
+      mcp_apps: { result: results.apps ?? 'success' },
+      mcp_tool_list_changed: { result: results.mcp ?? 'success' },
+      codegraph_select: { outputs: { mcp_run: mcpRun } },
+    },
+  });
+}
+
+test('PR selection and fail-open defaults use ten memory shards and two Redis transport shards', () => {
   assert.equal(defaults.length, 2);
   assert.deepEqual(defaults[0], prMatrix);
-  assert.equal(prMatrix.include.length, 8);
-  assertPartition(prMatrix, 'memory', 'full', 6);
+  assert.equal(prMatrix.include.length, 12);
+  assertPartition(prMatrix, 'memory', 'full', 10);
   assertPartition(prMatrix, 'redis', 'transport', 2);
 });
 
 test('nightly and default manual runs retain full-suite coverage on both stores', () => {
   assert.equal(workflow.on.workflow_dispatch.inputs.coverage.default, 'full');
-  assert.equal(defaults[1].include.length, 4);
-  assertPartition(defaults[1], 'memory', 'full', 2);
-  assertPartition(defaults[1], 'redis', 'full', 2);
+  assert.equal(defaults[1].include.length, 20);
+  assertPartition(defaults[1], 'memory', 'full', 10);
+  assertPartition(defaults[1], 'redis', 'full', 10);
 });
 
 test('PR and nightly matrices preserve both registered-email change modes on one memory shard', () => {
@@ -107,15 +157,16 @@ test('PR and nightly matrices preserve both registered-email change modes on one
     assert.equal(emailLanes[0].stream_store, 'memory');
     assert.match(emailLanes[0].shard, /^1\//);
   }
-  assert.equal(shards.steps.filter((step) => step.if === "matrix.email_change == 'true'").length, 2);
+  assert.equal(
+    shards.steps.filter((step) => step.if === "matrix.email_change == 'true'").length,
+    2,
+  );
 });
 
 test('manual PR coverage opts into the PR fallback matrix without bypassing the PR author gate', () => {
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.coverage.options, ['full', 'pr']);
-  assert.match(
-    shards.strategy.matrix,
-    /github\.event_name == 'pull_request' \|\| inputs\.coverage == 'pr'/,
-  );
+  assert.deepEqual(resolve(manual, { inputs: { coverage: 'pr' } }).matrix, prMatrix);
+  assert.deepEqual(resolve(manual, { inputs: { coverage: 'full' } }).matrix, defaults[1]);
   assert.match(shards.if, /github\.event_name == 'workflow_dispatch'/);
   assert.match(shards.if, /github\.event\.pull_request\.author_association/);
 });
@@ -129,9 +180,12 @@ test('every shard has a unique job name and artifact namespace', () => {
 });
 
 test('both suite commands consume the matrix shard without increasing worker concurrency', () => {
-  for (const suite of ['full', 'transport']) {
-    const step = shards.steps.find((entry) => entry.if === `matrix.suite == '${suite}'`);
-    assert.match(step.run, /--shard=\$\{\{ matrix\.shard \}\}/);
+  const full = shards.steps.find((entry) => entry.if === "matrix.suite == 'full'");
+  assert.match(full.run, /playwright-shards\.mjs plan[\s\S]*--shard '\$\{\{ matrix\.shard \}\}'/);
+  assert.match(full.run, /--test-list=e2e\/\.generated\/shard-tests\.txt/);
+  const transport = shards.steps.find((entry) => entry.if === "matrix.suite == 'transport'");
+  assert.match(transport.run, /--shard=\$\{\{ matrix\.shard \}\}/);
+  for (const step of [full, transport]) {
     assert.doesNotMatch(step.run, /--workers/);
   }
   const config = readFileSync(
@@ -146,8 +200,8 @@ test('an explicit Redis skip drops both transport shards and no memory shard', (
   const { matrix, outputs } = select(t, decision(false, false));
   assert.equal(outputs.decided, 'true');
   assert.equal(outputs.mcp_run, 'false');
-  assert.equal(matrix.include.length, 6);
-  assertPartition(matrix, 'memory', 'full', 6);
+  assert.equal(matrix.include.length, 10);
+  assertPartition(matrix, 'memory', 'full', 10);
 });
 
 test('missing or non-boolean Redis decisions retain both transport shards', (t) => {
@@ -198,7 +252,12 @@ test('graduated spec skips keep the same pool across shards and remain opt-in', 
 test('the required gate still waits for all shards and rejects failures without fighting cancellation', () => {
   const gate = workflow.jobs.e2e;
   assert.equal(gate.name, 'e2e');
-  assert.deepEqual(gate.needs, ['codegraph_select', 'e2e_shards', 'mcp_tool_list_changed', 'mcp_apps']);
+  assert.deepEqual(gate.needs, [
+    'codegraph_select',
+    'e2e_shards',
+    'mcp_tool_list_changed',
+    'mcp_apps',
+  ]);
   assert.equal(shards.strategy['fail-fast'], false);
   assert.match(gate.if, /!cancelled\(\)/);
   assert.match(shards.if, /!cancelled\(\)/);
@@ -207,5 +266,69 @@ test('the required gate still waits for all shards and rejects failures without 
   assert.match(gate.steps[0].if, /needs\.mcp_tool_list_changed\.result != 'success'/);
   assert.match(gate.steps[0].if, /needs\.codegraph_select\.outputs\.mcp_run == 'false'/);
   assert.equal(gate.steps[0].run, 'exit 1');
-  assert.equal(workflow.concurrency['cancel-in-progress'], true);
+  assert.equal(resolve(pullRequest('synchronize')).cancels, true);
+});
+
+test('a push to dev runs every lane on the pull request matrix with nothing narrowed', () => {
+  assert.deepEqual(workflow.on.push.branches, ['dev']);
+  assert.deepEqual(workflow.on.push.paths, workflow.on.pull_request.paths);
+  const { jobs, matrix } = resolve(pushToDev);
+  assert.deepEqual(jobs, { ...everyLane, select: false });
+  assert.deepEqual(matrix, prMatrix);
+  assert.equal(gateFails({}), false);
+  assert.equal(gateFails({ shards: 'failure' }), true);
+  assert.equal(gateFails({ apps: 'failure' }), true);
+  assert.equal(gateFails({ mcp: 'failure' }), true);
+  /** No selector ran on a push, so a skipped MCP lane is a fault there, not a decision. */
+  assert.equal(gateFails({ mcp: 'skipped' }), true);
+  assert.equal(gateFails({ mcp: 'skipped' }, 'false'), false);
+});
+
+test('dev pushes never cancel each other and share no group with any other event', () => {
+  const pushed = resolve(pushToDev);
+  assert.equal(pushed.group, 'playwright-mock-post-merge-refs/heads/dev');
+  assert.equal(pushed.cancels, false);
+  const others = [pullRequest('opened'), pullRequest('synchronize'), nightly, manual].map(
+    (github) => resolve(github),
+  );
+  assert.deepEqual(
+    others.map(({ group }) => group),
+    [
+      'playwright-mock-refs/pull/1/merge',
+      'playwright-mock-refs/pull/1/merge',
+      'playwright-mock-refs/heads/main',
+      'playwright-mock-refs/heads/dev',
+    ],
+  );
+  assert.ok(others.every(({ cancels }) => cancels === true));
+});
+
+test('pull request, nightly and manual runs resolve as they did without the push trigger', () => {
+  const opened = resolve(pullRequest('opened'));
+  assert.deepEqual(opened.jobs, { ...everyLane, select: false });
+  assert.deepEqual(opened.matrix, prMatrix);
+
+  const memoryOnly = { include: prMatrix.include.filter((lane) => lane.suite === 'full') };
+  const narrowed = resolve(pullRequest('synchronize'), {
+    select: { e2e_include: JSON.stringify(memoryOnly), mcp_run: 'false' },
+  });
+  assert.deepEqual(narrowed.jobs, { ...everyLane, mcp: false });
+  assert.deepEqual(narrowed.matrix, memoryOnly);
+
+  const outsider = resolve(pullRequest('synchronize', 'CONTRIBUTOR', 'someone/LibreChat'));
+  assert.deepEqual(outsider.jobs, {
+    select: false,
+    shards: false,
+    mcp: false,
+    apps: false,
+    gate: false,
+  });
+  const sameRepositoryBot = resolve(pullRequest('opened', 'NONE'));
+  assert.deepEqual(sameRepositoryBot.jobs, { ...everyLane, select: false });
+
+  for (const github of [nightly, manual]) {
+    const run = resolve(github);
+    assert.deepEqual(run.jobs, { ...everyLane, select: false });
+    assert.deepEqual(run.matrix, defaults[1]);
+  }
 });

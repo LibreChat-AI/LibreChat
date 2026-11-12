@@ -1,5 +1,6 @@
 export * from './Auth';
 export * from './Agents';
+export * from './Responses';
 export * from './Endpoints';
 export * from './Skills';
 export * from './Files';
@@ -14,6 +15,7 @@ export * from './Projects';
 export * from './Schedules';
 export * from './Subagents';
 export * from './BackgroundTasks';
+export * from './PullRequest';
 export * from './Tools';
 export * from './Traces';
 export * from './connection';

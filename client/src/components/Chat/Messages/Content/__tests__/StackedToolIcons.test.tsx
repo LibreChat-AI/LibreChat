@@ -43,7 +43,7 @@ describe('shared header glyphs', () => {
       expect(container.querySelector('img')).toBeNull();
       expect(container.querySelector('.animate-pulse')).toBeNull();
       expect(
-        container.querySelector(status === 'failed' ? '.lucide-triangle-alert' : '.lucide-x'),
+        container.querySelector(status === 'failed' ? '.lucide-circle-x' : '.lucide-x'),
       ).not.toBeNull();
     },
   );

@@ -1,73 +1,54 @@
-import React from 'react';
-import { Button } from '@librechat/client';
+import React, { useEffect } from 'react';
+import { CircleX } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
+import { announceOAuthSettled } from '~/data-provider';
 import { useLocalize } from '~/hooks';
+import Shell from './Shell';
 
 export default function OAuthError() {
   const localize = useLocalize();
   const [searchParams] = useSearchParams();
   const error = searchParams.get('error') || 'unknown_error';
+  const flowId = searchParams.get('flow') ?? undefined;
+
+  useEffect(() => {
+    /** Ends the watch on this sign-in in the window that started it, which no longer polls. */
+    announceOAuthSettled({ outcome: 'failed', flowId });
+  }, [flowId]);
 
   const getErrorMessage = (error: string): string => {
     switch (error) {
+      case 'slack_transactions_unavailable':
+        return localize('com_ui_channels_transaction_required');
+      case 'slack_workspace_in_use':
+        return localize('com_ui_slack_workspaces_in_use');
+      case 'slack_forbidden':
+        return localize('com_ui_slack_workspaces_admin');
+      case 'slack_unsupported_installation':
+        return localize('com_ui_slack_workspaces_unsupported');
+      case 'slack_missing_scopes':
+        return localize('com_ui_slack_workspaces_scopes');
+      case 'slack_workspace_changed':
+        return localize('com_ui_slack_workspaces_changed');
+      case 'slack_stale_install':
+      case 'slack_invalid_install':
+        return localize('com_ui_slack_workspaces_restart');
       case 'missing_code':
-        return (
-          localize('com_ui_oauth_error_missing_code') ||
-          'Authorization code is missing. Please try again.'
-        );
+        return localize('com_ui_oauth_error_missing_code');
       case 'missing_state':
-        return (
-          localize('com_ui_oauth_error_missing_state') ||
-          'State parameter is missing. Please try again.'
-        );
+        return localize('com_ui_oauth_error_missing_state');
       case 'invalid_state':
-        return (
-          localize('com_ui_oauth_error_invalid_state') ||
-          'Invalid state parameter. Please try again.'
-        );
+        return localize('com_ui_oauth_error_invalid_state');
       case 'callback_failed':
-        return (
-          localize('com_ui_oauth_error_callback_failed') ||
-          'Authentication callback failed. Please try again.'
-        );
+        return localize('com_ui_oauth_error_callback_failed');
       default:
-        return localize('com_ui_oauth_error_generic') || error.replace(/_/g, ' ');
+        return localize('com_ui_oauth_error_generic');
     }
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-surface-secondary p-8">
-      <div className="w-full max-w-md rounded-lg bg-surface-primary p-8 text-center shadow-lg">
-        <div className="mb-4 flex justify-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-status-error-subtle">
-            <svg
-              className="h-6 w-6 text-status-error"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              aria-hidden="true"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-          </div>
-        </div>
-        <h1 className="mb-4 text-3xl font-bold text-text-primary">
-          {localize('com_ui_oauth_error_title') || 'Authentication Failed'}
-        </h1>
-        <p className="mb-6 text-sm text-text-secondary">{getErrorMessage(error)}</p>
-        <Button
-          variant="default"
-          onClick={() => window.close()}
-          aria-label={localize('com_ui_close_window')}
-        >
-          {localize('com_ui_close_window')}
-        </Button>
-      </div>
-    </div>
+    <Shell icon={CircleX} tone="error" title={localize('com_ui_oauth_error_title')}>
+      <p className="text-text-secondary text-sm">{getErrorMessage(error)}</p>
+    </Shell>
   );
 }

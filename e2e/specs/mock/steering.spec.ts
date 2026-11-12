@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page, Response } from '@playwright/test';
 import type { CancelSteerParams } from '../../../client/src/data-provider/SSE/mutations';
 import {
@@ -13,6 +12,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
+import { expect, test, unroute } from './fixtures';
 
 /** Non-spec endpoint from e2e/config/librechat.e2e.yaml — the ephemeral MCP
  *  selection rides the no-spec path, mirroring mcp-ephemeral.spec.ts. */
@@ -117,7 +117,7 @@ test.describe('mid-run steering and queuing', () => {
    * SURVIVES inside the response after run end, with no degradation to a
    * queued follow-up turn.
    */
-  test('steers mid-run: anchored bubble appears immediately and applies at the next tool boundary', async ({
+  test('steers mid-run: anchored bubble appears immediately and applies at the next tool boundary @scenario:steer-renders-in-thread', async ({
     page,
   }) => {
     test.setTimeout(150000);
@@ -180,6 +180,10 @@ test.describe('mid-run steering and queuing', () => {
     page,
   }) => {
     test.setTimeout(150000);
+    /* This covers code layout, not collapsing, which is on by default. */
+    await page.addInitScript(() => {
+      localStorage.setItem('collapseLongUserMessages', JSON.stringify(false));
+    });
     const label = uniqueLabel('steer-code-layout');
     const steerText = `Please use this example:\n\n\`\`\`js\n${`const payload = '${'x'.repeat(300)}';\n`.repeat(12)}\`\`\``;
 
@@ -233,7 +237,7 @@ test.describe('mid-run steering and queuing', () => {
       await language.scrollIntoViewIfNeeded();
       await expect(language).toBeInViewport();
     }
-    // Canary collapses long user messages only when that preference is enabled.
+    // Long user messages collapse only while that preference is on; it is off here.
     await expect(row.getByRole('button', { name: 'Show more' })).toHaveCount(0);
   });
 
@@ -422,7 +426,7 @@ test.describe('mid-run steering and queuing', () => {
     expect(secondResponse.status()).toBe(202);
     await secondPosted;
     expect(steersSeen).toBe(2);
-    await page.unroute('**/api/agents/chat/steer');
+    await unroute(page, '**/api/agents/chat/steer');
 
     await expect(appliedSteerParts(page).filter({ hasText: firstSteer })).toHaveCount(1, {
       timeout: 60000,

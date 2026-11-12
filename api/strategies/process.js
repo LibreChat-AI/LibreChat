@@ -89,8 +89,9 @@ const finishNewSocialUser = async (newUserId, avatarUrl, appConfig) => {
 /**
  * Creates a new user with the provided user details. If the file strategy is not local, the avatar URL is
  * processed using the specified file strategy. The new user is saved to the database with the processed or
- * original avatar URL. When a concurrent first login created the account first, that account is handled as
- * an existing user instead.
+ * original avatar URL. The account is admitted under the config of the role it is created with, so an email
+ * domain that config excludes fails the login before anything is created. When a concurrent first login
+ * created the account first, that account is handled as an existing user instead.
  *
  * @param {Object} params - The parameters object for user creation.
  * @param {string} params.email - The email of the new user.
@@ -100,7 +101,6 @@ const finishNewSocialUser = async (newUserId, avatarUrl, appConfig) => {
  * @param {string} params.providerId - The provider-specific ID of the user.
  * @param {string} params.username - The username of the new user.
  * @param {string} params.name - The name of the new user.
- * @param {AppConfig} appConfig - The application configuration object.
  * @param {boolean} [params.emailVerified=false] - Optional. Indicates whether the user's email is verified. Defaults to false.
  * @param {SocialUserLookup} params.lookup - The login's lookup, repeated when the insert loses a concurrent first login.
  *
@@ -117,7 +117,6 @@ const createSocialUser = async ({
   providerId,
   username,
   name,
-  appConfig,
   emailVerified,
   lookup,
 }) =>
@@ -132,12 +131,11 @@ const createSocialUser = async ({
       name,
       emailVerified,
     },
-    appConfig,
     getBalanceConfig,
     getAppConfig,
     createUserIfAbsent,
     findBalanceByUser,
-    finishNewUser: (user) => finishNewSocialUser(user._id, avatarUrl, appConfig),
+    finishNewUser: (user, appConfig) => finishNewSocialUser(user._id, avatarUrl, appConfig),
     refreshExistingUser: (user, accountConfig) =>
       handleExistingUser(user, avatarUrl, accountConfig, email),
   });

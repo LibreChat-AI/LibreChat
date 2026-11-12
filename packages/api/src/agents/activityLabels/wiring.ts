@@ -1,4 +1,4 @@
-import { ContentTypes } from 'librechat-data-provider';
+import { ContentTypes, stripOpaqueReasoning } from 'librechat-data-provider';
 import type { HookCallback } from '@librechat/agents';
 import type {
   ActivityLabelBlockContext,
@@ -83,7 +83,7 @@ export function captureActivityBlockContext(
       thinkingExcerpts.length < MAX_EXCERPTS &&
       (executingAgentId == null || part.agentId == null || part.agentId === executingAgentId)
     ) {
-      const think = textValue(part.think).trim();
+      const think = stripOpaqueReasoning(textValue(part.think)).trim();
       if (think.length > 0) {
         thinkingExcerpts.unshift(think.slice(0, EXCERPT_CHARS));
       }

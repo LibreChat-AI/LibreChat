@@ -13,6 +13,7 @@ import type {
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { EarlyBufferOverflowState } from './earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '../agents/hitl/resume';
+import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { MCPRuntimeRequestBody } from '../mcp/types';
 import type { ServerSentEvent } from './events';
 
@@ -23,6 +24,8 @@ export interface GenerationJobMetadata {
   /** Immutable per-generation saver scope. LangGraph's root `checkpoint_ns`
    * remains empty; the checkpointer adapter maps this scope into storage. */
   checkpointNamespace?: string;
+  /** Server-pinned saver settings retained for expired background-response cleanup. */
+  responseCheckpointConfigJSON?: string;
   /** Immutable generation protocol. Missing on legacy records means v1. */
   generationProtocolVersion?: 1 | 2;
   earlyBufferOverflow?: EarlyBufferOverflowState;
@@ -54,6 +57,8 @@ export interface GenerationJobMetadata {
   promptTokens?: number;
   /** Agent that initiated the run; a HITL resume verifies it rebuilds the same agent. */
   agent_id?: string;
+  /** Server-established first turn, permitting recovery before history is persisted. */
+  isNewConversation?: boolean;
   /** Whether the originating turn was a temporary chat; a HITL resume keeps it so. */
   isTemporary?: boolean;
   /** Original server-authenticated retention deadline, serialized across replicas. */
@@ -100,6 +105,7 @@ export interface GenerationJobMetadata {
    * without them the rebuilt model would lose the discovered tool schemas.
    */
   discoveredTools?: string[];
+  authoredSkills?: AuthoredSkillBinding[];
   /** Bounded collector state for continuing a phase across HITL resume. */
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   /** Exact bounded compaction guidance captured atomically with a HITL pause. */
@@ -116,6 +122,8 @@ export interface GenerationJobMetadata {
   providerExecutionId?: string;
   /** Exact provider owner that crossed its start fence. */
   providerExecutionStartedId?: string;
+  /** Private receipt for the exact request that won this segment's start CAS. */
+  providerExecutionOwnerId?: string;
   /** False only while that exact provider segment can still mutate user data. */
   providerDrained?: boolean;
   /** Terminal close has atomically stopped new steer acceptance, even if the
@@ -126,6 +134,8 @@ export interface GenerationJobMetadata {
   idempotencyClientRequestId?: string;
   /** Normal FINAL publication is waiting on required durable abort work. */
   terminalPersistencePending?: boolean;
+  /** Server-enrolled external journal owns final publication and barrier release. */
+  terminalPersistenceOwner?: 'external';
   terminalHostActionPending?: boolean;
   terminalPersistenceStartedAt?: number;
   /** Set when the job is paused for human review (status === 'requires_action') */

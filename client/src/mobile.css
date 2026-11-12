@@ -3,11 +3,6 @@
  * emitting its CSS a second time. */
 @reference './style.css';
 
-.hover-button.active {
-  display: block;
-  visibility: visible;
-}
-
 .nav {
   position: fixed;
   z-index: 110;
@@ -21,7 +16,7 @@
 
 .nav.active {
   position: relative;
-  left: 0;
+  inset-inline-start: 0;
   opacity: 1;
 }
 
@@ -182,14 +177,14 @@
  * v4's layers it would beat every utility instead — `no-underline` on a link inside a list stopped
  * working. Layered, it loses to a utility again and still styles an unclassed list link. */
 p.whitespace-pre-wrap a {
-  color: #0066cc;
+  color: rgb(var(--link-inline));
   text-decoration: underline;
   font-weight: bold;
 }
 
 @layer base {
   li a {
-    color: #0066cc;
+    color: rgb(var(--link-inline));
     text-decoration: underline;
     font-weight: bold;
   }
@@ -197,5 +192,5 @@ p.whitespace-pre-wrap a {
 
 .dark p.whitespace-pre-wrap a,
 .dark li a {
-  color: #52a0ff;
+  color: rgb(var(--link-inline));
 }

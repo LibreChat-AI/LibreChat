@@ -30,6 +30,7 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   createAdminCodeEnvironmentHandlers: jest.fn(() => mockHandlers),
+  isAuditFailClosed: jest.fn(() => true),
 }));
 
 jest.mock('~/server/middleware/roles/capabilities', () => ({
@@ -42,6 +43,10 @@ jest.mock('~/server/middleware', () => ({
 
 jest.mock('~/server/services/Config', () => ({
   getAppConfig: mockGetAppConfig,
+}));
+
+jest.mock('~/models', () => ({
+  recordAuditEntry: jest.fn(),
 }));
 
 function createApp() {

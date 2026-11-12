@@ -14,11 +14,14 @@ jest.mock('@librechat/api', () => ({
     mockDeps = deps;
     return {
       list: mockList,
+      create: mockWrite,
       get: mockList,
       update: mockWrite,
+      delete: mockWrite,
       listFiles: mockList,
       getFile: mockList,
       updateFile: mockWrite,
+      deleteFile: mockWrite,
     };
   },
   mapAgentManagementError: () => ({ status: 404, body: { error: { code: 'not_found' } } }),
@@ -26,6 +29,7 @@ jest.mock('@librechat/api', () => ({
 jest.mock('../middleware', () => ({ requireAgentManagementAuth: (...args) => mockAuth(...args) }));
 jest.mock('~/server/middleware', () => ({
   checkBan: (_req, _res, next) => next(),
+  requireTermsAcceptance: (_req, _res, next) => next(),
   configMiddleware: (req, _res, next) => {
     req.config = { tenantConfig: true };
     next();
@@ -66,4 +70,8 @@ it('keeps authentication ahead of management handlers', async () => {
   mockAuth.mockImplementationOnce((_req, res) => res.sendStatus(401));
   await request(app).get('/skills').expect(401);
   expect(mockList).not.toHaveBeenCalled();
+});
+it('routes whole-Skill deletion through the authorized management handler', async () => {
+  await request(app).delete('/skills/507f1f77bcf86cd799439011').expect(200);
+  expect(mockWrite).toHaveBeenCalledTimes(1);
 });

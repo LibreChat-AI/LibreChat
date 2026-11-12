@@ -105,8 +105,12 @@ describe('ErrorController', () => {
         messages: 'An document with that ["email"] already exists.',
         fields: '["email"]',
       });
-      expect(logger.warn).toHaveBeenCalledWith(
-        'Duplicate key error: E11000 duplicate key error collection: test.users index: email_1 dup key: { email: "test@example.com" }',
+      expect(logger.warn).toHaveBeenCalledWith('Duplicate key error', {
+        mongoCode: 11000,
+        fields: ['email'],
+      });
+      expect(JSON.stringify((logger.warn as jest.Mock).mock.calls)).not.toContain(
+        'test@example.com',
       );
     });
 
@@ -127,9 +131,10 @@ describe('ErrorController', () => {
         messages: 'An document with that ["email","username"] already exists.',
         fields: '["email","username"]',
       });
-      expect(logger.warn).toHaveBeenCalledWith(
-        'Duplicate key error: E11000 duplicate key error collection: test.users index: email_1 dup key: { email: "test@example.com" }',
-      );
+      expect(logger.warn).toHaveBeenCalledWith('Duplicate key error', {
+        mongoCode: 11000,
+        fields: ['email', 'username'],
+      });
     });
 
     it('should handle error with code 11000 as string', () => {

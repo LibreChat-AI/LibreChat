@@ -15,7 +15,6 @@ import type {
   ConversationListParams,
   MessagesListParams,
   MessagesListResponse,
-  Assistant,
   AssistantListParams,
   AssistantListResponse,
   AssistantDocument,
@@ -447,73 +446,6 @@ export const useListAssistantsQuery = <TData = AssistantListResponse>(
   );
 };
 
-/*
-export const useListAssistantsInfiniteQuery = (
-  params?: AssistantListParams,
-  config?: UseInfiniteQueryOptions<AssistantListResponse, Error>,
-) => {
-  const queryClient = useQueryClient();
-  const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
-  const keyExpiry = queryClient.getQueryData<TCheckUserKeyResponse>([
-    QueryKeys.name,
-    EModelEndpoint.assistants,
-  ]);
-  const userProvidesKey = !!endpointsConfig?.[EModelEndpoint.assistants]?.userProvide;
-  const keyProvided = userProvidesKey ? !!keyExpiry?.expiresAt : true;
-  const enabled = !!endpointsConfig?.[EModelEndpoint.assistants] && keyProvided;
-  return useInfiniteQuery<AssistantListResponse, Error>(
-    ['assistantsList', params],
-    ({ pageParam = '' }) => dataService.listAssistants({ ...params, after: pageParam }),
-    {
-      getNextPageParam: (lastPage) => {
-        // lastPage is of type AssistantListResponse, you can use the has_more and last_id from it directly
-        if (lastPage.has_more) {
-          return lastPage.last_id;
-        }
-        return undefined;
-      },
-      ...config,
-      enabled: config?.enabled !== undefined ? config?.enabled && enabled : enabled,
-    },
-  );
-};
-*/
-
-/**
- * Hook for retrieving details about a single assistant
- */
-export const useGetAssistantByIdQuery = (
-  endpoint: t.AssistantsEndpoint,
-  assistant_id: string,
-  config?: UseQueryOptions<Assistant>,
-): QueryObserverResult<Assistant> => {
-  const queryClient = useQueryClient();
-  const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
-  const keyExpiry = queryClient.getQueryData<TCheckUserKeyResponse>([QueryKeys.name, endpoint]);
-  const userProvidesKey = endpointsConfig?.[endpoint]?.userProvide ?? false;
-  const keyProvided = userProvidesKey ? !!keyExpiry?.expiresAt : true;
-  const enabled = !!endpointsConfig?.[endpoint] && keyProvided;
-  const version = endpointsConfig?.[endpoint]?.version ?? defaultAssistantsVersion[endpoint];
-  return useQuery<Assistant>(
-    [QueryKeys.assistant, assistant_id],
-    () =>
-      dataService.getAssistantById({
-        endpoint,
-        assistant_id,
-        version,
-      }),
-    {
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      refetchOnMount: false,
-      retry: false,
-      ...config,
-      // Query will not execute until the assistant_id exists
-      enabled: config?.enabled !== undefined ? config.enabled && enabled : enabled,
-    },
-  );
-};
-
 /**
  * Hook for retrieving user's saved Assistant Actions
  */
@@ -583,23 +515,6 @@ export const useVoicesQuery = (
     retry: false,
     ...config,
   });
-};
-
-/* Custom config speech */
-export const useCustomConfigSpeechQuery = (
-  config?: UseQueryOptions<t.TCustomConfigSpeechResponse>,
-): QueryObserverResult<t.TCustomConfigSpeechResponse> => {
-  return useQuery<t.TCustomConfigSpeechResponse>(
-    [QueryKeys.customConfigSpeech],
-    () => dataService.getCustomConfigSpeech(),
-    {
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      refetchOnMount: false,
-      retry: false,
-      ...config,
-    },
-  );
 };
 
 /** Prompt */
@@ -697,24 +612,6 @@ export const useGetCategories = <TData = t.TGetCategoriesResponse>(
   return useQuery<t.TGetCategoriesResponse, unknown, TData>(
     [QueryKeys.categories],
     () => dataService.getCategories(),
-    {
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      refetchOnMount: false,
-      retry: false,
-      ...config,
-      enabled: config?.enabled !== undefined ? config.enabled : true,
-    },
-  );
-};
-
-export const useGetRandomPrompts = (
-  filter: t.TGetRandomPromptsRequest,
-  config?: UseQueryOptions<t.TGetRandomPromptsResponse>,
-): QueryObserverResult<t.TGetRandomPromptsResponse> => {
-  return useQuery<t.TGetRandomPromptsResponse>(
-    [QueryKeys.randomPrompts],
-    () => dataService.getRandomPrompts(filter),
     {
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,

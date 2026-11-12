@@ -11,6 +11,8 @@ export default defineConfig({
     'src/telemetry.ts',
     'src/credentials.ts',
     'src/agents/files/edit-worker.ts',
+    'src/auth/hash-worker.ts',
+    'src/files/documents/spreadsheet-worker.ts',
   ],
   format: ['cjs'],
   platform: 'node',

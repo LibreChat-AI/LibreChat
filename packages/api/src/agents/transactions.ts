@@ -14,7 +14,8 @@ interface GetMultiplierParams {
 }
 
 interface GetCacheMultiplierParams {
-  cacheType: 'write' | 'read';
+  /** `write1h` is Anthropic's 1-hour cache write; `write` is the 5-minute rate */
+  cacheType: 'write' | 'read' | 'write1h' | 'write12h';
   model?: string;
   endpointTokenConfig?: EndpointTokenConfig;
   inputTokenCount?: number;
@@ -47,6 +48,10 @@ interface StructuredTxData extends BaseTxData {
   tokenType: TokenType;
   inputTokens?: number;
   writeTokens?: number;
+  /** Subset of `writeTokens` written to the 1-hour cache */
+  write1hTokens?: number;
+  /** Subset of `writeTokens` written to the 12-hour cache */
+  write12hTokens?: number;
   readTokens?: number;
   inputTokenCount?: number;
   rawAmount?: number;
@@ -66,6 +71,10 @@ export interface TokenUsage {
 export interface StructuredPromptTokens {
   input?: number;
   write?: number;
+  /** Subset of `write` written to the 1-hour cache, billed at its own rate */
+  write1h?: number;
+  /** Subset of `write` written to the 12-hour cache, billed at its own rate */
+  write12h?: number;
   read?: number;
 }
 
@@ -87,7 +96,11 @@ export interface TxMetadata {
 
 export interface BulkWriteDeps {
   insertMany: (docs: TransactionData[]) => Promise<unknown>;
-  updateBalance: (params: { user: string; incrementValue: number }) => Promise<unknown>;
+  updateBalance: (params: {
+    user: string;
+    incrementValue: number;
+    balanceConfig?: Partial<TCustomConfig['balance']>;
+  }) => Promise<unknown>;
 }
 
 function calculateTokenValue(
@@ -141,20 +154,45 @@ function calculateStructuredTokenValue(
 
     const inputAbs = Math.abs(txData.inputTokens ?? 0);
     const writeAbs = Math.abs(txData.writeTokens ?? 0);
+    const write1hAbs = Math.min(Math.abs(txData.write1hTokens ?? 0), writeAbs);
+    const write12hAbs = Math.min(Math.abs(txData.write12hTokens ?? 0), writeAbs - write1hAbs);
     const readAbs = Math.abs(txData.readTokens ?? 0);
     const totalPromptTokens = inputAbs + writeAbs + readAbs;
+    const write1hMultiplier =
+      write1hAbs > 0
+        ? (pricing.getCacheMultiplier({
+            cacheType: 'write1h',
+            model,
+            endpointTokenConfig,
+            inputTokenCount,
+          }) ?? writeMultiplier)
+        : writeMultiplier;
 
+    /** Missing TTL pricing retains the existing write/input fallback. */
+    const write12hMultiplier =
+      write12hAbs > 0
+        ? (pricing.getCacheMultiplier({
+            cacheType: 'write12h',
+            model,
+            endpointTokenConfig,
+            inputTokenCount,
+          }) ?? writeMultiplier)
+        : writeMultiplier;
+
+    const promptValue =
+      inputAbs * Math.abs(inputMultiplier) +
+      (writeAbs - write1hAbs - write12hAbs) * Math.abs(writeMultiplier) +
+      write1hAbs * Math.abs(write1hMultiplier) +
+      write12hAbs * Math.abs(write12hMultiplier) +
+      readAbs * Math.abs(readMultiplier);
     const rate =
-      totalPromptTokens > 0
-        ? (Math.abs(inputMultiplier * (txData.inputTokens ?? 0)) +
-            Math.abs(writeMultiplier * (txData.writeTokens ?? 0)) +
-            Math.abs(readMultiplier * (txData.readTokens ?? 0))) /
-          totalPromptTokens
-        : Math.abs(inputMultiplier);
+      totalPromptTokens > 0 ? promptValue / totalPromptTokens : Math.abs(inputMultiplier);
 
     const tokenValue = -(
       inputAbs * inputMultiplier +
-      writeAbs * writeMultiplier +
+      (writeAbs - write1hAbs - write12hAbs) * writeMultiplier +
+      write1hAbs * write1hMultiplier +
+      write12hAbs * write12hMultiplier +
       readAbs * readMultiplier
     );
 
@@ -162,7 +200,13 @@ function calculateStructuredTokenValue(
       tokenValue,
       rate,
       rawAmount: -totalPromptTokens,
-      rateDetail: { input: inputMultiplier, write: writeMultiplier, read: readMultiplier },
+      rateDetail: {
+        input: inputMultiplier,
+        write: writeMultiplier,
+        read: readMultiplier,
+        ...(write1hAbs > 0 && { write1h: write1hMultiplier }),
+        ...(write12hAbs > 0 && { write12h: write12hMultiplier }),
+      },
     };
   }
 
@@ -289,6 +333,8 @@ export function prepareStructuredTokenSpend(
   if (promptTokens) {
     const input = Math.max(promptTokens.input ?? 0, 0);
     const write = Math.max(promptTokens.write ?? 0, 0);
+    const write1h = Math.min(Math.max(promptTokens.write1h ?? 0, 0), write);
+    const write12h = Math.min(Math.max(promptTokens.write12h ?? 0, 0), write - write1h);
     const read = Math.max(promptTokens.read ?? 0, 0);
     const totalInputTokens = input + write + read;
     const entry = prepareStructuredTx(
@@ -297,6 +343,8 @@ export function prepareStructuredTokenSpend(
         tokenType: 'prompt',
         inputTokens: -input,
         writeTokens: -write,
+        ...(write1h > 0 && { write1hTokens: -write1h }),
+        ...(write12h > 0 && { write12hTokens: -write12h }),
         readTokens: -read,
         inputTokenCount: totalInputTokens,
       },
@@ -339,18 +387,22 @@ export async function bulkWriteTransactions(
   }
 
   let totalTokenValue = 0;
-  let balanceEnabled = false;
+  let balanceConfig: Partial<TCustomConfig['balance']> | undefined;
   const plainDocs = docs.map(({ doc, tokenValue, balance }) => {
     if (balance?.enabled) {
-      balanceEnabled = true;
+      balanceConfig ??= balance;
       totalTokenValue += tokenValue;
     }
     return doc;
   });
 
-  if (balanceEnabled) {
-    await dbOps.updateBalance({ user, incrementValue: totalTokenValue });
-  }
-
+  /**
+   * Ledger first, then balance (same order as `createTransaction`): a failed insert
+   * must never leave a debit without its transaction records.
+   */
   await dbOps.insertMany(plainDocs);
+
+  if (balanceConfig) {
+    await dbOps.updateBalance({ user, incrementValue: totalTokenValue, balanceConfig });
+  }
 }
