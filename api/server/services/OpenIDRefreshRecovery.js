@@ -46,8 +46,8 @@ module.exports = api.createOpenIDRefreshRecoveryService({
   revokeOpenIDRefreshFlights: flight.revokeOpenIDRefreshFlights,
   withOpenIDRefreshFlightLease: flight.withOpenIDRefreshFlightLease,
   bridgeGraceMs: bridge.OPENID_REFRESH_BRIDGE_GRACE_MS,
-  math: api.math,
-  defaultRefreshTokenExpiry: DEFAULT_REFRESH_TOKEN_EXPIRY,
+  getRefreshTokenExpiryMs: () =>
+    api.math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
   providerSessionAuthorizer,
   getProviderSessionClient,
 });

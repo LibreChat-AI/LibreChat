@@ -252,8 +252,9 @@ export interface OpenIDRefreshRecoveryDeps {
     operation: (context: LeaseContext) => Promise<T>;
   }) => Promise<T>;
   bridgeGraceMs: number;
-  math: (value: string | undefined, fallback: number) => number;
-  defaultRefreshTokenExpiry: number;
+  /** The refresh-token lifetime backing a provider-session grant, evaluated per call; the
+   *  caller owns `REFRESH_TOKEN_EXPIRY` and its default. */
+  getRefreshTokenExpiryMs: () => number;
   providerSessionAuthorizer: ProviderSessionAuthorizer;
   /** `{issuer, clientId}` for the configured OpenID provider, or `null` when none is configured. */
   getProviderSessionClient: () => { issuer: string; clientId: string } | null;
@@ -292,8 +293,7 @@ export function createOpenIDRefreshRecoveryService(
     revokeOpenIDRefreshFlights,
     withOpenIDRefreshFlightLease,
     bridgeGraceMs,
-    math,
-    defaultRefreshTokenExpiry,
+    getRefreshTokenExpiryMs,
     providerSessionAuthorizer,
     getProviderSessionClient,
   } = deps;
@@ -316,10 +316,7 @@ export function createOpenIDRefreshRecoveryService(
   }
 
   function providerSessionExpiry(): Date {
-    return providerSessionCredentialExpiry(
-      new Date(),
-      math(process.env.REFRESH_TOKEN_EXPIRY, defaultRefreshTokenExpiry),
-    );
+    return providerSessionCredentialExpiry(new Date(), getRefreshTokenExpiryMs());
   }
 
   const MAX_LOGOUT_REFRESH_CHAIN_DEPTH = 16;
