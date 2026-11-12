@@ -32,7 +32,13 @@ const probe = (page: Page, className: string) =>
 const elapsedReading = (page: Page) => messagesView(page).getByTestId('stream-elapsed');
 
 const readSweep = (page: Page) =>
-  elapsedReading(page).evaluate((element) => {
+  page.evaluate(() => {
+    // Streaming can replace the footer between locator resolution and evaluate.
+    // Resolve the current node and read its styles in the same browser task.
+    const element = document.querySelector(
+      '[data-testid="messages-view"] [data-testid="stream-elapsed"]',
+    );
+    if (!element) return null;
     const style = getComputedStyle(element);
     return {
       animationName: style.animationName,
@@ -81,17 +87,16 @@ test.describe('shared part classes', () => {
     expect(run.ok()).toBeTruthy();
     await expect(elapsedReading(page)).toBeVisible({ timeout: 15_000 });
 
-    const sweep = await readSweep(page);
-    expect(sweep.animationName).toBe('shimmer');
-    expect(sweep.backgroundClip).toBe('text');
-    expect(Number(sweep.dipAlpha)).toBeLessThan(1);
+    await expect(elapsedReading(page)).toHaveCSS('animation-name', 'shimmer');
+    await expect(elapsedReading(page)).toHaveCSS('background-clip', 'text');
+    await expect.poll(async () => Number((await readSweep(page))?.dipAlpha)).toBeLessThan(1);
 
     await page.emulateMedia({ contrast: 'more' });
     await expect(page.locator('html.high-contrast')).toHaveCount(1, { timeout: 5_000 });
-    await expect.poll(async () => (await readSweep(page)).dipAlpha).toBe('1');
+    await expect.poll(async () => (await readSweep(page))?.dipAlpha).toBe('1');
     await page.emulateMedia({ contrast: null });
 
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    await expect.poll(async () => (await readSweep(page)).animationName).toBe('none');
+    await expect(elapsedReading(page)).toHaveCSS('animation-name', 'none');
   });
 });
