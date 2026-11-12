@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import type { ProviderSessionAuthorizer } from './authorize';
 import type { RefreshTokenset } from '~/auth/refresh';
 import {
@@ -5,6 +6,7 @@ import {
   prepareAdminOpenIdRefresh,
   runAdminOpenIdRefreshGrant,
 } from './adminRefreshDeps';
+import { createOpenIDRefreshOwnershipError } from '~/auth/openid/errors';
 
 function makeAuthorizer(
   mode: 'off' | 'record' | 'enforce',
@@ -612,6 +614,74 @@ describe('runAdminOpenIdRefreshGrant', () => {
     );
 
     expect(result.refresh_token).toBe('rotated-refresh');
+  });
+
+  it('keeps the rotated tokenset when the flight lease itself fails after a successful grant (generic error)', async () => {
+    const tokenset = makeTokenset();
+    const grant = jest.fn().mockResolvedValue(tokenset);
+    const leaseError = new Error('lease renewal failed');
+    const withOpenIDRefreshFlightLease = jest.fn().mockImplementation(async ({ operation }) => {
+      await operation({ assertLeaseOwned: jest.fn() });
+      throw leaseError;
+    });
+    const loggerWarnSpy = jest.spyOn(logger, 'warn');
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      completeOpenIDRefreshFlight: jest.fn().mockResolvedValue(undefined),
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(loggerWarnSpy).toHaveBeenCalledWith(
+      '[runAdminOpenIdRefreshGrant] Refresh flight lease failed after a successful grant; keeping the rotated tokenset',
+      { error: leaseError },
+    );
+    loggerWarnSpy.mockRestore();
+  });
+
+  it('keeps the rotated tokenset when the flight lease fails with an ownership error after a successful grant', async () => {
+    const tokenset = makeTokenset();
+    const grant = jest.fn().mockResolvedValue(tokenset);
+    const ownershipError = createOpenIDRefreshOwnershipError(
+      'OpenID refresh coordination ownership was lost before completion',
+    );
+    const withOpenIDRefreshFlightLease = jest.fn().mockImplementation(async ({ operation }) => {
+      await operation({ assertLeaseOwned: jest.fn() });
+      throw ownershipError;
+    });
+    const loggerWarnSpy = jest.spyOn(logger, 'warn');
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      completeOpenIDRefreshFlight: jest.fn().mockResolvedValue(undefined),
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(loggerWarnSpy).toHaveBeenCalledWith(
+      '[runAdminOpenIdRefreshGrant] Refresh flight lease failed after a successful grant; keeping the rotated tokenset',
+      { error: ownershipError },
+    );
+    loggerWarnSpy.mockRestore();
   });
 
   it('rethrows a grant failure unchanged (not as ProviderSessionUnavailableError) once the grant has started', async () => {
