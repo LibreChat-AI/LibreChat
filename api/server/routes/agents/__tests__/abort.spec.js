@@ -67,20 +67,31 @@ jest.mock('~/server/services/Schedules', () => ({
     mockAcknowledgeScheduledStopPersistence(...args),
 }));
 
-jest.mock('~/server/middleware', () => ({
-  uaParser: (req, res, next) => next(),
-  checkBan: (req, res, next) => next(),
-  requireJwtAuth: (req, res, next) => {
-    req.user = { id: 'test-user-123' };
-    next();
-  },
-  moderateText: (req, res, next) => next(),
-  agentEventUserLimiter: (req, res, next) => next(),
-  messageIpLimiter: (req, res, next) => next(),
-  configMiddleware: (req, res, next) => next(),
-  messageUserLimiter: (req, res, next) => next(),
-  requireTermsAcceptance: (req, res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const middleware = {
+    uaParser: (req, res, next) => next(),
+    checkBan: (req, res, next) => next(),
+    requireJwtAuth: (req, res, next) => {
+      req.user = { id: 'test-user-123' };
+      next();
+    },
+    moderateText: (req, res, next) => next(),
+    agentEventUserLimiter: (req, res, next) => next(),
+    messageIpLimiter: (req, res, next) => next(),
+    configMiddleware: (req, res, next) => next(),
+    messageUserLimiter: (req, res, next) => next(),
+    requireTermsAcceptance: (req, res, next) => next(),
+  };
+  const strictRequests = new WeakSet();
+  return {
+    ...middleware,
+    strictConfigMiddleware: (req, res, next) => {
+      if (strictRequests.has(req)) return next();
+      strictRequests.add(req);
+      return middleware.configMiddleware(req, res, next);
+    },
+  };
+});
 
 // Mock the chat module - needs to be a router
 jest.mock('~/server/routes/agents/chat', () => require('express').Router());

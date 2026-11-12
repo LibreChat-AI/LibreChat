@@ -30,7 +30,7 @@ jest.mock('@librechat/chat/components', () => ({
   }),
 }));
 
-jest.mock('~/Providers', () => ({
+jest.mock('~/Providers/AgentsMapContext', () => ({
   useAgentsMapContext: () => ({
     'agent-123': { name: 'Test Agent' },
   }),

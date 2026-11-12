@@ -60,19 +60,30 @@ jest.mock('@librechat/api', () => ({
     typeof req.body?.text === 'string',
 }));
 
-jest.mock('~/server/middleware', () => ({
-  uaParser: (_req, _res, next) => next(),
-  checkBan: (...args) => mockCheckBan(...args),
-  requireJwtAuth: (req, _res, next) => {
-    req.user = { id: 'user-1' };
-    next();
-  },
-  requireTermsAcceptance: (_req, _res, next) => next(),
-  moderateText: (_req, _res, next) => next(),
-  messageIpLimiter: (...args) => mockIpLimiter(...args),
-  configMiddleware: (...args) => mockConfigMiddleware(...args),
-  messageUserLimiter: (...args) => mockUserLimiter(...args),
-}));
+jest.mock('~/server/middleware', () => {
+  const middleware = {
+    uaParser: (_req, _res, next) => next(),
+    checkBan: (...args) => mockCheckBan(...args),
+    requireJwtAuth: (req, _res, next) => {
+      req.user = { id: 'user-1' };
+      next();
+    },
+    requireTermsAcceptance: (_req, _res, next) => next(),
+    moderateText: (_req, _res, next) => next(),
+    messageIpLimiter: (...args) => mockIpLimiter(...args),
+    configMiddleware: (...args) => mockConfigMiddleware(...args),
+    messageUserLimiter: (...args) => mockUserLimiter(...args),
+  };
+  const strictRequests = new WeakSet();
+  return {
+    ...middleware,
+    strictConfigMiddleware: (req, res, next) => {
+      if (strictRequests.has(req)) return next();
+      strictRequests.add(req);
+      return middleware.configMiddleware(req, res, next);
+    },
+  };
+});
 
 jest.mock('~/server/routes/agents/chat', () => {
   const router = require('express').Router();

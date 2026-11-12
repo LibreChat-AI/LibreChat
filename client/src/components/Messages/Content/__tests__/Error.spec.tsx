@@ -1,13 +1,14 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import {
+  Constants,
   ErrorTypes,
   SystemRoles,
   ContentTypes,
   ViolationTypes,
   EModelEndpoint,
 } from 'librechat-data-provider';
-import type { Agent, TConversation, TMessage } from 'librechat-data-provider';
+import type { Agent, AgentDisplay, TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
 import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { MessageContext } from '~/Providers/MessageContext';
@@ -63,6 +64,14 @@ jest.mock('@librechat/chat/components', () => ({
     ref: { current: null },
   }),
 }));
+
+let mockPresetTargets: AgentDisplay[] = [];
+jest.mock('~/data-provider/Agents/queries', () => ({
+  useModelSpecHandoffsQuery: () => ({ data: mockPresetTargets }),
+}));
+afterEach(() => {
+  mockPresetTargets = [];
+});
 
 jest.mock('~/data-provider', () => ({
   useGetEndpointsQuery: jest.fn(() => ({ data: mockEndpointsData })),
@@ -1323,5 +1332,24 @@ describe('Error — agent handoffs within a row', () => {
 
     expect(screen.getByText(catalog.com_error_no_user_key_generic)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('Google');
+  });
+});
+
+describe('preset handoff error identity', () => {
+  const id = Constants.MODEL_SPEC_AGENT_PREFIX + 'abc123';
+  const source = { endpoint: EModelEndpoint.agents, model: id } as TMessage;
+  test('uses the actual provider and model rather than the graph hash', () => {
+    mockPresetTargets = [
+      { id, name: 'Preset Specialist', provider: 'openAI', model: 'gpt-4o', avatar: null },
+    ];
+    renderError({ type: ErrorTypes.REFUSAL }, source, { source });
+    expect(document.body.textContent).toContain('gpt-4o');
+    expect(document.body.textContent).not.toContain('model_spec');
+    expect(document.body.textContent).not.toContain('abc123');
+  });
+  test('does not expose a retired preset hash as an endpoint or model', () => {
+    renderError({ type: ErrorTypes.REFUSAL }, source, { source });
+    expect(document.body.textContent).not.toContain('model_spec');
+    expect(document.body.textContent).not.toContain('abc123');
   });
 });

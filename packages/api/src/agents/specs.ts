@@ -9,8 +9,8 @@ import type {
 } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
-import { applyModelSpecPreset, resolveModelSpecPromptPrefixVariables } from '../modelSpecs';
 import { getCustomEndpointConfig } from '../app/config';
+import { applyModelSpecPreset } from '../modelSpecs';
 import { collectEdgeAgentIds } from './edges';
 import { loadEphemeralAgent } from './load';
 
@@ -126,13 +126,12 @@ export async function loadModelSpecHandoff(
     defaultParamsEndpoint: customConfig?.customParams?.defaultParamsEndpoint,
     includePresetDefaults: true,
   });
-  const parameters = resolveModelSpecPromptPrefixVariables(parsedBody, req.user);
   const agent = await loadEphemeralAgent(
     {
       req: { user: req.user, config: req.config, body: {} },
       spec: spec.name,
       endpoint,
-      model_parameters: parameters as Agent['model_parameters'],
+      model_parameters: parsedBody as Agent['model_parameters'],
     },
     { getAgent: async () => null, getMCPServerTools: async () => null },
   );

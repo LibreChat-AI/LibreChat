@@ -18,9 +18,8 @@ import {
 } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import { useModelSpecHandoffsQuery } from '~/data-provider';
+import useTranscriptAgent from '~/hooks/Agents/useTranscriptAgent';
 import MessageIcon from '~/components/Share/MessageIcon';
-import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -116,7 +115,6 @@ function fieldLabel(key: string, localize: (translationKey: TranslationKeys) => 
 
 const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) => {
   const localize = useLocalize();
-  const agentsMap = useAgentsMapContext();
   const [showInfo, setShowInfo] = useState(false);
   useToolContentRequest(showInfo);
   const [isCopied, setIsCopied] = useState(false);
@@ -134,15 +132,7 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
     return name.replace(Constants.LC_TRANSFER_TO_, '');
   }, [name]);
 
-  const { data: configuredTargets } = useModelSpecHandoffsQuery(
-    targetAgentId?.startsWith(Constants.MODEL_SPEC_AGENT_PREFIX) === true,
-  );
-  const targetAgent = useMemo(() => {
-    if (!targetAgentId) return null;
-    return (
-      agentsMap?.[targetAgentId] ?? configuredTargets?.find((target) => target.id === targetAgentId)
-    );
-  }, [agentsMap, configuredTargets, targetAgentId]);
+  const targetAgent = useTranscriptAgent(targetAgentId ?? '');
 
   const fields = useMemo(() => parseHandoffFields(_args), [_args]);
   const copyText = useMemo(

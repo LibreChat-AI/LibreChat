@@ -8,7 +8,7 @@ import {
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
 import type {
-  Agent,
+  AgentDisplay,
   TFeedback,
   Assistant,
   TConversation,
@@ -39,7 +39,7 @@ export type MessageActions = {
   ask: TAskFunction;
   edit: boolean;
   index: number;
-  agent: Agent | undefined;
+  agent: AgentDisplay | undefined;
   feedback: TFeedback | undefined;
   getCanCopy: () => boolean;
   assistant: Assistant | undefined;

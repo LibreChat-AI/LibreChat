@@ -63,7 +63,7 @@ test('loads current server-owned settings without inheriting the primary prompt 
     name: 'Research Assistant',
     provider: 'openAI',
     model: 'gpt-4o',
-    instructions: 'Research for Ada.',
+    instructions: 'Research for {{current_user}}.',
     skills_enabled: true,
   });
   expect(agent?.tools).toContain('execute_code');
