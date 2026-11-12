@@ -1894,6 +1894,7 @@
   "com_ui_enter_value": "Enter value",
   "com_ui_error": "Error",
   "com_ui_error_connection": "Error connecting to server, try refreshing the page.",
+  "com_ui_error_offline": "You're offline. Check your connection and try again.",
   "com_ui_error_details": "Error details",
   "com_ui_error_message_prefix": "Error Message:",
   "com_ui_error_save_admin_settings": "There was an error saving your admin settings.",
