@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
-import { roleCacheConfigSchema } from 'librechat-data-provider';
+import { CacheKeys, roleCacheConfigSchema } from 'librechat-data-provider';
 import type {
   CacheStore,
   RoleChangeCursor,
@@ -8,6 +8,8 @@ import type {
   RoleChangeToken,
 } from '@librechat/data-schemas';
 import type { TCustomConfig } from 'librechat-data-provider';
+import type { Keyv } from 'keyv';
+import type { cacheConfig } from './cacheConfig';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 export function reportRoleCacheError(error: unknown): void {
@@ -19,6 +21,16 @@ export function reportRoleCacheError(error: unknown): void {
 
 export function reportRoleCacheInvalidation(reason: 'connected' | 'change'): void {
   logger.info('[roleCache] Regional generation invalidated', { reason });
+}
+
+/** Redis deployments may still keep the role namespace in a local Map. */
+export function shouldSweepMemoryCaches(
+  config: Pick<typeof cacheConfig, 'CI' | 'USE_REDIS' | 'FORCED_IN_MEMORY_CACHE_NAMESPACES'>,
+): boolean {
+  return (
+    !config.CI &&
+    (!config.USE_REDIS || config.FORCED_IN_MEMORY_CACHE_NAMESPACES?.includes(CacheKeys.ROLES))
+  );
 }
 
 export interface RegionalRoleCache extends CacheStore {
@@ -36,7 +48,7 @@ export function createRegionalRoleCache({
   onError,
   now = Date.now,
 }: {
-  cache: CacheStore & { opts?: { ttl?: number } };
+  cache: Keyv;
   onError: (error: unknown) => void;
   now?: () => number;
 }): RegionalRoleCache {
@@ -113,6 +125,13 @@ export function createRegionalRoleCache({
     configure: (value) => {
       if (!Number.isInteger(value) || value <= 0) {
         throw new RangeError('Role cache TTL must be a positive integer');
+      }
+      // Keyv and Redis each swallow failures by default. Enable both error boundaries
+      // only for the opt-in cache; foreground invalidation must never certify a no-op.
+      cache.throwOnErrors = true;
+      const adapter = cache.opts.store;
+      if (adapter && 'throwOnErrors' in adapter) {
+        adapter.throwOnErrors = true;
       }
       ttlMs = value;
       if (cache.opts) {
