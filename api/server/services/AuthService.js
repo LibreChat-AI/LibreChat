@@ -29,6 +29,8 @@ const {
   clearCloudFrontCookies,
   normalizeExpiresIn,
   createOpenIDSessionIdentity,
+  resolveOpenIDAuthTokenOptions,
+  providerSessionField,
   resolveAppConfigForUser,
   resolvePreAuthAppConfig,
   resetPasswordWithToken,
@@ -686,16 +688,17 @@ const setAuthTokens = async (userId, res, _session = null, req = null, options =
     let refreshTokenExpires;
     const expiresIn = math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY);
     const user = await getUserById(userId);
-    const authMethod = options.authMethod;
 
     if (session && session._id && session.expiration != null) {
       refreshTokenExpires = session.expiration.getTime();
       refreshToken = await generateRefreshToken(session);
     } else {
+      // `createSession` (packages/data-schemas) only sets `providerSession`/`authMethod` on the
+      // Session doc when they are truthy, so an undefined value here is a no-op.
       const result = await createSession(userId, {
         expiresIn,
-        ...(options.providerSession ? { providerSession: options.providerSession } : {}),
-        ...(authMethod ? { authMethod } : {}),
+        providerSession: options.providerSession,
+        authMethod: options.authMethod,
       });
       session = result.session;
       refreshToken = result.refreshToken;
@@ -719,24 +722,6 @@ const setAuthTokens = async (userId, res, _session = null, req = null, options =
     logger.error('[setAuthTokens] Error in setting authentication tokens:', error);
     throw error;
   }
-};
-
-const resolveOpenIDAuthTokenOptions = (optionsOrUserId, existingRefreshToken, tenantId) => {
-  if (optionsOrUserId != null && typeof optionsOrUserId === 'object') {
-    if (
-      'userId' in optionsOrUserId ||
-      'existingRefreshToken' in optionsOrUserId ||
-      'tenantId' in optionsOrUserId ||
-      'openidSubject' in optionsOrUserId ||
-      'openidIssuer' in optionsOrUserId ||
-      'providerSession' in optionsOrUserId
-    ) {
-      return optionsOrUserId;
-    }
-    return {};
-  }
-
-  return { userId: optionsOrUserId, existingRefreshToken, tenantId };
 };
 
 const getOpenIDTokenClaims = (tokenset) => {
@@ -877,9 +862,7 @@ const setOpenIDAuthTokens = (
         lastRefreshedAt: Date.now(),
       };
       applyOpenIDSessionIdentity(sessionOpenidTokens, sessionIdentity);
-      if (providerSession) {
-        sessionOpenidTokens.providerSession = providerSession;
-      }
+      Object.assign(sessionOpenidTokens, providerSessionField(providerSession));
       /**
        * Capture the access-token's own expiry (unix seconds) when the IdP
        * advertises one. Lets downstream consumers — notably the OBO inline-

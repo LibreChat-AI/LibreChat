@@ -8,3 +8,4 @@ export * from './session';
 export * from './retry';
 export * from './providerSession';
 export * from './logout';
+export * from './options';

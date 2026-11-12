@@ -5,6 +5,7 @@ import {
   isProviderSessionRef,
   isSameProviderSessionRef,
   providerSessionCredentialExpiry,
+  providerSessionField,
 } from './ref';
 
 describe('extractProviderSessionRef', () => {
@@ -145,5 +146,19 @@ describe('providerSessionCredentialExpiry', () => {
   it('returns now unchanged when no lifetimes are given', () => {
     const now = new Date('2026-01-01T00:00:00.000Z');
     expect(providerSessionCredentialExpiry(now).getTime()).toBe(now.getTime());
+  });
+});
+
+describe('providerSessionField', () => {
+  const ref = { issuer: 'https://idp.example.com', clientId: 'librechat', sid: 'session-1' };
+
+  it('spreads to an object carrying providerSession when given one', () => {
+    expect(providerSessionField(ref)).toEqual({ providerSession: ref });
+  });
+
+  it.each([null, undefined])('spreads to an empty object for %p', (value) => {
+    const result = providerSessionField(value);
+    expect(result).toEqual({});
+    expect(Object.keys(result)).toHaveLength(0);
   });
 });
