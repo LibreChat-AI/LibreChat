@@ -444,9 +444,10 @@ describe('Cyber exact endpoint contract', () => {
     { path: 'responses', responses: true },
   ])('matches the exact $path API with the installed SDK', async ({ path, responses }) => {
     const exactURL = `https://api.openai.com/v1/${path}?route=cyber`;
+    const urls: string[] = [];
     const bodies: Record<string, unknown>[] = [];
     jest.mocked(fetch).mockImplementationOnce(async (url, init) => {
-      expect(String(url)).toBe(exactURL);
+      urls.push(String(url));
       const body = JSON.parse(String(init?.body));
       bodies.push(body);
       const valid = responses ? Array.isArray(body.input) : Array.isArray(body.messages);
@@ -514,6 +515,7 @@ describe('Cyber exact endpoint contract', () => {
       },
     });
     await llm.invoke('Verify exact API routing');
+    expect(urls).toEqual([exactURL]);
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toMatchObject({
       model,
@@ -550,8 +552,32 @@ it.each([
 });
 
 it.each([
+  { baseURL: 'https://api.openai.com/v1/chat/completions', expected: false },
+  { baseURL: 'https://api.openai.com/v1/responses', expected: true },
+  { baseURL: 'https://api.openai.com/v1', expected: true },
+  { baseURL: 'https://api.openai.com/v1/chat/completions/batch', expected: true },
+  {
+    baseURL: 'https://api.openai.com/v1/responses',
+    addParams: { useResponsesApi: false },
+    expected: false,
+  },
+])('defaults the API from the exact URL path: %j', ({ expected, ...options }) => {
+  const result = config({ endpoint: 'Daybreak', directEndpoint: true, ...options });
+  expect(result.useResponsesApi).toBe(expected);
+  expect(result.modelKwargs).toMatchObject({
+    access_programs: { cyber: 'daybreak_red' },
+    safety_identifier: safetyId(),
+  });
+});
+
+it.each([
   { baseURL: 'https://gateway.example/v1/chat/completions', directEndpoint: true },
   { baseURL: 'https://gateway.example/v1/responses', directEndpoint: true },
+  {
+    baseURL: 'https://openrouter.ai/api/v1/chat/completions',
+    directEndpoint: true,
+    useOpenRouter: true,
+  },
 ])('does not impose native Cyber routing or identity on exact gateways: %j', (options) => {
   const result = config({ endpoint: 'Gateway', ...options });
   expect(result.useResponsesApi).toBeUndefined();

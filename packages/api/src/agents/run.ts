@@ -1530,18 +1530,17 @@ function shapeSummarizationConfig(
         configuration: { ...configuration, baseURL: inherited.baseURL },
       };
     }
-    const endpointConfig =
-      clientOverrides == null && provider === fallbackProvider && appConfig && agentEndpoint
-        ? getCustomEndpointConfig({ endpoint: agentEndpoint, appConfig })
-        : undefined;
     const nativeRequest = {
       model,
       endpoint: provider,
-      directEndpoint: endpointConfig?.directEndpoint,
       baseURL: typeof baseURL === 'string' ? baseURL : undefined,
       azure: targetsAzure ? (agent?.azureOptions ?? {}) : undefined,
     };
     if (isNativeCyberRequest(nativeRequest)) {
+      const endpointConfig =
+        clientOverrides == null && provider === fallbackProvider && appConfig && agentEndpoint
+          ? getCustomEndpointConfig({ endpoint: agentEndpoint, appConfig })
+          : undefined;
       const endpointDefaults = extractDefaultParams(endpointConfig?.customParams?.paramDefinitions);
       const endpointApiMode = endpointConfig?.dropParams?.includes('useResponsesApi')
         ? false
@@ -1557,6 +1556,7 @@ function shapeSummarizationConfig(
         apiKey: '',
         streaming: false,
         ...nativeRequest,
+        directEndpoint: endpointConfig?.directEndpoint,
         requestIdentity: {
           userId: headerContext.user?.id,
           tenantId: headerContext.tenantId ?? headerContext.user?.tenantId,
