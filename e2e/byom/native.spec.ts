@@ -12,6 +12,7 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from '../specs/mock/helpers';
+import { unroute } from '../specs/mock/fixtures';
 
 interface Pairing {
   environment: { id: string };
@@ -345,7 +346,7 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
         await route.continue();
       });
       const conversationId = await chat('Keep this conversation and its history.');
-      await page.unroute(streamRoute);
+      await unroute(page, streamRoute);
       const ordinaryDecision = await readDecision(conversationId);
       expect(ordinaryDecision.codeEnvironmentMode).toBe('without_attached');
       expect(ordinaryDecision.codeWorkspaces ?? []).toEqual([]);

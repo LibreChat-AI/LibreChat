@@ -132,7 +132,7 @@ context and its pages before Playwright closes it, and what a detached handler t
 is ignored. A context the spec opens itself with `browser.newContext()` closes through
 `closeContext(context)` from the same module.
 
-A mock spec that removes a route before its test ends calls `unroute(page, url, handler)` from that
+A spec that removes a route before its test ends calls `unroute(page, url, handler)` from that
 module in place of `page.unroute()`. When `page.unroute()` removes a page's last route, Playwright
 stops intercepting there and continues the requests its handlers were still working on, so a
 handler in the middle of one throws `Route is already handled!` and fails the test. `unroute`
