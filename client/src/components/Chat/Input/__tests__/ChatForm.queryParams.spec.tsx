@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useState } from 'react';
 import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
@@ -34,6 +34,13 @@ const initialConversation = {
   title: 'New Chat',
 } as TConversation;
 
+const agentConversation = {
+  ...initialConversation,
+  endpoint: EModelEndpoint.agents,
+  agent_id: 'agent_test',
+  model: undefined,
+} as TConversation;
+
 const ask = jest.fn();
 const newConversation = jest.fn();
 const stopGeneration = jest.fn();
@@ -55,6 +62,7 @@ function Harness({
   onAsk = ask,
   refusesWhileSubmitting = false,
   speechSettingsInitialized = false,
+  onCommit,
 }: {
   conversation: TConversation;
   routePending?: boolean;
@@ -63,7 +71,10 @@ function Harness({
   /** Mirrors the real `ask`, which reads `isSubmitting` from the render it was created in. */
   refusesWhileSubmitting?: boolean;
   speechSettingsInitialized?: boolean;
+  /** Runs in the commit phase, ahead of the passive effects of the same commit. */
+  onCommit?: () => void;
 }) {
+  useLayoutEffect(() => onCommit?.());
   const [files, setFiles] = useAtom(filesFamily(0));
   const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
@@ -354,13 +365,7 @@ describe('ChatForm URL submission', () => {
     async (releaseDelay) => {
       const view = mountComposer(initialConversation, { liveRun: true });
       await act(async () => jest.advanceTimersByTime(100));
-      const applied = {
-        ...initialConversation,
-        endpoint: EModelEndpoint.agents,
-        agent_id: 'agent_test',
-        model: undefined,
-      };
-      view.rerender(<Harness conversation={applied} refusesWhileSubmitting />);
+      view.rerender(<Harness conversation={agentConversation} refusesWhileSubmitting />);
       await act(async () => jest.advanceTimersByTime(releaseDelay));
       expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
       expect(screen.getByTestId('text-input')).toHaveValue('hi');
@@ -387,16 +392,80 @@ describe('ChatForm URL submission', () => {
     expect(ask).not.toHaveBeenCalled();
   });
 
+  it('restarts the settings wait when applied URL settings are replaced before composer release', async () => {
+    const view = mountComposer(initialConversation, { liveRun: true });
+    await act(async () => jest.advanceTimersByTime(100));
+    view.rerender(<Harness conversation={agentConversation} refusesWhileSubmitting />);
+    await act(async () => jest.advanceTimersByTime(1000));
+    view.rerender(<Harness conversation={initialConversation} refusesWhileSubmitting />);
+    await act(async () => jest.advanceTimersByTime(2999));
+    expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+    expect(view.getLocation().search).toContain('submit=true');
+    await act(async () => jest.advanceTimersByTime(1));
+    expect(screen.getByText(/Chat settings could not be applied/)).toBeInTheDocument();
+    expect(screen.getByTestId('text-input')).toHaveValue('hi');
+    expect(view.getLocation().search).toBe('');
+    await act(async () => view.setSubmitting(false));
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'sends once when the settings wait elapses before the effects of the commit that applied them (busy composer: %p)',
+    async (liveRun) => {
+      const view = mountComposer(initialConversation, { liveRun });
+      await act(async () => jest.advanceTimersByTime(100));
+      await act(async () => jest.advanceTimersByTime(2900));
+      expect(ask).not.toHaveBeenCalled();
+      let elapsed = false;
+      const elapseSettingsWait = () => {
+        if (elapsed) {
+          return;
+        }
+        elapsed = true;
+        jest.advanceTimersByTime(100);
+      };
+      await act(async () => {
+        view.rerender(
+          <Harness
+            conversation={agentConversation}
+            onCommit={elapseSettingsWait}
+            refusesWhileSubmitting
+          />,
+        );
+      });
+      expect(elapsed).toBe(true);
+      expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+      if (liveRun) {
+        expect(ask).not.toHaveBeenCalled();
+        expect(view.getLocation().search).toContain('submit=true');
+        await act(async () => view.setSubmitting(false));
+      }
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+      expect(view.getLocation().search).toBe('');
+      await act(async () => jest.advanceTimersByTime(4000));
+      expect(ask).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('submits to an existing conversation during its own run without waiting for the composer', async () => {
+    const view = mountComposer(
+      { ...agentConversation, conversationId: 'existing-live-chat' },
+      { liveRun: true },
+    );
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+    expect(view.getLocation().search).toBe('');
+    await act(async () => view.setSubmitting(false));
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
   it('cancels an applied URL submission if its route changes before composer release', async () => {
     const view = mountComposer(initialConversation, { liveRun: true });
     await act(async () => jest.advanceTimersByTime(100));
-    const applied = {
-      ...initialConversation,
-      endpoint: EModelEndpoint.agents,
-      agent_id: 'agent_test',
-      model: undefined,
-    };
-    view.rerender(<Harness conversation={applied} refusesWhileSubmitting />);
+    view.rerender(<Harness conversation={agentConversation} refusesWhileSubmitting />);
     await act(async () => jest.advanceTimersByTime(3500));
     await act(async () => {
       view.navigate('/c/other-chat');

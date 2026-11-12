@@ -478,7 +478,11 @@ export default function useQueryParams({
     );
   }, [methods, ownsRequest]);
 
-  /** Consumes an auto-submit once, leaving a refused submission in the composer. */
+  /**
+   * Consumes an auto-submit once, leaving a refused submission in the composer. Callers reach it
+   * only with the requested settings in place, so the settings wait ends here even when the send
+   * itself still waits for the composer or the history.
+   */
   const processSubmission = useCallback(() => {
     if (
       routePendingRef.current ||
@@ -558,6 +562,11 @@ export default function useQueryParams({
     settlePrompt,
   ]);
 
+  /**
+   * Bounds the wait for the requested settings, never the wait for the composer. The timer can
+   * fire between the commit that applied them and that commit's effects, so it reads them again
+   * before reporting a failure.
+   */
   const armSettingsTimeout = useCallback(() => {
     if (settingsTimeoutRef.current || routePendingRef.current || !targetReadyRef.current) return;
     const requestId = requestIdRef.current;
