@@ -12,7 +12,9 @@ const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const mongoSanitize = require('express-mongo-sanitize');
-const { logger, runAsSystem } = require('@librechat/data-schemas');
+const { logger, runAsSystem, createRoleChangeSource } = require('@librechat/data-schemas');
+const { CacheKeys } = require('librechat-data-provider');
+const getLogStores = require('~/cache/getLogStores');
 const {
   isEnabled,
   issueCsp,
@@ -51,6 +53,9 @@ const {
   preAuthTenantMiddleware,
   requestContextMiddleware,
   registerShutdownTask,
+  startRoleCacheInvalidation,
+  reportRoleCacheError,
+  reportRoleCacheInvalidation,
   getRemainingShutdownMs,
   registerBackgroundTaskShutdown,
   configureServerTimeouts,
@@ -264,6 +269,17 @@ const startServer = async () => {
   await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
   registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
+  registerShutdownTask(
+    'role cache invalidation',
+    await startRoleCacheInvalidation({
+      config: appConfig?.config?.roleCache,
+      cache: getLogStores(CacheKeys.ROLES),
+      open: createRoleChangeSource(mongoose),
+      onError: reportRoleCacheError,
+      onInvalidate: reportRoleCacheInvalidation,
+    }),
+    { priority: 50 },
+  );
   app.locals.sdkFileHost = createSdkFileHost(appConfig?.endpoints?.agents?.sdkHostFiles);
   app.locals.sdkModelHost = createSdkModelHost(appConfig?.endpoints?.agents?.sdkHostModels);
   await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);

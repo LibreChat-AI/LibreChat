@@ -10,6 +10,7 @@ export * from './common';
 export * from './crypto';
 export * from './schema';
 export * from './utils';
+export * from './roles/changes';
 export { createModels } from './models';
 export { createSlackWorkspaceStorage } from './methods/slackWorkspace';
 export { createSlackRouteStorage } from './methods/slackRoute';
