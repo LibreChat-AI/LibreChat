@@ -266,6 +266,16 @@ export default defineConfig(({ command }) => ({
               test: /node_modules[\\/]zod[\\/]/,
               priority: 1,
             },
+            /**
+             * The lazy devtools import the query core and the external-store shim, which every
+             * page uses. Unclaimed, the `query-devtools` group captured them, so the boot chunks
+             * imported it and loaded the devtools and superjson on every visit.
+             */
+            {
+              name: 'tanstack-vendor',
+              test: /node_modules[\\/](@tanstack[\\/](query-core|react-query)|use-sync-external-store)[\\/]/,
+              priority: 1,
+            },
             {
               name(id: string) {
                 const fullId = id.replace(/\\/g, '/');
