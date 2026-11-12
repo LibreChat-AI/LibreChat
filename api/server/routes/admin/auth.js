@@ -6,11 +6,13 @@ const { CacheKeys } = require('librechat-data-provider');
 const {
   logger,
   DEFAULT_SESSION_EXPIRY,
+  DEFAULT_REFRESH_TOKEN_EXPIRY,
   SystemCapabilities,
   getTenantId,
   tenantStorage,
 } = require('@librechat/data-schemas');
 const {
+  math,
   isEnabled,
   TENANT_CONTEXT_REQUIRED,
   createPreAuthTenantGuard,
@@ -47,6 +49,7 @@ const {
 } = require('~/server/services/RefreshTokenBridge');
 const {
   acquireOpenIDRefreshFlight,
+  assertOpenIDRefreshFlightAvailable,
   completeOpenIDRefreshFlight,
   waitForOpenIDRefreshFlight,
   withOpenIDRefreshFlightLease,
@@ -67,6 +70,11 @@ const { getOpenIdConfig } = require('~/strategies');
 const middleware = require('~/server/middleware');
 
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
+
+/** Same `REFRESH_TOKEN_EXPIRY` env read `~/server/services/OpenIDRefreshRecovery` injects for
+ *  the main refresh path, evaluated per call so a config reload is picked up without a restart. */
+const getRefreshTokenExpiryMs = () =>
+  math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY);
 
 const setBalanceConfig = createSetBalanceConfig({
   getAppConfig,
@@ -661,6 +669,7 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
     const requestOrigin = resolveRequestOrigin(req);
     const result = await exchangeAdminCode(cache, code, requestOrigin, codeVerifier, {
       authorizeProviderSession: getProviderSessionAuthorizer().authorize,
+      getRefreshTokenExpiryMs,
     });
 
     if (!result) {
@@ -801,6 +810,7 @@ router.post(
             bridgeGraceMs: OPENID_REFRESH_BRIDGE_GRACE_MS,
             upsertSession,
             deleteSession,
+            getRefreshTokenExpiryMs,
           },
           { expectedIssuer, userId: normalizedUserId, tenantId },
         );
@@ -828,6 +838,7 @@ router.post(
             createRefreshTokenBridgeFlightKey,
             acquireOpenIDRefreshFlight,
             completeOpenIDRefreshFlight,
+            assertOpenIDRefreshFlightAvailable,
             waitForOpenIDRefreshFlight,
             withOpenIDRefreshFlightLease,
           },

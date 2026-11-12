@@ -147,6 +147,10 @@ export interface AdminRefreshDeps {
   /** Persists the rotated refresh token's binding; mirrors `storeOpenIdSession`'s deps. */
   upsertSession?: OpenIdSessionDeps['upsertSession'];
   deleteSession?: OpenIdSessionDeps['deleteSession'];
+  /** The refresh-token lifetime backing a provider-session grant, evaluated per call; mirrors
+   *  `packages/api/src/auth/openid/recovery.ts`'s dep of the same name. Omitted callers fall
+   *  back to this module's own `REFRESH_TOKEN_EXPIRY` env read. */
+  getRefreshTokenExpiryMs?: () => number;
 }
 
 export interface AdminRefreshOptions {
@@ -262,7 +266,7 @@ export async function lookupAdminRefreshBinding(
  *  {@link resolveAdminRefreshToken}. */
 export async function precheckAdminRefreshBinding(
   lookup: AdminRefreshBindingLookupOutcome,
-  deps: Pick<AdminRefreshDeps, 'preCheckProviderSession' | 'getMode'>,
+  deps: Pick<AdminRefreshDeps, 'preCheckProviderSession' | 'getMode' | 'getRefreshTokenExpiryMs'>,
 ): Promise<AdminRefreshBinding> {
   if (!deps.preCheckProviderSession) {
     return { ref: null };
@@ -286,7 +290,8 @@ export async function precheckAdminRefreshBinding(
   const ref = binding?.providerSession ?? null;
   const expiresAt = providerSessionCredentialExpiry(
     new Date(),
-    math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
+    deps.getRefreshTokenExpiryMs?.() ??
+      math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
   );
   const outcome = await deps.preCheckProviderSession({ ref, subject: binding?.subject, expiresAt });
   if (!outcome.ok) {
@@ -606,7 +611,8 @@ export async function applyAdminRefresh(
   if (deps.authorizeProviderSession) {
     const providerSessionExpiresAt = providerSessionCredentialExpiry(
       new Date(),
-      math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
+      deps.getRefreshTokenExpiryMs?.() ??
+        math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
     );
     const outcome = await deps.authorizeProviderSession({
       ref: mergedRef,

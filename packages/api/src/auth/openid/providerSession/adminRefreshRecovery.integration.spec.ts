@@ -740,4 +740,88 @@ describe.each(['record', 'enforce'] as const)('admin refresh recovery (%s mode)'
     expect(newSession).not.toBeNull();
     expect(newSession?.tenantId).toBe(TENANT_ID);
   });
+
+  it('(k) keeps the rotated tokenset and repoints the bridge when completeOpenIDRefreshFlight rejects on a bridged retry', async () => {
+    const bridgeService = await makeBridgeService();
+    const A = 'refresh-k';
+    await seedLoggedIn(A, ADMIN_USER_ID);
+    const grant = makeGrant();
+
+    const first = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: ADMIN_USER_ID,
+      grant,
+    });
+    expect(first.status).toBe(200);
+    // response "lost"; the bridge now points A -> `${A}-r`
+
+    const failingComplete = jest.fn().mockRejectedValue(new Error('flight store unavailable'));
+    const flightDeps: AdminRefreshGrantDeps = {
+      ...makeFlightDeps(),
+      completeOpenIDRefreshFlight: failingComplete,
+    };
+
+    const retry = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: ADMIN_USER_ID,
+      grant,
+      flightDeps,
+    });
+
+    // The IdP already rotated the token at this point; the response must still succeed with it.
+    expect(retry.status).toBe(200);
+    expect(grant).toHaveBeenNthCalledWith(2, `${A}-r`);
+    expect(failingComplete).toHaveBeenCalledTimes(1);
+
+    const newSession = await methods.findSession({ refreshToken: `${A}-r-r` }, { lean: true });
+    expect(newSession).not.toBeNull();
+
+    const bridge = await bridgeService.getRefreshTokenBridge({
+      oldRefreshToken: A,
+      userId: ADMIN_USER_ID,
+      openidIssuer: ISSUER,
+    });
+    // Repointed to the newly rotated token despite the flight's own completion write failing.
+    expect(bridge?.refreshToken).toBe(`${A}-r-r`);
+  });
+
+  it('(l) answers 503, not 401, when flight coordination fails before the grant runs', async () => {
+    const bridgeService = await makeBridgeService();
+    const A = 'refresh-l';
+    await seedLoggedIn(A, ADMIN_USER_ID);
+    const grant = makeGrant();
+
+    const first = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: ADMIN_USER_ID,
+      grant,
+    });
+    expect(first.status).toBe(200);
+    // response "lost"; the bridge now points A -> `${A}-r`, so the retry below is bridged.
+
+    const retryGrant = jest.fn();
+    const flightDeps: AdminRefreshGrantDeps = {
+      createRefreshTokenBridgeFlightKey: makeFlightDeps().createRefreshTokenBridgeFlightKey,
+      acquireOpenIDRefreshFlight: jest.fn().mockRejectedValue(new Error('flight store down')),
+      withOpenIDRefreshFlightLease: jest.fn(),
+    };
+
+    const retry = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: ADMIN_USER_ID,
+      grant: retryGrant,
+      flightDeps,
+    });
+
+    expect(retry.status).toBe(503);
+    expect(retryGrant).not.toHaveBeenCalled();
+  });
 });
