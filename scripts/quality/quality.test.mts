@@ -3,9 +3,15 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { strict as assert } from 'node:assert';
-import { spawnSync } from 'node:child_process';
 import { Instrumenter } from '@stryker-mutator/instrumenter';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 
 import {
   cognitiveFunctions,
@@ -16,7 +22,7 @@ import {
 } from './risk.mts';
 import { changedRanges, isSource, overlaps, workspaceFor, WORKSPACES } from './changes.mts';
 import { measureFunctions } from '../crap.mts';
-import { coverageArgs } from './jest.mts';
+import { coverageGroups, runCoverage } from './jest.mts';
 
 test('every application workspace has a source owner; test/support/declaration files are excluded', () => {
   for (const workspace of WORKSPACES) {
@@ -212,7 +218,7 @@ function factory() {
   );
 });
 
-test('the real Jest command collects every selected source file and excludes unrelated source', (t) => {
+test('real Jest groups reuse compiled code, isolate Redis settings and preserve reports', (t) => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'quality-jest-')));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const require = createRequire(import.meta.url);
@@ -220,30 +226,90 @@ test('the real Jest command collects every selected source file and excludes unr
   for (const file of [...files, 'untouched.js', 'secondp.js']) {
     writeFileSync(join(directory, file), 'module.exports = () => 1;');
   }
-  writeFileSync(join(directory, 'jest.config.json'), JSON.stringify({ rootDir: directory }));
+  const transforms = join(directory, 'transforms.jsonl');
+  writeFileSync(
+    join(directory, 'transform.cjs'),
+    `const fs = require('node:fs');
+module.exports = { process(code, filename, options) {
+  fs.appendFileSync(${JSON.stringify(transforms)}, JSON.stringify({ filename, instrument: options.instrument }) + '\\n');
+  return { code };
+} };`,
+  );
+  writeFileSync(
+    join(directory, 'jest.config.json'),
+    JSON.stringify({
+      rootDir: directory,
+      maxWorkers: 2,
+      workerIdleMemoryLimit: '1GB',
+      cacheDirectory: join(directory, 'cache'),
+      transform: { '^.+\\.js$': join(directory, 'transform.cjs') },
+    }),
+  );
   writeFileSync(
     join(directory, 'sample.test.js'),
-    "test('calls sources', () => { expect(require('./first')()).toBe(1); expect(require('./second[part]')()).toBe(1); expect(require('./untouched')()).toBe(1); expect(require('./secondp')()).toBe(1); });",
+    "test('unit source', () => { expect(process.env.USE_REDIS).toBe('false'); expect(require('./first')()).toBe(1); expect(require('./untouched')()).toBe(1); expect(require('./secondp')()).toBe(1); });",
+  );
+  writeFileSync(
+    join(directory, 'sample.cache_integration.spec.js'),
+    "test('Redis source', () => { expect(process.env.USE_REDIS).toBe('true'); expect(process.env.USE_REDIS_CLUSTER).toBe('false'); expect(require('./second[part]')()).toBe(1); });",
   );
   const output = join(directory, 'coverage');
-  const result = spawnSync(
-    process.execPath,
-    [
-      require.resolve('jest/bin/jest'),
-      ...coverageArgs('jest.config.json', files, output, ['sample.test.js']),
-    ],
-    {
-      cwd: directory,
-      encoding: 'utf8',
-      env: { ...process.env, NODE_ENV: 'test' },
-    },
-  );
-  assert.equal(result.status, 0, result.stderr);
+  const options = {
+    workspace: 'api',
+    config: 'jest.config.json',
+    cwd: directory,
+    jestBin: require.resolve('jest/bin/jest'),
+    files,
+    tests: ['sample.test.js', 'sample.cache_integration.spec.js'],
+    output,
+    env: { ...process.env, NODE_ENV: 'test', USE_REDIS: 'false' },
+  };
+  runCoverage(options);
   const coverage = JSON.parse(readFileSync(join(output, 'coverage-final.json'), 'utf8'));
   assert.deepEqual(
     Object.keys(coverage).sort(),
     files.map((file) => join(directory, file)),
   );
+  for (const file of files)
+    assert.ok(Object.values(coverage[join(directory, file)].f).every((hits) => Number(hits) > 0));
+  const compiled: { filename: string; instrument: boolean }[] = readFileSync(transforms, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  for (const file of files) {
+    assert.equal(
+      compiled.filter((entry) => entry.filename === join(directory, file) && entry.instrument)
+        .length,
+      1,
+      `${file} should be compiled once across coverage groups`,
+    );
+  }
+  for (const group of ['unit', 'cache-core']) {
+    const results = JSON.parse(readFileSync(join(output, group, 'tests.json'), 'utf8'));
+    assert.equal(results.numPassedTests, 1);
+    assert.ok(existsSync(join(output, group, 'coverage-final.json')));
+  }
+  writeFileSync(
+    join(directory, 'sample.cache_integration.spec.js'),
+    "test('failure is preserved', () => expect(1).toBe(2));",
+  );
+  writeFileSync(join(directory, 'sample.stream_integration.spec.js'), "test('later', () => {});");
+  const failedOutput = join(directory, 'failed');
+  assert.throws(
+    () =>
+      runCoverage({
+        ...options,
+        output: failedOutput,
+        tests: [...options.tests, 'sample.stream_integration.spec.js'],
+      }),
+    /Jest cache-core exited with 1/u,
+  );
+  const failed = JSON.parse(readFileSync(join(failedOutput, 'cache-core', 'tests.json'), 'utf8'));
+  assert.equal(failed.numFailedTests, 1);
+  assert.ok(existsSync(join(failedOutput, 'unit', 'coverage-final.json')));
+  assert.ok(existsSync(join(failedOutput, 'cache-core', 'coverage-final.json')));
+  assert.equal(existsSync(join(failedOutput, 'coverage-final.json')), false);
+  assert.equal(existsSync(join(failedOutput, 'cache-stream')), false);
 });
 
 test('risk report keeps only changed functions, joins real coverage, and preserves missing coverage', (t) => {
@@ -281,4 +347,35 @@ test('risk report keeps only changed functions, joins real coverage, and preserv
   assert.equal(report.functions[1].crap, null);
   assert.match(riskMarkdown(report), /N\/A/);
   assert.equal(riskReport(coverage, [{ file, ranges: [] }]).functions.length, 0);
+});
+
+test('every related test belongs to one coverage group with the existing cache lane ordering', () => {
+  const tests = [
+    '/repo/src/unit.spec.ts',
+    '/repo/src/cache/one.cache_integration.spec.ts',
+    '/repo/src/middleware/two.cache_integration.test.ts',
+    '/repo/src/cluster/three.cache_integration.spec.ts',
+    '/repo/src/mcp/four.cache_integration.spec.ts',
+    '/repo/src/stream/five.stream_integration.spec.ts',
+  ];
+  const groups = coverageGroups('api', tests);
+  assert.deepEqual(
+    groups.flatMap((group) => group.tests),
+    tests,
+  );
+  assert.deepEqual(
+    groups.map(({ name, redis, serial }) => ({ name, redis, serial })),
+    [
+      { name: 'unit', redis: false, serial: false },
+      { name: 'cache-core', redis: true, serial: false },
+      { name: 'cache-cluster', redis: true, serial: true },
+      { name: 'cache-mcp', redis: true, serial: false },
+      { name: 'cache-stream', redis: true, serial: true },
+    ],
+  );
+  for (const workspace of ['server', 'data-schemas']) {
+    const [group] = coverageGroups(workspace, tests);
+    assert.deepEqual(group.tests, tests);
+    assert.equal(group.redis, false);
+  }
 });

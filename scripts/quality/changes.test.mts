@@ -93,9 +93,19 @@ test('assertion-only contract edits skip report jobs while a production edit rem
       },
     );
     assert.equal(run.status, 0, run.stderr);
-    return readFileSync(output, 'utf8');
+    return Object.fromEntries(
+      readFileSync(output, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => {
+          const index = line.indexOf('=');
+          return [line.slice(0, index), line.slice(index + 1)];
+        }),
+    );
   };
-  assert.equal(select(head), 'workspaces=[]\nhasChanges=false\n');
+  assert.equal(select(head).hasChanges, 'false');
+  assert.equal(select(head).reports, '[]');
+  assert.equal(select(head).hasMutations, 'false');
 
   write(production, 'export function getFavorites() { return ["new"]; }\n');
   const mixedHead = commit();
@@ -103,5 +113,81 @@ test('assertion-only contract edits skip report jobs while a production edit rem
     changes(base, mixedHead, directory).files.map(({ file }) => file),
     [production],
   );
-  assert.equal(select(mixedHead), 'workspaces=["data-schemas"]\nhasChanges=true\n');
+  assert.equal(select(mixedHead).workspaces, '["data-schemas"]');
+  assert.equal(select(mixedHead).hasChanges, 'true');
+  assert.equal(select(mixedHead).hasMutations, 'true');
 });
+
+for (const names of [
+  [],
+  ['data-schemas'],
+  ['api'],
+  ['server'],
+  ['client'],
+  ['data-schemas', 'api', 'server', 'client'],
+]) {
+  test(`report jobs select only changed backend owners: ${names.join(', ') || 'none'}`, (t) => {
+    const directory = mkdtempSync(join(tmpdir(), 'quality-report-selection-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    git(['init', '-q'], directory);
+    git(['config', 'user.name', 'Quality Test'], directory);
+    git(['config', 'user.email', 'quality@example.invalid'], directory);
+    git(['commit', '--allow-empty', '--no-gpg-sign', '-qm', 'base'], directory);
+    const base = git(['rev-parse', 'HEAD'], directory).trim();
+    const paths: Record<string, string> = {
+      'data-schemas': 'packages/data-schemas/src/feature.ts',
+      api: 'packages/api/src/feature.ts',
+      server: 'api/server/feature.js',
+      client: 'client/src/feature.ts',
+    };
+    for (const name of names) {
+      const file = join(directory, paths[name]);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, 'export function feature() { return 1; }');
+    }
+    git(['add', '.'], directory);
+    git(['commit', '--allow-empty', '--no-gpg-sign', '-qm', 'head'], directory);
+    const select = (scope = 'all') => {
+      const result = spawnSync(
+        process.execPath,
+        [
+          fileURLToPath(new URL('./changes.mts', import.meta.url)),
+          '--base',
+          base,
+          '--scope',
+          scope,
+        ],
+        {
+          cwd: directory,
+          encoding: 'utf8',
+          env: { ...process.env, GITHUB_OUTPUT: '', GITHUB_STEP_SUMMARY: '' },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    const selected = select();
+    const risk = names.filter((name) => name !== 'client');
+    assert.deepEqual(selected.workspaces, risk);
+    assert.deepEqual(
+      selected.reports.filter(({ task }: { task: { check: string } }) => task.check === 'risk'),
+      risk.map((workspace) => ({ workspace, task: { check: 'risk', shard: 0 } })),
+    );
+    const mutations = names.includes('data-schemas') ? ['data-schemas'] : [];
+    assert.deepEqual(selected.mutationWorkspaces, mutations);
+    assert.deepEqual(
+      selected.reports.filter(({ task }: { task: { check: string } }) => task.check === 'mutation'),
+      mutations.flatMap((workspace) =>
+        [1, 2, 3, 4].map((shard) => ({ workspace, task: { check: 'mutation', shard } })),
+      ),
+    );
+    for (const scope of ['data-schemas', 'api', 'server']) {
+      const narrowed = select(scope);
+      assert.deepEqual(narrowed.workspaces, names.includes(scope) ? [scope] : []);
+      assert.ok(
+        narrowed.reports.every(({ workspace }: { workspace: string }) => workspace === scope),
+      );
+      if (scope !== 'data-schemas') assert.deepEqual(narrowed.mutationWorkspaces, []);
+    }
+  });
+}
