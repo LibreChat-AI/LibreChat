@@ -90,6 +90,23 @@ jest.mock(
           await deps.sendEmail({ email: user.email, template: 'passwordReset.handlebars' });
         }
       }),
+      resolveOpenIDAuthTokenOptions: (optionsOrUserId, existingRefreshToken, tenantId) => {
+        if (optionsOrUserId != null && typeof optionsOrUserId === 'object') {
+          if (
+            'userId' in optionsOrUserId ||
+            'existingRefreshToken' in optionsOrUserId ||
+            'tenantId' in optionsOrUserId ||
+            'openidSubject' in optionsOrUserId ||
+            'openidIssuer' in optionsOrUserId ||
+            'providerSession' in optionsOrUserId
+          ) {
+            return optionsOrUserId;
+          }
+          return {};
+        }
+        return { userId: optionsOrUserId, existingRefreshToken, tenantId };
+      },
+      providerSessionField: (providerSession) => (providerSession ? { providerSession } : {}),
       createOpenIDSessionIdentity: jest.fn(
         ({ user, userId, openidSubject, tenantId, openidIssuer }) => {
           const normalize = (value) => {
