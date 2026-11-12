@@ -1367,6 +1367,14 @@ function resolveSummarizationProvider(
      */
     const provider = detectedProvider ?? overrideProvider;
     /**
+     * `getOpenAIConfig` honors an administrator's `useResponsesApi` drop by removing the field.
+     * Keep the decision itself, so a target that defaults to the Responses API is not routed
+     * there again when its request is shaped.
+     */
+    if (customEndpointConfig.dropParams?.includes('useResponsesApi')) {
+      clientOverrides.useResponsesApi = false;
+    }
+    /**
      * On the agent's provider the SDK layers these over the agent's own client options, so this
      * different endpoint replaces the agent's API mode, first-party declaration, reasoning and
      * request kwargs (an Azure Astra agent's Responses routing, for one) instead of inheriting them.

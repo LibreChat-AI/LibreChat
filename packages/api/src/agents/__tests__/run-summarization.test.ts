@@ -1567,6 +1567,77 @@ describe('Cyber direct endpoint summary routing', () => {
       });
     },
   );
+
+  it.each([
+    { agent: 'anthropic', path: '/chat/completions', responses: false },
+    { agent: 'anthropic', path: '/responses', responses: true },
+    { agent: 'anthropic', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'anthropic', path: '/responses', drop: true, responses: false },
+    { agent: 'anthropic', path: '', drop: true, responses: false },
+    { agent: 'openAI', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'endpoint', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'endpoint', path: '/chat/completions', inferred: true, responses: false },
+    { agent: 'endpoint', path: '/responses', inferred: true, responses: true },
+  ])(
+    'keeps the target endpoint API decision: %j',
+    async ({ agent, path, drop, inferred, responses }) => {
+      const endpoint: TestCustomEndpoint = {
+        name: 'Daybreak',
+        apiKey: 'test-key',
+        baseURL: `https://api.openai.com/v1${path}`,
+        directEndpoint: path !== '',
+        dropParams: drop ? ['useResponsesApi'] : undefined,
+      };
+      const user = { id: 'direct-user', tenantId: 'direct-tenant' } as IUser;
+      const onEndpoint = agent === 'endpoint';
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        endpoint.apiKey,
+        {
+          reverseProxyUrl: onEndpoint ? endpoint.baseURL : undefined,
+          directEndpoint: onEndpoint && endpoint.directEndpoint,
+          dropParams: onEndpoint ? endpoint.dropParams : undefined,
+          modelOptions: { model: 'gpt-4.1-mini' },
+          requestIdentity: { userId: user.id, tenantId: user.tenantId },
+        },
+        onEndpoint ? endpoint.name : EModelEndpoint.openAI,
+      );
+      const source =
+        agent === 'anthropic'
+          ? makeReasoningAgent({
+              provider: Providers.ANTHROPIC,
+              endpoint: EModelEndpoint.anthropic,
+              model: 'claude-sonnet-4.6',
+              model_parameters: { model: 'claude-sonnet-4.6', apiKey: 'anthropic-key' },
+            })
+          : makeReasoningAgent({
+              provider: Providers.OPENAI,
+              endpoint: onEndpoint ? endpoint.name : EModelEndpoint.openAI,
+              model: 'gpt-4.1-mini',
+              model_parameters: { ...llmConfig, configuration: configOptions },
+            });
+      const agents = await callAndCapture({
+        agents: [source],
+        user,
+        tenantId: user.tenantId,
+        appConfig: makeAppConfig([endpoint]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          ...(inferred ? {} : { provider: endpoint.name }),
+          model: 'gpt-6-cyber',
+          parameters: { streaming: false },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body).toHaveProperty(responses ? 'input' : 'messages');
+      expect(requests[0].body).not.toHaveProperty(responses ? 'messages' : 'input');
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+    },
+  );
 });
 
 describe('Cyber summary target shaping', () => {
