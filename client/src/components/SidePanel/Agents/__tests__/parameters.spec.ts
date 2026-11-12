@@ -136,6 +136,80 @@ describe.each([
   });
 });
 
+describe('Bedrock request fields without controls', () => {
+  const additionalModelRequestFields = {
+    thinking: { type: 'disabled' },
+    output_config: { effort: 'low' },
+    anthropic_beta: ['custom-beta'],
+  };
+  const stored = { ...defaults, additionalModelRequestFields };
+
+  it.each(['claude-sonnet-5', 'us.anthropic.claude-sonnet-5', 'amazon.nova-pro-v1:0'])(
+    'preserves request fields for %s without rendering a control',
+    (model) => {
+      const settings = resolveAgentParameterSettings({
+        provider: EModelEndpoint.bedrock,
+        model,
+        webSearchAllowed: false,
+      });
+      expect(settings.schemaResolved).toBe(true);
+      expect(settings.visibleParameters.map(({ key }) => key)).not.toContain(
+        'additionalModelRequestFields',
+      );
+      expect(pruneAgentModelParameters(stored, settings)).toBe(stored);
+    },
+  );
+
+  it('preserves request fields for an endpoint with the Bedrock type', () => {
+    const settings = resolveAgentParameterSettings({
+      provider: 'Bedrock Gateway',
+      model: 'claude-sonnet-5',
+      webSearchAllowed: false,
+      endpointsConfig: { 'Bedrock Gateway': { order: 0, type: EModelEndpoint.bedrock } },
+    });
+    expect(pruneAgentModelParameters(stored, settings)).toBe(stored);
+  });
+
+  it.each([
+    { drops: ['additionalModelRequestFields'] },
+    { drops: { 'claude-sonnet-5': ['additionalModelRequestFields'] } },
+  ])('still prunes explicitly dropped request fields (%j)', ({ drops }) => {
+    const settings = resolveAgentParameterSettings({
+      provider: EModelEndpoint.bedrock,
+      model: 'claude-sonnet-5',
+      webSearchAllowed: false,
+      startupConfig: { endpointsDropParamsMap: { bedrock: drops } },
+    });
+    expect(pruneAgentModelParameters(stored, settings)).not.toHaveProperty(
+      'additionalModelRequestFields',
+    );
+    expect(stored.additionalModelRequestFields).toBe(additionalModelRequestFields);
+  });
+
+  it('still prunes unknown fields without mutating stored request fields', () => {
+    const settings = resolveAgentParameterSettings({
+      provider: EModelEndpoint.bedrock,
+      model: 'claude-sonnet-5',
+      webSearchAllowed: false,
+    });
+    const withUnknown = { ...stored, unknown: true };
+    const result = pruneAgentModelParameters(withUnknown, settings);
+    expect(result).not.toHaveProperty('unknown');
+    expect(result).toHaveProperty('additionalModelRequestFields', additionalModelRequestFields);
+  });
+
+  it('prunes Bedrock request fields after switching providers', () => {
+    const settings = resolveAgentParameterSettings({
+      provider: EModelEndpoint.openAI,
+      model: 'gpt-4o',
+      webSearchAllowed: false,
+    });
+    expect(pruneAgentModelParameters(stored, settings)).not.toHaveProperty(
+      'additionalModelRequestFields',
+    );
+  });
+});
+
 it('preserves custom Anthropic settings while applying overrides only to visible controls', () => {
   const definitions = agentParamSettings.anthropic ?? [];
   const effort = definitions.find(({ key }) => key === 'effort')!;
