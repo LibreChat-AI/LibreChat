@@ -340,7 +340,11 @@ describe('composeAgentUpdatePayload', () => {
         output_config: { effort: 'low' },
         anthropic_beta: ['custom-beta'],
       };
-      const stored = { ...form.model_parameters, additionalModelRequestFields };
+      const stored = {
+        ...form.model_parameters,
+        maxContextTokens: 128000,
+        additionalModelRequestFields,
+      };
       form.model_parameters = stored;
 
       const { payload } = composeAgentUpdatePayload(
@@ -355,7 +359,10 @@ describe('composeAgentUpdatePayload', () => {
         additionalModelRequestFields,
       );
       const parsed = bedrockInputParser.parse({ model, ...saved.model_parameters });
-      expect(parsed.additionalModelRequestFields).toMatchObject(additionalModelRequestFields);
+      expect(parsed.additionalModelRequestFields).toMatchObject({
+        ...additionalModelRequestFields,
+        anthropic_beta: expect.arrayContaining(additionalModelRequestFields.anthropic_beta),
+      });
       expect(stored.additionalModelRequestFields).toEqual(additionalModelRequestFields);
     },
   );
