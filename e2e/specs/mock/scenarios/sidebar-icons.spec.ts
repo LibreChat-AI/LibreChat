@@ -72,14 +72,14 @@ test('row icons preserve conversation focus after keyboard unpin @scenario:sideb
     const title = regular.locator('[data-conversation-link]');
     await expect(project).toBeVisible();
     await expect(pr).toBeVisible();
+    await title.focus();
+    const menu = regular.getByRole('button', { name: 'Conversation Menu Options' });
+    await expect(menu).toBeVisible();
     const projectBox = await project.boundingBox();
     const prBox = await pr.boundingBox();
     const titleBox = await title.boundingBox();
     expect(projectBox!.x + projectBox!.width).toBeLessThanOrEqual(titleBox!.x);
     expect(titleBox!.x + titleBox!.width).toBeLessThanOrEqual(prBox!.x);
-    await title.focus();
-    const menu = regular.getByRole('button', { name: 'Conversation Menu Options' });
-    await expect(menu).toBeVisible();
     const menuBox = await menu.boundingBox();
     expect(prBox!.x + prBox!.width).toBeLessThanOrEqual(menuBox!.x);
   } finally {
