@@ -111,6 +111,20 @@ describe('receiveBackchannelLogout', () => {
     expect(deps.revokeProviderSession).toHaveBeenCalledTimes(2);
   });
 
+  it('returns 503, not 400, when the token cannot be validated yet (TEMPORARY)', async () => {
+    const deps = makeDeps({
+      resolveKey: jest.fn(async () => {
+        throw new Error('JWKS endpoint unreachable');
+      }),
+    });
+    const token = signValidToken();
+
+    const result = await receiveBackchannelLogout(token, deps);
+
+    expect(result).toEqual({ status: 503, body: { code: AUTH_SESSION_CHECK_UNAVAILABLE } });
+    expect(deps.revokeProviderSession).not.toHaveBeenCalled();
+  });
+
   it('returns 503 when the database write throws', async () => {
     const deps = makeDeps({
       revokeProviderSession: jest.fn(async () => {
