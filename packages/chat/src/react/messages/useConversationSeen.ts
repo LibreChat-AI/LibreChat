@@ -32,6 +32,8 @@ export default function useConversationSeen(
   const queryClient = useQueryClient();
   const { readReply, hasReplyProof, markSeen, consumeFocusSuppression } = source;
   const isNearBottomRef = useRef(false);
+  const isSubmittingRef = useRef(isSubmitting);
+  isSubmittingRef.current = isSubmitting;
   /** Read from the deferred revalidation check, which outlives the render that created it. */
   const measureRef = useRef(measureNearBottom);
   measureRef.current = measureNearBottom;
@@ -184,6 +186,12 @@ export default function useConversationSeen(
         }
         if (requestedMessagesRef.current.get(conversationId) === lastResponseAt) {
           /* The requested fetch succeeded, but its cache event has not painted yet. */
+          return;
+        }
+        if (isSubmittingRef.current) {
+          /* A run in flight writes the tail of this history itself. A refetch landing under it
+           * replaces the response it is streaming with the stored row, which stays on screen
+           * until the stream's next event. The end of the run re-checks. */
           return;
         }
         requestedMessagesRef.current.set(conversationId, lastResponseAt);
