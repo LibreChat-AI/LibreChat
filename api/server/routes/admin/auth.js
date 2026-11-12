@@ -29,6 +29,7 @@ const {
   AdminRefreshError,
   buildOpenIDRefreshParams,
   isEmailDomainAllowed,
+  createFindProviderSessionBinding,
 } = require('@librechat/api');
 const { localLoginController } = require('~/server/controllers/auth/LoginController');
 const { hasCapability, requireCapability } = require('~/server/middleware/roles/capabilities');
@@ -72,6 +73,8 @@ const setBalanceConfig = createSetBalanceConfig({
   findBalanceByUser,
   upsertBalanceFields,
 });
+
+const findProviderSessionBinding = createFindProviderSessionBinding({ findSession });
 
 const router = express.Router();
 
@@ -791,15 +794,7 @@ router.post(
           {
             authorizer: getProviderSessionAuthorizer(),
             getProviderSessionClient,
-            findProviderSessionBinding: async (token) => {
-              const session = await findSession({ refreshToken: token }, { lean: true });
-              if (!session) return null;
-              return {
-                userId: session.user ? String(session.user) : undefined,
-                tenantId: session.tenantId,
-                providerSession: session.providerSession,
-              };
-            },
+            findProviderSessionBinding,
             getRefreshTokenBridge,
             storeRefreshTokenBridge,
             deleteRefreshTokenBridges,
