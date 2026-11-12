@@ -34,6 +34,7 @@ export type AdminRefreshProviderSessionDeps = Pick<
   | 'storeRefreshTokenBridge'
   | 'deleteRefreshTokenBridges'
   | 'bridgeGraceMs'
+  | 'getRefreshTokenExpiryMs'
 >;
 
 export interface BuildAdminRefreshProviderSessionDepsInput {
@@ -55,6 +56,10 @@ export interface BuildAdminRefreshProviderSessionDepsInput {
   bridgeGraceMs: number;
   upsertSession: OpenIdSessionDeps['upsertSession'];
   deleteSession: OpenIdSessionDeps['deleteSession'];
+  /** The refresh-token lifetime backing a provider-session grant, evaluated per call; threaded
+   *  through to `precheckAdminRefreshBinding`. Omitted callers fall back to the module's own
+   *  `REFRESH_TOKEN_EXPIRY` env read. */
+  getRefreshTokenExpiryMs?: () => number;
 }
 
 /** `{}` when the deployment mode is `'off'`; otherwise the full binding/check/persistence deps. */
@@ -77,6 +82,7 @@ export async function buildAdminRefreshProviderSessionDeps(
     storeRefreshTokenBridge: deps.storeRefreshTokenBridge,
     deleteRefreshTokenBridges: deps.deleteRefreshTokenBridges,
     bridgeGraceMs: deps.bridgeGraceMs,
+    getRefreshTokenExpiryMs: deps.getRefreshTokenExpiryMs,
   };
 }
 
@@ -206,6 +212,12 @@ export interface AdminRefreshGrantDeps {
     ownerId?: string;
     tokens?: TokenResult | null;
   }) => Promise<unknown>;
+  /** Confirms a completion write landed under this flight's ownership despite the write itself
+   *  throwing; mirrors the main refresh path's indeterminate-completion check. */
+  assertOpenIDRefreshFlightAvailable?: (args: {
+    key?: string | null;
+    ownerId?: string;
+  }) => Promise<unknown>;
   waitForOpenIDRefreshFlight?: (args: { key?: string | null }) => Promise<TokenResult | null>;
   withOpenIDRefreshFlightLease?: <T>(args: {
     key?: string | null;
@@ -247,9 +259,33 @@ export async function runAdminOpenIdRefreshGrant(
     return grant();
   }
 
-  const flight = await deps.acquireOpenIDRefreshFlight({ key });
+  let flight: { acquired: boolean; ownerId: string };
+  try {
+    flight = await deps.acquireOpenIDRefreshFlight({ key });
+  } catch (error) {
+    logger.warn('[runAdminOpenIdRefreshGrant] Failed to acquire the shared refresh flight', {
+      error,
+    });
+    throw new ProviderSessionUnavailableError(
+      'OpenID refresh coordination is temporarily unavailable',
+      { cause: error },
+    );
+  }
+
   if (!flight.acquired) {
-    const resolved = await deps.waitForOpenIDRefreshFlight?.({ key });
+    let resolved: TokenResult | null;
+    try {
+      resolved = (await deps.waitForOpenIDRefreshFlight?.({ key })) ?? null;
+    } catch (error) {
+      logger.warn(
+        '[runAdminOpenIdRefreshGrant] Failed while waiting for the shared refresh flight',
+        { error },
+      );
+      throw new ProviderSessionUnavailableError(
+        'OpenID refresh coordination is temporarily unavailable',
+        { cause: error },
+      );
+    }
     if (!resolved) {
       throw new ProviderSessionUnavailableError(
         'OpenID refresh coordination is temporarily unavailable',
@@ -263,27 +299,65 @@ export async function runAdminOpenIdRefreshGrant(
     };
   }
 
-  return deps.withOpenIDRefreshFlightLease({
-    key,
-    ownerId: flight.ownerId,
-    operation: async () => {
-      const tokenset = await grant();
-      let identityClaims: ReturnType<RefreshTokenset['claims']> | undefined;
-      try {
-        identityClaims = tokenset.claims();
-      } catch {
-        identityClaims = undefined;
-      }
-      await deps.completeOpenIDRefreshFlight?.({
-        key,
-        ownerId: flight.ownerId,
-        tokens: {
-          access_token: tokenset.access_token,
-          refresh_token: tokenset.refresh_token,
-          __identityClaims: identityClaims as TokenResult['__identityClaims'],
-        },
-      });
-      return tokenset;
-    },
-  });
+  /** Only a coordination failure strictly before the grant starts maps to a `503`: once the
+   *  grant has run, the IdP has already rotated the refresh token, and an error from here on
+   *  (the grant itself, or the flight's bookkeeping below) must not be reported as a bare
+   *  coordination outage. */
+  let grantStarted = false;
+  try {
+    return await deps.withOpenIDRefreshFlightLease({
+      key,
+      ownerId: flight.ownerId,
+      operation: async () => {
+        grantStarted = true;
+        const tokenset = await grant();
+        let identityClaims: ReturnType<RefreshTokenset['claims']> | undefined;
+        try {
+          identityClaims = tokenset.claims();
+        } catch {
+          identityClaims = undefined;
+        }
+        try {
+          await deps.completeOpenIDRefreshFlight?.({
+            key,
+            ownerId: flight.ownerId,
+            tokens: {
+              access_token: tokenset.access_token,
+              refresh_token: tokenset.refresh_token,
+              __identityClaims: identityClaims as TokenResult['__identityClaims'],
+            },
+          });
+        } catch (completionError) {
+          /** The IdP already rotated the refresh token at this point. Mirrors the main refresh
+           *  path's indeterminate-completion handling: confirm whether the write landed under
+           *  this flight's ownership despite the throw. Unlike the main path — which has already
+           *  persisted the rotated tokens to the session before this write runs — nothing else
+           *  recovers this tokenset once lost, so it is kept regardless of what the confirmation
+           *  finds; `applyAdminRefresh` is what persists it and repoints the bridge. */
+          try {
+            await deps.assertOpenIDRefreshFlightAvailable?.({ key, ownerId: flight.ownerId });
+          } catch {
+            // Ownership could not be confirmed either; still keep the rotated tokenset.
+          }
+          logger.warn(
+            '[runAdminOpenIdRefreshGrant] Flight completion failed after a successful grant; keeping the rotated tokenset',
+            { error: completionError },
+          );
+        }
+        return tokenset;
+      },
+    });
+  } catch (error) {
+    if (!grantStarted) {
+      logger.warn(
+        '[runAdminOpenIdRefreshGrant] Refresh flight coordination failed before the grant started',
+        { error },
+      );
+      throw new ProviderSessionUnavailableError(
+        'OpenID refresh coordination is temporarily unavailable',
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }

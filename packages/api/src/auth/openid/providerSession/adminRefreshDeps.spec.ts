@@ -475,4 +475,166 @@ describe('runAdminOpenIdRefreshGrant', () => {
     });
     expect(grant).not.toHaveBeenCalled();
   });
+
+  it('throws ProviderSessionUnavailableError, not the raw error, when acquireOpenIDRefreshFlight itself throws', async () => {
+    const grant = jest.fn();
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest.fn().mockRejectedValue(new Error('flight store down')),
+      withOpenIDRefreshFlightLease: jest.fn(),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      name: 'ProviderSessionUnavailableError',
+      message: 'OpenID refresh coordination is temporarily unavailable',
+    });
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it('throws ProviderSessionUnavailableError, not the raw error, when the loser wait itself throws', async () => {
+    const grant = jest.fn();
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: false, ownerId: 'owner-2' }),
+      withOpenIDRefreshFlightLease: jest.fn(),
+      waitForOpenIDRefreshFlight: jest.fn().mockRejectedValue(new Error('flight store down')),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      name: 'ProviderSessionUnavailableError',
+      message: 'OpenID refresh coordination is temporarily unavailable',
+    });
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it('throws ProviderSessionUnavailableError when withOpenIDRefreshFlightLease itself fails before the grant starts', async () => {
+    const grant = jest.fn().mockResolvedValue(makeTokenset());
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      withOpenIDRefreshFlightLease: jest.fn().mockRejectedValue(new Error('lease store down')),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      name: 'ProviderSessionUnavailableError',
+      message: 'OpenID refresh coordination is temporarily unavailable',
+    });
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it('keeps the rotated tokenset when completeOpenIDRefreshFlight rejects after a successful grant', async () => {
+    const tokenset = makeTokenset({ claims: () => ({ sub: 'idp-sub' }) });
+    const grant = jest.fn().mockResolvedValue(tokenset);
+    const completeOpenIDRefreshFlight = jest.fn().mockRejectedValue(new Error('write failed'));
+    const assertOpenIDRefreshFlightAvailable = jest.fn().mockRejectedValue(new Error('unknown'));
+    const withOpenIDRefreshFlightLease = jest
+      .fn()
+      .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() }));
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      completeOpenIDRefreshFlight,
+      assertOpenIDRefreshFlightAvailable,
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    // The IdP already rotated the token; losing it here (unlike the main refresh path, nothing
+    // downstream recovers it) would force the admin panel to sign in again for no reason.
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(completeOpenIDRefreshFlight).toHaveBeenCalledTimes(1);
+    expect(assertOpenIDRefreshFlightAvailable).toHaveBeenCalledWith({
+      key: 'flight-key',
+      ownerId: 'owner-1',
+    });
+  });
+
+  it('keeps the rotated tokenset when completeOpenIDRefreshFlight rejects but ownership is confirmed', async () => {
+    const tokenset = makeTokenset();
+    const grant = jest.fn().mockResolvedValue(tokenset);
+    const completeOpenIDRefreshFlight = jest.fn().mockRejectedValue(new Error('write failed'));
+    const assertOpenIDRefreshFlightAvailable = jest.fn().mockResolvedValue({
+      key: 'flight-key',
+      ownerId: 'owner-1',
+      status: 'completed',
+    });
+    const withOpenIDRefreshFlightLease = jest
+      .fn()
+      .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() }));
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      completeOpenIDRefreshFlight,
+      assertOpenIDRefreshFlightAvailable,
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(result.refresh_token).toBe('rotated-refresh');
+  });
+
+  it('rethrows a grant failure unchanged (not as ProviderSessionUnavailableError) once the grant has started', async () => {
+    const grantError = new Error('IdP rejected the refresh token');
+    const grant = jest.fn().mockRejectedValue(grantError);
+    const withOpenIDRefreshFlightLease = jest
+      .fn()
+      .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() }));
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      withOpenIDRefreshFlightLease,
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toBe(grantError);
+  });
 });

@@ -1749,6 +1749,24 @@ describe('precheckAdminRefreshBinding', () => {
       expiresAt: expect.any(Date),
     });
   });
+
+  it('derives expiresAt from the injected getRefreshTokenExpiryMs instead of the env default', async () => {
+    const ref = { issuer: 'https://issuer.example.com', clientId: 'test-client', sid: 'sid-1' };
+    const preCheckProviderSession = jest.fn().mockResolvedValue({ ok: true });
+    const now = Date.now();
+    const getRefreshTokenExpiryMs = jest.fn().mockReturnValue(60_000);
+
+    await precheckAdminRefreshBinding(
+      { ok: true, binding: { providerSession: ref } },
+      { preCheckProviderSession, getRefreshTokenExpiryMs },
+    );
+
+    expect(getRefreshTokenExpiryMs).toHaveBeenCalledTimes(1);
+    const { expiresAt } = preCheckProviderSession.mock.calls[0][0];
+    // providerSessionCredentialExpiry adds a grace window on top of the raw TTL; assert the
+    // injected (short) TTL drove it, not the multi-day env default.
+    expect(expiresAt.getTime()).toBeLessThan(now + 5 * 60_000);
+  });
 });
 
 describe('resolveAdminRefreshToken', () => {
