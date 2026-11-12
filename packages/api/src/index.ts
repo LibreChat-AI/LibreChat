@@ -39,6 +39,7 @@ export * from './mcp/openid';
 export * from './mcp/cache';
 export * from './mcp/tools';
 export * from './mcp/apps';
+export * from './mcp/imageInput';
 export * from './mcp/apps/controller';
 export * from './mcp/apps/binding';
 export * from './mcp/apps/limits';
