@@ -43,8 +43,10 @@ export function useAbortStreamMutation() {
  */
 export interface ResumeAgentFields {
   conversationId: string;
-  /** Exact paused generation being resumed. */
-  generationCreatedAt: number;
+  /** Exact paused generation being resumed. Optional: when the client has not
+   *  observed the epoch, the server resolves against its authoritative job and
+   *  still fences on `actionId`. */
+  generationCreatedAt?: number;
   endpoint?: EModelEndpoint | string | null;
   endpointType?: EModelEndpoint | string | null;
   agent_id?: string | null;

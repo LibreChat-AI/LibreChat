@@ -468,16 +468,14 @@ export function useResumeSubmit() {
 
   const buildResumeFields = useCallback((): ResumeAgentFields | null => {
     const conversationId = conversation?.conversationId;
-    if (
-      !conversationId ||
-      conversationId === Constants.NEW_CONVO ||
-      activeGenerationCreatedAt == null
-    ) {
+    if (!conversationId || conversationId === Constants.NEW_CONVO) {
       return null;
     }
     return {
       conversationId,
-      generationCreatedAt: activeGenerationCreatedAt,
+      /** Sent as a replacement fence when known. Without it the server still
+       *  resolves the action against its own job and rejects a stale actionId. */
+      ...(activeGenerationCreatedAt != null && { generationCreatedAt: activeGenerationCreatedAt }),
       endpoint: conversation?.endpoint,
       endpointType: conversation?.endpointType,
       agent_id: conversation?.agent_id,

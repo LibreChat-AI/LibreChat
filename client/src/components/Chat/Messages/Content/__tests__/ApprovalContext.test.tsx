@@ -459,7 +459,7 @@ describe('useResumeSubmit', () => {
     expect(result.current.isReady('action-1')).toBe(true);
   });
 
-  test('keeps approval and ask-answer resume controls inert before the generation epoch exists', () => {
+  test('submits approval and ask-answer resumes without an epoch when none is known', () => {
     const { result } = renderHook(
       () => ({
         approval: useApprovalContext(),
@@ -474,12 +474,27 @@ describe('useResumeSubmit', () => {
         tool_call_id: 'call-1',
         decision: 'approve',
       });
+    });
+    act(() => {
       result.current.resume.submitToolApproval('action-1');
       result.current.resume.submitAskAnswer('ask-1', 'answer');
     });
 
-    expect(mockApprovalMutate).not.toHaveBeenCalled();
-    expect(mockAskMutate).not.toHaveBeenCalled();
+    expect(mockApprovalMutate).toHaveBeenCalledTimes(1);
+    expect(mockApprovalMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conversation-1',
+        actionId: 'action-1',
+        decisions: [{ tool_call_id: 'call-1', decision: 'approve' }],
+      }),
+      expect.any(Object),
+    );
+    expect(mockApprovalMutate.mock.calls[0][0]).not.toHaveProperty('generationCreatedAt');
+    expect(mockAskMutate).toHaveBeenCalledTimes(1);
+    expect(mockAskMutate.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ conversationId: 'conversation-1', actionId: 'ask-1' }),
+    );
+    expect(mockAskMutate.mock.calls[0][0]).not.toHaveProperty('generationCreatedAt');
   });
 
   test('synchronously deduplicates ask answers and unlocks a retryable error', () => {
