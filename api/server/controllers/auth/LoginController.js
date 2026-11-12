@@ -1,7 +1,7 @@
 const {
   createLoginController,
   clearCloudFrontCookies,
-  isLdapAuthEnabled,
+  resolveDefaultLoginAuthMethod,
 } = require('@librechat/api');
 const { generate2FATempToken } = require('~/server/services/twoFactorService');
 const { getUserById, deleteAllUserSessions } = require('~/models');
@@ -19,7 +19,7 @@ const sharedDeps = {
  *  reflects which credential check actually ran. */
 const loginController = createLoginController({
   ...sharedDeps,
-  defaultAuthMethod: isLdapAuthEnabled() ? 'ldap' : 'local',
+  defaultAuthMethod: resolveDefaultLoginAuthMethod(),
 });
 
 /** `routes/admin/auth.js` mounts `/login/local` behind `requireLocalAuth` regardless of whether
