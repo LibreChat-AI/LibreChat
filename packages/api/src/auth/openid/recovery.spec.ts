@@ -195,6 +195,76 @@ describe('OpenID authentication publication settlement', () => {
         expect.objectContaining({ existingRefreshToken: 'stale-refresh' }),
       );
     });
+
+    /**
+     * A pending refresh's explicit `providerSession` is a stale request value: it was read
+     * before another login advanced the Express session to a different provider session. Once
+     * the session has advanced, publication must bind to the adopted session's own ref, not the
+     * stale request's, or a still-live old SID could authorize publishing credentials whose real
+     * SID was revoked.
+     */
+    describe('when the request carries an explicit providerSession and the session advanced', () => {
+      const staleRequestRef = {
+        issuer: 'https://idp.example.com',
+        clientId: 'librechat',
+        sid: 'sid-stale',
+      };
+      const adoptedSessionRef = {
+        issuer: 'https://idp.example.com',
+        clientId: 'librechat',
+        sid: 'sid-adopted',
+      };
+
+      function buildAdvancedSessionRequest() {
+        return {
+          session: { openidTokens: { ...buildStaleSession(), providerSession: adoptedSessionRef } },
+        };
+      }
+
+      it('authorizes and publishes against the adopted session ref, not the stale request ref', async () => {
+        const { deps, service, input } = setup();
+        const req = buildAdvancedSessionRequest();
+        await expect(
+          service.sendOpenIDAuthResponse({ ...input, req, providerSession: staleRequestRef }),
+        ).resolves.toBe('app-token');
+
+        expect(deps.providerSessionAuthorizer.authorize).toHaveBeenCalledWith(
+          expect.objectContaining({ ref: adoptedSessionRef }),
+        );
+        expect(deps.storeOpenIDSession).toHaveBeenCalledWith(
+          'user',
+          'stale-refresh',
+          undefined,
+          'stale-refresh',
+          expect.objectContaining({ providerSession: adoptedSessionRef }),
+        );
+        expect(deps.setOpenIDAuthTokens).toHaveBeenCalledWith(
+          expect.anything(),
+          req,
+          input.res,
+          expect.objectContaining({ providerSession: adoptedSessionRef }),
+        );
+      });
+
+      it('ends the session when the adopted ref is denied, even though the stale request ref would be authorized', async () => {
+        const { deps, service, input } = setup();
+        deps.providerSessionAuthorizer.authorize.mockImplementation(({ ref }) =>
+          Promise.resolve({ ok: ref?.sid !== adoptedSessionRef.sid }),
+        );
+        const req = buildAdvancedSessionRequest();
+
+        const error = await service
+          .sendOpenIDAuthResponse({ ...input, req, providerSession: staleRequestRef })
+          .catch((caught: unknown) => caught);
+
+        expect(isOpenIDSessionEndedError(error)).toBe(true);
+        expect(deps.providerSessionAuthorizer.authorize).toHaveBeenCalledWith(
+          expect.objectContaining({ ref: adoptedSessionRef }),
+        );
+        expect(deps.setOpenIDAuthTokens).not.toHaveBeenCalled();
+        expect(deps.deleteOpenIDSession).toHaveBeenCalledWith('stale-refresh');
+      });
+    });
   });
 });
 

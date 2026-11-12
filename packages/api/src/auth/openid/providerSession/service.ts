@@ -26,6 +26,9 @@ export interface CreateProviderSessionServiceOptions {
   }) => Promise<{ registration?: BackchannelLogoutRegistration } | null | undefined>;
   /** Returns the configured OpenID client, throwing when OpenID is not set up. */
   getOpenIdClient: () => OpenIdIssuerSource;
+  /** Returns the configured OpenID client ID, read lazily per call so a runtime config change
+   *  is picked up without restarting the service. */
+  getClientId: () => string | undefined;
   logger: OpenIDLogger;
 }
 
@@ -52,6 +55,7 @@ export function createProviderSessionService({
   methods,
   getAppConfig,
   getOpenIdClient,
+  getClientId,
   logger,
 }: CreateProviderSessionServiceOptions): ProviderSessionService {
   async function loadBackchannelLogoutConfig(): Promise<ResolvedBackchannelLogoutConfig> {
@@ -84,7 +88,7 @@ export function createProviderSessionService({
   }
 
   function getProviderSessionClient(): { issuer: string; clientId: string } | null {
-    const clientId = process.env.OPENID_CLIENT_ID;
+    const clientId = getClientId();
     if (!clientId) {
       return null;
     }
