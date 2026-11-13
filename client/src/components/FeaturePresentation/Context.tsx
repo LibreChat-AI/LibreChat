@@ -37,6 +37,7 @@ type Presentation = {
   chatLocation?: Location;
   updateChatLocation: (location: Location) => void;
   setReturnTarget: (url: string) => void;
+  ownsChatJourney: (entry: Pick<Location, 'key' | 'state'>) => boolean;
   ready: boolean;
   links: NavLink[];
   openPanel: (navId: string) => void;
@@ -140,6 +141,10 @@ export function FeaturePresentationProvider({
   const chatLocationRef = useRef(chatLocation);
   const journey = chatJourney(location);
   const journeyRef = useRef(journey);
+  const ownsChatJourney = useCallback(
+    (entry: Pick<Location, 'key' | 'state'>) => chatJourney(entry) === journeyRef.current,
+    [],
+  );
   const setReturnTarget = useCallback(
     (url: string) => setReturnUrl(getChatReturnUrl(url)),
     [setReturnUrl],
@@ -206,7 +211,11 @@ export function FeaturePresentationProvider({
         target === 'parameters'
           ? pageRegistry[target].path + '?' + new URLSearchParams({ chat: contextUrl })
           : pageRegistry[target].path;
-      revealPage(() => navigate(path));
+      revealPage(() =>
+        navigate(path, {
+          state: chatJourneyState(chatUrl ? chatJourney(chatUrl) : journeyRef.current),
+        }),
+      );
     },
     [
       canOpenPage,
@@ -291,6 +300,7 @@ export function FeaturePresentationProvider({
       chatLocation,
       updateChatLocation,
       setReturnTarget,
+      ownsChatJourney,
       links,
       openPanel,
       page,
@@ -309,6 +319,7 @@ export function FeaturePresentationProvider({
       chatLocation,
       updateChatLocation,
       setReturnTarget,
+      ownsChatJourney,
       links,
       openPanel,
       page,

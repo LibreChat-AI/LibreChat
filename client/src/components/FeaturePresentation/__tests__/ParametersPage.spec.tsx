@@ -5,8 +5,8 @@ import { ResumableRun } from '@librechat/chat';
 import { ToastProvider } from '@librechat/client';
 import userEvent from '@testing-library/user-event';
 import { RecoilRoot, useRecoilState, useRecoilValue } from 'recoil';
-import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router-dom';
 import {
   EModelEndpoint,
   LocalStorageKeys,
@@ -68,6 +68,7 @@ const saved: TConversation = {
 };
 const clients: QueryClient[] = [];
 let enabled = true;
+let defaultView: 'page' | 'panel' = 'panel';
 let delayRecord: Promise<TConversation> | undefined;
 let userProvide = false;
 let credentialsResponse: () => Promise<{ expiresAt: string }>;
@@ -116,6 +117,8 @@ function LiveChat() {
 }
 function Controls() {
   const presentation = useFeaturePresentation()!;
+  const navigate = useNavigate();
+  const { setConversation } = store.useSetConversationAtom(0);
   return (
     <>
       <button
@@ -125,6 +128,15 @@ function Controls() {
         {'Expand'}
       </button>
       <button onClick={() => presentation.minimize('parameters')}>{'Return to chat'}</button>
+      <button onClick={() => presentation.open('parameters')}>{'Open Parameters'}</button>
+      <button
+        onClick={() => {
+          setConversation(saved);
+          navigate('/c/saved-chat');
+        }}
+      >
+        {'Select saved conversation'}
+      </button>
     </>
   );
 }
@@ -213,6 +225,7 @@ beforeEach(() => {
   localStorage.clear();
   resetCatalogWarmup();
   enabled = true;
+  defaultView = 'panel';
   delayRecord = undefined;
   userProvide = false;
   credentialsResponse = async () => ({ expiresAt: '' });
@@ -227,7 +240,7 @@ beforeEach(() => {
         modelSpecs: configModelSpecs,
         interface: {
           ...getConfigDefaults().interface,
-          navigation: resolveNavigation({ pages: { parameters: { enabled } } }),
+          navigation: resolveNavigation({ pages: { parameters: { enabled, defaultView } } }),
         },
       });
     if (path === '/api/endpoints')
@@ -439,6 +452,34 @@ it('treats an explicit saved-context change on the same page as real chat naviga
     temperature: saved.temperature,
   });
 });
+
+it.each(['', '?projectId=aaaaaaaaaaaaaaaaaaaaaaaa#draft'])(
+  'honors the original new-chat context on Parameters history re-entry (%s)',
+  async (search) => {
+    defaultView = 'page';
+    const source = '/c/new' + search;
+    const router = mount(source, { ...saved, conversationId: 'new' });
+    await waitFor(() => expect(screen.getByText('Expand')).toBeEnabled());
+    await userEvent.click(screen.getByText('Open Parameters'));
+    expect(await screen.findByRole('button', { name: /Save as Preset/i })).toBeInTheDocument();
+    expect(new URLSearchParams(router.state.location.search).get('chat')).toBe(source);
+    await userEvent.click(screen.getByText('Select saved conversation'));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/c/saved-chat'));
+    await act(async () => {
+      await router.navigate(-1);
+    });
+    await waitFor(() =>
+      expect(
+        router.state.location.pathname + router.state.location.search + router.state.location.hash,
+      ).toBe(source),
+    );
+    expect(screen.queryByRole('button', { name: /Save as Preset/i })).not.toBeInTheDocument();
+    expect(JSON.parse(screen.getByTestId('context').textContent ?? '{}')).toMatchObject({
+      conversationId: saved.conversationId,
+      temperature: saved.temperature,
+    });
+  },
+);
 
 it.each(['https://example.com/c/unsafe', '//example.com/c/unsafe', '/parameters'])(
   'rejects unsafe cold return target %s',
