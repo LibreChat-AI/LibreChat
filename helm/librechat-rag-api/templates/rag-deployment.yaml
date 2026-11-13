@@ -26,6 +26,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if or .Values.serviceAccount.create .Values.serviceAccount.name }}
+      serviceAccountName: {{ include "rag.serviceAccountName" . }}
+      {{- end }}
       {{- if kindIs "bool" .Values.enableServiceLinks }}
       enableServiceLinks: {{ .Values.enableServiceLinks }}
       {{- end }}
