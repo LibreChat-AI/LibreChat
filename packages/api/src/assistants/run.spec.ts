@@ -568,7 +568,7 @@ describe('Assistants run admission against the deletion marker', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   });
 
   beforeEach(() => {
