@@ -38,6 +38,14 @@ data:
   {{- end }}
   LANGFUSE_FANOUT_TENANT_DESTINATIONS: {{ join "," $tenantDestinations | quote }}
   {{- end }}
+  {{- if and .Values.channelGateway.enabled (eq .Values.channelGateway.mode "shared") }}
+  {{- if not (hasKey $configEnv "SLACK_WORKSPACES_ENABLED") }}
+  SLACK_WORKSPACES_ENABLED: "true"
+  {{- end }}
+  {{- if and .Values.channelGateway.ingress.enabled (not (hasKey $configEnv "SLACK_GATEWAY_URL")) }}
+  SLACK_GATEWAY_URL: {{ printf "https://%s" (required "channelGateway.ingress.host is required" .Values.channelGateway.ingress.host) | quote }}
+  {{- end }}
+  {{- end }}
   {{- if $configEnv }}
   {{- $renderedConfigEnv := $configEnv }}
   {{- if and $adminPanelUrl (hasKey $configEnv "ADMIN_PANEL_URL") (not $configAdminPanelUrl) }}

@@ -1,7 +1,7 @@
 import React from 'react';
 import { QueryKeys } from 'librechat-data-provider';
 import { renderHook, act } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryObserver, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
 import { applyServerReplyStamp, updateConvoInAllQueries } from '~/utils';
 import useUnseenConversations from '../useUnseenConversations';
@@ -27,6 +27,65 @@ function setup() {
 }
 
 describe('useUnseenConversations', () => {
+  it.each([1, 25])('scans %s cached lists only once per message-update batch', (variants) => {
+    const { result, queryClient } = setup();
+    const conversation = {
+      conversationId: 'sending',
+      title: 'Sending',
+      updatedAt: RESPONDED_AT,
+    } as TConversation;
+    act(() => {
+      for (let index = 0; index < variants; index++) {
+        queryClient.setQueryData(
+          [QueryKeys.allConversations, { tags: [`tag-${index}`] }],
+          page([conversation]),
+        );
+      }
+    });
+    const reads = jest.spyOn(queryClient, 'getQueryData');
+
+    act(() => {
+      updateConvoInAllQueries(
+        queryClient,
+        'sending',
+        (convo) => ({ ...convo, lastResponseAt: RESPONDED_AT }),
+        true,
+      );
+    });
+
+    const listReads = reads.mock.calls.filter(([key]) => key?.[0] === QueryKeys.allConversations);
+    expect(listReads).toHaveLength(variants);
+    expect(result.current?.stamps).toEqual([['sending', RESPONDED_AT]]);
+    expect(result.current?.arrivalStamps).toEqual([['sending', RESPONDED_AT]]);
+    expect(result.current?.unseen).toHaveLength(1);
+  });
+
+  it('does not rescan lists when an observer changes its options or result', () => {
+    const { queryClient } = setup();
+    act(() => {
+      queryClient.setQueryData(
+        listKeyActive,
+        page([{ conversationId: 'unseen', lastResponseAt: RESPONDED_AT }]),
+      );
+    });
+    const observer = new QueryObserver(queryClient, {
+      queryKey: listKeyActive,
+      staleTime: Infinity,
+    });
+    let unsubscribe: () => void = () => undefined;
+    act(() => {
+      unsubscribe = observer.subscribe(() => undefined);
+    });
+    const reads = jest.spyOn(queryClient, 'getQueryData');
+
+    act(() => {
+      observer.setOptions({ queryKey: listKeyActive, staleTime: 30_000 });
+    });
+
+    expect(reads).not.toHaveBeenCalled();
+    act(() => unsubscribe());
+  });
+
   it('derives the unseen set from the cached lists', () => {
     const { result, queryClient } = setup();
 

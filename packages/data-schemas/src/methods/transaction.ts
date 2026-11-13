@@ -1,5 +1,6 @@
 import { isBalanceRefillDue } from 'librechat-data-provider';
 import type { AnyBulkWriteOperation, FilterQuery, Model, Types } from 'mongoose';
+import type { TCustomConfig } from 'librechat-data-provider';
 import type {
   BalanceReservationRequest,
   BalanceReservationRenewal,
@@ -29,7 +30,7 @@ type MultiplierParams = {
 };
 
 type CacheMultiplierParams = {
-  cacheType?: 'write' | 'read' | 'write1h';
+  cacheType?: 'write' | 'read' | 'write1h' | 'write12h';
   model?: string;
   endpointTokenConfig?: Record<string, Record<string, number>>;
   inputTokenCount?: number;
@@ -51,6 +52,8 @@ interface InternalTxDoc {
   writeTokens?: number;
   /** Subset of `writeTokens` written to the 1-hour cache */
   write1hTokens?: number;
+  /** Subset of `writeTokens` written to the 12-hour cache */
+  write12hTokens?: number;
   readTokens?: number;
 }
 
@@ -69,8 +72,10 @@ export interface TxData {
   writeTokens?: number;
   /** Subset of `writeTokens` written to the 1-hour cache */
   write1hTokens?: number;
+  /** Subset of `writeTokens` written to the 12-hour cache */
+  write12hTokens?: number;
   readTokens?: number;
-  balance?: { enabled?: boolean };
+  balance?: Partial<TCustomConfig['balance']>;
   transactions?: { enabled?: boolean };
 }
 
@@ -84,6 +89,24 @@ export interface TransactionResult {
   credits?: number;
 }
 
+function initialDebitBalance(balance: TxData['balance']): IBalanceUpdate | undefined {
+  if (!balance?.enabled || balance.startBalance == null) {
+    return;
+  }
+  const grantedAt = new Date();
+  return {
+    tokenCredits: balance.startBalance,
+    allotment: balance.startBalance,
+    allottedAt: grantedAt,
+    lastRefill: grantedAt,
+    autoRefillEnabled: balance.autoRefillEnabled ?? false,
+    refillAmount: balance.refillAmount,
+    refillMode: balance.refillMode ?? 'add',
+    refillIntervalValue: balance.refillIntervalValue,
+    refillIntervalUnit: balance.refillIntervalUnit,
+  };
+}
+
 export function createTransactionMethods(
   mongoose: typeof import('mongoose'),
   txMethods: {
@@ -95,15 +118,21 @@ export function createTransactionMethods(
     user,
     incrementValue,
     setValues,
+    balanceConfig,
   }: {
     user: string;
     incrementValue: number;
     setValues?: IBalanceUpdate;
+    balanceConfig?: TxData['balance'];
   }) => Promise<IBalance>;
   bulkInsertTransactions: (docs: TransactionData[]) => Promise<void>;
   findBalanceByUser: (
     user: string,
     options?: { includeReservedCredits?: boolean; applyReset?: boolean },
+  ) => Promise<IBalance | null>;
+  initializeNullBalance: (
+    user: string,
+    input: { tokenCredits: number; sync?: IBalanceUpdate },
   ) => Promise<IBalance | null>;
   upsertBalanceFields: (
     user: string,
@@ -176,6 +205,7 @@ export function createTransactionMethods(
       const inputAbs = Math.abs(txn.inputTokens ?? 0);
       const writeAbs = Math.abs(txn.writeTokens ?? 0);
       const write1hAbs = Math.min(Math.abs(txn.write1hTokens ?? 0), writeAbs);
+      const write12hAbs = Math.min(Math.abs(txn.write12hTokens ?? 0), writeAbs - write1hAbs);
       const readAbs = Math.abs(txn.readTokens ?? 0);
       const write1hMultiplier =
         write1hAbs > 0
@@ -187,18 +217,31 @@ export function createTransactionMethods(
             }) ?? writeMultiplier)
           : writeMultiplier;
 
+      /** Missing TTL pricing retains the existing write/input fallback. */
+      const write12hMultiplier =
+        write12hAbs > 0
+          ? (txMethods.getCacheMultiplier({
+              cacheType: 'write12h',
+              model,
+              endpointTokenConfig: etConfig,
+              inputTokenCount,
+            }) ?? writeMultiplier)
+          : writeMultiplier;
+
       txn.rateDetail = {
         input: inputMultiplier,
         write: writeMultiplier,
         read: readMultiplier,
         ...(write1hAbs > 0 && { write1h: write1hMultiplier }),
+        ...(write12hAbs > 0 && { write12h: write12hMultiplier }),
       };
 
       const totalPromptTokens = inputAbs + writeAbs + readAbs;
       const promptValue =
         inputAbs * Math.abs(inputMultiplier) +
-        (writeAbs - write1hAbs) * Math.abs(writeMultiplier) +
+        (writeAbs - write1hAbs - write12hAbs) * Math.abs(writeMultiplier) +
         write1hAbs * Math.abs(write1hMultiplier) +
+        write12hAbs * Math.abs(write12hMultiplier) +
         readAbs * Math.abs(readMultiplier);
 
       txn.rate =
@@ -206,8 +249,9 @@ export function createTransactionMethods(
 
       txn.tokenValue = -(
         inputAbs * inputMultiplier +
-        (writeAbs - write1hAbs) * writeMultiplier +
+        (writeAbs - write1hAbs - write12hAbs) * writeMultiplier +
         write1hAbs * write1hMultiplier +
+        write12hAbs * write12hMultiplier +
         readAbs * readMultiplier
       );
 
@@ -243,10 +287,12 @@ export function createTransactionMethods(
     user,
     incrementValue,
     setValues,
+    balanceConfig,
   }: {
     user: string;
     incrementValue: number;
     setValues?: IBalanceUpdate;
+    balanceConfig?: TxData['balance'];
   }): Promise<IBalance> {
     const Balance = mongoose.models.Balance as Model<IBalance>;
     const maxRetries = 10;
@@ -281,7 +327,11 @@ export function createTransactionMethods(
           }
           lastError = new Error(`Concurrency conflict for user ${user} on attempt ${attempt}.`);
         } else {
-          await upsertBalanceRecord(user, {}, { tokenCredits: 0 });
+          await upsertBalanceRecord(
+            user,
+            {},
+            initialDebitBalance(balanceConfig) ?? { tokenCredits: 0 },
+          );
           continue;
         }
       } catch (error) {
@@ -384,6 +434,8 @@ export function createTransactionMethods(
         $set: {
           tokenCredits: credits,
           lastRefill: now,
+          allotment: record.refillAmount,
+          allottedAt: now,
           pendingRefill,
         },
       },
@@ -644,6 +696,7 @@ export function createTransactionMethods(
     const balanceResponse = await updateBalance({
       user: transaction.user as string,
       incrementValue,
+      balanceConfig: transaction.tokenType === 'credits' ? undefined : balance,
     });
 
     return {
@@ -670,6 +723,7 @@ export function createTransactionMethods(
     transaction.endpointTokenConfig = txData.endpointTokenConfig;
     transaction.inputTokenCount = txData.inputTokenCount;
     transaction.write1hTokens = txData.write1hTokens;
+    transaction.write12hTokens = txData.write12hTokens;
 
     calculateStructuredTokenValue(transaction);
 
@@ -684,6 +738,7 @@ export function createTransactionMethods(
     const balanceResponse = await updateBalance({
       user: transaction.user as string,
       incrementValue,
+      balanceConfig: transaction.tokenType === 'credits' ? undefined : balance,
     });
 
     return {
@@ -793,7 +848,21 @@ export function createTransactionMethods(
     }
   }
 
+  /** Null also matches legacy missing credit; a miss must never upsert or restore spent credit. */
+  async function initializeNullBalance(
+    user: string,
+    { tokenCredits, sync }: { tokenCredits: number; sync?: IBalanceUpdate },
+  ): Promise<IBalance | null> {
+    const Balance = mongoose.models.Balance as Model<IBalance>;
+    return Balance.findOneAndUpdate(
+      { user, tokenCredits: null },
+      { $set: { tokenCredits, ...(sync && Object.keys(sync).length > 0 ? sync : {}) } },
+      { new: true, sort: oldestFirst },
+    ).lean<IBalance>();
+  }
+
   return {
+    initializeNullBalance,
     updateBalance,
     bulkInsertTransactions,
     findBalanceByUser,

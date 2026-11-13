@@ -45,3 +45,4 @@ export type {
   ChatSubmissionContract,
   ChatConversationContract,
 } from './contract';
+export { isHistoryRevalidating } from './guards';

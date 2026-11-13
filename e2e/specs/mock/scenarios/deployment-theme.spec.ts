@@ -1,10 +1,10 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { defaultTheme } from '../../../../packages/data-provider/src/themes/default';
 import { darkTheme } from '../../../../packages/data-provider/src/themes/dark';
 import { getE2EUser } from '../../../setup/user';
 import { themeValue } from './style.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * `interface.theme` in librechat.yaml reaches the client through `/api/config`,

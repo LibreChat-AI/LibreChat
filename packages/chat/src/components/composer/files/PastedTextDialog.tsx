@@ -60,7 +60,8 @@ export default function PastedTextDialog({
           value={text}
           onChange={(e) => setText(e.target.value)}
           aria-label={localize('com_ui_pasted_text_edit')}
-          className="h-[65vh] max-h-[70vh] min-h-[20rem] font-mono text-xs"
+          variant="code"
+          className="h-[65vh] max-h-[70vh] min-h-[20rem]"
         />
         <div className="flex justify-end gap-2 pt-4">
           <OGDialogClose asChild>

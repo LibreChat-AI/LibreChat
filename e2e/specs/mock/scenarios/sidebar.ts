@@ -64,12 +64,17 @@ const NARROW_MAX_WIDTH = 768;
  * builder, say) may have replaced.
  */
 export async function openChatHistory(page: Page) {
+  await openSidebar(page);
   const narrow = (page.viewportSize()?.width ?? Infinity) <= NARROW_MAX_WIDTH;
   if (!narrow) {
-    await page.getByRole('button', { name: 'Chat History' }).click();
+    /* The rail button of the panel already showing collapses the sidebar, so it is pressed
+       only to switch panels. */
+    const trigger = page.getByRole('button', { name: 'Chat History' });
+    if ((await trigger.getAttribute('aria-pressed')) !== 'true') {
+      await trigger.click();
+    }
     return;
   }
-  await openSidebar(page);
   const switcher = page.getByTestId('panel-switcher-button');
   if (!(await switcher.textContent())?.includes('Chat History')) {
     await switcher.click();

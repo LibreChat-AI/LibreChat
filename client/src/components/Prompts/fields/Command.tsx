@@ -73,6 +73,7 @@ const Command = ({
             className={cn(
               'text-text-secondary peer-focus:text-text-primary pointer-events-none absolute inset-s-0 top-0.5 hidden max-w-[calc(100%-3.5rem)] origin-[0] translate-y-2 scale-100 rounded px-1 text-sm transition-transform duration-200 peer-placeholder-shown:translate-y-2 peer-placeholder-shown:scale-100 peer-focus:-translate-y-3 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-3 peer-[:not(:placeholder-shown)]:scale-75 md:block rtl:origin-right',
               labelBgClassName,
+              'theme-field-fill:bg-field-fill',
             )}
           >
             {localize('com_ui_command_placeholder')}

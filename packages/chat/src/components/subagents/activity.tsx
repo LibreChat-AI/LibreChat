@@ -1,6 +1,6 @@
 import { useCallback, useId, useMemo, useState } from 'react';
 import { Bot, ChevronDown } from 'lucide-react';
-import { Button, cn, useLocalize } from '@librechat/client';
+import { Button, cn, useLocalize, disabledInkClasses } from '@librechat/client';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
@@ -71,7 +71,7 @@ export function EventSubagentActivityGroup({
   return (
     <div
       className={cn(
-        'duration-theme-normal mx-auto min-w-0 flex-1 px-4 transition-[max-width] motion-reduce:transition-none sm:px-0',
+        'duration-theme-normal transition-max-width mx-auto min-w-0 flex-1 px-4 motion-reduce:transition-none sm:px-0',
         getMessageRowWidthClass({ fullWidth, hasParallelContent }),
       )}
     >
@@ -155,13 +155,13 @@ function EventSubagentRows({
       data-event-subagent-conversation={conversationId}
     >
       <Button
-        variant="quiet"
+        variant="disclosure-panel"
         type="button"
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={expanded}
         aria-controls={panelId}
         aria-label={`${localize('com_ui_subagent_activity')}: ${summary}`}
-        className="focus-visible:ring-ring-primary flex h-auto min-h-10 w-full items-center justify-start px-3 text-start focus-visible:ring-offset-0 focus-visible:ring-inset"
+        className="flex min-h-10 items-center"
       >
         <Bot size={15} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{summary}</span>
@@ -207,7 +207,7 @@ function EventSubagentRow({
       data-subagent-part-index="0"
       className={cn(
         'focus-visible:ring-ring-primary flex w-full items-center gap-2 px-3 py-2 text-start text-sm focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
-        canOpen ? 'hover:bg-surface-hover' : 'cursor-default opacity-70',
+        canOpen ? 'hover:bg-surface-hover' : cn('cursor-default opacity-70', disabledInkClasses),
       )}
     >
       <span className="flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full">

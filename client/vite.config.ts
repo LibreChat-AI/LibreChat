@@ -10,6 +10,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { compression, defineAlgorithm } from 'vite-plugin-compression2';
 import type { Plugin } from 'vite';
+import { sandpackConsoleIsolation } from './src/lib/sandpack.ts';
 import { bundledThemeBoot, injectThemeCacheVersion } from './src/Providers/bootVersion.ts';
 
 const require = createRequire(import.meta.url);
@@ -73,6 +74,7 @@ export default defineConfig(({ command }) => ({
   envDir: '../',
   envPrefix: ['VITE_', 'SCRIPT_', 'DOMAIN_', 'ALLOW_', 'REACT_APP_THEME_'],
   plugins: [
+    sandpackConsoleIsolation(),
     react(),
     {
       name: 'node-polyfills-shims-resolver',
@@ -210,6 +212,7 @@ export default defineConfig(({ command }) => ({
     }),
   ],
   optimizeDeps: {
+    rolldownOptions: { plugins: [sandpackConsoleIsolation()] },
     include: [
       'vite-plugin-node-polyfills/shims/buffer',
       'vite-plugin-node-polyfills/shims/process',
@@ -254,10 +257,26 @@ export default defineConfig(({ command }) => ({
               test: /node_modules[\\/]lodash(?:\.[^\\/]+)?[\\/]/,
               priority: 1,
             },
+            /**
+             * The data layer imports zod at boot, and the MCP bridge chunk imports it too. Without
+             * this claim the bridge chunk captured zod as a dependency and every page loaded it.
+             */
+            {
+              name: 'validation',
+              test: /node_modules[\\/]zod[\\/]/,
+              priority: 1,
+            },
             {
               name(id: string) {
-                const normalizedId = id.replace(/\\/g, '/');
-                if (normalizedId.includes('node_modules')) {
+                const fullId = id.replace(/\\/g, '/');
+                const dependencyStart = fullId.indexOf('/node_modules/');
+                /** Rules match package names, never the checkout: a repository under a path that
+                 *  contains `fetch`, `ky` or `zod` would otherwise send every dependency to that
+                 *  rule's chunk. The first `node_modules` stays, so nested dependencies still
+                 *  match their parent package (mermaid's own lodash-es, for one). */
+                const normalizedId =
+                  dependencyStart === -1 ? fullId : fullId.slice(dependencyStart);
+                if (dependencyStart !== -1) {
                   if (normalizedId.includes('/node_modules/regenerator-runtime/')) {
                     return 'polyfills';
                   }
@@ -425,6 +444,18 @@ export default defineConfig(({ command }) => ({
 
                   if (normalizedId.includes('@icons-pack/react-simple-icons/icons/')) {
                     return null;
+                  }
+
+                  /** Reached only through `import()`: without a chunk of their own the catch-all
+                   *  below would put them in `vendor`, which every page loads at boot. */
+                  if (normalizedId.includes('/@mcp-ui/')) {
+                    return 'mcp-ui';
+                  }
+                  if (normalizedId.includes('/@modelcontextprotocol/')) {
+                    return 'mcp-apps';
+                  }
+                  if (/\/(?:html-to-image|export-from-json|downloadjs)\//.test(normalizedId)) {
+                    return 'export-tools';
                   }
 
                   // Everything else falls into a generic vendor chunk.

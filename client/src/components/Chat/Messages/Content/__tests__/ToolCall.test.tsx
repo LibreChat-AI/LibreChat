@@ -1,11 +1,15 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ToolAuthWarningContext } from '@librechat/chat/components';
 import { Tools, Constants, dataService } from 'librechat-data-provider';
-import { LoneGroupContext, SoleToolContext } from '@librechat/chat/react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import {
+  LoneGroupContext,
+  SoleToolContext,
+  GeneratedToolLabelContext,
+} from '@librechat/chat/react';
 import type { TStartupConfig } from 'librechat-data-provider';
 import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
-import { ToolAuthWarningContext } from '../auth';
 import ToolCall from '../ToolCall';
 import { logger } from '~/utils';
 import store from '~/store';
@@ -31,7 +35,10 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
@@ -40,18 +47,23 @@ jest.mock('~/hooks', () => ({
     },
     ref: { current: null },
   }),
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
 }));
 
 jest.mock('~/hooks/MCP', () => {
   const mcpServerNames: string[] = [];
   return {
     useMCPIconMap: () => new Map(),
-    useAppBridge: jest.fn(),
     useMCPAppFrame: jest.requireActual('~/hooks/MCP/useMCPAppFrame').useMCPAppFrame,
     useMCPServerNames: () => mcpServerNames,
   };
 });
+
+jest.mock('~/hooks/MCP/useAppBridge', () => ({ useAppBridge: jest.fn() }));
 
 jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
   __esModule: true,
@@ -94,6 +106,7 @@ jest.mock('../Parts', () => ({
 }));
 
 jest.mock('@librechat/client', () => {
+  const actual = jest.requireActual('@librechat/client');
   const DialogPart = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
   const DialogButton = ({
     children,
@@ -103,6 +116,8 @@ jest.mock('@librechat/client', () => {
     onClick?: () => void;
   }) => <button onClick={onClick}>{children}</button>;
   return {
+    cn: actual.cn,
+    useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
     Button: ({ children, onClick, ...props }: any) => (
       <button onClick={onClick} {...props}>
         {children}
@@ -316,7 +331,7 @@ describe('ToolCall', () => {
       expect(JSON.parse(attachmentGroup.textContent!)).toEqual(attachments);
     });
 
-    it('renders an iframe for an inline ui:// text resource attached to the tool call', () => {
+    it('renders an iframe for an inline ui:// text resource attached to the tool call', async () => {
       const attachments = [
         {
           type: Tools.ui_resources,
@@ -350,9 +365,12 @@ describe('ToolCall', () => {
       // Stored results do not run App code until the viewer explicitly opens the App.
       expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
-      const iframe = container.querySelector('iframe[data-sandbox-url]');
-      expect(iframe).toBeInTheDocument();
-      const { useAppBridge } = jest.requireMock('~/hooks/MCP') as { useAppBridge: jest.Mock };
+      await waitFor(() =>
+        expect(container.querySelector('iframe[data-sandbox-url]')).toBeInTheDocument(),
+      );
+      const { useAppBridge } = jest.requireMock('~/hooks/MCP/useAppBridge') as {
+        useAppBridge: jest.Mock;
+      };
       expect(useAppBridge).toHaveBeenCalledWith(
         expect.objectContaining({
           toolArgs: { owner: 'resource' },
@@ -388,11 +406,13 @@ describe('ToolCall', () => {
 
       expect(screen.getAllByText('Completed testFunction').length).toBeGreaterThan(0);
       expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
-      const { useAppBridge } = jest.requireMock('~/hooks/MCP') as { useAppBridge: jest.Mock };
+      const { useAppBridge } = jest.requireMock('~/hooks/MCP/useAppBridge') as {
+        useAppBridge: jest.Mock;
+      };
       expect(useAppBridge).not.toHaveBeenCalled();
     });
 
-    it('removes a mounted App when the observed policy is disabled', () => {
+    it('removes a mounted App when the observed policy is disabled', async () => {
       const attachments = [
         {
           type: Tools.ui_resources,
@@ -424,7 +444,9 @@ describe('ToolCall', () => {
       );
       expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
-      expect(container.querySelector('iframe[data-sandbox-url]')).toBeInTheDocument();
+      await waitFor(() =>
+        expect(container.querySelector('iframe[data-sandbox-url]')).toBeInTheDocument(),
+      );
 
       rerender(
         <RecoilRoot>
@@ -512,7 +534,9 @@ describe('ToolCall', () => {
       );
 
       expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
-      const { useAppBridge } = jest.requireMock('~/hooks/MCP') as { useAppBridge: jest.Mock };
+      const { useAppBridge } = jest.requireMock('~/hooks/MCP/useAppBridge') as {
+        useAppBridge: jest.Mock;
+      };
       expect(useAppBridge).not.toHaveBeenCalled();
     });
 
@@ -1250,5 +1274,43 @@ describe('ToolCall sole tool disclosure', () => {
     );
     const panel = container.querySelector('[style*="grid-template-rows"]') as HTMLElement;
     expect(panel.style.gridTemplateRows).toBe('0fr');
+  });
+});
+
+describe('generated single-tool label', () => {
+  it.each(['search_documents_mcp_Workspace', 'get_weather_action_api---example---com', 'lookup'])(
+    'replaces the completed %s row with its panel',
+    (name) => {
+      render(
+        <RecoilRoot>
+          <GeneratedToolLabelContext.Provider value>
+            <ToolCall
+              name={name}
+              args='{"intent":"Check weather","query":"weather"}'
+              output="sunny"
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </GeneratedToolLabelContext.Provider>
+        </RecoilRoot>,
+      );
+      expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+    },
+  );
+  it('keeps the output available without a second disclosure', () => {
+    render(
+      <RecoilRoot>
+        <GeneratedToolLabelContext.Provider value>
+          <ToolCall
+            name="search_documents_mcp_Workspace"
+            args='{"query":"weather"}'
+            output="sunny"
+            initialProgress={1}
+            isSubmitting={false}
+          />
+        </GeneratedToolLabelContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
   });
 });

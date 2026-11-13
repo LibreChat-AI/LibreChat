@@ -2,9 +2,9 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { PrincipalType, PrincipalModel, PermissionBits } from 'librechat-data-provider';
 import type { IAclEntry } from '..';
+import { tenantStorage } from '../config/tenantContext';
 import { createAclEntryMethods } from './aclEntry';
 import { createModels } from '../models';
-import { tenantStorage } from '../config/tenantContext';
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -110,5 +110,30 @@ describe('AclEntry resource lookups are scoped to the active tenant', () => {
       methods.findPublicResourceIds(RESOURCE_TYPE, PermissionBits.VIEW),
     );
     expect(bPublic.map(String)).toEqual([String(publicB)]);
+  });
+});
+
+describe('AclEntry grants made as a unique entry', () => {
+  it('create one entry in the active tenant when the same grant runs concurrently', async () => {
+    const resourceId = new mongoose.Types.ObjectId();
+    const grant = () =>
+      methods.grantPermission(
+        PrincipalType.PUBLIC,
+        null,
+        RESOURCE_TYPE,
+        resourceId,
+        PermissionBits.VIEW,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+
+    await runAs(TENANT_A, () => Promise.all(Array.from({ length: 8 }, grant)));
+
+    const entries = await runAs(TENANT_A, () => AclEntry.find({ resourceId }).lean());
+    expect(entries).toHaveLength(1);
+    expect(entries[0].tenantId).toBe(TENANT_A);
   });
 });

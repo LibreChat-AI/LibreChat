@@ -1,23 +1,35 @@
 import { Keyv } from 'keyv';
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { ResourceType, PrincipalType } from 'librechat-data-provider';
 import {
+  createPostgresFavoriteBackend,
+  createPostgresDatabase,
+  migratePostgres,
+  importFavorites,
   createModels,
   createMethods,
   tenantStorage,
   createSkillDeletionPersistenceAdapter,
   logger,
 } from '@librechat/data-schemas';
+import type { PostgresDatabase } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { CheckpointDeletion } from '~/agents/checkpoints/deletion';
 import type { UserErasureDeps, MCPOAuthErasureHooks } from './erasure';
 import type { MCPOAuthTokens } from '~/mcp/oauth/types';
+import {
+  deleteUserMCPServers,
+  eraseUserData,
+  cancelUserDataDeletion,
+  createUserDeletionAttempt,
+} from './erasure';
 import { MCPOAuthHandler, MCPTokenStorage, getMCPOAuthLeaseId } from '~/mcp/oauth';
 import { deleteAllSharedLinksWithCleanup } from '~/shared-links/service';
 import { createSkillDeletionService } from '../skills/deletionService';
-import { deleteUserMCPServers, eraseUserData } from './erasure';
 import { cleanupMCPServerOAuth } from '~/mcp/oauth/cleanup';
+import { createFavoriteRuntime } from '~/app/persistence';
 import { FlowStateManager } from '~/flow/manager';
 
 /** Stored OAuth credentials are encrypted with a key read when the module loads. */
@@ -901,5 +913,334 @@ describe('removing a shared MCP server with its owner', () => {
       expect(MCPTokenStorage.isRefreshTeardownActive(id.toString(), serverName)).toBe(false);
     }
     expect(await count('MCPServer', { _id: mcpServerId })).toBe(1);
+  });
+});
+
+const realPostgres = process.env.PG_TEST_URL ? describe : describe.skip;
+realPostgres('attempt-scoped PostgreSQL account erasure', () => {
+  const schema = `erasure_${randomUUID().replace(/-/g, '')}`;
+  const config = { favorites: 'postgres', postgres: { connectionStringEnv: 'PG_TEST_URL' } };
+  const options = {
+    connectionString: process.env.PG_TEST_URL ?? '',
+    max: 2,
+    maxWaiting: 10,
+    acquireTimeoutMs: 1000,
+    queryTimeoutMs: 5000,
+    idleTimeoutMs: 1000,
+  };
+  let admin: PostgresDatabase;
+  let db: PostgresDatabase;
+  beforeAll(async () => {
+    admin = createPostgresDatabase(options);
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const url = new URL(options.connectionString);
+    url.searchParams.set('options', `-c search_path=${schema}`);
+    options.connectionString = url.toString();
+    db = createPostgresDatabase(options);
+    await migratePostgres(db);
+    await importFavorites(db, async function* () {}, {
+      offline: true,
+      verifiedEmpty: true,
+      batchSize: 10,
+    });
+  });
+  afterAll(async () => {
+    await db.close();
+    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin.close();
+  });
+  async function setup() {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const startedAt = new Date();
+    const deletionAttemptId = randomUUID();
+    await model('User').insertOne({
+      _id: new mongoose.Types.ObjectId(userId),
+      agentTriggerDeletionStartedAt: startedAt,
+      agentTriggerDeletionAttemptId: deletionAttemptId,
+    });
+    const runtime = createFavoriteRuntime(
+      methods,
+      { PG_TEST_URL: options.connectionString },
+      createPostgresFavoriteBackend,
+    );
+    await runtime.initialize(config);
+    const { deps } = createDeps();
+    const erasure = { ...deps, ...runtime.methods };
+    const cancel = { ...methods, ...runtime.methods };
+    const params = { userId, startedAt, deletionAttemptId };
+    const favorite = { userId, itemType: 'tool', itemId: 'saved' } as const;
+    await runtime.methods.addToolFavorite(favorite);
+    return { runtime, erasure, cancel, params, favorite };
+  }
+  it('unfences a retained account after a later cascade failure, including after restart', async () => {
+    const { runtime, erasure, cancel, params, favorite } = await setup();
+    erasure.deleteSharedLinks = jest.fn().mockRejectedValue(new Error('shared links unavailable'));
+    try {
+      await expect(eraseUserData(params, erasure)).rejects.toThrow('shared links unavailable');
+      expect(await count('User', { _id: new mongoose.Types.ObjectId(params.userId) })).toBe(1);
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+      await cancelUserDataDeletion(params, cancel);
+      await runtime.close();
+      const restarted = createFavoriteRuntime(
+        methods,
+        { PG_TEST_URL: options.connectionString },
+        createPostgresFavoriteBackend,
+      );
+      try {
+        await restarted.initialize(config);
+        await expect(restarted.methods.addToolFavorite(favorite)).resolves.toEqual({
+          ok: true,
+          added: true,
+        });
+        expect(await restarted.methods.getToolFavorites(params.userId)).toEqual([
+          { itemType: 'tool', itemId: 'saved' },
+        ]);
+      } finally {
+        await restarted.close();
+      }
+    } finally {
+      await runtime.close();
+    }
+  });
+  it.each(['deleted', 'other-attempt', 'mongo-error'] as const)(
+    'keeps the marker when cancellation cannot prove ownership: %s',
+    async (reason) => {
+      const { runtime, erasure, cancel, params, favorite } = await setup();
+      try {
+        await eraseUserData(params, erasure);
+        if (reason === 'deleted') await methods.deleteUserById(params.userId);
+        if (reason === 'other-attempt')
+          await model('User').updateOne(
+            { _id: new mongoose.Types.ObjectId(params.userId) },
+            { $set: { agentTriggerDeletionStartedAt: new Date(params.startedAt.getTime() + 1) } },
+          );
+        if (reason === 'mongo-error')
+          jest
+            .spyOn(mongoose.models.User.collection, 'findOne')
+            .mockRejectedValueOnce(new Error('Mongo unavailable'));
+        if (reason === 'mongo-error')
+          await expect(cancelUserDataDeletion(params, cancel)).rejects.toThrow('Mongo unavailable');
+        else await cancelUserDataDeletion(params, cancel);
+        if (reason === 'mongo-error')
+          expect(
+            await methods.isAgentTriggerUserDeletionOwner(params.userId, params.startedAt),
+          ).toBe(true);
+        await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+        await runtime.close();
+        const restarted = createFavoriteRuntime(
+          methods,
+          { PG_TEST_URL: options.connectionString },
+          createPostgresFavoriteBackend,
+        );
+        try {
+          await restarted.initialize(config);
+          await expect(restarted.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+        } finally {
+          await restarted.close();
+        }
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
+  it('retains Mongo ownership through a PostgreSQL cancellation fault, then retries after restart', async () => {
+    const { runtime, erasure, cancel, params, favorite } = await setup();
+    try {
+      await eraseUserData(params, erasure);
+      await db.query(
+        `CREATE FUNCTION reject_cancel() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cancel unavailable'; END $$`,
+      );
+      await db.query(
+        'CREATE TRIGGER reject_cancel BEFORE DELETE ON tool_favorite_erasure FOR EACH ROW EXECUTE FUNCTION reject_cancel()',
+      );
+      try {
+        await expect(cancelUserDataDeletion(params, cancel)).rejects.toThrow('cancel unavailable');
+      } finally {
+        await db.query('DROP TRIGGER reject_cancel ON tool_favorite_erasure');
+        await db.query('DROP FUNCTION reject_cancel()');
+      }
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+      expect(await methods.isAgentTriggerUserDeletionOwner(params.userId, params.startedAt)).toBe(
+        true,
+      );
+      await runtime.close();
+      const restarted = createFavoriteRuntime(
+        methods,
+        { PG_TEST_URL: options.connectionString },
+        createPostgresFavoriteBackend,
+      );
+      try {
+        await restarted.initialize(config);
+        await cancelUserDataDeletion(params, { ...methods, ...restarted.methods });
+        expect(await methods.isAgentTriggerUserDeletionOwner(params.userId, params.startedAt)).toBe(
+          false,
+        );
+        await expect(restarted.methods.addToolFavorite(favorite)).resolves.toEqual({
+          ok: true,
+          added: true,
+        });
+      } finally {
+        await restarted.close();
+      }
+    } finally {
+      await runtime.close();
+    }
+  });
+  it('retries Mongo release after PostgreSQL cleanup without losing the durable owner', async () => {
+    const { runtime, erasure, cancel, params, favorite } = await setup();
+    try {
+      await eraseUserData(params, erasure);
+      // Fail the real release write after the ownership read and PostgreSQL cancellation.
+      jest
+        .spyOn(mongoose.models.User.collection, 'updateOne')
+        .mockRejectedValueOnce(new Error('Mongo release unavailable'));
+      await expect(cancelUserDataDeletion(params, cancel)).rejects.toThrow(
+        'Mongo release unavailable',
+      );
+      expect(await methods.isAgentTriggerUserDeletionOwner(params.userId, params.startedAt)).toBe(
+        true,
+      );
+      await expect(runtime.methods.addToolFavorite(favorite)).resolves.toEqual({
+        ok: true,
+        added: true,
+      });
+      await cancelUserDataDeletion(params, cancel);
+      expect(await methods.isAgentTriggerUserDeletionOwner(params.userId, params.startedAt)).toBe(
+        false,
+      );
+    } finally {
+      await runtime.close();
+    }
+  });
+  it('tolerates a lost Mongo release acknowledgement after PostgreSQL cleanup', async () => {
+    const { runtime, erasure, cancel, params, favorite } = await setup();
+    try {
+      await eraseUserData(params, erasure);
+      cancel.cancelAgentTriggerUserDeletion = async (userId, startedAt) => {
+        await methods.cancelAgentTriggerUserDeletion(userId, startedAt, params.deletionAttemptId);
+        throw new Error('release acknowledgement lost');
+      };
+      await expect(cancelUserDataDeletion(params, cancel)).rejects.toThrow(
+        'release acknowledgement lost',
+      );
+      await cancelUserDataDeletion(params, { ...methods, ...runtime.methods });
+      await expect(runtime.methods.addToolFavorite(favorite)).resolves.toEqual({
+        ok: true,
+        added: true,
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+  it('makes concurrent cancellation idempotent without releasing a successor UUID', async () => {
+    const { runtime, erasure, cancel, params, favorite } = await setup();
+    try {
+      await eraseUserData(params, erasure);
+      const successor = randomUUID();
+      await runtime.methods.deleteUserToolFavorites(params.userId, successor);
+      await Promise.all([
+        cancelUserDataDeletion(params, cancel),
+        cancelUserDataDeletion(params, cancel),
+      ]);
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+      expect(
+        (
+          await db.query('SELECT attempt_id FROM tool_favorite_erasure WHERE user_id=$1', [
+            params.userId,
+          ])
+        ).rows,
+      ).toEqual([{ attempt_id: successor }]);
+    } finally {
+      await runtime.close();
+    }
+  });
+  it('preserves a successor owner and UUID acquired after the ownership proof', async () => {
+    const { runtime, erasure, cancel, params, favorite } = await setup();
+    const successor = randomUUID();
+    const nextStartedAt = new Date(params.startedAt.getTime() + 1);
+    try {
+      await eraseUserData(params, erasure);
+      cancel.isAgentTriggerUserDeletionOwner = async (userId, startedAt) => {
+        const owned = await methods.isAgentTriggerUserDeletionOwner(userId, startedAt);
+        await methods.cancelAgentTriggerUserDeletion(userId, startedAt, params.deletionAttemptId);
+        await methods.beginAgentTriggerUserDeletion(userId, nextStartedAt, successor);
+        await runtime.methods.deleteUserToolFavorites(userId, successor);
+        return owned;
+      };
+      await cancelUserDataDeletion(params, cancel);
+      expect(await methods.isAgentTriggerUserDeletionOwner(params.userId, nextStartedAt)).toBe(
+        true,
+      );
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+      expect(
+        (
+          await db.query('SELECT attempt_id FROM tool_favorite_erasure WHERE user_id=$1', [
+            params.userId,
+          ])
+        ).rows,
+      ).toEqual([{ attempt_id: successor }]);
+    } finally {
+      await runtime.close();
+    }
+  });
+  it('keeps both fences when a final delete is pending or loses its acknowledgement', async () => {
+    const { runtime, erasure, cancel, params, favorite } = await setup();
+    const attempt = createUserDeletionAttempt();
+    let releaseCommit!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    try {
+      await eraseUserData(params, erasure);
+      const committing = attempt.commit(async () => {
+        await gate;
+        await methods.deleteUserById(params.userId, {
+          startedAt: params.startedAt,
+          attemptId: params.deletionAttemptId,
+        });
+        throw new Error('delete acknowledgement lost');
+      });
+      await attempt.cancel(params, cancel);
+      expect(await methods.isAgentTriggerUserDeletionOwner(params.userId, params.startedAt)).toBe(
+        true,
+      );
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+      releaseCommit();
+      await expect(committing).rejects.toThrow('delete acknowledgement lost');
+      await attempt.cancel(params, cancel);
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+    } finally {
+      releaseCommit();
+      await runtime.close();
+    }
+  });
+  it('keeps both fences after a final delete throws without a known outcome', async () => {
+    const { runtime, erasure, cancel, params, favorite } = await setup();
+    const attempt = createUserDeletionAttempt();
+    try {
+      await eraseUserData(params, erasure);
+      await expect(
+        attempt.commit(async () => {
+          throw new Error('delete outcome unknown');
+        }),
+      ).rejects.toThrow('delete outcome unknown');
+      await attempt.cancel(params, cancel);
+      expect(await methods.isAgentTriggerUserDeletionOwner(params.userId, params.startedAt)).toBe(
+        true,
+      );
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+    } finally {
+      await runtime.close();
+    }
+  });
+  it('never cancels a permanent marker when no UUID was supplied', async () => {
+    const { runtime, cancel, params, favorite } = await setup();
+    try {
+      await runtime.methods.deleteUserToolFavorites(params.userId);
+      await cancelUserDataDeletion({ userId: params.userId, startedAt: params.startedAt }, cancel);
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+    } finally {
+      await runtime.close();
+    }
   });
 });

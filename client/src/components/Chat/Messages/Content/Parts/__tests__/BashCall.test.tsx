@@ -33,7 +33,16 @@ jest.mock('~/hooks', () => ({
       };
       return translations[key] ?? key;
     },
-  useProgress: (initialProgress: number) => initialProgress,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  CopyButton: ({ label, onClick }: { label?: string; onClick?: () => void }) => (
+    <button type="button" onClick={onClick}>
+      {label}
+    </button>
+  ),
+  LangIcon: () => <span data-testid="lang-icon" />,
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
@@ -42,6 +51,11 @@ jest.mock('~/hooks', () => ({
     },
     ref: { current: null },
   }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (initialProgress: number) => initialProgress,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
@@ -66,20 +80,6 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
       {phase === 'failed' ? ` · ${verdict || 'tool failed'}` : ''}
     </div>
   ),
-}));
-
-jest.mock('~/components/Messages/Content/CopyButton', () => ({
-  __esModule: true,
-  default: ({ label, onClick }: { label?: string; onClick?: () => void }) => (
-    <button type="button" onClick={onClick}>
-      {label}
-    </button>
-  ),
-}));
-
-jest.mock('~/components/Messages/Content/LangIcon', () => ({
-  __esModule: true,
-  default: () => <span data-testid="lang-icon" />,
 }));
 
 jest.mock('../Attachment', () => ({

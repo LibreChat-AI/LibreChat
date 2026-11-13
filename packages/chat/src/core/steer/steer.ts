@@ -259,6 +259,20 @@ export function carriedSteerContext(source?: SteerCarriedContext): SteerCarriedC
   };
 }
 
+/** Whether a steer may become a durable server queued turn if its run ends without
+ *  applying it. Only when nothing about it lives solely in this tab: skill picks and
+ *  reasoning overrides never ride the POST, and a queued-origin steer must restore to
+ *  its exact queue row. */
+export function canPromoteLeftover(
+  source: SteerCarriedContext & { queuedOrigin?: QueuedMessageOrigin },
+): boolean {
+  return (
+    source.queuedOrigin == null &&
+    (source.manualSkills == null || source.manualSkills.length === 0) &&
+    source.reasoningOverride == null
+  );
+}
+
 /** Restore a temporarily removed queue item using surviving original
  * neighbours first, then the queue's durable priority/time ordering. */
 export function insertQueuedOrigin(

@@ -165,7 +165,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                   onClick={handlePrevPage}
                   disabled={currentPage === 0}
                   className="size-7"
-                  aria-label="Previous source"
+                  aria-label={localize('com_sources_previous')}
                 >
                   <ChevronLeft className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
@@ -183,7 +183,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                         ? 'bg-surface-hover text-text-primary font-medium'
                         : 'text-text-secondary hover:bg-surface-hover'
                     }`}
-                    aria-label={`Source ${i + 1}`}
+                    aria-label={localize('com_sources_number', { number: i + 1 })}
                     aria-current={i === currentPage ? 'true' : undefined}
                   >
                     {i + 1}
@@ -195,7 +195,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                   onClick={handleNextPage}
                   disabled={currentPage === totalPages - 1}
                   className="size-7"
-                  aria-label="Next source"
+                  aria-label={localize('com_sources_next')}
                 >
                   <ChevronRight className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
@@ -234,7 +234,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                   onClick={handlePrevPage}
                   disabled={currentPage === 0}
                   className="size-7"
-                  aria-label="Previous source"
+                  aria-label={localize('com_sources_previous')}
                 >
                   <ChevronLeft className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
@@ -252,7 +252,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                         ? 'bg-surface-hover text-text-primary font-medium'
                         : 'text-text-secondary hover:bg-surface-hover'
                     }`}
-                    aria-label={`Source ${i + 1}`}
+                    aria-label={localize('com_sources_number', { number: i + 1 })}
                     aria-current={i === currentPage ? 'true' : undefined}
                   >
                     {i + 1}
@@ -264,7 +264,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                   onClick={handleNextPage}
                   disabled={currentPage === totalPages - 1}
                   className="size-7"
-                  aria-label="Next source"
+                  aria-label={localize('com_sources_next')}
                 >
                   <ChevronRight className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>

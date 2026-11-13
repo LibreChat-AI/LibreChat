@@ -50,7 +50,7 @@ const readConfig = (threadId: string, checkpointNamespace = '') => ({
  * persists only checkpoints seeded this way (a bare `put` is a clean exit → discarded).
  */
 async function seedInterruptCheckpoint(
-  saver: MongoDBSaver,
+  saver: Pick<LazyMongoSaver, 'put' | 'putWrites'>,
   threadId: string,
   checkpointNamespace = '',
   interruptId = 'interrupt-current',
@@ -830,7 +830,7 @@ describe('LazyMongoSaver (lazy persistence — mongodb-memory-server)', () => {
     const { config, checkpoint, metadata } = putArgs(threadId);
 
     const spy = jest
-      .spyOn(MongoDBSaver.prototype, 'putWrites')
+      .spyOn(saver!.repository, 'saveWrites')
       .mockRejectedValueOnce(new Error('transient mongo failure'));
     try {
       await expect(

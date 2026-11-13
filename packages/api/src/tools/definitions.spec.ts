@@ -1,13 +1,15 @@
 import { Providers, WebSearchToolDefinition, GitHubCompareToolDefinition } from '@librechat/agents';
 import type {
   LoadToolDefinitionsParams,
+  LoadToolDefinitionsResult,
   LoadToolDefinitionsDeps,
   ActionToolDefinition,
+  MCPServerTools,
 } from './definitions';
+import { loadToolDefinitions, orderMCPServerNames } from './definitions';
 import { toolkitExpansion, toolkitParent } from './toolkits/mapping';
 import { getToolDefinition } from './registry/definitions';
 import { getToolApprovalIdentity } from './approval';
-import { loadToolDefinitions } from './definitions';
 import { formatMCPServerTools } from '~/mcp/tools';
 import { getToolApprovalName } from './approval';
 
@@ -1128,6 +1130,592 @@ describe('definitions.ts', () => {
       });
     });
 
+    describe('concurrent MCP and action resolution', () => {
+      type Fetched = MCPServerTools | null;
+      type FetchMock = jest.Mock<Promise<Fetched>, [string, string]>;
+
+      const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+      function deferred<T>() {
+        let resolve!: (value: T) => void;
+        let reject!: (error: Error) => void;
+        const promise = new Promise<T>((yes, no) => {
+          resolve = yes;
+          reject = no;
+        });
+        return { promise, resolve, reject };
+      }
+
+      /** One tool per name, keyed the way a server catalog builds its keys. */
+      function catalogOf(serverName: string, ...names: string[]): MCPServerTools {
+        const catalog: MCPServerTools = {};
+        for (const name of names) {
+          const key = `${name}_mcp_${serverName}`;
+          catalog[key] = {
+            function: {
+              name: key,
+              description: `${name} on ${serverName}`,
+              parameters: { type: 'object', properties: {} },
+            },
+          };
+        }
+        return catalog;
+      }
+
+      const calledServers = (fetch: FetchMock): string[] =>
+        fetch.mock.calls.map(([, serverName]) => serverName);
+
+      const toolNames = (result: Pick<LoadToolDefinitionsResult, 'toolDefinitions'>): string[] =>
+        result.toolDefinitions.map(({ name }) => name);
+
+      const toolServers = (
+        result: Pick<LoadToolDefinitionsResult, 'toolDefinitions'>,
+      ): [string, string | undefined][] =>
+        result.toolDefinitions.map((def) => [
+          def.name,
+          'serverName' in def ? def.serverName : undefined,
+        ]);
+
+      const baseParams = { userId: 'user-123', agentId: 'agent-123' };
+
+      it('starts the fetch for every distinct server before any of them resolves', async () => {
+        const alpha = deferred<Fetched>();
+        const beta = deferred<Fetched>();
+        const fetch: FetchMock = jest.fn((_userId, serverName) =>
+          serverName === 'alpha' ? alpha.promise : beta.promise,
+        );
+
+        const loading = loadToolDefinitions(
+          { ...baseParams, tools: ['search_mcp_alpha', 'list_mcp_beta'] },
+          { getOrFetchMCPServerTools: fetch, isBuiltInTool: () => false },
+        );
+        await settle();
+
+        try {
+          expect(calledServers(fetch)).toEqual(['alpha', 'beta']);
+        } finally {
+          alpha.resolve(catalogOf('alpha', 'search'));
+          beta.resolve(catalogOf('beta', 'list'));
+        }
+
+        const result = await loading;
+        expect(toolNames(result)).toEqual(['search_mcp_alpha', 'list_mcp_beta']);
+        expect(result.mcpResolution).toEqual({ expectedToolCount: 2, resolvedToolCount: 2 });
+      });
+
+      it('fetches a server once however many of its tools are selected', async () => {
+        const fetch: FetchMock = jest.fn(async (_userId, serverName) =>
+          catalogOf(serverName, 'search', 'list'),
+        );
+
+        const result = await loadToolDefinitions(
+          { ...baseParams, tools: ['search_mcp_alpha', 'list_mcp_beta', 'list_mcp_alpha'] },
+          { getOrFetchMCPServerTools: fetch, isBuiltInTool: () => false },
+        );
+
+        expect(calledServers(fetch).sort()).toEqual(['alpha', 'beta']);
+        expect(toolNames(result)).toEqual(['search_mcp_alpha', 'list_mcp_beta', 'list_mcp_alpha']);
+        expect(result.mcpResolution).toEqual({ expectedToolCount: 3, resolvedToolCount: 3 });
+      });
+
+      it('keeps tool order in the output whatever order the fetches settle in', async () => {
+        const gates = new Map([
+          ['alpha', deferred<Fetched>()],
+          ['beta', deferred<Fetched>()],
+          ['gamma', deferred<Fetched>()],
+        ]);
+        const fetch: FetchMock = jest.fn(
+          (_userId, serverName) => gates.get(serverName)?.promise ?? Promise.resolve(null),
+        );
+
+        const loading = loadToolDefinitions(
+          { ...baseParams, tools: ['a_mcp_alpha', 'b_mcp_beta', 'c_mcp_gamma'] },
+          { getOrFetchMCPServerTools: fetch, isBuiltInTool: () => false },
+        );
+        await settle();
+
+        try {
+          expect(calledServers(fetch)).toEqual(['alpha', 'beta', 'gamma']);
+        } finally {
+          gates.get('gamma')?.resolve(catalogOf('gamma', 'c'));
+          gates.get('alpha')?.resolve(catalogOf('alpha', 'a'));
+          gates.get('beta')?.resolve(catalogOf('beta', 'b'));
+        }
+
+        const result = await loading;
+        expect(toolNames(result)).toEqual(['a_mcp_alpha', 'b_mcp_beta', 'c_mcp_gamma']);
+      });
+
+      it('holds a lookup back until one of the allowed number has settled', async () => {
+        const gates = new Map([
+          ['alpha', deferred<Fetched>()],
+          ['beta', deferred<Fetched>()],
+          ['gamma', deferred<Fetched>()],
+        ]);
+        const fetch: FetchMock = jest.fn(
+          (_userId, serverName) => gates.get(serverName)?.promise ?? Promise.resolve(null),
+        );
+
+        const loading = loadToolDefinitions(
+          {
+            ...baseParams,
+            tools: ['a_mcp_alpha', 'b_mcp_beta', 'c_mcp_gamma'],
+            mcpCatalogLookups: 2,
+          },
+          { getOrFetchMCPServerTools: fetch, isBuiltInTool: () => false },
+        );
+        await settle();
+
+        try {
+          expect(calledServers(fetch)).toEqual(['alpha', 'beta']);
+          gates.get('beta')?.resolve(catalogOf('beta', 'b'));
+          await settle();
+          expect(calledServers(fetch)).toEqual(['alpha', 'beta', 'gamma']);
+        } finally {
+          gates.get('alpha')?.resolve(catalogOf('alpha', 'a'));
+          gates.get('beta')?.resolve(catalogOf('beta', 'b'));
+          gates.get('gamma')?.resolve(catalogOf('gamma', 'c'));
+        }
+
+        const result = await loading;
+        expect(toolNames(result)).toEqual(['a_mcp_alpha', 'b_mcp_beta', 'c_mcp_gamma']);
+      });
+
+      it('looks servers up one after another when the bound is 1', async () => {
+        const alpha = deferred<Fetched>();
+        const fetch: FetchMock = jest.fn((_userId, serverName) =>
+          serverName === 'alpha' ? alpha.promise : Promise.resolve(catalogOf('beta', 'list')),
+        );
+
+        const loading = loadToolDefinitions(
+          { ...baseParams, tools: ['search_mcp_alpha', 'list_mcp_beta'], mcpCatalogLookups: 1 },
+          { getOrFetchMCPServerTools: fetch, isBuiltInTool: () => false },
+        );
+        await settle();
+
+        try {
+          expect(calledServers(fetch)).toEqual(['alpha']);
+        } finally {
+          alpha.resolve(catalogOf('alpha', 'search'));
+        }
+
+        const result = await loading;
+        expect(calledServers(fetch)).toEqual(['alpha', 'beta']);
+        expect(toolNames(result)).toEqual(['search_mcp_alpha', 'list_mcp_beta']);
+      });
+
+      it('reports the looked-up servers in tool order whatever order they settle in', async () => {
+        const gates = new Map([
+          ['alpha', deferred<Fetched>()],
+          ['beta', deferred<Fetched>()],
+          ['gamma', deferred<Fetched>()],
+        ]);
+        const fetch: FetchMock = jest.fn(
+          (_userId, serverName) => gates.get(serverName)?.promise ?? Promise.resolve(null),
+        );
+
+        const loading = loadToolDefinitions(
+          { ...baseParams, tools: ['a_mcp_alpha', 'b_mcp_beta', 'c_mcp_gamma', 'd_mcp_alpha'] },
+          { getOrFetchMCPServerTools: fetch, isBuiltInTool: () => false },
+        );
+        await settle();
+        gates.get('gamma')?.resolve(catalogOf('gamma', 'c'));
+        gates.get('beta')?.resolve(null);
+        gates.get('alpha')?.resolve(catalogOf('alpha', 'a', 'd'));
+
+        const result = await loading;
+        expect(result.mcpServerLookupOrder).toEqual(['alpha', 'beta', 'gamma']);
+      });
+
+      describe('alias fallback', () => {
+        const aliasParams = {
+          ...baseParams,
+          mcpServerNames: ['alpha', 'Connector__Company', 'Other__Server'],
+          rawServerNames: ['alpha', 'Connector: Company', 'Other: Server'],
+          accessibleServerNames: ['alpha', 'Other__Server', 'Other: Server'],
+        };
+
+        it('falls back to the raw alias only for a parsed name that is not a known server', async () => {
+          const fetch: FetchMock = jest.fn(async (_userId, serverName) => {
+            if (serverName === 'alpha') {
+              return catalogOf('alpha', 'search');
+            }
+            return serverName === 'Connector: Company'
+              ? catalogOf('Connector__Company', 'find')
+              : null;
+          });
+
+          const result = await loadToolDefinitions(
+            {
+              ...aliasParams,
+              tools: ['search_mcp_alpha', 'find_mcp_Connector__Company', 'ping_mcp_Other__Server'],
+            },
+            { getOrFetchMCPServerTools: fetch, isBuiltInTool: () => false },
+          );
+
+          expect(calledServers(fetch).sort()).toEqual([
+            'Connector: Company',
+            'Connector__Company',
+            'Other__Server',
+            'alpha',
+          ]);
+          expect(toolServers(result)).toEqual([
+            ['search_mcp_alpha', 'alpha'],
+            ['find_mcp_Connector__Company', 'Connector: Company'],
+          ]);
+          expect(result.mcpResolution).toEqual({ expectedToolCount: 3, resolvedToolCount: 2 });
+        });
+
+        it('shares one in-flight fetch between a direct lookup and an alias fallback to the same server', async () => {
+          /** `Connector__Company` is not a known server, so it falls back to its raw alias,
+           *  which the second tool key is already looking up directly. */
+          const normalized = deferred<Fetched>();
+          const raw = deferred<Fetched>();
+          const fetch: FetchMock = jest.fn((_userId, serverName) =>
+            serverName === 'Connector__Company' ? normalized.promise : raw.promise,
+          );
+
+          const loading = loadToolDefinitions(
+            {
+              ...aliasParams,
+              tools: ['search_mcp_Connector__Company', 'lookup_mcp_Connector: Company'],
+            },
+            { getOrFetchMCPServerTools: fetch, isBuiltInTool: () => false },
+          );
+          await settle();
+          normalized.resolve(null);
+          await settle();
+          raw.resolve({
+            ...catalogOf('Connector__Company', 'search'),
+            ...catalogOf('Connector: Company', 'lookup'),
+          });
+
+          const result = await loading;
+          expect(calledServers(fetch)).toEqual(['Connector__Company', 'Connector: Company']);
+          expect(toolServers(result)).toEqual([
+            ['search_mcp_Connector__Company', 'Connector: Company'],
+            ['lookup_mcp_Connector: Company', 'Connector: Company'],
+          ]);
+        });
+      });
+
+      it('keeps definition order, counts and OAuth action names for a mixed tool list', async () => {
+        const fetch: FetchMock = jest.fn(async (_userId, serverName) =>
+          serverName === 'alpha' ? catalogOf('alpha', 'search') : catalogOf('beta', 'list', 'get'),
+        );
+        const getActionToolDefinitions = jest.fn<
+          Promise<ActionToolDefinition[]>,
+          [string, string[]]
+        >(async () => [
+          { name: 'getWeather_action_weather_com', description: 'Get weather' },
+          { name: 'sendMail_action_mail_example_com', description: 'Send an email', oauth: true },
+        ]);
+
+        const result = await loadToolDefinitions(
+          {
+            ...baseParams,
+            tools: [
+              'calculator',
+              'search_mcp_alpha',
+              'getWeather_action_weather---com',
+              'sys__all__sys_mcp_beta',
+              'web_search',
+              'ghost_mcp_alpha',
+              'sys__server__sys_mcp_alpha',
+              'sendMail_action_mail---example---com',
+              'not_a_builtin',
+            ],
+          },
+          {
+            getOrFetchMCPServerTools: fetch,
+            getActionToolDefinitions,
+            isBuiltInTool: (name) => name === 'calculator' || name === 'web_search',
+          },
+        );
+
+        expect(toolNames(result)).toEqual([
+          'search_mcp_alpha',
+          'list_mcp_beta',
+          'get_mcp_beta',
+          'getWeather_action_weather_com',
+          'sendMail_action_mail_example_com',
+          'calculator',
+          'web_search',
+        ]);
+        expect(result.mcpResolution).toEqual({ expectedToolCount: 3, resolvedToolCount: 3 });
+        expect(result.oauthActionToolNames).toEqual(['sendMail_action_mail_example_com']);
+        expect(calledServers(fetch).sort()).toEqual(['alpha', 'beta']);
+        expect(getActionToolDefinitions).toHaveBeenCalledWith('agent-123', [
+          'getWeather_action_weather---com',
+          'sendMail_action_mail---example---com',
+        ]);
+      });
+
+      it('starts the action definition fetch while MCP fetches are still pending', async () => {
+        const alpha = deferred<Fetched>();
+        const actions = deferred<ActionToolDefinition[]>();
+        const fetch = jest.fn<Promise<Fetched>, [string, string]>(() => alpha.promise);
+        const getActionToolDefinitions = jest.fn<
+          Promise<ActionToolDefinition[]>,
+          [string, string[]]
+        >(() => actions.promise);
+
+        const loading = loadToolDefinitions(
+          { ...baseParams, tools: ['search_mcp_alpha', 'getWeather_action_weather---com'] },
+          { getOrFetchMCPServerTools: fetch, getActionToolDefinitions, isBuiltInTool: () => false },
+        );
+        await settle();
+
+        try {
+          expect(getActionToolDefinitions).toHaveBeenCalledWith('agent-123', [
+            'getWeather_action_weather---com',
+          ]);
+          expect(calledServers(fetch)).toEqual(['alpha']);
+        } finally {
+          actions.resolve([{ name: 'getWeather_action_weather_com', description: 'Get weather' }]);
+          alpha.resolve(catalogOf('alpha', 'search'));
+        }
+
+        const result = await loading;
+        expect(toolNames(result)).toEqual(['search_mcp_alpha', 'getWeather_action_weather_com']);
+      });
+
+      describe('failures', () => {
+        const failureTools = ['a_mcp_alpha', 'b_mcp_beta'];
+
+        it('rejects with the error of a rejecting fetch, while a null fetch only leaves the server empty', async () => {
+          const failure = new Error('registry down');
+
+          await expect(
+            loadToolDefinitions(
+              { ...baseParams, tools: failureTools },
+              {
+                getOrFetchMCPServerTools: async (_userId, serverName) => {
+                  if (serverName === 'alpha') {
+                    throw failure;
+                  }
+                  return catalogOf('beta', 'b');
+                },
+                isBuiltInTool: () => false,
+              },
+            ),
+          ).rejects.toBe(failure);
+
+          const unavailable = await loadToolDefinitions(
+            { ...baseParams, tools: failureTools },
+            { getOrFetchMCPServerTools: async () => null, isBuiltInTool: () => false },
+          );
+          expect(unavailable.toolDefinitions).toEqual([]);
+          expect(unavailable.mcpResolution).toEqual({ expectedToolCount: 2, resolvedToolCount: 0 });
+        });
+
+        it('rejects with the error of the action fetch', async () => {
+          const failure = new Error('actions unavailable');
+
+          await expect(
+            loadToolDefinitions(
+              { ...baseParams, tools: ['a_mcp_alpha', 'getWeather_action_weather---com'] },
+              {
+                getOrFetchMCPServerTools: async () => catalogOf('alpha', 'a'),
+                getActionToolDefinitions: async () => {
+                  throw failure;
+                },
+                isBuiltInTool: () => false,
+              },
+            ),
+          ).rejects.toBe(failure);
+        });
+
+        it('leaves no unhandled rejection when the other fetches fail after the first failure', async () => {
+          /** jest-circus fails the running test on an unhandled rejection, so finishing this one
+           *  after the late failures have fired is the assertion. */
+          const failLater: Array<() => void> = [];
+          const failLate = (label: string): Promise<never> =>
+            new Promise((_resolve, reject) => {
+              failLater.push(() => reject(new Error(`${label} failed late`)));
+            });
+          const fetch: FetchMock = jest.fn((_userId, serverName) =>
+            serverName === 'alpha'
+              ? Promise.reject(new Error('alpha failed'))
+              : failLate(serverName),
+          );
+          const getActionToolDefinitions = jest.fn<
+            Promise<ActionToolDefinition[]>,
+            [string, string[]]
+          >(() => failLate('actions'));
+
+          await expect(
+            loadToolDefinitions(
+              {
+                ...baseParams,
+                tools: [
+                  'a_mcp_alpha',
+                  'b_mcp_beta',
+                  'c_mcp_gamma',
+                  'getWeather_action_weather---com',
+                ],
+              },
+              {
+                getOrFetchMCPServerTools: fetch,
+                getActionToolDefinitions,
+                isBuiltInTool: () => false,
+              },
+            ),
+          ).rejects.toThrow('alpha failed');
+
+          expect(failLater).toHaveLength(3);
+          failLater.forEach((fail) => fail());
+          await settle();
+          await settle();
+        });
+      });
+
+      describe('refresh', () => {
+        it('stays serial and happens once per server', async () => {
+          const staleAlpha = catalogOf('alpha', 'list');
+          const staleBeta = catalogOf('beta', 'list');
+          const alphaRefresh = deferred<Fetched>();
+          const betaRefresh = deferred<Fetched>();
+          const refresh: FetchMock = jest.fn((_userId, serverName) =>
+            serverName === 'alpha' ? alphaRefresh.promise : betaRefresh.promise,
+          );
+
+          const loading = loadToolDefinitions(
+            { ...baseParams, tools: ['run_mcp_alpha', 'run_mcp_beta', 'other_mcp_alpha'] },
+            {
+              getOrFetchMCPServerTools: async (_userId, serverName) =>
+                serverName === 'alpha' ? staleAlpha : staleBeta,
+              refreshMCPServerTools: refresh,
+              isBuiltInTool: () => false,
+            },
+          );
+          await settle();
+          expect(calledServers(refresh)).toEqual(['alpha']);
+
+          alphaRefresh.resolve({ ...staleAlpha, ...catalogOf('alpha', 'run', 'other') });
+          await settle();
+          expect(calledServers(refresh)).toEqual(['alpha', 'beta']);
+
+          betaRefresh.resolve({ ...staleBeta, ...catalogOf('beta', 'run') });
+          const result = await loading;
+
+          expect(calledServers(refresh)).toEqual(['alpha', 'beta']);
+          expect(toolNames(result)).toEqual(['run_mcp_alpha', 'run_mcp_beta', 'other_mcp_alpha']);
+        });
+
+        it('resolves a later spelling of a refreshed server against the refreshed catalog', async () => {
+          /** The refreshed catalog is what a later lookup of the same server returns, as it is
+           *  for the request-scoped tool memory the real loader dependency keeps. */
+          let current: MCPServerTools = catalogOf('Connector__Company', 'other');
+          const refreshed: MCPServerTools = {
+            ...current,
+            ...catalogOf('Connector__Company', 'search'),
+            ...catalogOf('Connector: Company', 'lookup'),
+          };
+
+          const result = await loadToolDefinitions(
+            {
+              ...baseParams,
+              tools: ['search_mcp_Connector__Company', 'lookup_mcp_Connector: Company'],
+              mcpServerNames: ['Connector__Company'],
+              rawServerNames: ['Connector: Company'],
+            },
+            {
+              getOrFetchMCPServerTools: async (_userId, serverName) =>
+                serverName === 'Connector: Company' ? current : null,
+              refreshMCPServerTools: async () => {
+                current = refreshed;
+                return refreshed;
+              },
+              isBuiltInTool: () => false,
+            },
+          );
+
+          expect(toolNames(result)).toEqual([
+            'search_mcp_Connector__Company',
+            'lookup_mcp_Connector: Company',
+          ]);
+          expect(result.mcpResolution).toEqual({ expectedToolCount: 2, resolvedToolCount: 2 });
+        });
+
+        it('resolves a later spelling again after a refresh made its server available', async () => {
+          /** `legacy_mcp_Other: Server` names the raw server, unavailable until its refresh;
+           *  `search_mcp_Other__Server` reaches the same server through its alias. */
+          let available = false;
+          const catalog: MCPServerTools = {
+            ...catalogOf('Other__Server', 'search'),
+            ...catalogOf('Other: Server', 'legacy'),
+          };
+          const refresh: FetchMock = jest.fn(async (_userId, serverName) => {
+            if (serverName !== 'Other: Server') {
+              return null;
+            }
+            available = true;
+            return catalog;
+          });
+
+          const result = await loadToolDefinitions(
+            {
+              ...baseParams,
+              tools: ['legacy_mcp_Other: Server', 'search_mcp_Other__Server'],
+              mcpServerNames: ['Other__Server'],
+              rawServerNames: ['Other: Server'],
+            },
+            {
+              getOrFetchMCPServerTools: async (_userId, serverName) =>
+                serverName === 'Other: Server' && available ? catalog : null,
+              refreshMCPServerTools: refresh,
+              isBuiltInTool: () => false,
+            },
+          );
+
+          expect(calledServers(refresh)).toEqual(['Other: Server']);
+          expect(toolServers(result)).toEqual([
+            ['legacy_mcp_Other: Server', 'Other: Server'],
+            ['search_mcp_Other__Server', 'Other: Server'],
+          ]);
+        });
+
+        it('keeps an earlier spelling on the catalog it was resolved with', async () => {
+          /** A tool only the refreshed catalog holds stays unresolved under the spelling that
+           *  was already resolved: a refresh through the other spelling does not rewrite it. */
+          let current: MCPServerTools = catalogOf('Connector__Company', 't2');
+          const refreshed: MCPServerTools = {
+            ...catalogOf('Connector__Company', 't2', 't3'),
+            ...catalogOf('Connector: Company', 't3'),
+          };
+
+          const result = await loadToolDefinitions(
+            {
+              ...baseParams,
+              tools: [
+                't2_mcp_Connector__Company',
+                't3_mcp_Connector: Company',
+                't3_mcp_Connector__Company',
+              ],
+              mcpServerNames: ['Connector__Company'],
+              rawServerNames: ['Connector: Company'],
+            },
+            {
+              getOrFetchMCPServerTools: async (_userId, serverName) =>
+                serverName === 'Connector: Company' ? current : null,
+              refreshMCPServerTools: async () => {
+                current = refreshed;
+                return refreshed;
+              },
+              isBuiltInTool: () => false,
+            },
+          );
+
+          expect(toolNames(result)).toEqual([
+            't2_mcp_Connector__Company',
+            't3_mcp_Connector: Company',
+          ]);
+          expect(result.mcpResolution).toEqual({ expectedToolCount: 3, resolvedToolCount: 2 });
+        });
+      });
+    });
+
     describe('toolkit expansion', () => {
       it('should expand image_gen_oai to include image_edit_oai', async () => {
         mockIsBuiltInTool.mockImplementation((name) => name === 'image_gen_oai');
@@ -1344,4 +1932,29 @@ test('live catalog reassignment changes consent while retaining the same display
   expect(getToolApprovalIdentity(second.toolDefinitions[0])).not.toBe(
     getToolApprovalIdentity(first.toolDefinitions[0]),
   );
+});
+
+describe('orderMCPServerNames', () => {
+  it('puts the names in lookup order', () => {
+    expect(
+      orderMCPServerNames(new Set(['gamma', 'alpha', 'beta']), ['alpha', 'beta', 'gamma']),
+    ).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('keeps names that were never looked up after the rest, in the order given', () => {
+    expect(orderMCPServerNames(['late', 'beta', 'other', 'alpha'], ['alpha', 'beta'])).toEqual([
+      'alpha',
+      'beta',
+      'late',
+      'other',
+    ]);
+  });
+
+  it('returns nothing for no names', () => {
+    expect(orderMCPServerNames([], ['alpha'])).toEqual([]);
+  });
+
+  it('returns the names as given when no lookup order is known', () => {
+    expect(orderMCPServerNames(new Set(['beta', 'alpha']))).toEqual(['beta', 'alpha']);
+  });
 });

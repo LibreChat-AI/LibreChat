@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Button, Spinner, ThemeSelector } from '@librechat/client';
 import type { EmailChangeErrorCode } from 'librechat-data-provider';
@@ -19,6 +19,7 @@ function RequestPasswordReset() {
   const [headerText, setHeaderText] = useState<string>('');
   const [showResendLink, setShowResendLink] = useState<boolean>(false);
   const [verificationStatus, setVerificationStatus] = useState<boolean>(false);
+  const [submitted, setSubmitted] = useState<boolean>(false);
   const token = useMemo(() => params.get('token') || '', [params]);
   const email = useMemo(() => params.get('email') || '', [params]);
   const userId = useMemo(() => params.get('userId') || '', [params]);
@@ -84,46 +85,48 @@ function RequestPasswordReset() {
     resendEmailMutation.mutate({ email });
   };
 
-  useEffect(() => {
-    if (
-      verificationStatus ||
-      verifyEmailMutation.isLoading ||
-      confirmEmailChangeMutation.isLoading
-    ) {
+  const hasVerificationParams = isEmailChange ? !!(token && email && userId) : !!(token && email);
+
+  const handleConfirm = () => {
+    if (submitted || !hasVerificationParams) {
       return;
     }
-
-    if (isEmailChange && token && email && userId) {
+    setSubmitted(true);
+    if (isEmailChange) {
       confirmEmailChangeMutation.mutate({ email, token, userId });
-    } else if (!isEmailChange && token && email) {
-      verifyEmailMutation.mutate({ email, token });
     } else {
-      if (email) {
-        setHeaderText(localize('com_auth_email_verification_failed_token_missing') + ' 😢');
-      } else {
-        setHeaderText(localize('com_auth_email_verification_invalid') + ' 🤨');
-      }
-      setShowResendLink(!isEmailChange);
-      setVerificationStatus(true);
+      verifyEmailMutation.mutate({ email, token });
     }
-  }, [
-    token,
-    email,
-    userId,
-    isEmailChange,
-    verificationStatus,
-    verifyEmailMutation,
-    confirmEmailChangeMutation,
-    localize,
-  ]);
+  };
 
-  const statusText = verificationStatus
-    ? headerText
-    : localize(
-        isEmailChange
-          ? 'com_auth_email_change_verification_in_progress'
-          : 'com_auth_email_verification_in_progress',
-      );
+  /**
+   * A valid link waits for an explicit click so email security scanners that open links
+   * (Defender Safe Links, Sophos, Hornetsecurity) do not consume the single-use token first.
+   * A link missing its parameters resolves immediately, since there is nothing to submit.
+   */
+  const invalidLink = !hasVerificationParams;
+  const resolved = verificationStatus || invalidLink;
+  const awaitingConfirmation = !invalidLink && !submitted && !verificationStatus;
+  const canResend = invalidLink ? !isEmailChange && resendEmailMutation.isIdle : showResendLink;
+
+  let statusText = headerText;
+  if (invalidLink && !headerText) {
+    statusText = email
+      ? localize('com_auth_email_verification_failed_token_missing') + ' 😢'
+      : localize('com_auth_email_verification_invalid') + ' 🤨';
+  } else if (awaitingConfirmation) {
+    statusText = localize(
+      isEmailChange
+        ? 'com_auth_email_change_confirm_title'
+        : 'com_auth_email_verification_confirm_title',
+    );
+  } else if (!resolved) {
+    statusText = localize(
+      isEmailChange
+        ? 'com_auth_email_change_verification_in_progress'
+        : 'com_auth_email_verification_in_progress',
+    );
+  }
 
   return (
     <div className="bg-surface-primary flex min-h-screen flex-col items-center justify-center pt-6 sm:pt-0">
@@ -138,17 +141,31 @@ function RequestPasswordReset() {
         >
           {statusText}
         </h1>
-        {!verificationStatus && (
+        {awaitingConfirmation && (
+          <>
+            <p className="text-text-secondary mb-6 max-w-md px-4 text-center text-lg">
+              {localize('com_auth_email_verification_confirm_description', { 0: email })}
+            </p>
+            <Button type="button" onClick={handleConfirm}>
+              {localize(
+                isEmailChange
+                  ? 'com_auth_email_change_confirm'
+                  : 'com_auth_email_verification_confirm',
+              )}
+            </Button>
+          </>
+        )}
+        {!awaitingConfirmation && !resolved && (
           <div className="text-accent-primary mt-4 flex justify-center">
             <Spinner className="h-8 w-8" />
           </div>
         )}
-        {verificationStatus && countdown > 0 && (
+        {resolved && countdown > 0 && (
           <p className="text-text-secondary text-center text-lg">
             {localize('com_auth_email_verification_redirecting', { 0: countdown.toString() })}
           </p>
         )}
-        {verificationStatus && showResendLink && countdown === 0 && (
+        {resolved && canResend && countdown === 0 && (
           <p className="text-text-secondary text-center text-lg">
             {localize('com_auth_email_verification_resend_prompt')}
             <Button

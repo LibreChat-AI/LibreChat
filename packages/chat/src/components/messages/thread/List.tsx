@@ -1,11 +1,11 @@
 import { memo } from 'react';
 import type { NamedExoticComponent, ReactElement } from 'react';
-import type { MessageRowSlotProps } from '../../../react/messages/host';
+import type { ThreadMessageProps } from '../../../react/messages/types';
 import type { ThreadRow } from '../../../core/thread';
 import { useRowMountWindow } from '../../../react/messages/useProgressiveRowMount';
 import Row from './Row';
 
-type ListProps = Pick<MessageRowSlotProps, 'currentEditId' | 'setCurrentEditId'> & {
+type ListProps = Pick<ThreadMessageProps, 'currentEditId' | 'setCurrentEditId'> & {
   rows: ThreadRow[];
 };
 

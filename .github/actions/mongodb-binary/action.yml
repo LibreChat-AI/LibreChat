@@ -1,0 +1,45 @@
+name: MongoDB memory-server binary
+description: >-
+  Restores the mongodb-memory-server binary cache and makes sure the mongod build the installed
+  mongodb-memory-server asks for is on disk and runs, so no test downloads it from inside a hook.
+  Use after dependencies are installed and before anything starts MongoMemoryServer.
+
+inputs:
+  working-directory:
+    description: >-
+      Directory holding the package-lock.json and the installed node_modules the tests use,
+      relative to the workspace. Only needed when the repository is checked out to a subpath.
+    required: false
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    # restore-keys keeps the previous binary warm across lockfile churn; a genuinely new binary
+    # version downloads once, in the next step, and is re-saved.
+    - name: Restore MongoDB memory-server binaries
+      id: cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.cache/mongodb-binaries
+        key: mongodb-binaries-${{ runner.os }}-${{ hashFiles(inputs.working-directory == '.' && 'package-lock.json' || format('{0}/package-lock.json', inputs.working-directory)) }}
+        restore-keys: |
+          mongodb-binaries-${{ runner.os }}-
+
+    - name: Provision the mongod binary
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        MONGODB_BINARY_CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: node "$GITHUB_ACTION_PATH/prewarm.mjs"
+
+    # Saved here rather than in a post-job step: only a binary that was just proven to run is
+    # promoted into the cache every later job restores, and a failing test run still leaves it
+    # behind for the next one.
+    - name: Save MongoDB memory-server binaries
+      if: steps.cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@v5
+      with:
+        path: ~/.cache/mongodb-binaries
+        key: ${{ steps.cache.outputs.cache-primary-key }}

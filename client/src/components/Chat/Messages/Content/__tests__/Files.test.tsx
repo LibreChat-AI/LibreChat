@@ -13,12 +13,15 @@ jest.mock('@librechat/chat/components', () => ({
   FileContainer: ({
     onClick,
     buttonClassName,
+    file,
   }: {
     onClick: () => void;
     buttonClassName?: string;
+    file: { textPreview?: string };
   }) => (
     <button className={buttonClassName} onClick={onClick}>
       file action
+      {file.textPreview && <span>{file.textPreview}</span>}
     </button>
   ),
 }));
@@ -70,4 +73,21 @@ it('exposes extracted image text without changing ordinary image previews', () =
   );
   fireEvent.click(screen.getByText('file action'));
   expect(screen.getByText('preview: text')).toBeInTheDocument();
+});
+
+it('shows the persisted snippet after reload without the owner file cache', () => {
+  const saved = JSON.parse(
+    JSON.stringify({
+      files: [
+        {
+          file_id: 'stored-paste',
+          type: 'text/plain',
+          filename: 'pasted-text.txt',
+          textPreview: 'An excerpt retained on the saved message.',
+        },
+      ],
+    }),
+  ) as TMessage;
+  render(<Files message={saved} />);
+  expect(screen.getByText('An excerpt retained on the saved message.')).toBeInTheDocument();
 });

@@ -30,6 +30,7 @@ import {
   getPreliminaryRegenerateResponseMessageId,
 } from '../regenerate';
 import { createDualMessageContent, stripStreamedIndexStamps } from '../content';
+import { partitionComposerFiles } from '../files';
 
 /**
  * Prompt prefix as sent in the request payload. With `stableContext` the Agents route
@@ -90,6 +91,8 @@ export type BuildTurnInput = {
 export type TurnFileEffects = {
   submittedFileIds: (string | undefined)[];
   clearComposer: boolean;
+  canceledUploadIds?: string[];
+  replacedFileIds?: string[];
 };
 
 export type BuiltTurn = {
@@ -306,28 +309,35 @@ export function buildTurn({
     // Caller-supplied overrideFiles were consumed elsewhere (queued
     // during-run messages take theirs out of the composer at queue time);
     // clearing here would eat attachments staged for the user's NEXT send.
-    fileEffects = { submittedFileIds, clearComposer: isRegenerate };
-  } else if (!compact && canClearFiles && files && files.size > 0 && overrideFiles == null) {
+    fileEffects = { submittedFileIds, clearComposer: false };
+  } else if (
+    !regenerateShaped &&
+    !isEditOrContinue &&
+    canClearFiles &&
+    files &&
+    files.size > 0 &&
+    overrideFiles == null
+  ) {
     /** A compaction attaches nothing and must not consume files the user
      *  staged in the composer for their next message. */
     // `overrideFiles` (even empty) is authoritative for the submission:
     // auto-drained queued messages must never vacuum up attachments the
     // user has staged in the composer for their NEXT message.
-    const submittedFileIds: (string | undefined)[] = [];
-    currentMsg.files = [];
-    for (const [key, file] of files) {
-      currentMsg.files.push({
-        file_id: file.file_id,
-        filepath: file.filepath,
-        filename: file.filename,
-        type: file.type ?? '',
-        llmDeliveryPath: file.llmDeliveryPath,
-        height: file.height,
-        width: file.width,
-      });
-      submittedFileIds.push(key, file.file_id, file.temp_file_id);
-    }
-    fileEffects = { submittedFileIds, clearComposer: true };
+    const {
+      text: mergedText,
+      files: refs,
+      submittedFileIds,
+      canceledUploadIds,
+      replacedFileIds,
+    } = partitionComposerFiles(currentMsg.text, files);
+    currentMsg.text = mergedText;
+    currentMsg.files = refs;
+    fileEffects = {
+      submittedFileIds,
+      clearComposer: true,
+      ...(canceledUploadIds.length > 0 && { canceledUploadIds }),
+      ...(replacedFileIds.length > 0 && { replacedFileIds }),
+    };
   }
 
   const responseMessageId =

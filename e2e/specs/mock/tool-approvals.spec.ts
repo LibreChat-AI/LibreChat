@@ -22,6 +22,7 @@ import {
 } from './approvals.helpers';
 import { NEW_CHAT_PATH, getAccessToken, messagesView, requestJson } from './helpers';
 import { cleanupAgent } from './agents.helpers';
+import { unroute } from './fixtures';
 
 test.describe('tool approvals', () => {
   test('approves a paused tool with its original arguments', async ({ page }) => {
@@ -462,6 +463,61 @@ test.describe('tool approvals', () => {
     }
   });
 
+  test('submits a rehydrated approval when the status omits the generation epoch @scenario:approval-submit-without-epoch', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const label = uniqueLabel();
+    const toolCallId = `call_e2e_approval_${label}`;
+    const originalValue = `original-${label}`;
+    const executedText = `E2E approval probe executed: ${originalValue}`;
+    let agentId: string | undefined;
+    let statusHandler: ((route: Route) => Promise<void>) | undefined;
+    clearApprovalInvocations(originalValue);
+
+    try {
+      agentId = await createAndSelectApprovalAgent(page);
+      await startApproval(page, label);
+      const conversationPath = new URL(page.url()).pathname;
+
+      /** The status snapshot is where a reloaded page learns the generation epoch;
+       *  without it the rehydrated card has no epoch to send. */
+      let strippedEpochs = 0;
+      statusHandler = async (route) => {
+        const response = await route.fetch();
+        const status = (await response.json()) as Record<string, unknown>;
+        if (status.createdAt != null) {
+          strippedEpochs++;
+        }
+        delete status.createdAt;
+        await route.fulfill({ response, json: status });
+      };
+      await page.route('**/api/agents/chat/status/**', statusHandler);
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await expect.poll(() => new URL(page.url()).pathname).toBe(conversationPath);
+      await collapseComposerApproval(page);
+      const card = approvalCard(page, toolCallId);
+      await expect(card).toBeVisible({ timeout: 30000 });
+      expect(strippedEpochs).toBeGreaterThan(0);
+
+      await card.getByRole('button', { name: 'Approve' }).click();
+      const { body } = await submitAndCapture(page, card.getByRole('button', { name: 'Submit' }));
+      expect(body.actionId).toBeTruthy();
+      expect(body.conversationId).toBe(conversationPath.replace('/c/', ''));
+      expect(body).not.toHaveProperty('generationCreatedAt');
+      await expectCompletedApprovalToolOutput(page, toolCallId, executedText);
+      await expectApprovalInvocationCount(originalValue, 1);
+      await expect(approvalCards(page)).toHaveCount(0);
+    } finally {
+      if (statusHandler) {
+        await page.unroute('**/api/agents/chat/status/**', statusHandler);
+      }
+      clearApprovalInvocations(originalValue);
+      await cleanupAgent(page, agentId);
+    }
+  });
+
   test('sends only one resume request for two synchronous submit clicks', async ({ page }) => {
     test.setTimeout(120000);
     const label = uniqueLabel();
@@ -515,7 +571,7 @@ test.describe('tool approvals', () => {
     } finally {
       releaseResume();
       if (resumeHandler) {
-        await page.unroute('**/api/agents/chat/resume', resumeHandler);
+        await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       }
       clearApprovalInvocations(originalValue);
       await cleanupAgent(page, agentId);
@@ -583,7 +639,7 @@ test.describe('tool approvals', () => {
       await expect(approvalCards(page)).toHaveCount(0);
     } finally {
       if (resumeHandler) {
-        await page.unroute('**/api/agents/chat/resume', resumeHandler);
+        await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       }
       clearApprovalInvocations(originalValue);
       await cleanupAgent(page, agentId);
@@ -634,7 +690,7 @@ test.describe('tool approvals', () => {
       await expect(submit).toBeDisabled();
       expect(capturedResumeBody).toBeDefined();
 
-      await page.unroute('**/api/agents/chat/resume', resumeHandler);
+      await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       routeInstalled = false;
       const token = await getAccessToken(page);
       await requestJson(page, {
@@ -649,7 +705,7 @@ test.describe('tool approvals', () => {
       await expect(approvalCards(page)).toHaveCount(0);
     } finally {
       if (routeInstalled) {
-        await page.unroute('**/api/agents/chat/resume', resumeHandler);
+        await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       }
       if (!backendResolved && capturedResumeBody) {
         const token = await getAccessToken(page);

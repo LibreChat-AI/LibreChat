@@ -4,3 +4,4 @@ export * from './branch';
 export * from './estimate';
 export * from './snapshot';
 export * from './view';
+export * from './format';

@@ -6,8 +6,31 @@ import type { JobMetadataPatch } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
 import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 
+/** Trusted persisted capability, not an endpoint or caller-body inference. */
+export function parseTerminalPersistenceOwner(value: unknown): 'external' | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'external') throw new Error('terminal_persistence_owner_invalid');
+  return value;
+}
+
+/** The acknowledgement carries the reply ID already reserved for this generation. */
+export function buildGenerationStartedResponse(input: {
+  streamId: string;
+  conversationId: string;
+  generationCreatedAt: number;
+  responseMessageId: string;
+}): typeof input & { status: 'started' } {
+  return { ...input, status: 'started' };
+}
+
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
   const patch: JobMetadataPatch = {};
+  if (metadata.terminalPersistenceOwner !== undefined)
+    patch.terminalPersistenceOwner = parseTerminalPersistenceOwner(
+      metadata.terminalPersistenceOwner,
+    );
+  if (metadata.responseCheckpointConfigJSON !== undefined)
+    patch.responseCheckpointConfigJSON = metadata.responseCheckpointConfigJSON;
   if (metadata.responseMessageId) {
     patch.responseMessageId = metadata.responseMessageId;
   }
@@ -40,6 +63,9 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   }
   if (metadata.agent_id) {
     patch.agent_id = metadata.agent_id;
+  }
+  if (metadata.isNewConversation !== undefined) {
+    patch.isNewConversation = metadata.isNewConversation;
   }
   if (metadata.isTemporary !== undefined) {
     patch.isTemporary = metadata.isTemporary;

@@ -6,6 +6,7 @@
 jest.mock('@librechat/api', () => ({
   deleteRagFile: jest.fn(),
   stripCacheBust: jest.fn((filepath) => filepath.split('?')[0]),
+  resolveLocalFile: jest.requireActual('@librechat/api').resolveLocalFile,
 }));
 jest.mock('@librechat/data-schemas', () => ({
   logger: { warn: jest.fn(), error: jest.fn() },

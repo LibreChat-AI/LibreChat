@@ -1,5 +1,5 @@
 export const COLLAPSED_WIDTH = 52;
-export const EXPANDED_MIN = 360;
+export const EXPANDED_MIN = 362;
 
 /**
  * How much of the viewport the mobile drawer covers.

@@ -233,7 +233,7 @@ const CASES: Array<{
       'the ClickHouse light theme presses and disables in Click UI fills @scenario:state-roles-clickhouse-light',
     mode: 'light',
     definition: clickHouseTheme,
-    pressed: 'rgb(221, 222, 225)',
+    pressed: 'rgb(230, 231, 233)',
     disabled: {
       fill: 'rgb(223, 223, 223)',
       ink: 'rgb(160, 160, 160)',
@@ -249,7 +249,7 @@ const CASES: Array<{
       'the ClickHouse dark theme presses and disables in Click UI fills @scenario:state-roles-clickhouse-dark',
     mode: 'dark',
     definition: clickHouseTheme,
-    pressed: 'rgb(36, 36, 36)',
+    pressed: 'rgb(50, 50, 50)',
     disabled: {
       fill: 'rgb(65, 65, 65)',
       ink: 'rgb(128, 128, 128)',
