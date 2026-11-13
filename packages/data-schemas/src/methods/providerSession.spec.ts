@@ -282,6 +282,40 @@ describe('ProviderSession Methods', () => {
     }
   });
 
+  it('reports ok on the retried update after a duplicate-key error on the initial upsert', async () => {
+    const sid = 'sid-revoke-duplicate-key-retry-success';
+    await methods.establishProviderSession({
+      ...ref,
+      sid,
+      subject: 'user-1',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const ProviderSession = mongoose.models.ProviderSession;
+    const findOneAndUpdateSpy = jest
+      .spyOn(ProviderSession, 'findOneAndUpdate')
+      .mockRejectedValueOnce(Object.assign(new Error('E11000 duplicate key'), { code: 11000 })); // initial upsert attempt; the retry below runs on the real DB
+
+    try {
+      await expect(
+        methods.revokeProviderSession({
+          ...ref,
+          sid,
+          subject: 'user-1',
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+      ).resolves.toEqual({ ok: true });
+    } finally {
+      findOneAndUpdateSpy.mockRestore();
+    }
+
+    const stored = await mongoose.models.ProviderSession.findOne({
+      ...ref,
+      sid,
+    }).lean<t.IProviderSession>();
+    expect(stored?.revokedAt).toBeInstanceOf(Date);
+  });
+
   describe('non-duplicate-key errors are rethrown rather than classified as a conflict', () => {
     it('establishProviderSession rethrows a non-duplicate-key error from the initial upsert', async () => {
       const sid = 'sid-establish-nondup-error';
@@ -535,6 +569,26 @@ describe('ProviderSession Methods', () => {
         findOneAndUpdateSpy.mockRestore();
       }
     });
+
+    it('reports MISSING, not CONFLICT, for an expired record whose subject disagrees with the request', async () => {
+      const sid = 'sid-authorize-expired-subject-mismatch';
+      const establishedAt = new Date(Date.now() - 120_000);
+      await methods.establishProviderSession({
+        ...ref,
+        sid,
+        subject: 'user-1',
+        expiresAt: new Date(Date.now() - 1000),
+        now: establishedAt,
+      });
+
+      const authorized = await methods.authorizeProviderSession({
+        ...ref,
+        sid,
+        subject: 'user-2',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(authorized).toEqual({ ok: false, code: 'MISSING' });
+    });
   });
 
   describe('revoke $setOnInsert subject on a fresh record', () => {
@@ -704,6 +758,63 @@ describe('ProviderSession Methods', () => {
         sid,
       }).lean<t.IProviderSession>();
       expect(stored?.subject).toBe('user-1');
+    });
+
+    it('reactivates an expired-but-unrevoked record that never stored a subject, storing the one just supplied', async () => {
+      const sid = 'sid-reactivate-fill-missing-subject';
+      const base = new Date('2026-02-01T00:00:00Z');
+      await methods.establishProviderSession({
+        ...ref,
+        sid,
+        expiresAt: new Date(base.getTime() + 1000),
+        now: base,
+      });
+
+      const later = new Date(base.getTime() + 5000);
+      const result = await methods.establishProviderSession({
+        ...ref,
+        sid,
+        subject: 'user-1',
+        expiresAt: new Date(later.getTime() + 60_000),
+        now: later,
+      });
+      expect(result).toEqual({ ok: true });
+
+      const stored = await mongoose.models.ProviderSession.findOne({
+        ...ref,
+        sid,
+      }).lean<t.IProviderSession>();
+      expect(stored?.subject).toBe('user-1');
+      expect(stored?.expiresAt.getTime()).toBe(later.getTime() + 60_000);
+    });
+
+    it('reactivates an expired-but-unrevoked record when the follow-up request carries no subject, leaving the stored one unchanged', async () => {
+      const sid = 'sid-reactivate-no-subject-in-request';
+      const base = new Date('2026-02-01T00:00:00Z');
+      await methods.establishProviderSession({
+        ...ref,
+        sid,
+        subject: 'user-1',
+        expiresAt: new Date(base.getTime() + 1000),
+        now: base,
+      });
+
+      const later = new Date(base.getTime() + 5000);
+      const result = await methods.establishProviderSession({
+        ...ref,
+        sid,
+        subject: null,
+        expiresAt: new Date(later.getTime() + 60_000),
+        now: later,
+      } as unknown as t.ProviderSessionOperationData);
+      expect(result).toEqual({ ok: true });
+
+      const stored = await mongoose.models.ProviderSession.findOne({
+        ...ref,
+        sid,
+      }).lean<t.IProviderSession>();
+      expect(stored?.subject).toBe('user-1');
+      expect(stored?.expiresAt.getTime()).toBe(later.getTime() + 60_000);
     });
   });
 
