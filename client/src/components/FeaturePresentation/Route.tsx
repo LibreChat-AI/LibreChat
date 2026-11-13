@@ -7,7 +7,10 @@ import {
   UNSAFE_RouteContext,
 } from 'react-router-dom';
 import type { ReactNode } from 'react';
+import { ComposerRouteContext } from '~/Providers/ComposerRouteContext';
+import { readBrowserComposerRoute } from '~/common/composerRoute';
 import { useFeaturePresentation } from './Context';
+import { getRelatedPage } from './registry';
 
 type DataContext = NonNullable<React.ContextType<typeof UNSAFE_DataRouterContext>>;
 type Navigate = DataContext['router']['navigate'];
@@ -20,6 +23,21 @@ export default function ChatRouteOwner({ children }: { children: ReactNode }) {
   const presentation = useFeaturePresentation();
   const current = useRef({ location, presentation });
   current.current = { location, presentation };
+  const readComposerRoute = useMemo(
+    () => () => {
+      if (!data) return readBrowserComposerRoute();
+      // Navigation must fence old uploads before React commits the destination.
+      const actual = data.router.state.navigation.location ?? data.router.state.location;
+      const base = data.basename === '/' ? '' : data.basename.replace(/\/$/, '');
+      const pathname = actual.pathname.slice(base.length) || '/';
+      if (current.current.presentation && getRelatedPage(pathname)) {
+        const retained = current.current.location;
+        return base + retained.pathname + retained.search;
+      }
+      return actual.pathname + actual.search;
+    },
+    [data],
+  );
   const context = useMemo(() => {
     if (!data) {
       return data;
@@ -60,7 +78,9 @@ export default function ChatRouteOwner({ children }: { children: ReactNode }) {
   return (
     <UNSAFE_DataRouterContext.Provider value={context}>
       <UNSAFE_RouteContext.Provider value={{ ...route, matches }}>
-        {children}
+        <ComposerRouteContext.Provider value={readComposerRoute}>
+          {children}
+        </ComposerRouteContext.Provider>
       </UNSAFE_RouteContext.Provider>
     </UNSAFE_DataRouterContext.Provider>
   );
