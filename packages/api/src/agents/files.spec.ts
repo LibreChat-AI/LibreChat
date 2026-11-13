@@ -538,6 +538,21 @@ describe('Agent Management file handlers', () => {
     });
   });
 
+  it('reads only the Agent and files without a tenant for a User without a tenant', async () => {
+    const deps = makeDeps();
+    const response = makeResponse();
+    const request = makeRequest({ id: 'agent-one' });
+    request.user = { ...user, tenantId: undefined } as IUser;
+
+    await createAgentManagementFileHandlers(deps).list(request, response);
+
+    expect(deps.getAgentWithVersionCount).toHaveBeenCalledWith({ id: 'agent-one', tenantId: null });
+    expect(deps.getFiles).toHaveBeenCalledWith(expect.objectContaining({ tenantId: null }), null, {
+      text: 0,
+    });
+    expect(response.status).not.toHaveBeenCalledWith(403);
+  });
+
   it('unlinks a file from every purpose without deleting shared storage', async () => {
     const deps = makeDeps();
     const response = makeResponse();

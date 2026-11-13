@@ -105,10 +105,10 @@ export interface AgentManagementFileDeps {
   getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
   getAgentWithVersionCount: (search: {
     id: string;
-    tenantId: string;
+    tenantId: string | null;
   }) => Promise<AgentManagementFileAgent | null>;
   getFiles: (
-    filter: { file_id: { $in: string[] }; tenantId: string },
+    filter: { file_id: { $in: string[] }; tenantId: string | null },
     sort?: null,
     projection?: Record<string, 0 | 1>,
   ) => Promise<AgentManagementFileRecord[] | null>;
@@ -323,7 +323,7 @@ export function createAgentManagementFileHandlers(deps: AgentManagementFileDeps)
     Request,
     {
       agent: AgentManagementFileAgent;
-      tenantId: string;
+      tenantId: string | null;
       uploadConfig: AgentUploadConfig;
     }
   >();
@@ -331,7 +331,7 @@ export function createAgentManagementFileHandlers(deps: AgentManagementFileDeps)
 
   async function getAuthorizedAgent(req: Request, permissions: Permissions[]) {
     const user = req.user as IUser | undefined;
-    if (!user?.id || !user.tenantId) {
+    if (!user?.id) {
       return { allowed: false as const, code: 'permission_denied' as const };
     }
 
@@ -341,7 +341,7 @@ export function createAgentManagementFileHandlers(deps: AgentManagementFileDeps)
 
     const agent = await deps.getAgentWithVersionCount({
       id: req.params.id,
-      tenantId: user.tenantId,
+      tenantId: user.tenantId ?? null,
     });
     if (!agent) {
       return { allowed: false as const, code: 'not_found' as const };
@@ -349,7 +349,7 @@ export function createAgentManagementFileHandlers(deps: AgentManagementFileDeps)
     if (!(await canEditAgentFiles(user, agent, deps))) {
       return { allowed: false as const, code: 'permission_denied' as const };
     }
-    return { allowed: true as const, agent, user, tenantId: user.tenantId };
+    return { allowed: true as const, agent, user, tenantId: user.tenantId ?? null };
   }
 
   async function authorizeUpload(
@@ -408,7 +408,7 @@ export function createAgentManagementFileHandlers(deps: AgentManagementFileDeps)
   async function isWithinAggregateLimits(
     req: Request,
     purpose: AgentUploadPurpose,
-    tenantId: string,
+    tenantId: string | null,
     config: AgentUploadConfig,
   ): Promise<boolean> {
     const currentAgent = await deps.getAgentWithVersionCount({
@@ -481,7 +481,7 @@ export function createAgentManagementFileHandlers(deps: AgentManagementFileDeps)
         return sendError(res, cleaned ? 'permission_denied' : 'internal_error');
       }
 
-      const queueKey = `${authorized.tenantId}:${req.params.id}:${purpose}`;
+      const queueKey = `${authorized.tenantId ?? ''}:${req.params.id}:${purpose}`;
       return await deps.runUploadExclusive(queueKey, async () =>
         withUploadQueue(queueKey, async () => {
           if (!(await isValidUpload(req, purpose as AgentUploadPurpose, authorized.uploadConfig))) {

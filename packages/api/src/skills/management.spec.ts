@@ -8,6 +8,7 @@ import {
   createModels,
   createMethods,
   createSkillDeletionPersistenceAdapter,
+  SYSTEM_TENANT_ID,
   tenantStorage,
 } from '@librechat/data-schemas';
 import type { AllMethods, AppConfig, IRole, IUser } from '@librechat/data-schemas';
@@ -34,6 +35,9 @@ let allowUse: boolean;
 let allowCreate: boolean;
 let canManage: boolean;
 let authenticated: boolean;
+/** The authenticated User and the tenant context each request runs in. */
+let requestUser: IUser;
+let requestTenantId: string;
 let saveFile: jest.MockedFunction<SkillManagementDeps['saveFile']>;
 let filters: FiltersConfig | undefined;
 let readSkill: jest.SpyInstance;
@@ -70,6 +74,8 @@ beforeEach(async () => {
   allowCreate = true;
   canManage = false;
   authenticated = true;
+  requestUser = user;
+  requestTenantId = tenantId;
   filters = undefined;
   readSkill = jest.spyOn(db, 'getSkillById');
   const { skill } = await inTenant(() =>
@@ -137,9 +143,9 @@ beforeEach(async () => {
   app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    if (authenticated) req.user = user;
+    if (authenticated) req.user = requestUser;
     (req as ServerRequest).config = { filters } as ServerRequest['config'];
-    tenantStorage.run({ tenantId }, next);
+    tenantStorage.run({ tenantId: requestTenantId }, next);
   });
   app.get('/skills', async (req, res) => {
     await management.list(req, res);
@@ -238,6 +244,23 @@ it('requires DELETE access and hides missing or cross-tenant Skills', async () =
   expect(
     await tenantStorage.run({ tenantId: 'foreign' }, () => db.getSkillById(skill._id)),
   ).not.toBeNull();
+});
+it('serves a User without a tenant only the Skills without a tenant', async () => {
+  /** The system context reads every tenant, so only the handler's own tenant check isolates. */
+  const { skill: unscoped } = await tenantStorage.run({ tenantId: SYSTEM_TENANT_ID }, () =>
+    db.createSkill({
+      name: 'unscoped',
+      description: 'Skill of a deployment that does not use tenants.',
+      body: 'x',
+      author,
+      authorName: 'Author',
+    }),
+  );
+  requestUser = { ...user, tenantId: undefined } as IUser;
+  requestTenantId = SYSTEM_TENANT_ID;
+
+  await request(app).get(`/skills/${unscoped._id}`).expect(200);
+  await request(app).get(`/skills/${skillId}`).expect(404);
 });
 it('preserves the existing incomplete-cleanup result without exposing storage details', async () => {
   jest
