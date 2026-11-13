@@ -141,7 +141,7 @@ describe('PendingSteers', () => {
     renderPending([pending(over)]);
 
     expect(screen.getByTestId('steer-part')).toHaveTextContent('change of plan');
-    expect(screen.getByRole('listitem')).toHaveClass('opacity-60');
+    expect(screen.getByRole('listitem')).not.toHaveClass('opacity-60');
     expect(screen.getByTestId('steer-receipt')).toHaveAttribute('data-receipt-state', receiptState);
     expect(screen.getAllByText(label)).toHaveLength(1);
     expect(screen.queryByText('com_ui_sending')).not.toBeInTheDocument();
