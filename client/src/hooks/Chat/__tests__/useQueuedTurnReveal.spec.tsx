@@ -402,6 +402,113 @@ describe('useQueuedTurnReveal', () => {
     expect(current()?.clientRequestId).toBe('next-request');
   });
 
+  it('settles a claimed turn revealed after its own reply when admission arrives later', () => {
+    const { result, current, queryClient, setReceipts } = setup();
+    const end = completedEnd({ generationCreatedAt: 42, responseMessageId: 'queued-response' });
+    act(() => {
+      setReceipts([receipt({ status: 'claimed', expectedPredecessorCreatedAt: 41 })]);
+      queryClient.setQueryData(streamStatusQueryKey(CONVO_ID), {
+        active: false,
+        status: 'complete',
+        createdAt: 42,
+        resumeState: { responseMessageId: 'queued-response' },
+      });
+      result.current(serverRow(), end);
+    });
+    expect(current()).not.toBeNull();
+
+    act(() => {
+      setReceipts([receipt({ status: 'admitted', effectivePredecessorCreatedAt: 41 })]);
+    });
+    expect(current()).toBeNull();
+    act(() => {
+      result.current(serverRow(), end);
+      setReceipts([]);
+    });
+    expect(current()).toBeNull();
+  });
+
+  it.each([
+    ['the actual predecessor', { effectivePredecessorCreatedAt: 41 }, RESPONSE_ID],
+    [
+      'another request',
+      { clientRequestId: 'other', effectivePredecessorCreatedAt: 40 },
+      RESPONSE_ID,
+    ],
+    ['another response', { effectivePredecessorCreatedAt: 40 }, 'other-response'],
+    ['an unconfirmed admission boundary', { expectedPredecessorCreatedAt: 40 }, RESPONSE_ID],
+  ] as const)(
+    'keeps admission guarded when terminal evidence describes %s',
+    (_, admitted, responseId) => {
+      const { result, current, queryClient, setReceipts } = setup();
+      act(() => {
+        queryClient.setQueryData(streamStatusQueryKey(CONVO_ID), {
+          active: false,
+          status: 'complete',
+          createdAt: 41,
+          resumeState: { responseMessageId: responseId },
+        });
+        setReceipts([receipt({ status: 'admitted', ...admitted })]);
+        result.current(serverRow(), completedEnd());
+      });
+      expect(current()).not.toBeNull();
+    },
+  );
+
+  it.each([
+    ['known', { effectivePredecessorCreatedAt: 42 }],
+    ['unconfirmed', { expectedPredecessorCreatedAt: 41 }],
+  ] as const)(
+    'remembers a sibling admission with a %s boundary after its receipt disappears',
+    (_, boundary) => {
+      const { result, current, queryClient, setReceipts } = setup();
+      act(() => {
+        queryClient.setQueryData(streamStatusQueryKey(CONVO_ID), {
+          active: false,
+          status: 'complete',
+          createdAt: 42,
+          resumeState: { responseMessageId: 'queued-response' },
+        });
+        setReceipts([receipt({ status: 'claimed' })]);
+        result.current(
+          serverRow(),
+          completedEnd({ generationCreatedAt: 42, responseMessageId: 'queued-response' }),
+        );
+      });
+      act(() => {
+        setReceipts([
+          receipt({ status: 'admitted', effectivePredecessorCreatedAt: 41 }),
+          receipt({
+            clientRequestId: 'sibling',
+            status: 'queued',
+            expectedPredecessorCreatedAt: 41,
+          }),
+        ]);
+      });
+      expect(current()).not.toBeNull();
+      act(() => {
+        setReceipts([receipt({ clientRequestId: 'sibling', status: 'admitted', ...boundary })]);
+      });
+      expect(current()).not.toBeNull();
+      act(() => {
+        setReceipts([]);
+      });
+      act(() => {
+        setReceipts([receipt({ status: 'admitted', effectivePredecessorCreatedAt: 41 })]);
+      });
+      expect(current()).not.toBeNull();
+      act(() => {
+        queryClient.setQueryData(streamStatusQueryKey(CONVO_ID), {
+          active: false,
+          status: 'complete',
+          createdAt: 43,
+          resumeState: { responseMessageId: 'sibling-response' },
+        });
+      });
+      expect(current()).toBeNull();
+    },
+  );
+
   it('does not register a message fetcher or replace history fetching during invalidation', async () => {
     const { queryClient, getMessages, unmount } = setup();
     const key = [QueryKeys.messages, CONVO_ID];
