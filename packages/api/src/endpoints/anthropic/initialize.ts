@@ -27,7 +27,9 @@ export async function initializeAnthropic(
   const { key: expiresAt } = requestBody;
 
   let credentials: Record<string, unknown> = {};
-  let vertexOptions: { region?: string; projectId?: string } | undefined;
+  let vertexOptions:
+    | { region?: string; projectId?: string; skipAuth?: boolean; baseURL?: string }
+    | undefined;
 
   /** @type {undefined | import('librechat-data-provider').TVertexAIConfig} */
   const vertexConfig = appConfig?.endpoints?.[EModelEndpoint.anthropic]?.vertexConfig;
@@ -38,15 +40,33 @@ export async function initializeAnthropic(
     (vertexConfig && vertexConfig.enabled !== false) || isEnabled(process.env.ANTHROPIC_USE_VERTEX);
 
   if (useVertexAI) {
-    // Load credentials with optional YAML config overrides
-    const credentialOptions = vertexConfig ? getVertexCredentialOptions(vertexConfig) : undefined;
+    // Gateway mode: when ANTHROPIC_VERTEX_SKIP_AUTH is set (or skipAuth in YAML),
+    // route Anthropic Vertex requests through an upstream proxy that owns auth.
+    // YAML config takes priority over the env var.
+    const skipAuth =
+      vertexConfig?.skipAuth === true ||
+      (vertexConfig?.skipAuth === undefined && isEnabled(process.env.ANTHROPIC_VERTEX_SKIP_AUTH));
+    const baseURL = vertexConfig?.baseURL || process.env.ANTHROPIC_VERTEX_BASE_URL || undefined;
+
+    // Load credentials with optional YAML config overrides. In skipAuth mode this
+    // returns a placeholder credential without touching any service-account file.
+    // The resolved `skipAuth` already takes the env var into account; merge it
+    // back so env-only gateway mode (no YAML config) and YAML-only both work.
+    let credentialOptions: ReturnType<typeof getVertexCredentialOptions> | undefined;
+    if (vertexConfig) {
+      credentialOptions = { ...getVertexCredentialOptions(vertexConfig), skipAuth };
+    } else if (skipAuth) {
+      credentialOptions = { skipAuth: true };
+    }
     credentials = await loadAnthropicVertexCredentials(credentialOptions);
 
     // Store vertex options for client creation
-    if (vertexConfig) {
+    if (vertexConfig || skipAuth || baseURL) {
       vertexOptions = {
-        region: vertexConfig.region,
-        projectId: vertexConfig.projectId,
+        region: vertexConfig?.region,
+        projectId: vertexConfig?.projectId,
+        skipAuth,
+        baseURL,
       };
     }
   } else {
