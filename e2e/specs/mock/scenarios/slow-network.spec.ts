@@ -44,6 +44,14 @@ test.describe('slow and lost connections', () => {
         timeout: 5000,
       })
       .toBeGreaterThan(0);
+    /* It inks in the theme's text role, not a fixed color. */
+    const [ink, role] = await indicator.evaluate((el) => {
+      const probe = document.createElement('span');
+      probe.style.color = 'rgb(var(--text-primary))';
+      document.body.appendChild(probe);
+      return [getComputedStyle(el).color, getComputedStyle(probe).color];
+    });
+    expect(ink).toBe(role);
   });
 
   test('the loading label follows the language chosen before the bundle loads @scenario:loading-shell-label-follows-language', async ({

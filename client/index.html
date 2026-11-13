@@ -297,7 +297,9 @@
             justify-content: center;
             height: 100vh;
             background-color: ${backgroundColor};
-            color: ${dark ? '#ececec' : '#0d0d0d'};
+            /* The theme's own text role (a deployment theme sets it on the root above); the
+             * fallback is the default palette's value, for a stylesheet that has not loaded. */
+            color: rgb(var(--text-primary, ${dark ? '236 236 236' : '33 33 33'}));
           }
         `;
         document.head.appendChild(loadingContainerStyle);
