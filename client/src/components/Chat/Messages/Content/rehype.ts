@@ -45,10 +45,11 @@ export function loadRehypeModules(): Promise<RehypeModules> {
 export const getLoadedRehypeModules = (): RehypeModules | null => loaded;
 
 /**
- * Math needs a remark-math delimiter, and highlighting needs a code block: fenced, or indented
- * for the renderers that auto-detect the language. Anything else passes through both untouched.
+ * Math needs a remark-math delimiter, and a message highlights only a fence that names its
+ * language. Anything else passes through both plugins untouched. Indented and unlabeled code is
+ * not detected here: the renderers that guess its language load the plugins regardless.
  */
-const NEEDS_REHYPE = /\$|\\\(|\\\[|```|~~~|^[ \t>]*?(?: {4}|\t)/m;
+const NEEDS_REHYPE = /\$|\\\(|\\\[|```|~~~/;
 
 export const needsRehype = (text: string): boolean => NEEDS_REHYPE.test(text);
 
@@ -57,12 +58,14 @@ const MAX_LOAD_RETRIES = 3;
 
 /**
  * The math and highlighting plugins, or null until they have loaded. `text` decides whether this
- * render starts the load: text with nothing for them to transform never does. Without them the
- * output is identical except that math and fenced code are unformatted, so callers render
- * immediately and upgrade when this resolves.
+ * render starts the load: text with nothing for them to transform never does. Renderers that
+ * guess the language (`DETECT_HIGHLIGHT`) highlight any code block, including indented ones
+ * nested in lists or quotes that no cheap check finds reliably, so they pass `detectsLanguage`
+ * and always load. Without the plugins the output is identical except that math and code are
+ * unformatted, so callers render immediately and upgrade when this resolves.
  */
-export function useRehypeModules(text: string): RehypeModules | null {
-  const needed = needsRehype(text);
+export function useRehypeModules(text: string, detectsLanguage = false): RehypeModules | null {
+  const needed = detectsLanguage || needsRehype(text);
   const [modules, setModules] = useState<RehypeModules | null>(loaded);
   const [attempt, setAttempt] = useState(0);
 

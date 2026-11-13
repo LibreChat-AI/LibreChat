@@ -44,7 +44,7 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
     formState: { errors },
   } = useFormContext();
   const value = useWatch({ control, name }) as string | undefined;
-  const rehypePlugins = toRehypePlugins(useRehypeModules(value ?? ''), DETECT_HIGHLIGHT);
+  const rehypePlugins = toRehypePlugins(useRehypeModules(value ?? '', true), DETECT_HIGHLIGHT);
 
   return (
     <div className="flex max-h-[85vh] flex-col sm:max-h-[85vh]">

@@ -127,7 +127,7 @@ function SkillMarkdownRenderer({
   currentFilePath,
   className,
 }: SkillMarkdownRendererProps) {
-  const rehypePlugins = toRehypePlugins(useRehypeModules(content), DETECT_HIGHLIGHT);
+  const rehypePlugins = toRehypePlugins(useRehypeModules(content, true), DETECT_HIGHLIGHT);
   const components = useMemo(
     () => ({
       ...MARKDOWN_COMPONENTS,

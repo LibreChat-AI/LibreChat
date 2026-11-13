@@ -4,8 +4,8 @@ import ReactMarkdown from 'react-markdown';
 import { render, screen, waitFor } from '@testing-library/react';
 import { needsRehype, toRehypePlugins, useRehypeModules } from '../rehype';
 
-function Preview({ text }: { text: string }) {
-  const modules = useRehypeModules(text);
+function Preview({ text, detectsLanguage }: { text: string; detectsLanguage?: boolean }) {
+  const modules = useRehypeModules(text, detectsLanguage);
   return (
     <div data-testid="preview" data-loaded={modules != null}>
       <ReactMarkdown
@@ -27,15 +27,13 @@ describe('needsRehype', () => {
     ['display math', '\\[x\\]'],
     ['a backtick fence', '```js\nconst a = 1;\n```'],
     ['a tilde fence', '~~~\nplain\n~~~'],
-    ['an indented block', 'Intro\n\n    indented code'],
-    ['a deeper indented block', 'Intro\n\n        const answer = 42;'],
-    ['an indented block in a quote', '> Intro\n>\n>     quoted code'],
   ])('loads the plugins for %s', (_label, text) => {
     expect(needsRehype(text)).toBe(true);
   });
 
-  it('skips plain prose and inline code', () => {
+  it('skips plain prose, inline code and unlabeled indented code', () => {
     expect(needsRehype('Just a sentence with `inline` code and a list:\n- item')).toBe(false);
+    expect(needsRehype('Intro\n\n    indented code')).toBe(false);
   });
 });
 
@@ -44,6 +42,13 @@ describe('useRehypeModules', () => {
     render(<Preview text="Hello there" />);
     expect(screen.getByTestId('preview')).toHaveAttribute('data-loaded', 'false');
     expect(screen.getByText('Hello there')).toBeInTheDocument();
+  });
+
+  it('loads for a language-detecting renderer whatever the text', async () => {
+    render(<Preview text={'- item\n\n      const answer = 42;'} detectsLanguage />);
+    await waitFor(() =>
+      expect(screen.getByTestId('preview')).toHaveAttribute('data-loaded', 'true'),
+    );
   });
 
   it('renders math once KaTeX arrives', async () => {

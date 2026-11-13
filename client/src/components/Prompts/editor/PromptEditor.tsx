@@ -35,7 +35,7 @@ const PromptEditor: React.FC<Props> = ({ name, isEditing, setIsEditing }) => {
 
   const value = useWatch({ control, name }) as string | undefined;
   const rehypePlugins: PluggableList = toRehypePlugins(
-    useRehypeModules(value ?? ''),
+    useRehypeModules(value ?? '', true),
     DETECT_HIGHLIGHT,
   );
 
