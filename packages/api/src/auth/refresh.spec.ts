@@ -53,16 +53,21 @@ function makeTokenset(overrides: Partial<RefreshTokenset> = {}): RefreshTokenset
   };
 }
 
-function makeDeps(user: IUser | undefined, overrides: Partial<AdminRefreshDeps> = {}) {
+function makeDeps(
+  user: IUser | undefined,
+  overrides: Partial<AdminRefreshDeps> = {},
+): AdminRefreshDeps {
   const findUsers = jest.fn().mockResolvedValue(user ? [user] : []);
   const getUserById = jest.fn().mockResolvedValue(user ?? null);
   const mintToken = jest.fn().mockResolvedValue({ token: 'minted-jwt', expiresAt: 1234567890 });
   const onRefreshSuccess = jest.fn().mockResolvedValue(undefined);
+  const getRefreshTokenExpiryMs = jest.fn(() => 1000 * 60 * 60 * 24 * 90);
   return {
     findUsers,
     getUserById,
     mintToken,
     onRefreshSuccess,
+    getRefreshTokenExpiryMs,
     ...overrides,
   };
 }
@@ -1626,8 +1631,14 @@ describe('lookupAdminRefreshBinding', () => {
 });
 
 describe('precheckAdminRefreshBinding', () => {
+  /** Arbitrary fixed TTL for tests that don't assert on the expiry value itself. */
+  const getRefreshTokenExpiryMs = () => 1000 * 60 * 60 * 24 * 90;
+
   it('skips the check and returns a null ref when deps are omitted (mode off)', async () => {
-    const result = await precheckAdminRefreshBinding({ ok: true, binding: null }, {});
+    const result = await precheckAdminRefreshBinding(
+      { ok: true, binding: null },
+      { getRefreshTokenExpiryMs },
+    );
     expect(result).toEqual({ ref: null });
   });
 
@@ -1637,7 +1648,7 @@ describe('precheckAdminRefreshBinding', () => {
 
     const result = await precheckAdminRefreshBinding(
       { ok: true, binding: { providerSession: ref } },
-      { preCheckProviderSession },
+      { preCheckProviderSession, getRefreshTokenExpiryMs },
     );
 
     expect(preCheckProviderSession).toHaveBeenCalledWith({
@@ -1654,7 +1665,7 @@ describe('precheckAdminRefreshBinding', () => {
 
     await precheckAdminRefreshBinding(
       { ok: true, binding: { providerSession: ref, subject: 'idp-sub-99' } },
-      { preCheckProviderSession },
+      { preCheckProviderSession, getRefreshTokenExpiryMs },
     );
 
     expect(preCheckProviderSession).toHaveBeenCalledWith(
@@ -1667,7 +1678,7 @@ describe('precheckAdminRefreshBinding', () => {
 
     const result = await precheckAdminRefreshBinding(
       { ok: true, binding: null },
-      { preCheckProviderSession },
+      { preCheckProviderSession, getRefreshTokenExpiryMs },
     );
 
     expect(preCheckProviderSession).toHaveBeenCalledWith({
@@ -1682,7 +1693,10 @@ describe('precheckAdminRefreshBinding', () => {
     const preCheckProviderSession = jest.fn().mockResolvedValue({ ok: false });
 
     await expect(
-      precheckAdminRefreshBinding({ ok: true, binding: null }, { preCheckProviderSession }),
+      precheckAdminRefreshBinding(
+        { ok: true, binding: null },
+        { preCheckProviderSession, getRefreshTokenExpiryMs },
+      ),
     ).rejects.toMatchObject({
       name: 'AdminRefreshError',
       code: 'OPENID_SESSION_ENDED',
@@ -1696,7 +1710,10 @@ describe('precheckAdminRefreshBinding', () => {
     const preCheckProviderSession = jest.fn().mockRejectedValue(unavailableError);
 
     await expect(
-      precheckAdminRefreshBinding({ ok: true, binding: null }, { preCheckProviderSession }),
+      precheckAdminRefreshBinding(
+        { ok: true, binding: null },
+        { preCheckProviderSession, getRefreshTokenExpiryMs },
+      ),
     ).rejects.toBe(unavailableError);
   });
 
@@ -1705,7 +1722,10 @@ describe('precheckAdminRefreshBinding', () => {
     const getMode = jest.fn().mockResolvedValue('enforce');
 
     await expect(
-      precheckAdminRefreshBinding({ ok: false }, { preCheckProviderSession, getMode }),
+      precheckAdminRefreshBinding(
+        { ok: false },
+        { preCheckProviderSession, getMode, getRefreshTokenExpiryMs },
+      ),
     ).rejects.toMatchObject({
       name: 'ProviderSessionUnavailableError',
       status: 503,
@@ -1723,7 +1743,7 @@ describe('precheckAdminRefreshBinding', () => {
 
     const result = await precheckAdminRefreshBinding(
       { ok: false },
-      { preCheckProviderSession, getMode },
+      { preCheckProviderSession, getMode, getRefreshTokenExpiryMs },
     );
 
     expect(result).toEqual({ ref: null });
@@ -1740,7 +1760,10 @@ describe('precheckAdminRefreshBinding', () => {
   it('treats a missing getMode as not enforced and fails open when the binding lookup failed', async () => {
     const preCheckProviderSession = jest.fn().mockResolvedValue({ ok: true });
 
-    const result = await precheckAdminRefreshBinding({ ok: false }, { preCheckProviderSession });
+    const result = await precheckAdminRefreshBinding(
+      { ok: false },
+      { preCheckProviderSession, getRefreshTokenExpiryMs },
+    );
 
     expect(result).toEqual({ ref: null });
     expect(preCheckProviderSession).toHaveBeenCalledWith({
