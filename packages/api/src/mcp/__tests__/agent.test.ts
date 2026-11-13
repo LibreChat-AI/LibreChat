@@ -66,7 +66,7 @@ describe('MCP executing agent context', () => {
   });
 
   it('preserves plugin and user-sourced template boundaries', () => {
-    for (const source of ['plugin', 'user']) {
+    for (const source of ['plugin', 'user'] as const) {
       const options = { ...config, source };
       expect(processMCPEnv({ options, body: withMCPAgentContext({}, 'agent_root') })).toMatchObject(
         {
