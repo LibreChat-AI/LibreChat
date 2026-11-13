@@ -17,6 +17,10 @@ jest.mock('~/hooks', () => ({
   }),
 }));
 
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({ data: { interface: {} } }),
+}));
+
 jest.mock('@librechat/client', () => ({
   MCPIcon: () => <span />,
 }));

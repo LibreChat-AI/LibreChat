@@ -3184,6 +3184,17 @@ describe('conversation title ownership rollout', () => {
   });
 });
 
+describe('MCP server contact interface option', () => {
+  it('defaults contact display on', () => {
+    expect(interfaceSchema.parse({}).mcpServerContact).toBe(true);
+    expect(interfaceSchema.parse(undefined).mcpServerContact).toBe(true);
+  });
+
+  it('lets a deployment disable contact display', () => {
+    expect(interfaceSchema.parse({ mcpServerContact: false }).mcpServerContact).toBe(false);
+  });
+});
+
 describe('workspace admission configuration', () => {
   it('preserves absent defaults and resolves an explicit admission policy', () => {
     expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});

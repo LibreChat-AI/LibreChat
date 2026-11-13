@@ -3,7 +3,10 @@ import { VerifiedIcon } from '@librechat/client';
 import { Check, Globe, Info, Settings, Star, User } from 'lucide-react';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { AgentItem, ItemStatus } from './items/types';
-import MCPServerContact, { shouldDisplayMCPServerContact } from '~/components/MCP/MCPServerContact';
+import MCPServerContact, {
+  shouldDisplayMCPServerContact,
+  useMCPServerContactEnabled,
+} from '~/components/MCP/MCPServerContact';
 import { hasConfigurableSettings } from './items/configurable';
 import { useLocalize, useAuthContext } from '~/hooks';
 import { getIconForItem } from './items/icons';
@@ -95,6 +98,7 @@ function ToolCardImpl({
   const localize = useLocalize();
   const { name, description } = useDisplayStrings(item);
   const { user } = useAuthContext();
+  const mcpServerContactEnabled = useMCPServerContactEnabled();
   const isNative = item.kind === 'builtin';
   const kindLabel = localize(KIND_LABEL_KEYS[item.kind]);
   const canFavorite = onToggleFavorite !== undefined && item.kind !== 'action';
@@ -107,7 +111,8 @@ function ToolCardImpl({
     item.id === 'web_search' &&
     !canConfigure &&
     onConfigure !== undefined;
-  const showMcpContact = item.kind === 'mcp' && shouldDisplayMCPServerContact(item.server);
+  const showMcpContact =
+    mcpServerContactEnabled && item.kind === 'mcp' && shouldDisplayMCPServerContact(item.server);
   const DetailIcon = canConfigure ? Settings : Info;
 
   return (

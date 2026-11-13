@@ -30,6 +30,10 @@ const mockLocalize = jest.fn((key: string, values?: Record<number, string>) =>
 
 const mockMCPRefresh = jest.fn();
 
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({ data: { interface: {} } }),
+}));
+
 jest.mock('~/hooks/MCP/useMCPRefresh', () => ({
   useMCPRefresh: (options: { enabled: boolean; tools?: boolean }) => mockMCPRefresh(options),
 }));

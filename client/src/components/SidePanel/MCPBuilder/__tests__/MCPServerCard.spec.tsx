@@ -2,6 +2,14 @@ import { render, screen } from '@testing-library/react';
 import type { MCPServerDefinition } from '~/hooks';
 import MCPServerCard from '../MCPServerCard';
 
+let mockMcpServerContactEnabled = true;
+
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({
+    data: { interface: { mcpServerContact: mockMcpServerContactEnabled } },
+  }),
+}));
+
 jest.mock('../MCPCardActions', () => () => <div data-testid="actions" />);
 jest.mock('../MCPServerDialog', () => () => null);
 jest.mock('~/components/MCP/McpOAuthDialog', () => () => null);
@@ -92,5 +100,17 @@ describe('MCPServerCard contact', () => {
 
     expect(screen.getByText('Contact:')).toBeInTheDocument();
     expect(screen.getByText('No contact available')).toBeInTheDocument();
+  });
+
+  it('hides MCP contacts when the interface option is disabled', () => {
+    mockMcpServerContactEnabled = false;
+    renderCard(
+      { type: 'sse', url: 'https://example.com/mcp' },
+      { support_contact: { name: 'Platform Support', email: 'support@example.com' } },
+    );
+
+    expect(screen.queryByText('Contact:')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Platform Support' })).not.toBeInTheDocument();
+    mockMcpServerContactEnabled = true;
   });
 });

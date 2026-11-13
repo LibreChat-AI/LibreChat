@@ -3,6 +3,14 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import type { AgentItem } from '../items/types';
 import ToolCard from '../ToolCard';
 
+let mockMcpServerContactEnabled = true;
+
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({
+    data: { interface: { mcpServerContact: mockMcpServerContactEnabled } },
+  }),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize:
     () =>
@@ -92,6 +100,29 @@ describe('ToolCard', () => {
 
     const contactLink = screen.getByRole('link', { name: 'Platform Support' });
     expect(contactLink).toHaveAttribute('href', 'mailto:support@example.com');
+  });
+
+  test('hides MCP contacts when the interface option is disabled', () => {
+    mockMcpServerContactEnabled = false;
+    const mcp: AgentItem = {
+      kind: 'mcp',
+      id: 'everything',
+      name: 'Everything',
+      description: 'Everything server',
+      iconKey: 'mcp',
+      server: {
+        serverName: 'everything',
+        isConfigured: true,
+        tools: [],
+        support_contact: { name: 'Platform Support', email: 'support@example.com' },
+      } as never,
+      toolCount: 14,
+    };
+
+    render(<ToolCard item={mcp} selected={false} onToggle={jest.fn()} />);
+
+    expect(screen.queryByRole('link', { name: 'Platform Support' })).not.toBeInTheDocument();
+    mockMcpServerContactEnabled = true;
   });
 
   test('renders the owner fallback for MCP cards', () => {

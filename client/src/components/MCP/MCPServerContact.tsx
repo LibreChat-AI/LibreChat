@@ -1,4 +1,5 @@
 import type { MCPServerOwnerContact, SupportContact } from 'librechat-data-provider';
+import { useGetStartupConfig } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -22,14 +23,20 @@ export function shouldDisplayMCPServerContact(server?: MCPServerContactSource | 
   );
 }
 
+export function useMCPServerContactEnabled(): boolean {
+  const { data: startupConfig } = useGetStartupConfig();
+  return startupConfig?.interface?.mcpServerContact !== false;
+}
+
 export default function MCPServerContact({ server, className = '' }: MCPServerContactProps) {
   const localize = useLocalize();
+  const isEnabled = useMCPServerContactEnabled();
   const supportName = server?.support_contact?.name?.trim();
   const supportEmail = server?.support_contact?.email?.trim();
   const ownerName = server?.owner_contact?.name?.trim();
   const name = supportName || supportEmail || ownerName;
 
-  if (!shouldDisplayMCPServerContact(server)) {
+  if (!isEnabled || !shouldDisplayMCPServerContact(server)) {
     return null;
   }
 
