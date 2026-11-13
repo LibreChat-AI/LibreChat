@@ -27,10 +27,13 @@ import { ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
 import SidePanelNav from '~/components/SidePanel/Nav';
+import { cn, DEFAULT_APP_TITLE } from '~/utils';
 import { createResizeMeasure } from './resize';
+import { CONSOLE_PANEL_ID } from './Console';
+import { pageRegistry } from '~/components/FeaturePresentation/registry';
 import { useLocalize } from '~/hooks';
+import Navigation from './Navigation';
 import Sidebar from './Sidebar';
-import { cn } from '~/utils';
 
 function getInitialWidth(): number {
   const saved = localStorage.getItem('side:width');
@@ -55,8 +58,19 @@ function SidebarChatProvider({ children }: { children: ReactNode }) {
 function UnifiedSidebar({
   isSliding = false,
   switchToHistory,
+  layout = 'current',
+  appTitle = DEFAULT_APP_TITLE,
+  routeActiveId,
+  onSelect,
 }: {
   isSliding?: boolean;
+  /** Host-selected layout. Runtime configuration is resolved outside this component. */
+  layout?: 'current' | 'console';
+  appTitle?: string;
+  /** The host's full-page destination, when it replaces the secondary panel. */
+  routeActiveId?: string;
+  /** Console destination adapter, including route-backed feature links. */
+  onSelect?: (id: string) => void;
   /** The user's "new chat returns to the chat list" preference. App-global
    *  shell state the sidebar only reads, so the host passes it in. */
   switchToHistory: boolean;
@@ -75,10 +89,28 @@ function UnifiedSidebar({
   const [isResizing, setIsResizing] = useState(false);
   const resizeHandlers = useRef<{ move: (e: MouseEvent) => void; up: () => void } | null>(null);
 
+  const panelContainerRef = useRef<HTMLElement>(null);
+  const panelToggleRef = useRef<HTMLButtonElement>(null);
+  const consoleLayout = layout === 'console' && !isSmallScreen;
+
   const links = useUnifiedSidebarLinks();
   const presentation = useFeaturePresentation();
   const isInsightsRoute = location.pathname.startsWith('/insights');
-  const panelExpanded = expanded && !isInsightsRoute && !presentation?.page;
+  const pageActiveId = routeActiveId ?? (presentation?.page
+    ? pageRegistry[presentation.page].navId
+    : isInsightsRoute ? 'insights' : undefined);
+  const panelExpanded = expanded && pageActiveId == null;
+  const collapsedWidth = consoleLayout ? 0 : COLLAPSED_WIDTH;
+
+  useEffect(() => {
+    if (
+      consoleLayout &&
+      !panelExpanded &&
+      panelContainerRef.current?.contains(document.activeElement)
+    ) {
+      panelToggleRef.current?.focus();
+    }
+  }, [consoleLayout, panelExpanded]);
 
   /** The aside's max width is a viewport percentage, so the announced range has to track
    *  the viewport rather than a render-time snapshot of it. */
@@ -93,7 +125,7 @@ function UnifiedSidebar({
   const resizeMin = Math.min(EXPANDED_MIN, resizeMax);
   const resizeNow = panelExpanded
     ? Math.min(Math.max(sidebarWidth, resizeMin), resizeMax)
-    : COLLAPSED_WIDTH;
+    : collapsedWidth;
 
   const handleCollapse = useCallback(
     (afterSlide?: () => void) => {
@@ -291,26 +323,47 @@ function UnifiedSidebar({
   ) : (
     <SidebarChatProvider>
       <ActivePanelProvider>
+        {consoleLayout && (
+          <Navigation
+            links={links}
+            panelExpanded={panelExpanded}
+            onExpand={handleExpand}
+            onCollapse={handleCollapse}
+            onLeavePage={handleLeaveInsights}
+            routeActiveId={pageActiveId}
+            panelToggleRef={panelToggleRef}
+            switchToHistory={switchToHistory}
+            appTitle={appTitle}
+            onSelect={onSelect}
+          />
+        )}
         <aside
+          ref={panelContainerRef}
+          aria-hidden={consoleLayout && !panelExpanded ? true : undefined}
+          inert={consoleLayout && !panelExpanded ? '' : undefined}
           className="relative flex h-full shrink-0 overflow-hidden"
           style={{
-            width: pxToRem(panelExpanded ? sidebarWidth : COLLAPSED_WIDTH),
+            width: pxToRem(panelExpanded ? sidebarWidth : collapsedWidth),
             minWidth: panelExpanded
               ? `min(${pxToRem(EXPANDED_MIN)}, 40%)`
-              : pxToRem(COLLAPSED_WIDTH),
-            maxWidth: panelExpanded ? '40%' : pxToRem(COLLAPSED_WIDTH),
-            transition: isResizing
-              ? 'none'
-              : `width ${TRANSITION_MS}ms ${EASING}, min-width ${TRANSITION_MS}ms ${EASING}, max-width ${TRANSITION_MS}ms ${EASING}`,
+              : pxToRem(collapsedWidth),
+            maxWidth: panelExpanded ? '40%' : pxToRem(collapsedWidth),
+            transition:
+              isResizing || prefersReducedMotion
+                ? 'none'
+                : `width ${TRANSITION_MS}ms ${EASING}, min-width ${TRANSITION_MS}ms ${EASING}, max-width ${TRANSITION_MS}ms ${EASING}`,
           }}
           aria-label={localize('com_nav_control_panel')}
         >
           <Sidebar
             links={links}
+            hideNavigation={consoleLayout}
+            reducedMotion={prefersReducedMotion}
+            panelId={consoleLayout ? CONSOLE_PANEL_ID : undefined}
             expanded={panelExpanded}
             width={resizeNow}
-            minWidth={panelExpanded ? resizeMin : COLLAPSED_WIDTH}
-            maxWidth={panelExpanded ? resizeMax : COLLAPSED_WIDTH}
+            minWidth={panelExpanded ? resizeMin : collapsedWidth}
+            maxWidth={panelExpanded ? resizeMax : collapsedWidth}
             onCollapse={handleCollapse}
             onExpand={handlePanelExpand}
             onLeaveInsights={handleLeaveInsights}
