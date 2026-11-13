@@ -11,6 +11,7 @@ import { useLocalize, useAuthContext, useGreeting } from '~/hooks';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import AgentContact from '~/components/Agents/AgentContact';
 import ConvoIcon from '~/components/Endpoints/ConvoIcon';
+import { announceGreetingSettled } from './welcome';
 
 const containerClassName =
   'relative flex h-full items-center justify-center rounded-full bg-presentation text-text-primary';
@@ -96,6 +97,29 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
       : undefined;
 
   const scheduledGreeting = useGreeting(user?.name);
+
+  /** The greeting animates a grapheme at a time; when the last one settles the
+   * screen comes alive from that character (the composer takes focus, and a
+   * welcome backdrop can answer) instead of the title simply stopping. Once per
+   * visit: the title remounts when its text changes, such as an agent's name
+   * arriving after the time-based greeting has settled, and the screen has
+   * already come alive by then. */
+  const settledAnnounced = useRef(false);
+  const handleTitleSettled = useCallback(() => {
+    if (settledAnnounced.current) {
+      return;
+    }
+    const graphemes = contentRef.current?.querySelectorAll<HTMLElement>(
+      '.split-parent .will-change-transform',
+    );
+    const lastGrapheme = graphemes?.[graphemes.length - 1];
+    if (!lastGrapheme) {
+      return;
+    }
+    settledAnnounced.current = true;
+    const { left, top, width, height } = lastGrapheme.getBoundingClientRect();
+    announceGreetingSettled(left + width / 2, top + height / 2);
+  }, []);
 
   const handleLineCountChange = useCallback((count: number) => {
     setTextHasMultipleLines(count > 1);
@@ -188,6 +212,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
                 threshold={0}
                 rootMargin="0px"
                 onLineCountChange={handleLineCountChange}
+                onLetterAnimationComplete={handleTitleSettled}
               />
             </div>
           ) : (
@@ -203,6 +228,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
               threshold={0}
               rootMargin="0px"
               onLineCountChange={handleLineCountChange}
+              onLetterAnimationComplete={handleTitleSettled}
             />
           )}
         </div>
