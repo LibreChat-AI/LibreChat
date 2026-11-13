@@ -36,6 +36,7 @@ type Presentation = {
   availability: Partial<Record<NavigationPage, PageAvailability>>;
   chatLocation?: Location;
   updateChatLocation: (location: Location) => void;
+  setReturnTarget: (url: string) => void;
   ready: boolean;
   links: NavLink[];
   openPanel: (navId: string) => void;
@@ -139,6 +140,10 @@ export function FeaturePresentationProvider({
   const chatLocationRef = useRef(chatLocation);
   const journey = chatJourney(location);
   const journeyRef = useRef(journey);
+  const setReturnTarget = useCallback(
+    (url: string) => setReturnUrl(getChatReturnUrl(url)),
+    [setReturnUrl],
+  );
   const updateChatLocation = useCallback(
     (next: Location) => {
       chatLocationRef.current = next;
@@ -285,6 +290,7 @@ export function FeaturePresentationProvider({
       availability,
       chatLocation,
       updateChatLocation,
+      setReturnTarget,
       links,
       openPanel,
       page,
@@ -302,6 +308,7 @@ export function FeaturePresentationProvider({
       availability,
       chatLocation,
       updateChatLocation,
+      setReturnTarget,
       links,
       openPanel,
       page,
