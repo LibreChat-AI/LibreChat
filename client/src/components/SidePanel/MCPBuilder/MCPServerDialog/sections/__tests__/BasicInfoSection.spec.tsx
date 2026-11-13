@@ -6,6 +6,14 @@ import type * as ReactNS from 'react';
 import type { MCPServerFormData } from '../../hooks/useMCPServerForm';
 import BasicInfoSection from '../BasicInfoSection';
 
+let mockMcpServerContactEnabled = true;
+
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({
+    data: { interface: { mcpServerContact: mockMcpServerContactEnabled } },
+  }),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, values?: Record<string, unknown>) => {
     const translations: Record<string, string> = {
@@ -96,11 +104,33 @@ function rasterFile(bytes: number): File {
 }
 
 describe('BasicInfoSection support contact', () => {
+  afterEach(() => {
+    mockMcpServerContactEnabled = true;
+  });
+
   it('prepopulates name and email independently', () => {
     renderSection();
 
     expect(screen.getByLabelText('Support name Optional')).toHaveValue('Platform Team');
     expect(screen.getByLabelText('Support email Optional')).toHaveValue('platform@example.com');
+  });
+
+  it('hides contact fields when disabled and retains their values on submit', async () => {
+    mockMcpServerContactEnabled = false;
+    const { onSubmit } = renderSection();
+
+    expect(screen.queryByLabelText('Support name Optional')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Support email Optional')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'save' }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          support_contact: { name: 'Platform Team', email: 'platform@example.com' },
+        }),
+      );
+    });
   });
 
   it('validates a non-empty short name', async () => {

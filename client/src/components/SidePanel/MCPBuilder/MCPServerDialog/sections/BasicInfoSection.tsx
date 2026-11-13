@@ -3,6 +3,7 @@ import { useFormContext } from 'react-hook-form';
 import { Input, Label, Textarea } from '@librechat/client';
 import { MAX_MCP_ICON_PATH_LENGTH, MCP_SERVER_TITLE_PATTERN } from 'librechat-data-provider';
 import type { MCPServerFormData } from '../hooks/useMCPServerForm';
+import { useMCPServerContactEnabled } from '~/components/MCP/MCPServerContact';
 import { sanitizeSvg, svgToDataUri, validateEmail } from '~/utils';
 import MCPIcon from '~/components/SidePanel/Agents/MCPIcon';
 import { useLocalize } from '~/hooks';
@@ -13,6 +14,7 @@ const MAX_ICON_FILE_KB = Math.floor(MAX_ICON_FILE_BYTES / 1024);
 
 export default function BasicInfoSection() {
   const localize = useLocalize();
+  const showMcpServerContact = useMCPServerContactEnabled();
   const {
     register,
     watch,
@@ -62,7 +64,7 @@ export default function BasicInfoSection() {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {/* Icon + Name row */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
         <div className="shrink-0 space-y-1.5">
@@ -120,70 +122,72 @@ export default function BasicInfoSection() {
         />
       </div>
 
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">{localize('com_ui_support_contact')}</legend>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="mcp-support-contact-name" className="text-sm font-medium">
-              {localize('com_ui_support_contact_name')}{' '}
-              <span className="text-text-secondary text-xs">{localize('com_ui_optional')}</span>
-            </Label>
-            <Input
-              id="mcp-support-contact-name"
-              autoComplete="name"
-              placeholder={localize('com_ui_support_contact_name_placeholder')}
-              aria-invalid={errors.support_contact?.name ? 'true' : 'false'}
-              aria-describedby={
-                errors.support_contact?.name ? 'mcp-support-contact-name-error' : undefined
-              }
-              {...register('support_contact.name', {
-                minLength: {
-                  value: 3,
-                  message: localize('com_ui_support_contact_name_min_length', { minLength: 3 }),
-                },
-              })}
-            />
-            {errors.support_contact?.name && (
-              <p
-                id="mcp-support-contact-name-error"
-                role="alert"
-                className="text-text-destructive text-xs"
-              >
-                {errors.support_contact.name.message}
-              </p>
-            )}
+      {showMcpServerContact && (
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">{localize('com_ui_support_contact')}</legend>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="mcp-support-contact-name" className="text-sm font-medium">
+                {localize('com_ui_support_contact_name')}{' '}
+                <span className="text-text-secondary text-xs">{localize('com_ui_optional')}</span>
+              </Label>
+              <Input
+                id="mcp-support-contact-name"
+                autoComplete="name"
+                placeholder={localize('com_ui_support_contact_name_placeholder')}
+                aria-invalid={errors.support_contact?.name ? 'true' : 'false'}
+                aria-describedby={
+                  errors.support_contact?.name ? 'mcp-support-contact-name-error' : undefined
+                }
+                {...register('support_contact.name', {
+                  minLength: {
+                    value: 3,
+                    message: localize('com_ui_support_contact_name_min_length', { minLength: 3 }),
+                  },
+                })}
+              />
+              {errors.support_contact?.name && (
+                <p
+                  id="mcp-support-contact-name-error"
+                  role="alert"
+                  className="text-text-destructive text-xs"
+                >
+                  {errors.support_contact.name.message}
+                </p>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="mcp-support-contact-email" className="text-sm font-medium">
+                {localize('com_ui_support_contact_email')}{' '}
+                <span className="text-text-secondary text-xs">{localize('com_ui_optional')}</span>
+              </Label>
+              <Input
+                id="mcp-support-contact-email"
+                type="email"
+                autoComplete="email"
+                placeholder={localize('com_ui_support_contact_email_placeholder')}
+                aria-invalid={errors.support_contact?.email ? 'true' : 'false'}
+                aria-describedby={
+                  errors.support_contact?.email ? 'mcp-support-contact-email-error' : undefined
+                }
+                {...register('support_contact.email', {
+                  validate: (value) =>
+                    validateEmail(value, localize('com_ui_support_contact_email_invalid')),
+                })}
+              />
+              {errors.support_contact?.email && (
+                <p
+                  id="mcp-support-contact-email-error"
+                  role="alert"
+                  className="text-text-destructive text-xs"
+                >
+                  {errors.support_contact.email.message}
+                </p>
+              )}
+            </div>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="mcp-support-contact-email" className="text-sm font-medium">
-              {localize('com_ui_support_contact_email')}{' '}
-              <span className="text-text-secondary text-xs">{localize('com_ui_optional')}</span>
-            </Label>
-            <Input
-              id="mcp-support-contact-email"
-              type="email"
-              autoComplete="email"
-              placeholder={localize('com_ui_support_contact_email_placeholder')}
-              aria-invalid={errors.support_contact?.email ? 'true' : 'false'}
-              aria-describedby={
-                errors.support_contact?.email ? 'mcp-support-contact-email-error' : undefined
-              }
-              {...register('support_contact.email', {
-                validate: (value) =>
-                  validateEmail(value, localize('com_ui_support_contact_email_invalid')),
-              })}
-            />
-            {errors.support_contact?.email && (
-              <p
-                id="mcp-support-contact-email-error"
-                role="alert"
-                className="text-text-destructive text-xs"
-              >
-                {errors.support_contact.email.message}
-              </p>
-            )}
-          </div>
-        </div>
-      </fieldset>
+        </fieldset>
+      )}
     </div>
   );
 }

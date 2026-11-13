@@ -90,6 +90,7 @@ export async function loadDefaultInterface({
     presets: interfaceConfig?.presets ?? (hasModelSpecs ? false : defaults.presets),
     privacyPolicy: interfaceConfig?.privacyPolicy ?? defaults.privacyPolicy,
     termsOfService: interfaceConfig?.termsOfService ?? defaults.termsOfService,
+    mcpServerContact: interfaceConfig?.mcpServerContact ?? defaults.mcpServerContact,
     mcpServers: interfaceConfig?.mcpServers ?? defaults.mcpServers,
     customWelcome: interfaceConfig?.customWelcome ?? defaults.customWelcome,
     landingHeading: interfaceConfig?.landingHeading ?? defaults.landingHeading,
