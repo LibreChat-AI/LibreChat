@@ -49,9 +49,14 @@ test.describe('surfaces that load on demand', () => {
     page,
   }) => {
     const seen = recordOnDemandChunks(page);
+    /* The composer popovers load right after the chat renders; once they have, everything the
+       fresh chat fetches on its own is in. */
+    const popovers = page.waitForResponse((response) =>
+      /\/assets\/PromptsCommand\.[^/]+\.js$/.test(new URL(response.url()).pathname),
+    );
     await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
     await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
-    await page.waitForLoadState('networkidle');
+    await popovers;
 
     expect(seen).toEqual([]);
   });
