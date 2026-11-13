@@ -51,13 +51,11 @@ export const disabledInkClasses =
  * lightningcss rejects and which fails the production CSS build while leaving `jest`
  * and `tsc` perfectly green.
  *
- * The transition is `transition-reveal` (opacity, color and background-color) rather
- * than `transition-opacity`: `cn` merges the whole `transition-*` group, so a bare
- * `transition-opacity` would replace the `transition-colors` a `Button` brings and
- * the hover tint would snap instead of fading.
+ * The transition is opacity only: the hover tint snaps, it does not fade, and `cn` merges the
+ * whole `transition-*` group so this replaces the `transition-none` the toolbar buttons carry.
  */
 export const revealOnRowHoverClasses =
-  'transition-reveal duration-theme-normal ease-out group-hover:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:opacity-100 motion-reduce:transition-none no-touch:opacity-0';
+  'transition-opacity duration-theme-normal ease-out group-hover:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:opacity-100 motion-reduce:transition-none no-touch:opacity-0';
 
 export const peerDisabledInkClasses =
   'peer-theme-disabled:text-text-disabled peer-theme-disabled:opacity-100 peer-theme-disabled:[&_svg]:text-text-disabled';

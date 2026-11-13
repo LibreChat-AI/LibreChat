@@ -46,18 +46,18 @@ describe('revealOnRowHoverClasses', () => {
     expect(revealOnRowHoverClasses).toContain('motion-reduce:transition-none');
   });
 
-  /* `cn` merges the whole `transition-*` group, so a bare `transition-opacity`
-     would replace the `transition-colors` a `Button` contributes and the hover
-     tint would snap. The colour properties have to ride along explicitly. */
-  it('names the colour properties alongside opacity', () => {
-    expect(revealOnRowHoverClasses).toContain('transition-reveal');
-    expect(revealOnRowHoverClasses).not.toContain('transition-opacity');
+  /* The hover tint snaps: only opacity transitions, and the reveal replaces the
+     `transition-none` the toolbar buttons carry. */
+  it('transitions opacity only', () => {
+    expect(revealOnRowHoverClasses).toContain('transition-opacity');
+    expect(revealOnRowHoverClasses).not.toContain('transition-reveal');
   });
 
-  it('keeps the colour fade when merged onto a Button', () => {
+  it('does not fade colours when merged onto a Button', () => {
     const merged = cn(buttonVariants({ variant: 'message-hover-reveal' }));
-    expect(merged).toContain('transition-reveal');
+    expect(merged).toContain('transition-opacity');
     expect(merged).not.toContain('transition-colors');
+    expect(cn(buttonVariants({ variant: 'message-hover' }))).toContain('transition-none');
   });
 });
 

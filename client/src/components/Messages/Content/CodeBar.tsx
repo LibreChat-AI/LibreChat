@@ -16,7 +16,7 @@ const CodeBar: React.FC<CodeBarProps> = React.memo(
 
     return (
       <div className="bg-surface-code text-text-secondary flex items-center justify-between px-1.5 py-1.5 font-sans text-xs">
-        <span className="flex items-center gap-1.5 text-xs font-medium">
+        <span className="flex items-center gap-1.5 ps-1.5 text-xs font-medium">
           <LangIcon lang={lang} className="size-3.5" />
           {lang}
         </span>

@@ -627,6 +627,9 @@ async function clickForkVisibleMessages(
   await render.scrollIntoViewIfNeeded();
   await render.hover();
   await render.getByRole('button', { name: 'Open Fork Menu' }).click();
+  const popover = page.getByRole('dialog', { name: 'Fork conversation' });
+  await popover.getByRole('button', { name: 'More options' }).click();
+  await popover.getByRole('radio', { name: 'Visible', exact: true }).click();
 
   const [response] = await Promise.all([
     page.waitForResponse(
@@ -636,7 +639,7 @@ async function clickForkVisibleMessages(
         res.status() === 200,
       { timeout: 30000 },
     ),
-    page.getByRole('button', { name: 'Visible messages only', exact: true }).click(),
+    popover.getByRole('button', { name: 'Fork', exact: true }).click(),
   ]);
 
   return (await response.json()) as ForkResponse;
