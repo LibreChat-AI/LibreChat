@@ -1,9 +1,27 @@
-import { useEffect } from 'react';
+import { Suspense, useEffect } from 'react';
 import { useAtom } from 'jotai';
+import { Spinner } from '@librechat/client';
 import type { ReactNode } from 'react';
 import { traceViewerConversationAtom } from './store';
-import Viewer from './Viewer';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
+
+/** The trace viewer opens on demand, so it loads then instead of with the chat. */
+const Viewer = lazyWithRecovery(() => import('./Viewer'));
+
+function ViewerLoading() {
+  const localize = useLocalize();
+  return (
+    <div
+      role="status"
+      className="bg-surface-primary-alt text-text-secondary absolute inset-0 z-20 flex items-center justify-center"
+    >
+      <Spinner size={24} />
+      <span className="sr-only">{localize('com_ui_loading')}</span>
+    </div>
+  );
+}
 
 /**
  * Hosts the trace over the chat without unmounting it: the chat stays mounted
@@ -37,7 +55,9 @@ export default function TraceSurface({
         {children}
       </div>
       {open && (
-        <Viewer conversationId={conversationId} onClose={() => setTraceConversationId(null)} />
+        <Suspense fallback={<ViewerLoading />}>
+          <Viewer conversationId={conversationId} onClose={() => setTraceConversationId(null)} />
+        </Suspense>
       )}
     </div>
   );
