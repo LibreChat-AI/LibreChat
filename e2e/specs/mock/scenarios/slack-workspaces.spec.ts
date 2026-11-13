@@ -4,7 +4,7 @@ import type {
   SlackWorkspaceRouteTarget,
 } from 'librechat-data-provider';
 import type { AgentDetail } from '../agents.helpers';
-import { openAgentBuilder, cleanupAgent } from '../agents.helpers';
+import { openAgentBuilder, uniqueAgentName, cleanupAgent } from '../agents.helpers';
 import { MOCK_ENDPOINTS, getAccessToken, requestJson } from '../helpers';
 import { appURL } from '../../../setup/authenticate';
 import { expect, test } from '../fixtures';
@@ -17,6 +17,10 @@ test.use({ viewport: { width: 1280, height: 960 }, hasTouch: false, isMobile: fa
 const SCENARIO = {
   light: '@scenario:slack-workspace-install-cancel-and-disconnect-light',
   dark: '@scenario:slack-workspace-install-cancel-and-disconnect-dark',
+} as const;
+const AGENT_SCENARIO = {
+  light: '@scenario:slack-workspace-agent-setup-replacement-and-removal-light',
+  dark: '@scenario:slack-workspace-agent-setup-replacement-and-removal-dark',
 } as const;
 
 for (const theme of ['light', 'dark'] as const) {
@@ -292,8 +296,8 @@ for (const theme of ['light', 'dark'] as const) {
 
 // Exercises the production Agent Builder/connection components with a real saved agent.
 // Installation/channel HTTP is the boundary fixture; storage and permissions have API tests.
-for (const theme of ['light', 'dark']) {
-  test(`organization workspace agent setup, replacement and removal (${theme})`, async ({
+for (const theme of ['light', 'dark'] as const) {
+  test(`organization workspace agent setup, replacement and removal (${theme}) ${AGENT_SCENARIO[theme]}`, async ({
     page,
     baseURL,
   }) => {
@@ -334,7 +338,9 @@ for (const theme of ['light', 'dark']) {
       token,
       method: 'POST',
       body: {
-        name: 'Slack workspace assistant',
+        /** Unique per attempt, so an agent a timed-out attempt could not delete never makes the
+         *  retry's picker ambiguous. */
+        name: uniqueAgentName('Slack workspace assistant'),
         description: 'Workspace setup browser acceptance.',
         instructions: 'Keep this test deterministic.',
         provider: MOCK_ENDPOINTS[0].label,
@@ -430,10 +436,14 @@ for (const theme of ['light', 'dark']) {
       await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
       await page.getByRole('option', { name: agent.name!, exact: true }).click();
       await expect(form.getByLabel('Agent name')).toHaveValue(agent.name!);
-      await form
-        .getByRole('button', { name: 'Add Slack channel', exact: true })
-        .scrollIntoViewIfNeeded();
-      await form.getByRole('button', { name: 'Add Slack channel', exact: true }).click();
+      const add = form.getByRole('button', { name: 'Add channel', exact: true });
+      await add.scrollIntoViewIfNeeded();
+      await add.click();
+      /** The library lists the channel kinds; Slack opens its own add dialog. */
+      await page
+        .getByRole('dialog', { name: 'Channels', exact: true })
+        .getByRole('button', { name: /^Slack/ })
+        .click();
       const picker = page.getByRole('dialog', { name: 'Add Slack channel', exact: true });
       const botPicker = picker.getByRole('combobox', { name: 'Slack bot', exact: true });
       await expect(botPicker).toBeVisible();
@@ -481,8 +491,11 @@ for (const theme of ['light', 'dark']) {
       await replacement.getByRole('button', { name: 'Replace default agent', exact: true }).click();
       await expect(setup).toHaveCount(0);
       expect(activations).toBe(1);
-      await expect(form.getByText('Active', { exact: true })).toBeVisible();
-      await form.getByRole('button', { name: 'Manage connection', exact: true }).click();
+      /** An active row names its state for screen readers only; the dot shows it. */
+      await expect(form.getByText('Active', { exact: true })).toBeAttached();
+      const row = form.getByRole('listitem').filter({ hasText: 'Slack' });
+      await row.hover();
+      await row.getByRole('button', { name: 'Manage connection', exact: true }).click();
       const manage = page.getByRole('dialog', { name: 'Manage connection', exact: true });
       await expect(manage.getByRole('button', { name: 'Remove', exact: true })).toBeVisible();
       await expect(
@@ -522,7 +535,8 @@ for (const theme of ['light', 'dark']) {
       await manage.getByRole('button', { name: 'Disable', exact: true }).click();
       await expect(form.getByText('Disabled', { exact: true })).toBeVisible();
       expect(disabled).toBe(1);
-      await form.getByRole('button', { name: 'Manage connection', exact: true }).click();
+      await row.hover();
+      await row.getByRole('button', { name: 'Manage connection', exact: true }).click();
       await manage.getByRole('button', { name: 'Delete connection', exact: true }).click();
       expect(deleted).toBe(0);
       await page
