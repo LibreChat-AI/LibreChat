@@ -405,7 +405,7 @@ const buttonVariantRecipe = cva(
         size: 'default',
         class: 'size-auto p-1.5',
       },
-      { variant: 'section-add', size: 'default', class: 'h-7 px-2' },
+      { variant: 'section-add', size: 'default', class: 'h-theme-button-xs px-2' },
       { variant: 'popover-option', size: 'default', class: 'h-auto p-2' },
       { variant: 'inline-link', size: 'default', class: 'h-auto p-0' },
       { variant: 'carousel-nav', size: 'default', class: 'h-auto p-2' },
