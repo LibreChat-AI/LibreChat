@@ -60,12 +60,14 @@ test.describe('code loaded on first need', () => {
     await openChat(page);
     await sendMessageAndWaitForCompletion(page, 'E2E_MATH_REPLY');
 
-    const display = messagesView(page).locator('.katex-display .katex').first();
-    await expect(display).toBeVisible();
-    /* Display math plus the inline mhchem formula: mhchem registers with KaTeX in the same chunk. */
-    await expect(messagesView(page).locator('.katex')).toHaveCount(2);
+    /* Both formulas render, the inline one through mhchem, which registers in the same chunk. */
+    const formulas = messagesView(page).locator('.katex');
+    await expect(formulas).toHaveCount(2);
+    await expect(formulas.first()).toBeVisible();
     /* The stylesheet arrives with the chunk; without it KaTeX output falls back to body type. */
-    expect(await display.evaluate((el) => getComputedStyle(el).fontFamily)).toMatch(/KaTeX/);
+    expect(await formulas.first().evaluate((el) => getComputedStyle(el).fontFamily)).toMatch(
+      /KaTeX/,
+    );
   });
 });
 
