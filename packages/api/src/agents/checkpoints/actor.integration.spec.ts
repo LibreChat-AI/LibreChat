@@ -89,7 +89,7 @@ test('late legacy writes and another tagged owner survive owned scope deletion',
 
 test('old raw readers cannot see isolated owner payloads', async () => {
   const id = await write('event-actor/head', 'owner');
-  const tuple = await MongoDBSaver.prototype.getTuple.call((await getAgentCheckpointer(cfg))!, {
+  const tuple = await rawSaver().getTuple({
     configurable: {
       thread_id: 'actor-thread',
       checkpoint_ns: 'event-actor/head',
@@ -99,7 +99,7 @@ test('old raw readers cannot see isolated owner payloads', async () => {
   expect(tuple).toBeUndefined();
   const saver = (await getAgentCheckpointer(cfg))!;
   expect(
-    await MongoDBSaver.prototype.getTuple.call(saver, {
+    await rawSaver().getTuple({
       configurable: { thread_id: 'actor-thread', checkpoint_ns: 'event-actor/head' },
     }),
   ).toBeUndefined();
@@ -119,7 +119,7 @@ test('raw thread cleanup cannot remove isolated actor checkpoints or pending wri
   const id = await write('event-actor/head', 'owner');
   await write('event-actor/head');
   const saver = (await getAgentCheckpointer(cfg))!;
-  await MongoDBSaver.prototype.deleteThread.call(saver, 'actor-thread');
+  await rawSaver().deleteThread('actor-thread');
   const tuple = await saver.getTuple(config('event-actor/head', 'owner'));
   expect(tuple?.checkpoint.id).toBe(id);
   expect(tuple?.pendingWrites).toHaveLength(1);
@@ -394,3 +394,14 @@ test('custom checkpoint collections carry owner authority without separate maint
   expect(await mongoose.connection.db!.collection('tenant_cp').countDocuments()).toBe(0);
   expect(await mongoose.connection.db!.collection('tenant_writes').countDocuments()).toBe(0);
 });
+
+function rawSaver(): MongoDBSaver {
+  return new MongoDBSaver({
+    client: mongoose.connection.getClient() as unknown as ConstructorParameters<
+      typeof MongoDBSaver
+    >[0]['client'],
+    dbName: mongoose.connection.db!.databaseName,
+    checkpointCollectionName: 'agent_checkpoints',
+    checkpointWritesCollectionName: 'agent_checkpoint_writes',
+  });
+}

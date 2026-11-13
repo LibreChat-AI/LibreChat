@@ -143,7 +143,7 @@ export type ChatViewContract = {
   /** Whether message feedback controls are enabled by the startup config. */
   feedbackEnabled: boolean;
   /**
-   * The app's tool outcome rules for viewing one message as a `UIMessage`, given the
+   * The tool outcome rules for viewing one message as a `UIMessage`, given the
    * attachments that arrived for it outside the message cache. Stable across renders.
    */
   getMappingOptions: (live: TAttachment[] | undefined) => UIMappingOptions;

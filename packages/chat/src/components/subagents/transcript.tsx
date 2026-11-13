@@ -202,8 +202,8 @@ function SubagentControlHistory({
                   <Button
                     type="button"
                     variant="ghost"
-                    size="sm"
-                    className="h-7 shrink-0 px-2 text-xs"
+                    size="xs"
+                    className="shrink-0"
                     onClick={() => onCancelControl(control.controlId as string)}
                   >
                     {localize('com_ui_subagent_control_withdraw')}
@@ -390,14 +390,13 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
           {localize('com_ui_prompt')}
         </h3>
         <Button
-          variant="ghost"
-          size="sm"
+          variant="quiet"
+          size="compact"
           onClick={() => setExpanded((value) => !value)}
           aria-controls={contentId}
           aria-expanded={expanded}
           aria-label={toggleLabel}
           title={toggleLabel}
-          className="text-text-secondary hover:bg-surface-tertiary focus:ring-text-primary h-8 gap-1.5 rounded-md px-2 text-xs font-medium transition focus:ring-2"
         >
           {expanded ? <Minimize2 size={14} aria-hidden /> : <Maximize2 size={14} aria-hidden />}
           <span className="hidden sm:inline">{toggleLabel}</span>

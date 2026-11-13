@@ -1,5 +1,7 @@
 import type { StructuredToolInterface } from '@librechat/agents/langchain/tools';
 import type { PtcToolCallEvent } from 'librechat-data-provider';
+import type { ToolExecutionIdentity } from '~/telemetry/tools';
+import { observeToolExecution } from '~/telemetry/tools';
 
 /** Whole-preview budget for one inner call's arguments. */
 const ARGS_PREVIEW_MAX_CHARS = 96;
@@ -86,6 +88,8 @@ export interface InstrumentPtcToolMapParams {
   /** The PTC run step's tool call id — the card the trace renders under. */
   toolCallId: string;
   runId?: string;
+  telemetry?: ToolExecutionIdentity;
+  signal?: AbortSignal;
   /**
    * Whether argument and failure previews may ride the stream. False when the
    * deployment filters tool arguments for PII: inner calls never pass through
@@ -118,6 +122,8 @@ export function instrumentPtcToolMap({
   toolMap,
   toolCallId,
   runId,
+  telemetry,
+  signal,
   includePreviews = true,
   traceExclusions,
   emit,
@@ -159,9 +165,24 @@ export function instrumentPtcToolMap({
               ...(runId != null ? { runId } : {}),
             });
             try {
-              const result = await (
-                target.invoke as (input: unknown, config?: unknown) => Promise<unknown>
-              ).call(target, input, config);
+              const invoke = () =>
+                (target.invoke as (input: unknown, config?: unknown) => Promise<unknown>).call(
+                  target,
+                  input,
+                  config,
+                );
+              const result = telemetry
+                ? await observeToolExecution(
+                    {
+                      ...telemetry,
+                      toolName: name,
+                      toolCallId: callId,
+                      parentToolCallId: toolCallId,
+                    },
+                    invoke,
+                    { signal },
+                  )
+                : await invoke();
               safeEmit({
                 tool_call_id: toolCallId,
                 call_id: callId,

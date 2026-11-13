@@ -14,6 +14,7 @@ import type {
   SteerQueueItem,
   SteerReceipt,
   SteerReceiptInput,
+  SteerPromotionOutcome,
   UsageMetadata,
   IJobStoreV2,
   JobStatus,
@@ -149,6 +150,9 @@ interface ContentState {
  * - No chunk persistence needed - same instance handles generation and reconnects
  */
 export class InMemoryJobStore implements IJobStoreV2 {
+  readonly providerGuardedStatusTransitions = true as const;
+  readonly providerStartOwnership = true as const;
+  readonly providerTerminalPersistence = true as const;
   readonly durableScheduleReceipts = false;
   readonly detachedAgentEventActionStoreMode = 'process_local' as const;
 
@@ -776,10 +780,17 @@ export class InMemoryJobStore implements IJobStoreV2 {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean> {
     const job = this.jobs.get(streamId);
     if (job?.createdAt !== expectedCreatedAt || job.providerExecutionId !== providerExecutionId) {
       return false;
+    }
+    if (terminalPersistencePending) {
+      if (!['complete', 'error', 'aborted'].includes(job.status)) return false;
+      job.terminalPersistencePending = true;
+      job.terminalPersistenceOwner = 'external';
+      job.terminalPersistenceStartedAt ??= Date.now();
     }
     job.providerDrained = true;
     return true;
@@ -789,6 +800,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    ownerId?: string,
   ): Promise<boolean> {
     const job = this.jobs.get(streamId);
     if (
@@ -801,6 +813,8 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     job.providerDrained = false;
     job.providerExecutionStartedId = providerExecutionId;
+    if (ownerId != null) job.providerExecutionOwnerId = ownerId;
+    else delete job.providerExecutionOwnerId;
     return true;
   }
 
@@ -835,6 +849,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
     if (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt) {
       return false;
     }
+    if (
+      args.expectProviderExecutionId != null &&
+      job.providerExecutionId !== args.expectProviderExecutionId
+    )
+      return false;
     if (args.notAfterMs != null && Date.now() >= args.notAfterMs) {
       throw new JobStatusTransitionDeadlineError(args.notAfterMs);
     }
@@ -914,7 +933,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
       !job ||
       job.status !== args.from ||
       (args.expectActionId != null && job.pendingActionId !== args.expectActionId) ||
-      (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt)
+      (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt) ||
+      (args.expectProviderExecutionId != null &&
+        job.providerExecutionId !== args.expectProviderExecutionId)
     ) {
       return null;
     }
@@ -2604,6 +2625,81 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     entry.receipt.state = 'cancelled';
     return true;
+  }
+
+  async promoteSteerLeftover(
+    streamId: string,
+    steerId: string,
+    ownerUserId: string,
+    ownerTenantId: string | undefined,
+    generationCreatedAt: number,
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome> {
+    const now = Date.now();
+    let receipt: SteerReceipt | undefined;
+    for (const entry of this.steerReceipts.get(streamId)?.values() ?? []) {
+      if (entry.expiresAt > now && entry.receipt.item?.steerId === steerId) {
+        receipt = entry.receipt;
+        break;
+      }
+    }
+    if (receipt == null) {
+      return 'missing';
+    }
+    if (
+      receipt.generationCreatedAt !== generationCreatedAt ||
+      receipt.userId !== ownerUserId ||
+      (receipt.tenantId != null && receipt.tenantId !== ownerTenantId)
+    ) {
+      return 'refused';
+    }
+    if (receipt.state === 'recovered' && receipt.promotedTurnId === queuedTurnId) {
+      return 'promoted';
+    }
+    if (receipt.state !== 'leftover') {
+      return 'refused';
+    }
+    const activeJob = this.jobs.get(streamId);
+    if (
+      activeJob?.recoveredSteerId === steerId &&
+      (activeJob.status === 'running' || activeJob.status === 'requires_action')
+    ) {
+      return 'refused';
+    }
+    const parked = this.parkedSteers.get(streamId);
+    if (parked == null || parked.expiresAt <= now) {
+      return 'unparked';
+    }
+    try {
+      const parsed = JSON.parse(parked.payload) as {
+        userId?: string;
+        tenantId?: string;
+        steers?: Array<{ steerId?: string }>;
+      };
+      if (
+        parsed.userId !== ownerUserId ||
+        (parsed.tenantId != null && parsed.tenantId !== ownerTenantId) ||
+        !Array.isArray(parsed.steers) ||
+        !parsed.steers.every(isValidParkedSteer)
+      ) {
+        return 'refused';
+      }
+      const kept = parsed.steers.filter((item) => item.steerId !== steerId);
+      if (kept.length === parsed.steers.length) {
+        return 'unparked';
+      }
+      if (kept.length === 0) {
+        this.parkedSteers.delete(streamId);
+      } else {
+        parsed.steers = kept;
+        parked.payload = JSON.stringify(parsed);
+      }
+    } catch {
+      return 'refused';
+    }
+    receipt.state = 'recovered';
+    receipt.promotedTurnId = queuedTurnId;
+    return 'promoted';
   }
 
   private parkLeftovers(

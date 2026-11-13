@@ -185,6 +185,11 @@ export const getModelKey = (endpoint: EModelEndpoint | string, model: string) =>
     const provider = [parts[0], parts[1]].find((part) =>
       Object.values(BedrockProviders).includes(part as BedrockProviders),
     );
+    /** A bare `claude-*` ID (one mapped to an inference profile) names no provider,
+     *  so it is keyed by its family, the way `bedrockInputParser` already reads it. */
+    if (provider == null && model.includes('claude')) {
+      return BedrockProviders.Anthropic;
+    }
     return (provider ?? parts[0]) as BedrockProviders;
   }
   return model;

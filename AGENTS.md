@@ -67,7 +67,9 @@ changed. `packages/client` excludes `*.spec.ts(x)` and `*.test.ts(x)` from typec
 `npm run sort-imports` with no arguments rewrites every source root — pass the paths you touched.
 Run `npm run static-checks -- --against origin/dev` to reproduce the PR's static checks; use
 `npm run static-checks:full` for the slower gates. Fix all formatting, lint, and TypeScript
-warnings/errors in the code you change.
+warnings/errors in the code you change. The pre-push hook runs the same checks, slow tier and
+typecheck included, against the commit being pushed; it refuses a dirty worktree or a ref other
+than `HEAD` instead of checking the wrong content, so commit first rather than bypassing it.
 
 ## Module boundaries and configuration
 

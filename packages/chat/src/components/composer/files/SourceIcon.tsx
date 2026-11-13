@@ -23,7 +23,7 @@ const sourceToClassname = (): Partial<Record<string, string>> => ({
 });
 
 const defaultClassName =
-  'absolute inset-e-0 bottom-0 rounded-full p-[0.15rem] text-text-secondary transition-colors';
+  'absolute inset-e-0 bottom-0 rounded-full p-0.5 text-text-secondary transition-colors';
 
 export default function SourceIcon({
   source,

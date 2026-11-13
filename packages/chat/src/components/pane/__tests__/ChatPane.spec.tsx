@@ -148,6 +148,17 @@ describe('ChatPane', () => {
     expect(paneColumn(container)).not.toContainElement(screen.getByText('Full footer'));
   });
 
+  it('seats the composer footer directly after the composer', () => {
+    const { container } = renderPane({
+      composer: <p>Composer</p>,
+      composerFooter: <p>Composer footer</p>,
+    });
+
+    const footer = screen.getByText('Composer footer');
+    expect(composerBand(container)).toContainElement(footer);
+    expect(screen.getByText('Composer').nextElementSibling).toBe(footer);
+  });
+
   it('hands the mascot the composer band to stand on', () => {
     let band: HTMLElement | null = null;
     function Mascot({ bandRef }: { bandRef: { current: HTMLElement | null } }) {

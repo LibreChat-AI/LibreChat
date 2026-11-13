@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { ToolPreparation } from '@librechat/chat/components';
 import AskUserQuestionProgress from '../AskUserQuestionProgress';
-import { ToolPreparation } from '../preparation';
 
 const translations: Record<string, string> = {
   com_ui_asking: 'Asking',
@@ -26,7 +26,7 @@ let mockLivePauses: { ids: string[]; hasUnattributed: boolean } = {
 };
 
 jest.mock('~/data-provider', () => ({
-  useGetMessagesByConvoId: () => ({ data: mockLivePauses }),
+  useCachedMessages: () => ({ data: mockLivePauses }),
 }));
 
 describe('AskUserQuestionProgress', () => {

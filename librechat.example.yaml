@@ -206,9 +206,14 @@ interface:
   # 'entity' shows its name; 'greeting' shows the time-of-day greeting (or customWelcome) with the
   # user's name, for deployments where the header selector already names the agent.
   # landingHeading: entity
-  # Show the generic disclaimer and policy links beneath the welcome screen's composer (default: true).
-  # When false, a CUSTOM_FOOTER still renders there, as it does in conversations.
+  # Show the generic disclaimer and policy links on the welcome screen (default: true).
+  # true places them at the bottom of the page, 'composer' directly under the composer, and false
+  # hides them. When false, a CUSTOM_FOOTER still renders there, as it does in conversations.
   # landingFooter: true
+  # Which responses show the author's avatar and name above their content (default: always).
+  # 'whenDifferent' drops them when the header's model selector already shows that agent; a
+  # response from another agent keeps them. The name stays available to screen readers.
+  # messageAuthor: always
   # Allow renaming a running chat or one with a placeholder title (default: true).
   # Set to false during a rolling upgrade, until ALL API replicas are upgraded and old
   # title-generation jobs have drained. While false, rename is disabled for running chats
@@ -571,7 +576,7 @@ registration:
 #   ocrMs: 300000 # each OCR provider call
 #   actionsMs: 300000 # each action (OpenAPI tool) HTTP call
 #   moderationMs: 10000 # the OpenAI moderation check before a chat turn
-#   imageFetchMs: 30000 # fetching a stored image to encode it for a provider
+#   imageFetchMs: 30000 # reading a stored image, by URL or from blob storage, to encode it for a provider
 #   toolsMs: 60000 # each call a built-in tool makes to its API (weather, Wolfram, web search)
 #   speechMs: 300000 # each text-to-speech or speech-to-text provider request
 #   imageGenerationMs: 300000 # each Stable Diffusion image generation request
@@ -587,7 +592,7 @@ registration:
 # Upper bounds on independent lookups a request runs at once (1 to 32). Each omitted key keeps the default shown.
 # concurrency:
 #   connectedAgentLoads: 4 # connected agents initialized together per level of a handoff graph
-#   mcpCatalogLookups: 4 # MCP tool catalog reads when assembling an ephemeral or added agent
+#   mcpCatalogLookups: 4 # MCP tool catalog reads when assembling an agent's tools
 #   skillNameLookups: 8 # model spec skill name resolutions
 #   skillFileInspections: 4 # bundled skill file inspections before a skill is primed
 #   resumeAgentLoads: 4 # agent reads while building the resume snapshot of a paused run
@@ -1384,10 +1389,10 @@ endpoints:
       headers:
         x-librechat-body-parentmessageid: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}'
       models:
-        default: ['meta-llama/llama-3-70b-instruct']
+        default: ['meta-llama/llama-3.3-70b-instruct']
         fetch: true
       titleConvo: true
-      titleModel: 'meta-llama/llama-3-70b-instruct'
+      titleModel: 'meta-llama/llama-3.3-70b-instruct'
       # Recommended: Drop the stop parameter from the request as Openrouter models use a variety of stop tokens.
       dropParams: ['stop']
       modelDisplayLabel: 'OpenRouter'

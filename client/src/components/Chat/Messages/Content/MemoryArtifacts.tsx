@@ -3,9 +3,9 @@ import { ChevronDown } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
 import { toolPanelSpacingClassName } from '@librechat/chat/react';
 import { Button, disclosureChevronVariants } from '@librechat/client';
+import { MemoryInfo, useExpandCollapse } from '@librechat/chat/components';
 import type { MemoryArtifact, TAttachment } from 'librechat-data-provider';
-import { useExpandCollapse, useLocalize } from '~/hooks';
-import MemoryInfo from './MemoryInfo';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 /** True for a memory attachment with no originating tool call. A call rendered
@@ -60,7 +60,7 @@ export default function MemoryArtifacts({ attachments }: { attachments?: TAttach
 
   return (
     <>
-      <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5">
+      <div className="relative my-1.5 flex h-5 shrink-0 items-center gap-2.5">
         <Button
           variant="ghost"
           className={cn(
@@ -100,7 +100,7 @@ export default function MemoryArtifacts({ attachments }: { attachments?: TAttach
           <ChevronDown
             className={cn(
               disclosureChevronVariants({ expanded: showInfo }),
-              'size-4 translate-y-[0.0625rem]',
+              'ms-auto size-4 translate-y-[0.0625rem]',
             )}
             aria-hidden="true"
           />

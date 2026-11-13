@@ -21,6 +21,18 @@ if (BASE_URL && BASE_URL.endsWith('/')) {
 }
 
 export const apiBaseUrl = () => BASE_URL;
+export const responseReview = (responseId: string): string =>
+  `${BASE_URL}/api/agents/responses/${encodeURIComponent(responseId)}/review`;
+export const responseCancel = (responseId: string): string =>
+  `${BASE_URL}/api/agents/responses/${encodeURIComponent(responseId)}/cancel`;
+
+export const slackWorkspaces = (workspaceId?: string): string =>
+  `${apiBaseUrl()}/api/channels/workspaces${workspaceId ? `/${encodeURIComponent(workspaceId)}` : ''}`;
+
+export const agentChannels = (agentId: string, channelId?: string): string =>
+  `${BASE_URL}/api/agents/${encodeURIComponent(agentId)}/channels${
+    channelId ? `/${encodeURIComponent(channelId)}` : ''
+  }`;
 
 // Testing this buildQuery function
 const buildQuery = (params: Record<string, unknown>): string => {
@@ -266,12 +278,14 @@ export const deletePreset = () => `${BASE_URL}/api/presets/delete`;
 
 export const aiEndpoints = () => `${BASE_URL}/api/endpoints`;
 
-export const tokenConfig = () => `${BASE_URL}/api/endpoints/token-config`;
+export const tokenConfig = (endpoint?: string) =>
+  `${BASE_URL}/api/endpoints/token-config${endpoint == null ? '' : `?endpoint=${encodeURIComponent(endpoint)}`}`;
 
 export const reasoningCapabilities = (endpoint: string) =>
   `${BASE_URL}/api/endpoints/reasoning-capabilities?endpoint=${encodeURIComponent(endpoint)}`;
 
-export const models = () => `${BASE_URL}/api/models`;
+export const models = (endpoint?: string) =>
+  `${BASE_URL}/api/models${endpoint == null ? '' : `?endpoint=${encodeURIComponent(endpoint)}`}`;
 
 export const login = () => `${BASE_URL}/api/auth/login`;
 
@@ -656,6 +670,7 @@ export const enableTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup`;
 export const confirmTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/confirm`;
 export const acknowledgeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/acknowledge`;
 export const finalizeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/finalize`;
+export const cancelTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/cancel`;
 export const verifyTwoFactor = () => `${BASE_URL}/api/auth/2fa/verify`;
 export const confirmTwoFactor = () => `${BASE_URL}/api/auth/2fa/confirm`;
 export const disableTwoFactor = () => `${BASE_URL}/api/auth/2fa/disable`;

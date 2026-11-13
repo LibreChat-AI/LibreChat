@@ -603,7 +603,7 @@ export function parseSessionHint(value: string): SessionHint | undefined {
  * Bumped by hand when a release changes what resolving a theme emits without changing its roles
  * (a palette value, a fallback derivation, an emitted attribute), so cached entries are rebuilt.
  */
-export const THEME_CACHE_EPOCH = 5 as const;
+export const THEME_CACHE_EPOCH = 6 as const;
 
 /**
  * Names the role set a stored resolved theme was built against: any color, brand or appearance

@@ -880,7 +880,9 @@ async function provisionQueued({
   turnSignal?: AbortSignal;
   deadline: AbortSignal;
 }): Promise<void> {
-  const provisioning = provisionFiles([AgentConstants.READ_FILE], agent.id, turnSignal).then(
+  /* Named as a code call because priming claims the handoff: refs that arrive in time seed
+   * the run's sessions, and a read_file batch would leave them queued for the next code call. */
+  const provisioning = provisionFiles([AgentConstants.EXECUTE_CODE], agent.id, turnSignal).then(
     (files) => files ?? [],
   );
   const onTime = await Promise.race([

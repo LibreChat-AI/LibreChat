@@ -7,6 +7,24 @@ on:
       - '!**.md'
       - '!.github/workflows/**'
       - '.github/workflows/playwright-mock.yml'
+  # Post-merge safety net, as backend-review.yml and frontend-review.yml have for jest. A
+  # regression that reaches dev fails this suite on every open pull request, and without a run
+  # on dev itself nothing names the merge that caused it. A push runs the pull request profile
+  # with no lane narrowed, so a red run on dev is what the next pull request would see. The
+  # nightly stays on the default branch, where it covers the full suite on both stores.
+  push:
+    branches:
+      - dev
+    paths:
+      - '**'
+      - '!**.md'
+      - '!.github/workflows/**'
+      - '.github/workflows/playwright-mock.yml'
+  # The merge queue tests the commit about to land on dev. It has no path filter and runs
+  # the pull request profile with no lane narrowed, so a failure in the queue is one the
+  # pull request's own checks can reproduce.
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: '0 5 * * *'
   workflow_dispatch:
@@ -27,8 +45,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: playwright-mock-${{ github.ref }}
-  cancel-in-progress: true
+  # Pull requests, the nightly and manual runs keep a per-ref group in which a newer run cancels
+  # the older one. Pushes to dev take a group of their own that never cancels, so the run in
+  # progress always finishes; GitHub holds one pending run per group and a newer one replaces
+  # it, so merges that land meanwhile collapse into a single run of the newest commit. A
+  # cancelling group would rarely finish on a busy day (nine merges landed within 89 seconds on
+  # 2026-11-09) and a run per commit, which the jest workflows use, costs about 190
+  # runner-minutes on 15 runners each time. A red run therefore names a range of merges, from
+  # the commit of the last finished run to its own, and the dev tip always gets a run.
+  group: playwright-mock-${{ github.event_name == 'push' && 'post-merge-' || '' }}${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 env:
   NODE_OPTIONS: '--max-old-space-size=${{ secrets.NODE_MAX_OLD_SPACE_SIZE || 6144 }}'
@@ -39,9 +65,9 @@ jobs:
   # two matrix lanes whose relevance is a reachability question: the redis-transport shards (the
   # stream-boundary specs under a real Redis round-trip) and the MCP list_changed lanes. Memory
   # shards always run. Monotone and fail-open: a lane is dropped ONLY on an explicit `false` from
-  # the service; unavailable/unconfigured/non-synchronize events keep the full matrix. Lock
-  # attribution rides along so a backend dependency bump (reaches nothing in the graph) still
-  # earns both lanes. Kill switch: repo variable CODEGRAPH_GATING=off.
+  # the service; unavailable/unconfigured/non-synchronize events (dev pushes among them) keep the
+  # full matrix. Lock attribution rides along so a backend dependency bump (reaches nothing in
+  # the graph) still earns both lanes. Kill switch: repo variable CODEGRAPH_GATING=off.
   codegraph_select:
     name: Codegraph select
     runs-on: ubuntu-latest
@@ -153,7 +179,7 @@ jobs:
           fi
           echo "decided=true" >> "$GITHUB_OUTPUT"
           note ""
-          note "memory shards always run · kill switch: repo variable \`CODEGRAPH_GATING=off\` · full matrix on PR open and nightly"
+          note "memory shards always run · kill switch: repo variable \`CODEGRAPH_GATING=off\` · full matrix on PR open, on every dev push and nightly"
           exit 0
 
   e2e_shards:
@@ -163,6 +189,8 @@ jobs:
       !cancelled() &&
       (github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
@@ -177,7 +205,7 @@ jobs:
         ${{
           (github.event_name == 'pull_request' && needs.codegraph_select.outputs.e2e_include != '' &&
           fromJSON(needs.codegraph_select.outputs.e2e_include)) ||
-          ((github.event_name == 'pull_request' || inputs.coverage == 'pr') &&
+          ((github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'merge_group' || inputs.coverage == 'pr') &&
           fromJSON('{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
           fromJSON('{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis, shard 1/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/10","artifact":"redis-1-of-10"},{"name":"redis, shard 2/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/10","artifact":"redis-2-of-10"},{"name":"redis, shard 3/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"3/10","artifact":"redis-3-of-10"},{"name":"redis, shard 4/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"4/10","artifact":"redis-4-of-10"},{"name":"redis, shard 5/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"5/10","artifact":"redis-5-of-10"},{"name":"redis, shard 6/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"6/10","artifact":"redis-6-of-10"},{"name":"redis, shard 7/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"7/10","artifact":"redis-7-of-10"},{"name":"redis, shard 8/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"8/10","artifact":"redis-8-of-10"},{"name":"redis, shard 9/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"9/10","artifact":"redis-9-of-10"},{"name":"redis, shard 10/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"10/10","artifact":"redis-10-of-10"}]}')
         }}
@@ -198,10 +226,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -215,15 +243,16 @@ jobs:
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
+            packages/channel-gateway/node_modules
             api/node_modules
-          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: Test Playwright matrix selection and the vote gate
-        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs
+      - name: Test Playwright matrix selection, the vote gate, the merge gate and the retried-pass reporter
+        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs .github/scripts/merge-gate.test.mjs e2e/reporters/retried.test.mjs
 
       - name: Restore data-provider build cache
         id: cache-data-provider
@@ -283,6 +312,9 @@ jobs:
       - name: Build client app
         if: steps.cache-client-app.outputs.cache-hit != 'true'
         run: npm run build:client
+
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
 
       - name: Verify Chrome is present
         run: google-chrome --version
@@ -392,8 +424,18 @@ jobs:
           CI: 'true'
           E2E_ALLOW_EMAIL_CHANGE: 'false'
 
+      # Reports and traces are debugging aids that no job downloads, so an upload that fails must
+      # not fail a shard whose tests passed. On 2026-11-11 the artifact service answered every
+      # request with an HTML page: each upload retried for 9 to 10.5 minutes before it failed,
+      # six shards whose tests had passed went red, and one of them ended within seconds of the
+      # job's 30 minute timeout. `continue-on-error` keeps a failed upload out of the job result,
+      # and the bound keeps a stalled one from running the job into that timeout: the slowest of
+      # 519 successful report uploads took 10 seconds. The runner still annotates the run with
+      # the upload's own error, or with the step timeout.
       - name: Upload Playwright HTML report
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: playwright-report-${{ matrix.artifact }}
@@ -403,6 +445,8 @@ jobs:
 
       - name: Upload traces & screenshots
         if: failure()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: playwright-test-results-${{ matrix.artifact }}
@@ -417,11 +461,14 @@ jobs:
           E2E_TITLE_CONVO: 'true'
         run: >-
           npx playwright test --config=e2e/playwright.config.mock.ts
-          conversation-management.spec.ts --grep 'first-turn|final-title polling' --reporter=line
+          conversation-management.spec.ts --grep 'first-turn|final-title polling'
+          --reporter=line,e2e/reporters/retried.mjs
           --output=e2e/specs/.test-results/title-ownership
 
       - name: Upload title ownership diagnostics
         if: ${{ always() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: playwright-title-ownership-${{ matrix.artifact }}
@@ -437,6 +484,8 @@ jobs:
       needs.codegraph_select.outputs.mcp_run != 'false' &&
       (github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
@@ -455,10 +504,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v4
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -472,8 +521,9 @@ jobs:
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
+            packages/channel-gateway/node_modules
             api/node_modules
-          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -481,6 +531,9 @@ jobs:
 
       - name: Build e2e dependencies
         run: npm run e2e:prepare
+
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
 
       - name: Verify Chrome is present
         run: google-chrome --version
@@ -516,22 +569,23 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-ffmpeg-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
-      # This job deliberately skips the optional font install: its bounded
-      # Playwright apt process can outlive the wrapper on a slow mirror and
-      # retain the package-manager lock needed by the required Redis install.
-      # The MCP suite does not enable visual snapshot assertions.
+      # This job deliberately skips the optional font install: the MCP suite
+      # does not enable visual snapshot assertions, so nothing here needs apt.
 
-      # Redis is a hard requirement for this job, so this step stays fatal.
+      # Redis is a hard requirement for this job, so this step stays fatal. The
+      # action puts the pinned redis-server and redis-cli on PATH from the
+      # Actions cache, or builds them from the pinned commit on a miss; no
+      # distro mirror has to resolve for this job to get Redis.
       - name: Install Redis runtime dependencies
-        timeout-minutes: 5
-        run: |
-          sudo apt-get -o DPkg::Lock::Timeout=300 update
-          sudo apt-get -o DPkg::Lock::Timeout=300 install -y redis-server redis-tools
+        timeout-minutes: 8
+        uses: ./.github/actions/redis-binaries
 
+      # A daemonized redis-server returns before it opens its port, so the
+      # first ping waits for it instead of racing it.
       - name: Start standalone Redis and Redis Cluster
         run: |
           redis-server --daemonize yes --port 6379
-          redis-cli -p 6379 ping
+          timeout 30 bash -c 'until redis-cli -p 6379 ping; do sleep 0.5; done'
           chmod +x redis-config/start-cluster.sh redis-config/stop-cluster.sh
           ./redis-config/start-cluster.sh
           redis-cli -p 7001 cluster info
@@ -559,8 +613,12 @@ jobs:
           npx playwright test --config=e2e/playwright.config.mock.ts
           mcp-tool-list-changed.spec.ts --retries=0
 
+      # Debugging aids that no job downloads: non-fatal and bounded, as the note on the
+      # e2e_shards uploads explains.
       - name: Upload Playwright HTML report
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: playwright-mcp-list-changed-${{ matrix.replicas }}-replicas
@@ -570,6 +628,8 @@ jobs:
 
       - name: Upload traces & screenshots
         if: failure()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: playwright-mcp-list-changed-results-${{ matrix.replicas }}-replicas
@@ -585,11 +645,13 @@ jobs:
 
   mcp_apps:
     name: MCP Apps (browser and server)
-    # Always run the dedicated fixture on eligible PRs, schedule, and manual runs. The regular
-    # mock shards skip it unless E2E_MCP_APPS=true; codegraph gating must not omit this lane.
+    # Always run the dedicated fixture on eligible PRs, dev pushes, schedule, and manual runs. The
+    # regular mock shards skip it unless E2E_MCP_APPS=true; codegraph gating must not omit this lane.
     if: >-
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
@@ -602,10 +664,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -619,12 +681,16 @@ jobs:
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
+            packages/channel-gateway/node_modules
             api/node_modules
-          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
+
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
 
       - name: Verify Chrome is present
         run: google-chrome --version
@@ -640,8 +706,12 @@ jobs:
       - name: Run MCP Apps browser fixture (enabled, disabled, omitted, quota)
         run: node e2e/mcp-apps/run.mjs
 
+      # Debugging aids that no job downloads: non-fatal and bounded, as the note on the
+      # e2e_shards uploads explains.
       - name: Upload per-phase Playwright reports
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: playwright-mcp-apps-reports
@@ -653,6 +723,8 @@ jobs:
 
       - name: Upload MCP Apps traces and screenshots
         if: failure()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: playwright-mcp-apps-results
@@ -671,6 +743,8 @@ jobs:
       !cancelled() &&
       (github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||

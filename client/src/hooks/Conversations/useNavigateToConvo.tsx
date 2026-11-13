@@ -268,7 +268,6 @@ const useNavigateToConvo = (index = 0) => {
     const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
     if (!convo.endpoint || !endpointsConfig?.[convo.endpoint]) {
       /* undefined/removed endpoint edge case */
-      const modelsConfig = queryClient.getQueryData<TModelsConfig>([QueryKeys.models]);
       const defaultEndpoint = getDefaultEndpoint({
         convoSetup: conversation,
         endpointsConfig,
@@ -279,7 +278,9 @@ const useNavigateToConvo = (index = 0) => {
         conversation.endpointType = endpointType;
       }
 
-      const models = modelsConfig?.[defaultEndpoint ?? ''] ?? [];
+      const models = queryClient.getQueryData<TModelsConfig>([QueryKeys.models, defaultEndpoint])?.[
+        defaultEndpoint ?? ''
+      ];
 
       const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, defaultEndpoint);
       convo = buildDefaultConvo({

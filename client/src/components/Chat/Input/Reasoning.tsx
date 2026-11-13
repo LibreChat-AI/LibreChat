@@ -1,20 +1,17 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import * as Popover from '@radix-ui/react-popover';
+import { useEffect, useMemo, useRef } from 'react';
 import { useAtom, useStore, useAtomValue } from 'jotai';
 import { submissionByIndex } from '@librechat/chat/react';
-import { Button, Input, Slider } from '@librechat/client';
-import { BrainCircuit, ChevronDown, X } from 'lucide-react';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import {
   Constants,
   ReasoningParameterFormat,
-  clampSettingRange,
   getEndpointField,
   isAgentsEndpoint,
   isAssistantsEndpoint,
   reasoningOverrideSchema,
   isReasoningOverrideSupported,
   resolveReasoningSettingForTarget,
+  getReasoningParamDefinitions,
 } from 'librechat-data-provider';
 import type {
   Agent,
@@ -23,231 +20,13 @@ import type {
   TConversation,
   TReasoningOverride,
 } from 'librechat-data-provider';
-import type { TranslationKeys } from '~/hooks';
 import { useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
 import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
-import { formatTokens, resolveAgentTarget } from '~/utils';
 import { useAgentsMapContext } from '~/Providers';
-import { useLocalize } from '~/hooks';
+import { resolveAgentTarget } from '~/utils';
 
-type ReasoningControlProps = {
-  index: number;
-  setting: SettingDefinition;
-  value?: TReasoningOverride;
-  disabled?: boolean;
-  onChange: (value: TReasoningOverride) => void;
-};
-
-const translated = (
-  value: string | number | boolean | undefined,
-  localize: ReturnType<typeof useLocalize>,
-) =>
-  typeof value === 'string' && value.startsWith('com_')
-    ? localize(value as TranslationKeys)
-    : String(value ?? '');
-
-export function ReasoningControl({
-  index,
-  setting,
-  value,
-  disabled = false,
-  onChange,
-}: ReasoningControlProps) {
-  const localize = useLocalize();
-  const labelId = useId();
-  const options = setting.options ?? [];
-  const isEnum = setting.type === 'enum' && options.length > 0;
-  const label = translated(setting.label ?? setting.key, localize);
-  const selectedValue = value?.key === setting.key ? value.value : setting.default;
-  const selectedIndex = isEnum ? Math.max(0, options.indexOf(String(selectedValue ?? ''))) : 0;
-  let displayValue = String(selectedValue ?? localize('com_ui_auto'));
-  if (isEnum) {
-    displayValue = translated(
-      setting.enumMappings?.[options[selectedIndex]] ?? options[selectedIndex],
-      localize,
-    );
-  } else if (selectedValue === -1) {
-    displayValue = localize('com_ui_auto');
-  } else if (typeof selectedValue === 'number') {
-    displayValue = `${formatTokens(selectedValue)} ${localize('com_ui_tokens')}`;
-  }
-  const [numericValue, setNumericValue] = useState(String(selectedValue ?? -1));
-
-  useEffect(() => {
-    if (!isEnum) {
-      setNumericValue(String(selectedValue ?? -1));
-    }
-  }, [isEnum, selectedValue]);
-
-  const emit = (nextValue: string | number) => {
-    const parsed = reasoningOverrideSchema.safeParse({ key: setting.key, value: nextValue });
-    if (parsed.success) {
-      onChange(parsed.data);
-    }
-  };
-
-  const range = useMemo(() => setting.range ?? { min: -1, max: 200000, step: 1 }, [setting.range]);
-  const numericMin = range.positiveMin ?? Math.max(0, range.min);
-  const parsedNumericValue = Number(numericValue);
-  const numericScaleValue = Number.isFinite(parsedNumericValue)
-    ? Math.min(range.max, Math.max(numericMin, parsedNumericValue))
-    : numericMin;
-  const isAuto = range.min === -1 && numericValue === '-1';
-
-  const emitNumericValue = (nextValue: number) => {
-    setNumericValue(String(nextValue));
-    emit(nextValue);
-  };
-
-  const commitNumericValue = () => {
-    const parsed = numericValue.trim() === '' ? range.min : Number(numericValue);
-    const nextValue = clampSettingRange(
-      Number.isFinite(parsed) ? Math.round(parsed) : range.min,
-      range,
-    );
-    setNumericValue(String(nextValue));
-    if (nextValue !== (selectedValue ?? range.min)) {
-      emit(nextValue);
-    }
-  };
-
-  return (
-    <Popover.Root modal>
-      <Popover.Trigger asChild>
-        {/* `composer-trigger` keeps it lit while its popover is up, through the
-            `aria-expanded` the trigger carries. */}
-        <Button
-          variant="composer-trigger"
-          disabled={disabled}
-          aria-label={`${localize('com_ui_composer_thinking')} ${displayValue}`}
-        >
-          <BrainCircuit className="size-4" aria-hidden="true" />
-          <ChevronDown className="size-3" aria-hidden="true" />
-        </Button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          data-chat-pane-portal={index}
-          role="dialog"
-          aria-label={label}
-          align="end"
-          sideOffset={6}
-          className="border-border-light bg-surface-secondary text-text-primary data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 rounded-theme-popover z-50 w-72 max-w-[calc(100vw-2rem)] origin-[--radix-popover-content-transform-origin] overflow-hidden border shadow-xl motion-reduce:animate-none"
-        >
-          <div className="flex items-center gap-2 px-4 py-3">
-            <BrainCircuit className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-            <div className="min-w-0 flex-1">
-              <div id={labelId} className="truncate text-sm font-medium">
-                {label}
-              </div>
-              <div className="text-text-secondary truncate text-xs">
-                {localize('com_ui_composer_thinking')}
-              </div>
-            </div>
-            <Popover.Close asChild>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                aria-label={localize('com_ui_close')}
-                className="group -me-1 shrink-0"
-              >
-                <X
-                  className="text-text-secondary group-hover:text-text-primary size-4"
-                  aria-hidden="true"
-                />
-              </Button>
-            </Popover.Close>
-          </div>
-          <div className="border-border-light border-t px-4 pt-3 pb-4">
-            {isEnum ? (
-              <>
-                <div className="text-text-primary mb-4 text-sm font-medium">{displayValue}</div>
-                <div className="py-1">
-                  <Slider
-                    aria-labelledby={labelId}
-                    aria-valuetext={displayValue}
-                    value={[selectedIndex]}
-                    min={0}
-                    max={options.length - 1}
-                    step={1}
-                    onValueChange={([nextIndex]) => emit(options[nextIndex])}
-                  />
-                </div>
-                <div className="text-text-secondary mt-2.5 flex justify-between gap-4 text-xs">
-                  <span className="truncate">
-                    {translated(setting.enumMappings?.[options[0]] ?? options[0], localize)}
-                  </span>
-                  <span className="truncate text-end">
-                    {translated(
-                      setting.enumMappings?.[options[options.length - 1]] ??
-                        options[options.length - 1],
-                      localize,
-                    )}
-                  </span>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <div className="bg-surface-primary h-8 w-24 shrink-0 rounded-lg font-medium shadow-xs">
-                      <Input
-                        type="number"
-                        aria-label={label}
-                        value={numericValue === '-1' ? '' : numericValue}
-                        placeholder={formatTokens(numericMin)}
-                        min={numericMin}
-                        max={range.max}
-                        step={range.step ?? 1}
-                        onChange={(event) => setNumericValue(event.target.value)}
-                        onBlur={commitNumericValue}
-                        className="h-8 w-24 text-end"
-                      />
-                    </div>
-                    <span className="text-text-secondary truncate text-xs">
-                      {localize('com_ui_tokens')}
-                    </span>
-                  </div>
-                  {range.min === -1 && (
-                    <Button
-                      type="button"
-                      variant={isAuto ? 'default' : 'ghost'}
-                      size="sm"
-                      aria-pressed={isAuto}
-                      onClick={() => emitNumericValue(-1)}
-                      className="h-8 shrink-0"
-                    >
-                      <span className="text-xs">{localize('com_ui_auto')}</span>
-                    </Button>
-                  )}
-                </div>
-                <div className="py-1">
-                  <Slider
-                    aria-labelledby={labelId}
-                    aria-valuetext={
-                      isAuto
-                        ? localize('com_ui_auto')
-                        : `${formatTokens(numericScaleValue)} ${localize('com_ui_tokens')}`
-                    }
-                    value={[numericScaleValue]}
-                    min={numericMin}
-                    max={range.max}
-                    step={range.step ?? 1}
-                    onValueChange={([nextValue]) => emitNumericValue(nextValue)}
-                  />
-                </div>
-                <div className="text-text-secondary mt-2.5 flex justify-between gap-4 text-xs">
-                  <span>{formatTokens(numericMin)}</span>
-                  <span>{formatTokens(range.max)}</span>
-                </div>
-              </>
-            )}
-          </div>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
-  );
-}
+/** The budget control renders from @librechat/chat; the composer and specs import it from here. */
+export { ReasoningControl } from '@librechat/chat/components';
 
 /** Override keys whose level also turns thinking on. */
 const THINKING_LEVEL_KEYS: ReadonlySet<string> = new Set([
@@ -357,7 +136,7 @@ export function useComposerReasoning({
       isAgent,
       defaultParamsEndpoint: customParams.defaultParamsEndpoint,
       reasoningFormat: customParams.reasoningFormat,
-      paramDefinitions: customParams.paramDefinitions,
+      paramDefinitions: getReasoningParamDefinitions(endpointsConfig[provider], model),
       blockedReasoningKeys,
       modelReasoning,
     });

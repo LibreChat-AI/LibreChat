@@ -194,6 +194,7 @@ function makeDeps(
     abortScheduledJob: async () => undefined,
     clearReconciledJob: async () => undefined,
     isOwnerDeleting: async () => false,
+    isTermsBlocked: async () => false,
     isGloballyDisabled: async () => false,
     countActiveRunsGlobal: async () => methods.countActiveRuns(),
     withGlobalCapacitySlot: (cap: number, claim: (slot: number) => Promise<unknown>) =>
@@ -813,6 +814,96 @@ describe('fireSchedule', () => {
 
     expect(result.skipped).toBe('balance');
     expect(calls.skipped).toEqual(['skipped_balance']);
+  });
+
+  /**
+   * The HTTP terms gate refuses the loopback dispatch of an owner who has not accepted the
+   * terms, which dead-letters the delivery and walks the schedule toward `too_many_failures`.
+   * Refusing at admission instead keeps the schedule enabled for the owner to resume by
+   * accepting, and starts no MCP preflight, balance write, capacity slot or run row for them.
+   */
+  describe('owner has not accepted the terms of service', () => {
+    it('skips the occurrence before any admission work and keeps the schedule enabled', async () => {
+      const { methods, runs, calls } = makeMethods();
+      const preflightMCP = jest.fn().mockResolvedValue([]);
+      const enqueueTrigger = jest.fn(async () => undefined);
+      const isOutOfBalance = jest.fn(async () => false);
+      const isTermsBlocked = jest.fn(async () => true);
+
+      const result = await fireSchedule(
+        makeDeps(methods, { isTermsBlocked, preflightMCP, enqueueTrigger, isOutOfBalance }),
+        makeSchedule(),
+        LIMITS,
+        dueAt(),
+      );
+
+      expect(result).toEqual({ fired: false, skipped: 'terms_not_accepted' });
+      expect(isTermsBlocked).toHaveBeenCalledWith(OWNER);
+      expect(preflightMCP).not.toHaveBeenCalled();
+      expect(isOutOfBalance).not.toHaveBeenCalled();
+      expect(enqueueTrigger).not.toHaveBeenCalled();
+      expect(methods.reserveStartedRun).not.toHaveBeenCalled();
+      expect(runs.size).toBe(0);
+      expect(calls.disable).toEqual([]);
+      expect(calls.recordOutcome).toEqual([]);
+      expect(calls.skipped).toEqual([]);
+      expect(calls.advance).toBe(1);
+    });
+
+    it('releases a manual run without rescheduling the next automatic occurrence', async () => {
+      const { methods, calls } = makeMethods();
+
+      const result = await fireSchedule(
+        makeDeps(methods, { isTermsBlocked: async () => true }),
+        makeSchedule(),
+        LIMITS,
+        dueAt(),
+        { manual: true },
+      );
+
+      expect(result.skipped).toBe('terms_not_accepted');
+      expect(calls.advance).toBe(0);
+      expect(calls.releaseLease).toBe(1);
+    });
+
+    it('fails closed: a config lookup failure leaves the occurrence due for a retry', async () => {
+      const { methods, runs, calls } = makeMethods();
+      const preflightMCP = jest.fn().mockResolvedValue([]);
+      const lookupFailure = new Error('override lookup failed');
+      const isTermsBlocked = async () => {
+        throw lookupFailure;
+      };
+
+      await expect(
+        fireSchedule(
+          makeDeps(methods, { isTermsBlocked, preflightMCP }),
+          makeSchedule(),
+          LIMITS,
+          dueAt(),
+        ),
+      ).rejects.toBe(lookupFailure);
+
+      expect(preflightMCP).not.toHaveBeenCalled();
+      expect(runs.size).toBe(0);
+      expect(calls.advance).toBe(0);
+      expect(calls.disable).toEqual([]);
+    });
+
+    it('does not mask a revoked schedule permission, which still disables', async () => {
+      const { methods, calls } = makeMethods();
+      const isTermsBlocked = jest.fn(async () => true);
+
+      const result = await fireSchedule(
+        makeDeps(methods, { isTermsBlocked, hasScheduleAccess: async () => false }),
+        makeSchedule(),
+        LIMITS,
+        dueAt(),
+      );
+
+      expect(result.skipped).toBe('permission_revoked');
+      expect(calls.disable).toEqual(['permission_revoked']);
+      expect(isTermsBlocked).not.toHaveBeenCalled();
+    });
   });
 
   /**

@@ -9,6 +9,7 @@ export { default as useCombobox } from './useCombobox';
 export { default as useLocalize } from './useLocalize';
 export { default as useLanguage } from './useLanguage';
 export { default as useMediaQuery } from './useMediaQuery';
+export { default as useFocusTrap } from './useFocusTrap';
 export { default as useDelayedRender } from './useDelayedRender';
 export { default as useInputModality } from './useInputModality';
 export { default as useOnClickOutside } from './useOnClickOutside';

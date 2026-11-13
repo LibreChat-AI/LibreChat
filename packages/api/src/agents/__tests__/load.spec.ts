@@ -317,6 +317,51 @@ describe('loadAgent', () => {
        *  pick is gone, the spec's pin stays. */
       expect(body.ephemeralAgent.mcp).toEqual(['visible', 'hidden']);
     });
+
+    const pinsBoth = {
+      mcpConfig: {},
+      modelSpecs: {
+        list: [
+          {
+            name: 'pins-both',
+            label: 'Pins Both',
+            preset: { endpoint: 'openai', model: 'gpt-4' },
+            mcpServers: ['visible', 'hidden'],
+          },
+        ],
+      },
+    };
+
+    test('a spec server the picker offers follows the user deselecting it', async () => {
+      const body = { ephemeralAgent: { mcp: [] as string[] } };
+      const result = await loadEphemeral(pinsBoth, body, 'pins-both');
+
+      /** The picker showed `visible` preselected and the user cleared it; the
+       *  picker never offered `hidden`, so it stays as the operator pinned it. */
+      expect(selectedServerNames()).toEqual(['hidden']);
+      expect(result?.tools).not.toContain('tool_mcp_visible');
+      expect(body.ephemeralAgent.mcp).toEqual(['hidden']);
+    });
+
+    test('every spec server applies when the request sends no selection', async () => {
+      const result = await loadEphemeral(
+        pinsBoth,
+        { ephemeralAgent: {} } as unknown as { ephemeralAgent: { mcp: string[] } },
+        'pins-both',
+      );
+
+      expect(selectedServerNames()).toEqual(['visible', 'hidden']);
+      expect(result?.tools).toEqual(
+        expect.arrayContaining(['tool_mcp_visible', 'tool_mcp_hidden']),
+      );
+    });
+
+    test('classifies the selection and the spec servers with one catalog lookup', async () => {
+      await loadEphemeral(pinsBoth, { ephemeralAgent: { mcp: ['visible'] } }, 'pins-both');
+
+      expect(mockGetAccessibleMCPServers).toHaveBeenCalledTimes(1);
+      expect(selectedServerNames()).toEqual(['visible', 'hidden']);
+    });
   });
 
   test('addresses cached tools with a non-ephemeral request overlay', async () => {
@@ -1115,6 +1160,473 @@ describe('loadAgent', () => {
     } else {
       expect(result).toBeFalsy();
     }
+  });
+
+  describe('model spec tool flags are defaults, not mandates (#15277)', () => {
+    const { EPHEMERAL_AGENT_ID } = Constants;
+
+    const buildReq = (
+      ephemeralAgent: TEphemeralAgent | undefined,
+      spec: Record<string, unknown>,
+    ): LoadAgentParams['req'] =>
+      ({
+        user: { id: 'user123' },
+        body: ephemeralAgent ? { ephemeralAgent } : {},
+        config: {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          modelSpecs: {
+            list: [
+              {
+                name: 'spec-under-test',
+                label: 'spec-under-test',
+                preset: { endpoint: 'openai', model: 'gpt-4' },
+                ...spec,
+              },
+            ],
+          },
+        },
+      }) as unknown as LoadAgentParams['req'];
+
+    const load = (ephemeralAgent: TEphemeralAgent | undefined, spec: Record<string, unknown>) =>
+      loadAgent(
+        {
+          req: buildReq(ephemeralAgent, spec),
+          spec: 'spec-under-test',
+          agent_id: EPHEMERAL_AGENT_ID as string,
+          endpoint: 'openai',
+          model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+        },
+        deps,
+      );
+
+    test('carries the spec deferLoading selection as tool options', async () => {
+      const agent = await load(undefined, { deferLoading: ['execute_code'] });
+      expect(agent?.tool_options).toEqual({
+        '*': { defer_loading: false },
+        execute_code: { defer_loading: true },
+      });
+    });
+
+    test('an explicit user "off" disables every spec-enabled tool', async () => {
+      const result = await load(
+        {
+          web_search: false,
+          file_search: false,
+          execute_code: false,
+          memory: false,
+          ask_user_question: false,
+        },
+        {
+          webSearch: true,
+          fileSearch: true,
+          executeCode: true,
+          memory: true,
+          askUserQuestion: true,
+        },
+      );
+
+      expect(result?.tools).toEqual([]);
+    });
+
+    test('a spec flag still applies when the request carries no toggle for it', async () => {
+      const result = await load({ web_search: false }, { webSearch: true, fileSearch: true });
+
+      expect(result?.tools).toEqual(['file_search']);
+    });
+
+    test('a spec flag applies when no ephemeral agent accompanies the request', async () => {
+      const result = await load(undefined, { webSearch: true, executeCode: true });
+
+      expect(result?.tools).toEqual(['execute_code', 'web_search']);
+    });
+
+    test('a user "on" still equips a tool the spec leaves off', async () => {
+      const result = await load({ web_search: true }, { webSearch: false });
+
+      expect(result?.tools).toEqual(['web_search']);
+    });
+
+    test('a deselected MCP server is not re-added by the spec', async () => {
+      mockGetMCPServerTools.mockResolvedValue({ crm_lookup: { name: 'crm_lookup' } });
+
+      const result = await load({ mcp: [] }, { mcpServers: ['crm'] });
+
+      expect(result?.tools).toEqual([]);
+      expect(mockGetMCPServerTools).not.toHaveBeenCalled();
+    });
+
+    test('an MCP selection replaces the spec list rather than unioning with it', async () => {
+      mockGetMCPServerTools.mockImplementation(async (_userId: string, server: string) => ({
+        [`lookup_mcp_${server}`]: { name: `lookup_mcp_${server}` },
+      }));
+
+      const result = await load({ mcp: ['jira'] }, { mcpServers: ['crm'] });
+
+      expect(result?.tools).toEqual(['lookup_mcp_jira']);
+    });
+
+    test('the spec MCP list applies when the request sends no selection', async () => {
+      mockGetMCPServerTools.mockImplementation(async (_userId: string, server: string) => ({
+        [`lookup_mcp_${server}`]: { name: `lookup_mcp_${server}` },
+      }));
+
+      const result = await load({ web_search: false }, { mcpServers: ['crm'] });
+
+      expect(result?.tools).toEqual(['lookup_mcp_crm']);
+    });
+
+    test('an explicit skills "off" overrides a spec that enables skills', async () => {
+      const result = await load({ skills: false }, { skills: true });
+
+      expect(result?.skills_enabled).toBe(false);
+      expect(result?.skills).toEqual([]);
+    });
+
+    test('a spec skill allowlist still narrows the catalog when skills stay on', async () => {
+      const result = await load({ skills: true }, { skills: ['research'] });
+
+      expect(result?.skills_enabled).toBe(true);
+      expect(result?.skills).toEqual([]);
+    });
+
+    test('a spec `skills: false` remains a hard opt-out the badge cannot lift', async () => {
+      const result = await load({ skills: true }, { skills: false });
+
+      expect(result?.skills_enabled).toBe(false);
+      expect(result?.skills).toEqual([]);
+    });
+  });
+
+  describe('a hidden badge row makes the spec unconditional (#15277)', () => {
+    const { EPHEMERAL_AGENT_ID } = Constants;
+
+    const hiddenReq = (ephemeralAgent: TEphemeralAgent) =>
+      ({
+        user: { id: 'user123' },
+        body: { ephemeralAgent },
+        config: {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          modelSpecs: {
+            list: [
+              {
+                name: 'hidden-spec',
+                label: 'Hidden Spec',
+                preset: { endpoint: 'openai', model: 'gpt-4' },
+                hideBadgeRow: true,
+                webSearch: true,
+                executeCode: true,
+                skills: true,
+                mcpServers: ['crm'],
+              },
+            ],
+          },
+        },
+      }) as unknown as LoadAgentParams['req'];
+
+    /** No badge exists to express an override with, so a toggle posted against
+     *  such a spec — only an API caller can produce one — is dropped. */
+    test('request toggles cannot strip a hidden spec of its tools', async () => {
+      mockGetMCPServerTools.mockImplementation(async (_userId: string, server: string) => ({
+        [`lookup_mcp_${server}`]: { name: `lookup_mcp_${server}` },
+      }));
+
+      const result = await loadAgent(
+        {
+          req: hiddenReq({ web_search: false, execute_code: false, skills: false, mcp: [] }),
+          spec: 'hidden-spec',
+          agent_id: EPHEMERAL_AGENT_ID as string,
+          endpoint: 'openai',
+          model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['execute_code', 'web_search', 'lookup_mcp_crm']);
+      expect(result?.skills_enabled).toBe(true);
+    });
+
+    /** A spec left out of the menu never reaches the client's config, so the
+     *  badges sent beside it were seeded from the user's own defaults. */
+    test('a spec left out of the menu holds the same authority', async () => {
+      const req = hiddenReq({ web_search: false, file_search: true });
+      const spec = (
+        req.config as unknown as { modelSpecs: { list: Array<Record<string, unknown>> } }
+      ).modelSpecs.list[0];
+      delete spec.hideBadgeRow;
+      spec.showInMenu = false;
+      delete spec.mcpServers;
+
+      const result = await loadAgent(
+        {
+          req,
+          spec: 'hidden-spec',
+          agent_id: EPHEMERAL_AGENT_ID as string,
+          endpoint: 'openai',
+          model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['execute_code', 'file_search', 'web_search']);
+    });
+
+    test('a hidden spec still applies the artifacts it configures', async () => {
+      const req = hiddenReq({ web_search: false });
+      const spec = (req.config as unknown as { modelSpecs: { list: Record<string, unknown>[] } })
+        .modelSpecs.list[0];
+      spec.artifacts = true;
+
+      const result = await loadAgent(
+        {
+          req,
+          spec: 'hidden-spec',
+          agent_id: EPHEMERAL_AGENT_ID as string,
+          endpoint: 'openai',
+          model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+        },
+        deps,
+      );
+
+      expect(result?.artifacts).toBe('default');
+    });
+
+    test('a hidden spec leaves capabilities it does not configure to the request', async () => {
+      const req = hiddenReq({ file_search: true });
+      const spec = (req.config as unknown as { modelSpecs: { list: Record<string, unknown>[] } })
+        .modelSpecs.list[0];
+      /** Silent on file search, so it holds no authority over that toggle. */
+      delete spec.fileSearch;
+      delete spec.mcpServers;
+      delete spec.skills;
+
+      const result = await loadAgent(
+        {
+          req,
+          spec: 'hidden-spec',
+          agent_id: EPHEMERAL_AGENT_ID as string,
+          endpoint: 'openai',
+          model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['execute_code', 'file_search', 'web_search']);
+    });
+
+    test('an ordinary spec still honors the same toggles', async () => {
+      const req = hiddenReq({ web_search: false, execute_code: false, skills: false, mcp: [] });
+      const spec = (req.config as unknown as { modelSpecs: { list: Record<string, unknown>[] } })
+        .modelSpecs.list[0];
+      delete spec.hideBadgeRow;
+
+      const result = await loadAgent(
+        {
+          req,
+          spec: 'hidden-spec',
+          agent_id: EPHEMERAL_AGENT_ID as string,
+          endpoint: 'openai',
+          model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual([]);
+      expect(result?.skills_enabled).toBe(false);
+    });
+  });
+
+  describe('added conversations inherit the composer toggles (#15277)', () => {
+    const { EPHEMERAL_AGENT_ID } = Constants;
+
+    const addedReq = (ephemeralAgent?: TEphemeralAgent, spec?: Record<string, unknown>) =>
+      ({
+        user: { id: 'user123' },
+        body: ephemeralAgent ? { ephemeralAgent } : {},
+        config: {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          modelSpecs: {
+            list: [
+              {
+                name: 'added-spec',
+                label: 'Added Spec',
+                preset: { endpoint: 'openai', model: 'gpt-4' },
+                ...spec,
+              },
+            ],
+          },
+        },
+      }) as unknown as Parameters<typeof loadAddedAgent>[0]['req'];
+
+    const addedConversation = {
+      endpoint: 'openai',
+      model: 'gpt-4',
+      spec: 'added-spec',
+    } as unknown as TConversation;
+
+    /** The added pane never carries an `ephemeralAgent` of its own — one badge
+     *  row submits one toggle set — so the request's state must reach it. */
+    test('a composer opt-out disables a spec tool on the added pane', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: addedReq({ web_search: false }, { webSearch: true }),
+          conversation: addedConversation,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual([]);
+    });
+
+    test('a composer skills opt-out reaches the added pane', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: addedReq({ skills: false }, { skills: true }),
+          conversation: addedConversation,
+        },
+        deps,
+      );
+
+      expect(result?.skills_enabled).toBe(false);
+      expect(result?.skills).toEqual([]);
+    });
+
+    test('the mirrored-tools branch applies the spec artifacts too', async () => {
+      const { EPHEMERAL_AGENT_ID: EID } = Constants;
+      const req = addedReq(undefined, { artifacts: true });
+
+      /** This branch returns early, so every spec-configured capability has to
+       *  be resolved before it, not after. */
+      const result = await loadAddedAgent(
+        {
+          req,
+          conversation: addedConversation,
+          primaryAgent: { id: EID as string, tools: ['web_search'] } as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['web_search']);
+      expect(result?.artifacts).toBe('default');
+    });
+
+    test('a composer skills opt-out reaches the mirrored-tools branch too', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: addedReq({ skills: false }, { skills: ['brand-writer'] }),
+          conversation: addedConversation,
+          primaryAgent: {
+            id: EPHEMERAL_AGENT_ID as string,
+            tools: ['web_search'],
+          } as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['web_search']);
+      expect(result?.skills_enabled).toBe(false);
+    });
+
+    test("records the pane's own skills choice when no spec configures skills", async () => {
+      /** Otherwise the pane falls back to the run-level toggle, which belongs to
+       *  the PRIMARY request — the other pane's badge scoping this one. */
+      const offResult = await loadAddedAgent(
+        { req: addedReq({ skills: false }, {}), conversation: addedConversation },
+        deps,
+      );
+      expect(offResult?.skills_enabled).toBe(false);
+      expect(offResult?.skills).toEqual([]);
+
+      const onResult = await loadAddedAgent(
+        { req: addedReq({ skills: true }, {}), conversation: addedConversation },
+        deps,
+      );
+      expect(onResult?.skills_enabled).toBe(true);
+      expect(onResult?.skills).toBeUndefined();
+    });
+
+    test('leaves skills unset when neither the spec nor the request decides', async () => {
+      const result = await loadAddedAgent(
+        { req: addedReq({ web_search: true }, {}), conversation: addedConversation },
+        deps,
+      );
+
+      expect(result?.skills_enabled).toBeUndefined();
+    });
+
+    test('a spec still applies to the added pane when the composer is silent', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: addedReq(undefined, { webSearch: true, skills: true }),
+          conversation: addedConversation,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['web_search']);
+      expect(result?.skills_enabled).toBe(true);
+    });
+
+    test('a partial pane object still inherits the toggles it omits', async () => {
+      mockGetMCPServerTools.mockImplementation(async (_userId: string, server: string) => ({
+        [`lookup_mcp_${server}`]: { name: `lookup_mcp_${server}` },
+      }));
+
+      const result = await loadAddedAgent(
+        {
+          req: addedReq({ web_search: true, mcp: ['jira'] }, {}),
+          conversation: {
+            ...addedConversation,
+            ephemeralAgent: { skills: false },
+          } as unknown as TConversation,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['web_search', 'lookup_mcp_jira']);
+    });
+
+    test('a pane whose spec hides the badge row keeps its spec capabilities', async () => {
+      mockGetMCPServerTools.mockImplementation(async (_userId: string, server: string) => ({
+        [`lookup_mcp_${server}`]: { name: `lookup_mcp_${server}` },
+      }));
+
+      /** Those toggles were never offered for this pane, so the other pane's
+       *  choices must not strip what its own spec configured. */
+      const result = await loadAddedAgent(
+        {
+          req: addedReq(
+            { web_search: false, skills: false, mcp: [] },
+            { hideBadgeRow: true, webSearch: true, skills: true, mcpServers: ['crm'] },
+          ),
+          conversation: addedConversation,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['web_search', 'lookup_mcp_crm']);
+      expect(result?.skills_enabled).toBe(true);
+    });
+
+    test("the added pane's own toggles still outrank the request when present", async () => {
+      const result = await loadAddedAgent(
+        {
+          req: addedReq({ web_search: false }, { webSearch: true }),
+          conversation: {
+            ...addedConversation,
+            ephemeralAgent: { web_search: true },
+          } as unknown as TConversation,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['web_search']);
+    });
   });
 
   describe('Edge Cases', () => {

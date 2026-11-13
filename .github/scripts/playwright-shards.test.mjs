@@ -250,6 +250,40 @@ test('record sums every attempt per file from JSON reports', (t) => {
   });
 });
 
+test('record averages a file over the runs that measured it', (t) => {
+  const dir = scratch(t);
+  const report = (entries) => ({
+    suites: entries.map(([file, duration]) => ({
+      file,
+      specs: [{ tests: [{ results: [{ duration }] }] }],
+      suites: [],
+    })),
+  });
+  for (const [run, entries] of [
+    [
+      'run-1',
+      [
+        ['a.spec.ts', 1000],
+        ['b.spec.ts', 4000],
+      ],
+    ],
+    ['run-2', [['a.spec.ts', 3000]]],
+  ]) {
+    mkdirSync(join(dir, run, 'memory-1'), { recursive: true });
+    writeFileSync(join(dir, run, 'memory-1', 'results.json'), JSON.stringify(report(entries)));
+  }
+  const out = join(dir, 'timings.json');
+  const result = spawnSync(
+    process.execPath,
+    [script, 'record', '--out', out, join(dir, 'run-1'), join(dir, 'run-2')],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')), {
+    files: { 'a.spec.ts': 2, 'b.spec.ts': 4 },
+  });
+});
+
 test('the committed timings are a flat map of spec files to seconds', () => {
   const { files } = JSON.parse(
     readFileSync(new URL('../../e2e/timings.mock.json', import.meta.url), 'utf8'),

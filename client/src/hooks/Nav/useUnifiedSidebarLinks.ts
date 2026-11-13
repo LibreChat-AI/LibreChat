@@ -9,6 +9,7 @@ import type { NavLink } from '~/common';
 import { useGetEndpointsQuery, useGetStartupConfig, useInsightsAccessQuery } from '~/data-provider';
 import ConversationsSection from '~/components/UnifiedSidebar/ConversationsSection';
 import useSideNavLinks from '~/hooks/Nav/useSideNavLinks';
+import { getRoutePanelLinks } from './routePanels';
 import { useAuthContext } from '~/hooks';
 import store from '~/store';
 
@@ -54,7 +55,7 @@ export default function useUnifiedSidebarLinks() {
     [keyExpiry.expiresAt, userProvidesKey],
   );
 
-  const sideNavLinks = useSideNavLinks({
+  const allSideNavLinks = useSideNavLinks({
     keyProvided,
     endpoint,
     endpointType,
@@ -62,6 +63,10 @@ export default function useUnifiedSidebarLinks() {
     endpointsConfig,
     includeHidePanel: false,
   });
+  const sideNavLinks = useMemo(
+    () => getRoutePanelLinks(location.pathname, allSideNavLinks),
+    [location.pathname, allSideNavLinks],
+  );
 
   const links = useMemo(() => {
     const conversationLink: NavLink = {
