@@ -19,12 +19,9 @@ function capError(): Error {
   return error;
 }
 
-export function createToolFavoriteMethods(mongoose: typeof import('mongoose')): {
-  getToolFavorites: (userId: string) => Promise<t.IToolFavoriteLean[]>;
-  addToolFavorite: (params: t.ToolFavoriteParams) => Promise<t.AddToolFavoriteResult>;
-  removeToolFavorite: (params: t.ToolFavoriteParams) => Promise<t.RemoveToolFavoriteResult>;
-  deleteUserToolFavorites: (userId: string) => Promise<number>;
-} {
+export function createToolFavoriteMethods(
+  mongoose: typeof import('mongoose'),
+): t.ToolFavoriteMethods {
   async function getToolFavorites(userId: string): Promise<t.IToolFavoriteLean[]> {
     const ToolFavorite = mongoose.models.ToolFavorite;
     return ToolFavorite.find({ user: userId })
@@ -96,4 +93,4 @@ export function createToolFavoriteMethods(mongoose: typeof import('mongoose')): 
   };
 }
 
-export type ToolFavoriteMethods = ReturnType<typeof createToolFavoriteMethods>;
+export type { ToolFavoriteMethods } from '~/types/favorite';

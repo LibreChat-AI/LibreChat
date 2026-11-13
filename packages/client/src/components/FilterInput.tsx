@@ -40,7 +40,14 @@ const FilterInput: React.ForwardRefExoticComponent<
 > = React.forwardRef<HTMLInputElement, FilterInputProps>(
   ({ className, label, inputId, containerClassName, surface = 'primary', ...props }, ref) => {
     return (
-      <div className={cn('relative', SURFACE_CLASSES[surface], containerClassName)}>
+      <div
+        className={cn(
+          'relative rounded-lg',
+          SURFACE_CLASSES[surface],
+          'theme-field-fill:bg-field-fill',
+          containerClassName,
+        )}
+      >
         <input
           id={inputId}
           ref={ref}

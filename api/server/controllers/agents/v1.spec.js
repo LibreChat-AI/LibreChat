@@ -186,7 +186,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {

@@ -21,6 +21,11 @@ describe('outbound timeouts', () => {
     );
   });
 
+  it('bounds directory verification by a configurable finite budget', () => {
+    expect(getOutboundTimeoutMs(undefined, 'directoryMs')).toBe(30_000);
+    expect(getOutboundTimeoutMs({ timeouts: { directoryMs: 50 } }, 'directoryMs')).toBe(50);
+  });
+
   it('uses the configured value when present', () => {
     expect(getOutboundTimeoutMs({ timeouts: { moderationMs: 2_500 } }, 'moderationMs')).toBe(2_500);
   });

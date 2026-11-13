@@ -39,7 +39,7 @@
 #       - uses: actions/checkout@v5
 #       - uses: actions/setup-node@v5
 #         with:
-#           node-version: 24.22.1
+#           node-version: 24.22.3
 #           cache: 'npm'
 
 #       - name: Install global dependencies

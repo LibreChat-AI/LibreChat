@@ -24,6 +24,7 @@ export default function useResumableSteers(steerState: SteerState): ResumableSte
     seedSteerChips,
     settleAppliedSteerParts,
     convertSteersToQueued,
+    adoptPromotedSteers,
     convertLocalSteersToQueued,
   } = steerState;
 
@@ -60,6 +61,7 @@ export default function useResumableSteers(steerState: SteerState): ResumableSte
       appliedIds: collectAppliedSteerIds,
       settleApplied: settleAppliedSteerParts,
       convertToQueued: convertSteersToQueued,
+      adoptPromoted: adoptPromotedSteers,
       convertLocalToQueued: convertLocalSteersToQueued,
     }),
     [
@@ -71,6 +73,7 @@ export default function useResumableSteers(steerState: SteerState): ResumableSte
       seedSteerChips,
       settleAppliedSteerParts,
       convertSteersToQueued,
+      adoptPromotedSteers,
       convertLocalSteersToQueued,
     ],
   );

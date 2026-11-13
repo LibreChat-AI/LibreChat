@@ -105,7 +105,9 @@ test('thousands of conversation targets use bounded cleanup commands', async () 
     .insertMany(ids.map((thread_id) => ({ thread_id, checkpoint_ns: ns })));
   const spy = jest.spyOn(mongoose.mongo.Collection.prototype, 'deleteMany');
   await deleteOwnedAgentCheckpoints('owner', undefined, ids, cfg);
-  expect(spy.mock.calls.every(([filter]) => filter?.thread_id.$in.length <= 256)).toBe(true);
+  expect(
+    spy.mock.calls.every(([filter]) => filter?.$and?.[0]?.$or?.[0]?.thread_id.$in.length <= 256),
+  ).toBe(true);
   expect(await mongoose.connection.db!.collection('cleanup_cp').countDocuments()).toBe(0);
   await intent.acknowledge();
   expect(
@@ -143,7 +145,9 @@ test('snapshots legacy references without per-reference ownership lookups', asyn
   expect(deletion.conversationIds()).toHaveLength(257);
   const deletionCommands = jest.spyOn(mongoose.mongo.Collection.prototype, 'deleteMany');
   await deletion.cleanup();
-  const exactCommands = deletionCommands.mock.calls.filter(([filter]) => filter?.$and != null);
+  const exactCommands = deletionCommands.mock.calls.filter(
+    ([filter]) => filter?.$and?.length === 2,
+  );
   expect(exactCommands).toHaveLength(10);
   expect(
     exactCommands.every(([filter]) => (filter?.$and?.[1]?.$or?.length ?? Infinity) <= 256),

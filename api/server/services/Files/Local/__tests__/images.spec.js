@@ -57,6 +57,58 @@ describe('prepareImagesLocal', () => {
 
     expect(encoded).toBe(Buffer.from('plain-png-bytes').toString('base64'));
   });
+
+  it('reads the file behind an encoded filepath', async () => {
+    fs.writeFileSync(
+      path.join(publicPath, 'images', 'user-1', 'chart #1?.png'),
+      Buffer.from('encoded-png-bytes'),
+    );
+
+    const [, encoded] = await prepareImagesLocal(makeReq(), {
+      file_id: 'file-3',
+      filepath: '/images/user-1/chart%20%231%3F.png?v=1789460622697',
+    });
+
+    expect(encoded).toBe(Buffer.from('encoded-png-bytes').toString('base64'));
+  });
+
+  it('reads a legacy record by its raw name, never a decoded lookalike', async () => {
+    const directory = path.join(publicPath, 'images', 'user-1');
+    fs.writeFileSync(path.join(directory, 'a%41.png'), Buffer.from('literal-escape'));
+    fs.writeFileSync(path.join(directory, 'aA.png'), Buffer.from('lookalike'));
+
+    const [, encoded] = await prepareImagesLocal(makeReq(), {
+      file_id: 'file-4',
+      filepath: '/images/user-1/a%41.png',
+    });
+
+    expect(encoded).toBe(Buffer.from('literal-escape').toString('base64'));
+  });
+
+  it('reads a legacy record named with a literal escape of a reserved character', async () => {
+    const directory = path.join(publicPath, 'images', 'user-1');
+    fs.writeFileSync(path.join(directory, 'a%23.png'), Buffer.from('literal-reserved-escape'));
+
+    const [, encoded] = await prepareImagesLocal(makeReq(), {
+      file_id: 'file-6',
+      filepath: '/images/user-1/a%23.png',
+    });
+
+    expect(encoded).toBe(Buffer.from('literal-reserved-escape').toString('base64'));
+  });
+
+  it('reads a legacy record named with a literal escape of a space', async () => {
+    const directory = path.join(publicPath, 'images', 'user-1');
+    fs.writeFileSync(path.join(directory, 'a%20b.png'), Buffer.from('literal-space-escape'));
+    fs.writeFileSync(path.join(directory, 'a b.png'), Buffer.from('spaced-lookalike'));
+
+    const [, encoded] = await prepareImagesLocal(makeReq(), {
+      file_id: 'file-5',
+      filepath: '/images/user-1/a%20b.png',
+    });
+
+    expect(encoded).toBe(Buffer.from('literal-space-escape').toString('base64'));
+  });
 });
 
 describe('uploadLocalImage', () => {
@@ -100,4 +152,21 @@ describe('uploadLocalImage', () => {
       expect(fs.existsSync(inputFilePath)).toBe(false);
     },
   );
+
+  it('records an encoded filepath for a name that changes under encoding', async () => {
+    const inputFilePath = path.join(tmpDir, 'photo #1.png');
+    await sharp({ create: { width: 8, height: 8, channels: 3, background: '#d22' } })
+      .png()
+      .toFile(inputFilePath);
+
+    const { filepath } = await uploadLocalImage({
+      req: { user: { id: 'user-1' }, config: { paths: { imageOutput }, imageOutputType: 'png' } },
+      file: { path: inputFilePath },
+      file_id: 'file-1',
+      endpoint: 'anthropic',
+    });
+
+    expect(filepath).toBe('/images/user-1/file-1__photo%20%231.png');
+    expect(fs.existsSync(path.join(imageOutput, 'user-1', 'file-1__photo #1.png'))).toBe(true);
+  });
 });

@@ -15,6 +15,8 @@ import {
   getToolIconName,
   getToolMeta,
   summarizeSpan,
+  getBatchActivityLabelPart,
+  getActivityLabelText,
 } from '@librechat/chat';
 import type {
   Agents,
@@ -25,7 +27,6 @@ import type {
 import type { SpanOutcome, SpanSummary } from '@librechat/chat';
 import type { TOptions } from 'i18next';
 import type { TranslationKeys } from '~/hooks';
-import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activityLabels';
 import { hasPendingAuthInPart } from '~/utils/groupToolCalls';
 import { isError } from './ToolOutput';
 

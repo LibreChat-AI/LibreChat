@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { MOCK_ENDPOINTS, NEW_CHAT_PATH, selectMockEndpoint } from '../helpers';
 import type { MockEndpoint } from '../helpers';
+import { expect, test } from '../fixtures';
 import { openPanel } from './panels';
 import { withMongo } from '../db';
 

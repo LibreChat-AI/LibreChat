@@ -1,7 +1,7 @@
 import { Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { getActivityLabelText, getBatchActivityLabelPart } from '@librechat/chat';
 import type { TMessageContentParts, Agents } from 'librechat-data-provider';
 import type { PartWithIndex } from '~/components/Chat/Messages/Content/ParallelContent';
-import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activityLabels';
 
 export type GroupedPart =
   | { type: 'single'; part: PartWithIndex }
@@ -151,6 +151,16 @@ export function groupSequentialToolCalls(parts: PartWithIndex[]): GroupedPart[] 
   };
 
   for (const item of parts) {
+    const previous = result[result.length - 1];
+    if (
+      isReasoningPart(item.part) &&
+      currentBlock.length === 0 &&
+      previous?.type === 'tool-group' &&
+      previous.labelPart != null
+    ) {
+      previous.parts.push(item);
+      continue;
+    }
     if (
       isGroupableToolCall(item.part) ||
       item.part.type === ContentTypes.THINK ||

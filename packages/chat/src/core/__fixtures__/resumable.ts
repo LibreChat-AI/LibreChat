@@ -129,6 +129,7 @@ export const createHost = (
       appliedIds: jest.fn(() => []),
       settleApplied: jest.fn(),
       convertToQueued: jest.fn(),
+      adoptPromoted: jest.fn(() => []),
       convertLocalToQueued: jest.fn(),
     },
     events: {

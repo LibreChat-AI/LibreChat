@@ -1,11 +1,9 @@
 export default function ProgressCircle({
   circumference,
   offset,
-  circleCSSProperties,
 }: {
   circumference: number;
   offset: number;
-  circleCSSProperties: React.CSSProperties;
 }): React.JSX.Element {
   return (
     <div className="bg-surface-media-overlay/5 text-text-on-media absolute inset-0 flex items-center justify-center">
@@ -19,7 +17,7 @@ export default function ProgressCircle({
           cy="60"
         />
         <circle
-          className="origin-[50%_50%] -rotate-90 transition-[stroke-dashoffset]"
+          className="transition-stroke-dashoffset origin-[50%_50%] -rotate-90 duration-300 ease-linear"
           stroke="currentColor"
           strokeWidth="10"
           strokeDasharray={`${circumference} ${circumference}`}
@@ -28,7 +26,6 @@ export default function ProgressCircle({
           r="55"
           cx="60"
           cy="60"
-          style={circleCSSProperties}
         />
       </svg>
     </div>

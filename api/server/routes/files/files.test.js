@@ -150,7 +150,7 @@ describe('File Routes - Delete with Agent Access', () => {
     }
 
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {

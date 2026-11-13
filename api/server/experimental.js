@@ -59,6 +59,9 @@ const {
   cacheConfig,
   createClusteredFileSweep,
   createRequestSanitizer,
+  createStartupReadiness,
+  keyvRedisClient,
+  ioredisClient,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -67,7 +70,21 @@ const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { startExpiredFileSweep } = require('./services/Files/process');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
 const { startSkillDeletionSweep } = require('./services/Skills/deletion');
-const { initializeAgentTriggerService } = require('./services/Agents/triggers');
+const {
+  initializeAgentTriggerService,
+  enqueueAgentTrigger,
+  isAgentTriggerServiceReady,
+} = require('./services/Agents/triggers');
+const {
+  initializeBackgroundResponses,
+  configureBackgroundResponseQueue,
+} = require('./services/Responses');
+const {
+  initializeChannelFeedback,
+  stopChannelFeedback,
+  initializeChannelCleanup,
+  stopChannelCleanup,
+} = require('./services/Channels');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
 const {
   recordExpiredScheduleApproval,
@@ -80,6 +97,8 @@ const {
   getRoleByName,
   updateAccessPermissions,
   seedDatabase,
+  initializeFavorites,
+  closeFavorites,
   recordAuditEntry,
   sweepOrphanedPreviews,
 } = require('~/models');
@@ -87,7 +106,7 @@ const { checkMigrations } = require('./services/start/migration');
 const initializeMCPs = require('./services/initializeMCPs');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
-const { getAppConfig } = require('./services/Config');
+const { getAppConfig, loadCustomConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const noIndex = require('./middleware/noIndex');
@@ -365,6 +384,11 @@ if (cluster.isMaster) {
    * Each worker runs a full Express server instance
    */
   const app = express();
+  const readiness = createStartupReadiness({
+    useRedis: cacheConfig.USE_REDIS,
+    ioredis: ioredisClient,
+    keyv: keyvRedisClient,
+  });
   app.locals.codeApiUploadRegistry = createCodeApiUploadRegistry();
   // The clustered entrypoint deliberately does not arm the v1 schedule engine,
   // but an already-fired scheduled generation can still reach HITL here. Settle
@@ -502,6 +526,8 @@ if (cluster.isMaster) {
      * deletion, the expired-file sweep, tool-approval hooks and the other worker-wide settings
      * below are fixed for the process lifetime, so DB `__base__` overrides must not decide them.
      */
+    await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
+    registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
     const appConfig = await getAppConfig({ baseOnly: true });
     initializeFileStorage(appConfig);
     initializeGitHubSkillSync(appConfig);
@@ -593,6 +619,8 @@ if (cluster.isMaster) {
 
     /** Health check endpoint */
     app.get('/health', (_req, res) => res.status(200).send('OK'));
+    app.get('/readyz', readiness.handler);
+    app.use('/api', readiness.gate);
 
     /** Middleware */
     app.use(requestContextMiddleware);
@@ -687,6 +715,7 @@ if (cluster.isMaster) {
     app.use('/api/share', preAuthTenantMiddleware, routes.share);
     app.use('/api/roles', routes.roles);
     app.use('/api/agents', routes.agents);
+    app.use('/api/channels', routes.channels);
     app.use('/api/banner', routes.banner);
     app.use('/api/memories', routes.memories);
     app.use('/api/schedules', rejectScheduleWritesUntilReady, routes.schedules);
@@ -706,6 +735,10 @@ if (cluster.isMaster) {
     app.use(ErrorController);
 
     /** Start listening on shared port (cluster will distribute connections) */
+    configureBackgroundResponseQueue({
+      enqueue: enqueueAgentTrigger,
+      isReady: isAgentTriggerServiceReady,
+    });
     const server = app.listen(port, host, async (err) => {
       if (err) {
         logger.error(`Worker ${process.pid} failed to start server:`, err);
@@ -730,6 +763,7 @@ if (cluster.isMaster) {
         await initializeMCPs();
         await initializeOAuthReconnectManager();
         await checkMigrations();
+        initializeBackgroundResponses(server.address());
         await initializeAgentTriggerService({
           address: server.address(),
           completionResultBatchSize:
@@ -740,6 +774,11 @@ if (cluster.isMaster) {
             appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
           idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
         });
+        await initializeChannelFeedback();
+        registerShutdownTask('channel feedback export', stopChannelFeedback, { priority: 100 });
+        registerShutdownTask('channel authority cleanup', stopChannelCleanup, { priority: 100 });
+        await initializeChannelCleanup();
+        readiness.markReady();
       } catch (initErr) {
         logger.error(`Worker ${process.pid} post-listen initialization failed:`, initErr);
         process.exit(1);
@@ -756,7 +795,8 @@ if (cluster.isMaster) {
     setupGracefulShutdown(server);
   };
 
-  startServer().catch((err) => {
+  startServer().catch(async (err) => {
+    await closeFavorites().catch(() => undefined);
     logger.error(`Failed to start worker ${process.pid}:`, err);
     process.exit(1);
   });

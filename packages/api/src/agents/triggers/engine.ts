@@ -546,6 +546,8 @@ export function createAgentTriggerDeliveryEngine(
             logger.info('[agent-triggers] delivery deferred without consuming an attempt', {
               deliveryKey: delivery.deliveryKey,
               reason,
+              ...(error instanceof AgentTriggerExecutionError &&
+                error.code != null && { code: error.code }),
               availableAt: availableAt.toISOString(),
             });
           }

@@ -39,7 +39,6 @@ const {
   checkAndIncrementPendingRequest,
   isSteerPreemptSupported,
   isStopConfirmed,
-  toPendingSteer,
   createMCPRuntimeRequestBody,
   getSafeErrorMetadata,
   isAgentEventRetentionActive,
@@ -111,6 +110,7 @@ const {
   negotiateNewGenerationProtocol,
   negotiateExistingGenerationProtocol,
 } = require('./protocol');
+const { promoteUnappliedSteers } = require('./promotion');
 
 function sendGenerationJson(res, status, body, generationProtocolVersion) {
   if (typeof res.set === 'function') {
@@ -696,7 +696,13 @@ async function finalizeResumedTurn({
       });
     }
 
-    const pendingSteers = terminalClaim.drainedSteers.map(toPendingSteer);
+    const { pendingSteers, promotedSteers } = await promoteUnappliedSteers(req, {
+      claim: terminalClaim,
+      conversationId,
+      responseMessageId: savedResponseMessage.messageId,
+      responseContent: responseMessage.content,
+      completed: responseMessage.unfinished !== true,
+    });
     const finalEvent = {
       final: true,
       conversation,
@@ -716,6 +722,7 @@ async function finalizeResumedTurn({
         : null,
       responseMessage: { ...responseMessage },
       ...(pendingSteers.length > 0 && { pendingSteers }),
+      ...(promotedSteers.length > 0 && { promotedSteers }),
     };
 
     terminalPublicationStarted = true;

@@ -1,9 +1,9 @@
 import { Terminal } from 'lucide-react';
-import { useToolExpansion } from '@librechat/chat/react';
+import { useToolExpansion, useProgress } from '@librechat/chat/react';
 import type { ToolCallPhase } from '@librechat/chat';
-import { useProgress, useLocalize } from '~/hooks';
 import ProgressText from './ProgressText';
 import MarkdownLite from './MarkdownLite';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 export default function CodeAnalyze({
@@ -48,7 +48,7 @@ export default function CodeAnalyze({
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {phase === 'running' ? localize('com_ui_analyzing') : localize('com_ui_analyzing_finished')}
       </span>
-      <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5">
+      <div className="relative my-1.5 flex h-5 shrink-0 items-center gap-2.5">
         <ProgressText
           phase={phase}
           onClick={handleToggleCode}

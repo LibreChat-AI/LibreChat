@@ -14,6 +14,7 @@ jest.mock('./run', () => ({
 
 import { Readable } from 'stream';
 import { Types } from 'mongoose';
+import { logger } from '@librechat/data-schemas';
 import { createCodeApiUploadRegistry } from '~/utils';
 import { primeInvokedSkills, primeInvokedSkillsForProfiles, primeSkillFiles } from './skillFiles';
 import type {
@@ -931,6 +932,51 @@ function makeSkillFilesDeps(overrides: Partial<PrimeSkillFilesParams> = {}): Pri
 describe('primeSkillFiles — resource identity propagation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('names the file whose stream failed and uploads the rest of the bundle', async () => {
+    const missingPathError = Object.assign(new Error('ENOENT: /srv/skills/secret/missing.dotx'), {
+      code: 'ENOENT',
+    });
+    const getDownloadStream = jest.fn(async (_req: unknown, filepath: string) => {
+      if (filepath.endsWith('missing.dotx')) {
+        throw missingPathError;
+      }
+      return Readable.from(Buffer.from('style'));
+    });
+    const deps = makeSkillFilesDeps({
+      skillFiles: [
+        {
+          relativePath: 'masters/missing.dotx',
+          filename: 'missing.dotx',
+          filepath: '/srv/skills/secret/missing.dotx',
+          source: 'deployment',
+          bytes: 16,
+        },
+        {
+          relativePath: 'references/style.md',
+          filename: 'style.md',
+          filepath: '/srv/skills/secret/style.md',
+          source: 'deployment',
+          bytes: 5,
+        },
+      ],
+      getStrategyFunctions: jest.fn().mockReturnValue({ getDownloadStream }),
+    });
+
+    const result = await primeSkillFiles(deps);
+
+    const { files } = (deps.batchUploadCodeEnvFiles as jest.Mock).mock.calls[0][0];
+    expect(files.map((file: { filename: string }) => file.filename)).toEqual([
+      'skills/brand-guidelines/SKILL.md',
+      'skills/brand-guidelines/references/style.md',
+    ]);
+    expect(result?.storage_session_id).toBe('session-fresh');
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      '[primeSkillFiles] Failed to get stream for "masters/missing.dotx":',
+      { type: 'Error' },
+    );
   });
 
   it('fresh-upload path: emits resource_id=skill._id, kind=skill, version on each file', async () => {

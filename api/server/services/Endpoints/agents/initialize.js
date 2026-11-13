@@ -72,6 +72,8 @@ const {
   MAX_SUBAGENT_GRAPH_NODES,
   MAX_SUBAGENT_RUN_CONFIGS,
   isEphemeralAgentId,
+  resolveSpecUserToggle,
+  resolveSpecSkillsEnabled,
   resolveAllowedStatefulCodeEnvironments,
 } = require('librechat-data-provider');
 const {
@@ -105,7 +107,7 @@ const {
   digestFile,
 } = require('~/server/services/Files/provision');
 const { createProvisionFilesCallback } = require('~/server/services/Files/provisionCallback');
-const { getModelsConfig } = require('~/server/controllers/ModelController');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
 const AgentClient = require('~/server/controllers/agents/client');
 const { processAddedConvo } = require('./addedConvo');
@@ -375,9 +377,10 @@ const initializeClientWithProvider = async ({
     }),
   );
   const primaryAgentPromise = endpointOption.agent;
-  const modelsConfigPromise = getModelsConfig(req);
-  const validatedPrimaryAgentPromise = Promise.all([primaryAgentPromise, modelsConfigPromise]).then(
-    async ([primaryAgent, modelsConfig]) => {
+  /** Each validation, including handoff and subagents, loads only its agent's provider models. */
+  const getEndpointModels = (endpoint) => getEndpointModelsConfig(req, endpoint);
+  const validatedPrimaryAgentPromise = Promise.resolve(primaryAgentPromise).then(
+    async (primaryAgent) => {
       if (!primaryAgent) {
         throw new Error('Agent not found');
       }
@@ -385,7 +388,7 @@ const initializeClientWithProvider = async ({
       const validationResult = await validateAgentModel({
         req,
         res,
-        modelsConfig,
+        getEndpointModels,
         logViolation,
         agent: primaryAgent,
       });
@@ -393,7 +396,7 @@ const initializeClientWithProvider = async ({
         throw new Error(validationResult.error?.message);
       }
 
-      return { primaryAgent, modelsConfig };
+      return primaryAgent;
     },
   );
 
@@ -662,7 +665,7 @@ const initializeClientWithProvider = async ({
     editableSkillIds,
     skillCreateAllowed,
     { skillStates, defaultActiveOnShare },
-    { primaryAgent, modelsConfig },
+    primaryAgent,
     requestConversation,
     chatProjectContext,
     toolRoleGrants,
@@ -757,10 +760,13 @@ const initializeClientWithProvider = async ({
     selectedModelSpec &&
     Object.hasOwn(selectedModelSpec, 'skills')
   ) {
-    if (selectedModelSpec.skills === true) {
-      primaryAgent.skills_enabled = true;
-      delete primaryAgent.skills;
-    } else if (selectedModelSpec.skills === false) {
+    /** The spec's `skills` config is the default the badge is seeded from; the
+     *  request's explicit toggle decides (`skills: false` stays a hard opt-out). */
+    const specSkillsEnabled = resolveSpecSkillsEnabled(
+      resolveSpecUserToggle(req.body?.ephemeralAgent?.skills, selectedModelSpec, 'skills'),
+      selectedModelSpec.skills,
+    );
+    if (!specSkillsEnabled) {
       primaryAgent.skills_enabled = false;
       primaryAgent.skills = [];
     } else if (Array.isArray(selectedModelSpec.skills)) {
@@ -772,6 +778,9 @@ const initializeClientWithProvider = async ({
       });
       primaryAgent.skills_enabled = true;
       primaryAgent.skills = resolvedSkillIds.map((id) => id.toString());
+    } else {
+      primaryAgent.skills_enabled = true;
+      delete primaryAgent.skills;
     }
   }
   const primaryScopedSkillIds = resolveAgentScopedSkillIds({
@@ -878,7 +887,7 @@ const initializeClientWithProvider = async ({
       agent_ids: primaryConfig.agent_ids,
       endpointOption,
       allowedProviders,
-      modelsConfig,
+      getEndpointModels,
       loadTools,
       requestFiles,
       conversationId,
@@ -979,7 +988,7 @@ const initializeClientWithProvider = async ({
     res,
     loadTools,
     logViolation,
-    modelsConfig,
+    getEndpointModels,
     requestFiles,
     agentConfigs,
     primaryAgent,
@@ -1385,7 +1394,7 @@ const initializeClientWithProvider = async ({
       throw new Error(`You no longer have access to subagent ${agentId}.`);
     }
     const validation = await waitForAbort(
-      validateAgentModel({ req, res, agent, modelsConfig, logViolation }),
+      validateAgentModel({ req, res, agent, getEndpointModels, logViolation }),
       context.signal,
     );
     throwIfAborted(context.signal);
