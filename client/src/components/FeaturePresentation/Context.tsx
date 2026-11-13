@@ -195,15 +195,15 @@ export function FeaturePresentationProvider({
       if (!canOpenPage(target) || (relatedPage === target && page !== target)) {
         return;
       }
-      if (!relatedPage && !chatLocationRef.current) {
-        setChatLocation(undefined);
+      const isChat = /^\/c(?:\/|$)/.test(location.pathname);
+      if (isChat && !chatLocationRef.current) {
         setReturnUrl(getChatReturnUrl(location.pathname + location.search + location.hash));
       }
       focusTarget.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const chatUrl = chatLocationRef.current;
       const currentUrl = location.pathname + location.search + location.hash;
-      const originUrl = relatedPage ? returnUrl : currentUrl;
+      const originUrl = isChat ? currentUrl : returnUrl;
       const contextUrl = getChatReturnUrl(
         chatUrl ? chatUrl.pathname + chatUrl.search + chatUrl.hash : originUrl,
       );
@@ -227,7 +227,6 @@ export function FeaturePresentationProvider({
       location.hash,
       navigate,
       setReturnUrl,
-      setChatLocation,
       revealPage,
     ],
   );
