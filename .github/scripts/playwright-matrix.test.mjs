@@ -136,18 +136,18 @@ function gateFails(results, mcpRun = '') {
   });
 }
 
-test('PR selection and fail-open defaults use ten memory shards and two Redis transport shards', () => {
+test('PR selection and fail-open defaults use fifteen memory shards and two Redis transport shards', () => {
   assert.equal(defaults.length, 2);
   assert.deepEqual(defaults[0], prMatrix);
-  assert.equal(prMatrix.include.length, 12);
-  assertPartition(prMatrix, 'memory', 'full', 10);
+  assert.equal(prMatrix.include.length, 17);
+  assertPartition(prMatrix, 'memory', 'full', 15);
   assertPartition(prMatrix, 'redis', 'transport', 2);
 });
 
 test('nightly and default manual runs retain full-suite coverage on both stores', () => {
   assert.equal(workflow.on.workflow_dispatch.inputs.coverage.default, 'full');
-  assert.equal(defaults[1].include.length, 20);
-  assertPartition(defaults[1], 'memory', 'full', 10);
+  assert.equal(defaults[1].include.length, 25);
+  assertPartition(defaults[1], 'memory', 'full', 15);
   assertPartition(defaults[1], 'redis', 'full', 10);
 });
 
@@ -201,8 +201,8 @@ test('an explicit Redis skip drops both transport shards and no memory shard', (
   const { matrix, outputs } = select(t, decision(false, false));
   assert.equal(outputs.decided, 'true');
   assert.equal(outputs.mcp_run, 'false');
-  assert.equal(matrix.include.length, 10);
-  assertPartition(matrix, 'memory', 'full', 10);
+  assert.equal(matrix.include.length, 15);
+  assertPartition(matrix, 'memory', 'full', 15);
 });
 
 test('missing or non-boolean Redis decisions retain both transport shards', (t) => {
