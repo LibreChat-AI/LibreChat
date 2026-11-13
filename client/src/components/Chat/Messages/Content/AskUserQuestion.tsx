@@ -1,8 +1,8 @@
 import { useContext, useMemo, useRef, useState } from 'react';
 import { AskOptions } from '@librechat/chat/components';
 import { useOptionalChatSurface } from '@librechat/chat/react';
-import { Button, TextareaAutosize, TooltipAnchor } from '@librechat/client';
 import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
+import { Button, Shimmer, TooltipAnchor, TextareaAutosize } from '@librechat/client';
 import {
   isCancelKey,
   isReboundSubmitChord,
@@ -436,11 +436,9 @@ function AskingPlaceholder({ children }: { children: React.ReactNode }) {
   return (
     <div className="relative">
       {children}
-      <div className="absolute inset-x-0 top-0 my-1 flex h-5 items-center gap-2.5">
-        <MessageCircleQuestion className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-        <span className="tool-status-text shimmer text-text-secondary font-medium">
-          {localize('com_ui_asking')}
-        </span>
+      <div className="text-text-secondary absolute inset-x-0 top-0 my-1 flex h-5 items-center gap-2.5">
+        <MessageCircleQuestion className="size-4 shrink-0" aria-hidden="true" />
+        <Shimmer className="tool-status-text font-medium">{localize('com_ui_asking')}</Shimmer>
       </div>
     </div>
   );

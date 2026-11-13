@@ -247,6 +247,14 @@ export default [
               pattern: '^(Label|Description|DialogTitle|DialogDescription|SeriesLabel)(\\$\\d+)?$',
               allow: ['layout', 'icon-*', 'typography'],
             },
+            // The sweep on an in-flight label is drawn over the caller's own line of text, so
+            // the caller sets that line's size, weight and truncation, `tool-status-text`
+            // included: the status rows' type scale, which has no Tailwind form. The sweep's
+            // two colors are the theme's.
+            {
+              pattern: '^Shimmer(\\$\\d+)?$',
+              allow: ['layout', 'icon-*', 'typography', 'tool-status-text'],
+            },
             // A skeleton stands in for the caller's content, so it takes that content's
             // silhouette and footprint.
             { pattern: '^Skeleton(\\$\\d+)?$', allow: ['layout', 'icon-*', 'shape', 'spacing'] },
@@ -361,6 +369,9 @@ export default [
             'result-streaming',
             'result-thinking',
             'shimmer',
+            'shimmer-clip',
+            'shimmer-band',
+            'shimmer-copy',
             'tool-status-text',
             'message-render',
             'message-timestamp',
