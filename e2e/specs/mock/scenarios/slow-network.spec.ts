@@ -9,7 +9,9 @@ import { expect, test } from '../fixtures';
 
 const messageInput = (page: Page) => page.getByRole('textbox', { name: 'Message input' });
 
-const KEY_ENDPOINT = MOCK_ENDPOINTS[1];
+/** Providers A and B show as model specs; C and D are plain endpoint rows with models. */
+const KEY_ENDPOINT = 'Mock Provider C';
+const NEIGHBOUR_ENDPOINT = 'Mock Provider D';
 
 /** No mock endpoint asks for a user key, so the served config marks one as user-provided. */
 async function requireUserKey(page: Page, label: string): Promise<void> {
@@ -36,12 +38,22 @@ test.describe('slow and lost connections', () => {
 
     const indicator = page.locator('#loading-container').getByRole('status');
     await expect(indicator).toBeVisible();
-    await expect(indicator).toHaveText('Loading');
+    await expect(indicator).toHaveText('Loading...');
     await expect
       .poll(() => indicator.evaluate((el) => Number(getComputedStyle(el).opacity)), {
         timeout: 5000,
       })
       .toBeGreaterThan(0);
+  });
+
+  test('the loading label follows the language chosen before the bundle loads @scenario:loading-shell-label-follows-language', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => localStorage.setItem('lang', JSON.stringify('de-DE')));
+    await page.route(/\/assets\/index\.[^/]+\.js(\?|$)/, () => undefined);
+    await page.goto(NEW_CHAT_PATH, { waitUntil: 'commit' });
+
+    await expect(page.locator('#loading-container').getByRole('status')).toHaveText('Lade …');
   });
 
   test('a message sent offline names the lost connection @scenario:offline-send-names-the-lost-connection', async ({
@@ -68,11 +80,11 @@ test.describe('slow and lost connections', () => {
   test('the endpoint key button is large enough to tap @scenario:endpoint-key-button-touch-target', async ({
     page,
   }) => {
-    await requireUserKey(page, KEY_ENDPOINT.label);
+    await requireUserKey(page, KEY_ENDPOINT);
     await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
     await modelSelectorTrigger(page).click();
 
-    const keyButton = page.getByRole('button', { name: `Set API Key ${KEY_ENDPOINT.label}` });
+    const keyButton = page.getByRole('button', { name: `Set API Key ${KEY_ENDPOINT}` });
     await expect(keyButton).toBeVisible();
     const box = await keyButton.boundingBox();
     expect(box).not.toBeNull();
@@ -87,6 +99,6 @@ test.describe('slow and lost connections', () => {
         .getByRole('option', { name: new RegExp(`^${label}`) })
         .first()
         .evaluate((el) => el.getBoundingClientRect().height);
-    expect(await rowHeight(KEY_ENDPOINT.label)).toBe(await rowHeight(MOCK_ENDPOINTS[0].label));
+    expect(await rowHeight(KEY_ENDPOINT)).toBe(await rowHeight(NEIGHBOUR_ENDPOINT));
   });
 });
