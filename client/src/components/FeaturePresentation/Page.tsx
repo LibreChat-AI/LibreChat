@@ -12,6 +12,9 @@ export default function FeaturePage({ page }: { page: NavigationPage }) {
   const isSmallScreen = useDrawerViewport();
   const localize = useLocalize();
   const availability = presentation?.availability[page];
+  if (presentation?.startupError) {
+    return <CollectionError onRetry={presentation.startupError} />;
+  }
   if (presentation && (!presentation.ready || availability?.status === 'loading')) {
     return (
       <div
