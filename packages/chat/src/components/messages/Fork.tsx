@@ -87,7 +87,16 @@ function Fork({
     setRememberOption: setRememberGlobal,
   } = host.useForkPreferences();
   const groupId = useId();
-  const [selected, setSelected] = useState<string>(forkSetting || ForkOptions.TARGET_LEVEL);
+  const defaultMode = forkSetting || ForkOptions.TARGET_LEVEL;
+  const [selected, setSelected] = useState<string>(defaultMode);
+  /** The stored default can change while this toolbar stays mounted (Settings does it), so the
+   *  picked mode follows it. Adjusting state during render replaces the pick before the first
+   *  paint; an effect would paint the old mode once. */
+  const [seenDefault, setSeenDefault] = useState(defaultMode);
+  if (seenDefault !== defaultMode) {
+    setSeenDefault(defaultMode);
+    setSelected(defaultMode);
+  }
   const [showMore, setShowMore] = useState(false);
   const popoverStore = Ariakit.usePopoverStore({
     placement: 'bottom',

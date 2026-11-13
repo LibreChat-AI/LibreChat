@@ -1,9 +1,9 @@
 /**
  * @jest-environment jsdom
  */
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { ForkOptions } from 'librechat-data-provider';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { ForkConversation, ForkPreferences } from '../../../react/messages/host';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
@@ -173,6 +173,56 @@ describe('Fork', () => {
     expect(region).not.toHaveAttribute('inert');
     expect(region).toHaveClass('grid-rows-[1fr]');
     expect(chevron).toHaveClass('rotate-180');
+  });
+
+  /** The default mode lives in a store the Settings dialog also writes, so it can change while the
+   *  message toolbar stays mounted. */
+  it('follows the stored default mode when it changes while the toolbar stays mounted', async () => {
+    let stored: string = ForkOptions.INCLUDE_BRANCHES;
+    const listeners = new Set<() => void>();
+    const setStored = (next: string) => {
+      stored = next;
+      listeners.forEach((listener) => listener());
+    };
+    const preferences = {
+      setOption: setStored,
+      splitAtTarget: false,
+      setSplitAtTarget: () => {},
+      rememberOption: false,
+      setRememberOption: () => {},
+    };
+    const host = createMessagesHost({
+      useForkPreferences: () => ({
+        ...preferences,
+        option: useSyncExternalStore(
+          (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          () => stored,
+        ),
+      }),
+      useForkConversation: () => forkConversation,
+    });
+    render(
+      <MessagesHostProvider host={host}>
+        <Fork messageId="assistant-1" conversationId="convo-1" forkingSupported={true} />
+      </MessagesHostProvider>,
+    );
+
+    act(() => setStored(ForkOptions.DIRECT_PATH));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork_more_options' }));
+    expect(screen.getByRole('radio', { name: 'com_ui_fork_mode_visible' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork' }));
+
+    expect(forkConversation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ option: ForkOptions.DIRECT_PATH }),
+      expect.anything(),
+    );
   });
 
   it('keeps files by default', async () => {
