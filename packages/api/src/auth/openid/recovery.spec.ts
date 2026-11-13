@@ -1,6 +1,6 @@
 import type { OpenIDRefreshRecoveryDeps } from './recovery';
+import { createOpenIDRefreshOwnershipError, isOpenIDSessionEndedError } from './errors';
 import { createOpenIDRefreshRecoveryService } from './recovery';
-import { isOpenIDSessionEndedError } from './errors';
 
 describe('OpenID authentication publication settlement', () => {
   function setup() {
@@ -389,6 +389,75 @@ describe('sendOpenIDAuthResponse: provider-session denial after a successful gra
   });
 });
 
+/** Shared by the bridge-recovery describes below so neither duplicates the other's mock wiring. */
+function createBridgeRecoveryDeps(
+  overrides: Partial<OpenIDRefreshRecoveryDeps> = {},
+): OpenIDRefreshRecoveryDeps {
+  return {
+    jwt: { decode: jest.fn() },
+    cookies: { parse: jest.fn(() => ({})) },
+    getJwtRefreshSecret: () => 'refresh-secret',
+    findOpenIDUser: jest.fn(),
+    findUser: jest.fn(),
+    getOpenIdConfig: jest.fn(),
+    getOpenIdEmail: jest.fn(),
+    getOpenIdIssuer: jest.fn(),
+    createAuthIdentityContext: jest.fn(() => ({
+      appUserId: 'user-1',
+      openidSubject: 'sub-1',
+    })),
+    refreshOpenIDSession: jest.fn(),
+    clearOpenIDAuthTokens: jest.fn(),
+    deleteOpenIDSession: jest.fn(),
+    createOpenIDRefreshFlightKey: jest.fn(),
+    storeRefreshTokenBridge: jest.fn().mockResolvedValue('bridge-version'),
+    deleteRefreshTokenBridges: jest.fn(),
+    waitForOpenIDRefreshFlight: jest.fn(),
+    assertOpenIDRefreshSessionGenerationAvailable: jest.fn(),
+    revokeOpenIDRefreshFlights: jest.fn(),
+    bridgeGraceMs: 1000,
+    logger: { debug: jest.fn(), warn: jest.fn() },
+    createRefreshTokenBridgeFlightKey: jest.fn(() => 'bridge-flight-key'),
+    acquireOpenIDRefreshFlight: jest.fn().mockResolvedValue({
+      acquired: true,
+      ownerId: 'owner',
+    }),
+    withOpenIDRefreshFlightLease: jest.fn(({ operation }) =>
+      operation({
+        assertLeaseOwned: jest.fn().mockResolvedValue(true),
+        markLeaseSettled: jest.fn(),
+      }),
+    ),
+    failOpenIDRefreshFlight: jest.fn().mockResolvedValue(null),
+    completeOpenIDRefreshFlight: jest.fn().mockResolvedValue({ status: 'completed' }),
+    getOpenIDAppAuthToken: jest.fn(() => 'app-token'),
+    storeOpenIDSession: jest.fn().mockResolvedValue(undefined),
+    assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue(true),
+    setOpenIDAuthTokens: jest.fn(() => 'app-token'),
+    getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
+    providerSessionAuthorizer: {
+      establish: jest.fn().mockResolvedValue({ ok: true }),
+      authorize: jest.fn().mockResolvedValue({ ok: true }),
+      preCheck: jest.fn().mockResolvedValue({ ok: true }),
+      getMode: jest.fn().mockResolvedValue('off'),
+    },
+    getProviderSessionClient: jest.fn(() => null),
+    ...overrides,
+  } satisfies OpenIDRefreshRecoveryDeps;
+}
+
+function buildBridgeRecoveryReq() {
+  return {
+    session: {
+      save: (callback: (error?: Error | null) => void) => callback(null),
+      reload: (callback: (error?: Error | null) => void) => callback(null),
+    },
+  };
+}
+
+const ref = { issuer: 'https://idp.example.com', clientId: 'librechat', sid: 'sid-1' };
+const bridgeUser = { _id: 'user-1', provider: 'openid', openidId: 'sub-1' };
+
 /**
  * While back-channel logout is off, bridge recovery must carry whichever ref the marker or the
  * bridge itself already recorded forward unchanged, instead of discarding it, and must never
@@ -396,72 +465,14 @@ describe('sendOpenIDAuthResponse: provider-session denial after a successful gra
  */
 describe('OpenID refresh bridge recovery: provider session while mode is off', () => {
   function setup(overrides: Partial<OpenIDRefreshRecoveryDeps> = {}) {
-    const deps = {
-      jwt: { decode: jest.fn() },
-      cookies: { parse: jest.fn(() => ({})) },
-      getJwtRefreshSecret: () => 'refresh-secret',
-      findOpenIDUser: jest.fn(),
-      findUser: jest.fn(),
-      getOpenIdConfig: jest.fn(),
-      getOpenIdEmail: jest.fn(),
-      getOpenIdIssuer: jest.fn(),
-      createAuthIdentityContext: jest.fn(() => ({
-        appUserId: 'user-1',
-        openidSubject: 'sub-1',
-      })),
-      refreshOpenIDSession: jest.fn(),
-      clearOpenIDAuthTokens: jest.fn(),
-      deleteOpenIDSession: jest.fn(),
-      createOpenIDRefreshFlightKey: jest.fn(),
-      storeRefreshTokenBridge: jest.fn().mockResolvedValue('bridge-version'),
-      deleteRefreshTokenBridges: jest.fn(),
-      waitForOpenIDRefreshFlight: jest.fn(),
-      assertOpenIDRefreshSessionGenerationAvailable: jest.fn(),
-      revokeOpenIDRefreshFlights: jest.fn(),
-      bridgeGraceMs: 1000,
-      logger: { debug: jest.fn(), warn: jest.fn() },
-      createRefreshTokenBridgeFlightKey: jest.fn(() => 'bridge-flight-key'),
-      acquireOpenIDRefreshFlight: jest.fn().mockResolvedValue({
-        acquired: true,
-        ownerId: 'owner',
-      }),
-      withOpenIDRefreshFlightLease: jest.fn(({ operation }) =>
-        operation({
-          assertLeaseOwned: jest.fn().mockResolvedValue(true),
-          markLeaseSettled: jest.fn(),
-        }),
-      ),
-      failOpenIDRefreshFlight: jest.fn().mockResolvedValue(null),
-      completeOpenIDRefreshFlight: jest.fn().mockResolvedValue({ status: 'completed' }),
-      getOpenIDAppAuthToken: jest.fn(() => 'app-token'),
-      storeOpenIDSession: jest.fn().mockResolvedValue(undefined),
-      assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue(true),
-      setOpenIDAuthTokens: jest.fn(() => 'app-token'),
-      getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
-      providerSessionAuthorizer: {
-        establish: jest.fn().mockResolvedValue({ ok: true }),
-        authorize: jest.fn().mockResolvedValue({ ok: true }),
-        preCheck: jest.fn().mockResolvedValue({ ok: true }),
-        getMode: jest.fn().mockResolvedValue('off'),
-      },
-      getProviderSessionClient: jest.fn(() => null),
-      ...overrides,
-    } satisfies OpenIDRefreshRecoveryDeps;
+    const deps = createBridgeRecoveryDeps(overrides);
     const service = createOpenIDRefreshRecoveryService(deps);
     return { deps, service };
   }
 
   function buildReq() {
-    return {
-      session: {
-        save: (callback: (error?: Error | null) => void) => callback(null),
-        reload: (callback: (error?: Error | null) => void) => callback(null),
-      },
-    };
+    return buildBridgeRecoveryReq();
   }
-
-  const ref = { issuer: 'https://idp.example.com', clientId: 'librechat', sid: 'sid-1' };
-  const bridgeUser = { _id: 'user-1', provider: 'openid', openidId: 'sub-1' };
 
   it('seeds the Express session with the bridge ref when the marker carries none', async () => {
     let captured: unknown;
@@ -555,5 +566,171 @@ describe('OpenID refresh bridge recovery: provider session while mode is off', (
     expect(captured).toBeUndefined();
     expect(deps.providerSessionAuthorizer.authorize).not.toHaveBeenCalled();
     expect(deps.providerSessionAuthorizer.establish).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The lease callback passed to `withOpenIDRefreshFlightLease` is what actually resolves the
+ * bridged refresh, stores the recovery grace bridge, and commits the shared publication. It is
+ * reached only once the underlying refresh succeeds, so these tests make `refreshOpenIDSession`
+ * and `findOpenIDUser` resolve successfully (instead of throwing at the seed step, as the
+ * "mode is off" tests above do) and exercise the callback's branches past that point.
+ */
+describe('OpenID refresh bridge recovery: lease callback execution', () => {
+  const resolvedTokenset = {
+    access_token: 'new-access',
+    refresh_token: 'new-refresh',
+    id_token: 'new-id',
+    claims: () => ({ sub: 'sub-1' }),
+  };
+
+  function setup(overrides: Partial<OpenIDRefreshRecoveryDeps> = {}) {
+    const leaseContext = {
+      assertLeaseOwned: jest.fn().mockResolvedValue(true),
+      markLeaseSettled: jest.fn(),
+    };
+    const withOpenIDRefreshFlightLease: OpenIDRefreshRecoveryDeps['withOpenIDRefreshFlightLease'] =
+      ({ operation }) => operation(leaseContext);
+    const deps = createBridgeRecoveryDeps({
+      refreshOpenIDSession: jest.fn().mockResolvedValue(resolvedTokenset),
+      findOpenIDUser: jest.fn().mockResolvedValue({ user: bridgeUser, error: null }),
+      withOpenIDRefreshFlightLease,
+      ...overrides,
+    });
+    const service = createOpenIDRefreshRecoveryService(deps);
+    return { deps, service, leaseContext };
+  }
+
+  function recover(service: ReturnType<typeof createOpenIDRefreshRecoveryService>) {
+    return service.recoverOpenIDRefreshBridge({
+      req: buildBridgeRecoveryReq() as never,
+      res: {} as never,
+      refreshToken: 'cookie-refresh',
+      bridgedRefreshToken: 'bridged-refresh',
+      bridgeUser,
+      bridgeProviderSession: null,
+      markerProviderSession: null,
+    });
+  }
+
+  it('publishes the app auth token, completes the flight, and settles the lease', async () => {
+    const { deps, service, leaseContext } = setup();
+
+    await expect(recover(service)).resolves.toEqual(
+      expect.objectContaining({ appAuthToken: 'app-token' }),
+    );
+
+    expect(deps.completeOpenIDRefreshFlight).toHaveBeenCalledTimes(1);
+    expect(leaseContext.markLeaseSettled).toHaveBeenCalledTimes(1);
+    expect(deps.failOpenIDRefreshFlight).not.toHaveBeenCalled();
+  });
+
+  describe('when the flight completion write is unobservable', () => {
+    it('rethrows the completion error and leaves the flight generation recoverable when availability also throws', async () => {
+      const completionError = new Error('completion write lost');
+      const { deps, service, leaseContext } = setup({
+        completeOpenIDRefreshFlight: jest.fn().mockRejectedValue(completionError),
+        assertOpenIDRefreshFlightAvailable: jest
+          .fn()
+          .mockRejectedValue(new Error('cannot observe')),
+      });
+
+      await expect(recover(service)).rejects.toBe(completionError);
+
+      expect(deps.failOpenIDRefreshFlight).not.toHaveBeenCalled();
+      expect(leaseContext.markLeaseSettled).not.toHaveBeenCalled();
+    });
+
+    it('honors a completion the flight owner already recorded', async () => {
+      const completionError = new Error('completion write lost');
+      const { deps, service, leaseContext } = setup({
+        completeOpenIDRefreshFlight: jest.fn().mockRejectedValue(completionError),
+        assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue({ status: 'completed' }),
+      });
+
+      await expect(recover(service)).resolves.toEqual(
+        expect.objectContaining({ appAuthToken: 'app-token' }),
+      );
+
+      expect(leaseContext.markLeaseSettled).toHaveBeenCalledTimes(1);
+      expect(deps.failOpenIDRefreshFlight).not.toHaveBeenCalled();
+    });
+
+    it('treats a bare availability boolean as unobservable, not as proof of completion', async () => {
+      const completionError = new Error('completion write lost');
+      const { deps, service, leaseContext } = setup({
+        completeOpenIDRefreshFlight: jest.fn().mockRejectedValue(completionError),
+        assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue(true),
+      });
+
+      await expect(recover(service)).rejects.toBe(completionError);
+
+      expect(deps.failOpenIDRefreshFlight).not.toHaveBeenCalled();
+      expect(leaseContext.markLeaseSettled).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when the second lease-ownership check fails after the grace bridge is stored', () => {
+    it('deletes the stored grace bridge on an ownership error', async () => {
+      const ownershipError = createOpenIDRefreshOwnershipError('lease ownership lost');
+      const { deps, service, leaseContext } = setup();
+      leaseContext.assertLeaseOwned
+        .mockResolvedValueOnce(true)
+        .mockRejectedValueOnce(ownershipError);
+
+      await expect(recover(service)).rejects.toBe(ownershipError);
+
+      expect(deps.deleteRefreshTokenBridges).toHaveBeenCalledWith({
+        refreshTokens: ['cookie-refresh'],
+        userId: 'user-1',
+        tenantId: undefined,
+        version: 'bridge-version',
+      });
+    });
+
+    it('keeps the stored grace bridge on a non-ownership error', async () => {
+      const readError = new Error('lease read unavailable');
+      const { deps, service, leaseContext } = setup();
+      leaseContext.assertLeaseOwned.mockResolvedValueOnce(true).mockRejectedValueOnce(readError);
+
+      await expect(recover(service)).rejects.toBe(readError);
+
+      expect(deps.deleteRefreshTokenBridges).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when the resolved refresh does not match the bridged user', () => {
+    it('rejects and fails the flight when a different user resolves', async () => {
+      const { deps, service } = setup({
+        findOpenIDUser: jest.fn().mockResolvedValue({ user: { _id: 'other-user' }, error: null }),
+      });
+
+      await expect(recover(service)).rejects.toThrow('Invalid OpenID refresh token');
+
+      expect(deps.failOpenIDRefreshFlight).toHaveBeenCalledTimes(1);
+      expect(deps.storeRefreshTokenBridge).not.toHaveBeenCalled();
+    });
+
+    it('rejects and fails the flight when no user resolves', async () => {
+      const { deps, service } = setup({
+        findOpenIDUser: jest.fn().mockResolvedValue({ user: null, error: null }),
+      });
+
+      await expect(recover(service)).rejects.toThrow('Invalid OpenID refresh token');
+
+      expect(deps.failOpenIDRefreshFlight).toHaveBeenCalledTimes(1);
+      expect(deps.storeRefreshTokenBridge).not.toHaveBeenCalled();
+    });
+  });
+
+  it('withholds the publication and fails the flight when completion resolves with no record', async () => {
+    const { deps, service, leaseContext } = setup({
+      completeOpenIDRefreshFlight: jest.fn().mockResolvedValue(null),
+    });
+
+    await expect(recover(service)).rejects.toThrow('ownership was lost');
+
+    expect(leaseContext.markLeaseSettled).not.toHaveBeenCalled();
+    expect(deps.failOpenIDRefreshFlight).toHaveBeenCalledTimes(1);
   });
 });
