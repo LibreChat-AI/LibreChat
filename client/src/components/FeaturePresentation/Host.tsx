@@ -31,8 +31,19 @@ function AgentSession({ visible }: { visible: boolean }) {
 const features = { ...featureContent, agentBuilder: AgentSession };
 
 export default function PresentationHost({ children }: { children: ReactNode }) {
-  const { data: config, isSuccess: configReady } = useGetStartupConfig();
-  const { isSuccess: endpointsReady } = useGetEndpointsQuery();
+  const { data: config, isError: configError, refetch: refetchConfig } = useGetStartupConfig();
+  const {
+    data: endpoints,
+    isError: endpointsError,
+    refetch: refetchEndpoints,
+  } = useGetEndpointsQuery();
+  const configReady = config != null;
+  const endpointsReady = endpoints != null;
+  const retryStartup = useCallback(() => {
+    if (!configReady) void refetchConfig();
+    if (!endpointsReady) void refetchEndpoints();
+  }, [configReady, endpointsReady, refetchConfig, refetchEndpoints]);
+  const startupFailed = (!configReady && configError) || (!endpointsReady && endpointsError);
   const { pathname } = useLocation();
   const mcpPage =
     getPageForPath(pathname) === 'mcpSettings' &&
@@ -53,6 +64,7 @@ export default function PresentationHost({ children }: { children: ReactNode }) 
   return (
     <FeaturePresentationProvider
       ready={configReady && endpointsReady && rolesReady}
+      startupError={startupFailed ? retryStartup : undefined}
       availability={mcpPage ? { mcpSettings: mcpAvailability } : undefined}
       revealPage={revealPage}
       links={links}

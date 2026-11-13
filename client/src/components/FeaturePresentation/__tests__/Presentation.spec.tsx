@@ -135,8 +135,12 @@ function Chat() {
 function Controls({ setVisible }: { setVisible: (visible: boolean) => void }) {
   const presentation = useFeaturePresentation()!;
   const navLinks = useUnifiedSidebarLinks();
+  const skills = navLinks.find((link) => link.id === 'skills');
   return (
     <>
+      <button onClick={() => skills?.onClick?.({} as React.MouseEvent<HTMLButtonElement>)}>
+        {'Shared skills'}
+      </button>
       <button
         onClick={() =>
           navLinks
@@ -243,6 +247,51 @@ function setup({
 beforeEach(() => jest.clearAllMocks());
 
 describe('feature presentation lifetime', () => {
+  it.each(['', '/app'])(
+    'releases background route ownership after returning to real chat under %s',
+    async (basename) => {
+      const { router } = setup({ entry: '/c/new?projectId=abc', basename });
+      const finish = capturedNavigate;
+      fireEvent.click(await screen.findByText('Expand'));
+      await act(async () => {
+        await finish('/c/saved?projectId=abc', { replace: true });
+      });
+      fireEvent.click(screen.getByText('Minimize'));
+      await waitFor(() => expect(router.state.location.pathname).toBe(basename + '/c/saved'));
+      await act(async () => {
+        await router.navigate('/c/another?branch=1');
+      });
+      expect(router.state.location.pathname).toBe(basename + '/c/another');
+      expect(chatEffects).toHaveBeenLastCalledWith('another', '/c/another', '?branch=1');
+      expect(screen.getByTestId('live-chat')).toHaveTextContent('another');
+      await act(async () => {
+        await router.navigate('/c/new');
+      });
+      expect(chatEffects).toHaveBeenLastCalledWith('new', '/c/new', '');
+      await act(async () => {
+        await router.navigate(-1);
+      });
+      expect(chatEffects).toHaveBeenLastCalledWith('another', '/c/another', '?branch=1');
+      expect(chatMounts).toHaveBeenCalledTimes(1);
+      expect(chatUnmounts).not.toHaveBeenCalled();
+    },
+  );
+
+  it('uses the shared registered panel callback from a related resource journey', async () => {
+    const { router, panelOpen } = setup({ includeSkills: true, includePrompts: true });
+    fireEvent.click(await screen.findByText('Expand'));
+    await act(async () => {
+      await router.navigate('/prompts/prompt-a');
+    });
+    fireEvent.click(screen.getByText('Shared skills'));
+    await waitFor(() =>
+      expect(router.state.location.pathname + router.state.location.search).toBe(
+        '/c/chat-a?projectId=abc&foo=bar',
+      ),
+    );
+    expect(panelOpen).toHaveBeenCalledWith('skills');
+  });
+
   it('adopts a saved background route under a non-root deployment basename', async () => {
     const { router } = setup({ entry: '/c/new?projectId=abc', basename: '/app' });
     const finalNavigate = capturedNavigate;

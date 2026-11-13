@@ -37,7 +37,9 @@ export default function PresentationWorkspace() {
           <UNSAFE_LocationContext.Provider
             value={{
               ...retained.current.location,
-              location: presentation?.chatLocation ?? retained.current.location.location,
+              location: chat
+                ? location
+                : (presentation?.chatLocation ?? retained.current.location.location),
             }}
           >
             <UNSAFE_RouteContext.Provider value={retained.current.route}>

@@ -128,18 +128,13 @@ export default function useUnifiedSidebarLinks() {
     () =>
       (presentation?.links ?? []).map((link) => {
         const page = getPageForNavId(link.id);
-        if (
-          presentation?.relatedPage &&
-          (link.Component || link.id === 'conversations') &&
-          !page &&
-          !link.onClick
-        ) {
+        if (presentation?.relatedPage && (link.Component || link.id === 'conversations') && !page) {
           return { ...link, onClick: () => presentation.openPanel(link.id) };
         }
         if (
           !page ||
           !presentation ||
-          (!presentation.page &&
+          (!presentation.relatedPage &&
             (!presentation.canOpenPage(page) ||
               getPageSettings(startupConfig?.interface?.navigation, page).defaultView !== 'page'))
         ) {

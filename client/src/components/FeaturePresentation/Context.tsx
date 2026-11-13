@@ -21,6 +21,7 @@ export type PageAvailability =
   | { status: 'error'; retry: () => void };
 
 type Presentation = {
+  startupError?: () => void;
   availability: Partial<Record<NavigationPage, PageAvailability>>;
   chatLocation?: Location;
   updateChatLocation: (location: Location) => void;
@@ -75,12 +76,14 @@ export function FeaturePresentationProvider({
   navigation,
   onPanelOpen,
   ready = true,
+  startupError,
   availability = {},
   revealPage = (show: () => void) => show(),
 }: {
   availability?: Partial<Record<NavigationPage, PageAvailability>>;
   revealPage?: (show: () => void) => void;
   ready?: boolean;
+  startupError?: () => void;
   children: ReactNode;
   links: NavLink[];
   features: Partial<Record<NavigationPage, Feature>>;
@@ -110,6 +113,12 @@ export function FeaturePresentationProvider({
     },
     [setChatLocation, setReturnUrl],
   );
+  useLayoutEffect(() => {
+    if (/^\/c(?:\/|$)/.test(location.pathname)) {
+      setChatLocation(undefined);
+      setReturnUrl(getChatReturnUrl(location.pathname + location.search + location.hash));
+    }
+  }, [location.pathname, location.search, location.hash, setChatLocation, setReturnUrl]);
   const relatedPage = getRelatedPage(location.pathname);
   const routePage = getPageForPath(location.pathname);
   const page = routePage && features[routePage] ? routePage : undefined;
@@ -202,6 +211,7 @@ export function FeaturePresentationProvider({
   const value = useMemo<Presentation>(
     () => ({
       ready,
+      startupError,
       availability,
       chatLocation,
       updateChatLocation,
@@ -218,6 +228,7 @@ export function FeaturePresentationProvider({
     }),
     [
       ready,
+      startupError,
       availability,
       chatLocation,
       updateChatLocation,

@@ -187,7 +187,7 @@ function RootLayout() {
           <AssistantsMapContext.Provider value={assistantsMap}>
             <AgentsMapContext.Provider value={agentsMap}>
               <PromptGroupsProvider>
-                <PresentationHost key={user?.id}>
+                <PresentationHost>
                   <Banner onHeightChange={setBannerHeight} />
                   <div className="flex" style={{ height: `calc(100dvh - ${bannerHeight}px)` }}>
                     <div
@@ -278,6 +278,11 @@ function RootLayout() {
 }
 
 export default function Root() {
+  const { user } = useAuthContext();
+  // Refresh returns the raw account before /user adds its virtual id.
+  const sessionUserId =
+    user?.id ??
+    (user != null && '_id' in user && typeof user._id === 'string' ? user._id : undefined);
   return (
     <>
       <ChatRecord />
@@ -286,7 +291,7 @@ export default function Root() {
           <ChatHostProvider host={appChatHost}>
             <StreamHostProvider host={appStreamHost}>
               <ComposerHostProvider host={appComposerHost}>
-                <RootLayout />
+                <RootLayout key={sessionUserId} />
               </ComposerHostProvider>
             </StreamHostProvider>
           </ChatHostProvider>
