@@ -7,6 +7,7 @@ import {
   getDefaultParamsEndpoint,
   isAgentsEndpoint,
   isParamEndpoint,
+  tQueryParamsSchema,
 } from 'librechat-data-provider';
 import { useGetStartupConfig, useGetEndpointsQuery } from '~/data-provider';
 import { getChatReturnUrl, getPageSettings } from './registry';
@@ -71,10 +72,19 @@ function ParametersContext({ chatUrl }: { chatUrl: string }) {
     !conversation?.model &&
     !isAgentsEndpoint(endpoint);
   const models = useGetEndpointModelsQuery(endpoint, { enabled: discover });
+  const hasContext = conversation != null;
+  const returnTarget = useMemo(() => {
+    const target = new URL(chatUrl, window.location.origin);
+    // The cold initializer already applied these settings; a new composer must not replay them.
+    if (hasContext) {
+      for (const key of Object.keys(tQueryParamsSchema.shape)) target.searchParams.delete(key);
+    }
+    return target.pathname + target.search + target.hash;
+  }, [chatUrl, hasContext]);
   const setReturnTarget = presentation?.setReturnTarget;
   useLayoutEffect(() => {
-    if (initialize && activation.cold) setReturnTarget?.(chatUrl);
-  }, [initialize, activation.cold, setReturnTarget, chatUrl]);
+    if (initialize && activation.cold) setReturnTarget?.(returnTarget);
+  }, [initialize, activation.cold, setReturnTarget, returnTarget]);
   const awaitsCredentialLinks =
     initialize &&
     endpoints?.[endpoint]?.userProvide === true &&
