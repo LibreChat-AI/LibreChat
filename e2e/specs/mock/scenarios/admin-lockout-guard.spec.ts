@@ -130,8 +130,7 @@ test.describe('revoking the ADMIN role from Admin Settings', () => {
 
     await expect(confirmation).toHaveCount(0);
     await expect(dialog).toBeHidden();
-    const toasts = page.getByRole('region', { name: /Notifications/ });
-    await expect(toasts.getByText(SAVED, { exact: true })).toBeVisible();
+    await expect(page.getByText(SAVED, { exact: true })).toBeVisible();
   });
 
   test('cancelling the confirmation saves nothing and clears what was typed @scenario:admin-lockout-cancel-saves-nothing', async ({
@@ -180,8 +179,8 @@ test.describe('revoking the ADMIN role from Admin Settings', () => {
     await confirm.click();
     await expect.poll(() => saves.length).toBe(1);
 
-    const toasts = page.getByRole('region', { name: /Notifications/ });
-    await expect(toasts.getByText(SAVE_FAILED, { exact: true })).toBeVisible();
+    /** The toast sits outside the modal dialog, which hides it from role queries while open */
+    await expect(page.getByText(SAVE_FAILED, { exact: true })).toBeVisible();
     await expect(confirmation).toHaveCount(0);
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole('switch', { name: 'Allow using Marketplace' })).not.toBeChecked();

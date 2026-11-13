@@ -1,4 +1,4 @@
-import { useId, useEffect, useState } from 'react';
+import { useId, useRef, useEffect, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { ChevronDown, ShieldEllipsis } from 'lucide-react';
 import { useForm, useWatch, Controller } from 'react-hook-form';
@@ -110,6 +110,7 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
   const roleLabelId = useId();
   const roleValueId = useId();
   const lockoutInputId = useId();
+  const lockoutInputRef = useRef<HTMLInputElement>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const [wasSuccessful, setWasSuccessful] = useState(isSuccess);
@@ -306,7 +307,14 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
             </OGDialogFooter>
           </form>
           <AlertDialog open={pendingLockout !== null} onOpenChange={handleLockoutOpenChange}>
-            <AlertDialogContent className="w-11/12 max-w-md">
+            <AlertDialogContent
+              className="w-11/12 max-w-md"
+              onOpenAutoFocus={(event) => {
+                /** Radix focuses an AlertDialogCancel by default; start in the field instead */
+                event.preventDefault();
+                lockoutInputRef.current?.focus();
+              }}
+            >
               <form
                 className="grid gap-4"
                 onSubmit={(event) => {
@@ -327,6 +335,7 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
                     {localize('com_ui_admin_lockout_confirm_label', { role: SystemRoles.ADMIN })}
                   </Label>
                   <Input
+                    ref={lockoutInputRef}
                     id={lockoutInputId}
                     value={lockoutConfirmText}
                     onChange={(event) => setLockoutConfirmText(event.target.value)}

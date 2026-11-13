@@ -89,6 +89,7 @@ describe('AdminSettingsDialog admin lockout guard', () => {
 
     const confirmButton = screen.getByRole('button', { name: 'com_ui_admin_lockout_confirm' });
     const input = screen.getByLabelText('com_ui_admin_lockout_confirm_label ADMIN');
+    expect(input).toHaveFocus();
     expect(confirmButton).toBeDisabled();
 
     fireEvent.change(input, { target: { value: 'admin' } });
