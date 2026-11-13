@@ -22,7 +22,8 @@ import {
   getRelatedPage,
   pageRegistry,
 } from './registry';
-import { useLocalize } from '~/hooks';
+import { chatJourney, chatJourneyState } from './journey';
+import useLocalize from '~/hooks/useLocalize';
 
 type Feature = ComponentType<{ visible: boolean }>;
 type Slot = { node: HTMLDivElement; page: NavigationPage; view: NavigationView; visible: boolean };
@@ -136,6 +137,8 @@ export function FeaturePresentationProvider({
   const [returnUrl, setReturnUrl] = useAtom(state.returnUrl);
   const [chatLocation, setChatLocation] = useAtom(state.chatLocation);
   const chatLocationRef = useRef(chatLocation);
+  const journey = chatJourney(location);
+  const journeyRef = useRef(journey);
   const updateChatLocation = useCallback(
     (next: Location) => {
       chatLocationRef.current = next;
@@ -146,11 +149,20 @@ export function FeaturePresentationProvider({
   );
   useLayoutEffect(() => {
     if (/^\/c(?:\/|$)/.test(location.pathname)) {
+      journeyRef.current = journey;
       chatLocationRef.current = undefined;
       setChatLocation(undefined);
       setReturnUrl(getChatReturnUrl(location.pathname + location.search + location.hash));
     }
-  }, [location.pathname, location.search, location.hash, setChatLocation, setReturnUrl]);
+  }, [
+    location.pathname,
+    location.search,
+    location.hash,
+    location.key,
+    journey,
+    setChatLocation,
+    setReturnUrl,
+  ]);
   const relatedPage = getRelatedPage(location.pathname);
   const routePage = getPageForPath(location.pathname);
   const page = routePage && features[routePage] ? routePage : undefined;
@@ -207,6 +219,7 @@ export function FeaturePresentationProvider({
         getChatReturnUrl(
           destination ? destination.pathname + destination.search + destination.hash : returnUrl,
         ),
+        { state: chatJourneyState(destination ? chatJourney(destination) : journeyRef.current) },
       );
     },
     [canUse, onPanelOpen, navigate, returnUrl],
@@ -221,6 +234,7 @@ export function FeaturePresentationProvider({
         const target = chatLocationRef.current;
         navigate(
           getChatReturnUrl(target ? target.pathname + target.search + target.hash : returnUrl),
+          { state: chatJourneyState(target ? chatJourney(target) : journeyRef.current) },
         );
       }
     },

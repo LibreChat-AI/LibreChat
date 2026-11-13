@@ -759,7 +759,7 @@ describe('stop generating shortcut', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /thinking/i }));
     const effort = screen.getByRole('radio', { name: 'Low' });
-    effort.focus();
+    act(() => effort.focus());
 
     act(() => {
       expect(stop?.()).toBe(true);
