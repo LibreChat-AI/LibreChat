@@ -44,3 +44,7 @@ dependencies:
     version: "0.5.3"
     condition: librechat-rag-api.enabled
     repository: file://../librechat-rag-api
+  - name: librechat-exporter
+    version: "0.1.0"
+    condition: librechat-exporter.enabled
+    repository: file://../librechat-exporter
