@@ -32,6 +32,9 @@
 </p>
 
 <p align="center">
+<a href="https://render.com/deploy?repo=https://github.com/ojusave/LibreChat">
+  <img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render" height="30">
+</a>
 <a href="https://railway.com/deploy/librechat-official?referralCode=HI9hWz&utm_medium=integration&utm_source=readme&utm_campaign=librechat">
   <img src="https://railway.com/button.svg" alt="Deploy on Railway" height="30">
 </a>
