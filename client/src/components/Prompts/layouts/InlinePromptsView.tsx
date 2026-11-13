@@ -16,7 +16,11 @@ export default function InlinePromptsView() {
   });
 
   if (user?.role == null || roles?.[user.role] == null) {
-    return <Spinner tone="secondary" aria-label={localize('com_ui_loading')} />;
+    return (
+      <div role="status" aria-label={localize('com_ui_loading')}>
+        <Spinner tone="secondary" />
+      </div>
+    );
   }
 
   if (!hasAccess) {

@@ -161,12 +161,32 @@ export const router = createBrowserRouter(
                   element: <FeaturePage page="agentBuilder" />,
                 },
                 {
+                  path: 'schedules',
+                  element: <FeaturePage page="schedules" />,
+                },
+                {
+                  path: 'memories',
+                  element: <FeaturePage page="memories" />,
+                },
+                {
+                  path: 'bookmarks',
+                  element: <FeaturePage page="bookmarks" />,
+                },
+                {
+                  path: 'parameters',
+                  element: <FeaturePage page="parameters" />,
+                },
+                {
+                  path: 'mcp-settings',
+                  element: <FeaturePage page="mcpSettings" />,
+                },
+                {
                   path: 'search',
                   element: <Search />,
                 },
                 {
                   path: 'prompts',
-                  element: <Navigate to="/c/new" replace={true} />,
+                  element: <FeaturePage page="prompts" />,
                 },
                 {
                   /** Prompts are created from a dialog, so there is no "new" page to land on */
@@ -179,7 +199,7 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'skills',
-                  lazy: loadSkillsView,
+                  element: <FeaturePage page="skills" />,
                 },
                 {
                   path: 'insights',

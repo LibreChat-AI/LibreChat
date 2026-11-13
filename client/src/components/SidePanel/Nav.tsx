@@ -1,11 +1,17 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { NavLink } from '~/common';
-import { FeatureVisibility } from '~/components/FeaturePresentation/Context';
+import {
+  FeatureSlot,
+  FeatureVisibility,
+  useFeaturePresentation,
+} from '~/components/FeaturePresentation/Context';
+import { getPageForNavId } from '~/components/FeaturePresentation/registry';
 import { useActivePanel, resolveActivePanel } from '~/Providers';
 import { cn } from '~/utils';
 
 export default function Nav({ links, visible = true }: { links: NavLink[]; visible?: boolean }) {
   const { active } = useActivePanel();
+  const presentation = useFeaturePresentation();
   const effectiveActive = resolveActivePanel(active, links);
   return (
     <div
@@ -17,9 +23,17 @@ export default function Nav({ links, visible = true }: { links: NavLink[]; visib
       )}
     >
       <FeatureVisibility.Provider value={visible}>
-        {links.map((link) =>
-          link.id === effectiveActive && link.Component ? <link.Component key={link.id} /> : null,
-        )}
+        {links.map((link) => {
+          if (link.id !== effectiveActive || !link.Component) {
+            return null;
+          }
+          const page = getPageForNavId(link.id);
+          return page && presentation?.canOpenPage(page) ? (
+            <FeatureSlot key={link.id} page={page} view="panel" visible={visible} />
+          ) : (
+            <link.Component key={link.id} />
+          );
+        })}
       </FeatureVisibility.Provider>
     </div>
   );

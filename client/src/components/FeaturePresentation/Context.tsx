@@ -11,6 +11,8 @@ type Feature = ComponentType<{ visible: boolean }>;
 type Slot = { node: HTMLDivElement; page: NavigationPage; view: NavigationView; visible: boolean };
 type Presentation = {
   ready: boolean;
+  links: NavLink[];
+  openPanel: (navId: string) => void;
   page?: NavigationPage;
   view: NavigationView;
   expand: (page: NavigationPage) => void;
@@ -69,7 +71,7 @@ export function FeaturePresentationProvider({
   const routePage = getPageForPath(location.pathname);
   const page = routePage && features[routePage] ? routePage : undefined;
   const canUse = useCallback(
-    (target: NavigationPage) => links.some((link) => link.id === pageRegistry[target].navId),
+    (target: NavigationPage) => links.some((link) => link.id === pageRegistry[target].navId && !link.disabled),
     [links],
   );
   const canOpenPage = useCallback(
@@ -102,6 +104,18 @@ export function FeaturePresentationProvider({
     },
     [canUse, onPanelOpen, navigate, returnUrl],
   );
+  const openPanel = useCallback(
+    (navId: string) => {
+      if (!links.some((link) => link.id === navId && !link.disabled)) {
+        return;
+      }
+      onPanelOpen(navId);
+      if (page) {
+        navigate(getChatReturnUrl(returnUrl));
+      }
+    },
+    [links, onPanelOpen, page, navigate, returnUrl],
+  );
   const open = useCallback(
     (target: NavigationPage) => {
       if (!canUse(target)) {
@@ -111,12 +125,9 @@ export function FeaturePresentationProvider({
         expand(target);
         return;
       }
-      onPanelOpen(pageRegistry[target].navId);
-      if (page) {
-        navigate(getChatReturnUrl(returnUrl));
-      }
+      openPanel(pageRegistry[target].navId);
     },
-    [canUse, canOpenPage, navigation, expand, onPanelOpen, page, navigate, returnUrl],
+    [canUse, canOpenPage, navigation, expand, openPanel],
   );
   const register = useCallback(
     (slot: Slot) => {
@@ -131,6 +142,8 @@ export function FeaturePresentationProvider({
   const value = useMemo<Presentation>(
     () => ({
       ready,
+      links,
+      openPanel,
       page,
       view: page ? 'page' : 'panel',
       expand,
@@ -139,7 +152,7 @@ export function FeaturePresentationProvider({
       canOpenPage,
       register,
     }),
-    [ready, page, expand, minimize, open, canOpenPage, register],
+    [ready, links, openPanel, page, expand, minimize, open, canOpenPage, register],
   );
 
   return (

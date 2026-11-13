@@ -17,8 +17,7 @@ import store from '~/store';
 
 const defaultInterface = { ...getConfigDefaults().interface, navigation: resolveNavigation() };
 
-export default function useUnifiedSidebarLinks() {
-  const presentation = useFeaturePresentation();
+export function useSidebarDestinations() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuthContext();
@@ -67,19 +66,8 @@ export default function useUnifiedSidebarLinks() {
     includeHidePanel: false,
   });
   const sideNavLinks = useMemo(
-    () =>
-      getRoutePanelLinks(location.pathname, allSideNavLinks).map((link) => {
-        const page = getPageForNavId(link.id);
-        if (
-          !page ||
-          !presentation?.canOpenPage(page) ||
-          getPageSettings(startupConfig?.interface?.navigation, page).defaultView !== 'page'
-        ) {
-          return link;
-        }
-        return { ...link, onClick: () => presentation.open(page) };
-      }),
-    [location.pathname, allSideNavLinks, presentation, startupConfig?.interface?.navigation],
+    () => getRoutePanelLinks(location.pathname, allSideNavLinks),
+    [location.pathname, allSideNavLinks],
   );
 
   const links = useMemo(() => {
@@ -126,4 +114,29 @@ export default function useUnifiedSidebarLinks() {
   ]);
 
   return links;
+}
+
+export default function useUnifiedSidebarLinks() {
+  const presentation = useFeaturePresentation();
+  const { data: startupConfig } = useGetStartupConfig();
+  return useMemo(
+    () =>
+      (presentation?.links ?? []).map((link) => {
+        const page = getPageForNavId(link.id);
+        if (presentation?.page && link.id === 'conversations') {
+          return { ...link, onClick: () => presentation.openPanel(link.id) };
+        }
+        if (
+          !page ||
+          !presentation ||
+          (!presentation.page &&
+            (!presentation.canOpenPage(page) ||
+              getPageSettings(startupConfig?.interface?.navigation, page).defaultView !== 'page'))
+        ) {
+          return link;
+        }
+        return { ...link, onClick: () => presentation.open(page) };
+      }),
+    [presentation, startupConfig?.interface?.navigation],
+  );
 }

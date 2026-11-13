@@ -1,8 +1,13 @@
 import React from 'react';
+import { Provider } from 'jotai';
+import { Bot } from 'lucide-react';
 import { RecoilRoot } from 'recoil';
-import { render } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { render, screen } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
+import { resolveNavigation } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
+import { FeaturePresentationProvider, FeatureSlot } from '~/components/FeaturePresentation/Context';
 import store from '~/store';
 
 const mockObserveToolAuthorization = jest.fn();
@@ -27,7 +32,7 @@ jest.mock('~/Providers/AgentPanelContext', () => ({
 jest.mock('./AgentPanel', () => () => null);
 jest.mock('./Version/VersionPanel', () => () => null);
 
-import AgentPanelSwitch from './AgentPanelSwitch';
+import AgentPanelSwitch, { AgentEditor } from './AgentPanelSwitch';
 
 function renderWithConversation(conversation?: TConversation) {
   return render(
@@ -68,4 +73,25 @@ describe('AgentPanelSwitch authorization observers', () => {
     } as TConversation);
     expect(mockObserveToolAuthorization).toHaveBeenLastCalledWith(false);
   });
+});
+
+it('enables visible standalone builder observers without a hydrated conversation', async () => {
+  render(
+    <Provider>
+      <RecoilRoot>
+        <MemoryRouter initialEntries={['/agent-builder']}>
+          <FeaturePresentationProvider
+            features={{ agentBuilder: AgentEditor }}
+            links={[{ id: 'agents', icon: Bot, title: 'com_sidepanel_agent_builder' }]}
+            navigation={resolveNavigation({ pages: { agentBuilder: { enabled: true } } })}
+            onPanelOpen={jest.fn()}
+          >
+            <FeatureSlot page="agentBuilder" view="page" visible />
+          </FeaturePresentationProvider>
+        </MemoryRouter>
+      </RecoilRoot>
+    </Provider>,
+  );
+  await screen.findByRole('button', { name: 'Minimize' });
+  expect(mockObserveToolAuthorization).toHaveBeenLastCalledWith(true);
 });

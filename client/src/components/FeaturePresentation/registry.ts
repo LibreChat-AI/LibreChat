@@ -27,12 +27,11 @@ export function getPageSettings(
   navigation: NavigationConfig | undefined,
   page: NavigationPage,
 ): { enabled: boolean; defaultView: 'page' | 'panel' } {
-  return (
-    navigation?.pages?.[page] ?? {
-      enabled: page === 'skills' || page === 'prompts',
-      defaultView: 'panel',
-    }
-  );
+  const settings = navigation?.pages?.[page];
+  return {
+    enabled: settings?.enabled ?? (page === 'skills' || page === 'prompts'),
+    defaultView: settings?.defaultView ?? 'panel',
+  };
 }
 
 /** Only internal chat destinations may be restored, never an external history entry. */

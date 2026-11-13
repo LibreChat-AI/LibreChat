@@ -44,23 +44,43 @@ function Prompts({ visible }: { visible: boolean }) {
 }
 
 function Schedules() {
-  return <Session page="schedules"><SchedulePanel /></Session>;
+  return (
+    <Session page="schedules">
+      <SchedulePanel />
+    </Session>
+  );
 }
 
 function Memories() {
-  return <Session page="memories"><MemoryPanel /></Session>;
+  return (
+    <Session page="memories">
+      <MemoryPanel />
+    </Session>
+  );
 }
 
 function Bookmarks() {
-  return <Session page="bookmarks"><BookmarkPanel /></Session>;
+  return (
+    <Session page="bookmarks">
+      <BookmarkPanel />
+    </Session>
+  );
 }
 
 function ModelParameters() {
-  return <Session page="parameters"><Parameters /></Session>;
+  return (
+    <Session page="parameters">
+      <Parameters />
+    </Session>
+  );
 }
 
 function MCPSettings({ visible }: { visible: boolean }) {
-  return <Session page="mcpSettings"><MCPBuilderPanel visible={visible} /></Session>;
+  return (
+    <Session page="mcpSettings">
+      <MCPBuilderPanel visible={visible} />
+    </Session>
+  );
 }
 
 export const featureContent: Record<

@@ -24,6 +24,7 @@ export default function AgentPanelSwitch() {
 }
 
 export function AgentEditor({ visible }: { visible: boolean }) {
+  const presentation = useFeaturePresentation();
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const agentId = conversation?.agent_id ?? null;
   return (
@@ -31,7 +32,10 @@ export function AgentEditor({ visible }: { visible: boolean }) {
       visible={visible}
       conversationReady={conversation != null}
       initialAgentId={agentId}
-      observeToolAuthorization={conversation != null && !isEphemeralAgent(agentId)}
+      observeToolAuthorization={
+        presentation?.page === 'agentBuilder' ||
+        (conversation != null && !isEphemeralAgent(agentId))
+      }
     >
       <PresentationActions page="agentBuilder" />
       <AgentPanelSwitchWithContext />

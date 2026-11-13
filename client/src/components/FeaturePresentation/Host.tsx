@@ -6,11 +6,12 @@ import type { ReactNode } from 'react';
 import type { ChatFormValues } from '~/common';
 import { AgentEditor } from '~/components/SidePanel/Agents/AgentPanelSwitch';
 import { useGetStartupConfig, useGetEndpointsQuery } from '~/data-provider';
-import useUnifiedSidebarLinks from '~/hooks/Nav/useUnifiedSidebarLinks';
+import { useSidebarDestinations } from '~/hooks/Nav/useUnifiedSidebarLinks';
 import { activePanelAtom } from '~/Providers/ActivePanelContext';
 import { ChatFormProvider } from '~/Providers/ChatFormContext';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { FeaturePresentationProvider } from './Context';
+import { featureContent } from './Content';
 import { useAuthContext } from '~/hooks';
 
 function AgentSession({ visible }: { visible: boolean }) {
@@ -24,10 +25,10 @@ function AgentSession({ visible }: { visible: boolean }) {
   );
 }
 
-const features = { agentBuilder: AgentSession };
+const features = { ...featureContent, agentBuilder: AgentSession };
 
 export default function PresentationHost({ children }: { children: ReactNode }) {
-  const links = useUnifiedSidebarLinks();
+  const links = useSidebarDestinations();
   const { data: config, isSuccess: configReady } = useGetStartupConfig();
   const { isSuccess: endpointsReady } = useGetEndpointsQuery();
   const { user, roles } = useAuthContext();
