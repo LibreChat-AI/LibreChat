@@ -1,6 +1,7 @@
 import type { RunLLMConfig } from '~/types';
 import {
   mergeHeaders,
+  mergeGoogleHeaders,
   mediaTypeEssence,
   resolveModelHeaders,
   resolveConfigHeaders,
@@ -39,6 +40,26 @@ describe('mediaTypeEssence', () => {
 });
 
 describe('mergeHeaders', () => {
+  it.each([false, true])(
+    'resolves configured Google auth templates while preserving managed credentials: %s',
+    (hasManagedAuth) => {
+      const credential = 'Bearer {{LIBRECHAT_USER_TENANT_ID}}/{{LIBRECHAT_AGENT_ID}}';
+      const configured = { authorization: credential, 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' };
+      const customHeaders = mergeGoogleHeaders(
+        configured,
+        hasManagedAuth ? { Authorization: credential } : undefined,
+      );
+      const llmConfig = { customHeaders };
+      resolveConfigHeaders({ llmConfig, tenantId: 'tenant-one', agent: { id: 'agent_root' } });
+      expect(llmConfig.customHeaders?.['X-Agent-Id']).toBe('agent_root');
+      if (hasManagedAuth) {
+        expect(llmConfig.customHeaders?.Authorization).toBe(credential);
+        expect(llmConfig.customHeaders?.authorization).toBeUndefined();
+      } else {
+        expect(llmConfig.customHeaders?.authorization).toBe('Bearer tenant-one/agent_root');
+      }
+    },
+  );
   it('returns undefined when neither side has headers', () => {
     expect(mergeHeaders(undefined, undefined)).toBeUndefined();
   });

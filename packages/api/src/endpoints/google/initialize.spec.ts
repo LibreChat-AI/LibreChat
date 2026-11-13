@@ -106,6 +106,38 @@ describe('initializeGoogle', () => {
     },
   );
 
+  it.each([
+    ['google', 'Authorization'],
+    ['google', 'authorization'],
+    ['all', 'Authorization'],
+    ['all', 'authorization'],
+  ])('resolves operator %s %s without provider-managed auth', async (endpoint, name) => {
+    process.env.GOOGLE_KEY = 'test-key';
+    mockIsEnabled.mockImplementation((value) => value === 'true');
+    mockGetGoogleConfig.mockImplementationOnce((credentials, options) =>
+      jest.requireActual('./llm').getGoogleConfig(credentials, options),
+    );
+    const req = createReq();
+    if (!req.config) throw new Error('Expected initialized test config');
+    const headers = { [name]: 'Bearer {{LIBRECHAT_USER_TENANT_ID}}/{{LIBRECHAT_AGENT_ID}}' };
+    req.config.endpoints = endpoint === 'google' ? { google: { headers } } : { all: { headers } };
+    const result = await initializeGoogle({
+      req,
+      endpoint: EModelEndpoint.google,
+      model_parameters: { model: 'gemini-2.5-flash' },
+      db: createDb(),
+    });
+    const runConfig = { ...result.llmConfig };
+    resolveConfigHeaders({
+      llmConfig: runConfig,
+      tenantId: 'tenant-one',
+      agent: { id: 'agent_root' },
+    });
+    expect((runConfig as { customHeaders?: Record<string, string> }).customHeaders?.[name]).toBe(
+      'Bearer tenant-one/agent_root',
+    );
+  });
+
   it('forces Vertex AI ADC config and ignores GOOGLE_KEY for vertexai endpoint', async () => {
     process.env.GOOGLE_KEY = 'test-api-key';
     process.env.VERTEX_PROJECT_ID = 'fiery-catwalk-385918';

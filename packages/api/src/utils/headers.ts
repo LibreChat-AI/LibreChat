@@ -145,6 +145,22 @@ export function resolveModelHeaders({
  * nothing carries across requests.
  */
 const resolvedHeaderMaps = new WeakSet<object>();
+const googleManagedHeaders = new WeakMap<object, ReadonlySet<string>>();
+
+/** Retain header provenance while layering provider credentials over operator templates. */
+export function mergeGoogleHeaders(
+  configured?: Record<string, string>,
+  managed?: Record<string, string>,
+): Record<string, string> | undefined {
+  const merged = mergeHeaders(configured, managed);
+  if (merged) {
+    googleManagedHeaders.set(
+      merged,
+      new Set(Object.keys(managed ?? {}).map((name) => name.toLowerCase())),
+    );
+  }
+  return merged;
+}
 
 /**
  * Resolves placeholder templates in the outbound request headers of a built LLM
@@ -214,9 +230,10 @@ export function resolveConfigHeaders({
     const headers = customHeadersContainer.customHeaders;
     if (!resolvedHeaderMaps.has(headers)) {
       const resolved = resolveTenantPlaceholders(headers, tenantId);
+      const managed = googleManagedHeaders.get(headers);
       for (const [name, value] of Object.entries(headers)) {
         resolved[name] =
-          name.toLowerCase() === 'authorization'
+          (managed?.has(name.toLowerCase()) ?? name.toLowerCase() === 'authorization')
             ? value
             : processAgentPlaceholders(resolved[name], agent ?? {});
       }
