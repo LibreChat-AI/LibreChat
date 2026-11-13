@@ -2,13 +2,16 @@ import { useMemo } from 'react';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import supersub from 'remark-supersub';
-import rehypeKatex from 'rehype-katex';
 import ReactMarkdown from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
 import { replaceSpecialVars } from 'librechat-data-provider';
 import { TextareaAutosize, InputCombobox, Button } from '@librechat/client';
 import { useForm, useFieldArray, Controller, useWatch } from 'react-hook-form';
 import type { TPromptGroup } from 'librechat-data-provider';
+import {
+  PROMPT_HIGHLIGHT,
+  toRehypePlugins,
+  useRehypeModules,
+} from '~/components/Chat/Messages/Content/rehype';
 import { codeNoExecution } from '~/components/Chat/Messages/Content/MarkdownComponents';
 import { cn, wrapVariable, defaultTextProps, extractVariableInfo } from '~/utils';
 import { useAuthContext, useLocalize, useSubmitMessage } from '~/hooks';
@@ -107,6 +110,8 @@ export default function VariableForm({
     name: 'fields',
   });
 
+  const rehypeModules = useRehypeModules(mainText);
+
   if (!uniqueVariables.length) {
     return null;
   }
@@ -152,12 +157,8 @@ export default function VariableForm({
           <ReactMarkdown
             /** @ts-ignore */
             remarkPlugins={[supersub, remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
-            rehypePlugins={[
-              /** @ts-ignore */
-              [rehypeKatex],
-              /** @ts-ignore */
-              [rehypeHighlight, { ignoreMissing: true }],
-            ]}
+            /** @ts-ignore */
+            rehypePlugins={toRehypePlugins(rehypeModules, PROMPT_HIGHLIGHT)}
             /** @ts-ignore */
             components={{ code: codeNoExecution, p: PromptVariableGfm }}
             className="markdown prose light my-1 max-h-[50vh] max-w-full break-words"
