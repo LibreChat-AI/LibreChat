@@ -1,9 +1,10 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { NavLink } from '~/common';
+import { FeatureVisibility } from '~/components/FeaturePresentation/Context';
 import { useActivePanel, resolveActivePanel } from '~/Providers';
 import { cn } from '~/utils';
 
-export default function Nav({ links }: { links: NavLink[] }) {
+export default function Nav({ links, visible = true }: { links: NavLink[]; visible?: boolean }) {
   const { active } = useActivePanel();
   const effectiveActive = resolveActivePanel(active, links);
   return (
@@ -15,9 +16,11 @@ export default function Nav({ links }: { links: NavLink[] }) {
         effectiveActive === EModelEndpoint.agents && 'scrollbar-gutter-stable',
       )}
     >
-      {links.map((link) =>
-        link.id === effectiveActive && link.Component ? <link.Component key={link.id} /> : null,
-      )}
+      <FeatureVisibility.Provider value={visible}>
+        {links.map((link) =>
+          link.id === effectiveActive && link.Component ? <link.Component key={link.id} /> : null,
+        )}
+      </FeatureVisibility.Provider>
     </div>
   );
 }

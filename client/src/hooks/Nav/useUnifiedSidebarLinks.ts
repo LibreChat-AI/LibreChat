@@ -3,19 +3,22 @@ import { useRecoilValue } from 'recoil';
 import { BarChart3, MessagesSquare } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useUserKeyQuery } from 'librechat-data-provider/react-query';
-import { getConfigDefaults, getEndpointField } from 'librechat-data-provider';
+import { getConfigDefaults, getEndpointField, resolveNavigation } from 'librechat-data-provider';
 import type { TEndpointsConfig } from 'librechat-data-provider';
 import type { NavLink } from '~/common';
 import { useGetEndpointsQuery, useGetStartupConfig, useInsightsAccessQuery } from '~/data-provider';
+import { getPageForNavId, getPageSettings } from '~/components/FeaturePresentation/registry';
 import ConversationsSection from '~/components/UnifiedSidebar/ConversationsSection';
+import { useFeaturePresentation } from '~/components/FeaturePresentation/Context';
 import useSideNavLinks from '~/hooks/Nav/useSideNavLinks';
 import { getRoutePanelLinks } from './routePanels';
 import { useAuthContext } from '~/hooks';
 import store from '~/store';
 
-const defaultInterface = getConfigDefaults().interface;
+const defaultInterface = { ...getConfigDefaults().interface, navigation: resolveNavigation() };
 
 export default function useUnifiedSidebarLinks() {
+  const presentation = useFeaturePresentation();
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuthContext();
@@ -64,8 +67,19 @@ export default function useUnifiedSidebarLinks() {
     includeHidePanel: false,
   });
   const sideNavLinks = useMemo(
-    () => getRoutePanelLinks(location.pathname, allSideNavLinks),
-    [location.pathname, allSideNavLinks],
+    () =>
+      getRoutePanelLinks(location.pathname, allSideNavLinks).map((link) => {
+        const page = getPageForNavId(link.id);
+        if (
+          !page ||
+          !presentation?.canOpenPage(page) ||
+          getPageSettings(startupConfig?.interface?.navigation, page).defaultView !== 'page'
+        ) {
+          return link;
+        }
+        return { ...link, onClick: () => presentation.open(page) };
+      }),
+    [location.pathname, allSideNavLinks, presentation, startupConfig?.interface?.navigation],
   );
 
   const links = useMemo(() => {

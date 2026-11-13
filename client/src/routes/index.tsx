@@ -8,6 +8,7 @@ import {
   TwoFactorSetupScreen,
   RequestPasswordReset,
 } from '~/components/Auth';
+import FeaturePage from '~/components/FeaturePresentation/Page';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import ResponseReviewRoute from './ResponseReviewRoute';
@@ -154,6 +155,10 @@ export const router = createBrowserRouter(
                 {
                   path: 'c/:conversationId?',
                   element: <ChatRoute />,
+                },
+                {
+                  path: 'agent-builder',
+                  element: <FeaturePage page="agentBuilder" />,
                 },
                 {
                   path: 'search',

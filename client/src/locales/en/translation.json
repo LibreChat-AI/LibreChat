@@ -1,4 +1,5 @@
 {
+  "com_ui_minimize": "Minimize",
   "com_ui_agent_actions": "Agent actions",
   "com_ui_chat_target_failed": "Unable to load this chat’s model or agent.",
   "com_ui_slack_workspaces_title": "Slack",

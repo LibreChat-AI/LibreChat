@@ -275,7 +275,7 @@ function UnifiedSidebar({
             <AgentMarketplaceButton layout="row" onNavigate={handleCollapse} />
           </div>
           <nav id="chat-history-nav" className="bg-surface-sidebar min-h-0 flex-1 overflow-hidden">
-            <SidePanelNav links={links} />
+            <SidePanelNav links={links} visible={panelExpanded} />
           </nav>
           <MobileShortcutTargets
             links={links}

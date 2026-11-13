@@ -1,8 +1,8 @@
-import React, { createContext, useContext, useState, useMemo, useEffect } from 'react';
-import { useRecoilValue } from 'recoil';
-import { useLocation } from 'react-router-dom';
+import React, { createContext, useContext, useMemo, useEffect, useRef, useCallback } from 'react';
+import { atom, useAtom } from 'jotai';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { MCP, Action, TPlugin } from 'librechat-data-provider';
+import type { SetStateAction } from 'react';
 import type { AgentPanelContextType, MCPServerInfo } from '~/common';
 import {
   useAvailableToolsQuery,
@@ -20,8 +20,7 @@ import {
 import { isMCPServerReadyForAgent } from '~/components/MCP/mcpServerUtils';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
 import useRevealChat from '~/hooks/Nav/useRevealChat';
-import { Panel } from '~/common';
-import store from '~/store';
+import { Panel, isEphemeralAgent } from '~/common';
 
 const AgentPanelContext = createContext<AgentPanelContextType | undefined>(undefined);
 
@@ -37,30 +36,55 @@ export function useAgentPanelContext() {
 export function AgentPanelProvider({
   children,
   observeToolAuthorization = true,
+  visible = false,
+  initialAgentId,
+  conversationReady = false,
 }: {
   children: React.ReactNode;
   observeToolAuthorization?: boolean;
+  visible?: boolean;
+  initialAgentId?: string | null;
+  conversationReady?: boolean;
 }) {
   const localize = useLocalize();
-  const location = useLocation();
   const revealChat = useRevealChat();
-  /** The panel stays mounted while the sidebar is hidden (collapsed, mobile
-   * drawer, or the insights route collapsing it), so only a visible form
-   * releases the MCP catalogs ahead of the background warmup schedule */
-  const sidebarExpanded = useRecoilValue(store.sidebarExpanded);
-  const panelVisible = sidebarExpanded && !location.pathname.startsWith('/insights');
   useEffect(() => {
-    if (panelVisible) {
+    if (visible) {
       activateCatalog('mcpServers');
       activateCatalog('mcpTools');
     }
-  }, [panelVisible]);
-  const observeVisibleToolAuthorization = panelVisible && observeToolAuthorization;
-  const [mcp, setMcp] = useState<MCP | undefined>(undefined);
-  const [mcps, setMcps] = useState<MCP[] | undefined>(undefined);
-  const [action, setAction] = useState<Action | undefined>(undefined);
-  const [activePanel, setActivePanel] = useState<Panel>(Panel.builder);
-  const [agent_id, setCurrentAgentId] = useState<string | undefined>(undefined);
+  }, [visible]);
+  const observeVisibleToolAuthorization = visible && observeToolAuthorization;
+  const session = useMemo(
+    () => ({
+      mcp: atom<MCP | undefined>(undefined),
+      mcps: atom<MCP[] | undefined>(undefined),
+      action: atom<Action | undefined>(undefined),
+      activePanel: atom<Panel>(Panel.builder),
+      agentId: atom<string | undefined>(undefined),
+    }),
+    [],
+  );
+  const [mcp, setMcp] = useAtom(session.mcp);
+  const [mcps, setMcps] = useAtom(session.mcps);
+  const [action, setAction] = useAtom(session.action);
+  const [activePanel, setActivePanel] = useAtom(session.activePanel);
+  const [agent_id, setAgentId] = useAtom(session.agentId);
+  const explicitlySelected = useRef(false);
+  const setCurrentAgentId = useCallback(
+    (value: SetStateAction<string | undefined>) => {
+      explicitlySelected.current = true;
+      setAgentId(value);
+    },
+    [setAgentId],
+  );
+  useEffect(() => {
+    if (!explicitlySelected.current && conversationReady) {
+      if (!isEphemeralAgent(initialAgentId)) {
+        setAgentId(initialAgentId ?? '');
+      }
+    }
+  }, [conversationReady, initialAgentId, setAgentId]);
   const { availableMCPServers, isLoading, availableMCPServersMap, connectionStatus } =
     useMCPServerManager({ observeToolAuthorization: observeVisibleToolAuthorization });
   const { data: startupConfig } = useGetStartupConfig();
