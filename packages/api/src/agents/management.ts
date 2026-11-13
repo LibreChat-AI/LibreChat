@@ -277,6 +277,7 @@ export function projectAgentManagementResponse(
   return agentManagementResponseSchema.parse({
     id: source.id,
     provider: source.provider,
+    sdk_runtime: source.sdk_runtime,
     model: source.model,
     version: getVersion(source),
     createdAt: toTimestamp(source.createdAt),

@@ -1883,6 +1883,18 @@ export const agentsEndpointSchema = baseEndpointSchema
   .merge(
     z.object({
       /* agents specific */
+      /** Trusted server-side SDK modules. Unconfigured runtimes cannot execute. */
+      sdkRuntimes: z
+        .record(
+          z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+          z
+            .object({
+              module: z.string().min(1),
+              roles: z.array(z.string().min(1)).min(1).default(['ADMIN']),
+            })
+            .strict(),
+        )
+        .optional(),
       hostFileEdits: hostFileEditLimitsSchema.optional(),
       /** Maximum provider error characters retained in unprotected terminal failures. */
       maxProviderErrorChars: z

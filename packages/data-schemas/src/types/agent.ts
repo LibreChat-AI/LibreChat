@@ -8,6 +8,7 @@ import type {
   AgentSubagentsConfig,
   AgentGitIdentity,
   AgentInstructionsPrompt,
+  SdkRuntimeBinding,
 } from 'librechat-data-provider';
 
 export interface ISupportContact {
@@ -25,6 +26,7 @@ export interface IAgent extends Omit<Document, 'model'> {
     source: string;
   };
   provider: string;
+  sdk_runtime?: SdkRuntimeBinding | null;
   model: string;
   model_parameters?: Record<string, unknown>;
   artifacts?: string;

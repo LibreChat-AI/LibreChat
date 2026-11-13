@@ -69,6 +69,7 @@ import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
 import type { ProvisionState } from '~/agents/resources';
 import type { RunFileSession } from './files/session';
+import type { SdkAgentRuntimeLoader } from './sdk';
 import type { RunFadingTiers } from './fading';
 import type * as t from '~/types';
 import {
@@ -122,6 +123,7 @@ import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPrompt
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
 import { createAgentToolApprovalSession, bindRunToolApprovalSession } from './hitl/modes';
 import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
+import { createSdkAgentRun, resolveSdkAgentBinding, SdkAgentRuntimeError } from './sdk';
 import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
@@ -2316,6 +2318,7 @@ export async function createRun({
   toolApprovalAllows,
   toolInputValidationErrors,
   sessionStartSource,
+  loadSdkRuntime,
   streaming = true,
   streamUsage = true,
 }: {
@@ -2470,11 +2473,13 @@ export async function createRun({
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
   toolInputValidationErrors?: Map<string, ToolInputValidationError>;
+  loadSdkRuntime?: SdkAgentRuntimeLoader;
 } & Pick<
   RunConfig,
   'tokenCounter' | 'customHandlers' | 'indexTokenCountMap' | 'initialSessions'
 >): Promise<Run<IState>> {
   const resolvedRunId = runId ?? randomUUID();
+  const registration = resolveSdkAgentBinding(agents, appConfig?.endpoints?.agents, user?.role);
   const runFilesActive =
     runFiles?.activate(
       resolvedRunId,
@@ -2548,6 +2553,9 @@ export async function createRun({
 
   const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
   const buildAgentInput = (agent: RunAgent, opts: { isSubagent?: boolean } = {}): AgentInputs => {
+    if (agent.id !== agents[0]?.id && agent.sdk_runtime != null) {
+      throw new SdkAgentRuntimeError('sdk_runtime_composition_unsupported');
+    }
     if (!preparedCodeFileAgents.has(agent)) {
       if (agent.provisionState) agent.provisionState.codeEnvDestinations = undefined;
       codeFileAgents.set(agent.id, agent);
@@ -3309,7 +3317,20 @@ export async function createRun({
     // older versions ignore the field.
     ...(streamLimits && { streamLimits }),
   };
-  const run = await Run.create(runConfig);
+  const run = registration
+    ? await createSdkAgentRun({
+        registration,
+        config: runConfig,
+        loadModule: loadSdkRuntime,
+        signal,
+        identity: {
+          agentId: agents[0].id,
+          conversationId: conversationId ?? requestBody?.conversationId ?? undefined,
+          userId: user?.id ?? '',
+          tenantId: tenantId ?? user?.tenantId,
+        },
+      })
+    : await Run.create(runConfig);
   if (approvalWiring != null) bindRunToolApprovalSession(run, agentApprovalSession);
   runMCPToolAliases.set(run, mcpToolAliases);
 
