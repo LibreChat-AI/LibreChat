@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { TMessage } from 'librechat-data-provider';
 import type { Page, Route } from '@playwright/test';
 import type { AgentDetail } from './agents.helpers';
@@ -14,6 +13,7 @@ import {
   requestJson,
   sendMessage,
 } from './helpers';
+import { expect, test, unroute } from './fixtures';
 
 /** Last chunk streamed by the fake model's slow replies (160 chunks, 0-indexed). */
 const SLOW_REPLY_LAST_CHUNK = 'chunk-159';
@@ -112,9 +112,9 @@ function holdBackSuccessor(page: Page, successorText: string) {
     },
     release: async () => {
       holding = false;
-      await page.unroute(RECEIPTS_ROUTE, receipts);
-      await page.unroute(STATUS_ROUTE, status);
-      await page.unroute(MESSAGES_ROUTE, messages);
+      await unroute(page, RECEIPTS_ROUTE, receipts);
+      await unroute(page, STATUS_ROUTE, status);
+      await unroute(page, MESSAGES_ROUTE, messages);
     },
   };
 }
