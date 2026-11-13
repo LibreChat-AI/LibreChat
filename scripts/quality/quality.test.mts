@@ -14,13 +14,15 @@ import {
 } from 'node:fs';
 
 import {
+  allMutationTargets,
   cognitiveFunctions,
   mutationTarget,
-  selectedFunctions,
-  riskReport,
   riskMarkdown,
+  riskReport,
+  selectedFunctions,
+  suppressionAdvisory,
 } from './risk.mts';
-import { changedRanges, isSource, overlaps, workspaceFor, WORKSPACES } from './changes.mts';
+import { changedRanges, git, isSource, overlaps, workspaceFor, WORKSPACES } from './changes.mts';
 import { measureFunctions } from '../crap.mts';
 import { coverageGroups, runCoverage } from './jest.mts';
 
@@ -179,7 +181,7 @@ function factory() {
   const source = before
     .replace('() => false', '() => true')
     .replace('enabled: false', 'enabled: true');
-  const target = mutationTarget('fixture.ts', source, [{ start: 4, count: 2 }], before);
+  const target = mutationTarget('fixture.ts', source, [{ start: 4, count: 2 }]);
   assert.equal(target.functions.length, 2);
   const ranges = target.mutate.map((pattern) => {
     const match = /:(\d+):(\d+)-(\d+):(\d+)$/u.exec(pattern);
@@ -347,6 +349,141 @@ test('risk report keeps only changed functions, joins real coverage, and preserv
   assert.equal(report.functions[1].crap, null);
   assert.match(riskMarkdown(report), /N\/A/);
   assert.equal(riskReport(coverage, [{ file, ranges: [] }]).functions.length, 0);
+});
+
+test('risk report hides coverage and CRAP for an incomplete file and fences multi-line gaps', (t) => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'quality-')));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'source.ts');
+  const source = 'function edited(a) {\n  return call(\n    a,\n  );\n}\n';
+  writeFileSync(file, source);
+  const entry = {
+    path: file,
+    statementMap: { '0': { start: { line: 2, column: 2 }, end: { line: 4, column: 4 } } },
+    s: { '0': 0 },
+  };
+  const coverage = join(directory, 'coverage.json');
+  writeFileSync(coverage, JSON.stringify({ [file]: entry }));
+  const files = [{ file, ranges: [{ start: 1, count: 5 }] }];
+  const result = { file, reasons: [], sources: ['unit'], entry };
+
+  const incomplete = riskReport(coverage, files, {
+    coverageResults: [{ ...result, state: 'incomplete', reasons: ['spec.js failed in unit'] }],
+  });
+  assert.equal(incomplete.functions[0].statementCoverage, null);
+  assert.equal(incomplete.functions[0].crap, null);
+  assert.match(riskMarkdown(incomplete), /\| 1 \| 0 \| incomplete \| N\/A \|/u);
+
+  const measured = riskReport(coverage, files, {
+    coverageResults: [{ ...result, state: 'measured' }],
+  });
+  assert.equal(measured.functions[0].statementCoverage, 0);
+  assert.match(
+    riskMarkdown(measured),
+    /L2-4:\n\n```ts\n {2}return call\(\n {4}a,\n {2}\);\n```\n/u,
+  );
+});
+
+test('risk markdown lists files that share an incomplete reason once, after measured files', (t) => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'quality-')));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const coverage = join(directory, 'coverage.json');
+  writeFileSync(coverage, JSON.stringify({}));
+  const names = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((name) => join(directory, `${name}.ts`));
+  for (const file of names) writeFileSync(file, 'export const value = 1;\n');
+  const files = names.map((file) => ({ file, ranges: [{ start: 1, count: 1 }] }));
+  const shared = { reasons: ['spec.js failed in alias'], sources: ['unit', 'alias'] };
+  const report = riskReport(coverage, files, {
+    coverageResults: [
+      ...names.slice(0, 6).map((file) => ({ file, state: 'incomplete' as const, ...shared })),
+      { file: names[6], state: 'unavailable', reasons: ['no run'], sources: [] },
+    ],
+  });
+  const markdown = riskMarkdown(report);
+  const heading = '### Coverage incomplete: spec.js failed in alias';
+  assert.equal(markdown.split(heading).length, 2);
+  assert.ok(
+    markdown.includes(
+      `${heading}\n\nEvidence: unit + alias.\n\n<details>\n<summary>6 files</summary>\n\n- ${names[0]}\n`,
+    ),
+  );
+  assert.ok(
+    markdown.includes(
+      `### Coverage unavailable: no run\n\nEvidence: none.\n\n1 file:\n\n- ${names[6]}\n`,
+    ),
+  );
+  assert.equal(markdown.includes(`### ${names[0]}`), false);
+});
+
+test('a comment-only change still surfaces its unreasoned suppression in the advisory list', (t) => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'quality-suppression-')));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'source.ts');
+  writeFileSync(
+    file,
+    `// Stryker disable next-line all\nfunction f(a: number) {\n  return a > 1;\n}\n`,
+  );
+  const ranges = [{ start: 1, count: 1 }];
+  const rawTargets = allMutationTargets([{ file, ranges }]);
+  // The comment line selects no mutant, so the filtered selection drops the file entirely.
+  assert.deepEqual(
+    rawTargets.filter(({ mutate }) => mutate.length),
+    [],
+  );
+  assert.deepEqual(suppressionAdvisory(rawTargets), [
+    { file, line: 1, text: 'all', problem: 'all' },
+  ]);
+});
+
+test('a renamed file with one edited function lists only that function', (t) => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'quality-rename-risk-')));
+  const originalCwd = process.cwd();
+  t.after(() => {
+    process.chdir(originalCwd);
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const commit = (message: string) => {
+    git(['add', '.'], directory);
+    git(
+      [
+        '-c',
+        'user.name=Quality Test',
+        '-c',
+        'user.email=quality@example.invalid',
+        'commit',
+        '--no-gpg-sign',
+        '-qm',
+        message,
+      ],
+      directory,
+    );
+  };
+  writeFileSync(
+    join(directory, 'old.ts'),
+    'function kept() { return 0; }\nfunction target() { return 1; }\n',
+  );
+  git(['init', '-q'], directory);
+  commit('base');
+  const base = git(['rev-parse', 'HEAD'], directory).trim();
+  git(['mv', 'old.ts', 'new.ts'], directory);
+  writeFileSync(
+    join(directory, 'new.ts'),
+    'function kept() { return 0; }\nfunction target() { return 2; }\n',
+  );
+  commit('rename and edit');
+  const coverage = join(directory, 'coverage.json');
+  writeFileSync(coverage, '{}');
+  process.chdir(directory);
+  // The overlapping range spans both functions; only fingerprinting via `oldFile` excludes `kept`.
+  const report = riskReport(
+    coverage,
+    [{ file: 'new.ts', oldFile: 'old.ts', ranges: [{ start: 1, count: 2 }] }],
+    { base },
+  );
+  assert.deepEqual(
+    report.functions.map((fn) => fn.function),
+    ['target'],
+  );
 });
 
 test('every related test belongs to one coverage group with the existing cache lane ordering', () => {

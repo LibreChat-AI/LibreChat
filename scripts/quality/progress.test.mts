@@ -10,6 +10,7 @@ import type { MutantResult, MutantTestPlan } from '@stryker-mutator/api/core';
 
 import { FunctionProgressReporter } from './progress.mts';
 import { mutationTarget } from './risk.mts';
+import { LOGGER_IGNORER_NAME } from './ignore.mts';
 
 test('live progress separates nested functions and static results, and retains partial evidence', (t) => {
   t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 0 });
@@ -192,6 +193,105 @@ test('a real Stryker run loads the reporter plugin and records every result', ()
     assert.equal(progress.functions.length, 1);
     assert.equal(progress.functions[0].function, 'positive');
     assert.match(run.stdout, /DONE .*positive/);
+    assert.equal(
+      readFileSync(join(output, 'progress.jsonl'), 'utf8').trim().split('\n').length,
+      mutants.length,
+    );
+  } finally {
+    rmSync(output, { recursive: true, force: true });
+  }
+});
+
+/** Regression for the live run on PR #17856's data-schemas shard 1: a changed module-scope
+ * statement (here a standalone, ignored `logger.info(...)` call, same as a changed Mongoose
+ * schema literal) selects a mutant with no owning function in `functions.json`. Before the fix,
+ * `onMutationTestingPlanReady` threw "No selected function owns mutant N" partway through
+ * planning; `BroadcastReporter` caught it per-event and the run continued, but every mutant
+ * planned after that point in iteration order — including this file's real, testable `positive`
+ * mutants — never reached `this.planned`, so `onMutantTested` then silently dropped their real
+ * results from `progress.jsonl` and `progress.json` instead of recording them. */
+test('a module-scope mutant with no owning function still reports, and does not drop later mutants', () => {
+  const output = realpathSync(mkdtempSync(join(tmpdir(), 'quality-progress-module-')));
+  const source = [
+    'const logger = { info: () => {} };',
+    "logger.info('module loaded');",
+    'function positive(value) { return value > 0; }',
+    'module.exports = positive;',
+    '',
+  ].join('\n');
+  // Only the logger call and the function are changed; `logger`'s declaration and the export
+  // stay untouched context, so the logger statement selects a mutate range with no owning
+  // function and `positive` selects its own.
+  const target = mutationTarget('subject.js', source, [{ start: 2, count: 2 }]);
+  assert.equal(target.functions.length, 1, 'only "positive" is a selected function');
+  assert.ok(
+    target.mutate.length > target.functions.length,
+    'the logger call also selected a mutate range with no owning function',
+  );
+  const report = join(output, 'mutation.json');
+  writeFileSync(join(output, 'subject.js'), source);
+  writeFileSync(
+    join(output, 'test.cjs'),
+    "const assert = require('node:assert/strict'); const positive = require('./subject.js'); assert.equal(positive(1), true); assert.equal(positive(0), false);\n",
+  );
+  writeFileSync(join(output, 'functions.json'), JSON.stringify([target]));
+  const options = {
+    plugins: [
+      new URL('./progress.mts', import.meta.url).href,
+      new URL('./ignore.mts', import.meta.url).href,
+    ],
+    ignorers: [LOGGER_IGNORER_NAME],
+    testRunner: 'command',
+    commandRunner: { command: `${JSON.stringify(process.execPath)} test.cjs` },
+    ignorePatterns: ['**', '!subject.js', '!test.cjs'],
+    mutate: target.mutate,
+    reporters: ['function-progress', 'json'],
+    jsonReporter: { fileName: report },
+    coverageAnalysis: 'off',
+    concurrency: 1,
+    timeoutMS: 1000,
+    thresholds: { break: 0 },
+  };
+  writeFileSync(
+    join(output, 'run.mjs'),
+    `import { Stryker } from ${JSON.stringify(import.meta.resolve('@stryker-mutator/core'))}; await new Stryker(${JSON.stringify(options)}).runMutationTest();\n`,
+  );
+  try {
+    const run = spawnSync(process.execPath, ['run.mjs'], {
+      cwd: output,
+      encoding: 'utf8',
+      timeout: 60000,
+    });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.ok(
+      !run.stderr.includes('No selected function owns mutant') &&
+        !run.stderr.includes('No mutation plan for result'),
+      run.stdout + run.stderr,
+    );
+    const progress = JSON.parse(readFileSync(join(output, 'progress.json'), 'utf8'));
+    const mutation = JSON.parse(readFileSync(report, 'utf8'));
+    const mutants = Object.values(mutation.files).flatMap(
+      (file) => (file as { mutants: unknown[] }).mutants,
+    );
+    assert.ok(mutants.length > 1, 'both the ignored logger mutant and a positive mutant ran');
+    assert.ok(
+      mutants.some((mutant) => (mutant as { status: string }).status === 'Ignored'),
+      'the logging-only mutant is still present, marked Ignored',
+    );
+    assert.equal(progress.complete, true, run.stdout + run.stderr + JSON.stringify(progress));
+    assert.equal(progress.completed, mutants.length);
+    assert.equal(progress.total, mutants.length);
+    const moduleBucket = progress.functions.find(
+      (fn: { function: string }) => fn.function === '<module>',
+    );
+    assert.ok(moduleBucket, 'the module-scope mutants have a tracked bucket');
+    assert.ok(moduleBucket.total > 0);
+    assert.equal(moduleBucket.completed, moduleBucket.total);
+    const positiveBucket = progress.functions.find(
+      (fn: { function: string }) => fn.function === 'positive',
+    );
+    assert.ok(positiveBucket.total > 0, '"positive" mutants are not dropped by the module mutant');
+    assert.equal(positiveBucket.completed, positiveBucket.total);
     assert.equal(
       readFileSync(join(output, 'progress.jsonl'), 'utf8').trim().split('\n').length,
       mutants.length,

@@ -4,6 +4,7 @@ import { strict as assert } from 'node:assert';
 import type { API, Comment, Context, Request } from './comment.mts';
 
 import {
+  GATE_FOOTER,
   acceptRequest,
   gateDecision,
   parseCommand,
@@ -328,7 +329,9 @@ test('one exact-head request comment moves through progress and completion with 
     },
   );
   assert.equal(api.statuses.at(-1)?.state, 'pending');
-  assert.match(api.comments[0].body, /Static: \*\*off\*\*/);
+  assert.match(api.comments[0].body, /Static mutants: \*\*off\*\*/);
+  // Status leads; the request facts follow as one list item each, not one run-on paragraph.
+  assert.match(api.comments[0].body, /### Quality request\n\nStatus: .*\n\n- Commit: /u);
   assert.match(api.comments[0].body, /actions\/runs\/55/);
   await publishRun(api, context, run('in_progress', null));
   assert.match(api.comments[0].body, /\*\*running\*\*/);
@@ -341,6 +344,67 @@ test('one exact-head request comment moves through progress and completion with 
   assert.match(api.comments[0].body, /completed \(success\)/);
 });
 
+test('check rows and report links are sorted by kind, scope and shard', async () => {
+  const api = new GitHub();
+  await accept(api, context, 1, command());
+  const job = (name: string, id: number) => ({
+    name,
+    status: 'completed',
+    conclusion: 'success',
+    id,
+  });
+  api.jobs = [
+    ...structuredClone(prerequisiteJobs),
+    job('Mutation report (data-schemas)', 80),
+    job('Mutation testing 3/4 (data-schemas)', 81),
+    job('Change risk (server)', 82),
+    job('Mutation testing 1/4 (data-schemas)', 83),
+    job('Change risk (data-schemas)', 84),
+    job('Mutation testing 4/4 (data-schemas)', 85),
+    job('Change risk (api)', 86),
+    job('Mutation testing 2/4 (data-schemas)', 87),
+  ];
+  api.artifacts = [
+    `change-mutation-data-schemas-${head}-shard-2`,
+    `change-risk-server-${head}`,
+    `change-mutation-data-schemas-${head}`,
+    `change-mutation-data-schemas-${head}-shard-1`,
+    `change-risk-api-${head}`,
+    `change-risk-data-schemas-${head}`,
+  ].map((name, index) => ({ id: 200 + index, name, expired: false }));
+  await publishRun(api, context, run());
+  const body = api.comments[0].body;
+  const rows = [...body.matchAll(/^\| \[([^\]]+)\]/gmu)].map(([, name]) => name);
+  assert.deepEqual(rows, [
+    'Change risk (data-schemas)',
+    'Change risk (api)',
+    'Change risk (server)',
+    'Mutation testing 1/4 (data-schemas)',
+    'Mutation testing 2/4 (data-schemas)',
+    'Mutation testing 3/4 (data-schemas)',
+    'Mutation testing 4/4 (data-schemas)',
+    'Mutation report (data-schemas)',
+  ]);
+  const links = [...body.matchAll(/^\d+\. \[([^\]]+)\]/gmu)].map(([, name]) => name);
+  assert.deepEqual(links, [
+    `change-risk-data-schemas-${head}`,
+    `change-risk-api-${head}`,
+    `change-risk-server-${head}`,
+    `change-mutation-data-schemas-${head}`,
+    `change-mutation-data-schemas-${head}-shard-1`,
+    `change-mutation-data-schemas-${head}-shard-2`,
+  ]);
+});
+
+test('the request footer names what closes the gate and what stays advisory', () => {
+  const body = renderRequest(record, context, head);
+  assert.ok(body.endsWith(GATE_FOOTER));
+  assert.match(GATE_FOOTER, /every report job succeed/u);
+  assert.match(GATE_FOOTER, /incomplete mutation report/u);
+  assert.match(GATE_FOOTER, /change-risk file marked incomplete or unavailable.*does not close/su);
+  assert.doesNotMatch(GATE_FOOTER, /incomplete reports keep the gate closed/u);
+});
+
 test('failures and cancellations keep the gate closed, while explicit ignore clears it', async () => {
   for (const conclusion of ['failure', 'cancelled', 'timed_out', 'action_required', 'skipped']) {
     const api = new GitHub();
@@ -350,6 +414,7 @@ test('failures and cancellations keep the gate closed, while explicit ignore cle
     await accept(api, { ...context, run: 56 }, 1, command(11, '/quality ignore'));
     assert.equal(api.statuses.at(-1)?.state, 'success');
     assert.match(api.comments[1].body, /explicitly ignored/);
+    assert.doesNotMatch(api.comments[1].body, /Scopes:|Mutation testing|Status:/u);
     // A late result from the older request cannot undo the explicit ignore.
     await publishRun(api, context, run('completed', conclusion));
     assert.equal(api.statuses.at(-1)?.state, 'success');
