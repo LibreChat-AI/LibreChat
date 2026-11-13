@@ -1,9 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Provider } from 'jotai';
+import { useForm } from 'react-hook-form';
 import axios, { AxiosHeaders } from 'axios';
 import { ResumableRun } from '@librechat/chat';
 import { ToastProvider } from '@librechat/client';
 import userEvent from '@testing-library/user-event';
+import { ChatProvider } from '@librechat/chat/react';
 import { RecoilRoot, useRecoilState, useRecoilValue } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router-dom';
@@ -17,10 +19,12 @@ import {
 } from 'librechat-data-provider';
 import type { TConversation, TModelsConfig, TStartupConfig, TUser } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import type { TAuthContext } from '~/common';
+import type { TAuthContext, ChatFormValues } from '~/common';
 import { act, cleanup, render, screen, waitFor } from 'test/layout-test-utils';
 import { PromptGroupsProvider, SetConvoProvider } from '~/Providers';
+import { ChatFormProvider } from '~/Providers/ChatFormContext';
 import { resetCatalogWarmup } from '~/hooks/useCatalogWarmup';
+import useQueryParams from '~/hooks/Input/useQueryParams';
 import ChatSettingsProvider from '~/routes/ChatSettings';
 import { SteerHostTestProvider } from 'test/steerHost';
 import { ChatHostTestProvider } from 'test/chatHost';
@@ -115,6 +119,28 @@ function LiveChat() {
   }, []);
   return <input aria-label="Live composer" defaultValue="unsent" />;
 }
+function QueryComposer() {
+  const methods = useForm<ChatFormValues>({ defaultValues: { text: '' } });
+  return (
+    <ChatFormProvider {...methods}>
+      <ChatProvider index={0}>
+        <QueryInput />
+      </ChatProvider>
+    </ChatFormProvider>
+  );
+}
+function QueryInput() {
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  const query = useQueryParams({ textAreaRef });
+  return (
+    <textarea
+      aria-label="Destination composer"
+      ref={textAreaRef}
+      data-preparing={query.isPreparing}
+    />
+  );
+}
+
 function Controls() {
   const presentation = useFeaturePresentation()!;
   const navigate = useNavigate();
@@ -150,9 +176,16 @@ function Layout() {
     </PresentationHost>
   );
 }
-function mount(path = '/parameters', initialConversation?: TConversation) {
+function mount(path = '/parameters', initialConversation?: TConversation, queryComposer = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, cacheTime: 0 } } });
   clients.push(client);
+  const emptyChat = queryComposer ? (
+    <ChatRouteOwner>
+      <QueryComposer />
+    </ChatRouteOwner>
+  ) : (
+    <output data-testid="redirect" />
+  );
   const router = createMemoryRouter(
     [
       {
@@ -167,7 +200,7 @@ function mount(path = '/parameters', initialConversation?: TConversation) {
                 <LiveChat />
               </ChatRouteOwner>
             ) : (
-              <output data-testid="redirect" />
+              emptyChat
             ),
           },
         ],
@@ -259,11 +292,14 @@ beforeEach(() => {
         throw new Error('Expected selected-endpoint discovery');
       return response(await modelsResponse());
     }
+    if (path === '/api/projects/' + 'a'.repeat(24))
+      return response({ _id: 'a'.repeat(24), name: 'Project context' });
     if (path === '/api/convos/saved-chat')
       return response(await (delayRecord ?? Promise.resolve(saved)));
     if (path === '/api/presets' || path === '/api/files' || path === '/api/prompts/categories')
       return response([]);
     if (path === '/api/agents') return response({ data: [], has_more: false });
+    if (path === '/api/agents/tools') return response([]);
     if (path === '/api/prompts/groups')
       return response({
         promptGroups: [],
@@ -311,6 +347,70 @@ it('initializes real model controls on a cold Parameters route without rendering
   expect(axios.get).not.toHaveBeenCalledWith('/api/models', expect.anything());
   expect(axios.get).not.toHaveBeenCalledWith('/api/models?endpoint=anthropic', expect.anything());
 });
+it.each(['direct', 'nested'])(
+  'keeps edited cold Parameters when the real destination composer consumes %s bootstrap settings',
+  async (entry) => {
+    const bootstrap = 'endpoint=openAI&model=gpt-4o&temperature=0.2';
+    const path =
+      entry === 'direct'
+        ? '/parameters?' + bootstrap
+        : '/parameters?' + new URLSearchParams({ chat: '/c/new?' + bootstrap });
+    const router = mount(path, undefined, true);
+    const temperature = await screen.findByRole('slider', { name: 'Temperature' });
+    expect(temperature).toHaveAttribute('aria-valuenow', '0.2');
+    act(() => temperature.focus());
+    await userEvent.keyboard('{ArrowRight}');
+    const edited = JSON.parse(screen.getByTestId('context').textContent ?? '{}').temperature;
+    expect(edited).toBeGreaterThan(0.2);
+    await userEvent.click(screen.getByText('Return to chat'));
+    const input = await screen.findByLabelText('Destination composer');
+    await waitFor(() => expect(router.state.location.search).toBe(''));
+    expect(input).toBeInTheDocument();
+    expect(JSON.parse(screen.getByTestId('context').textContent ?? '{}')).toMatchObject({
+      conversationId: 'new',
+      endpoint: 'openAI',
+      model: 'gpt-4o',
+      temperature: edited,
+    });
+  },
+);
+
+it('consumes only bootstrap settings while preserving project, prompt, query and hash context', async () => {
+  const projectId = 'a'.repeat(24);
+  const source =
+    '/c/new?' +
+    new URLSearchParams({
+      endpoint: 'openAI',
+      model: 'gpt-4o',
+      temperature: '0.2',
+      projectId,
+      prompt: 'Keep this prompt',
+      submit: 'false',
+      branch: 'original',
+    }) +
+    '#settings';
+  const router = mount('/parameters?' + new URLSearchParams({ chat: source }));
+  expect(await screen.findByRole('slider', { name: 'Temperature' })).toHaveAttribute(
+    'aria-valuenow',
+    '0.2',
+  );
+  await userEvent.click(screen.getByText('Return to chat'));
+  await waitFor(() => expect(router.state.location.pathname).toBe('/c/new'));
+  const params = new URLSearchParams(router.state.location.search);
+  expect(Object.fromEntries(params)).toEqual({
+    projectId,
+    prompt: 'Keep this prompt',
+    submit: 'false',
+    branch: 'original',
+  });
+  expect(router.state.location.hash).toBe('#settings');
+  expect(JSON.parse(screen.getByTestId('context').textContent ?? '{}')).toMatchObject({
+    conversationId: 'new',
+    chatProjectId: projectId,
+    temperature: 0.2,
+  });
+});
+
 it('waits for the contextual saved conversation rather than redirecting or replacing it', async () => {
   let finish!: (value: TConversation) => void;
   delayRecord = new Promise((resolve) => {
