@@ -633,6 +633,12 @@ interface AppearanceDecision {
  * and never fades one, so the theme paints them instead of dimming.
  */
 const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDecision>> = {
+  welcomeBackdrop: {
+    value: 'dots',
+    status: 'match',
+    reason:
+      "dots: the welcome screen's dot field is a product decision, not a Click UI token; its lattice, pitch and resting alpha come from the Agents launch mock",
+  },
   disabledStyle: {
     value: 'fill',
     status: 'match',
