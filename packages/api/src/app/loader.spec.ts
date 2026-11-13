@@ -1,5 +1,6 @@
 import path from 'path';
 import { logger } from '@librechat/data-schemas';
+import { setPiiRegexProgramSizer } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
 import { createCustomConfigLoader, ConfigReloadError, hashCustomConfig } from './loader';
 import { loadYaml } from '~/utils/yaml';
@@ -378,5 +379,37 @@ describe('hashCustomConfig', () => {
     expect(hashCustomConfig({ b: { d: [2, 1], c: 2 }, a: 1 })).not.toBe(
       hashCustomConfig({ a: 1, b: { c: 2, d: [1, 2] } }),
     );
+  });
+});
+
+describe('createCustomConfigLoader filters', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) {
+      delete process.env.CONFIG_PATH;
+    } else {
+      process.env.CONFIG_PATH = originalConfigPath;
+    }
+  });
+
+  /** The CLI scripts load config without the server's startup wiring. */
+  it('sizes custom PII patterns itself, so a process that registered nothing still loads them', async () => {
+    jest.spyOn(logger, 'info').mockImplementation(() => logger);
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const exit = jest.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    setPiiRegexProgramSizer(() => null);
+    process.env.CONFIG_PATH = path.join(__dirname, '__fixtures__', 'filters', 'custom-pii.yaml');
+
+    const config = await createLoader()(false);
+
+    expect(config?.filters?.messages?.pii?.customPatterns).toEqual([
+      { id: 'org', label: 'Organization id', regex: 'ORG-[A-Z0-9]+' },
+    ]);
+    expect(exit).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
   });
 });
