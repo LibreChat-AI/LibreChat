@@ -9,6 +9,7 @@ import SkillState from '~/components/Skills/display/SkillState';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { useGetSkillByIdQuery } from '~/data-provider';
+import SkillsCollection from './SkillsCollection';
 
 /**
  * Skill detail / edit / create route content.
@@ -57,17 +58,12 @@ export default function SkillsView() {
     return <CreateView />;
   }
 
-  // No skill selected — empty state
+  // Collection landing keeps detail, edit and file URLs unchanged.
   if (!skillId) {
     return (
       <div className="bg-surface-primary-alt flex h-full w-full flex-col">
         <MobileSidebarToggle />
-        <div className="flex flex-1 flex-col items-center justify-center">
-          <SkillState
-            title={localize('com_ui_skill_no_selection')}
-            description={localize('com_ui_skill_no_selection_desc')}
-          />
-        </div>
+        <SkillsCollection />
       </div>
     );
   }

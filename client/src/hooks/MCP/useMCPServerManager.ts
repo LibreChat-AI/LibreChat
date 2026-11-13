@@ -111,7 +111,9 @@ export function useMCPServerManager({
   const mcpServersReady = useCatalogReady('mcpServers');
   const mcpEnabled = canUseMcp && mcpServersReady;
 
-  const { data: loadedServers, isLoading } = useMCPServersQuery({ enabled: mcpEnabled });
+  const { data: loadedServers, isLoading, isError, refetch } = useMCPServersQuery({
+    enabled: mcpEnabled,
+  });
   const mcpToolsReady = useCatalogReady('mcpTools');
   const { data: discoveredMCPTools } = useMCPToolsQuery({
     enabled:
@@ -863,6 +865,8 @@ export function useMCPServerManager({
       selectableServers,
       availableMCPServersMap: loadedServers,
       isLoading,
+      isError,
+      refetch,
       connectionStatus,
       initializeServer,
       cancelOAuthFlow,
@@ -896,6 +900,8 @@ export function useMCPServerManager({
       selectableServers,
       loadedServers,
       isLoading,
+      isError,
+      refetch,
       connectionStatus,
       initializeServer,
       cancelOAuthFlow,

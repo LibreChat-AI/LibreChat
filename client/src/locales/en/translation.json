@@ -2597,6 +2597,8 @@
   "com_ui_no_projects": "No projects yet",
   "com_ui_no_prompts_title": "No prompts yet",
   "com_ui_no_read_access": "You don't have permission to view memories",
+  "com_ui_feature_no_access": "You don't have permission to use this feature",
+  "com_ui_collection_load_error": "Could not load this collection. Please try again.",
   "com_ui_no_results_found": "No results found",
   "com_ui_no_schedules": "Create one to have an agent run a prompt on a schedule",
   "com_ui_no_schedules_title": "No scheduled chats yet",

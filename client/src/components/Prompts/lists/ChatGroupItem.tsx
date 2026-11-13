@@ -1,7 +1,7 @@
 import { useState, memo, useRef, useCallback, useId, useMemo } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Ellipsis, Eye, SquarePen, Trash, EarthIcon, User } from 'lucide-react';
+import { Ellipsis, Eye, SquarePen, Trash, EarthIcon, User, Send } from 'lucide-react';
 import {
   Label,
   Button,
@@ -33,47 +33,129 @@ import CategoryIcon from '../utils/CategoryIcon';
 
 const PROMPT_PATH = '/prompts';
 
-function ChatGroupItem({
-  group,
-  isChatRoute = true,
-  permissionBits = 0,
-}: {
+interface GroupItemProps {
   group: TPromptGroup;
   isChatRoute?: boolean;
   permissionBits?: number;
+  onUsePrompt?: (group: TPromptGroup) => void;
+}
+
+function ChatGroupItem({ isChatRoute = true, ...props }: GroupItemProps) {
+  return isChatRoute ? <ChatItem {...props} /> : <GroupItem {...props} />;
+}
+
+function ChatItem({ group, permissionBits }: GroupItemProps) {
+  const localize = useLocalize();
+  const { submitPrompt } = useSubmitMessage();
+  const { index } = useChatContext();
+  const recordUsage = useRecordPromptUsage();
+  const resolvePromptContent = usePromptContentResolver();
+  const { showToast } = useToastContext();
+  const [isVariableDialogOpen, setVariableDialogOpen] = useState(false);
+  const [variablePromptText, setVariablePromptText] = useState<string | undefined>(undefined);
+  const [isResolving, setIsResolving] = useState(false);
+  const { isExternal } = getPromptGroupPermissions(group, permissionBits ?? 0);
+  const { begin, isCurrent, isMounted } = useChatScopedRequest(index, () => {
+    setIsResolving(false);
+    setVariableDialogOpen(false);
+  });
+
+  const onCardClick = useCallback(async () => {
+    if (isResolving) {
+      return;
+    }
+
+    const token = begin();
+    if (isExternal) {
+      setIsResolving(true);
+    }
+    try {
+      const text = await resolvePromptContent(group);
+      if (!isMounted() || !isCurrent(token) || !text?.trim()) {
+        return;
+      }
+      if (detectVariables(text)) {
+        setVariablePromptText(text);
+        setVariableDialogOpen(true);
+        return;
+      }
+      submitPrompt(text);
+      if (group._id) {
+        recordUsage.mutate(group._id);
+      }
+    } catch (error) {
+      if (isMounted() && isCurrent(token)) {
+        showToast({ status: 'error', message: getPromptResolveErrorMessage(error, localize) });
+      }
+    } finally {
+      if (isExternal && isMounted() && isCurrent(token)) {
+        setIsResolving(false);
+      }
+    }
+  }, [
+    group,
+    submitPrompt,
+    recordUsage,
+    isResolving,
+    isExternal,
+    resolvePromptContent,
+    showToast,
+    localize,
+    begin,
+    isCurrent,
+    isMounted,
+  ]);
+
+  return (
+    <>
+      <GroupItem
+        group={group}
+        permissionBits={permissionBits}
+        chatIndex={index}
+        onUse={onCardClick}
+        isResolving={isResolving}
+      />
+      <VariableDialog
+        open={isVariableDialogOpen}
+        onClose={() => setVariableDialogOpen(false)}
+        group={group}
+        promptText={variablePromptText}
+      />
+    </>
+  );
+}
+
+function GroupItem({
+  group,
+  permissionBits = 0,
+  chatIndex,
+  onUse,
+  onUsePrompt,
+  isResolving = false,
+}: {
+  group: TPromptGroup;
+  permissionBits?: number;
+  chatIndex?: number;
+  onUse?: () => void;
+  onUsePrompt?: (group: TPromptGroup) => void;
+  isResolving?: boolean;
 }) {
+  const isChatRoute = chatIndex !== undefined;
   const localize = useLocalize();
   const navigate = useNavigate();
   const params = useParams();
   const { user } = useAuthContext();
-  const { submitPrompt } = useSubmitMessage();
-  const recordUsage = useRecordPromptUsage();
-  const resolvePromptContent = usePromptContentResolver();
   const { announcePolite } = useLiveAnnouncer();
-  const { index } = useChatContext();
 
   const { showToast } = useToastContext();
   const menuId = useId();
   const isSharedPrompt = group.author !== user?.id && Boolean(group.authorName);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isPreviewDialogOpen, setPreviewDialogOpen] = useState(false);
-  const [isVariableDialogOpen, setVariableDialogOpen] = useState(false);
-  const [variablePromptText, setVariablePromptText] = useState<string | undefined>(undefined);
-  const [isResolving, setIsResolving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  /** A resolve that was started for one chat must not land on another; see
-   *  `useChatScopedRequest` for the three cancellation keys. On cancel, the
-   *  row's spinner clears (its own `finally` will not run for a discarded
-   *  request) and a variable dialog opened from the stale read closes rather
-   *  than surviving into the chat the user moved to. */
-  const { begin, isCurrent, isMounted } = useChatScopedRequest(index, () => {
-    setIsResolving(false);
-    setVariableDialogOpen(false);
-  });
-
   const groupIsGlobal = group.isPublic === true;
-  const { isExternal, canEdit, canDelete } = getPromptGroupPermissions(group, permissionBits);
+  const { canEdit, canDelete } = getPromptGroupPermissions(group, permissionBits);
 
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -103,68 +185,6 @@ function ChatGroupItem({
     deleteGroup.mutate({ id: group._id });
   };
 
-  const onCardClick = useCallback(async () => {
-    if (!isChatRoute) {
-      navigate(`${PROMPT_PATH}/${group._id}`, { replace: true });
-      return;
-    }
-
-    if (isResolving) {
-      return;
-    }
-
-    const token = begin();
-    if (isExternal) {
-      setIsResolving(true);
-    }
-    try {
-      const text = await resolvePromptContent(group);
-      /** The row may have unmounted, or the active conversation may have
-       *  changed, while the Langfuse resolve was in flight; a stale
-       *  continuation must not submit, stage, or record for a chat the
-       *  user left. */
-      if (!isMounted() || !isCurrent(token)) {
-        return;
-      }
-      if (!text?.trim()) {
-        return;
-      }
-
-      if (detectVariables(text)) {
-        setVariablePromptText(text);
-        setVariableDialogOpen(true);
-        return;
-      }
-
-      submitPrompt(text);
-      if (group._id) {
-        recordUsage.mutate(group._id);
-      }
-    } catch (error) {
-      if (isMounted() && isCurrent(token)) {
-        showToast({ status: 'error', message: getPromptResolveErrorMessage(error, localize) });
-      }
-    } finally {
-      if (isExternal && isMounted() && isCurrent(token)) {
-        setIsResolving(false);
-      }
-    }
-  }, [
-    group,
-    submitPrompt,
-    recordUsage,
-    isChatRoute,
-    navigate,
-    isResolving,
-    isExternal,
-    resolvePromptContent,
-    showToast,
-    localize,
-    begin,
-    isCurrent,
-    isMounted,
-  ]);
-
   const productionText = group.productionPrompt?.prompt ?? '';
   const hasOneliner = typeof group.oneliner === 'string' && group.oneliner.length > 0;
   let snippet = '';
@@ -186,6 +206,13 @@ function ChatGroupItem({
         icon: <Eye className="icon-sm text-text-primary me-2" aria-hidden="true" />,
       },
     ];
+    if (!isChatRoute && onUsePrompt) {
+      items.push({
+        label: localize('com_ui_use_prompt'),
+        onClick: () => onUsePrompt(group),
+        icon: <Send className="icon-sm text-text-primary me-2" aria-hidden="true" />,
+      });
+    }
     if (canEdit) {
       items.push({
         label: localize('com_ui_edit'),
@@ -201,7 +228,7 @@ function ChatGroupItem({
       });
     }
     return items;
-  }, [localize, canEdit, canDelete, group._id, navigate]);
+  }, [localize, canEdit, canDelete, group, navigate, isChatRoute, onUsePrompt]);
 
   return (
     <>
@@ -218,7 +245,7 @@ function ChatGroupItem({
         <button
           type="button"
           className="focus-visible:ring-ring-primary absolute inset-0 z-0 rounded-xl focus:outline-hidden focus-visible:ring-2"
-          onClick={onCardClick}
+          onClick={onUse ?? (() => navigate(`${PROMPT_PATH}/${group._id}`))}
           aria-label={ariaLabel}
           disabled={isResolving}
         />
@@ -311,7 +338,7 @@ function ChatGroupItem({
       </div>
       <PreviewPrompt
         group={group}
-        chatIndex={index}
+        chatIndex={chatIndex}
         open={isPreviewDialogOpen}
         onOpenChange={setPreviewDialogOpen}
         onCloseAutoFocus={() => {
@@ -320,14 +347,6 @@ function ChatGroupItem({
           });
         }}
       />
-      {isChatRoute && (
-        <VariableDialog
-          open={isVariableDialogOpen}
-          onClose={() => setVariableDialogOpen(false)}
-          group={group}
-          promptText={variablePromptText}
-        />
-      )}
       <OGDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <OGDialogTemplate
           title={localize('com_ui_delete_prompt')}
