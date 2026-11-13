@@ -71,6 +71,7 @@ import {
 import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
 import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
 import { specsConfigSchema, TSpecsConfig } from './models';
+import { visualsConfigSchema } from './visuals';
 import { fileConfigSchema } from './file-config';
 import { clientLimitsSchema } from './clientLimits';
 import type { TClientLimits } from './clientLimits';
@@ -129,7 +130,12 @@ export const DEFAULT_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 /** Sections only librechat.yaml sets: no config document, Base included, can change or remove
  * them. `turnstile` stays here until the server verifies Turnstile tokens: until then a stored
  * site key adds no protection, and a wrong one locks users out of sign-in and registration. */
-export const BASE_ONLY_CONFIG_SECTIONS = ['filters', 'mcpAppSandbox', 'turnstile'] as const;
+export const BASE_ONLY_CONFIG_SECTIONS = [
+  'filters',
+  'mcpAppSandbox',
+  'turnstile',
+  'visuals',
+] as const;
 /** Sections that may be stored in the tenant's base config document but must
  * not be overridden or tombstoned by role, group, or user config documents. */
 export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
@@ -3417,6 +3423,9 @@ export const interfaceSchema = z
      *  default; a deployment that cannot use popups can turn it off and keep
      *  the docked pane. */
     artifactUndocking: z.boolean().optional(),
+    /** Lets assistants draw charts, diagrams and small interactive figures inline in replies.
+     *  Enabled by default; each user can still turn it off in their settings. */
+    visuals: z.boolean().optional(),
     /** Asks each viewer for consent before Google Tag Manager (`ANALYTICS_GTM_ID`)
      *  loads. A deployment that settles consent itself, such as an internal one
      *  covered by its own policy, can set false to load the container without the
@@ -3657,6 +3666,7 @@ export const interfaceSchema = z
     contextUsage: true,
     contextCost: false,
     artifactUndocking: true,
+    visuals: true,
     feedback: true,
     peoplePicker: {
       users: true,
@@ -4748,6 +4758,7 @@ export const configSchema = z.object({
   toolCallPreviews: toolCallPreviewsConfigSchema.default(() =>
     toolCallPreviewsConfigSchema.parse({}),
   ),
+  visuals: visualsConfigSchema.default(() => visualsConfigSchema.parse({})),
   includedTools: z.array(z.string()).optional(),
   filteredTools: z.array(z.string()).optional(),
   mcpServers: MCPServersSchema.optional(),

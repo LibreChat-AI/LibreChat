@@ -63,6 +63,8 @@ export type BuildTurnInput = {
     environmentMode: TSubmission['codeEnvironmentMode'];
     workspaces: TSubmission['codeWorkspaces'];
   };
+  /** Whether the reply may carry inline visuals; sent with the turn as given. */
+  visuals?: boolean;
 };
 
 /** Composer files the turn consumed, for the caller to mark as submitted and clear. */
@@ -116,6 +118,7 @@ export function buildTurn({
   quotes,
   reasoningOverride,
   code,
+  visuals,
   conversationId: resolvedConversationId,
 }: BuildTurnInput): BuiltTurn {
   const { overrideConvoId, overrideUserMessageId, messageId = null } = params;
@@ -461,6 +464,7 @@ export function buildTurn({
     codeApprovalMode,
     codeEnvironmentMode,
     codeWorkspaces,
+    visuals,
     clientRequestId,
     recoverySteerId: overrideRecoverySteerId,
     expectedPredecessorCreatedAt: overrideExpectedPredecessorCreatedAt,

@@ -41,6 +41,7 @@ import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { chatDirectionAtom } from '~/store/chatDirection';
 import { showThinkingAtom } from '~/store/showThinking';
+import { useGetStartupConfig } from '~/data-provider';
 import { fontSizeAtom } from '~/store/fontSize';
 import { renderAgentAvatar } from '~/utils';
 import store from '~/store';
@@ -156,6 +157,10 @@ export const appMessagePartsHost: MessagePartsHost = {
     ),
   useToolArtifactClaim: (artifactId) => useRecoilState(store.toolArtifactClaim(artifactId)),
   useArtifactPanel: useAppArtifactPanel,
+  useVisualsAllowed: () => {
+    const { data } = useGetStartupConfig();
+    return data == null ? undefined : data.interface?.visuals !== false;
+  },
   usePendingSteers: (conversationId) => useAtomValue(pendingSteersByConvoId(conversationId)),
   useSteerEscalating: (conversationId) => useAtomValue(escalatingSteerFamily(conversationId)),
   usePaneConversationId: (index) => useRecoilValue(store.conversationIdByIndex(index)),

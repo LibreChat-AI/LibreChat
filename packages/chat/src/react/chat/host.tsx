@@ -93,6 +93,9 @@ export type TurnServices = {
    * as the app holds them. The package derives the decision; see `resolveTurnCode`.
    */
   readCodeInputs: () => TurnCodeInputs;
+  /** Whether a reply may carry inline visuals: the viewer's setting, where the deployment
+   *  offers them. Read once per send and sent with the turn. */
+  getVisuals?: () => boolean;
   /** Refuses a send until the host's configuration and selected targets are ready. */
   canSubmit?: (conversation: TConversation | null) => boolean;
   /** Moves the pane to the route a new chat starts from. */

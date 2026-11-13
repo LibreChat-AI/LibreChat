@@ -7,6 +7,7 @@ export * from './routing';
 export * from './params';
 export * from './rerunParent';
 export * from './splitMarkdown';
+export * from './visual';
 export * from './editableParts';
 export * from './approval';
 export * from './preview';

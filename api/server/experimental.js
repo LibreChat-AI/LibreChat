@@ -713,6 +713,7 @@ if (cluster.isMaster) {
       routes.staticRoute,
     );
     app.use('/api/share', preAuthTenantMiddleware, routes.share);
+    app.use('/api/visuals', preAuthTenantMiddleware, routes.visuals);
     app.use('/api/roles', routes.roles);
     app.use('/api/agents', routes.agents);
     app.use('/api/channels', routes.channels);

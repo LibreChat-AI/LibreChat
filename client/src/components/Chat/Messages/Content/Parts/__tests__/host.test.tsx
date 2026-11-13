@@ -53,6 +53,7 @@ function createHost(overrides: Partial<MessagePartsHost> = {}): MessagePartsHost
     useSandboxStarting: () => false,
     usePtcTrace: () => ({ entries: [], dropped: 0 }),
     useToolArtifactClaim: () => [null, jest.fn()],
+    useVisualsAllowed: () => true,
     usePendingSteers: () => [],
     useSteerEscalating: () => false,
     usePaneConversationId: () => null,

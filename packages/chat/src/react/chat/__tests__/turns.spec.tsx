@@ -373,6 +373,22 @@ describe('useTurns', () => {
     expect(chat.conversation()?.codeEnvironmentMode).toBe('without_attached');
   });
 
+  it.each([true, false])('sends the inline visuals setting the host reads: %s', (visuals) => {
+    const chat = setup({ services: createTurnServices({ getVisuals: () => visuals }) });
+
+    chat.turns.ask({ text: 'Next' });
+
+    expect(chat.submission()?.visuals).toBe(visuals);
+  });
+
+  it('sends no inline visuals setting when the host has none', () => {
+    const chat = setup();
+
+    chat.turns.ask({ text: 'Next' });
+
+    expect(chat.submission()?.visuals).toBeUndefined();
+  });
+
   it('regenerates a response with the replayed user message and focuses it', () => {
     const chat = setup();
     chat.store.set(pendingManualSkillsByConvoId(conversationId), ['queued']);

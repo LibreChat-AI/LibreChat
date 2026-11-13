@@ -6,7 +6,7 @@ type InterfaceConfig = NonNullable<AppConfig['interfaceConfig']>;
 
 type PreLoginInterface = Pick<
   InterfaceConfig,
-  'privacyPolicy' | 'termsOfService' | 'buildInfo' | 'theme'
+  'privacyPolicy' | 'termsOfService' | 'buildInfo' | 'theme' | 'visuals'
 >;
 
 type PolicyLinks = Pick<InterfaceConfig, 'privacyPolicy' | 'termsOfService'>;
@@ -101,9 +101,10 @@ export function checkConfigPolicyLinks(config: unknown): ConfigPolicyLinkCheck {
 /**
  * Selects the interface fields a signed-out client may see: the legal links the
  * login page renders (safe links only), a disabled build-info flag,
- * and the deployment theme so the login page paints it instead of switching after
- * sign-in. Returns `undefined` when none of them is configured, so the payload
- * omits `interface` entirely.
+ * the deployment theme so the login page paints it instead of switching after
+ * sign-in, and a disabled visuals flag so a shared conversation viewed signed out
+ * does not render visuals. Returns `undefined` when none of them is configured, so
+ * the payload omits `interface` entirely.
  */
 export function buildPreLoginInterface(
   interfaceConfig?: AppConfig['interfaceConfig'],
@@ -111,12 +112,14 @@ export function buildPreLoginInterface(
   if (!interfaceConfig) {
     return undefined;
   }
-  const { privacyPolicy, termsOfService, buildInfo, theme } = withSafePolicyLinks(interfaceConfig);
+  const { privacyPolicy, termsOfService, buildInfo, theme, visuals } =
+    withSafePolicyLinks(interfaceConfig);
   const selected: PreLoginInterface = {
     ...(privacyPolicy && { privacyPolicy }),
     ...(termsOfService && { termsOfService }),
     ...(buildInfo === false && { buildInfo }),
     ...(theme && { theme }),
+    ...(visuals === false && { visuals }),
   };
   return Object.keys(selected).length > 0 ? selected : undefined;
 }

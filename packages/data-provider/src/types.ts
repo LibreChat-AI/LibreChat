@@ -170,6 +170,8 @@ export type TPayload = Partial<TMessage> &
     codeEnvironmentMode?: CodeEnvironmentMode;
     /** Conversation-selected workspaces, with at most one binding per environment. */
     codeWorkspaces?: CodeWorkspaceSelection[];
+    /** The user's inline visuals setting; the server also needs `interface.visuals` on. */
+    visuals?: boolean;
     /** Browser IANA timezone (e.g. `America/New_York`) used to resolve local-time prompt variables server-side. */
     timezone?: string;
     /**
@@ -255,6 +257,8 @@ export type TSubmission = {
   codeEnvironmentMode?: CodeEnvironmentMode;
   /** Conversation-selected workspaces, with at most one binding per environment. */
   codeWorkspaces?: CodeWorkspaceSelection[];
+  /** The user's inline visuals setting, sent with every agents request. */
+  visuals?: boolean;
   /** Stable per-submission idempotency key (uuid) forwarded to the server to dedup retried start-generation requests. */
   clientRequestId?: string;
   /** Client-only carry-through for a receipt-bound queued recovery. */

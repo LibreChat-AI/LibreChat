@@ -6,6 +6,7 @@ import {
   filtersConfigSchema,
   conversationListConfigSchema,
   toolCallPreviewsConfigSchema,
+  visualsConfigSchema,
   hasActiveFiltersConfig,
   getConfigDefaults,
   langfuseConfigSchema,
@@ -119,6 +120,18 @@ export function loadToolCallPreviewsConfig(
   }
   logger.warn('[AppService] Invalid toolCallPreviews config', parsed.error.flatten());
   return toolCallPreviewsConfigSchema.parse({});
+}
+
+/** Resolves the inline visuals config; an invalid source list allows no origins, failing closed. */
+export function loadVisualsConfig(
+  config: DeepPartial<TCustomConfig>,
+): NonNullable<AppConfig['visuals']> {
+  const parsed = visualsConfigSchema.safeParse(config.visuals ?? {});
+  if (parsed.success) {
+    return parsed.data;
+  }
+  logger.warn('[AppService] Invalid visuals config', parsed.error.flatten());
+  return { sources: [] };
 }
 
 export function loadFiltersConfig(config: DeepPartial<TCustomConfig>): AppConfig['filters'] {
@@ -252,6 +265,7 @@ export const AppService = async (params?: {
     credentials: { writeFormat: config.credentials?.writeFormat ?? 'v3' },
     conversationList: loadConversationListConfig(config),
     toolCallPreviews: loadToolCallPreviewsConfig(config),
+    visuals: loadVisualsConfig(config),
   };
 
   const agentsDefaults = agentsConfigSetup(config);

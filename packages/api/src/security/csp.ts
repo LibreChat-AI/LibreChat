@@ -159,12 +159,17 @@ function mergeDirectives(directives: CspDirective[]): CspDirective[] {
   return order.map((name) => [name, merged.get(name) ?? []]);
 }
 
+/** Origins allowed to frame the app (`CSP_FRAME_ANCESTORS`), or only the app itself. */
+export function resolveFrameAncestors(env: NodeJS.ProcessEnv = process.env): string[] {
+  const frameAncestors = splitSourceList(env.CSP_FRAME_ANCESTORS);
+  return frameAncestors.length > 0 ? frameAncestors : ["'self'"];
+}
+
 export function buildCspDirectives(env: NodeJS.ProcessEnv = process.env): CspDirective[] {
   const scriptExtras = splitSourceList(env.CSP_SCRIPT_SRC_EXTRA);
-  const frameAncestors = splitSourceList(env.CSP_FRAME_ANCESTORS);
   const directives = defaultDirectives(
     scriptExtras,
-    frameAncestors.length > 0 ? frameAncestors : ["'self'"],
+    resolveFrameAncestors(env),
     parseEnvSwitch('CSP_ALLOW_WASM', env.CSP_ALLOW_WASM, true),
     parseEnvSwitch('CSP_ALLOW_DATA_WORKERS', env.CSP_ALLOW_DATA_WORKERS, true),
   );

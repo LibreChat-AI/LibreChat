@@ -1,13 +1,14 @@
 import supersub from 'remark-supersub';
 import { gfm } from 'micromark-extension-gfm';
+import { visualParts } from '@librechat/chat';
 import { math } from 'micromark-extension-math';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { mathFromMarkdown } from 'mdast-util-math';
 import { defaultUrlTransform } from 'react-markdown';
-import { apiBaseUrl } from 'librechat-data-provider';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { directive } from 'micromark-extension-directive';
 import { directiveFromMarkdown } from 'mdast-util-directive';
+import { apiBaseUrl, VISUAL_DIRECTIVE } from 'librechat-data-provider';
 import type {
   AlignType,
   Definition,
@@ -363,6 +364,18 @@ function serializeNode(node: SerializableNode, context: SerializeContext): strin
       return escapeText(`:${node.name}`);
     case 'containerDirective':
     case 'leafDirective':
+      /* An inline visual renders as a page, never its source, so it pastes as its title, with
+       * whatever the reply wrote around its fence. */
+      if (node.type === 'containerDirective' && node.name === VISUAL_DIRECTIVE) {
+        const visual = visualParts(node);
+        if (visual != null) {
+          return (
+            serializeChildren(visual.before, context) +
+            artifactTitle(node.attributes) +
+            serializeChildren(visual.after, context)
+          );
+        }
+      }
       return node.name === ARTIFACT_DIRECTIVE
         ? artifactTitle(node.attributes)
         : serializeChildren(node.children, context);

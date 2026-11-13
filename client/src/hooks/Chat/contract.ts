@@ -211,6 +211,9 @@ declare module '@librechat/chat/react' {
     usePtcTrace: (messageId: string, toolCallId: string) => PtcTrace;
     /** The artifact panel, scoped to one artifact. */
     useArtifactPanel: (artifactId: string) => MessagePartArtifactPanel;
+    /** Whether the deployment lets inline visuals render (`interface.visuals`); `undefined` until
+     *  the deployment has answered, so a turned-off deployment never runs a page. */
+    useVisualsAllowed: () => boolean | undefined;
     /** Steers sent to a conversation that the server has not confirmed yet. */
     usePendingSteers: (conversationId: string) => PendingSteer[];
     /** The messages view an inline editor reads and writes; only rendered inside one. */

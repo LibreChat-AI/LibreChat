@@ -1,3 +1,4 @@
+import { getDefaultStore } from 'jotai';
 import { renderHook } from '@testing-library/react';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -5,6 +6,8 @@ import type { CodeApprovalModeInputs, CodeWorkspaceInputs } from '@librechat/cha
 import type { TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import { inlineVisualsAtom } from '~/components/Visuals/store';
+import { startupConfigKey } from '~/data-provider';
 import useTurnServices from '../services';
 
 type ApprovalInputs = Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'>;
@@ -172,5 +175,24 @@ describe('useTurnServices readCodeInputs', () => {
     const latest = conversation({ conversationId: 'later', codeApprovalMode: 'acceptEdits' });
     mockGetLatestConversation.mockReturnValue(latest);
     expect(result.current.readCodeInputs().latest).toBe(latest);
+  });
+
+  it('offers inline visuals only when the viewer and the deployment both allow them', () => {
+    const jotaiStore = getDefaultStore();
+    const { result } = renderHook(() => useTurnServices({ index: 0, conversation: null }), {
+      wrapper,
+    });
+    const { getVisuals } = result.current;
+
+    jotaiStore.set(inlineVisualsAtom, true);
+    expect(getVisuals?.()).toBe(true);
+
+    queryClient.setQueryData(startupConfigKey(true), { interface: { visuals: false } });
+    expect(getVisuals?.()).toBe(false);
+
+    queryClient.setQueryData(startupConfigKey(true), { interface: { visuals: true } });
+    jotaiStore.set(inlineVisualsAtom, false);
+    expect(getVisuals?.()).toBe(false);
+    jotaiStore.set(inlineVisualsAtom, true);
   });
 });

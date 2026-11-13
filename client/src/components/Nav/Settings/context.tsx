@@ -52,6 +52,7 @@ export function useSettingsContext(): SettingsContextValue {
   const aboutEnabled = startupConfig?.interface?.buildInfo !== false;
   /* Offered only once the deployment has answered, so an operator's opt-out never flashes the row. */
   const mascotAllowed = startupConfig != null && startupConfig.interface?.mascot !== false;
+  const visualsAllowed = startupConfig != null && startupConfig.interface?.visuals !== false;
   /* Offered only once the deployment has answered, matching the capability hook the alerts
      read: before then a toggle could store a preference, or raise the browser's permission
      prompt, for a capability the operator turns off. */
@@ -94,6 +95,7 @@ export function useSettingsContext(): SettingsContextValue {
       allowAccountDeletion,
       aboutEnabled,
       mascotAllowed,
+      visualsAllowed,
       engineTTS,
       langfuseConnectionAccess,
       langfusePromptSyncAccess,
@@ -122,6 +124,7 @@ export function useSettingsContext(): SettingsContextValue {
       allowAccountDeletion,
       aboutEnabled,
       mascotAllowed,
+      visualsAllowed,
       engineTTS,
       langfuseConnectionAccess,
       langfusePromptSyncAccess,

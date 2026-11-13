@@ -34,6 +34,8 @@ export type RequestBody = {
   codeApprovalMode?: CodeApprovalMode;
   codeEnvironmentMode?: CodeEnvironmentMode;
   codeWorkspaces?: CodeWorkspaceSelection[];
+  /** The user's inline visuals setting. */
+  visuals?: boolean;
 };
 
 export type ServerRequest = Request<unknown, unknown, RequestBody> & {

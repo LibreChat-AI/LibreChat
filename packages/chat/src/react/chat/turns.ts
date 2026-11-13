@@ -306,6 +306,7 @@ export function useTurns(
       quotes,
       reasoningOverride,
       code: codeDecision.code,
+      visuals: services.getVisuals?.(),
     });
     const { submission, currentMsg, initialResponse, submissionMessages, fileEffects } = turn;
     conversationId = turn.conversationId;

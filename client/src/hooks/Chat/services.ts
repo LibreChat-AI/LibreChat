@@ -4,8 +4,8 @@ import { useNavigate } from 'react-router-dom';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import { launchedConversationFamily } from '@librechat/chat/react';
+import type { TEndpointsConfig, TStartupConfig } from 'librechat-data-provider';
 import type { ChatTurnsParams, TurnServices } from '@librechat/chat/react';
-import type { TEndpointsConfig } from 'librechat-data-provider';
 import {
   logger,
   requestChatFocus,
@@ -20,7 +20,9 @@ import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
+import { inlineVisualsAtom } from '~/components/Visuals/store';
 import { cancelUploads } from '~/hooks/Files/useFileHandling';
+import { startupConfigKey } from '~/data-provider';
 import useUserKey from '~/hooks/Input/useUserKey';
 import { isTargetReady } from './ask/guards';
 
@@ -78,6 +80,9 @@ export default function useTurnServices({
     getEphemeralAgent,
     getUserKey: getExpiry,
     getRouteProjectId: getRouteChatProjectId,
+    getVisuals: () =>
+      queryClient.getQueryData<TStartupConfig>(startupConfigKey(true))?.interface?.visuals !==
+        false && store.get(inlineVisualsAtom),
     canSubmit: (submitted) => {
       const { config, addedConversation } = readiness.current;
       return (

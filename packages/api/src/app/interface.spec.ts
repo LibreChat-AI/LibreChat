@@ -23,6 +23,11 @@ describe('buildPreLoginInterface', () => {
     });
   });
 
+  it('carries only a disabled visuals flag', () => {
+    expect(buildPreLoginInterface({ visuals: false })).toEqual({ visuals: false });
+    expect(buildPreLoginInterface({ visuals: true })).toBeUndefined();
+  });
+
   it('drops a policy link that would run script, keeping the safe link and the rest', () => {
     expect(
       buildPreLoginInterface({
