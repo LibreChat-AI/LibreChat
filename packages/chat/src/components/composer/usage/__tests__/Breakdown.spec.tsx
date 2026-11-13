@@ -5,7 +5,7 @@ import '@testing-library/jest-dom/extend-expect';
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { Constants, Tools } from 'librechat-data-provider';
-import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
 import type { TokenUsageView } from '../../../../core/usage';
 import { initEnglish } from '../../../../__fixtures__/i18n';
 import Breakdown from '../Breakdown';
@@ -119,11 +119,13 @@ const toggle = () => screen.getByTestId('context-breakdown-toggle');
 
 describe('TokenUsage Breakdown', () => {
   describe('collapse', () => {
-    it('opens showing only the gauge, with the detail behind the disclosure', () => {
+    it('shows context immediately and keeps conversation accounting collapsed', () => {
       renderBreakdown();
 
       expect(toggle()).toHaveAttribute('aria-expanded', 'false');
       expect(screen.getByRole('progressbar')).toBeInTheDocument();
+      expect(screen.getByTestId('context-estimate')).toBeVisible();
+      expect(screen.queryByRole('region', { name: 'Token totals' })).not.toBeInTheDocument();
       expect(screen.queryByTestId('token-usage-totals')).not.toBeInTheDocument();
     });
 
@@ -133,31 +135,23 @@ describe('TokenUsage Breakdown', () => {
       await userEvent.click(toggle());
 
       expect(toggle()).toHaveAttribute('aria-expanded', 'true');
-      expect(screen.getByTestId('token-usage-totals')).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Token totals' })).toBeInTheDocument();
+      expect(screen.getByTestId('token-usage-totals')).toBeVisible();
     });
 
-    it('reports the expanded choice to the host', async () => {
+    it('reports the disclosure choice to the host', async () => {
       const onExpandedChange = jest.fn();
       renderBreakdown({ onExpandedChange });
-
       await userEvent.click(toggle());
-      expect(onExpandedChange).toHaveBeenLastCalledWith(true);
-
-      await userEvent.click(toggle());
-      expect(onExpandedChange).toHaveBeenLastCalledWith(false);
-    });
-
-    it('renders expanded when the host starts it expanded', () => {
-      renderBreakdown({ initialExpanded: true });
-
-      expect(toggle()).toHaveAttribute('aria-expanded', 'true');
-      expect(screen.getByTestId('token-usage-totals')).toBeInTheDocument();
+      expect(onExpandedChange).toHaveBeenCalledWith(true);
     });
 
     it('keeps the gauge readout visible while collapsed', () => {
       renderBreakdown({ view: snapshotView });
 
-      expect(within(toggle()).getByText('1K / 2K (50%)')).toBeInTheDocument();
+      expect(screen.getByText('1K / 2K')).toBeVisible();
+      expect(screen.getByText('50%')).toBeVisible();
+      expect(screen.getByTestId('context-breakdown')).toHaveClass('grid-cols-2');
     });
   });
 
@@ -196,7 +190,6 @@ describe('TokenUsage Breakdown', () => {
 
     it('gives the deferred rows their family slot and a hatch', async () => {
       renderBreakdown({ view: snapshotView });
-      await userEvent.click(toggle());
 
       const breakdown = screen.getByTestId('context-breakdown');
       const rowFor = (label: string) =>
@@ -212,7 +205,6 @@ describe('TokenUsage Breakdown', () => {
 
     it('renders the Messages segment solid, like every other series', async () => {
       renderBreakdown({ view: snapshotView });
-      await userEvent.click(toggle());
 
       const messages = within(screen.getByTestId('context-breakdown')).getByText('Messages')
         .parentElement?.firstElementChild as HTMLElement;
@@ -223,7 +215,6 @@ describe('TokenUsage Breakdown', () => {
 
     it('dims the other bar segments while a legend row is hovered', async () => {
       renderBreakdown({ view: snapshotView });
-      await userEvent.click(toggle());
 
       const segments = Array.from(screen.getByRole('progressbar').children) as HTMLElement[];
       const rowFor = (label: string) =>
@@ -235,15 +226,17 @@ describe('TokenUsage Breakdown', () => {
 
       expect(segments[0].className).not.toContain('opacity-40');
       segments.slice(1).forEach((segment) => expect(segment).toHaveClass('opacity-40'));
+      expect(rowFor('System prompt').lastElementChild).toHaveClass('opacity-70');
+      expect(rowFor('Messages').lastElementChild).not.toHaveClass('opacity-70');
 
       fireEvent.pointerLeave(rowFor('Messages'));
 
       segments.forEach((segment) => expect(segment.className).not.toContain('opacity-40'));
+      expect(rowFor('System prompt').lastElementChild).not.toHaveClass('opacity-70');
     });
 
     it('recedes every segment when the free track row is hovered', async () => {
       renderBreakdown({ view: snapshotView });
-      await userEvent.click(toggle());
 
       const segments = Array.from(screen.getByRole('progressbar').children) as HTMLElement[];
       const rowFor = (label: string) =>
@@ -256,12 +249,21 @@ describe('TokenUsage Breakdown', () => {
       segments.forEach((segment) => expect(segment).toHaveClass('opacity-40'));
     });
 
+    it('highlights an available tool-call row even when its count is zero', () => {
+      const zeroTools = JSON.parse(JSON.stringify(snapshotView)) as TokenUsageView;
+      zeroTools.snapshot!.breakdown.toolMessageTokens = 0;
+      renderBreakdown({ view: zeroTools });
+      const legend = within(screen.getByTestId('context-breakdown'));
+      fireEvent.pointerEnter(legend.getByText('Tool calls').closest('div')!);
+      expect(legend.getByText('Messages').parentElement).toHaveClass('opacity-70');
+      expect(legend.getByText('Tool calls').parentElement).not.toHaveClass('opacity-70');
+    });
+
     it('drops the dimming when the hovered row disappears from a live update', async () => {
       const noSubagents = JSON.parse(JSON.stringify(snapshotView)) as TokenUsageView;
       delete noSubagents.snapshot?.breakdown.toolTokenCounts?.[Constants.SUBAGENT];
 
       const { rerender } = renderBreakdown({ view: snapshotView });
-      await userEvent.click(toggle());
 
       const segments = () => Array.from(screen.getByRole('progressbar').children) as HTMLElement[];
       const rowFor = (label: string) =>
@@ -287,7 +289,6 @@ describe('TokenUsage Breakdown', () => {
 
     it('leaves the estimate path unsegmented, with no swatches on its rows', async () => {
       renderBreakdown();
-      await userEvent.click(toggle());
 
       const estimate = screen.getByTestId('context-estimate');
 
@@ -307,7 +308,6 @@ describe('TokenUsage Breakdown', () => {
       } as TokenUsageView;
 
       renderBreakdown({ view: estimateWithTools });
-      await userEvent.click(toggle());
 
       const estimate = screen.getByTestId('context-estimate');
       const peerTotal = Array.from(estimate.children)
@@ -315,7 +315,7 @@ describe('TokenUsage Breakdown', () => {
         .reduce((sum, child) => sum + Number(child.lastElementChild?.textContent ?? 0), 0);
 
       /** 300 input + 200 output + 100 estimated = 600 used. The tool share is a
-       *  subset of those rows, so it may only appear as an indented subtotal:
+       *  subset of those rows, so it may only appear as an indented subtotal,
        *  as a peer row the visible rows would claim 750 of a 600-token window. */
       expect(peerTotal).toBe(600);
 
@@ -326,7 +326,6 @@ describe('TokenUsage Breakdown', () => {
     });
     it('splits tool-call usage out of the messages row when reported', async () => {
       renderBreakdown({ view: toolSplitView });
-      await userEvent.click(toggle());
 
       const breakdown = screen.getByTestId('context-breakdown');
       const rowFor = (label: string) =>
@@ -344,7 +343,6 @@ describe('TokenUsage Breakdown', () => {
       retainedToolSplit.snapshot!.retainedToolTokens = 75;
 
       renderBreakdown({ view: retainedToolSplit });
-      await userEvent.click(toggle());
 
       const breakdown = screen.getByTestId('context-breakdown');
       const rowFor = (label: string) =>
@@ -383,7 +381,6 @@ describe('TokenUsage Breakdown', () => {
       manyTools.toolMessageTokenCounts = manyTools.snapshot!.breakdown.toolMessageTokenCounts;
 
       renderBreakdown({ view: manyTools });
-      await userEvent.click(toggle());
       await userEvent.click(screen.getByRole('button', { name: /Tool calls/ }));
 
       const details = screen.getByText('By tool').parentElement as HTMLElement;
@@ -409,7 +406,6 @@ describe('TokenUsage Breakdown', () => {
       knownZero.snapshot!.breakdown.toolMessageTokens = 0;
 
       renderBreakdown({ view: knownZero });
-      await userEvent.click(toggle());
       const breakdown = screen.getByTestId('context-breakdown');
       expect(within(breakdown).getByText('Tool calls')).toBeInTheDocument();
       expect(
@@ -419,7 +415,6 @@ describe('TokenUsage Breakdown', () => {
 
     it('uses a native disclosure button for the expandable tool list', async () => {
       renderBreakdown({ view: toolSplitView });
-      await userEvent.click(toggle());
 
       const toolButton = screen.getByRole('button', { name: /Tool calls/ });
       expect(toolButton).toHaveAttribute('aria-expanded', 'false');
@@ -438,7 +433,6 @@ describe('TokenUsage Breakdown', () => {
 
     it('keeps the messages row unsplit when the snapshot lacks the tool split', async () => {
       renderBreakdown({ view: snapshotView });
-      await userEvent.click(toggle());
 
       const breakdown = screen.getByTestId('context-breakdown');
       expect(within(breakdown).queryByText('Tool calls')).toBeNull();
@@ -447,78 +441,20 @@ describe('TokenUsage Breakdown', () => {
       ).toContain('550');
     });
 
-    it('shows cached prompt shares as a subtotal, not beside the context rows', async () => {
-      const cached = {
-        ...snapshotView,
-        cacheRead: 30,
-        cacheWrite: 10,
-      } as TokenUsageView;
-      renderBreakdown({ view: cached });
-      await userEvent.click(toggle());
-
-      const breakdown = screen.getByTestId('context-breakdown');
-      const cachedRow = within(breakdown).getByText('Cached').parentElement
-        ?.parentElement as HTMLElement;
-
-      /** Reconciliation already counted the cached prompt inside the segments
-       *  above, so these may only appear indented: as peer rows a fully cached
-       *  prompt would show its tokens twice and the visible rows would sum past
-       *  the meter. */
-      expect(
-        within(breakdown).getByText('Cached input in the context snapshot'),
-      ).toBeInTheDocument();
-      expect(cachedRow.parentElement?.className).toContain('ps-6');
-      expect(cachedRow.textContent).toContain('30');
-      /** The share column is keyed to the window, like every row above: without
-       *  it the cached row reads as a bare number beside rows that all carry a
-       *  percentage, with the cell left blank. */
-      expect(cachedRow.textContent).toContain('(2%)');
-      const peers = Array.from(breakdown.children).filter(
-        (child) => !child.className.includes('ps-6'),
-      );
-      expect(peers.some((peer) => peer.textContent?.includes('Cache write'))).toBe(false);
+    it('keeps cached traffic inside the context meter without duplicate legend rows', () => {
+      renderBreakdown({ view: { ...snapshotView, cacheRead: 30, cacheWrite: 10 } });
+      expect(screen.queryByText('Cached')).not.toBeInTheDocument();
+      expect(screen.queryByText('Cache write')).not.toBeInTheDocument();
       expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50');
     });
 
-    it('hides the compaction hint when the operation is unavailable', async () => {
+    it('keeps the pressure warning without an insights control', () => {
       renderBreakdown({
-        view: { ...toolSplitView, runwayTurns: 2, compactionReclaim: 90000 },
-        compactionAvailable: false,
+        view: { ...toolSplitView, percent: 85, runwayTurns: 2, compactionReclaim: 90000 },
       });
-      await userEvent.click(toggle());
-      await userEvent.click(screen.getByTestId('context-insights-toggle'));
-      const hints = await screen.findByTestId('context-hints');
-      expect(hints.textContent).toContain('≈2 more turns at this growth');
-      expect(hints.textContent).not.toContain('Summarizing now could reclaim');
-    });
-
-    it('warns under pressure inline, with insights behind the ⓘ button', async () => {
-      const pressured = JSON.parse(JSON.stringify(toolSplitView)) as TokenUsageView;
-      pressured.percent = 85;
-      pressured.snapshot!.breakdown.toolMessageTokenCounts = {
-        grep: 1500,
-        read_file: 500,
-      };
-      pressured.toolMessageTokenCounts = pressured.snapshot!.breakdown.toolMessageTokenCounts;
-      pressured.runwayTurns = 2;
-      pressured.compactionReclaim = 90000;
-
-      renderBreakdown({ view: pressured, compactionAvailable: true });
-      await userEvent.click(toggle());
-
-      /** Pressure warns inline; insights stay hidden until the ⓘ is hovered */
       expect(screen.getByText('Context window is filling up')).toBeInTheDocument();
-      expect(screen.queryByTestId('context-hints')).toBeNull();
-
-      const info = screen.getByTestId('context-insights-toggle');
-      await userEvent.click(info);
-      const hints = await screen.findByTestId('context-hints');
-      expect(hints.textContent).toContain('Largest tool: grep (150)');
-      expect(hints.textContent).toContain('≈2 more turns at this growth');
-      expect(hints.textContent).toContain('Summarizing now could reclaim ≈90K tokens');
-
-      await userEvent.keyboard('{Escape}');
-      await waitFor(() => expect(screen.queryByTestId('context-hints')).toBeNull());
+      expect(screen.queryByTestId('context-insights-toggle')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('context-hints')).not.toBeInTheDocument();
     });
 
     it('shows the danger tint at the hard threshold', async () => {
@@ -526,7 +462,6 @@ describe('TokenUsage Breakdown', () => {
       critical.percent = 96;
 
       renderBreakdown({ view: critical });
-      await userEvent.click(toggle());
 
       expect(screen.getByText('Context window is almost full')).toBeInTheDocument();
     });
@@ -537,14 +472,18 @@ describe('TokenUsage Breakdown', () => {
       renderBreakdown();
       await userEvent.click(toggle());
 
+      expect(toggle()).toHaveAccessibleName('Token totals');
       expect(
-        within(screen.getByTestId('token-usage-totals')).getByRole('heading', {
-          name: 'Totals',
-        }),
-      ).toBeInTheDocument();
+        within(screen.getByTestId('token-usage-totals')).queryByRole('heading'),
+      ).not.toBeInTheDocument();
+      const totals = screen.getByTestId('token-usage-totals');
+      expect(totals).not.toHaveClass('border', 'p-3');
+      expect(within(totals).queryByRole('button')).not.toBeInTheDocument();
+      expect(within(totals).getByText('Input (uncached)')).toBeVisible();
+      expect(within(totals).queryByText('This branch')).not.toBeInTheDocument();
     });
 
-    it('counts a cached subagent call in the all-branches subtotal', async () => {
+    it('leaves all-branch subagent accounting in conversation info', async () => {
       /** A fully cached subagent call reports its prompt under cacheRead and
        *  returns nothing: summing input+output alone would hide the row while
        *  the cache rows above still count the same traffic. */
@@ -565,15 +504,13 @@ describe('TokenUsage Breakdown', () => {
       await userEvent.click(toggle());
 
       const totals = within(screen.getByTestId('token-usage-totals'));
-      expect(totals.getByText('Subagents (all branches)').nextElementSibling).toHaveTextContent(
-        '1K',
-      );
+      expect(totals.queryByText('Subagents (all branches)')).not.toBeInTheDocument();
     });
   });
 
-  describe('last turn', () => {
+  describe('conversation accounting', () => {
     it.each([true, false])(
-      'shows sibling totals on an unrecorded branch, showCost=%s',
+      'does not show sibling totals on an unrecorded branch, showCost=%s',
       async (showCost) => {
         renderBreakdown({
           view: {
@@ -600,16 +537,10 @@ describe('TokenUsage Breakdown', () => {
           },
           showCost,
         });
-        await userEvent.click(toggle());
+        expect(screen.queryByTestId('context-breakdown-toggle')).not.toBeInTheDocument();
         expect(screen.queryByTestId('token-usage-totals')).not.toBeInTheDocument();
-        expect(screen.getByTestId('token-usage-all-branches')).toHaveTextContent('800');
-        if (showCost) {
-          expect(
-            within(screen.getByTestId('token-usage-all-branches')).getByTestId('usage-cost'),
-          ).toHaveTextContent('All branches');
-        } else {
-          expect(screen.queryByTestId('usage-cost')).not.toBeInTheDocument();
-        }
+        expect(screen.queryByTestId('token-usage-all-branches')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('usage-cost')).not.toBeInTheDocument();
       },
     );
 
@@ -648,21 +579,15 @@ describe('TokenUsage Breakdown', () => {
       });
       await userEvent.click(toggle());
 
-      const last = within(screen.getByTestId('token-usage-last-turn'));
-      expect(last.getByRole('heading', { name: 'Last turn' })).toBeInTheDocument();
-      expect(last.getByText('Cache read').parentElement?.parentElement).toHaveTextContent('700');
-      expect(last.getByText('Cache write').parentElement?.parentElement).toHaveTextContent('90');
+      expect(screen.queryByTestId('token-usage-last-turn')).not.toBeInTheDocument();
       const totals = within(screen.getByTestId('token-usage-totals'));
-      expect(totals.getByText('This branch')).toBeInTheDocument();
+      expect(totals.queryByText('This branch')).not.toBeInTheDocument();
       expect(totals.getByText('Cache read').parentElement?.parentElement).toHaveTextContent('800');
-      const all = within(screen.getByTestId('token-usage-all-branches'));
-      expect(all.getByText('Cache read').parentElement?.parentElement).toHaveTextContent('900');
-      expect(last.getByTestId('usage-cost')).toHaveTextContent('Cost (last turn)');
-      expect(totals.getByTestId('usage-cost')).toHaveTextContent('Cost (this branch)');
-      expect(all.getByTestId('usage-cost')).toHaveTextContent('All branches');
+      expect(screen.queryByTestId('token-usage-all-branches')).not.toBeInTheDocument();
+      expect(within(toggle()).getByTestId('usage-cost')).toHaveTextContent('$0.01');
     });
 
-    it('exposes all-branches token differences without requiring cost coverage', async () => {
+    it('does not expose all-branches token differences or incomplete branch cost', async () => {
       renderBreakdown({
         view: {
           ...view,
@@ -680,81 +605,21 @@ describe('TokenUsage Breakdown', () => {
         showCost: true,
       });
       await userEvent.click(toggle());
-      expect(screen.getByTestId('token-usage-all-branches')).toHaveTextContent('25');
-      expect(
-        within(screen.getByTestId('token-usage-last-turn')).getByTestId('usage-cost'),
-      ).toHaveTextContent('Cost (last turn)');
-      expect(
-        within(screen.getByTestId('token-usage-totals')).queryByTestId('usage-cost'),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId('token-usage-all-branches')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('usage-cost')).not.toBeInTheDocument();
     });
 
-    it('shows waiting and unavailable states without presenting old totals as the current turn', async () => {
-      const { rerender } = render(
-        <Host view={{ ...view, lastTurnUsage: undefined, turnInProgress: true }} showCost />,
-      );
-      await userEvent.click(toggle());
-      expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent(
-        'Waiting for model usage...',
-      );
-      rerender(
-        <Host view={{ ...view, lastTurnUsage: undefined, turnInProgress: false }} showCost />,
-      );
-      expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent(
-        'Usage not available for this turn',
-      );
-    });
-
-    it('labels recorded in-flight cost as a partial current-turn figure', async () => {
-      renderBreakdown({
-        view: {
-          ...view,
-          turnInProgress: true,
-          lastTurnUsage: {
-            input: 10,
-            output: 0,
-            cacheRead: 20,
-            cacheWrite: 0,
-            cost: 0.01,
-            costKnown: true,
-          },
-        },
-        showCost: true,
-      });
-      await userEvent.click(toggle());
-      expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent(
-        'Current turn (so far)',
-      );
-      expect(
-        within(screen.getByTestId('token-usage-last-turn')).getByTestId('usage-cost'),
-      ).toHaveTextContent('Cost (current turn so far)');
-    });
-
-    it('keeps a known zero cost and hides a missing cost', async () => {
-      renderBreakdown({
-        view: {
-          ...view,
-          lastTurnUsage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            cost: 0,
-            costKnown: true,
-          },
-          branchUsage: { ...view.branchUsage, costKnown: false },
-        },
-        showCost: true,
-      });
-      await userEvent.click(toggle());
-      expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent('Last turn');
-      expect(
-        within(screen.getByTestId('token-usage-last-turn')).getByTestId('usage-cost'),
-      ).toHaveTextContent('Cost (last turn)');
-      expect(
-        within(screen.getByTestId('token-usage-totals')).queryByTestId('usage-cost'),
-      ).not.toBeInTheDocument();
-    });
+    it.each([true, false])(
+      'leaves turn details on the response, streaming=%s',
+      (turnInProgress) => {
+        renderBreakdown({
+          view: { ...view, lastTurnUsage: undefined, turnInProgress },
+          showCost: true,
+        });
+        expect(screen.queryByTestId('token-usage-last-turn')).not.toBeInTheDocument();
+        expect(screen.queryByText('Waiting for model usage...')).not.toBeInTheDocument();
+      },
+    );
   });
 
   describe('langfuse', () => {

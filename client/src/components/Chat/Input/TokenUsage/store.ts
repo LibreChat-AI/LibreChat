@@ -1,7 +1,6 @@
 import { createStorageAtom } from '~/store/jotai-utils';
 
-/** Sticky preference: does the context popover open with the breakdown showing?
- *  The gauge alone is the default; a user who wants the detail sets it once. */
+/** Remember whether cumulative token totals are expanded below the context legend. */
 export const contextBreakdownExpandedAtom = createStorageAtom<boolean>(
   'contextBreakdownExpanded',
   false,

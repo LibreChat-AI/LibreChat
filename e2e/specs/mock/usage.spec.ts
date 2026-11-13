@@ -19,9 +19,7 @@ async function expectGaugeAboveZero(page: Page) {
   await expect(gaugeMeter(page)).toHaveAttribute('aria-valuenow', /[1-9]/, { timeout: 20000 });
 }
 
-/** The popover opens showing the gauge alone; the detail sits behind a
- *  disclosure whose state is remembered per user. Idempotent, so it is safe to
- *  call after a reload that restored an already-expanded preference. */
+/** Conversation accounting is a remembered disclosure below the visible context legend. */
 async function expandBreakdown(popover: Locator) {
   const toggle = popover.getByTestId('context-breakdown-toggle');
   await expect(toggle).toBeVisible({ timeout: 10000 });
@@ -61,7 +59,9 @@ async function sendAndAwaitReply(page: Page, text: string) {
 }
 
 test.describe('context usage gauge', () => {
-  test('tracks usage from live SSE events and survives reload', async ({ page }) => {
+  test('tracks usage from live SSE events and survives reload @scenario:context-live-usage', async ({
+    page,
+  }) => {
     test.setTimeout(120000);
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
 
@@ -81,9 +81,7 @@ test.describe('context usage gauge', () => {
      *  Input/Output rows when the lib predates on_context_usage */
     const popover = await openBreakdown(page);
     await expect(popover.getByText('Context window')).toBeVisible();
-    const lastTurn = popover.getByTestId('token-usage-last-turn');
-    await expect(lastTurn.getByRole('heading', { name: 'Last turn' })).toBeVisible();
-    await expect(lastTurn.getByText('Input (uncached)')).toBeVisible();
+    await expect(popover.getByTestId('token-usage-last-turn')).toHaveCount(0);
     const usageSection = popover.getByTestId('token-usage-totals');
     await expect(usageSection).toBeVisible({ timeout: 10000 });
     await expect(usageSection.getByText('Input (uncached)', { exact: true })).toBeVisible();
@@ -91,24 +89,30 @@ test.describe('context usage gauge', () => {
 
     /** Cost row: interface.contextCost is enabled in the harness yaml, the
      *  token-config endpoint prices mock models at the default rate, and the
-     *  fake model emits usage — so a $ value must render. A single (unbranched)
+     *  fake model emits usage, so a $ value must render. A single (unbranched)
      *  conversation shows only the branch cost, no all-branches total line. */
-    const costSection = popover.getByTestId('token-usage-totals').getByTestId('usage-cost');
+    const costSection = popover.getByTestId('context-breakdown-toggle').getByTestId('usage-cost');
     await expect(costSection).toBeVisible();
     await expect(costSection.getByText(/\$\d|<\$0\.01/).first()).toBeVisible();
     await expect(popover.getByTestId('token-usage-all-branches')).toHaveCount(0);
     await page.keyboard.press('Escape');
 
+    await page.getByTestId('message-usage-button').last().click();
+    const turn = page.getByTestId('message-turn-usage');
+    await expect(turn.getByRole('heading', { name: 'Turn usage' })).toBeVisible();
+    await expect(turn.getByText('Input (uncached)')).toBeVisible();
+    await page.keyboard.press('Escape');
+
     /** Persistence (Parts A + B): after reload the breakdown rehydrates from
-     *  the response message's metadata.contextUsage + metadata.usage — the
+     *  the response message's metadata.contextUsage + metadata.usage, the
      *  granular rows AND the branch cost survive without generating a turn. */
     await page.reload({ timeout: 15000 });
     await expect(mockReply(page)).toBeVisible({ timeout: 20000 });
     await expectGaugeAboveZero(page);
     const reloaded = await openBreakdown(page);
     await expect(reloaded.getByTestId('context-breakdown')).toBeVisible({ timeout: 10000 });
-    await expect(reloaded.getByTestId('token-usage-last-turn')).toContainText('Input (uncached)');
-    const reloadedCost = reloaded.getByTestId('token-usage-totals').getByTestId('usage-cost');
+    await expect(reloaded.getByTestId('token-usage-last-turn')).toHaveCount(0);
+    const reloadedCost = reloaded.getByTestId('context-breakdown-toggle').getByTestId('usage-cost');
     await expect(reloadedCost).toBeVisible();
     await expect(reloadedCost.getByText(/\$\d|<\$0\.01/).first()).toBeVisible();
   });
@@ -121,20 +125,25 @@ test.describe('context usage gauge', () => {
     await sendAndAwaitReply(page, 'hello');
 
     /** The agents pipeline emits on_context_usage on each model call, so the
-     *  breakdown — not the estimate fallback — drives the popover. */
+     *  breakdown, not the estimate fallback, drives the popover. */
     await expectGranular(page);
   });
 
-  test('shows branch cost with an all-branches total after regenerating', async ({ page }) => {
+  test('shows branch cost with all-response usage in conversation info @scenario:conversation-info-branched-usage', async ({
+    page,
+  }, testInfo) => {
     test.setTimeout(150000);
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await expect(page.getByTestId('conversation-info-menu-item')).toHaveCount(0);
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
     await sendAndAwaitReply(page, 'hello');
 
     /** Single branch: branch cost == total, so no all-branches line renders. */
     let popover = await openBreakdown(page);
-    await expect(popover.getByTestId('token-usage-totals').getByTestId('usage-cost')).toBeVisible();
+    await expect(
+      popover.getByTestId('context-breakdown-toggle').getByTestId('usage-cost'),
+    ).toBeVisible();
     await expect(popover.getByText('All branches')).toHaveCount(0);
     await page.keyboard.press('Escape');
 
@@ -154,21 +163,46 @@ test.describe('context usage gauge', () => {
 
     /** Branch cost is shown live for the regenerated branch. */
     popover = await openBreakdown(page);
-    await expect(popover.getByTestId('token-usage-totals').getByTestId('usage-cost')).toBeVisible();
+    await expect(
+      popover.getByTestId('context-breakdown-toggle').getByTestId('usage-cost'),
+    ).toBeVisible();
     await page.keyboard.press('Escape');
 
     /** After reload both branches rehydrate from persisted metadata.usage, so
-     *  the cost is branch-scoped and a muted all-branches total appears (it
-     *  exceeds the single viewed branch). */
+     *  the context card keeps the branch cost and conversation info contains
+     *  the combined cost of both branches. */
     await page.reload({ timeout: 15000 });
     await expect(mockReply(page)).toBeVisible({ timeout: 20000 });
     const reloaded = await openBreakdown(page);
-    const costSection = reloaded.getByTestId('token-usage-totals').getByTestId('usage-cost');
+    const costSection = reloaded.getByTestId('context-breakdown-toggle').getByTestId('usage-cost');
     await expect(costSection).toBeVisible();
-    await expect(costSection).toContainText('Cost (this branch)');
+    await expect(costSection).toContainText('Cost');
+    await expect(reloaded.getByTestId('token-usage-all-branches')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await page.locator('#export-menu-button:visible, #header-menu-button:visible').click();
+    await page.getByTestId('conversation-info-menu-item').click();
+    const info = page.getByRole('dialog', { name: 'Conversation info' });
     await expect(
-      reloaded.getByTestId('token-usage-all-branches').getByTestId('usage-cost'),
+      info.getByTestId('conversation-total-usage').getByTestId('usage-cost'),
     ).toBeVisible();
+    const conversationId = new URL(page.url()).pathname.split('/').pop()!;
+    await expect(info.getByText(conversationId, { exact: true })).toBeVisible();
+    await expect(info.getByRole('button', { name: 'Copy conversation ID' })).toBeVisible();
+    await expect(
+      info.getByText('Assistant responses', { exact: true }).locator('..'),
+    ).toContainText('2');
+    const accessibility = await new AxeBuilder({ page })
+      .include('[data-testid="conversation-info-details"]')
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+    expect(accessibility.violations).toEqual([]);
+    await testInfo.attach('conversation-info', {
+      body: await info.screenshot(),
+      contentType: 'image/png',
+    });
+    await page.keyboard.press('Escape');
+    await expect(info).toBeHidden();
+    await expect(page.getByTestId('conversation-info-menu-item')).toBeFocused();
   });
 
   test('preserves the granular breakdown after switching branches', async ({ page }) => {
@@ -209,14 +243,15 @@ test.describe('context usage gauge', () => {
      *  flushed usage is restored from the sticky usage history even though its
      *  cache message lacks metadata.usage and B's regenerate dropped it. */
     const popover = page.getByRole('region', { name: 'Context usage' });
-    const costSection = popover.getByTestId('token-usage-totals').getByTestId('usage-cost');
+    const costSection = popover.getByTestId('context-breakdown-toggle').getByTestId('usage-cost');
     await expect(costSection).toBeVisible();
-    /** Branch A also has siblings, so both a branch-cost row and an all-branches
-     *  total render — assert at least one cost value is present. */
+    /** The branch cost stays available without opening conversation info. */
     await expect(costSection.getByText(/\$\d|<\$0\.01/).first()).toBeVisible();
   });
 
-  test('opens to the gauge alone and remembers an expanded breakdown', async ({ page }) => {
+  test('shows the context legend immediately and remembers expanded conversation accounting @scenario:context-live-disclosure', async ({
+    page,
+  }) => {
     test.setTimeout(120000);
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
@@ -224,15 +259,15 @@ test.describe('context usage gauge', () => {
     await sendAndAwaitReply(page, 'hello');
     await expectGaugeAboveZero(page);
 
-    /** Default view is the gauge: the meter and its readout, nothing else. */
+    /** The context composition is visible immediately; accounting is collapsed. */
     await gauge(page).click();
     const popover = page.getByRole('region', { name: 'Context usage' });
     await expect(popover).toBeVisible({ timeout: 10000 });
     const toggle = popover.getByTestId('context-breakdown-toggle');
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await expect(popover.getByRole('progressbar')).toBeVisible();
-    await expect(popover.getByTestId('token-usage-totals')).toHaveCount(0);
-    await expect(popover.getByTestId('context-breakdown')).toHaveCount(0);
+    await expect(popover.getByTestId('token-usage-totals')).toBeHidden();
+    await expect(popover.getByTestId('context-breakdown')).toBeVisible();
 
     /** Expanding reveals the detail, and the usage section is labelled so its
      *  numbers are not read as part of the context composition. */
@@ -240,11 +275,11 @@ test.describe('context usage gauge', () => {
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     const totals = popover.getByTestId('token-usage-totals');
     await expect(totals).toBeVisible({ timeout: 10000 });
-    await expect(totals.getByRole('heading', { name: 'Totals' })).toBeVisible();
+    await expect(totals).toHaveAccessibleName('Token totals');
     await page.keyboard.press('Escape');
 
     /** The choice is a stored preference, so a reload reopens expanded with no
-     *  second click — the part a component test cannot reach. */
+     *  second click, the part a component test cannot reach. */
     await page.reload({ timeout: 15000 });
     await expect(mockReply(page)).toBeVisible({ timeout: 20000 });
     await expectGaugeAboveZero(page);
@@ -257,7 +292,7 @@ test.describe('context usage gauge', () => {
     await expect(popover.getByTestId('token-usage-totals')).toBeVisible({ timeout: 10000 });
   });
 
-  test('reflows condensed sections inside the viewport with keyboard-accessible details', async ({
+  test('reflows condensed sections inside the viewport with keyboard-accessible details @scenario:context-responsive-details', async ({
     page,
   }, testInfo) => {
     test.setTimeout(120000);
@@ -267,17 +302,17 @@ test.describe('context usage gauge', () => {
     const popover = await openBreakdown(page);
     await expect(popover).toHaveCSS('container-type', 'inline-size');
     const dialog = page.getByRole('dialog', { name: 'Context usage' });
-    const details = popover.getByTestId('context-details');
-    const lastTurn = popover.getByTestId('token-usage-last-turn');
-    const disclosure = lastTurn.getByRole('button');
-    await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
-    await expect(lastTurn.getByText('Cache read', { exact: true })).toBeVisible();
+    const details = popover.getByTestId('context-breakdown');
+    const totals = popover.getByTestId('token-usage-totals');
+    const disclosure = popover.getByTestId('context-breakdown-toggle');
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    await expect(totals.getByText('Cache read', { exact: true })).toBeVisible();
 
     for (const viewport of [
       { width: 1280, height: 900, columns: 2 },
       { width: 768, height: 800, columns: 2 },
-      { width: 375, height: 812, columns: 1 },
-      { width: 320, height: 568, columns: 1 },
+      { width: 375, height: 812, columns: 2 },
+      { width: 320, height: 568, columns: 2 },
       { width: 1280, height: 450, columns: 2 },
     ]) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -306,19 +341,27 @@ test.describe('context usage gauge', () => {
     }
 
     await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(dialog).toHaveCSS('opacity', '1');
+    await expect(dialog).toHaveCSS('transition-duration', '0.36s, 0.36s');
     await disclosure.focus();
-    await page.keyboard.press('Enter');
-    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
-    await expect(lastTurn.getByText('Cache write', { exact: true })).toBeVisible();
     await page.keyboard.press('Space');
     await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
-    await expect(lastTurn.getByText('Input (uncached)', { exact: true })).toBeVisible();
+    await expect(totals).toBeHidden();
+    await page.keyboard.press('Enter');
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    await expect(totals.getByText('Cache write', { exact: true })).toBeVisible();
 
+    await details.getByText('Messages', { exact: true }).hover();
+    await expect(details.getByText('Tool calls', { exact: true }).locator('..')).toHaveCSS(
+      'opacity',
+      '0.7',
+    );
     const accessibility = await new AxeBuilder({ page })
       .include('[data-testid="token-usage-card"]')
       .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
       .analyze();
     expect(accessibility.violations).toEqual([]);
+    await disclosure.hover();
     await testInfo.attach('context-panel-desktop', {
       body: await dialog.screenshot(),
       contentType: 'image/png',
@@ -330,14 +373,20 @@ test.describe('context usage gauge', () => {
           (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
         ),
       )
-      .toBe(1);
+      .toBe(2);
     await testInfo.attach('context-panel-mobile', {
       body: await dialog.screenshot(),
       contentType: 'image/png',
     });
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await gauge(page).click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveCSS('transition-duration', '0s');
   });
 
-  test('hides on a new chat, then reveals the breakdown on hover and pins it on click', async ({
+  test('hides on a new chat, then reveals the breakdown on hover and pins it on click @scenario:context-hover-and-pin', async ({
     page,
   }) => {
     test.setTimeout(120000);

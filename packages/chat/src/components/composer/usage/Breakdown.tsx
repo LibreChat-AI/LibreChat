@@ -1,11 +1,7 @@
 import { Fragment, useId, useMemo, useState } from 'react';
-import { ChevronDown, ExternalLink, Info, TriangleAlert } from 'lucide-react';
+import { ChevronDown, ExternalLink, TriangleAlert } from 'lucide-react';
 import {
   Button,
-  HoverCard,
-  HoverCardPortal,
-  HoverCardContent,
-  HoverCardTrigger,
   Collapsible,
   MeterSwatch,
   SegmentedMeter,
@@ -16,19 +12,24 @@ import {
 } from '@librechat/client';
 import type { MeterSegment } from '@librechat/client';
 import type { CurrencyConfig, TokenUsageView } from '../../../core/usage';
-import { groupToolTokens, formatTokens, normalizeTokenCount } from '../../../core/usage';
+import {
+  groupToolTokens,
+  formatTokens,
+  formatCost,
+  normalizeTokenCount,
+} from '../../../core/usage';
 import Usage from './Usage';
 
 interface RowProps {
   label: string;
   value: number;
-  max?: number;
   /** Present only when the row corresponds to real estate in the meter */
   segment?: Pick<MeterSegment, 'slot' | 'hatched' | 'outlined'>;
   /** The free-space remainder, keyed to the bare track rather than a series */
   track?: boolean;
   /** Meter segment this row keys; hovering it highlights its slice of the bar */
   id?: string;
+  activeId?: string | null;
   onHoverChange?: (id: string | null) => void;
   onClick?: () => void;
   expanded?: boolean;
@@ -38,21 +39,23 @@ interface RowProps {
 function Row({
   label,
   value,
-  max,
   segment,
   track,
   id,
+  activeId,
   onHoverChange,
   onClick,
   expanded,
   controls,
 }: RowProps) {
   const safeValue = normalizeTokenCount(value);
-  const safeMax = max != null ? normalizeTokenCount(max) : 0;
-  const percent = safeMax > 0 ? Math.min((safeValue / safeMax) * 100, 100) : null;
+  const highlightClass = cn(
+    'transition-opacity duration-150 motion-reduce:transition-none',
+    activeId != null && id != null && activeId !== id && 'opacity-70',
+  );
   const content = (
     <>
-      <span className="flex min-w-0 items-center gap-2">
+      <span className={cn('flex min-w-0 items-center gap-2', highlightClass)}>
         {segment != null && <MeterSwatch segment={segment} />}
         {track === true && (
           <span
@@ -60,38 +63,38 @@ function Row({
             className="bg-surface-tertiary ring-border-medium size-2 flex-none rounded-sm ring-1 ring-inset"
           />
         )}
-        <span className="text-text-secondary min-w-0 break-words">{label}</span>
+        <span className="text-text-primary min-w-0 break-words">{label}</span>
       </span>
-      <span className="text-text-primary shrink-0 font-medium whitespace-nowrap">
-        {formatTokens(safeValue)}
-        {percent != null && (
-          <span className="text-text-secondary ms-1 text-xs" aria-hidden="true">
-            ({Math.round(percent)}%)
-          </span>
+      <span
+        className={cn(
+          'text-text-primary shrink-0 font-medium whitespace-nowrap tabular-nums',
+          highlightClass,
         )}
+      >
+        {formatTokens(safeValue)}
       </span>
     </>
   );
   const className = cn(
-    'flex w-full items-center justify-between gap-4 text-start text-sm',
-    onClick != null &&
-      'rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-text-primary',
+    'flex w-full items-center justify-between gap-2 text-start text-sm tabular-nums',
   );
   const handlers = {
     onPointerEnter: id != null ? () => onHoverChange?.(id) : undefined,
     onPointerLeave: id != null ? () => onHoverChange?.(null) : undefined,
   };
   return onClick != null ? (
-    <button
+    <Button
+      variant="ghost"
+      size="bare"
       type="button"
-      className={className}
+      className="w-full justify-between text-start"
       aria-expanded={expanded}
       aria-controls={controls}
       onClick={onClick}
       {...handlers}
     >
       {content}
-    </button>
+    </Button>
   ) : (
     <div className={className} {...handlers}>
       {content}
@@ -102,10 +105,9 @@ function Row({
 export interface BreakdownProps {
   view: TokenUsageView;
   showCost: boolean;
-  compactionAvailable?: boolean;
   currency?: CurrencyConfig;
   langfuseSessionUrl?: string;
-  /** Whether the totals disclosure is open; owned by the host so it survives remounts */
+  /** The host owns the disclosure preference so it survives remounts. */
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
 }
@@ -113,7 +115,6 @@ export interface BreakdownProps {
 export default function Breakdown({
   view,
   showCost,
-  compactionAvailable = false,
   currency,
   langfuseSessionUrl,
   expanded,
@@ -122,8 +123,6 @@ export default function Breakdown({
   const localize = useLocalize();
   const [hoveredSegment, setHoveredSegment] = useState<string | null>(null);
   const [toolsExpanded, setToolsExpanded] = useState(false);
-  const [insightsOpen, setInsightsOpen] = useState(false);
-  const insightsId = useId();
   const toolBreakdownId = useId();
   const usedTokens = normalizeTokenCount(view.usedTokens);
   const maxTokens = view.maxTokens != null ? normalizeTokenCount(view.maxTokens) : undefined;
@@ -133,29 +132,6 @@ export default function Breakdown({
     percent = Math.min(Math.max(view.percent, 0), 100);
   }
   const { snapshot, snapshotActive, branchUsage, hasUsage } = view;
-  /** Token differences are visible independently of cost display/coverage;
-   *  only compare costs when both sides are complete to avoid an apparent
-   *  all-branches total made from partially priced history. */
-  const showTotal =
-    view.totalUsage.input !== branchUsage.input ||
-    view.totalUsage.output !== branchUsage.output ||
-    view.totalUsage.cacheRead !== branchUsage.cacheRead ||
-    view.totalUsage.cacheWrite !== branchUsage.cacheWrite ||
-    (view.totalUsage.costKnown &&
-      branchUsage.costKnown &&
-      Number.isFinite(view.totalCost) &&
-      Number.isFinite(view.branchCost) &&
-      view.totalCost - view.branchCost > 1e-9);
-
-  /** Every normalized bucket of the subagent calls: a cached call reports its
-   *  prompt under `cacheRead`/`cacheWrite`, so summing input+output alone
-   *  under-reports it: and hides a fully cached call with no output entirely,
-   *  while the Totals rows above still count its cache traffic. */
-  const subagentTokens =
-    normalizeTokenCount(view.subagentUsage?.input) +
-    normalizeTokenCount(view.subagentUsage?.output) +
-    normalizeTokenCount(view.subagentUsage?.cacheRead) +
-    normalizeTokenCount(view.subagentUsage?.cacheWrite);
 
   const breakdown = snapshotActive ? snapshot?.breakdown : undefined;
   const instructionTokens = normalizeTokenCount(
@@ -188,8 +164,7 @@ export default function Breakdown({
       : undefined;
   const messageTokens = Math.max(0, messageBudget - (toolCallTokens ?? 0));
   const freeTokens = maxTokens != null ? Math.max(0, maxTokens - usedTokens) : null;
-  /** Context pressure: the gauge percent against soft (80%) and hard (95%)
-   * thresholds, driving the warning line's tint and the offender/runway hints. */
+  /** Context pressure drives the warning line at the soft (80%) and hard (95%) thresholds. */
   let pressure: 'danger' | 'warn' | 'none' = 'none';
   if (percent >= 95) {
     pressure = 'danger';
@@ -197,14 +172,11 @@ export default function Breakdown({
     pressure = 'warn';
   }
   const dynamicInstructionTokens = normalizeTokenCount(breakdown?.dynamicInstructionTokens);
-  /** Keep the largest tool for the pressure insight, but retain every named
-   *  result in the disclosure. Result counts are a subset of the tool-call
-   *  share; any invocation overhead in that share remains unassigned. */
-  const { largestTool, toolBreakdown } = useMemo(() => {
+  /** Result counts are a subset of the tool-call share; invocation overhead remains unassigned. */
+  const toolBreakdown = useMemo(() => {
     const counts = view.toolMessageTokenCounts;
     if (counts == null) {
-      const empty: Array<{ name: string; tokens: number }> = [];
-      return { largestTool: null, toolBreakdown: empty };
+      return [];
     }
     const candidates: Array<{ name: string; tokens: number }> = [];
     for (const name in counts) {
@@ -224,35 +196,9 @@ export default function Breakdown({
       candidate.tokens = Math.min(candidate.tokens, remaining);
       remaining -= candidate.tokens;
     }
-    return {
-      largestTool: candidates[0]?.tokens > 0 ? candidates[0] : null,
-      toolBreakdown: candidates,
-    };
+    return candidates;
   }, [toolCallTokens, view.toolMessageTokenCounts]);
   const hasToolCounts = toolBreakdown.length > 0;
-  /** Insights shown on hovering the ⓘ button: largest tool, runway, and what a
-   *  summarization could reclaim. */
-  const insights: string[] = [];
-  if (largestTool != null) {
-    insights.push(
-      localize('com_ui_context_largest_tool', {
-        0: largestTool.name,
-        1: formatTokens(largestTool.tokens),
-      }),
-    );
-  }
-  const runwayTurns =
-    typeof view.runwayTurns === 'number' && Number.isFinite(view.runwayTurns)
-      ? Math.max(0, Math.floor(view.runwayTurns))
-      : null;
-  if (runwayTurns != null && runwayTurns <= 25) {
-    insights.push(localize('com_ui_context_runway', { 0: String(runwayTurns) }));
-  }
-  const compactionReclaim = normalizeTokenCount(view.compactionReclaim);
-  if (compactionAvailable && compactionReclaim > 0) {
-    insights.push(localize('com_ui_context_compaction', { 0: formatTokens(compactionReclaim) }));
-  }
-
   const groups =
     breakdown?.toolTokenCounts != null
       ? groupToolTokens(breakdown.toolTokenCounts, breakdown.deferredToolNames)
@@ -260,7 +206,7 @@ export default function Breakdown({
 
   /** Single source of truth for both the meter and its legend: a row carries a
    *  swatch if and only if it is a segment, so the two can never disagree.
-   *  Deferred tools keep their family's slot and are hatched: same identity,
+   *  Deferred tools keep their family's slot and are hatched, same identity,
    *  held out of the active set. */
   const segments: Array<MeterSegment & { label: string }> =
     breakdown == null
@@ -344,7 +290,11 @@ export default function Breakdown({
   const hoverIsValid = (id: string): boolean =>
     id === 'free'
       ? breakdown != null && freeTokens != null
-      : meterSegments.some((segment) => segment.id === id && segment.value > 0);
+      : segments.some(
+          (segment) =>
+            segment.id === id &&
+            (segment.value > 0 || (id === 'tool-calls' && toolCallTokens != null)),
+        );
   if (hoveredSegment != null && !hoverIsValid(hoveredSegment)) {
     setHoveredSegment(null);
   }
@@ -353,334 +303,242 @@ export default function Breakdown({
 
   return (
     <div className="@container w-full" role="region" aria-label={localize('com_ui_context_usage')}>
-      <Collapsible open={expanded} onOpenChange={onExpandedChange}>
-        <CollapsibleTrigger
-          focusOutline="hidden"
-          appearance="disclosure"
-          className="group flex w-full flex-wrap items-center justify-between"
-          data-testid="context-breakdown-toggle"
-        >
-          <span className="text-text-primary min-w-0 text-start text-sm font-medium">
-            {localize('com_ui_context_window')}
-          </span>
-          <span className="text-text-secondary flex min-w-0 items-center gap-1 text-xs font-medium">
+      <div
+        className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1"
+        data-usage-stage="heading"
+      >
+        <h3 className="text-text-secondary flex items-baseline gap-2 text-sm">
+          {localize('com_ui_context_window')}
+          {maxTokens != null && (
+            <span className="text-text-primary font-semibold tabular-nums">
+              {Math.round(percent)}%
+            </span>
+          )}
+        </h3>
+        <div className="flex items-center gap-2">
+          <span className="text-text-secondary text-sm tabular-nums">
             {maxTokens != null
-              ? `${formatTokens(usedTokens)} / ${formatTokens(maxTokens)} (${Math.round(percent)}%)`
+              ? `${formatTokens(usedTokens)} / ${formatTokens(maxTokens)}`
               : formatTokens(usedTokens)}
-            <ChevronDown
-              aria-hidden="true"
-              className="text-text-tertiary size-3.5 shrink-0 transition-transform duration-300 ease-out group-data-[state=open]:rotate-180 motion-reduce:transition-none"
-            />
           </span>
-        </CollapsibleTrigger>
+        </div>
+      </div>
 
-        <SegmentedMeter
-          className="mt-3"
-          segments={maxTokens != null ? meterSegments : []}
-          max={maxTokens ?? 1}
-          highlightId={activeSegment}
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={maxTokens != null ? Math.round(percent) : undefined}
-          aria-label={localize('com_ui_context_usage')}
-        />
+      <SegmentedMeter
+        className="mt-3"
+        data-usage-stage="meter"
+        segments={maxTokens != null ? meterSegments : []}
+        max={maxTokens ?? 1}
+        highlightId={activeSegment}
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={maxTokens != null ? Math.round(percent) : undefined}
+        aria-label={localize('com_ui_context_usage')}
+      />
 
-        {/* The gap to the meter lives INSIDE the animated element (mt-3 below),
-            so it collapses with the height. On the parent it would be a margin
-            outside the animation, and unmounting the content would drop it in a
-            single 12px jump after the height reached zero. */}
-        <CollapsibleContent motion="height" className="overflow-hidden">
-          <div
-            className="mt-3 grid min-w-0 grid-cols-1 items-start gap-3 @min-[38rem]:grid-cols-2"
-            data-testid="context-details"
+      <div className="mt-4 space-y-3" data-testid="context-details" data-usage-stage="details">
+        {pressure !== 'none' && (
+          <p
+            className={cn(
+              'flex min-w-0 items-center gap-1.5 text-xs',
+              pressure === 'danger' ? 'text-text-destructive' : 'text-text-warning',
+            )}
           >
-            <div className="min-w-0 space-y-3">
-              {(pressure !== 'none' || insights.length > 0) && (
-                <div className="relative flex items-center justify-between gap-2">
-                  {pressure !== 'none' ? (
-                    <p
-                      className={cn(
-                        'flex min-w-0 items-center gap-1.5 text-xs',
-                        pressure === 'danger' ? 'text-text-destructive' : 'text-text-warning',
-                      )}
-                    >
-                      <TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />
-                      {localize(
-                        pressure === 'danger'
-                          ? 'com_ui_context_pressure_danger'
-                          : 'com_ui_context_pressure_warn',
-                      )}
-                    </p>
-                  ) : (
-                    <span />
-                  )}
-                  {insights.length > 0 && (
-                    <HoverCard open={insightsOpen} onOpenChange={setInsightsOpen}>
-                      <HoverCardTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="quiet"
-                          size="icon"
-                          aria-label={localize('com_ui_context_insights')}
-                          aria-expanded={insightsOpen}
-                          aria-controls={insightsOpen ? insightsId : undefined}
-                          data-testid="context-insights-toggle"
-                          className="size-6"
-                          onFocus={() => setInsightsOpen(true)}
-                          onBlur={() => setInsightsOpen(false)}
-                          onClick={() => setInsightsOpen(true)}
-                        >
-                          <Info className="size-3.5" aria-hidden="true" />
-                        </Button>
-                      </HoverCardTrigger>
-                      <HoverCardPortal>
-                        <HoverCardContent
-                          id={insightsId}
-                          role="region"
-                          aria-label={localize('com_ui_context_insights')}
-                          data-testid="context-hints"
-                          className="max-w-[calc(100vw-2rem)]"
-                          align="end"
-                        >
-                          {insights.map((insight, index) => (
-                            <p className="text-text-secondary text-xs break-words" key={index}>
-                              {insight}
-                            </p>
-                          ))}
-                        </HoverCardContent>
-                      </HoverCardPortal>
-                    </HoverCard>
-                  )}
-                </div>
-              )}
-              <div
-                className="space-y-1.5"
-                data-testid={breakdown ? 'context-breakdown' : 'context-estimate'}
-              >
-                {breakdown ? (
-                  <>
-                    {segments.map(({ id, label, value, ...segment }) => {
-                      const shouldRender =
-                        value > 0 || (id === 'tool-calls' && toolCallTokens != null);
-                      if (!shouldRender) {
-                        return null;
-                      }
-                      return (
-                        <Fragment key={id}>
-                          {id === 'tool-calls' && hasToolCounts ? (
-                            <Row
-                              label={label}
-                              value={value}
-                              max={maxTokens}
-                              segment={segment}
-                              id={id}
-                              onHoverChange={setHoveredSegment}
-                              onClick={() => setToolsExpanded((open) => !open)}
-                              expanded={toolsExpanded}
-                              controls={toolsExpanded ? toolBreakdownId : undefined}
-                            />
-                          ) : (
-                            <Row
-                              label={label}
-                              value={value}
-                              max={maxTokens}
-                              segment={segment}
-                              id={id}
-                              onHoverChange={setHoveredSegment}
-                            />
-                          )}
-                          {id === 'tool-calls' && toolsExpanded && hasToolCounts && (
-                            <div id={toolBreakdownId} className="space-y-1 ps-6">
-                              <p className="text-text-tertiary text-xs font-medium">
-                                {localize('com_ui_context_tool_breakdown')}
-                              </p>
-                              {toolBreakdown.map((tool) => (
-                                <Row key={tool.name} label={tool.name} value={tool.tokens} />
-                              ))}
-                            </div>
-                          )}
-                          {id === 'system' && dynamicInstructionTokens > 0 && (
-                            <div className="ps-6">
-                              <Row
-                                label={localize('com_ui_context_dynamic_instructions')}
-                                value={dynamicInstructionTokens}
-                              />
-                            </div>
-                          )}
-                        </Fragment>
-                      );
-                    })}
-                    {/** The reconciling call's cached prompt share is already inside
-                     *  the segments above (reconciliation counted it in `usedTokens`),
-                     *  so it renders indented, like the estimate path's tool-call
-                     *  share: as peer rows a fully cached prompt would show its
-                     *  tokens twice and the visible rows would sum past the meter. */}
-                    {(normalizeTokenCount(view.cacheRead) > 0 ||
-                      normalizeTokenCount(view.cacheWrite) > 0) && (
-                      <div className="space-y-1.5 ps-6">
-                        <p className="text-text-tertiary text-xs font-medium">
-                          {localize('com_ui_context_cache_last_call')}
-                        </p>
-                        {normalizeTokenCount(view.cacheRead) > 0 && (
-                          <Row
-                            label={localize('com_ui_context_cached')}
-                            value={normalizeTokenCount(view.cacheRead)}
-                            max={maxTokens}
-                          />
-                        )}
-                        {normalizeTokenCount(view.cacheWrite) > 0 && (
-                          <Row
-                            label={localize('com_ui_context_cache_write')}
-                            value={normalizeTokenCount(view.cacheWrite)}
-                            max={maxTokens}
-                          />
-                        )}
-                      </div>
-                    )}
-                    {freeTokens != null && (
+            <TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+            {localize(
+              pressure === 'danger'
+                ? 'com_ui_context_pressure_danger'
+                : 'com_ui_context_pressure_warn',
+            )}
+          </p>
+        )}
+        <div
+          className="grid grid-cols-2 gap-x-4 gap-y-2"
+          data-testid={breakdown ? 'context-breakdown' : 'context-estimate'}
+        >
+          {breakdown ? (
+            <>
+              {segments.map(({ id, label, value, ...segment }) => {
+                const shouldRender = value > 0 || (id === 'tool-calls' && toolCallTokens != null);
+                if (!shouldRender) {
+                  return null;
+                }
+                return (
+                  <Fragment key={id}>
+                    {id === 'tool-calls' && hasToolCounts ? (
                       <Row
-                        label={localize('com_ui_context_free')}
-                        value={freeTokens}
-                        max={maxTokens}
-                        track
-                        id="free"
+                        label={label}
+                        value={value}
+                        segment={segment}
+                        id={id}
+                        activeId={activeSegment}
+                        onHoverChange={setHoveredSegment}
+                        onClick={() => setToolsExpanded((open) => !open)}
+                        expanded={toolsExpanded}
+                        controls={toolsExpanded ? toolBreakdownId : undefined}
+                      />
+                    ) : (
+                      <Row
+                        label={label}
+                        value={value}
+                        segment={segment}
+                        id={id}
+                        activeId={activeSegment}
                         onHoverChange={setHoveredSegment}
                       />
                     )}
-                  </>
-                ) : (
-                  <>
-                    {normalizeTokenCount(view.branchTotals.summaryBaseline) > 0 && (
-                      <Row
-                        label={localize('com_ui_context_summary')}
-                        value={view.branchTotals.summaryBaseline}
-                        max={maxTokens}
-                      />
-                    )}
-                    {view.messagesPruned ? (
-                      /** Over-window: the per-category split no longer describes what's
-                       *  sent, so show the pruned message total (incl. in-flight). */
-                      <Row
-                        label={localize('com_ui_context_messages')}
-                        value={view.messageTokens + view.liveTokens}
-                        max={maxTokens}
-                      />
-                    ) : (
-                      <>
-                        <Row label={localize('com_ui_input')} value={view.branchTotals.input} />
-                        <Row
-                          label={localize('com_ui_output')}
-                          value={view.branchTotals.output + view.liveTokens}
-                        />
-                        {normalizeTokenCount(view.estimatedTokens) > 0 && (
+                    {id === 'tool-calls' && toolsExpanded && hasToolCounts && (
+                      <div id={toolBreakdownId} className="col-span-2 space-y-1 ps-6">
+                        <p className="text-text-tertiary text-xs font-medium">
+                          {localize('com_ui_context_tool_breakdown')}
+                        </p>
+                        {toolBreakdown.map((tool) => (
                           <Row
-                            label={localize('com_ui_context_estimated')}
-                            value={view.estimatedTokens}
+                            key={tool.name}
+                            label={tool.name}
+                            value={tool.tokens}
+                            id="tool-calls"
+                            activeId={activeSegment}
+                            onHoverChange={setHoveredSegment}
                           />
-                        )}
-                      </>
+                        ))}
+                      </div>
                     )}
-                    {/** Retained tool traffic is already inside the message rows above
-                     *  (their clamped tool-content share), so it renders as an indented
-                     *  subtotal: as a peer row the visible rows would sum past
-                     *  `usedTokens`. The snapshot path instead subtracts it from
-                     *  Messages, which is exact there; here the counted Input/Output
-                     *  rows are provider counts and this share is a char estimate, so
-                     *  subtracting it would corrupt them. */}
-                    {normalizeTokenCount(view.toolCallTokens) > 0 && (
-                      <div className="ps-6">
+                    {id === 'system' && dynamicInstructionTokens > 0 && (
+                      <div className="col-span-2 ps-6">
                         <Row
-                          label={localize('com_ui_context_tool_calls')}
-                          value={normalizeTokenCount(view.toolCallTokens)}
+                          label={localize('com_ui_context_dynamic_instructions')}
+                          value={dynamicInstructionTokens}
+                          id="system"
+                          activeId={activeSegment}
+                          onHoverChange={setHoveredSegment}
                         />
                       </div>
                     )}
-                    {view.overheadTokens > 0 && (
-                      <Row label={localize('com_ui_context_system')} value={view.overheadTokens} />
-                    )}
-                    {maxTokens == null && (
-                      <p className="text-text-secondary text-xs">
-                        {localize('com_ui_context_unknown')}
-                      </p>
-                    )}
-                    <p className="text-text-secondary text-xs italic">
-                      {localize('com_ui_estimated')}
-                    </p>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="min-w-0 space-y-3">
-              <Usage
-                title={localize(
-                  view.turnInProgress ? 'com_ui_context_current_turn' : 'com_ui_context_last_turn',
-                )}
-                usage={view.lastTurnUsage}
-                unavailable={localize(
-                  view.turnInProgress
-                    ? 'com_ui_context_waiting_usage'
-                    : 'com_ui_context_unavailable_usage',
-                )}
-                cost={
-                  showCost && view.lastTurnUsage?.costKnown ? view.lastTurnUsage.cost : undefined
-                }
-                costLabel={localize(
-                  view.turnInProgress
-                    ? 'com_ui_context_cost_current_turn'
-                    : 'com_ui_context_cost_last_turn',
-                )}
-                currency={currency}
-                testId="token-usage-last-turn"
-              />
-              {hasUsage && (
-                <Usage
-                  title={localize('com_ui_context_totals')}
-                  subtitle={localize('com_ui_context_this_branch')}
-                  usage={branchUsage}
-                  cost={showCost && branchUsage.costKnown ? view.branchCost : undefined}
-                  costLabel={localize(
-                    showTotal ? 'com_ui_context_cost_branch' : 'com_ui_context_cost',
+                  </Fragment>
+                );
+              })}
+              {freeTokens != null && (
+                <Row
+                  label={localize('com_ui_context_free')}
+                  value={freeTokens}
+                  track
+                  id="free"
+                  activeId={activeSegment}
+                  onHoverChange={setHoveredSegment}
+                />
+              )}
+            </>
+          ) : (
+            <>
+              {normalizeTokenCount(view.branchTotals.summaryBaseline) > 0 && (
+                <Row
+                  label={localize('com_ui_context_summary')}
+                  value={view.branchTotals.summaryBaseline}
+                />
+              )}
+              {view.messagesPruned ? (
+                /** Over-window: the per-category split no longer describes what's
+                 *  sent, so show the pruned message total (incl. in-flight). */
+                <Row
+                  label={localize('com_ui_context_messages')}
+                  value={view.messageTokens + view.liveTokens}
+                />
+              ) : (
+                <>
+                  <Row label={localize('com_ui_input')} value={view.branchTotals.input} />
+                  <Row
+                    label={localize('com_ui_output')}
+                    value={view.branchTotals.output + view.liveTokens}
+                  />
+                  {normalizeTokenCount(view.estimatedTokens) > 0 && (
+                    <Row
+                      label={localize('com_ui_context_estimated')}
+                      value={view.estimatedTokens}
+                    />
                   )}
-                  currency={currency}
-                  subagentTokens={subagentTokens}
-                  testId="token-usage-totals"
-                />
+                </>
               )}
-              {showTotal && (
-                <Usage
-                  title={localize('com_ui_context_cost_total')}
-                  usage={view.totalUsage}
-                  cost={showCost && view.totalUsage.costKnown ? view.totalCost : undefined}
-                  costLabel={localize('com_ui_context_cost_total')}
-                  currency={currency}
-                  testId="token-usage-all-branches"
-                />
+              {/** Retained tool traffic is already inside the message rows above
+               *  (their clamped tool-content share), so it renders as an indented
+               *  subtotal, as a peer row the visible rows would sum past
+               *  `usedTokens`. The snapshot path instead subtracts it from
+               *  Messages, which is exact there; here the counted Input/Output
+               *  rows are provider counts and this share is a char estimate, so
+               *  subtracting it would corrupt them. */}
+              {normalizeTokenCount(view.toolCallTokens) > 0 && (
+                <div className="col-span-2 ps-6">
+                  <Row
+                    label={localize('com_ui_context_tool_calls')}
+                    value={normalizeTokenCount(view.toolCallTokens)}
+                  />
+                </div>
               )}
-            </div>
-
-            {langfuseSessionUrl && (
-              <>
-                <div
-                  className="border-border-light border-t @min-[38rem]:col-span-2"
-                  role="separator"
-                />
+              {view.overheadTokens > 0 && (
+                <Row label={localize('com_ui_context_system')} value={view.overheadTokens} />
+              )}
+              {maxTokens == null && (
+                <p className="text-text-secondary text-xs">{localize('com_ui_context_unknown')}</p>
+              )}
+              <p className="text-text-secondary text-xs italic">{localize('com_ui_estimated')}</p>
+            </>
+          )}
+        </div>
+        {hasUsage && (
+          <div className="border-border-light border-t pt-3">
+            <Collapsible open={expanded} onOpenChange={onExpandedChange}>
+              <CollapsibleTrigger asChild>
                 <Button
-                  asChild
-                  variant="link"
+                  variant="disclosure"
                   size="bare"
-                  className="w-full justify-between @min-[38rem]:col-span-2"
+                  className="group w-full justify-between"
+                  data-testid="context-breakdown-toggle"
                 >
-                  <a href={langfuseSessionUrl} target="_blank" rel="noopener noreferrer">
-                    <span>{localize('com_ui_langfuse_view_session')}</span>
-                    <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
-                  </a>
+                  {localize('com_ui_context_conversation_usage')}
+                  {showCost && branchUsage.costKnown && Number.isFinite(view.branchCost) && (
+                    <span className="ms-auto tabular-nums" data-testid="usage-cost">
+                      <span className="sr-only">{localize('com_ui_context_cost')}: </span>
+                      {formatCost(view.branchCost, currency)}
+                    </span>
+                  )}
+                  <ChevronDown
+                    aria-hidden="true"
+                    className="size-3.5 transition-transform group-data-[state=open]:rotate-180 motion-reduce:transition-none"
+                  />
                 </Button>
-              </>
-            )}
+              </CollapsibleTrigger>
+              <CollapsibleContent motion="height" className="overflow-hidden">
+                <div className="space-y-3 pt-3">
+                  {hasUsage && (
+                    <Usage
+                      disclosure={false}
+                      hideHeading
+                      title={localize('com_ui_context_conversation_usage')}
+                      usage={branchUsage}
+                      costLabel={localize('com_ui_context_cost')}
+                      currency={currency}
+                      testId="token-usage-totals"
+                    />
+                  )}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </div>
-        </CollapsibleContent>
-      </Collapsible>
+        )}
+
+        {langfuseSessionUrl && (
+          <>
+            <div className="border-border-light border-t" role="separator" />
+            <Button asChild variant="link" size="bare" className="w-full justify-between">
+              <a href={langfuseSessionUrl} target="_blank" rel="noopener noreferrer">
+                <span>{localize('com_ui_langfuse_view_session')}</span>
+                <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
+              </a>
+            </Button>
+          </>
+        )}
+      </div>
     </div>
   );
 }

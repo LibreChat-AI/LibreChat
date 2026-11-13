@@ -1,6 +1,6 @@
 import { memo } from 'react';
+import { useAtom } from 'jotai';
 import { Spinner } from '@librechat/client';
-import { useAtom, useAtomValue } from 'jotai';
 import { Constants } from 'librechat-data-provider';
 import {
   CompactAction,
@@ -13,11 +13,9 @@ import type { TokenUsageView } from '~/hooks/Chat/useTokenUsage';
 import type { CurrencyConfig } from '~/utils';
 import useCompactConversation, { supportsCompaction } from '~/hooks/Chat/useCompactConversation';
 import { useGetLangfuseSessionLinkQuery, useGetStartupConfig } from '~/data-provider';
-import Balance, { Summary as BalanceSummary } from '~/components/Balance';
-import useBalanceSummary from '~/hooks/useBalanceSummary';
 import useTokenUsage from '~/hooks/Chat/useTokenUsage';
 import { contextBreakdownExpandedAtom } from './store';
-import { cn, formatTokens } from '~/utils';
+import { formatTokens } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 interface TokenUsageProps {
@@ -66,7 +64,6 @@ function ContextCard({
       <Breakdown
         view={view}
         showCost={showCost}
-        compactionAvailable={compactionAvailable}
         currency={currency}
         langfuseSessionUrl={langfuseSession?.url ?? undefined}
         expanded={breakdownExpanded}
@@ -76,6 +73,7 @@ function ContextCard({
         <>
           <div className="border-border-light border-t" role="separator" />
           <CompactAction
+            reclaimableTokens={view.compactionReclaim}
             compact={compaction.compact}
             canCompact={compaction.canCompact}
             isCompacting={compaction.isCompacting}
@@ -94,16 +92,13 @@ function TokenUsageIndicator({
   currency,
   langfuseConnectionAccess,
   compactionEnabled,
-  balanceEnabled,
 }: TokenUsageProps & {
   showCost: boolean;
   currency?: CurrencyConfig;
   langfuseConnectionAccess: boolean;
   compactionEnabled: boolean;
-  balanceEnabled: boolean;
 }) {
   const localize = useLocalize();
-  const expanded = useAtomValue(contextBreakdownExpandedAtom);
   const view = useTokenUsage({ index, conversation, isSubmitting });
   /** Owned here, not in the popover: `unmountOnHide` would otherwise lose the
    *  in-flight state the moment the pointer leaves. */
@@ -112,24 +107,18 @@ function TokenUsageIndicator({
   const conversationId = conversation?.conversationId ?? '';
   const hasContext = view.usedTokens > 0;
 
-  /** Without balance, hide until the branch has data — keeps a fresh,
-   *  message-less chat clean and lets the indicator animate into view once the
-   *  first tokens land. With balance, the card always has something to show. */
-  if (!hasContext && !balanceEnabled) {
+  if (!hasContext) {
     return null;
   }
 
   const hasMax = view.maxTokens != null && view.maxTokens > 0;
-  let usageAriaLabel = localize('com_nav_balance');
-  if (hasContext) {
-    usageAriaLabel = hasMax
-      ? localize('com_ui_context_usage_label', {
-          0: formatTokens(view.usedTokens),
-          1: formatTokens(view.maxTokens ?? 0),
-          2: String(Math.round(view.percent)),
-        })
-      : localize('com_ui_context_usage_label_unknown', { 0: formatTokens(view.usedTokens) });
-  }
+  const usageAriaLabel = hasMax
+    ? localize('com_ui_context_usage_label', {
+        0: formatTokens(view.usedTokens),
+        1: formatTokens(view.maxTokens ?? 0),
+        2: String(Math.round(view.percent)),
+      })
+    : localize('com_ui_context_usage_label_unknown', { 0: formatTokens(view.usedTokens) });
   const ariaLabel = compaction.isCompacting
     ? localize('com_ui_context_compacting')
     : usageAriaLabel;
@@ -138,7 +127,7 @@ function TokenUsageIndicator({
     <UsagePopover
       resetKey={conversationId}
       label={ariaLabel}
-      cardLabel={localize(hasContext ? 'com_ui_context_usage' : 'com_nav_balance')}
+      cardLabel={localize('com_ui_context_usage')}
       busy={compaction.isCompacting}
       trigger={(open) =>
         compaction.isCompacting && !open ? (
@@ -157,75 +146,17 @@ function TokenUsageIndicator({
         )
       }
     >
-      <div
-        className={cn(
-          'max-w-full space-y-3',
-          hasContext && expanded ? 'w-[min(44rem,calc(100vw-2.5rem))]' : 'w-72',
-        )}
-        data-testid="token-usage-card"
-      >
-        {hasContext && (
-          <ContextCard
-            view={view}
-            conversationId={conversationId}
-            isSubmitting={isSubmitting}
-            showCost={showCost}
-            currency={currency}
-            langfuseConnectionAccess={langfuseConnectionAccess}
-            compaction={compaction}
-            compactionAvailable={compactionAvailable}
-          />
-        )}
-        {balanceEnabled && (
-          <Balance className={hasContext ? 'border-border-light border-t pt-3' : undefined} />
-        )}
-      </div>
-    </UsagePopover>
-  );
-}
-
-/** The gauge for a deployment that turned context usage off but meters credits:
- *  its ring is the share of the balance allotment spent. */
-function BalanceIndicator({ conversationId }: { conversationId: string }) {
-  const localize = useLocalize();
-  const { state, currency } = useBalanceSummary();
-  if (state.status === 'empty') {
-    return null;
-  }
-  const summary = state.status === 'success' ? state.summary : null;
-  const usedPercent = summary?.usedPercent ?? null;
-  const label = localize('com_nav_balance');
-
-  return (
-    <UsagePopover
-      resetKey={conversationId}
-      label={label}
-      cardLabel={label}
-      busy={state.status === 'loading'}
-      trigger={() =>
-        /** A meter has no indeterminate state: until there is a share to report
-         *  (loading, failed, nothing to measure against) the ring is decoration
-         *  and the button's label carries the name. */
-        usedPercent != null ? (
-          <span
-            role="meter"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={usedPercent}
-            aria-label={localize('com_ui_balance_used_label')}
-            className="flex items-center justify-center"
-          >
-            <Gauge percent={usedPercent} indeterminate={false} tone={summary?.tone} />
-          </span>
-        ) : (
-          <span aria-hidden="true" className="flex items-center justify-center">
-            <Gauge percent={0} indeterminate />
-          </span>
-        )
-      }
-    >
-      <div className="w-72 max-w-full">
-        <BalanceSummary state={state} currency={currency} />
+      <div className="flex w-96 max-w-full flex-col gap-3" data-testid="token-usage-card">
+        <ContextCard
+          view={view}
+          conversationId={conversationId}
+          isSubmitting={isSubmitting}
+          showCost={showCost}
+          currency={currency}
+          langfuseConnectionAccess={langfuseConnectionAccess}
+          compaction={compaction}
+          compactionAvailable={compactionAvailable}
+        />
       </div>
     </UsagePopover>
   );
@@ -240,11 +171,8 @@ const TokenUsage = memo(function TokenUsage(props: TokenUsageProps) {
   if (startupConfig == null) {
     return null;
   }
-  const balanceEnabled = startupConfig.balance?.enabled === true;
   if (startupConfig.interface?.contextUsage === false) {
-    return balanceEnabled ? (
-      <BalanceIndicator conversationId={props.conversation?.conversationId ?? ''} />
-    ) : null;
+    return null;
   }
   return (
     <TokenUsageIndicator
@@ -257,7 +185,6 @@ const TokenUsage = memo(function TokenUsage(props: TokenUsageProps) {
        *  (a cached config from an older release) must not receive the request,
        *  which it would run as an empty, billed ordinary turn. */
       compactionEnabled={startupConfig.compactionEnabled === true}
-      balanceEnabled={balanceEnabled}
     />
   );
 });

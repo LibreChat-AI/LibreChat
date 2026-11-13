@@ -65,6 +65,9 @@ export default function useQueuedTurnReveal(
       const { receipts, status } = readCache();
       const submitting = jotaiStore.get(isSubmittingFamily(index));
       let generationCreatedAt = intent.generationCreatedAt;
+      let admittedPredecessorCreatedAt = intent.admittedPredecessorCreatedAt;
+      // A stale claimed receipt can reveal a turn again after its own reply.
+      let admittedBeforeResponse = false;
       let waiting = false;
       for (const receipt of receipts ?? []) {
         const actionable =
@@ -76,12 +79,29 @@ export default function useQueuedTurnReveal(
         }
         const boundary =
           receipt.effectivePredecessorCreatedAt ?? receipt.expectedPredecessorCreatedAt;
+        if (receipt.status === 'admitted') {
+          // An older wire format cannot prove an admission predates this handoff.
+          const admittedBoundary =
+            receipt.effectivePredecessorCreatedAt ?? intent.generationCreatedAt;
+          if (admittedBoundary != null) {
+            admittedPredecessorCreatedAt = Math.max(
+              admittedPredecessorCreatedAt ?? admittedBoundary,
+              admittedBoundary,
+            );
+          }
+          admittedBeforeResponse ||=
+            receipt.clientRequestId === intent.clientRequestId &&
+            receipt.effectivePredecessorCreatedAt != null &&
+            status?.createdAt != null &&
+            receipt.effectivePredecessorCreatedAt < status.createdAt;
+        }
         if (boundary != null && (generationCreatedAt == null || boundary > generationCreatedAt)) {
           generationCreatedAt = boundary;
         }
       }
       return {
         generationCreatedAt,
+        admittedPredecessorCreatedAt,
         settled:
           (receipts != null && shouldRollbackReveal(receipts, intent)) ||
           (generationCreatedAt != null &&
@@ -92,7 +112,11 @@ export default function useQueuedTurnReveal(
                   status.status === 'error' ||
                   status.status === 'aborted') &&
                 status.createdAt != null &&
-                status.createdAt > generationCreatedAt))),
+                (status.createdAt > generationCreatedAt ||
+                  (admittedBeforeResponse &&
+                    admittedPredecessorCreatedAt != null &&
+                    admittedPredecessorCreatedAt < status.createdAt &&
+                    status.resumeState?.responseMessageId === intent.parentMessageId))))),
       };
     },
     [readCache, jotaiStore, index, activeEpoch],
@@ -103,7 +127,7 @@ export default function useQueuedTurnReveal(
   const getSnapshot = useCallback(() => {
     if (reveal == null) return '';
     const handoff = readHandoff(reveal);
-    return `${handoff.generationCreatedAt ?? ''}:${handoff.settled}`;
+    return `${handoff.generationCreatedAt ?? ''}:${handoff.admittedPredecessorCreatedAt ?? ''}:${handoff.settled}`;
   }, [reveal, readHandoff]);
   const handoffVersion = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
@@ -140,7 +164,11 @@ export default function useQueuedTurnReveal(
       };
       const handoff = readHandoff(intent);
       if (!handoff.settled) {
-        jotaiStore.set(family, { ...intent, generationCreatedAt: handoff.generationCreatedAt });
+        jotaiStore.set(family, {
+          ...intent,
+          generationCreatedAt: handoff.generationCreatedAt,
+          admittedPredecessorCreatedAt: handoff.admittedPredecessorCreatedAt,
+        });
       }
     },
     [conversationId, readHandoff, jotaiStore],
@@ -152,8 +180,15 @@ export default function useQueuedTurnReveal(
     const handoff = readHandoff(reveal);
     if (handoff.settled) {
       jotaiStore.set(family, null);
-    } else if (handoff.generationCreatedAt !== reveal.generationCreatedAt) {
-      jotaiStore.set(family, { ...reveal, generationCreatedAt: handoff.generationCreatedAt });
+    } else if (
+      handoff.generationCreatedAt !== reveal.generationCreatedAt ||
+      handoff.admittedPredecessorCreatedAt !== reveal.admittedPredecessorCreatedAt
+    ) {
+      jotaiStore.set(family, {
+        ...reveal,
+        generationCreatedAt: handoff.generationCreatedAt,
+        admittedPredecessorCreatedAt: handoff.admittedPredecessorCreatedAt,
+      });
     }
   }, [jotaiStore, revealKey, reveal, readHandoff, handoffVersion, isSubmitting]);
 

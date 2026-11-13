@@ -28,6 +28,8 @@ export type RevealedQueuedTurn = {
   parentMessageId: string;
   /** Completion boundary, advanced as later queued turns are admitted. */
   generationCreatedAt?: number;
+  /** Latest admitted boundary, retained after receipts leave the projection. */
+  admittedPredecessorCreatedAt?: number;
   /** Immutable queue lineage, independent of the display/completion boundary. */
   queueParentMessageId?: string;
   queuePredecessorCreatedAt?: number;
