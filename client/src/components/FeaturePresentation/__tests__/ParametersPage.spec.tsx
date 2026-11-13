@@ -129,6 +129,7 @@ function Controls() {
       </button>
       <button onClick={() => presentation.minimize('parameters')}>{'Return to chat'}</button>
       <button onClick={() => presentation.open('parameters')}>{'Open Parameters'}</button>
+      <button onClick={() => navigate('/agents')}>{'Open Marketplace'}</button>
       <button
         onClick={() => {
           setConversation(saved);
@@ -158,6 +159,7 @@ function mount(path = '/parameters', initialConversation?: TConversation) {
         element: <Layout />,
         children: [
           { path: '/parameters', element: <ParametersPage /> },
+          { path: '/agents', element: <output data-testid="marketplace" /> },
           {
             path: '/c/:conversationId',
             element: initialConversation ? (
@@ -480,6 +482,28 @@ it.each(['', '?projectId=aaaaaaaaaaaaaaaaaaaaaaaa#draft'])(
     });
   },
 );
+
+it('keeps the edited saved-chat URL when opening Parameters from Marketplace', async () => {
+  defaultView = 'page';
+  const source = '/c/saved-chat?branch=original#settings';
+  const router = mount(source, saved);
+  await waitFor(() => expect(screen.getByText('Expand')).toBeEnabled());
+  await userEvent.click(screen.getByText('Open Marketplace'));
+  await waitFor(() => expect(router.state.location.pathname).toBe('/agents'));
+  await userEvent.click(screen.getByText('Open Parameters'));
+  expect(await screen.findByRole('button', { name: /Save as Preset/i })).toBeInTheDocument();
+  expect(new URLSearchParams(router.state.location.search).get('chat')).toBe(source);
+  expect(JSON.parse(screen.getByTestId('context').textContent ?? '{}')).toMatchObject({
+    conversationId: saved.conversationId,
+    temperature: saved.temperature,
+  });
+  await userEvent.click(screen.getByText('Return to chat'));
+  await waitFor(() =>
+    expect(
+      router.state.location.pathname + router.state.location.search + router.state.location.hash,
+    ).toBe(source),
+  );
+});
 
 it.each(['https://example.com/c/unsafe', '//example.com/c/unsafe', '/parameters'])(
   'rejects unsafe cold return target %s',

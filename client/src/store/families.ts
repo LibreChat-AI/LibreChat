@@ -84,7 +84,7 @@ const conversationByIndex = atomFamily<TConversation | null, string | number>({
            * `navigate()` calls (useNewConvo), and in-place writers like
            * ProjectLandingChip deliberately replace. Pushing here buried the
            * Back target under one inert entry per draft edit. */
-          window.history.replaceState({}, '', url);
+          window.history.replaceState(window.history.state, '', url);
         }
       });
     },
