@@ -3,10 +3,9 @@ import copy from 'copy-to-clipboard';
 import { isError } from '@librechat/chat';
 import { Button } from '@librechat/client';
 import { useToolContentPending } from '@librechat/chat/react';
-import { PANE_COPY_REVEAL } from '@librechat/chat/components';
 import { stripToolCallErrorPrefix } from 'librechat-data-provider';
+import { PANE_COPY_REVEAL, CopyButton } from '@librechat/chat/components';
 import type { UIEvent } from 'react';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

@@ -487,3 +487,12 @@ describe('AppService custom endpoint parameters', () => {
     expect(written.endpoints?.custom?.[0]).toEqual(gateway);
   });
 });
+
+describe('AppService spreadsheet parsing policy', () => {
+  it('carries bounded deployment policy into request configuration', async () => {
+    const spreadsheetParsing = { timeoutMs: 30_000, maxConcurrent: 4 };
+    const result = await AppService({ config: { spreadsheetParsing } });
+    expect(result.spreadsheetParsing).toEqual(spreadsheetParsing);
+    expect((await AppService({ config: {} })).spreadsheetParsing).toBeUndefined();
+  });
+});

@@ -25,6 +25,7 @@ import type {
   CodeWorkspaceSelection,
   TPublicCodeEnvironment,
 } from 'librechat-data-provider';
+import type { CodeWorkspaceInputs } from '@librechat/chat';
 import type { CodeEnvironmentReconciliation } from '~/store/codeEnvironmentReconciliation';
 import {
   useGetStartupConfig,
@@ -73,6 +74,8 @@ export interface CodeWorkspaceResult {
     mode?: CodeEnvironmentMode,
   ) => CodeWorkspaceSubmission | undefined;
   rememberSelection: (selection: CodeWorkspaceSelection) => void;
+  /** The raw values this hook read on its last render, for a derivation at send time. */
+  readInputs: () => CodeWorkspaceInputs;
 }
 
 export default function useCodeWorkspace(
@@ -288,5 +291,23 @@ export default function useCodeWorkspace(
     resolveSelections,
     resolveSubmission,
     rememberSelection,
+    readInputs: () => ({
+      conversation,
+      addedConversation,
+      primaryAgent,
+      addedAgent,
+      agentsMap,
+      statefulCodeSessions,
+      startupConfig,
+      canRunCode,
+      capabilities: agentsConfig?.capabilities,
+      configurationLoaded: endpointsConfig !== undefined || agentsConfig != null,
+      recoveryPending: recovery != null,
+      replacingDecision,
+      statuses: Object.fromEntries(
+        attachedEnvironments.map(({ id }, index) => [id, statuses[index]]),
+      ),
+      getPreferredWorkspace: preferences.get,
+    }),
   };
 }

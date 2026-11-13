@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Tools } from 'librechat-data-provider';
 import { parseJsonField } from '@librechat/chat';
 import { Globe, ChevronDown, Info } from 'lucide-react';
-import { ROW_GLYPH_SLOT, useToolPreparation } from '@librechat/chat/components';
+import { ROW_GLYPH_SLOT, useToolPreparation, useExpandCollapse } from '@librechat/chat/components';
 import {
   Button,
   HoverCard,
@@ -19,6 +19,7 @@ import {
   useToolContentRequest,
   toolPanelSpacingClassName,
   useToolCallIntent,
+  useLazyCollapseBody,
 } from '@librechat/chat/react';
 import type {
   TAttachment,
@@ -28,13 +29,13 @@ import type {
   AnswerBoxResult,
 } from 'librechat-data-provider';
 import { FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
-import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { isError } from './ToolOutput/OutputRenderer';
 import { HeaderActionSlotContext } from './slot';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';
+import { useLocalize } from '~/hooks';
 import ToolCall from './ToolCall';
 import cn from '~/utils/cn';
 
@@ -318,11 +319,11 @@ export default function WebSearch({
     );
 
     return (
-      <div className="group/websearch my-1">
+      <div className={cn('group/websearch', bare && 'my-1.5')}>
         <span className="sr-only" aria-live="polite" aria-atomic="true">
           {completedText}
         </span>
-        <div className={cn('relative flex items-center gap-1.5', bare ? 'h-0' : 'h-5')}>
+        <div className={cn('relative flex items-center gap-1.5', bare ? 'h-0' : 'my-1.5 h-5')}>
           {!bare && (
             <Button
               ref={rowRef}
@@ -427,7 +428,7 @@ export default function WebSearch({
   }
 
   return (
-    <div className="relative my-1 flex h-5 shrink-0 items-center gap-2">
+    <div className="relative my-1.5 flex h-5 shrink-0 items-center gap-2">
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {genericProgressText}
       </span>

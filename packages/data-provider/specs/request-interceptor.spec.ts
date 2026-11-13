@@ -758,6 +758,157 @@ describe('axios 401 interceptor — Authorization header guard', () => {
     expect(retriedHeaders.get('Authorization')).toBe('Bearer fresh-token');
   });
 
+  /**
+   * A burst of requests leaves with one bearer, and some of their 401s are delivered only after
+   * the refresh the first 401 started has settled. Those describe a bearer that is already gone.
+   */
+  it('replays a 401 that carried a superseded bearer without a second refresh', async () => {
+    expect.assertions(5);
+    setTokenHeader('expired-token');
+    const lateRejection = createDeferred<void>();
+    const sentBearers: Record<string, string[]> = {};
+    const recoveryStates: string[] = [];
+    const recordRecovery = (event: Event) => {
+      recoveryStates.push((event as CustomEvent<{ state: string }>).detail.state);
+    };
+    window.addEventListener('authRecovery', recordRecovery);
+
+    mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
+      const url = config.url ?? '';
+      if (url.includes('/api/auth/refresh')) {
+        return createAdapterResponse(config, { token: 'new-token' });
+      }
+      const authorization = String(config.headers?.Authorization);
+      (sentBearers[url] ??= []).push(authorization);
+      if (authorization !== 'Bearer expired-token') {
+        return createAdapterResponse(config, { ok: true });
+      }
+      if (url === '/api/convos') {
+        return lateRejection.promise.then(() => create401Error(config));
+      }
+      return create401Error(config);
+    });
+
+    try {
+      const lateRequest = axios.get('/api/convos');
+      const recovered = await axios.get('/api/messages');
+      lateRejection.resolve();
+      const replayed = await lateRequest;
+
+      expect([recovered.data, replayed.data]).toEqual([{ ok: true }, { ok: true }]);
+      expect(getCallsForUrl('/api/auth/refresh')).toHaveLength(1);
+      expect(sentBearers['/api/messages']).toEqual(['Bearer expired-token', 'Bearer new-token']);
+      expect(sentBearers['/api/convos']).toEqual(['Bearer expired-token', 'Bearer new-token']);
+      expect(recoveryStates).toEqual(['started', 'finished']);
+    } finally {
+      window.removeEventListener('authRecovery', recordRecovery);
+    }
+  });
+
+  it('still refreshes when the replayed request is rejected with the current bearer', async () => {
+    expect.assertions(3);
+    setTokenHeader('expired-token');
+    const lateRejection = createDeferred<void>();
+    let refreshes = 0;
+
+    mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
+      const url = config.url ?? '';
+      if (url.includes('/api/auth/refresh')) {
+        refreshes += 1;
+        return createAdapterResponse(config, { token: `token-${refreshes}` });
+      }
+      const authorization = String(config.headers?.Authorization);
+      if (url === '/api/convos' && authorization === 'Bearer expired-token') {
+        return lateRejection.promise.then(() => create401Error(config));
+      }
+      if (authorization === 'Bearer token-2') {
+        return createAdapterResponse(config, { ok: true });
+      }
+      if (url === '/api/messages' && authorization === 'Bearer token-1') {
+        return createAdapterResponse(config, { ok: true });
+      }
+      return create401Error(config);
+    });
+
+    const lateRequest = axios.get('/api/convos');
+    await axios.get('/api/messages');
+    lateRejection.resolve();
+    const replayed = await lateRequest;
+
+    expect(replayed.data).toEqual({ ok: true });
+    expect(refreshes).toBe(2);
+    expect(getCallsForUrl('/api/convos')).toHaveLength(3);
+  });
+
+  it('replays an authenticated fetch whose bearer was superseded without a second refresh', async () => {
+    expect.assertions(4);
+    setTokenHeader('expired-token');
+    const lateRejection = createDeferred<Response>();
+
+    mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
+      if (config.url?.includes('/api/auth/refresh') === true) {
+        return createAdapterResponse(config, { token: 'new-token' });
+      }
+      if (String(config.headers?.Authorization) === 'Bearer expired-token') {
+        return create401Error(config);
+      }
+      return createAdapterResponse(config, { ok: true });
+    });
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockReturnValueOnce(lateRejection.promise)
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    const upload = dataRequest.authenticatedFetch('/api/files', { method: 'POST' });
+    await axios.get('/api/messages');
+    lateRejection.resolve(new Response(null, { status: 401 }));
+    const response = await upload;
+
+    expect(response.status).toBe(200);
+    expect(getCallsForUrl('/api/auth/refresh')).toHaveLength(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(new Headers(fetchSpy.mock.calls[1][1]?.headers).get('Authorization')).toBe(
+      'Bearer new-token',
+    );
+  });
+
+  it('still refreshes when the replayed fetch is rejected with the current bearer', async () => {
+    expect.assertions(4);
+    setTokenHeader('expired-token');
+    const lateRejection = createDeferred<Response>();
+    let refreshes = 0;
+
+    mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
+      if (config.url?.includes('/api/auth/refresh') === true) {
+        refreshes += 1;
+        return createAdapterResponse(config, { token: `token-${refreshes}` });
+      }
+      if (String(config.headers?.Authorization) === 'Bearer expired-token') {
+        return create401Error(config);
+      }
+      return createAdapterResponse(config, { ok: true });
+    });
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockReturnValueOnce(lateRejection.promise)
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    const upload = dataRequest.authenticatedFetch('/api/files', { method: 'POST' });
+    await axios.get('/api/messages');
+    lateRejection.resolve(new Response(null, { status: 401 }));
+    const response = await upload;
+
+    expect(response.status).toBe(200);
+    expect(refreshes).toBe(2);
+    expect(new Headers(fetchSpy.mock.calls[1][1]?.headers).get('Authorization')).toBe(
+      'Bearer token-1',
+    );
+    expect(new Headers(fetchSpy.mock.calls[2][1]?.headers).get('Authorization')).toBe(
+      'Bearer token-2',
+    );
+  });
+
   it('does not wait on the in-flight recovery when the refresh request itself fails', async () => {
     expect.assertions(3);
     setTokenHeader(createJwt(Date.now() + 60_000));

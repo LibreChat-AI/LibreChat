@@ -675,6 +675,8 @@ export type ResponsesApiRouting = Record<string, ResponsesApiRoute>;
 
 export type TConfig = {
   responsesApiRouting?: ResponsesApiRouting;
+  /** Azure model name -> the `reasoning_effort` values its deployment declares. */
+  modelReasoningEfforts?: Record<string, string[]>;
   order: number;
   type?: EModelEndpoint;
   azure?: boolean;
@@ -851,6 +853,14 @@ export type TFinalize2FASetupRequest = {
 export type TFinalize2FASetupResponse = {
   token: string;
   user: TUser;
+};
+
+export type TCancel2FASetupRequest = {
+  tempToken: string;
+};
+
+export type TCancel2FASetupResponse = {
+  message: string;
 };
 
 export type TVerify2FARequest = TOTPVerificationPayload;
@@ -1354,6 +1364,10 @@ export type TBalanceResponse = {
   lastRefill?: Date | string;
   refillAmount?: number;
   refillMode?: BalanceRefillMode;
+  /** Credits granted at the start of the current period; absent on records not yet granted one. */
+  allotment?: number;
+  /** When `allotment` was granted; a later `lastRefill` means a writer replaced the period without it. */
+  allottedAt?: Date | string;
 };
 
 /* -------------------------------------------------------------------------- */

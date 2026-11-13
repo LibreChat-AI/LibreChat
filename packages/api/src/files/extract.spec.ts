@@ -4,7 +4,9 @@ import {
   extractInspectableFileText,
   getFileExtractionLogDetails,
 } from './extract';
+import { SpreadsheetLimitError } from './documents/workbook';
 import { UninspectableFileError } from '~/protection/files';
+import { SpreadsheetBusyError } from './upload/errors';
 
 const strictExtractedTextFilters = {
   files: {
@@ -45,6 +47,30 @@ describe('extracted file text inspection boundary', () => {
       fileLabel: '"report.pdf"',
       errorMetadata: rawFailure,
     });
+  });
+
+  it('preserves retryable admission pressure without bypassing strict extraction', async () => {
+    const error = new SpreadsheetBusyError();
+    await expect(
+      extractInspectableFileText({
+        filters: strictExtractedTextFilters,
+        extract: async () => {
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
+  });
+
+  it('preserves resource-limit rejection under strict inspection without returning text', async () => {
+    const error = new SpreadsheetLimitError();
+    await expect(
+      extractInspectableFileText({
+        filters: strictExtractedTextFilters,
+        extract: async () => {
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
   });
 
   it('converts strict extraction failures into a stable raw-free policy error', async () => {

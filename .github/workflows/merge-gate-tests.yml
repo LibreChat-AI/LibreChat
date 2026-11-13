@@ -1,0 +1,58 @@
+# The gate jobs dev's merge queue requires are only as good as their wiring: a job left out of a
+# gate's `needs`, or a job that skips on `merge_group`, would let the queue pass without running
+# it. merge-gate.test.mjs reads every workflow and fails on either. The Playwright shards run the
+# same test, which is what holds it in the merge group; this workflow covers the pull requests
+# that only touch workflow files, where Playwright does not start.
+name: Merge Gate Tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - '.github/scripts/merge-gate*.mjs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: merge-gate-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Merge gate wiring and decisions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+
+      # Same key and path list as the E2E and Static Checks workflows, so the tree they
+      # installed for this lockfile is reused; ci-setup.spec.ts holds every job that shares
+      # the key to the same list.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            packages/channel-gateway/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - run: node --test .github/scripts/merge-gate.test.mjs

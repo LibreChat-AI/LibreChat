@@ -32,21 +32,6 @@ async function closeWith(popup: Page, activate: () => Promise<void>) {
   await closed;
 }
 
-/**
- * A full navigation to /oauth/error is answered by the server's social-login failure route
- * (api/server/routes/oauth.js), which redirects to /login before the app loads. These tests
- * cover the page the app renders for that path, so its document is served the app shell.
- */
-async function serveErrorPageShell(page: Page) {
-  await page.context().route(/\/oauth\/error(\?|$)/, async (route) => {
-    if (route.request().resourceType() !== 'document') {
-      return route.fallback();
-    }
-    const shell = await route.fetch({ url: new URL('/', route.request().url()).toString() });
-    await route.fulfill({ response: shell });
-  });
-}
-
 test('the success page names the server and its Close button closes the popup @scenario:oauth-success-close', async ({
   page,
   context,
@@ -99,7 +84,6 @@ test('a long server name stays inside the page @scenario:oauth-success-long-name
 test('the error page explains a known code and falls back for an unknown one @scenario:oauth-error-message', async ({
   page,
 }) => {
-  await serveErrorPageShell(page);
   const known = await openPopup(page, '/oauth/error?error=invalid_state&flow=flow-a');
   await expect(known.getByRole('heading', { name: 'Authentication Failed' })).toBeVisible();
   await expect(known.getByText('Invalid state parameter. Please try again.')).toBeVisible();
@@ -109,4 +93,24 @@ test('the error page explains a known code and falls back for an unknown one @sc
   await expect(unknown.getByText('Authentication failed. Please try again.')).toBeVisible();
   await expect(unknown.getByText('access_denied')).toHaveCount(0);
   await closeWith(unknown, () => unknown.getByRole('button', { name: 'Close Window' }).click());
+});
+
+test.describe('signed out', () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  test('a social login failure still lands on the login screen with its error @scenario:oauth-social-failure-login', async ({
+    page,
+  }) => {
+    /** Passport's `failureRedirect` names no error, unlike the connect callbacks above. */
+    await page.goto('/oauth/error', { timeout: 15000 });
+
+    await expect(page).toHaveURL(/\/login/);
+    await expect(page.getByLabel('Email')).toBeVisible();
+    /** Exact, so the screen reader announcement that repeats the toast text is not a second match. */
+    await expect(
+      page.getByText('Authentication failed. Please check your login method and try again.', {
+        exact: true,
+      }),
+    ).toBeVisible();
+  });
 });

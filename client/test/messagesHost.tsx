@@ -35,7 +35,12 @@ export const testMessagesHost: MessagesHost = {
     consumeFocusSuppression: () => false,
   }),
   renderMessageIcon: () => null,
-  renderMessageRow: () => null,
+  useMaximizeChatSpace: () => false,
+  useHideSelectedAuthor: () => false,
+  useAgentsMap: () => undefined,
+  renderMessageBody: () => null,
+  renderWakeup: () => null,
+  renderPrivateText: () => null,
   renderActivity: () => null,
   useFileMap: () => undefined,
 };

@@ -34,9 +34,12 @@ for the exact input SHA, from the repository's existing backend and frontend wor
 IDs and paths. All build, typecheck, test-shard and circular-dependency jobs must be
 present and successful. Only the PR-only **Codegraph select** job may be skipped.
 An older successful run cannot conceal a newer failed or pending full run. PR checks
-and checks from a different commit do not qualify. This gate does not imply that
-Lighthouse, Playwright or integration lanes that only run on PRs tested the resulting
-post-merge SHA; maintainers still assess those PR results and release readiness.
+and checks from a different commit do not qualify. This gate does not read Lighthouse,
+Playwright or integration lanes. Lighthouse and integration lanes run only on PRs.
+Playwright also runs after merges to `dev`, where merges that land during a run share
+one run of the newest commit, so the `dev` tip has a run of its own unless it changed
+only Markdown or other workflows. Maintainers still assess those results and release
+readiness; a manual **Playwright E2E Tests** run on `dev` covers both stores in full.
 
 The candidate must be the current `dev` tip, and the reviewed baseline must still be
 the current `main` tip. `main` must be an ancestor of the candidate. Ref and CI

@@ -83,3 +83,64 @@ export function getBranchReasoning(
   }
   return undefined;
 }
+
+type SiblingIndexLookup = (parentMessageId: string | null | undefined) => number;
+
+export const selectActiveBranchTail = (
+  messages: TMessage[] | null | undefined,
+  rootSiblingKey: string | null | undefined,
+  getSiblingIndex: SiblingIndexLookup = () => 0,
+): TMessage | null => {
+  const messagesTree = buildTree({ messages: messages ?? null });
+  if (!messagesTree?.length) {
+    return null;
+  }
+
+  let siblings = messagesTree;
+  let parentMessageId = rootSiblingKey;
+  let tail: TMessage | null = null;
+
+  while (siblings.length > 0) {
+    const siblingIdx = getSiblingIndex(parentMessageId);
+    const normalizedSiblingIdx = siblingIdx >= 0 && siblingIdx < siblings.length ? siblingIdx : 0;
+    const activeSiblingIndex = siblings.length - normalizedSiblingIdx - 1;
+    const message = siblings[activeSiblingIndex] ?? siblings[siblings.length - 1];
+    if (!message) {
+      return tail;
+    }
+
+    tail = message;
+    parentMessageId = message.messageId;
+    siblings = message.children ?? [];
+  }
+
+  return tail;
+};
+
+export const getMessageBranchSiblingParentIds = (
+  messages: TMessage[] | null | undefined,
+  rootSiblingKey: string | null | undefined,
+): (string | null)[] => {
+  const messagesTree = buildTree({ messages: messages ?? null });
+  if (!messagesTree?.length) {
+    return [];
+  }
+
+  const parentIds = new Set<string | null>();
+  const stack = [{ siblings: messagesTree, parentMessageId: rootSiblingKey, index: 0 }];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    if (frame.index === 0 && frame.siblings.length > 1) {
+      parentIds.add(frame.parentMessageId ?? null);
+    }
+    const message = frame.siblings[frame.index++];
+    if (!message) {
+      stack.pop();
+      continue;
+    }
+    if (message.children?.length) {
+      stack.push({ siblings: message.children, parentMessageId: message.messageId, index: 0 });
+    }
+  }
+  return Array.from(parentIds);
+};

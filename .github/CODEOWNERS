@@ -2,4 +2,5 @@
 /.github/CODEOWNERS @danny-avila
 /.github/workflows/ @danny-avila
 /.github/scripts/ @danny-avila
+/.github/actions/ @danny-avila
 /.github/MAIN_PROMOTION.md @danny-avila

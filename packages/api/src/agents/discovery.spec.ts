@@ -68,7 +68,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -104,7 +104,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -126,6 +126,44 @@ describe('discoverConnectedAgents', () => {
     expect(onAgentInitialized.mock.calls.map((c) => c[0])).toEqual(['B', 'C']);
   });
 
+  it('validates each referenced agent through the endpoint model loader', async () => {
+    const primaryConfig = makeConfig('A', [
+      { from: 'A', to: 'B', edgeType: 'handoff' },
+      { from: 'A', to: 'C', edgeType: 'handoff' },
+    ]);
+    const agents: Record<string, Agent> = {
+      B: { ...makeAgent('B'), provider: 'anthropic' } as Agent,
+      C: makeAgent('C'),
+    };
+    const getEndpointModels = jest.fn(async () => ({}));
+
+    await discoverConnectedAgents(
+      {
+        req: makeReq(),
+        res: makeRes(),
+        primaryConfig,
+        allowedProviders: new Set(),
+        getEndpointModels,
+        loadTools: jest.fn(),
+      },
+      {
+        getAgent: jest.fn(async ({ id }: { id: string }) => agents[id] ?? null),
+        checkPermission: jest.fn().mockResolvedValue(true),
+        logViolation: jest.fn(),
+        db: {} as never,
+      },
+    );
+
+    expect(mockValidateAgentModel).toHaveBeenCalledTimes(2);
+    for (const [params] of mockValidateAgentModel.mock.calls) {
+      expect(params.getEndpointModels).toBe(getEndpointModels);
+      expect(params).not.toHaveProperty('modelsConfig');
+    }
+    expect(
+      mockValidateAgentModel.mock.calls.map(([params]) => params.agent.provider).sort(),
+    ).toEqual(['anthropic', 'openai']);
+  });
+
   it('skips orphaned agents and filters out edges pointing at them', async () => {
     const edges: GraphEdge[] = [
       { from: 'A', to: 'B', edgeType: 'handoff' },
@@ -145,7 +183,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -187,7 +225,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -218,7 +256,7 @@ describe('discoverConnectedAgents', () => {
         // controllers do this — endpoint = primary provider)
         endpointOption: { endpoint: EModelEndpoint.openAI, model_parameters: {} },
         allowedProviders: new Set(['openai']),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -255,7 +293,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         codeEnvAvailable: true,
       },
@@ -289,7 +327,7 @@ describe('discoverConnectedAgents', () => {
           res: makeRes(),
           primaryConfig,
           allowedProviders: new Set(),
-          modelsConfig: { openai: ['gpt-4o'] },
+          getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
           loadTools: jest.fn(),
           fileSearchAvailable,
         },
@@ -321,7 +359,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         resolveWebSearchGrant,
       },
@@ -355,7 +393,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         resolveLinkedInstructions,
         recordLinkedPromptUsage: false,
@@ -390,7 +428,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         requestBody,
       },
@@ -423,7 +461,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         codeEnvAvailable: false,
       },
@@ -452,7 +490,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         resourceType: 'REMOTE_AGENT',
       },
@@ -498,7 +536,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -540,7 +578,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -586,7 +624,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -629,7 +667,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -679,7 +717,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -742,7 +780,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -785,7 +823,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -833,7 +871,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -893,7 +931,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -934,7 +972,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -980,7 +1018,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -1016,7 +1054,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -1050,7 +1088,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -1086,7 +1124,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -1126,7 +1164,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -1157,7 +1195,7 @@ describe('discoverConnectedAgents', () => {
         primaryConfig,
         agent_ids: ['B', 'C'],
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -1195,7 +1233,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -1229,7 +1267,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -1263,7 +1301,7 @@ describe('discoverConnectedAgents', () => {
           res: makeRes(),
           primaryConfig,
           allowedProviders: new Set(),
-          modelsConfig: { openai: ['gpt-4o'] },
+          getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
           loadTools: jest.fn(),
         },
         {
@@ -1299,7 +1337,7 @@ describe('discoverConnectedAgents', () => {
           res: makeRes(),
           primaryConfig,
           allowedProviders: new Set(),
-          modelsConfig: { openai: ['gpt-4o'] },
+          getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
           loadTools: jest.fn(),
         },
         {
@@ -1335,7 +1373,7 @@ describe('discoverConnectedAgents', () => {
           res: makeRes(),
           primaryConfig,
           allowedProviders: new Set(),
-          modelsConfig: { openai: ['gpt-4o'] },
+          getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
           loadTools: jest.fn(),
         },
         {
@@ -1369,7 +1407,7 @@ describe('discoverConnectedAgents', () => {
             primaryConfig,
             agent_ids: ['B'],
             allowedProviders: new Set(),
-            modelsConfig: { openai: ['gpt-4o'] },
+            getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
             loadTools: jest.fn(),
           },
           {
@@ -1399,7 +1437,7 @@ describe('discoverConnectedAgents', () => {
           primaryConfig: makeConfig('A', edges),
           agent_ids: agentIds,
           allowedProviders: new Set(),
-          modelsConfig: { openai: ['gpt-4o'] },
+          getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
           loadTools: jest.fn(),
         },
         {
@@ -1441,7 +1479,7 @@ describe('discoverConnectedAgents', () => {
           signal: controller.signal,
           primaryConfig: makeConfig('A', [{ from: 'A', to: 'B', edgeType: 'handoff' as const }]),
           allowedProviders: new Set(),
-          modelsConfig: { openai: ['gpt-4o'] },
+          getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
           loadTools: jest.fn(),
         },
         {
@@ -1479,7 +1517,7 @@ describe('discoverConnectedAgents', () => {
         res: makeRes(),
         primaryConfig,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
       },
       {
@@ -1536,7 +1574,7 @@ describe('resolveSubagentGraphs', () => {
         primaryConfig,
         rootConfigs: [primaryConfig],
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         resourceType: 'remote_agent',
         statefulSessionsAvailable: true,
@@ -1600,7 +1638,7 @@ describe('resolveSubagentGraphs', () => {
           primaryConfig,
           rootConfigs: [primaryConfig],
           allowedProviders: new Set(),
-          modelsConfig: { openai: ['gpt-4o'] },
+          getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
           loadTools: jest.fn(),
           resourceType: 'remote_agent',
         },
@@ -1652,7 +1690,7 @@ describe('resolveSubagentGraphs', () => {
         primaryConfig: rootConfigs[0],
         rootConfigs,
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         resourceType: 'remote_agent',
       },
@@ -1693,7 +1731,7 @@ describe('resolveSubagentGraphs', () => {
         primaryConfig,
         rootConfigs: [primaryConfig],
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         resourceType: 'remote_agent',
       },
@@ -1746,7 +1784,7 @@ describe('resolveSubagentGraphs', () => {
         primaryConfig,
         rootConfigs: [primaryConfig],
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         resourceType: 'remote_agent',
       },
@@ -1791,7 +1829,7 @@ describe('resolveSubagentGraphs', () => {
         primaryConfig,
         rootConfigs: [primaryConfig],
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         resourceType: 'remote_agent',
       },
@@ -1845,7 +1883,7 @@ describe('resolveSubagentGraphs', () => {
         primaryConfig,
         rootConfigs: [primaryConfig],
         allowedProviders: new Set(),
-        modelsConfig: { openai: ['gpt-4o'] },
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
         resourceType: 'remote_agent',
       },

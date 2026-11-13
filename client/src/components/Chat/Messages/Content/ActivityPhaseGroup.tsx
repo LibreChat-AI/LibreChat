@@ -1,9 +1,18 @@
 import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
 import { ContentTypes } from 'librechat-data-provider';
-import { GeneratedToolLabelContext } from '@librechat/chat/react';
-import { getOutcomeStatus, isSpanFailed, summarizeSpan } from '@librechat/chat';
 import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
+import {
+  getOutcomeStatus,
+  isSpanFailed,
+  summarizeSpan,
+  getActivityLabelText,
+} from '@librechat/chat';
+import {
+  GeneratedToolLabelContext,
+  useLazyCollapseBody,
+  useThrottledValue,
+} from '@librechat/chat/react';
 import {
   FOLD_RAIL_CLASSES,
   ROW_GLYPH_SLOT,
@@ -17,28 +26,22 @@ import {
   FailedRevealContext,
   FailedRevealPill,
   useFailedRevealTrigger,
+  useExpandCollapse,
+  EXPAND_TRANSITION,
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { RailHover } from '@librechat/chat/components';
 import type { CSSProperties, ReactNode } from 'react';
-import {
-  useLocalize,
-  useExpandCollapse,
-  useLazyCollapseBody,
-  scheduleMessageContentLayoutReconcile,
-  EXPAND_TRANSITION,
-} from '~/hooks';
 import {
   getLiveActivity,
   getSpanIconNames,
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
 } from './live';
+import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import useThrottledValue from '~/hooks/Messages/useThrottledValue';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import { getActivityLabelText } from '~/utils/activityLabels';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { MessageSurfaceContext } from '../ui/surface';
 import { HeaderActionSlotContext } from './slot';
@@ -751,9 +754,9 @@ export default function ActivityPhaseGroup({
              *  the element that depends on it. */
             className={cn(
               'text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle flex h-auto min-h-7 min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-start font-medium hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none focus-visible:ring-inset',
-              /** The open card's title: the one semibold, primary-colour line
-               *  in the fold, so the rows under it read as its contents. */
-              isExpanded && 'text-text-primary font-semibold',
+              /** The open card's title: the one semibold line in the fold, so the
+               *  rows under it read as its contents. Its colour does not change. */
+              isExpanded && 'font-semibold',
             )}
             onClick={handleToggle}
             aria-expanded={isExpanded}

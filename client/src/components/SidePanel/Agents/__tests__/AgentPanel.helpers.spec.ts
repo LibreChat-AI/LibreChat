@@ -1,11 +1,12 @@
 /**
  * @jest-environment jsdom
  */
-import { Constants, EModelEndpoint, type Agent } from 'librechat-data-provider';
+import { Constants, EModelEndpoint, bedrockInputParser } from 'librechat-data-provider';
 import type {
   AgentCreateParams,
   AgentUpdateParams,
   AgentModelParameters,
+  Agent,
 } from 'librechat-data-provider';
 import type { FieldNamesMarkedBoolean } from 'react-hook-form';
 import type { AgentForm } from '~/common';
@@ -324,6 +325,45 @@ describe('composeAgentUpdatePayload', () => {
       );
       expect(payload.model_parameters).toEqual(form.model_parameters);
       expect(JSON.parse(JSON.stringify(payload)).model_parameters).toEqual(form.model_parameters);
+    },
+  );
+
+  it.each(['claude-sonnet-5', 'us.anthropic.claude-sonnet-5'])(
+    'preserves persisted Bedrock request fields on a name-only edit (%s)',
+    (model) => {
+      const form = createForm();
+      form.provider = EModelEndpoint.bedrock;
+      form.model = model;
+      form.name = 'Renamed';
+      const additionalModelRequestFields = {
+        thinking: { type: 'disabled' },
+        output_config: { effort: 'low' },
+        anthropic_beta: ['custom-beta'],
+      };
+      const stored = {
+        ...form.model_parameters,
+        maxContextTokens: 128000,
+        additionalModelRequestFields,
+      };
+      form.model_parameters = stored;
+
+      const { payload } = composeAgentUpdatePayload(
+        form,
+        'agent_123',
+        { endpointsConfig: {}, startupConfig: {} },
+        { instructionsPromptChanged: false },
+      );
+      const saved = JSON.parse(JSON.stringify(payload));
+      expect(saved.model_parameters).toHaveProperty(
+        'additionalModelRequestFields',
+        additionalModelRequestFields,
+      );
+      const parsed = bedrockInputParser.parse({ model, ...saved.model_parameters });
+      expect(parsed.additionalModelRequestFields).toMatchObject({
+        ...additionalModelRequestFields,
+        anthropic_beta: expect.arrayContaining(additionalModelRequestFields.anthropic_beta),
+      });
+      expect(stored.additionalModelRequestFields).toEqual(additionalModelRequestFields);
     },
   );
 

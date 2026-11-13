@@ -1,5 +1,10 @@
-import { buildOAuthFailureLog, getOAuthFailureMessage, isOAuthProtocolFailure } from './failure';
 import type { OAuthFailureRequest } from './failure';
+import {
+  buildOAuthFailureLog,
+  getOAuthFailureMessage,
+  hasOAuthErrorQuery,
+  isOAuthProtocolFailure,
+} from './failure';
 
 function createRequest(overrides: Partial<OAuthFailureRequest> = {}): OAuthFailureRequest {
   return {
@@ -33,6 +38,18 @@ describe('OAuth failure logging helpers', () => {
     });
 
     expect(getOAuthFailureMessage(req)).toBe('Denied by provider');
+  });
+
+  it.each([
+    [{ error: 'invalid_state' }, true],
+    [{ error: ['', 'access_denied'] }, true],
+    [{ error: '' }, false],
+    [{ error: '   ' }, false],
+    [{ error: ['', ' '] }, false],
+    [{ error_description: 'Denied by provider' }, false],
+    [{}, false],
+  ])('reports whether the query %j names an error', (query, expected) => {
+    expect(hasOAuthErrorQuery(createRequest({ query }))).toBe(expected);
   });
 
   it('logs OpenID protocol failure metadata without raw code or state values', () => {

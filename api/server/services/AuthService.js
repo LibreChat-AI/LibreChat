@@ -36,6 +36,10 @@ const {
   getSafeErrorMetadata,
   hashSecret,
   compareSecret,
+  issuePasswordReset,
+  PASSWORD_RESET_REQUEST_MESSAGE,
+  getOpenIDAppAccessToken,
+  getOpenIDBearerAudiences,
 } = require('@librechat/api');
 const {
   findUser,
@@ -70,8 +74,7 @@ const AuthTokenTypes = Object.freeze({
 
 const latestAuthTokenOptions = Object.freeze({ sort: { createdAt: -1 } });
 const genericVerificationMessage = 'Please check your email to verify your email address.';
-const genericResetMessage =
-  'If an account with that email exists, a password reset link has been sent to it.';
+const genericResetMessage = PASSWORD_RESET_REQUEST_MESSAGE;
 const domainNotAllowedMessage =
   'The email address provided cannot be used. Please use a different email address.';
 const invalidEmailVerificationMessage = 'Invalid or expired email verification token';
@@ -208,7 +211,10 @@ const getUnexpiredOpenIDSessionIdToken = (idToken) => {
 const getOpenIDAppAuthToken = (tokenset, sessionIdToken) =>
   (isExpiredOpenIDIdToken(tokenset?.id_token) ? undefined : tokenset?.id_token) ||
   getUnexpiredOpenIDSessionIdToken(sessionIdToken) ||
-  tokenset?.access_token;
+  getOpenIDAppAccessToken(
+    tokenset?.access_token,
+    getOpenIDBearerAudiences(process.env.OPENID_CLIENT_ID, process.env.OPENID_AUDIENCE),
+  );
 
 const clearOpenIDAuthTokens = (req, res, userId, tenantId) => {
   if (req.session?.openidTokens) {
@@ -536,52 +542,15 @@ const requestPasswordReset = async (req) => {
     logger.warn("[requestPasswordReset] The account's config blocked the domain");
     return { message: genericResetMessage };
   }
-  const emailEnabled = checkEmailConfig();
-
-  logger.warn('[requestPasswordReset] [Password reset request initiated]');
-
-  if (!user) {
-    logger.warn('[requestPasswordReset] [No user found]');
-    return { message: genericResetMessage };
-  }
-
-  await Promise.all([
-    deleteTokens({ userId: user._id, type: AuthTokenTypes.PASSWORD_RESET }),
-    deleteTokens({ userId: user._id, email: null, identifier: null, type: null }),
-  ]);
-
-  const [resetToken, hash] = await createTokenHash();
-
-  await createToken({
-    userId: user._id,
-    email: user.email.toLowerCase(),
-    type: AuthTokenTypes.PASSWORD_RESET,
-    token: hash,
-    createdAt: Date.now(),
-    expiresIn: 900,
-  });
-
-  const link = `${domains.client}/reset-password?token=${resetToken}&userId=${user._id}`;
-
-  if (emailEnabled) {
-    await sendEmail({
-      email: user.email,
-      subject: 'Password Reset Request',
-      payload: {
-        appName: process.env.APP_TITLE || 'LibreChat',
-        name: user.name || user.username || user.email,
-        link: link,
-        year: new Date().getFullYear(),
-      },
-      template: 'requestPasswordReset.handlebars',
-    });
-    logger.info(`[requestPasswordReset] Link emailed. [User ID: ${user._id}]`);
-  } else {
-    logger.info(`[requestPasswordReset] Link issued. [User ID: ${user._id}]`);
-    return { link };
-  }
-
-  return { message: genericResetMessage };
+  return issuePasswordReset(
+    { deleteTokens, createToken, createTokenHash, sendEmail },
+    {
+      user,
+      emailEnabled: checkEmailConfig(),
+      clientUrl: domains.client,
+      appName: process.env.APP_TITLE || 'LibreChat',
+    },
+  );
 };
 
 /**

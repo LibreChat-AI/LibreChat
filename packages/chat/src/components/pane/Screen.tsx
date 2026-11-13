@@ -40,7 +40,7 @@ export type ChatScreenProps = Pick<
   /** The project the route opens a new chat in. */
   project?: TChatProject;
   /** The deployment shows the full footer on the welcome screen. */
-  landingFooter: boolean;
+  landingFooter: boolean | 'composer';
   /** The deployment configured footer content. */
   configuredFooter: boolean;
   /** The pane's header, given the pane's decisions (a subagent thread's parent, read-only). */
@@ -53,8 +53,9 @@ export type ChatScreenProps = Pick<
   messagesSlots?: ChatScreenMessagesSlots;
   /** The composer, unless the thread is read-only. */
   renderComposer?: (props: ChatScreenComposerProps) => ReactNode;
-  /** The footer: the full one below the column, or the configured one inside the composer band. */
-  renderFooter?: (placement: 'full' | 'band') => ReactNode;
+  /** The footer: the full one below the column or under the composer, or the configured one
+   *  inside the composer band. */
+  renderFooter?: (placement: 'full' | 'composer' | 'band') => ReactNode;
   /** Rendered beside the composer band, given the band and whether the welcome screen shows. */
   renderMascot?: (bandRef: RefObject<HTMLDivElement>, isLanding: boolean) => ReactNode;
 };
@@ -135,8 +136,9 @@ export default function ChatScreen({
             ? localize('com_ui_new_chat_in_project', { name: landingProject.name })
             : undefined,
       })}
+      composerFooter={chrome.composerFooter ? renderFooter?.('composer') : null}
       bandFooter={chrome.bandFooter ? renderFooter?.('band') : null}
-      footer={chrome.fullFooter ? renderFooter?.('full') : null}
+      footer={chrome.fullFooter && !chrome.composerFooter ? renderFooter?.('full') : null}
       renderMascot={renderMascot ? (bandRef) => renderMascot(bandRef, view.isLanding) : undefined}
     />
   );

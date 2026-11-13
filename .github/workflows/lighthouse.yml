@@ -11,6 +11,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/lighthouse.yml'
+      - '.github/actions/mongodb-binary/**'
       - '!**.md'
   workflow_dispatch:
 
@@ -33,7 +34,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
       - name: Test Lighthouse failure reporting
         run: node --test e2e/lighthouse.test.mts
@@ -51,8 +52,9 @@ jobs:
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
+            packages/channel-gateway/node_modules
             api/node_modules
-          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
       - name: Install dependencies
         id: install-dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -72,10 +74,22 @@ jobs:
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
+            packages/channel-gateway/node_modules
             api/node_modules
           key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
       - name: Install lockfile-pinned Chromium
-        run: npx playwright install --with-deps --no-shell chromium
+        run: npx playwright install --no-shell chromium
+      # The audit keeps the lockfile-pinned Chromium build, so its download above stays fatal.
+      # Its system packages do not: the runner's own Chrome already brings every library
+      # Chromium links, and what `--with-deps` installed on top were nine optional font packages
+      # (22MB from the Ubuntu mirror) that no budget reads. With the mirror unreachable, apt
+      # failed the combined command before any audit ran.
+      - name: Install optional Chromium system packages (best effort)
+        timeout-minutes: 4
+        continue-on-error: true
+        run: .github/scripts/install-playwright-fonts.sh chromium
       - name: Select Lighthouse browser
         run: |
           chrome=$(node -p "require('@playwright/test').chromium.executablePath()")
@@ -104,8 +118,12 @@ jobs:
             echo "[Open the full run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
           } > lighthouse-comment.md
           gh pr comment "$PR_NUMBER" --body-file lighthouse-comment.md
+      # A debugging aid that no job downloads, so a failed or stalled upload must not fail the
+      # audit: see the note on the e2e_shards uploads in playwright-mock.yml.
       - name: Upload Lighthouse reports
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: lighthouse

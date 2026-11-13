@@ -65,6 +65,10 @@ export { default as SourceIcon } from './components/composer/files/SourceIcon';
 export { default as FilePreview } from './components/composer/files/FilePreview';
 export { default as ProgressCircle } from './components/composer/files/ProgressCircle';
 export { default as FileContainer } from './components/composer/files/FileContainer';
+export { default as FileRow, FileRowWrapper } from './components/composer/files/FileRow';
+export type { FileRowProps } from './components/composer/files/FileRow';
+export { default as ComposerTray } from './components/composer/Tray';
+export type { TrayProps as ComposerTrayProps } from './components/composer/Tray';
 export { default as DragDropOverlay } from './components/composer/files/DragDropOverlay';
 export { default as PastedTextDialog } from './components/composer/files/PastedTextDialog';
 export { getFileType } from './components/composer/files/kinds';
@@ -89,6 +93,8 @@ export { getRunStepDurationLabels, getElapsedDurationLabels } from './components
 export type { RunStepDurationLabels } from './components/messages/duration';
 export { default as MessageRow } from './components/messages/MessageRow';
 export { default as WakeupRow } from './components/messages/WakeupRow';
+export { default as PendingTurn } from './components/messages/PendingTurn';
+export type { PendingTurnProps } from './components/messages/PendingTurn';
 export { default as MessageTimestamp } from './components/messages/MessageTimestamp';
 export { getMessageRowWidthClass } from './components/messages/width';
 export { isValidTimestamp, getMessageTimestamp } from './components/messages/time';
@@ -209,6 +215,7 @@ export { getChatPaneView } from './components/pane/view';
 export type { ChatPaneProps } from './components/pane/ChatPane';
 export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';
 export { default as ChatScreen } from './components/pane/Screen';
+export { default as ChatStarters } from './components/pane/starters';
 export { getChatPaneChrome } from './components/pane/chrome';
 export type {
   ChatScreenProps,
@@ -217,6 +224,7 @@ export type {
   ChatScreenMessagesSlots,
 } from './components/pane/Screen';
 export type { ChatPaneChrome } from './components/pane/chrome';
+export type { ChatStartersProps } from './components/pane/starters';
 
 /** Message list root: the scroll container, mount window and pending tail around the thread. */
 export { default as MessagesView } from './components/messages/MessagesView';
@@ -228,6 +236,12 @@ export type {
 } from './components/messages/MessagesView';
 
 export { EventSubagentActivityGroup } from './components/subagents/activity';
+export { default as ThreadMessage } from './components/messages/thread/Message';
+export { default as MessageContent } from './components/messages/MessageContent';
+export { default as ContentRender } from './components/messages/ContentRender';
+export { default as MessageRender } from './components/messages/MessageRender';
+export { default as MessageParts } from './components/messages/MessageParts';
+export { default as Message } from './components/messages/Message';
 export { default as useMessageActions } from './components/messages/useMessageActions';
 export type { TMessageActions, MessageActions } from './components/messages/useMessageActions';
 export { default as useMessageHelpers } from './components/messages/useMessageHelpers';
@@ -242,3 +256,16 @@ export {
   SubagentActivityContent,
   SubagentActivityScrollSurface,
 } from './components/subagents/transcript';
+export { default as SubagentConversation } from './components/subagents/conversation';
+export { default as SharedSubagentActivityDialog } from './components/subagents/shared';
+export { loadSubagentThreadPanel } from './components/subagents/load';
+
+/** Part helpers moved from the app: copy and action buttons, language icons, expand/collapse. */
+export {
+  default as useExpandCollapse,
+  EXPAND_TRANSITION,
+  REDUCED_MOTION_EXPAND_TRANSITION,
+} from './components/parts/useExpandCollapse';
+export { default as CopyButton } from './components/parts/CopyButton';
+export { default as ActionButton } from './components/parts/ActionButton';
+export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';

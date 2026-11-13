@@ -2,6 +2,8 @@ const jwt = require('jsonwebtoken');
 
 const mockSetAuthTokens = jest.fn(() => Promise.resolve('auth-token'));
 const mockDeleteAllUserSessions = jest.fn(() => Promise.resolve({ deletedCount: 0 }));
+const mockFindSession = jest.fn(() => Promise.resolve(null));
+const mockDeleteSession = jest.fn(() => Promise.resolve({ deletedCount: 1 }));
 const mockAwaitAuthUserDocEviction = jest.fn(() => Promise.resolve());
 const mockGetTOTPSecret = jest.fn();
 const mockVerifyTOTP = jest.fn();
@@ -26,6 +28,8 @@ jest.mock('~/models', () => ({
   getUserById: (...args) => store.getUserById(...args),
   updateTwoFactorEnrollment: (...args) => store.updateTwoFactorEnrollment(...args),
   updateUser: (...args) => store.updateUser(...args),
+  findSession: (...args) => mockFindSession(...args),
+  deleteSession: (...args) => mockDeleteSession(...args),
   deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
   awaitAuthUserDocEviction: (...args) => mockAwaitAuthUserDocEviction(...args),
 }));
@@ -104,6 +108,7 @@ const {
   confirm2FASetupWithTempToken,
   acknowledge2FASetup,
   finalize2FASetup,
+  cancel2FASetup,
 } = require('./TwoFactorAuthController');
 const {
   generateTwoFactorLoginChallengeToken,
@@ -739,5 +744,31 @@ describe('finalize2FASetup', () => {
       provider: 'local',
       twoFactorEnabled: true,
     });
+  });
+});
+
+/**
+ * Cancellation is tested against a real database in packages/api; this only proves the controller
+ * module is wired with the session methods it needs.
+ */
+describe('cancel2FASetup', () => {
+  it('ends the session the browser presents through the models the module is wired with', async () => {
+    mockFindSession.mockResolvedValueOnce({
+      _id: 'session-1',
+      expiration: new Date(Date.now() + 60_000),
+    });
+    const res = createResponse();
+
+    await cancel2FASetup(
+      { user: { id: 'user-1' }, cookies: { refreshToken: 'live-session-token' }, body: {} },
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(mockFindSession).toHaveBeenCalledWith(
+      { userId: 'user-1', refreshToken: 'live-session-token' },
+      { lean: false },
+    );
+    expect(mockDeleteSession).toHaveBeenCalledWith({ sessionId: 'session-1' });
   });
 });

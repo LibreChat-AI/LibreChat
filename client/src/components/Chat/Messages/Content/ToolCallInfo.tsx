@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { hasToolParams } from '@librechat/chat';
-import { useLocalize, useExpandCollapse } from '~/hooks';
+import { useExpandCollapse } from '@librechat/chat/components';
 import { OutputRenderer } from './ToolOutput';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 function isSimpleObject(obj: unknown): obj is Record<string, string | number | boolean | null> {

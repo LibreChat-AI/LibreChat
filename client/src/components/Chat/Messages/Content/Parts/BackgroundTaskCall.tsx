@@ -1,6 +1,10 @@
 import { useMemo, useState, useCallback } from 'react';
 import { backgroundTaskOutcome, parseBackgroundTaskOutput } from '@librechat/chat';
-import { toolPanelSpacingClassName, useToolCallIntent } from '@librechat/chat/react';
+import {
+  toolPanelSpacingClassName,
+  useToolCallIntent,
+  useLazyCollapseBody,
+} from '@librechat/chat/react';
 import {
   TOOL_ROW_CLASSES,
   backgroundListGuidanceKeys,
@@ -10,13 +14,13 @@ import {
 import type { PartMetadata, TAttachment } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import { useLocalize, useLazyCollapseBody } from '~/hooks';
 import { ToolIcon, OutputRenderer } from '../ToolOutput';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import BackgroundTaskCard from '../BackgroundTaskCard';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
 import ToolCallInfo from '../ToolCallInfo';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import './BackgroundTaskCall.css';
 

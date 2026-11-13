@@ -7,18 +7,19 @@ import {
   isToolCallPreparing,
 } from '@librechat/chat';
 import {
-  TOOL_ROW_CLASSES,
-  useToolPreparation,
-  ToolAuthWarning,
-  useFailedReveal,
-} from '@librechat/chat/components';
-import {
   Constants,
   dataService,
   actionDelimiter,
   actionDomainSeparator,
   splitToolCallName,
 } from 'librechat-data-provider';
+import {
+  TOOL_ROW_CLASSES,
+  useToolPreparation,
+  ToolAuthWarning,
+  useFailedReveal,
+  useExpandCollapse,
+} from '@librechat/chat/components';
 import {
   toolPanelSpacingClassName,
   useToolContentRequest,
@@ -28,9 +29,10 @@ import {
   SoleToolContext,
   useToolCallIntent,
   useRowHandoff,
+  useProgress,
+  useLazyCollapseBody,
 } from '@librechat/chat/react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { ToolIcon, getToolIconType, isError, hasRenderableOutput } from './ToolOutput';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { MCPAppViews } from '~/components/MCPUIResource';
@@ -39,6 +41,7 @@ import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
 import { firstErrorLine } from './live';
+import { useLocalize } from '~/hooks';
 
 export default function ToolCall({
   initialProgress = 0.1,
@@ -473,6 +476,7 @@ export default function ToolCall({
             toolPreparationDurationMs={toolPreparationDurationMs}
             toolExecutionDurationMs={toolExecutionDurationMs}
             phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
+            phaseStepId={stepId}
             icon={
               <ToolIcon
                 type={toolIconType}

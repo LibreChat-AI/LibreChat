@@ -10,7 +10,7 @@ ARG BUILD_BRANCH=
 ARG BUILD_DATE=
 
 # Base for all builds
-FROM node:24.22.1-alpine AS base-min
+FROM node:24.22.3-alpine AS base-min
 ARG NPM_CI_TIMEOUT_SECONDS=1500
 ARG NPM_CI_ATTEMPTS=2
 RUN apk upgrade --no-cache
@@ -41,12 +41,12 @@ ARG NPM_CI_TIMEOUT_SECONDS=1500
 ARG NPM_CI_ATTEMPTS=2
 WORKDIR /app
 RUN attempt=1; \
-    until timeout "$NPM_CI_TIMEOUT_SECONDS" npm ci; do \
+    until timeout "$NPM_CI_TIMEOUT_SECONDS" npm ci --no-audit; do \
       status=$?; \
       if [ "$attempt" -ge "$NPM_CI_ATTEMPTS" ]; then \
         exit "$status"; \
       fi; \
-      echo "npm ci failed with exit code $status; retrying attempt $((attempt + 1))/$NPM_CI_ATTEMPTS"; \
+      echo "npm ci --no-audit failed with exit code $status; retrying attempt $((attempt + 1))/$NPM_CI_ATTEMPTS"; \
       attempt=$((attempt + 1)); \
       npm cache clean --force || true; \
       sleep 10; \
@@ -115,12 +115,12 @@ RUN uv --version
 WORKDIR /app
 # Install only production deps
 RUN attempt=1; \
-    until timeout "$NPM_CI_TIMEOUT_SECONDS" npm ci --omit=dev; do \
+    until timeout "$NPM_CI_TIMEOUT_SECONDS" npm ci --omit=dev --no-audit; do \
       status=$?; \
       if [ "$attempt" -ge "$NPM_CI_ATTEMPTS" ]; then \
         exit "$status"; \
       fi; \
-      echo "npm ci --omit=dev failed with exit code $status; retrying attempt $((attempt + 1))/$NPM_CI_ATTEMPTS"; \
+      echo "npm ci --omit=dev --no-audit failed with exit code $status; retrying attempt $((attempt + 1))/$NPM_CI_ATTEMPTS"; \
       attempt=$((attempt + 1)); \
       npm cache clean --force || true; \
       sleep 10; \

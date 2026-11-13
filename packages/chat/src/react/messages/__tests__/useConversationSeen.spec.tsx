@@ -11,14 +11,14 @@ import useConversationSeen from '../useConversationSeen';
 const CONVO_ID = 'convo-seen';
 const RESPONDED_AT = '2026-11-03T10:00:00.000Z';
 
-function setup(reply: SeenReply | undefined) {
+function setup(reply: SeenReply | undefined, { proven = true, submitting = false } = {}) {
   const queryClient = new QueryClient();
   queryClient.setQueryData([QueryKeys.messages, CONVO_ID], []);
   const markSeen = jest.fn();
   const consumeFocusSuppression = jest.fn(() => false);
   const source: ConversationSeenSource = {
     readReply: (conversationId) => (conversationId === CONVO_ID ? reply : undefined),
-    hasReplyProof: (_conversationId, _stamp, from) => from === 'server',
+    hasReplyProof: (_conversationId, _stamp, from) => proven && from === 'server',
     markSeen,
     consumeFocusSuppression,
   };
@@ -26,10 +26,11 @@ function setup(reply: SeenReply | undefined) {
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   );
   const view = renderHook(
-    ({ id }: { id: string }) => useConversationSeen(source, id, false, undefined, () => true),
-    { initialProps: { id: CONVO_ID }, wrapper },
+    ({ id, isSubmitting }: { id: string; isSubmitting: boolean }) =>
+      useConversationSeen(source, id, isSubmitting, undefined, () => true),
+    { initialProps: { id: CONVO_ID, isSubmitting: submitting }, wrapper },
   );
-  return { ...view, markSeen, consumeFocusSuppression };
+  return { ...view, markSeen, consumeFocusSuppression, queryClient };
 }
 
 const unseenReply: SeenReply = {
@@ -104,11 +105,37 @@ describe('useConversationSeen', () => {
     act(() => result.current(true));
     await waitFor(() => expect(markSeen).toHaveBeenCalledTimes(1));
 
-    rerender({ id: 'convo-next' });
-    rerender({ id: CONVO_ID });
+    rerender({ id: 'convo-next', isSubmitting: false });
+    rerender({ id: CONVO_ID, isSubmitting: false });
     await act(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
 
     /** Returning re-arms the attempt, but nothing reported the end in view since. */
     expect(markSeen).toHaveBeenCalledTimes(1);
+  });
+
+  it('revalidates history for a reply no fetch has shown yet', () => {
+    const { result, queryClient } = setup(unseenReply, { proven: false });
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+
+    act(() => result.current(true));
+
+    expect(invalidate).toHaveBeenCalledWith([QueryKeys.messages, CONVO_ID]);
+  });
+
+  it('leaves history alone under a run in flight and revalidates once it ends', async () => {
+    const { result, rerender, queryClient } = setup(unseenReply, {
+      proven: false,
+      submitting: true,
+    });
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+
+    act(() => result.current(true));
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+    expect(invalidate).not.toHaveBeenCalled();
+
+    rerender({ id: CONVO_ID, isSubmitting: false });
+
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith([QueryKeys.messages, CONVO_ID]));
+    expect(invalidate).toHaveBeenCalledTimes(1);
   });
 });

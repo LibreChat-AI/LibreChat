@@ -35,7 +35,10 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
@@ -44,18 +47,23 @@ jest.mock('~/hooks', () => ({
     },
     ref: { current: null },
   }),
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
 }));
 
 jest.mock('~/hooks/MCP', () => {
   const mcpServerNames: string[] = [];
   return {
     useMCPIconMap: () => new Map(),
-    useAppBridge: jest.fn(),
     useMCPAppFrame: jest.requireActual('~/hooks/MCP/useMCPAppFrame').useMCPAppFrame,
     useMCPServerNames: () => mcpServerNames,
   };
 });
+
+jest.mock('~/hooks/MCP/useAppBridge', () => ({ useAppBridge: jest.fn() }));
 
 jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
   __esModule: true,
@@ -323,7 +331,7 @@ describe('ToolCall', () => {
       expect(JSON.parse(attachmentGroup.textContent!)).toEqual(attachments);
     });
 
-    it('renders an iframe for an inline ui:// text resource attached to the tool call', () => {
+    it('renders an iframe for an inline ui:// text resource attached to the tool call', async () => {
       const attachments = [
         {
           type: Tools.ui_resources,
@@ -357,9 +365,12 @@ describe('ToolCall', () => {
       // Stored results do not run App code until the viewer explicitly opens the App.
       expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
-      const iframe = container.querySelector('iframe[data-sandbox-url]');
-      expect(iframe).toBeInTheDocument();
-      const { useAppBridge } = jest.requireMock('~/hooks/MCP') as { useAppBridge: jest.Mock };
+      await waitFor(() =>
+        expect(container.querySelector('iframe[data-sandbox-url]')).toBeInTheDocument(),
+      );
+      const { useAppBridge } = jest.requireMock('~/hooks/MCP/useAppBridge') as {
+        useAppBridge: jest.Mock;
+      };
       expect(useAppBridge).toHaveBeenCalledWith(
         expect.objectContaining({
           toolArgs: { owner: 'resource' },
@@ -395,11 +406,13 @@ describe('ToolCall', () => {
 
       expect(screen.getAllByText('Completed testFunction').length).toBeGreaterThan(0);
       expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
-      const { useAppBridge } = jest.requireMock('~/hooks/MCP') as { useAppBridge: jest.Mock };
+      const { useAppBridge } = jest.requireMock('~/hooks/MCP/useAppBridge') as {
+        useAppBridge: jest.Mock;
+      };
       expect(useAppBridge).not.toHaveBeenCalled();
     });
 
-    it('removes a mounted App when the observed policy is disabled', () => {
+    it('removes a mounted App when the observed policy is disabled', async () => {
       const attachments = [
         {
           type: Tools.ui_resources,
@@ -431,7 +444,9 @@ describe('ToolCall', () => {
       );
       expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
-      expect(container.querySelector('iframe[data-sandbox-url]')).toBeInTheDocument();
+      await waitFor(() =>
+        expect(container.querySelector('iframe[data-sandbox-url]')).toBeInTheDocument(),
+      );
 
       rerender(
         <RecoilRoot>
@@ -519,7 +534,9 @@ describe('ToolCall', () => {
       );
 
       expect(container.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
-      const { useAppBridge } = jest.requireMock('~/hooks/MCP') as { useAppBridge: jest.Mock };
+      const { useAppBridge } = jest.requireMock('~/hooks/MCP/useAppBridge') as {
+        useAppBridge: jest.Mock;
+      };
       expect(useAppBridge).not.toHaveBeenCalled();
     });
 

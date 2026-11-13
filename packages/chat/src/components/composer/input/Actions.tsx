@@ -23,6 +23,8 @@ export interface ComposerActionsProps {
   enterToSend: boolean;
   /** Files ready to go with the next message. */
   fileCount: number;
+  /** A generated paste can supply the during-run text while its upload is pending. */
+  hasInlinePaste?: boolean;
   /** Send is unavailable for a reason other than a running turn (loading files, locked, ...). */
   sendDisabled: boolean;
   /** The during-run send is unavailable (loading files, preparing from a URL). */
@@ -35,9 +37,7 @@ export interface ComposerActionsProps {
   isPreparingFromUrl: boolean;
 }
 
-/** The composer's single action slot: send when idle; while a turn runs, Stop, or the steer and
- *  queue send once there is text, with Stop kept mounted behind it so its shortcut still resolves
- *  against this form. */
+/** Idle send, or a during-run submit with Stop kept mounted for its keyboard shortcut. */
 export default function ComposerActions({
   text,
   submitButtonRef,
@@ -50,6 +50,7 @@ export default function ComposerActions({
   onConsumed,
   enterToSend,
   fileCount,
+  hasInlinePaste = false,
   sendDisabled,
   duringRunDisabled,
   showStopButton,
@@ -58,7 +59,7 @@ export default function ComposerActions({
   canStop,
   isPreparingFromUrl,
 }: ComposerActionsProps): ReactNode {
-  const sendOwnsSlot = steering.duringRunActive && text.trim() !== '';
+  const sendOwnsSlot = steering.duringRunActive && (text.trim() !== '' || hasInlinePaste);
 
   const stopButton = showStopButton ? (
     <StopButton
@@ -74,6 +75,7 @@ export default function ComposerActions({
       <DuringRunSendButton
         ref={submitButtonRef}
         text={text}
+        hasInlinePaste={hasInlinePaste}
         steering={steering}
         isNewConversation={isNewConversation}
         getText={getText}

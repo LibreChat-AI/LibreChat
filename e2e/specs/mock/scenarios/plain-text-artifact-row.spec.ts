@@ -16,6 +16,10 @@ const PLAIN_TEXT =
   'plain notes body\n' +
   ':::';
 
+/** The mock profile blocks every service worker in the context, and Sandpack's static preview
+ *  serves the artifact's files from one inside the preview iframe. */
+test.use({ serviceWorkers: 'allow' });
+
 test.describe('plain text artifact row', () => {
   test(
     'announces a rendered preview for plain text artifacts ' +

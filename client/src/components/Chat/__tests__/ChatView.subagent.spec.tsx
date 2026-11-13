@@ -23,6 +23,7 @@ jest.mock('react-hook-form', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   Spinner: () => <div data-testid="spinner" />,
   cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
   useLocalize: () => (key: string) => key,
@@ -56,10 +57,6 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks/Chat/outcomes', () => ({
-  getMappingOptions: () => ({}),
-}));
-
 jest.mock('~/Providers', () => {
   const Passthrough = ({ children }: { children: React.ReactNode }) => <>{children}</>;
   const Context = { Provider: Passthrough };
@@ -69,8 +66,14 @@ jest.mock('~/Providers', () => {
     ChatFormProvider: Passthrough,
     ComposerRestoreProvider: Passthrough,
     useFileMapContext: () => new Map(),
+    useAgentsMapContext: () => undefined,
   };
 });
+
+jest.mock('~/hooks/Chat/target', () => ({
+  __esModule: true,
+  default: () => ({ ready: true, pending: false, failed: false, retry: jest.fn() }),
+}));
 
 jest.mock('~/data-provider', () => ({
   useProjectQuery: () => ({ data: undefined }),
@@ -79,7 +82,6 @@ jest.mock('~/data-provider', () => ({
 jest.mock('../Input/ConversationStarters', () => () => null);
 /** The package list renders the child's messages; the app's pieces of it are not under test. */
 jest.mock('../Messages/PendingTurn', () => () => null);
-jest.mock('../Messages/ScrollButton', () => () => null);
 jest.mock('../Messages/Content/Parts/PendingSteers', () => () => null);
 jest.mock('../Presentation', () => ({ children }: { children: React.ReactNode }) => (
   <>{children}</>

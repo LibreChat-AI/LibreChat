@@ -178,3 +178,28 @@ export function mergeAttachments(
   });
   return liveOnly.length > 0 ? [...merged, ...liveOnly] : merged;
 }
+
+/** Maps Attachments by `toolCallId` for quick lookup */
+export function mapAttachments(
+  attachments: Array<TAttachment | null | undefined>,
+): Record<string, TAttachment[] | undefined> {
+  const attachmentMap: Record<string, TAttachment[] | undefined> = {};
+
+  for (const attachment of attachments) {
+    if (attachment === null || attachment === undefined) {
+      continue;
+    }
+    const key = attachment.toolCallId || '';
+    if (key.length === 0) {
+      continue;
+    }
+
+    if (!attachmentMap[key]) {
+      attachmentMap[key] = [];
+    }
+
+    attachmentMap[key]?.push(attachment);
+  }
+
+  return attachmentMap;
+}

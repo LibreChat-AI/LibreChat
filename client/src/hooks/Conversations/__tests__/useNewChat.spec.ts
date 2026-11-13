@@ -7,11 +7,16 @@ import type { FilesDraft } from '~/utils';
 
 const mockNewConversation = jest.fn();
 const mockClearMessagesCache = jest.fn();
+const mockRefetchQueries = jest.fn();
 const mockInvalidateQueries = jest.fn();
 const mockClearAllDrafts = jest.fn();
 const mockClearFilesDraft = jest.fn();
 const mockDeleteFiles = jest.fn();
 const mockScheduleRetainedRetry = jest.fn();
+const mockQueryClient = {
+  invalidateQueries: mockInvalidateQueries,
+  refetchQueries: mockRefetchQueries,
+};
 
 /** A live composer entry: what the ownership check reads off the file map. */
 type LiveFile = {
@@ -62,7 +67,7 @@ const mockState = {
 };
 
 jest.mock('@tanstack/react-query', () => ({
-  useQueryClient: () => ({ invalidateQueries: mockInvalidateQueries }),
+  useQueryClient: () => mockQueryClient,
 }));
 
 jest.mock('recoil', () => ({
@@ -235,7 +240,8 @@ jest.mock('~/store', () => ({
 }));
 
 jest.mock('librechat-data-provider', () => ({
-  QueryKeys: { messages: 'messages' },
+  QueryKeys: { messages: 'messages', files: 'files' },
+  fileConfig: { deletionRetryLimit: 5 },
 }));
 
 import useNewChat from '../useNewChat';
@@ -273,6 +279,81 @@ describe('useNewChat', () => {
     mockState.retainedPassInFlight = false;
     mockState.fileConfig = { deletionRetryLimit: 5 };
     mockScheduleRetainedRetry.mockClear();
+  });
+
+  it('reconciles a transport-aborted paste through its persisted temporary ID', async () => {
+    mockState.persistedPendingDiscardIds = ['aborted-paste'];
+    mockState.fileList = [];
+    const { rerender } = renderHook(() => useNewChat());
+    await act(async () => {});
+    expect(mockRefetchQueries).toHaveBeenCalledWith(
+      { queryKey: ['files'] },
+      { cancelRefetch: false },
+    );
+    expect(mockState.persistedPendingDiscardIds).toEqual(['aborted-paste']);
+    mockState.fileList = [
+      {
+        file_id: 'server-paste',
+        temp_file_id: 'aborted-paste',
+        filepath: '/uploads/paste.txt',
+        source: 'local',
+      },
+    ];
+    await act(async () => rerender());
+    expect(mockDeleteFiles).toHaveBeenCalledWith({
+      files: [expect.objectContaining({ file_id: 'server-paste' })],
+    });
+    expect(mockState.persistedPendingDiscardIds).toEqual([]);
+  });
+
+  it('bounds cache refreshes while retaining unresolved abort identities', async () => {
+    mockState.persistedPendingDiscardIds = ['aborted-paste'];
+    mockState.fileList = [];
+    renderHook(() => useNewChat());
+    await act(async () => {});
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await act(async () => mockState.retainedListener?.());
+    }
+    expect(mockRefetchQueries).toHaveBeenCalledTimes(5);
+    expect(mockState.persistedPendingDiscardIds).toEqual(['aborted-paste']);
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['temporary-paste', 'server-paste'],
+    ['server-paste', 'temporary-paste'],
+  ])('protects a discarded %s claimed elsewhere as %s', async (discarded, claimed) => {
+    mockState.persistedPendingDiscardIds = [discarded];
+    mockState.fileList = [
+      {
+        file_id: 'server-paste',
+        temp_file_id: 'temporary-paste',
+        filepath: '/uploads/paste.txt',
+        source: 'local',
+      },
+    ];
+    mockState.foreignDraftedIds = [claimed];
+    renderHook(() => useNewChat());
+    await act(async () => {});
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+  });
+
+  it('protects a retained server ID when another draft holds its temporary ID', async () => {
+    mockState.retainedDeletions = [
+      { file_id: 'server-paste', filepath: '/uploads/paste.txt', source: 'local' },
+    ];
+    mockState.fileList = [
+      {
+        file_id: 'server-paste',
+        temp_file_id: 'temporary-paste',
+        filepath: '/uploads/paste.txt',
+        source: 'local',
+      },
+    ];
+    mockState.foreignDraftedIds = ['temporary-paste'];
+    renderHook(() => useNewChat());
+    await act(async () => {});
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
   });
 
   it('clears the outgoing conversation before resetting', () => {

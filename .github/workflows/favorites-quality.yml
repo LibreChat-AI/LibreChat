@@ -28,6 +28,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/favorites-quality.yml'
+      - '.github/actions/mongodb-binary/**'
 
 permissions:
   contents: read
@@ -49,7 +50,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
       - uses: actions/cache@v5
         with:
@@ -59,7 +60,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
         id: dependencies
       - name: Install dependencies
         if: steps.dependencies.outputs.cache-hit != 'true'
@@ -73,12 +74,18 @@ jobs:
           --strict --types node scripts/crap.mts scripts/crap.test.mts
       - name: Verify the advisory reporter
         run: node --test scripts/crap.test.mts
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
       - name: Contracts, compatibility, and CRAP report
         run: npm run test:quality:${{ matrix.suite }} --workspace packages/data-schemas
       - name: Mutate the real database implementation
         run: npm run test:mutations:${{ matrix.suite }} --workspace packages/data-schemas
+      # A debugging aid that no job downloads, so a failed or stalled upload must not fail the
+      # contracts: see the note on the e2e_shards uploads in playwright-mock.yml.
       - name: Upload advisory reports
         if: always()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.suite }}-quality-${{ github.sha }}

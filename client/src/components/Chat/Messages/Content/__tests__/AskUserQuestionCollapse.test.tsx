@@ -38,7 +38,7 @@ let mockLiveAsk: {
 };
 
 jest.mock('~/data-provider', () => ({
-  useGetMessagesByConvoId: () => ({ data: mockLiveAsk }),
+  useCachedMessages: () => ({ data: mockLiveAsk }),
 }));
 jest.mock('~/components/Chat/Messages/Content/ApprovalContext', () => ({
   useApprovalContext: () => ({ getAskAnswerDraft: () => '', setAskAnswerDraft: jest.fn() }),

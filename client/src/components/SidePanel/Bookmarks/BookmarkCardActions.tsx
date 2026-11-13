@@ -107,10 +107,9 @@ export default function BookmarkCardActions({ bookmark }: BookmarkCardActionsPro
             <p className="text-text-secondary text-start text-sm">
               {localize('com_ui_bookmark_delete_confirm')}{' '}
               {/* The name is the user's and can be one unbroken run of characters. It
-                  breaks anywhere rather than wrapping on spaces it does not have,
-                  which is also what stops it setting the dialog's width. The sentence
-                  around it still breaks on its own words. */}
-              <strong className="break-all">{bookmark.tag}</strong>
+                  wraps on its own spaces first and breaks inside a word only when a
+                  run cannot fit, which also stops it setting the dialog's width. */}
+              <strong className="wrap-anywhere">{bookmark.tag}</strong>
             </p>
           }
           selection={{

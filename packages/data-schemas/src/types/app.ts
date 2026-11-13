@@ -133,6 +133,7 @@ export interface AppConfig {
   mcpAppSandbox?: TCustomConfig['mcpAppSandbox'];
   /** File configuration */
   fileConfig?: TFileConfig;
+  spreadsheetParsing?: TCustomConfig['spreadsheetParsing'];
   /** Secure image links configuration, enabled unless explicitly disabled */
   secureImageLinks?: TCustomConfig['secureImageLinks'];
   /** Stored user credential write format, `v3` unless configured */

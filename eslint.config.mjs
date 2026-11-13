@@ -317,6 +317,7 @@ export default [
             'select-item',
             'reset-rc-number-input',
             'reset-rc-number-input-text-right',
+            'choice-badge',
             'assistant-item',
             'animated-tab',
             'animated-tab-list',

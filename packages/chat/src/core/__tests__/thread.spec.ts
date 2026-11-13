@@ -102,7 +102,59 @@ describe('resolveThreadRows', () => {
   });
 });
 
+describe('resolveThreadRows on a 12,000-message chain', () => {
+  const chain = Array.from({ length: 12_000 }, (_, i) =>
+    message(`large-${i}`, i === 0 ? ROOT : `large-${i - 1}`),
+  );
+
+  it('walks the whole branch without recursing, and reuses rows only when handed them', () => {
+    const index = buildThreadIndex(chain);
+    const rows = resolveThreadRows(index, 'c', () => 0, null);
+    expect(rows).toHaveLength(12_000);
+    expect(rows[11_999].source.messageId).toBe('large-11999');
+
+    expect(resolveThreadRows(index, 'c', () => 0, rows)).toBe(rows);
+    const fresh = resolveThreadRows(index, 'other', () => 0, null);
+    expect(fresh).not.toBe(rows);
+    expect(fresh[0]).not.toBe(rows[0]);
+  });
+});
+
 describe('resolveThreadRows with a file map', () => {
+  it('retains message snippets when the owner list omits extracted text', () => {
+    const original = {
+      ...message('u1', ROOT),
+      files: [
+        {
+          file_id: 'paste',
+          type: 'text/plain',
+          textPreview: 'persisted excerpt',
+          llmDeliveryPath: 'text' as const,
+        },
+      ],
+    };
+    const stored = {
+      file_id: 'paste',
+      filename: 'pasted-text.txt',
+      type: 'text/plain',
+      llmDeliveryPath: 'none',
+    } as TFile;
+    const [row] = resolveThreadRows(
+      buildThreadIndex([original], { paste: stored }),
+      'c',
+      () => 0,
+      null,
+    );
+    expect(row.message.files?.[0]).toMatchObject({
+      file_id: 'paste',
+      textPreview: 'persisted excerpt',
+      llmDeliveryPath: 'text',
+      filename: 'pasted-text.txt',
+    });
+    expect(row.source).toBe(original);
+    expect(stored).not.toHaveProperty('textPreview');
+  });
+
   it('hydrates files on the row while reusing the raw cache identity', () => {
     const withFile = { ...message('u1', ROOT), files: [{ file_id: 'f1' }] } as TMessage;
     const fileMap: Record<string, TFile> = {

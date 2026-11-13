@@ -79,6 +79,7 @@ import { UserConnectionManager } from './UserConnectionManager';
 import { ConnectionsRepository } from './ConnectionsRepository';
 import { MCPConnectionFactory } from './MCPConnectionFactory';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
+import { guardUnattendedOAuth } from './oauth/unattended';
 import { OAuthLifecycleRelay } from './oauth/pending';
 import { isOwnedAbortError } from '~/utils/errors';
 import { markMCPToolResultError } from './status';
@@ -144,6 +145,11 @@ export class MCPManager extends UserConnectionManager {
     Promise<void>,
     { controller: AbortController; waiters: number; connection: MCPConnection }
   >();
+
+  /** Each OAuth recovery's prompt relay, for waiters that hold only the recovery promise. */
+  private readonly recoveryPrompts = new WeakMap<Promise<void>, OAuthLifecycleRelay>();
+  /** How to end a guarded caller's wait, by the signal its guard issued. */
+  private readonly unattendedCallers = new WeakMap<AbortSignal, () => void>();
 
   private readonly oauthRecoveries = new WeakMap<
     MCPConnection,
@@ -247,7 +253,26 @@ export class MCPManager extends UserConnectionManager {
     await super.disconnectUserConnection(userId, serverName, options);
   }
 
+  /** Guards a caller nobody can sign in for; see {@link guardUnattendedOAuth}. */
+  private guardUnattended(
+    callerSignal: AbortSignal | undefined,
+    logPrefix: string,
+  ): { signal: AbortSignal; oauthStart: t.OAuthStartHandler; oauthEnd: undefined } {
+    const { signal, oauthStart, leave } = guardUnattendedOAuth(callerSignal, () =>
+      logger.warn(`${logPrefix} Sign-in required on an unattended run; not prompting`),
+    );
+    this.unattendedCallers.set(signal, leave);
+    return { signal, oauthStart, oauthEnd: undefined };
+  }
+
   public override getUserConnection(opts: t.UserMCPConnectionOptions): Promise<MCPConnection> {
+    if (opts.unattended) {
+      opts = {
+        ...opts,
+        ...this.guardUnattended(opts.signal, `[MCP][User: ${opts.user?.id}][${opts.serverName}]`),
+        unattended: false,
+      };
+    }
     const connectionTarget = this.getSuppliedConnectionTarget(opts);
     if (connectionTarget) {
       return this.getVisibleUserConnection(opts, connectionTarget);
@@ -389,6 +414,12 @@ export class MCPManager extends UserConnectionManager {
   }
 
   private waitForActiveRecovery(recovery: Promise<void>, signal?: AbortSignal): Promise<void> {
+    /** Every recovery wait passes here, including ones that registered no prompt handler. */
+    const leave = signal && this.unattendedCallers.get(signal);
+    if (leave) {
+      const stopWatching = this.recoveryPrompts.get(recovery)?.onSignInRequested(leave);
+      if (stopWatching) void recovery.then(stopWatching, stopWatching);
+    }
     const shared = this.recoveryCancellation.get(recovery);
     if (shared) {
       shared.waiters++;
@@ -1047,6 +1078,7 @@ export class MCPManager extends UserConnectionManager {
     });
 
     const recoveryEntry = { promise: recovery, callbacks, allowsTakeover, takeoverClaimed: false };
+    this.recoveryPrompts.set(recovery, callbacks);
     this.oauthRecoveries.set(connection, recoveryEntry);
     this.holdDeferredConnectionDisposal(connection);
     const clearRecovery = () => {
@@ -1491,7 +1523,10 @@ export class MCPManager extends UserConnectionManager {
     onOAuthCredentialsChanging,
     mcpApps,
     scheduledMCPInvocation,
+    unattended,
   }: {
+    /** See {@link t.UserConnectionContext.unattended}. */
+    unattended?: boolean;
     scheduledBearerInvocation?: ScheduledMCPBearerInvocation;
     scheduledMCPInvocation?: ScheduledMCPInvocation;
     user?: IUser;
@@ -1525,6 +1560,11 @@ export class MCPManager extends UserConnectionManager {
       scheduledMCPInvocation != null && scheduledMCPInvocation.enrolled !== false;
     const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
     const logPrefix = userId ? `[MCP][User: ${userId}][${serverName}]` : `[MCP][${serverName}]`;
+    if (unattended) {
+      const guard = this.guardUnattended(options?.signal, logPrefix);
+      ({ oauthStart, oauthEnd } = guard);
+      options = { ...options, signal: guard.signal };
+    }
     this.bindRequestScopedConnectionStore(requestScopedConnections);
     let recoveryTakeoverConsumed = false;
     const directBearerRecoveryState: t.DirectBearerRecoveryState = { attempted: false };

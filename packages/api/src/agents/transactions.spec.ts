@@ -258,6 +258,39 @@ describe('prepareStructuredTokenSpend', () => {
 });
 
 describe('bulkWriteTransactions (real DB)', () => {
+  it('initializes a missing balance with the effective allowance before the bulk debit', async () => {
+    const balance = {
+      enabled: true,
+      startBalance: 1000,
+      autoRefillEnabled: true,
+      refillAmount: 1000,
+      refillMode: 'reset' as const,
+      refillIntervalValue: 7,
+      refillIntervalUnit: 'days' as const,
+    };
+    const docs: PreparedEntry[] = [
+      {
+        doc: { user: testUserId, conversationId: 'c1', tokenType: 'prompt', tokenValue: -300 },
+        tokenValue: -300,
+        balance,
+      },
+    ];
+    await bulkWriteTransactions(
+      { user: testUserId, docs },
+      {
+        insertMany: dbMethods.bulkInsertTransactions,
+        updateBalance: dbMethods.updateBalance,
+      },
+    );
+    expect(await Balance.findOne({ user: testUserId }).lean()).toMatchObject({
+      tokenCredits: 700,
+      allotment: 1000,
+      refillMode: 'reset',
+      refillAmount: 1000,
+    });
+    expect(await Transaction.countDocuments({ user: testUserId })).toBe(1);
+  });
+
   it('should return early for empty docs without DB writes', async () => {
     const dbOps = {
       insertMany: dbMethods.bulkInsertTransactions,

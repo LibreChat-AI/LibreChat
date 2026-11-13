@@ -952,6 +952,29 @@ export function markServerFetchedReply(
   markReplyProof(queryClient, conversationId, lastResponseAt, 'server', messages);
 }
 
+/**
+ * Proves a history fetched before its conversation record was cached, as a URL load's prefetch
+ * is. Such a fetch had no reply stamp to capture, so the proof comes from the content instead:
+ * the history must hold the exact reply the record names. A reply newer than the fetch names a
+ * message the history lacks, so it stays unproven and the seen check loads it.
+ */
+export function proveFetchedReplyByIdentity(
+  queryClient: QueryClient,
+  conversationId: string,
+  messages: TMessage[],
+): boolean {
+  const convo = findConvoInAllQueries(queryClient, conversationId);
+  const { lastResponseAt, lastResponseMessageId } = convo ?? {};
+  if (!lastResponseAt || !lastResponseMessageId || convo?.lastResponseIsManual === true) {
+    return false;
+  }
+  if (!messages.some((message) => message.messageId === lastResponseMessageId)) {
+    return false;
+  }
+  markServerFetchedReply(queryClient, conversationId, lastResponseAt, messages);
+  return true;
+}
+
 function hasReplyProof(
   queryClient: QueryClient,
   conversationId: string,
@@ -985,15 +1008,31 @@ export function hasServerFetchedReply(
   conversationId: string,
   lastResponseAt: string,
 ): boolean {
+  const query = queryClient.getQueryCache().find([QueryKeys.messages, conversationId]);
+  if (query) reconcileMessagesReply(queryClient, query);
   return hasReplyProof(queryClient, conversationId, lastResponseAt, 'server');
 }
 type MessagesReplyFetch = {
-  stamp: string;
+  stamp: string | undefined;
   acceptedServerResult: boolean;
 };
 
 const messagesReplyFetches = new WeakMap<Query, MessagesReplyFetch>();
 const messagesReplyTracking = new WeakSet<QueryClient>();
+const eligibleMessagesReplies = new WeakSet<Query>();
+
+function reconcileMessagesReply(queryClient: QueryClient, query: Query): void {
+  if (!eligibleMessagesReplies.has(query) || query.state.isInvalidated) {
+    return;
+  }
+  const messages = query.state.data;
+  if (
+    Array.isArray(messages) &&
+    proveFetchedReplyByIdentity(queryClient, query.queryKey[1] as string, messages as TMessage[])
+  ) {
+    eligibleMessagesReplies.delete(query);
+  }
+}
 
 function trackMessagesReplyFetches(queryClient: QueryClient): void {
   if (messagesReplyTracking.has(queryClient)) {
@@ -1001,55 +1040,68 @@ function trackMessagesReplyFetches(queryClient: QueryClient): void {
   }
   messagesReplyTracking.add(queryClient);
   queryClient.getQueryCache().subscribe((event) => {
-    if (event.type !== 'updated' || event.query.queryKey[0] !== QueryKeys.messages) {
+    const root = event.query.queryKey[0];
+    if (root !== QueryKeys.messages) {
+      if (
+        event.type === 'updated' &&
+        event.action.type === 'success' &&
+        (root === QueryKeys.conversation || root === QueryKeys.runningConversation)
+      ) {
+        const query = queryClient
+          .getQueryCache()
+          .find([QueryKeys.messages, event.query.queryKey[1]]);
+        if (query) reconcileMessagesReply(queryClient, query);
+      }
       return;
     }
-    const action = event.action;
-    const pending = messagesReplyFetches.get(event.query);
-    if (pending == null) {
-      return;
-    }
-    if (action.type === 'error') {
+    if (event.type === 'removed') {
       messagesReplyFetches.delete(event.query);
+      eligibleMessagesReplies.delete(event.query);
       return;
     }
-    if (action.type !== 'success' || action.manual === true) {
-      pending.acceptedServerResult = false;
+    if (event.type !== 'updated') {
       return;
     }
+    eligibleMessagesReplies.delete(event.query);
+    const pending = messagesReplyFetches.get(event.query);
     messagesReplyFetches.delete(event.query);
-    if (!pending.acceptedServerResult) {
+    const action = event.action;
+    if (action.type !== 'success' || action.manual === true || !pending?.acceptedServerResult) {
       return;
     }
     const committedMessages = event.query.state.data;
-    if (Array.isArray(committedMessages)) {
+    if (!Array.isArray(committedMessages)) {
+      return;
+    }
+    if (pending.stamp != null) {
       markServerFetchedReply(
         queryClient,
         event.query.queryKey[1] as string,
         pending.stamp,
         committedMessages as TMessage[],
       );
+      return;
     }
+    eligibleMessagesReplies.add(event.query);
+    reconcileMessagesReply(queryClient, event.query);
   });
 }
 
 /**
- * Captures the list reply stamp before a messages request crosses its loading gate. The returned
- * request record is weakly tied to the query so an abandoned conversation cannot retain history.
+ * Captures the reply stamp when known. An accepted unstamped fetch remains eligible for identity
+ * proof when its record arrives; query ownership keeps abandoned histories collectible.
  */
 export function beginMessagesReplyFetch(
   queryClient: QueryClient,
   conversationId: string,
   stamp: string | undefined,
 ): MessagesReplyFetch | undefined {
-  if (stamp == null) {
-    return undefined;
-  }
   trackMessagesReplyFetches(queryClient);
   const query = queryClient.getQueryCache().find([QueryKeys.messages, conversationId]);
   if (query == null) {
     return undefined;
   }
+  eligibleMessagesReplies.delete(query);
   const request: MessagesReplyFetch = { stamp, acceptedServerResult: false };
   messagesReplyFetches.set(query, request);
   return request;

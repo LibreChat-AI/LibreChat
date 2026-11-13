@@ -73,6 +73,29 @@ const resolveOpenRouter = (queryClient: QueryClient, drainedReasoning = true) =>
   });
 
 describe('resolveSubmittedReasoning', () => {
+  it.each([
+    ['production-west', high],
+    ['production-chat', undefined],
+  ])('checks an Azure override against the declaration of %s', (model, reasoningOverride) => {
+    expect(
+      resolveSubmittedReasoning({
+        queryClient: new QueryClient(),
+        endpoint: EModelEndpoint.azureOpenAI,
+        conversation: { ...base, endpoint: EModelEndpoint.azureOpenAI, model },
+        endpointsConfig: {
+          [EModelEndpoint.azureOpenAI]: {
+            userProvide: false,
+            order: 0,
+            modelReasoningEfforts: { 'production-west': ['low', 'high'] },
+          },
+        },
+        reasoningOverride: high,
+        drainedReasoning: true,
+        stagedReasoning: high,
+      }),
+    ).toEqual({ reasoningOverride, restoreStaged: false });
+  });
+
   it('keeps an override the target supports', () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData([QueryKeys.agent, 'agent-1'], gpt5);

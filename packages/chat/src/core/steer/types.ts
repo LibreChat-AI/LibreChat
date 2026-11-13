@@ -1,4 +1,4 @@
-import type { TMessage } from 'librechat-data-provider';
+import type { TMessage, CodeApprovalMode } from 'librechat-data-provider';
 import type { GenerationProtocolVersion } from '../protocol';
 
 /**
@@ -39,6 +39,9 @@ export type PendingSteer = {
   preempt?: boolean;
   /** Monotonic server revision; delayed ACKs cannot undo SSE corrections. */
   preemptRevision?: number;
+  /** The code approval mode the steer was sent under. A retry repeats it, so a
+   *  turn the server promotes from this steer starts under the same mode. */
+  codeApprovalMode?: CodeApprovalMode;
   /** Exact server generation this steer belongs to. Conversation ids are
    * reused by later turns, so retries/arm/cancel must retain this epoch rather
    * than mutating whatever generation currently occupies the conversation. */

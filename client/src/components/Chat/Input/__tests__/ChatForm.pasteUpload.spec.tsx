@@ -14,6 +14,7 @@ import { QueryKeys, FileSources, EModelEndpoint } from 'librechat-data-provider'
 import type { TFile, TFileUpload, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { ChatContext, ChatFormProvider } from '~/Providers';
+import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import DragDropWrapper from '../Files/DragDropWrapper';
 import { SteerHostTestProvider } from 'test/steerHost';
@@ -107,14 +108,18 @@ function Harness() {
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
-        <DragDropWrapper>
-          <ChatForm
-            index={0}
-            isLandingPage={false}
-            footerBelow={false}
-            centerFormOnLanding={false}
-          />
-        </DragDropWrapper>
+        <TargetContext.Provider
+          value={{ ready: true, pending: false, failed: false, retry: () => {} }}
+        >
+          <DragDropWrapper>
+            <ChatForm
+              index={0}
+              isLandingPage={false}
+              footerBelow={false}
+              centerFormOnLanding={false}
+            />
+          </DragDropWrapper>
+        </TargetContext.Provider>
       </ChatContext.Provider>
     </ChatFormProvider>
   );

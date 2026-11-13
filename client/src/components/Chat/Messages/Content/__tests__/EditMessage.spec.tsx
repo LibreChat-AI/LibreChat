@@ -211,7 +211,7 @@ describe('EditMessage', () => {
           conversationId: message.conversationId,
         }),
         expect.objectContaining({
-          overrideFiles: message.files,
+          overrideFiles: message.files ?? [],
           overrideManualSkills: message.manualSkills,
           overrideQuotes: message.quotes,
         }),
@@ -241,7 +241,7 @@ describe('EditMessage', () => {
           parentMessageId: message.parentMessageId,
           conversationId: message.conversationId,
         }),
-        expect.objectContaining({ overrideFiles: message.files }),
+        expect.objectContaining({ overrideFiles: message.files ?? [] }),
       ),
     );
     expect(setSiblingIdx).toHaveBeenCalledWith(-1);

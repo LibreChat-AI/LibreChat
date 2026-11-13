@@ -295,6 +295,22 @@ export async function fireSchedule(
       return { fired: false, skipped: 'permission_revoked' as const };
     }
 
+    // The deployment requires the terms of service and this owner has not accepted them (never,
+    // or the acceptance was reset). The HTTP gate refuses the loopback dispatch of such an owner,
+    // which dead-letters the delivery and walks the schedule toward `too_many_failures`, so
+    // refuse here instead, ahead of the MCP preflight, the balance write, a capacity slot and
+    // the run row. A skip rather than a disable: accepting is the owner's own remedy, and a
+    // disabled schedule would then wait for a manual re-enable. Like the deletion barrier it
+    // leaves no run row, so the failure streak is untouched. A config lookup failure throws and
+    // the occurrence is retried, never run unchecked.
+    if (await deps.isTermsBlocked(user)) {
+      logger.debug(
+        `[schedules] skipped ${schedule.id}: owner has not accepted the terms of service`,
+      );
+      await advance();
+      return { fired: false, skipped: 'terms_not_accepted' as const };
+    }
+
     // The owner-config generation this occurrence was CLAIMED under, stamped onto every
     // run row (fired or skipped) so bookkeeping can derive its fence from the row.
     const claimedRevision =

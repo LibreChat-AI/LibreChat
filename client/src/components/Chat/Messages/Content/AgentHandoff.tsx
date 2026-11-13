@@ -4,18 +4,23 @@ import { ChevronDown } from 'lucide-react';
 import { unescapeJsonString } from '@librechat/chat';
 import { EModelEndpoint, Constants } from 'librechat-data-provider';
 import { Button, disclosureChevronVariants } from '@librechat/client';
-import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES, ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import {
   useToolContentRequest,
   useToolContentPending,
   toolPanelSpacingClassName,
 } from '@librechat/chat/react';
+import {
+  PANE_COPY_REVEAL,
+  TOOL_ROW_CLASSES,
+  ROW_GLYPH_SLOT,
+  CopyButton,
+  useExpandCollapse,
+} from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import MessageIcon from '~/components/Share/MessageIcon';
-import { useLocalize, useExpandCollapse } from '~/hooks';
 import { useAgentsMapContext } from '~/Providers';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 interface AgentHandoffProps {

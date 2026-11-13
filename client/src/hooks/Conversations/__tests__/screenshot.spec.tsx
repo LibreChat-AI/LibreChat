@@ -237,3 +237,29 @@ it('does not revive a cancelled capture after navigating away and back', async (
   });
   expect(download).not.toHaveBeenCalled();
 });
+
+describe('when the screenshot library chunk cannot load', () => {
+  afterEach(() => {
+    delete window.__lcRecoverStaleAssets;
+    jest.doMock('html-to-image', () => ({ toCanvas }));
+  });
+
+  it('reports the failure, asks for stale-asset recovery and downloads nothing', async () => {
+    const recover = jest.fn(() => false);
+    window.__lcRecoverStaleAssets = recover;
+    jest.resetModules();
+    jest.doMock('html-to-image', () => {
+      throw new TypeError('Failed to fetch dynamically imported module: /assets/export-old.js');
+    });
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { result } = setup();
+    await act(async () => {
+      await result.current.exportConversation();
+    });
+    expect(download).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'com_nav_export_screenshot_error' }),
+    );
+    expect(recover).toHaveBeenCalledTimes(1);
+  });
+});

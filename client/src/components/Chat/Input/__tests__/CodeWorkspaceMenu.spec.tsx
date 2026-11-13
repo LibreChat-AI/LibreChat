@@ -78,6 +78,7 @@ function workspace(overrides: Partial<CodeWorkspaceResult> = {}): CodeWorkspaceR
     resolveSelections: () => [selected],
     resolveSubmission: () => ({ codeEnvironmentMode: 'attached', codeWorkspaces: [selected] }),
     rememberSelection: jest.fn(),
+    readInputs: jest.fn(),
     ...overrides,
   };
 }

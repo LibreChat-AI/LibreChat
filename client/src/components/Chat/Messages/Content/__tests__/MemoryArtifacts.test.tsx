@@ -14,6 +14,10 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
@@ -158,7 +162,7 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button.parentElement).toHaveClass('my-1', 'h-5');
+      expect(button.parentElement).toHaveClass('my-1.5', 'h-5');
       expect(button).toHaveClass('group/disclosure');
 
       fireEvent.click(button);

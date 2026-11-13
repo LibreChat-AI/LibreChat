@@ -27,6 +27,7 @@ export * from './rag';
 export * from './rag/context';
 export * from './rag/search';
 export * from './regexEngine';
+export * from './resize';
 export * from './retention';
 export * from './speech';
 export * from './sse';
@@ -36,3 +37,6 @@ export * from './validation';
 export * from './text';
 export * from './list';
 export * from './access';
+
+export { SpreadsheetBusyError } from './upload/errors';
+export { SpreadsheetLimitError } from './documents/workbook';
