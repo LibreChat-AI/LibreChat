@@ -18,6 +18,7 @@ import { codeSetupRoute } from './CodeSetup';
 import LoginLayout from './Layouts/Login';
 import dashboardRoutes from './Dashboard';
 import WithRum from '~/lib/rum/WithRum';
+import ShareEntry from './ShareEntry';
 import ChatRoute from './ChatRoute';
 import Root from './Root';
 
@@ -54,15 +55,13 @@ const loadProjectWorkspace = () =>
     Component: m.ProjectWorkspace,
   }));
 
-/** These render messages (search results, shared and reviewed conversations) or the agent
- *  marketplace, none of which a fresh chat shows, so they load when first visited. */
+/** These render messages (search results and reviewed conversations) or the agent marketplace,
+ *  none of which a fresh chat shows, so they load when first visited; `ShareEntry` does the
+ *  same for shared links. */
 const loadResponseReview = () =>
   importWithRecovery(() => import('./ResponseReviewRoute')).then((m) => ({
     Component: m.default,
   }));
-
-const loadShare = () =>
-  importWithRecovery(() => import('./ShareRoute')).then((m) => ({ Component: m.default }));
 
 const loadSearch = () =>
   importWithRecovery(() => import('./Search')).then((m) => ({ Component: m.default }));
@@ -87,7 +86,7 @@ export const router = createBrowserRouter(
     },
     {
       path: 'share/:shareId',
-      lazy: loadShare,
+      element: <ShareEntry />,
       errorElement: <RouteErrorBoundary />,
     },
     {
