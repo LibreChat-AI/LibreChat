@@ -34,6 +34,7 @@ const {
   needsRetentionConversation,
   getConversationWriteContext,
   savePrivateTextMessage,
+  getTurnUserMessageCreatedAt,
   stampPrivateTextMessage,
   deferPrivateTextStart,
   requirePrivateTextPersistence,
@@ -1354,6 +1355,8 @@ class BaseClient {
       req.resolvedConversation = await db.getConvo(req.user.id, message.conversationId);
     }
     const reqCtx = getConversationWriteContext(req);
+    const createdAtOnInsert =
+      message.isCreatedByUser === true ? getTurnUserMessageCreatedAt(req) : undefined;
     const savedMessage = await savePrivateTextMessage(
       db.saveMessage,
       req,
@@ -1365,7 +1368,10 @@ class BaseClient {
         user,
         ...(hasAddedConvo && { addedConvo: true }),
       },
-      { context: 'api/app/clients/BaseClient.js - saveMessageToDatabase #saveMessage' },
+      {
+        context: 'api/app/clients/BaseClient.js - saveMessageToDatabase #saveMessage',
+        ...(createdAtOnInsert && { createdAtOnInsert }),
+      },
     );
 
     /** Only a reply that is actually in the message history may light an indicator: a write

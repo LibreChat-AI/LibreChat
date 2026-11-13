@@ -60,6 +60,7 @@ const {
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
   savePrivateTextMessage,
+  getTurnUserMessageCreatedAt,
   savePrivateTextErrorTurn,
   getUserFacingGenerationError,
   stampPreliminaryPrivateTextMessage,
@@ -517,7 +518,7 @@ async function saveErrorTurn(
           error: false,
           unfinished: false,
         },
-        { context },
+        { context, createdAtOnInsert: getTurnUserMessageCreatedAt(req) },
       );
       if (!savedUserMessage) {
         throw new Error('Failed user message could not be persisted');
@@ -2847,6 +2848,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                     },
                     userMessage,
                     {
+                      createdAtOnInsert: getTurnUserMessageCreatedAt(req),
                       context:
                         'api/server/controllers/agents/request.js - user message before HITL pause',
                     },
@@ -3093,6 +3095,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             reqCtx,
             userMessage,
             {
+              createdAtOnInsert: getTurnUserMessageCreatedAt(req),
               context: 'api/server/controllers/agents/request.js - resumable user message',
             },
           );
