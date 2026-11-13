@@ -87,6 +87,7 @@ jest.mock('~/hooks', () => ({
   useGetAgentsConfig: () => ({ agentsConfig: { capabilities: ['file_search'] } }),
   useHasAccess: () => mockCanUseFileSearch(),
   useAuthContext: () => ({ user: { id: 'user-1' } }),
+  useOnline: jest.requireActual('~/hooks/useOnline').default,
   useToolFavorites: () => ({ favoriteKeys: new Set(), toggle: jest.fn() }),
   useLocalize: () => (key: string, options?: { count?: number; name?: string }) => {
     const translations: Record<string, string> = {

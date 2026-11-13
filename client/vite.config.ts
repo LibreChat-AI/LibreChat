@@ -12,6 +12,7 @@ import { compression, defineAlgorithm } from 'vite-plugin-compression2';
 import type { Plugin } from 'vite';
 import { sandpackConsoleIsolation } from './src/lib/sandpack.ts';
 import { bundledThemeBoot, injectThemeCacheVersion } from './src/Providers/bootVersion.ts';
+import { localeAliases, resolveLocale, supportedLocales } from './src/locales/resolve.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -95,9 +96,14 @@ export default defineConfig(({ command }) => ({
       },
     },
     themeCacheVersion(),
+    bootLoadingLabels(),
     copyPublicAssets(),
     VitePWA({
-      injectRegister: 'auto', // 'auto' | 'manual' | 'disabled'
+      /** `auto` emits a parser-blocking `<script>` at the end of `<head>`. On a slow
+       *  HTTP/1.1 link it queues behind every modulepreload, so the body, and with it
+       *  the loading canvas, cannot paint until most of the bundle has downloaded.
+       *  Registration itself waits for `load` either way. */
+      injectRegister: 'script-defer',
       registerType: 'autoUpdate', // 'prompt' | 'autoUpdate'
       devOptions: {
         enabled: false, // disable service worker registration in development mode
@@ -560,6 +566,44 @@ export function themeCacheVersion(): Plugin {
       });
     },
   };
+}
+
+/**
+ * The shell's loading indicator announces itself before i18n loads, so the build inlines each
+ * locale's `com_ui_loading` and the boot script picks the one for the language it detected.
+ */
+export function bootLoadingLabels(): Plugin {
+  return {
+    name: 'boot-loading-labels',
+    transformIndexHtml: (html) =>
+      html.replace(
+        "'__BOOT_LOADING_LABELS__'",
+        JSON.stringify(readLoadingLabels()).replace(/</g, '\\u003c'),
+      ),
+  };
+}
+
+function readLoadingLabels(): Record<string, string> {
+  const localesDir = path.join(import.meta.dirname, 'src/locales');
+  const labelOf = (locale: string): string | undefined => {
+    const file = path.join(localesDir, locale, 'translation.json');
+    const label = fs.existsSync(file)
+      ? JSON.parse(fs.readFileSync(file, 'utf8')).com_ui_loading
+      : undefined;
+    return typeof label === 'string' ? label : undefined;
+  };
+  const english = labelOf('en') ?? 'Loading...';
+  /* Every key the app's `resolveLocale` accepts, exact or alias, mapped through it, so the
+     shell announces the locale the app is about to load (`zh-tw` is Traditional, `pt` is
+     European Portuguese). The shell falls back to the base language, then to English. */
+  const labels: Record<string, string> = {};
+  for (const key of [
+    ...supportedLocales.map((locale) => locale.toLowerCase()),
+    ...Object.keys(localeAliases),
+  ]) {
+    labels[key] = labelOf(resolveLocale(key)) ?? english;
+  }
+  return labels;
 }
 
 interface SourcemapExclude {

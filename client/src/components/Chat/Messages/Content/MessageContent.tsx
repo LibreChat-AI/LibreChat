@@ -13,10 +13,10 @@ import AttachmentRecoveryActions from '~/components/Messages/Content/Error/recov
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import Error from '~/components/Messages/Content/Error';
+import { useLocalize, useOnline } from '~/hooks';
 import MarkdownLite from './MarkdownLite';
 import EditMessage from './EditMessage';
 import Thinking from './Parts/Thinking';
-import { useLocalize } from '~/hooks';
 import Markdown from './Markdown';
 import { cn } from '~/utils';
 
@@ -51,6 +51,7 @@ const ErrorBox = ({
 
 const ConnectionError = ({ message }: { message?: TMessage }) => {
   const localize = useLocalize();
+  const online = useOnline();
 
   return (
     <Suspense fallback={<LoadingFallback />}>
@@ -65,7 +66,7 @@ const ConnectionError = ({ message }: { message?: TMessage }) => {
             elevation="raised"
             className="text-text-secondary mt-2 transition-all"
           >
-            {localize('com_ui_error_connection')}
+            {localize(online ? 'com_ui_error_connection' : 'com_ui_error_offline')}
           </Alert>
         </Container>
       </DelayedRender>
