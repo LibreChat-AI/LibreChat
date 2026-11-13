@@ -18,9 +18,7 @@ import { reopenTermsOnRefusal } from '~/utils/terms';
 import { LiveAnnouncer } from '~/a11y';
 import { router } from './routes';
 import '~/Providers/MessagePartsHostContext';
-import '~/Providers/MessagesHostContext';
 import '~/Providers/SubagentsHostContext';
-import '~/components/Chat/Messages/Content/register';
 
 const App = () => {
   const { setError } = useApiErrorBoundary();

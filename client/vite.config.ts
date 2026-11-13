@@ -517,6 +517,19 @@ export default defineConfig(({ command }) => ({
                 return null;
               },
             },
+            /**
+             * `@librechat/chat` ships one file per module so the message list, which it loads
+             * through `import()`, can stay out of boot. Left alone, Rolldown gives each module
+             * a boot chunk shares with a different set of lazy chunks its own small file; this
+             * folds the ones every page loads back into one. `$initial` is decided on the
+             * import graph before tree-shaking, and the entry files re-export the message list,
+             * so the entries and the list's own modules are left out of the test.
+             */
+            {
+              name: 'chat-boot',
+              test: /packages[\\/]chat[\\/]dist[\\/](?!(?:components|react|index)\.mjs$|components[\\/](?:messages|pane[\\/]messages)[\\/.])/,
+              tags: ['$initial'],
+            },
           ],
         },
         entryFileNames: 'assets/[name].[hash].js',

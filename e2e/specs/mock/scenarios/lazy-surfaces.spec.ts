@@ -1,8 +1,10 @@
 import type { Page } from '@playwright/test';
 import {
+  replyText,
+  replyPrompt,
+  messagesView,
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
-  replyPrompt,
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
@@ -22,6 +24,9 @@ function recordOnDemandChunks(page: Page): string[] {
   });
   return seen;
 }
+
+/** The message list and the app's row hosts and slots, which the welcome screen never draws. */
+const MESSAGE_LIST_CHUNK = /\/assets\/(messages|slots|hosts)\.[^/"]+\.js/g;
 
 /** The mock fleet runs without the trace viewer, so the served config and availability turn it on. */
 async function enableTraceViewer(page: Page): Promise<void> {
@@ -69,6 +74,49 @@ test.describe('surfaces that load on demand', () => {
 
     await expect(page.getByText('Type to search your messages')).toBeVisible();
     expect(seen).toContain('Search');
+  });
+
+  test.describe('message list', () => {
+    test('the page shell does not preload the message list @scenario:boot-excludes-message-list', async ({
+      page,
+    }) => {
+      const shell = await (await page.request.get(NEW_CHAT_PATH)).text();
+      expect(shell).toContain('modulepreload');
+      expect(shell.match(MESSAGE_LIST_CHUNK) ?? []).toEqual([]);
+    });
+
+    test('a conversation opened by its link draws its messages @scenario:conversation-link-draws-message-list', async ({
+      page,
+    }) => {
+      await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
+      await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+      await sendMessageAndWaitForCompletion(page, replyPrompt('lazy-list-link'));
+      const conversationUrl = page.url();
+
+      const seen = new Set<string>();
+      page.on('request', (request) => {
+        const match = new URL(request.url()).pathname.match(/\/assets\/(messages|slots)\./);
+        if (match) {
+          seen.add(match[1]);
+        }
+      });
+      await page.goto(conversationUrl, { timeout: 15000 });
+
+      await expect(messagesView(page).getByText(replyText('lazy-list-link'))).toBeVisible();
+      await expect(messagesView(page).getByText(replyPrompt('lazy-list-link'))).toBeVisible();
+      expect([...seen].sort()).toEqual(['messages', 'slots']);
+    });
+
+    test('the first message of a fresh chat appears in the list @scenario:first-message-draws-message-list', async ({
+      page,
+    }) => {
+      await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
+      await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+      await sendMessageAndWaitForCompletion(page, replyPrompt('lazy-list-first'));
+
+      await expect(messagesView(page).getByText(replyText('lazy-list-first'))).toBeVisible();
+      await expect(messagesView(page).getByText(replyPrompt('lazy-list-first'))).toBeVisible();
+    });
   });
 
   test.describe('trace viewer', () => {

@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { useEffect } from 'react';
+import { lazy, useEffect } from 'react';
 import { Provider, createStore } from 'jotai';
 import { Constants } from 'librechat-data-provider';
 import { render, screen } from '@testing-library/react';
@@ -98,6 +98,24 @@ describe('ChatPane', () => {
     expect(screen.queryByRole('list', { name: 'Messages' })).not.toBeInTheDocument();
     expect(screen.queryByText('Welcome')).not.toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeInTheDocument();
+  });
+
+  it('keeps the composer while the message list is still loading', async () => {
+    let resolveList: (module: { default: () => ReactNode }) => void = () => undefined;
+    const List = lazy(
+      () =>
+        new Promise<{ default: () => ReactNode }>((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+    const { container } = renderPane({ messages: <List /> });
+
+    expect(screen.queryByRole('list', { name: 'Messages' })).not.toBeInTheDocument();
+    expect(paneColumn(container).querySelector('svg')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeInTheDocument();
+
+    resolveList({ default: () => <ol aria-label="Messages" /> });
+    expect(await screen.findByRole('list', { name: 'Messages' })).toBeInTheDocument();
   });
 
   it('keeps the welcome layout under the spinner while a new session loads', () => {

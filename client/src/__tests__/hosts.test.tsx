@@ -29,13 +29,23 @@ jest.mock('librechat-data-provider', () => {
 
 /** The registrations the app entry performs, loaded the way `App.jsx` loads them. Nothing here
  *  imports a message component, so the hosts cannot arrive as a side effect of one. */
-const ENTRY_HOSTS = [
-  '~/Providers/MessagePartsHostContext',
+const ENTRY_HOSTS = ['~/Providers/MessagePartsHostContext', '~/Providers/SubagentsHostContext'];
+/** The row hosts import the message renderer, so the surfaces that draw rows load them. */
+const ROW_HOSTS = [
   '~/Providers/MessagesHostContext',
-  '~/Providers/SubagentsHostContext',
   '~/components/Chat/Messages/Content/register',
 ];
+const ROW_HOSTS_MODULE = '~/components/Chat/Messages/hosts';
+const ROW_SURFACES = [
+  'components/Chat/Messages/slots.tsx',
+  'components/Chat/Presentation.tsx',
+  'routes/ShareRoute.tsx',
+  'routes/Search.tsx',
+];
 ENTRY_HOSTS.forEach((path) => jest.requireActual(path));
+jest.requireActual(ROW_HOSTS_MODULE);
+
+const readSource = (path: string) => readFileSync(join(__dirname, '..', path), 'utf8');
 
 function ParentAuthor() {
   const author = useParentAuthor('conversation', 'message', 'Parent agent');
@@ -48,10 +58,23 @@ function ParentAuthor() {
 }
 
 describe('app host registration', () => {
-  it('registers every default host from the app entry', () => {
-    const entry = readFileSync(join(__dirname, '..', 'App.jsx'), 'utf8');
+  it('registers the light default hosts from the app entry', () => {
+    const entry = readSource('App.jsx');
     for (const path of ENTRY_HOSTS) {
       expect(entry).toContain(`import '${path}';`);
+    }
+    for (const path of ROW_HOSTS) {
+      expect(entry).not.toContain(`import '${path}';`);
+    }
+  });
+
+  it('registers the row hosts on every surface that draws message rows', () => {
+    const hosts = readSource('components/Chat/Messages/hosts.ts');
+    for (const path of ROW_HOSTS) {
+      expect(hosts).toContain(`import '${path}';`);
+    }
+    for (const surface of ROW_SURFACES) {
+      expect(readSource(surface)).toMatch(/(?:'\.\/hosts'|'~\/components\/Chat\/Messages\/hosts')/);
     }
   });
 

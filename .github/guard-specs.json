@@ -21,7 +21,14 @@
     "client/src/Providers/__tests__/bootDirection.spec.ts": ["client/index.html"],
     "client/src/Providers/__tests__/bootScript.spec.tsx": ["client/index.html"],
     "client/src/Providers/__tests__/handoff.spec.tsx": ["client/index.html"],
-    "client/src/__tests__/hosts.test.tsx": ["client/src/App.jsx"],
+    "client/src/__tests__/hosts.test.tsx": [
+      "client/src/App.jsx",
+      "client/src/components/Chat/Messages/hosts.ts",
+      "client/src/components/Chat/Messages/slots.tsx",
+      "client/src/components/Chat/Presentation.tsx",
+      "client/src/routes/ShareRoute.tsx",
+      "client/src/routes/Search.tsx"
+    ],
     "client/src/__tests__/loadingCanvas.spec.ts": ["client/index.html"],
     "client/src/__tests__/loadingSpinner.spec.tsx": ["client/index.html"],
     "client/src/components/Chat/Input/Composer/__tests__/semanticTokens.spec.ts": [
