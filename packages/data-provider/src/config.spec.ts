@@ -3185,13 +3185,13 @@ describe('conversation title ownership rollout', () => {
 });
 
 describe('MCP server contact interface option', () => {
-  it('defaults contact display on', () => {
-    expect(interfaceSchema.parse({}).mcpServerContact).toBe(true);
-    expect(interfaceSchema.parse(undefined).mcpServerContact).toBe(true);
+  it('defaults contact display off', () => {
+    expect(interfaceSchema.parse({}).mcpServerContact).toBe(false);
+    expect(interfaceSchema.parse(undefined).mcpServerContact).toBe(false);
   });
 
-  it('lets a deployment disable contact display', () => {
-    expect(interfaceSchema.parse({ mcpServerContact: false }).mcpServerContact).toBe(false);
+  it('lets a deployment enable contact display', () => {
+    expect(interfaceSchema.parse({ mcpServerContact: true }).mcpServerContact).toBe(true);
   });
 });
 

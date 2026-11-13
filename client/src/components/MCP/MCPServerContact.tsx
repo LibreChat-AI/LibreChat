@@ -25,7 +25,7 @@ export function shouldDisplayMCPServerContact(server?: MCPServerContactSource | 
 
 export function useMCPServerContactEnabled(): boolean {
   const { data: startupConfig } = useGetStartupConfig();
-  return startupConfig?.interface?.mcpServerContact !== false;
+  return startupConfig?.interface?.mcpServerContact === true;
 }
 
 export default function MCPServerContact({ server, className = '' }: MCPServerContactProps) {
