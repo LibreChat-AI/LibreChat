@@ -769,6 +769,9 @@ actions:
 #     # a `{{LIBRECHAT_BODY_*}}` placeholder here no longer hides the server's tool list.
 #     requestHeaders:
 #       X-Conversation-Id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
+#       # Persisted agent that owns the executing tool, including a subagent's own tools.
+#       # Empty for plain chat or an ephemeral agent. Available on operator-defined servers.
+#       X-Agent-Id: "{{LIBRECHAT_AGENT_ID}}"
 #   puppeteer:
 #     type: stdio
 #     command: npx
@@ -1157,11 +1160,12 @@ endpoints:
   # (optional) Custom request headers for the built-in OpenAI / Google endpoints.
   # Forwarded on every request to the provider (or an AI gateway / reverse proxy
   # in front of it) while keeping provider-native request shaping intact. Values
-  # support env vars (${VAR}), user fields ({{LIBRECHAT_USER_*}}), and request-body
-  # fields ({{LIBRECHAT_BODY_CONVERSATIONID}}). Set the same `headers:` block under
-  # `endpoints.all` to apply globally across endpoints (endpoint values win on key
-  # collisions). NOTE: send metadata headers like these only behind a gateway that
-  # consumes them — native provider APIs ignore unknown headers.
+  # support env vars (${VAR}), user fields ({{LIBRECHAT_USER_*}}), request-body
+  # fields ({{LIBRECHAT_BODY_CONVERSATIONID}}), and the active agent id
+  # ({{LIBRECHAT_AGENT_ID}}). Set the same `headers:` block under `endpoints.all`
+  # to apply globally across endpoints (endpoint values win on key collisions).
+  # NOTE: send metadata headers like these only behind a gateway that consumes
+  # them — native provider APIs ignore unknown headers.
   # openAI:
   #   headers:
   #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'

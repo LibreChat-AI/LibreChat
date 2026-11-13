@@ -1,8 +1,14 @@
 import { Types } from 'mongoose';
 import { TokenExchangeMethodEnum } from 'librechat-data-provider';
-import type { MCPOptions } from 'librechat-data-provider';
+import type { Agent, MCPOptions } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
-import { createSafeUser, resolveHeaders, processMCPEnv, encodeHeaderValue } from './env';
+import {
+  createSafeUser,
+  createSafeAgent,
+  resolveHeaders,
+  processMCPEnv,
+  encodeHeaderValue,
+} from './env';
 import { applyRequestHeaders } from '~/mcp/utils';
 
 function isStdioOptions(options: MCPOptions): options is Extract<MCPOptions, { type?: 'stdio' }> {
@@ -2353,5 +2359,183 @@ describe('processMCPEnv OpenID re-authentication signalling', () => {
     } else {
       throw new Error('Expected streamable-http options');
     }
+  });
+});
+
+describe('createSafeAgent', () => {
+  it('returns an empty object for null/undefined agents', () => {
+    expect(createSafeAgent(null)).toEqual({});
+    expect(createSafeAgent(undefined)).toEqual({});
+  });
+
+  it('projects only allowlisted fields, dropping everything else', () => {
+    const safeAgent = createSafeAgent({
+      id: 'agent_HTbJ5rDW0kOOK1a5MPBSt',
+      name: 'Support Bot',
+      instructions: 'internal system prompt',
+      author: 'user-123',
+    } as Partial<Agent>);
+
+    expect(safeAgent).toEqual({ id: 'agent_HTbJ5rDW0kOOK1a5MPBSt' });
+  });
+
+  it('omits an absent or null id rather than emitting a null value', () => {
+    expect(createSafeAgent({})).toEqual({});
+    expect(createSafeAgent({ id: null })).toEqual({});
+  });
+
+  it('passes an ephemeral id through — the gate belongs to resolution, not projection', () => {
+    expect(createSafeAgent({ id: 'openAI__gpt-4o___My Preset' })).toEqual({
+      id: 'openAI__gpt-4o___My Preset',
+    });
+  });
+});
+
+describe('resolveHeaders agent placeholders', () => {
+  const agentHeaders = { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' };
+  const persistedAgent = { id: 'agent_HTbJ5rDW0kOOK1a5MPBSt' };
+
+  it('preserves the template until the provider agent context is available', () => {
+    const pending = resolveHeaders({ headers: agentHeaders });
+    expect(pending).toEqual(agentHeaders);
+    expect(
+      resolveHeaders({ headers: pending, agent: persistedAgent, stripUnresolved: true }),
+    ).toEqual({ 'X-Agent-Id': persistedAgent.id });
+  });
+
+  it('uses the provider agent ahead of body fields and custom variables', () => {
+    expect(
+      resolveHeaders({
+        headers: agentHeaders,
+        agent: persistedAgent,
+        body: { agentId: 'agent_spoofed' },
+        customUserVars: { LIBRECHAT_AGENT_ID: 'agent_spoofed' },
+        stripUnresolved: true,
+      }),
+    ).toEqual({ 'X-Agent-Id': persistedAgent.id });
+  });
+
+  it('resolves the agent id for a persisted agent', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      agent: persistedAgent,
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('agent_HTbJ5rDW0kOOK1a5MPBSt');
+  });
+
+  it('resolves alongside user and body placeholders without interfering', () => {
+    const result = resolveHeaders({
+      headers: {
+        'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}',
+        'X-User-Id': '{{LIBRECHAT_USER_ID}}',
+        'X-Convo': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        'Content-Type': 'application/json',
+      },
+      user: { id: 'user-123' },
+      body: { conversationId: 'convo-abc' },
+      agent: persistedAgent,
+      stripUnresolved: true,
+    });
+
+    expect(result).toEqual({
+      'X-Agent-Id': 'agent_HTbJ5rDW0kOOK1a5MPBSt',
+      'X-User-Id': 'user-123',
+      'X-Convo': 'convo-abc',
+      'Content-Type': 'application/json',
+    });
+  });
+
+  it('replaces every occurrence within a composite value', () => {
+    const result = resolveHeaders({
+      headers: { 'X-Meta': 'agent={{LIBRECHAT_AGENT_ID}};ref={{LIBRECHAT_AGENT_ID}}' },
+      agent: persistedAgent,
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Meta']).toBe(
+      'agent=agent_HTbJ5rDW0kOOK1a5MPBSt;ref=agent_HTbJ5rDW0kOOK1a5MPBSt',
+    );
+  });
+
+  it('strips the placeholder when no agent context is available', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      user: { id: 'user-123' },
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('');
+  });
+
+  it('strips the placeholder for an ephemeral agent id', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      agent: { id: 'openAI__gpt-4o___My Preset' },
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('');
+  });
+
+  it('never forwards user-authored preset text from an ephemeral id', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      agent: { id: 'openAI__gpt-4o___Marić\r\nX-Injected: 1' },
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('');
+  });
+
+  it('strips the placeholder when the agent id is empty', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      agent: { id: '' },
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('');
+  });
+
+  it('preserves the placeholder by default so staged flows can resolve later', () => {
+    const result = resolveHeaders({ headers: { ...agentHeaders } });
+
+    expect(result['X-Agent-Id']).toBe('{{LIBRECHAT_AGENT_ID}}');
+  });
+
+  it('leaves headers without the placeholder untouched', () => {
+    const result = resolveHeaders({
+      headers: { 'Content-Type': 'application/json', 'X-Static': 'value' },
+      agent: persistedAgent,
+      stripUnresolved: true,
+    });
+
+    expect(result).toEqual({ 'Content-Type': 'application/json', 'X-Static': 'value' });
+  });
+
+  it('resolves from a full agent projected through createSafeAgent', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      agent: createSafeAgent({
+        id: 'agent_HTbJ5rDW0kOOK1a5MPBSt',
+        name: 'Support Bot',
+        instructions: 'internal system prompt',
+      } as Partial<Agent>),
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('agent_HTbJ5rDW0kOOK1a5MPBSt');
+  });
+
+  it('does not resolve an unknown agent field', () => {
+    const result = resolveHeaders({
+      headers: { 'X-Agent-Name': '{{LIBRECHAT_AGENT_NAME}}' },
+      agent: persistedAgent,
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Name']).toBe('{{LIBRECHAT_AGENT_NAME}}');
   });
 });

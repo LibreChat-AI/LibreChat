@@ -23,6 +23,7 @@ const {
   resolveJsonSchemaRefs,
   sanitizeGeminiSchema,
   processMCPEnv,
+  createAgentMCPTool,
   preProcessGraphTokens,
   createMCPReauthenticationPrompt,
   createMCPInitializationOAuthPrompts,
@@ -848,7 +849,11 @@ async function reconnectServer({
  * @param {import('librechat-data-provider').TMCPAppsPolicy} [params.mcpApps] - Request-admitted MCP Apps policy.
  * @returns { Promise<Array<typeof tool | { _call: (toolInput: Object | string) => unknown}>> } An object with `_call` method to execute the tool input.
  */
-async function createMCPTools({
+function createMCPTools(params) {
+  return createAgentMCPTool(params, createMCPToolsImpl);
+}
+
+async function createMCPToolsImpl({
   agentId,
   res,
   mcpPermissionContext,
@@ -1002,7 +1007,12 @@ async function createMCPTools({
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  * @returns { Promise<typeof tool | { _call: (toolInput: Object | string) => unknown}> } An object with `_call` method to execute the tool input.
  */
-async function createMCPTool({
+function createMCPTool(params) {
+  return createAgentMCPTool(params, createMCPToolImpl);
+}
+
+async function createMCPToolImpl({
+  invokeTool,
   agentId,
   res,
   mcpPermissionContext,
@@ -1192,6 +1202,7 @@ async function createMCPTool({
   }
 
   return createToolInstance({
+    invokeTool,
     scheduledBearerInvocation: bindScheduledMCPBearerInvocation(
       requestScopedConnections,
       agentId,
@@ -1231,6 +1242,7 @@ async function createMCPTool({
 }
 
 function createToolInstance({
+  invokeTool,
   scheduledBearerInvocation,
   scheduledMCPInvocation,
   res,
@@ -1358,7 +1370,7 @@ function createToolInstance({
        * as the jwt-bearer assertion.
        */
       return await oauthPrompt.run(() =>
-        mcpManager.callTool({
+        invokeTool(mcpManager, {
           scheduledBearerInvocation,
           scheduledMCPInvocation,
           serverName,

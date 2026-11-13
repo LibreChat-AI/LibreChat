@@ -7,6 +7,7 @@ import {
   canUseAppConnection,
   canBackfillSharedServerInstructions,
   getMissingRuntimeBodyPlaceholderFields,
+  getMCPAgentConnectionKey,
   hasRuntimeUrlPlaceholders,
   isUserSourced,
   requiresEphemeralUserConnection,
@@ -513,7 +514,12 @@ export abstract class UserConnectionManager {
         ? getMCPRequestSignal(requestScopedConnections)
         : opts.signal;
       opts.signal?.throwIfAborted();
-      const requestConnectionKey = getUserConnectionKey(userId, serverName, capabilityProfile);
+      const baseConnectionKey = getUserConnectionKey(userId, serverName, capabilityProfile);
+      const requestConnectionKey = getMCPAgentConnectionKey(
+        baseConnectionKey,
+        config,
+        opts.requestBody,
+      );
       const existing = requestScopedConnections.connections.get(requestConnectionKey) as
         | MCPConnection
         | undefined;
@@ -574,7 +580,7 @@ export abstract class UserConnectionManager {
         logPrefix: `[MCP][User: ${userId}][${serverName}]`,
       });
       const creationGuard: ConnectionCreationGuard = { cancelledBy: null };
-      this.registerConnectionCreation(requestConnectionKey, creationGuard);
+      this.registerConnectionCreation(baseConnectionKey, creationGuard);
       const connectionPromise = this.createUserConnectionWithLifecycleRestarts(
         {
           ...opts,
@@ -608,7 +614,7 @@ export abstract class UserConnectionManager {
           return connection;
         })
         .finally(() => {
-          this.unregisterConnectionCreation(requestConnectionKey, creationGuard);
+          this.unregisterConnectionCreation(baseConnectionKey, creationGuard);
           if (requestScopedConnections.pending.get(requestConnectionKey) === connectionPromise)
             requestScopedConnections.pending.delete(requestConnectionKey);
         });

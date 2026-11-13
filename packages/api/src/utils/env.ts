@@ -1,6 +1,6 @@
 import { logger } from '@librechat/data-schemas';
-import { extractEnvVariable } from 'librechat-data-provider';
-import type { MCPOptions } from 'librechat-data-provider';
+import { extractEnvVariable, isEphemeralAgentId } from 'librechat-data-provider';
+import type { Agent, MCPOptions } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { RequestBody } from '~/types';
 import {
@@ -151,19 +151,62 @@ export function createSafeUser(
  */
 export const ALLOWED_BODY_FIELDS = ['conversationId', 'parentMessageId', 'messageId'] as const;
 
+/**
+ * List of allowed agent fields that can be used in header placeholders. Kept to
+ * identifiers the agent owns rather than user-authored content.
+ */
+const ALLOWED_AGENT_FIELDS = ['id'] as const;
+
+type AllowedAgentField = (typeof ALLOWED_AGENT_FIELDS)[number];
+type SafeAgent = Pick<Agent, AllowedAgentField>;
+
+/**
+ * Any object carrying agent identity fields, so the projection below accepts a
+ * full `Agent`, a run-shaped agent, or the narrower agent objects the auxiliary
+ * generation paths pass around, without those callers coupling to `Agent` itself.
+ */
+type AgentLike = { [K in AllowedAgentField]?: Agent[K] | null };
+
+/**
+ * Creates a safe agent object containing only allowed fields, mirroring
+ * `createSafeUser` — call sites project at the boundary rather than hand-building
+ * a literal, so the allowlist stays the one place that decides what an agent may
+ * contribute to a header.
+ *
+ * @param agent - The agent object to extract safe fields from
+ * @returns A new object containing only allowed fields
+ */
+export function createSafeAgent(agent?: AgentLike | null): Partial<SafeAgent> {
+  if (!agent) {
+    return {};
+  }
+
+  const safeAgent: Partial<SafeAgent> = {};
+  for (const field of ALLOWED_AGENT_FIELDS) {
+    const value = agent[field];
+    if (value != null) {
+      Object.assign(safeAgent, { [field]: value });
+    }
+  }
+
+  return safeAgent;
+}
+
 const OPENID_PLACEHOLDER_NAMES = `LIBRECHAT_OPENID_(?:${OPENID_TOKEN_FIELDS.join('|')}|TOKEN)`;
 
 /**
  * Matches every placeholder this module knows how to resolve: the enumerated
- * `{{LIBRECHAT_USER_*}}`, `{{LIBRECHAT_BODY_*}}`, and `{{LIBRECHAT_OPENID_*}}`
- * names. Deliberately excludes unknown names (a typo'd placeholder staying
- * literal is diagnosable) and `{{LIBRECHAT_GRAPH_ACCESS_TOKEN}}`, which is
- * resolved asynchronously via the OBO flow outside this pipeline.
+ * `{{LIBRECHAT_USER_*}}`, `{{LIBRECHAT_BODY_*}}`, `{{LIBRECHAT_AGENT_*}}`, and
+ * `{{LIBRECHAT_OPENID_*}}` names. Deliberately excludes unknown names (a typo'd
+ * placeholder staying literal is diagnosable) and
+ * `{{LIBRECHAT_GRAPH_ACCESS_TOKEN}}`, which is resolved asynchronously via the
+ * OBO flow outside this pipeline.
  */
 const RESOLVABLE_PLACEHOLDER_PATTERN = new RegExp(
   [
     `LIBRECHAT_USER_(?:${ALLOWED_USER_FIELDS.map((field) => field.toUpperCase()).join('|')})`,
     `LIBRECHAT_BODY_(?:${ALLOWED_BODY_FIELDS.map((field) => field.toUpperCase()).join('|')})`,
+    `LIBRECHAT_AGENT_(?:${ALLOWED_AGENT_FIELDS.map((field) => field.toUpperCase()).join('|')})`,
     OPENID_PLACEHOLDER_NAMES,
   ]
     .map((names) => `\\{\\{(?:${names})\\}\\}`)
@@ -188,8 +231,10 @@ const OPENID_ACCESS_CREDENTIAL_PLACEHOLDER_PATTERN =
  * users under that one string). Only for final resolution passes — staged
  * flows that resolve again later with more context must not strip.
  */
-export function stripUnresolvedPlaceholders(value: string): string {
-  return value.replace(RESOLVABLE_PLACEHOLDER_PATTERN, '');
+export function stripUnresolvedPlaceholders(value: string, preserveAgentId = false): string {
+  return value.replace(RESOLVABLE_PLACEHOLDER_PATTERN, (placeholder) =>
+    preserveAgentId && placeholder === '{{LIBRECHAT_AGENT_ID}}' ? placeholder : '',
+  );
 }
 
 /**
@@ -277,12 +322,41 @@ function processBodyPlaceholders(value: string, body: RequestBody): string {
 }
 
 /**
+ * Replaces agent field placeholders within a string.
+ * Recognized placeholders: `{{LIBRECHAT_AGENT_<FIELD>}}` where `<FIELD>` ∈ ALLOWED_AGENT_FIELDS.
+ * Only persisted agents resolve; missing or ephemeral identities become an empty value.
+ *
+ * @param value - The string value to process
+ * @param agent - The agent serving the request
+ * @returns The processed string with placeholders replaced
+ */
+export function processAgentPlaceholders(value: string, agent: Partial<Agent>): string {
+  if (!agent.id || isEphemeralAgentId(agent.id) || !/^agent_[A-Za-z0-9_-]+$/.test(agent.id)) {
+    return value.replaceAll('{{LIBRECHAT_AGENT_ID}}', '');
+  }
+
+  for (const field of ALLOWED_AGENT_FIELDS) {
+    const placeholder = `{{LIBRECHAT_AGENT_${field.toUpperCase()}}}`;
+    if (!value.includes(placeholder)) {
+      continue;
+    }
+
+    const fieldValue = agent[field];
+    const replacementValue = fieldValue == null ? '' : String(fieldValue);
+    value = value.replace(new RegExp(placeholder, 'g'), replacementValue);
+  }
+
+  return value;
+}
+
+/**
  * Processes a single string value by replacing various types of placeholders
  *
  * @param originalValue - The original string value to process
  * @param customUserVars - Optional custom user variables to replace placeholders
  * @param user - Optional user object for replacing user field placeholders
  * @param body - Optional request body object for replacing body field placeholders
+ * @param agent - Optional agent object for replacing agent field placeholders
  * @param isHeader - Whether this value will be used in an HTTP header (enables encoding)
  * @returns The processed string with all placeholders replaced
  */
@@ -291,6 +365,7 @@ function processSingleValue({
   customUserVars,
   user,
   body = undefined,
+  agent = undefined,
   isHeader = false,
   dbSourced = false,
   beforeCredentialResolution,
@@ -299,6 +374,7 @@ function processSingleValue({
   customUserVars?: Record<string, string>;
   user?: Partial<IUser>;
   body?: RequestBody;
+  agent?: Partial<Agent>;
   isHeader?: boolean;
   /** When true, only resolve customUserVars — skip env vars, user/OpenID/body placeholders */
   dbSourced?: boolean;
@@ -320,6 +396,7 @@ function processSingleValue({
    */
   if (!dbSourced) {
     value = extractEnvVariable(value);
+    if (agent) value = processAgentPlaceholders(value, agent);
   }
 
   /** Runs for both dbSourced and non-dbSourced — it is the only resolution DB-stored servers get */
@@ -393,6 +470,7 @@ export function processMCPEnv(params: {
   beforeCredentialResolution?: (value: string) => string;
 }): MCPOptions {
   const { options, user, body, beforeCredentialResolution } = params;
+  const agent = createSafeAgent({ id: body?.agentId });
 
   if (options === null || options === undefined) {
     return options;
@@ -412,7 +490,7 @@ export function processMCPEnv(params: {
   }
 
   /** Derive dbSourced from explicit param OR from dbId on the options (failsafe for callers that forget the flag) */
-  const dbSourced = params.dbSourced ?? !!options.dbId;
+  const dbSourced = params.dbSourced === true || !!options.dbId || options.source === 'user';
 
   /** A shared-server editor can inject old auth-field names into any template. Only
    *  server-declared variables may resolve, including destination-bound API key fields. */
@@ -441,6 +519,7 @@ export function processMCPEnv(params: {
     const processedEnv: Record<string, string> = {};
     for (const [key, originalValue] of Object.entries(newObj.env)) {
       processedEnv[key] = processSingleValue({
+        agent,
         user,
         body,
         dbSourced,
@@ -457,6 +536,7 @@ export function processMCPEnv(params: {
     for (const originalValue of newObj.args) {
       processedArgs.push(
         processSingleValue({
+          agent,
           originalValue,
           customUserVars,
           user,
@@ -475,6 +555,7 @@ export function processMCPEnv(params: {
     const processedHeaders: Record<string, string> = {};
     for (const [key, originalValue] of Object.entries(newObj.headers)) {
       processedHeaders[key] = processSingleValue({
+        agent,
         user,
         body,
         dbSourced,
@@ -492,6 +573,7 @@ export function processMCPEnv(params: {
     const processedOAuthHeaders: Record<string, string> = {};
     for (const [key, originalValue] of Object.entries(newObj.oauth_headers)) {
       processedOAuthHeaders[key] = processSingleValue({
+        agent,
         user,
         body,
         dbSourced,
@@ -507,6 +589,7 @@ export function processMCPEnv(params: {
   // Process URL if it exists (for WebSocket, SSE, StreamableHTTP types)
   if ('url' in newObj && newObj.url) {
     newObj.url = processSingleValue({
+      agent,
       user,
       body,
       dbSourced,
@@ -529,6 +612,7 @@ export function processMCPEnv(params: {
       // token_exchange_method is an enum and shouldn't be processed
       if (typeof originalValue === 'string') {
         processedOAuth[key] = processSingleValue({
+          agent,
           user,
           body,
           dbSourced,
@@ -554,6 +638,8 @@ export function processMCPEnv(params: {
  * @param options.headers - The headers object to process
  * @param options.user - Optional user object for replacing user field placeholders (can be partial with just id)
  * @param options.body - Optional request body object for replacing body field placeholders
+ * @param options.agent - Optional agent serving the request, for replacing agent field
+ *   placeholders. Only persisted agents resolve; see `processAgentPlaceholders`.
  * @param options.customUserVars - Optional custom user variables to replace placeholders
  * @param options.stripUnresolved - When true (final resolution passes only), replaces any
  *   remaining resolvable placeholders with an empty string so internal template syntax is
@@ -565,10 +651,13 @@ export function resolveHeaders(options?: {
   headers: Record<string, string> | undefined;
   user?: Partial<IUser> | { id: string };
   body?: RequestBody;
+  agent?: Partial<Agent>;
   customUserVars?: Record<string, string>;
   stripUnresolved?: boolean;
+  /** Google initialization resolves credentials before the agent identity is available. */
+  preserveAgentId?: boolean;
 }): Record<string, string> {
-  const { headers, user, body, customUserVars, stripUnresolved = false } = options ?? {};
+  const { headers, user, body, agent, customUserVars, stripUnresolved = false } = options ?? {};
   const inputHeaders = headers ?? {};
 
   const resolvedHeaders: Record<string, string> = { ...inputHeaders };
@@ -580,6 +669,7 @@ export function resolveHeaders(options?: {
         customUserVars,
         user: user as IUser,
         body,
+        agent,
         isHeader: true, // Important: Enable header encoding
       });
       if (!stripUnresolved) {
@@ -597,7 +687,7 @@ export function resolveHeaders(options?: {
         return;
       }
 
-      resolvedHeaders[key] = stripUnresolvedPlaceholders(processed);
+      resolvedHeaders[key] = stripUnresolvedPlaceholders(processed, options?.preserveAgentId);
     });
   }
 
