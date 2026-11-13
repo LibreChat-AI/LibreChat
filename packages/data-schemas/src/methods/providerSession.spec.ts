@@ -282,6 +282,316 @@ describe('ProviderSession Methods', () => {
     }
   });
 
+  describe('non-duplicate-key errors are rethrown rather than classified as a conflict', () => {
+    it('establishProviderSession rethrows a non-duplicate-key error from the initial upsert', async () => {
+      const sid = 'sid-establish-nondup-error';
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest
+        .spyOn(ProviderSession, 'findOneAndUpdate')
+        .mockRejectedValueOnce({ code: 121 });
+
+      try {
+        await expect(
+          methods.establishProviderSession({
+            ...ref,
+            sid,
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+        ).rejects.toEqual({ code: 121 });
+      } finally {
+        findOneAndUpdateSpy.mockRestore();
+      }
+      expect(await mongoose.models.ProviderSession.findOne({ ...ref, sid })).toBeNull();
+    });
+
+    it('establishProviderSession rethrows a plain Error without a numeric code', async () => {
+      const sid = 'sid-establish-plain-error';
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest
+        .spyOn(ProviderSession, 'findOneAndUpdate')
+        .mockRejectedValueOnce(new Error('connection reset'));
+
+      try {
+        await expect(
+          methods.establishProviderSession({
+            ...ref,
+            sid,
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+        ).rejects.toThrow('connection reset');
+      } finally {
+        findOneAndUpdateSpy.mockRestore();
+      }
+    });
+
+    it('revokeProviderSession rethrows a non-duplicate-key error from the initial upsert', async () => {
+      const sid = 'sid-revoke-nondup-error';
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest
+        .spyOn(ProviderSession, 'findOneAndUpdate')
+        .mockRejectedValueOnce({ code: 121 });
+
+      try {
+        await expect(
+          methods.revokeProviderSession({
+            ...ref,
+            sid,
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+        ).rejects.toEqual({ code: 121 });
+      } finally {
+        findOneAndUpdateSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('establish: duplicate-key recheck path', () => {
+    it('reports CONFLICT when the classification read finds no record and the retried upsert also fails', async () => {
+      const sid = 'sid-establish-retry-also-fails';
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest
+        .spyOn(ProviderSession, 'findOneAndUpdate')
+        .mockRejectedValueOnce({ code: 11000 }) // initial upsert attempt
+        .mockResolvedValueOnce(null); // the single retry inside the classification block
+      const findOneSpy = jest.spyOn(ProviderSession, 'findOne').mockReturnValue({
+        read: () => ({ lean: () => Promise.resolve(null) }),
+      } as unknown as ReturnType<typeof ProviderSession.findOne>);
+
+      try {
+        await expect(
+          methods.establishProviderSession({
+            ...ref,
+            sid,
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+        ).resolves.toEqual({ ok: false, code: 'CONFLICT' });
+      } finally {
+        findOneAndUpdateSpy.mockRestore();
+        findOneSpy.mockRestore();
+      }
+    });
+
+    it('rethrows an error raised while classifying a duplicate-key conflict', async () => {
+      const sid = 'sid-establish-classify-throws';
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest
+        .spyOn(ProviderSession, 'findOneAndUpdate')
+        .mockRejectedValueOnce({ code: 11000 });
+      const findOneSpy = jest.spyOn(ProviderSession, 'findOne').mockReturnValue({
+        read: () => ({ lean: () => Promise.reject(new Error('classify read failed')) }),
+      } as unknown as ReturnType<typeof ProviderSession.findOne>);
+
+      try {
+        await expect(
+          methods.establishProviderSession({
+            ...ref,
+            sid,
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+        ).rejects.toThrow('classify read failed');
+      } finally {
+        findOneAndUpdateSpy.mockRestore();
+        findOneSpy.mockRestore();
+      }
+    });
+
+    it('reports CONFLICT via the recheck when the reactivation update loses a race and the record is still active', async () => {
+      const sid = 'sid-establish-reactivation-race-conflict';
+      await methods.establishProviderSession({
+        ...ref,
+        sid,
+        subject: 'user-1',
+        expiresAt: new Date(Date.now() + 1000),
+      });
+
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest
+        .spyOn(ProviderSession, 'findOneAndUpdate')
+        .mockRejectedValueOnce({ code: 11000 }) // initial upsert attempt
+        .mockResolvedValueOnce(null); // reactivation attempt loses the race
+
+      try {
+        await expect(
+          methods.establishProviderSession({
+            ...ref,
+            sid,
+            subject: 'user-1',
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+        ).resolves.toEqual({ ok: false, code: 'CONFLICT' });
+      } finally {
+        findOneAndUpdateSpy.mockRestore();
+      }
+    });
+
+    it('reports ENDED via the recheck when the record was revoked between classification and reactivation', async () => {
+      const sid = 'sid-establish-reactivation-race-ended';
+      await methods.establishProviderSession({
+        ...ref,
+        sid,
+        subject: 'user-1',
+        expiresAt: new Date(Date.now() + 1000),
+      });
+
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest
+        .spyOn(ProviderSession, 'findOneAndUpdate')
+        .mockRejectedValueOnce({ code: 11000 }) // initial upsert attempt
+        .mockImplementationOnce((async () => {
+          // Simulate a concurrent revoke landing between the classification read and this
+          // reactivation attempt, then report the lost race the same way Mongo would.
+          await ProviderSession.updateOne({ ...ref, sid }, { $set: { revokedAt: new Date() } });
+          return null;
+        }) as unknown as typeof ProviderSession.findOneAndUpdate);
+
+      try {
+        await expect(
+          methods.establishProviderSession({
+            ...ref,
+            sid,
+            subject: 'user-1',
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+        ).resolves.toEqual({ ok: false, code: 'ENDED' });
+      } finally {
+        findOneAndUpdateSpy.mockRestore();
+      }
+    });
+
+    it('does not attempt reactivation once a genuine subject conflict is classified', async () => {
+      const sid = 'sid-establish-subject-conflict-shortcircuit';
+      await methods.establishProviderSession({
+        ...ref,
+        sid,
+        subject: 'user-1',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest.spyOn(ProviderSession, 'findOneAndUpdate');
+
+      const result = await methods.establishProviderSession({
+        ...ref,
+        sid,
+        subject: 'user-2',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(result).toEqual({ ok: false, code: 'CONFLICT' });
+      // The initial (failed, duplicate-key) upsert attempt is the only findOneAndUpdate call;
+      // the explicit subject-conflict check must return before a second (reactivation) attempt.
+      expect(findOneAndUpdateSpy).toHaveBeenCalledTimes(1);
+      findOneAndUpdateSpy.mockRestore();
+    });
+  });
+
+  describe('authorize: MISSING fallback and classification errors', () => {
+    it('reports MISSING when the top-level update fails to match for a reason other than ENDED, expiry, or subject conflict', async () => {
+      const sid = 'sid-authorize-fallback-missing';
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest
+        .spyOn(ProviderSession, 'findOneAndUpdate')
+        .mockResolvedValueOnce(null);
+      const findOneSpy = jest.spyOn(ProviderSession, 'findOne').mockReturnValue({
+        read: () => ({
+          lean: () =>
+            Promise.resolve({
+              ...ref,
+              sid,
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+        }),
+      } as unknown as ReturnType<typeof ProviderSession.findOne>);
+
+      try {
+        await expect(
+          methods.authorizeProviderSession({
+            ...ref,
+            sid,
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+        ).resolves.toEqual({ ok: false, code: 'MISSING' });
+      } finally {
+        findOneAndUpdateSpy.mockRestore();
+        findOneSpy.mockRestore();
+      }
+    });
+
+    it('rethrows an error raised while authorizing', async () => {
+      const sid = 'sid-authorize-classify-throws';
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest
+        .spyOn(ProviderSession, 'findOneAndUpdate')
+        .mockRejectedValueOnce(new Error('authorize db failure'));
+
+      try {
+        await expect(
+          methods.authorizeProviderSession({
+            ...ref,
+            sid,
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+        ).rejects.toThrow('authorize db failure');
+      } finally {
+        findOneAndUpdateSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('revoke $setOnInsert subject on a fresh record', () => {
+    it('stores the given subject and createdAt when revoking a sid that was never established', async () => {
+      const sid = 'sid-revoke-fresh-subject';
+      const now = new Date('2026-03-01T00:00:00Z');
+      const revoked = await methods.revokeProviderSession({
+        ...ref,
+        sid,
+        subject: 'user-1',
+        expiresAt: new Date(now.getTime() + 60_000),
+        now,
+      });
+      expect(revoked).toEqual({ ok: true });
+
+      const stored = await mongoose.models.ProviderSession.findOne({
+        ...ref,
+        sid,
+      }).lean<t.IProviderSession>();
+      expect(stored?.subject).toBe('user-1');
+      expect(stored?.createdAt.getTime()).toBe(now.getTime());
+    });
+
+    it('never writes a subject field on a fresh revoke when subject is explicitly null', async () => {
+      const sid = 'sid-revoke-fresh-null-subject';
+      await methods.revokeProviderSession({
+        ...ref,
+        sid,
+        subject: null,
+        expiresAt: new Date(Date.now() + 60_000),
+      } as unknown as t.ProviderSessionOperationData);
+
+      const raw = await mongoose.connection.db
+        ?.collection('providersessions')
+        .findOne({ ...ref, sid });
+      expect(raw).not.toBeNull();
+      expect('subject' in (raw as Record<string, unknown>)).toBe(false);
+    });
+  });
+
+  it('establishProviderSession stores the injected now as createdAt on a fresh insert', async () => {
+    const sid = 'sid-establish-fresh-createdat';
+    const now = new Date('2026-04-01T00:00:00Z');
+    await methods.establishProviderSession({
+      ...ref,
+      sid,
+      expiresAt: new Date(now.getTime() + 60_000),
+      now,
+    });
+
+    const stored = await mongoose.models.ProviderSession.findOne({
+      ...ref,
+      sid,
+    }).lean<t.IProviderSession>();
+    expect(stored?.createdAt.getTime()).toBe(now.getTime());
+  });
+
   it('fills a missing subject on establish rather than treating it as a conflict', async () => {
     const sid = 'sid-fill-subject';
     await methods.establishProviderSession({
