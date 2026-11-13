@@ -68,6 +68,26 @@ async function validateDockerRunning() {
   await validateDockerRunning();
   const { docker, singleCompose, useSudo, skipGit, bun } = config;
   const sudo = useSudo ? 'sudo ' : '';
+  if (docker) {
+    let pullHelp;
+    try {
+      pullHelp = execSync(`${sudo}docker compose pull --help`, {
+        encoding: 'utf8',
+        stdio: ['inherit', 'pipe', 'inherit'],
+      });
+    } catch (_error) {
+      console.red(
+        'Error: Could not check Docker Compose pull options. Check that Docker Compose is installed and accessible, then retry. No containers or images have been changed.',
+      );
+      return silentExit(1);
+    }
+    if (!pullHelp.includes('--ignore-buildable')) {
+      console.red(
+        'Error: Docker updates require Docker Compose v2.15.0 or later with pull --ignore-buildable support. Upgrade Docker Compose, then retry. No containers or images have been changed.',
+      );
+      return silentExit(1);
+    }
+  }
   if (!skipGit) {
     // Fetch latest repo
     console.purple('Fetching the latest repo...');
@@ -83,12 +103,6 @@ async function validateDockerRunning() {
   }
 
   if (docker) {
-    console.purple('Removing previously made Docker container...');
-    const downCommand = `${sudo}docker compose ${
-      singleCompose ? '-f ./docs/dev/single-compose.yml ' : ''
-    }down`;
-    console.orange(downCommand);
-    execSync(downCommand, { stdio: 'inherit' });
     console.purple('Pruning all LibreChat Docker images...');
 
     const imageName = singleCompose ? 'librechat_single' : 'librechat';
@@ -97,6 +111,18 @@ async function validateDockerRunning() {
     } catch (_error) {
       console.purple('Failed to remove Docker image librechat:latest. It might not exist.');
     }
+    console.purple('Pulling latest Docker images...');
+    const pullCommand = `${sudo}docker compose ${
+      singleCompose ? '-f ./docs/dev/single-compose.yml ' : ''
+    }pull --ignore-buildable`;
+    console.orange(pullCommand);
+    execSync(pullCommand, { stdio: 'inherit' });
+    console.purple('Removing previously made Docker container...');
+    const downCommand = `${sudo}docker compose ${
+      singleCompose ? '-f ./docs/dev/single-compose.yml ' : ''
+    }down`;
+    console.orange(downCommand);
+    execSync(downCommand, { stdio: 'inherit' });
     console.purple('Removing all unused dangling Docker images...');
     execSync(`${sudo}docker image prune -f`, { stdio: 'inherit' });
     console.purple('Building new LibreChat image...');
