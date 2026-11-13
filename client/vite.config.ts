@@ -12,6 +12,7 @@ import { compression, defineAlgorithm } from 'vite-plugin-compression2';
 import type { Plugin } from 'vite';
 import { sandpackConsoleIsolation } from './src/lib/sandpack.ts';
 import { bundledThemeBoot, injectThemeCacheVersion } from './src/Providers/bootVersion.ts';
+import { localeAliases, resolveLocale, supportedLocales } from './src/locales/resolve.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -549,20 +550,23 @@ export function bootLoadingLabels(): Plugin {
 
 function readLoadingLabels(): Record<string, string> {
   const localesDir = path.join(import.meta.dirname, 'src/locales');
+  const labelOf = (locale: string): string | undefined => {
+    const file = path.join(localesDir, locale, 'translation.json');
+    const label = fs.existsSync(file)
+      ? JSON.parse(fs.readFileSync(file, 'utf8')).com_ui_loading
+      : undefined;
+    return typeof label === 'string' ? label : undefined;
+  };
+  const english = labelOf('en') ?? 'Loading...';
+  /* Every key the app's `resolveLocale` accepts, exact or alias, mapped through it, so the
+     shell announces the locale the app is about to load (`zh-tw` is Traditional, `pt` is
+     European Portuguese). The shell falls back to the base language, then to English. */
   const labels: Record<string, string> = {};
-  for (const entry of fs.readdirSync(localesDir, { withFileTypes: true })) {
-    const file = path.join(localesDir, entry.name, 'translation.json');
-    if (!entry.isDirectory() || !fs.existsSync(file)) {
-      continue;
-    }
-    const label = JSON.parse(fs.readFileSync(file, 'utf8')).com_ui_loading;
-    if (typeof label !== 'string') {
-      continue;
-    }
-    const code = entry.name.toLowerCase();
-    labels[code] = label;
-    /* A bare language (`zh`, `pt`) takes its first regional variant, as the detector would. */
-    labels[code.split('-')[0]] ??= label;
+  for (const key of [
+    ...supportedLocales.map((locale) => locale.toLowerCase()),
+    ...Object.keys(localeAliases),
+  ]) {
+    labels[key] = labelOf(resolveLocale(key)) ?? english;
   }
   return labels;
 }

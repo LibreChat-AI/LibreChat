@@ -86,9 +86,10 @@
             /* Stored unquoted, or Web Storage denied: the raw value or the browser language. */
           }
         }
-        lang = String(lang || navigator.language || '').toLowerCase();
+        /* `auto` is the stored choice to follow the browser, as `normalizeLocale` reads it. */
+        lang = String((lang !== 'auto' && lang) || navigator.language || '').toLowerCase();
         /* The loading indicator's label reads it below, before i18n loads. */
-        window.__lcBootLang = lang.replace('_', '-');
+        window.__lcBootLang = lang.replace(/_/g, '-');
         if (['ar', 'he', 'fa', 'ug'].indexOf(lang.split(/[-_]/)[0]) !== -1) {
           document.documentElement.dir = 'rtl';
         }
@@ -485,7 +486,7 @@
             /* Each locale's `com_ui_loading`, inlined at build time (`bootLoadingLabels`). */
             var labels = '__BOOT_LOADING_LABELS__';
             var lang = String(window.__lcBootLang || '');
-            var label = labels[lang] || labels[lang.split('-')[0]];
+            var label = labels[lang] || labels[lang.split('-')[0]] || labels.en;
             if (typeof label === 'string') {
               document.getElementById('boot-indicator-label').textContent = label;
             }
