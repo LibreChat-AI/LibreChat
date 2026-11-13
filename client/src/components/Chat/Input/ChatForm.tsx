@@ -1,5 +1,6 @@
 import { memo, useRef, useMemo, useEffect, useState, Suspense, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
+import { Button } from '@librechat/client';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { isInlineablePastedText } from '@librechat/chat';
@@ -503,12 +504,12 @@ const ChatForm = memo(function ChatForm({
   );
   const { submitText: submitAnswerText } = answerMode;
   const dictationAnswerModeActive = answerMode.composerAnswers;
-  const speechDisabled =
-    !speechSettingsInitialized ||
-    disableInputs ||
-    isNotAppendable ||
-    answerMode.composerLocked ||
-    isPreparingFromUrl;
+  /** The draft cannot be edited: no key, a non-appendable conversation, a question card holding
+   *  the answer, or a URL prompt still being prepared. Typing, dictation and sending all stop here;
+   *  sending has further gates of its own. */
+  const draftBlocked =
+    disableInputs || isNotAppendable || answerMode.composerLocked || isPreparingFromUrl;
+  const speechDisabled = !speechSettingsInitialized || draftBlocked;
   /** The same gate `onSubmit` applies: while a question pause is live the
    * composer IS the answer box, so a dictated turn has to answer it rather
    * than start a turn the paused run would drop. */
@@ -570,14 +571,7 @@ const ChatForm = memo(function ChatForm({
         fileCount={submittableFileCount}
         hasInlinePaste={hasInlinePaste}
         sendDisabled={
-          filesLoading ||
-          isPreparingFromUrl ||
-          disableInputs ||
-          !target.ready ||
-          routePending ||
-          !codeWorkspace.canSubmit ||
-          isNotAppendable ||
-          answerMode.composerLocked
+          draftBlocked || filesLoading || !target.ready || routePending || !codeWorkspace.canSubmit
         }
         duringRunDisabled={filesLoading || isPreparingFromUrl}
         showStopButton={showStopButton}
@@ -590,7 +584,6 @@ const ChatForm = memo(function ChatForm({
     [
       isSubmitting,
       answerMode.composerAnswers,
-      answerMode.composerLocked,
       endpoint,
       steering,
       isNewConversation,
@@ -601,11 +594,10 @@ const ChatForm = memo(function ChatForm({
       hasInlinePaste,
       filesLoading,
       isPreparingFromUrl,
-      disableInputs,
+      draftBlocked,
       target.ready,
       routePending,
       codeWorkspace.canSubmit,
-      isNotAppendable,
       showStopButton,
       setShowStopButton,
       handleStopGenerating,
@@ -818,8 +810,7 @@ const ChatForm = memo(function ChatForm({
           ariaLabel={localize('com_ui_message_input')}
           textareaProps={{
             ...registerProps,
-            disabled:
-              disableInputs || isNotAppendable || answerMode.composerLocked || isPreparingFromUrl,
+            disabled: draftBlocked,
             onPaste: handlePaste,
             onKeyDown: (e) => {
               // Answer mode consumes option-navigation keys from the
@@ -848,25 +839,31 @@ const ChatForm = memo(function ChatForm({
       {target.failed && (
         <p role="alert" className="text-text-secondary px-5 pb-2 text-sm">
           {localize('com_ui_chat_target_failed')}{' '}
-          <button type="button" className="underline" onClick={target.retry}>
+          <Button
+            type="button"
+            variant="hyperlink"
+            size="bare"
+            className="inline"
+            onClick={target.retry}
+          >
             {localize('com_ui_retry')}
-          </button>
+          </Button>
         </p>
       )}
-      {(isPreparingFromUrl || urlSettingsError) && (
-        <p role="status" className="text-text-secondary px-5 pb-2 text-sm">
-          {localize(urlSettingsError ? 'com_ui_url_settings_failed' : 'com_ui_sending')}
-        </p>
-      )}
-      {(codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') && (
-        <p
-          id={`code-workspace-hint-${index}`}
-          role="status"
-          className="text-text-secondary px-5 pb-2 text-sm"
-        >
-          {localize('com_error_code_workspace_required')}
-        </p>
-      )}
+      {/* Mounted for the composer's lifetime: a live region that appears with its text already
+          in it is often not announced. */}
+      <div role="status" className="text-text-secondary text-sm">
+        {(isPreparingFromUrl || urlSettingsError) && (
+          <p className="px-5 pb-2">
+            {localize(urlSettingsError ? 'com_ui_url_settings_failed' : 'com_ui_sending')}
+          </p>
+        )}
+        {(codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') && (
+          <p id={`code-workspace-hint-${index}`} className="px-5 pb-2">
+            {localize('com_error_code_workspace_required')}
+          </p>
+        )}
+      </div>
       {/* The composer is what keeps MCP connection and authorization state
           current wherever its ephemeral tools apply; the Agent Builder's
           tool library reads the same cache, so without this a server it
