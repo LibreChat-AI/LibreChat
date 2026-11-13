@@ -64,6 +64,22 @@ test.describe('slow and lost connections', () => {
     await expect(page.locator('#loading-container').getByRole('status')).toHaveText('Lade …');
   });
 
+  test.describe('with the browser language', () => {
+    test.use({ locale: 'zh-TW' });
+
+    test('the loading label resolves the browser language the way the app does @scenario:loading-shell-label-follows-browser-locale', async ({
+      page,
+    }) => {
+      /* `auto` defers to the browser, and zh-TW resolves to Traditional Chinese, not the first
+         zh variant. */
+      await page.addInitScript(() => localStorage.setItem('lang', JSON.stringify('auto')));
+      await page.route(/\/assets\/index\.[^/]+\.js(\?|$)/, () => undefined);
+      await page.goto(NEW_CHAT_PATH, { waitUntil: 'commit' });
+
+      await expect(page.locator('#loading-container').getByRole('status')).toHaveText('載入中…');
+    });
+  });
+
   test('a message sent offline names the lost connection @scenario:offline-send-names-the-lost-connection', async ({
     page,
     context,
