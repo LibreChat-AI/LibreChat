@@ -4,6 +4,8 @@ const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const {
   loadJwtUser,
   isTokenRetired,
+  createJwtExtractor,
+  resolveJwtAuthHeader,
   getAuthUserDocCacheMode,
   AGENT_TRIGGER_SCOPE,
   continueAfterBearerRetirement,
@@ -28,10 +30,16 @@ function isAgentTriggerAdmissionRequest(req) {
 }
 
 // JWT strategy
-const jwtLogin = () =>
+/**
+ * @param {AppConfig} [appConfig] - Base app config, read once for the session JWT header.
+ */
+const jwtLogin = (appConfig) =>
   new JwtStrategy(
     {
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: createJwtExtractor(
+        resolveJwtAuthHeader(appConfig?.sessionToken),
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ),
       secretOrKey: process.env.JWT_SECRET,
       passReqToCallback: true,
     },
