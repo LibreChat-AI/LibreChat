@@ -9,7 +9,7 @@ import { createRequire } from 'module';
 import { VitePWA } from 'vite-plugin-pwa';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { compression, defineAlgorithm } from 'vite-plugin-compression2';
-import type { Plugin } from 'vite';
+import type { Plugin, Rollup } from 'vite';
 import { sandpackConsoleIsolation } from './src/lib/sandpack.ts';
 import { bundledThemeBoot, injectThemeCacheVersion } from './src/Providers/bootVersion.ts';
 import { localeAliases, resolveLocale, supportedLocales } from './src/locales/resolve.ts';
@@ -97,6 +97,7 @@ export default defineConfig(({ command }) => ({
     },
     themeCacheVersion(),
     bootLoadingLabels(),
+    lazyChunkGuard(),
     copyPublicAssets(),
     VitePWA({
       /** `auto` emits a parser-blocking `<script>` at the end of `<head>`. On a slow
@@ -325,6 +326,8 @@ export default defineConfig(({ command }) => ({
                   if (
                     normalizedId.includes('@hyperdx/') ||
                     normalizedId.includes('@opentelemetry/') ||
+                    /* HyperDX's exception instrumentation; nothing else imports it. */
+                    normalizedId.includes('/@sentry/') ||
                     /\/node_modules\/(?:rrweb(?:-snapshot)?|@rrweb\/[^/]+|fflate|protobufjs|long)\//.test(
                       normalizedId,
                     )
@@ -427,11 +430,9 @@ export default defineConfig(({ command }) => ({
                   ) {
                     return 'validation';
                   }
-                  if (
-                    normalizedId.includes('axios') ||
-                    normalizedId.includes('ky') ||
-                    normalizedId.includes('fetch')
-                  ) {
+                  /* Package names, not substrings: `fetch` matched Sentry's fetch instrumentation
+                     and put it in this boot chunk. */
+                  if (/\/node_modules\/(?:axios|ky)\//.test(normalizedId)) {
                     return 'http-client';
                   }
                   if (
@@ -604,6 +605,56 @@ function readLoadingLabels(): Record<string, string> {
     labels[key] = labelOf(resolveLocale(key)) ?? english;
   }
   return labels;
+}
+
+/**
+ * Libraries the app reaches only through `import()`. A chunk rule that captures one into a boot
+ * chunk, or captures a boot module into a lazy chunk, ships it to every page without any build
+ * error: it happened to the query devtools, KaTeX, highlight.js and Sentry. The guard fails the
+ * build instead.
+ */
+const LAZY_ONLY_PACKAGES =
+  /\/node_modules\/(?:@sentry|@hyperdx|@opentelemetry|katex|rehype-katex|highlight\.js|lowlight|rehype-highlight|mermaid|@codesandbox|@tanstack\/react-query-devtools|superjson|@mcp-ui|html-to-image|heic-to|monaco-editor)\//;
+
+export function lazyChunkGuard(): Plugin {
+  return {
+    name: 'lazy-chunk-guard',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const chunks = new Map<string, Rollup.OutputChunk>();
+      for (const output of Object.values(bundle)) {
+        if (output.type === 'chunk') {
+          chunks.set(output.fileName, output);
+        }
+      }
+      /* Everything an entry loads before any `import()`: its static import closure. */
+      const boot = new Set<string>();
+      const pending = [...chunks.values()].filter((chunk) => chunk.isEntry).map((c) => c.fileName);
+      while (pending.length > 0) {
+        const fileName = pending.pop() as string;
+        if (boot.has(fileName)) {
+          continue;
+        }
+        boot.add(fileName);
+        pending.push(...(chunks.get(fileName)?.imports ?? []));
+      }
+      const leaks: string[] = [];
+      for (const fileName of boot) {
+        for (const id of chunks.get(fileName)?.moduleIds ?? []) {
+          const match = id.replace(/\\/g, '/').match(LAZY_ONLY_PACKAGES);
+          if (match) {
+            leaks.push(`${match[0].slice(14, -1)} in ${fileName}`);
+          }
+        }
+      }
+      if (leaks.length > 0) {
+        this.error(
+          `Lazy-only libraries reached by static imports at boot: ${[...new Set(leaks)].join(', ')}. ` +
+            'A chunk rule in vite.config.ts probably grouped them with code the boot path imports.',
+        );
+      }
+    },
+  };
 }
 
 interface SourcemapExclude {
