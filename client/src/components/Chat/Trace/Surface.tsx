@@ -1,6 +1,7 @@
-import { Suspense, useEffect } from 'react';
+import { Suspense, useId, useRef, useEffect } from 'react';
 import { useAtom } from 'jotai';
-import { Spinner } from '@librechat/client';
+import { X } from 'lucide-react';
+import { Button, Spinner } from '@librechat/client';
 import type { ReactNode } from 'react';
 import { traceViewerConversationAtom } from './store';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
@@ -10,16 +11,51 @@ import { cn } from '~/utils';
 /** The trace viewer opens on demand, so it loads then instead of with the chat. */
 const Viewer = lazyWithRecovery(() => import('./Viewer'));
 
-function ViewerLoading() {
+/**
+ * Stands in for the viewer while its chunk downloads. It covers the chat, which is inert
+ * meanwhile, so it keeps the viewer's header: the close button and Escape dismiss it, and a
+ * slow or stalled download never traps the conversation.
+ */
+function ViewerLoading({ onClose }: { onClose: () => void }) {
   const localize = useLocalize();
+  const headingId = useId();
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeRef.current?.focus();
+  }, []);
+
   return (
-    <div
-      role="status"
-      className="bg-surface-primary-alt text-text-secondary absolute inset-0 z-20 flex items-center justify-center"
+    <section
+      aria-labelledby={headingId}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && !event.defaultPrevented) {
+          event.preventDefault();
+          onClose();
+        }
+      }}
+      className="bg-surface-primary-alt text-text-primary absolute inset-0 z-20 flex flex-col"
     >
-      <Spinner size={24} />
-      <span className="sr-only">{localize('com_ui_loading')}</span>
-    </div>
+      <div className="border-border-light flex h-[52px] shrink-0 items-center gap-2 border-b px-2 md:px-4">
+        <h2 id={headingId} className="text-base font-semibold">
+          {localize('com_ui_trace_title')}
+        </h2>
+        <Button
+          ref={closeRef}
+          size="icon-sm"
+          variant="outline"
+          className="ms-auto"
+          aria-label={localize('com_ui_trace_close')}
+          onClick={onClose}
+        >
+          <X className="size-4" aria-hidden="true" />
+        </Button>
+      </div>
+      <div role="status" className="text-text-secondary flex flex-1 items-center justify-center">
+        <Spinner size={24} />
+        <span className="sr-only">{localize('com_ui_loading')}</span>
+      </div>
+    </section>
   );
 }
 
@@ -55,7 +91,7 @@ export default function TraceSurface({
         {children}
       </div>
       {open && (
-        <Suspense fallback={<ViewerLoading />}>
+        <Suspense fallback={<ViewerLoading onClose={() => setTraceConversationId(null)} />}>
           <Viewer conversationId={conversationId} onClose={() => setTraceConversationId(null)} />
         </Suspense>
       )}
