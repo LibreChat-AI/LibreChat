@@ -8,8 +8,13 @@ import Links from './Links';
 import Link from './Link';
 
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
+const mockAgentQuery = jest.fn((agentId: string) =>
+  agentId === 'missing-agent'
+    ? { data: undefined, isLoading: false }
+    : { data: { name: 'Support agent' } },
+);
 jest.mock('~/data-provider', () => ({
-  useGetAgentByIdQuery: () => ({ data: { name: 'Support agent' } }),
+  useGetAgentByIdQuery: (agentId: string) => mockAgentQuery(agentId),
 }));
 const pending: ChannelLinkView = {
   identity: {
@@ -388,6 +393,19 @@ test('each link is a row: the agent name, the Slack ids, a status and a hover-on
   expect(within(row).getByRole('status')).toHaveTextContent('com_ui_channel_link_active');
   const revoke = within(row).getByRole('button', { name: /com_ui_channel_link_revoke_for/ });
   expect(revoke.parentElement).toHaveClass('no-touch:opacity-0', 'group-hover:opacity-100');
+});
+
+test('a link whose agent cannot be read keeps its agent id, so two such rows stay apart', async () => {
+  api.list.mockResolvedValue([
+    {
+      ...pending,
+      state: 'unavailable',
+      identity: { ...pending.identity, agentId: 'missing-agent' },
+    },
+  ]);
+  renderPage(<Links api={api} principalKey="tenant:user-a" />);
+  expect(await screen.findByText('missing-agent')).toBeInTheDocument();
+  expect(screen.queryByText('com_ui_channel_link_agent_fallback')).not.toBeInTheDocument();
 });
 
 test('hides the linked-account section after a successful empty list', async () => {

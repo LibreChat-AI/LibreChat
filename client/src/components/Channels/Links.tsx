@@ -29,11 +29,15 @@ const dotColors: Record<ChannelLinkView['state'], string> = {
   unavailable: 'bg-status-error',
 };
 
-/** The agent's own name beats its id; the id stands in while it loads or when it can't be read. */
+/** The agent's own name when it can be read. While it loads the row reads as a Slack agent; when
+ *  it cannot be read (deleted, or no longer shared) the id stays, so two such links stay distinct. */
 function LinkAgentName({ agentId }: { agentId: string }) {
   const localize = useLocalize();
   const agent = useGetAgentByIdQuery(agentId);
-  return <>{agent.data?.name || localize('com_ui_channel_link_agent_fallback')}</>;
+  if (agent.data?.name) {
+    return <>{agent.data.name}</>;
+  }
+  return <>{agent.isLoading ? localize('com_ui_channel_link_agent_fallback') : agentId}</>;
 }
 
 interface LinksProps {
