@@ -6,7 +6,10 @@ import { useLocalize } from '~/hooks';
 export default function PresentationActions({ page }: { page: NavigationPage }) {
   const presentation = useFeaturePresentation();
   const localize = useLocalize();
-  if (!presentation?.canOpenPage(page)) {
+  if (
+    !presentation?.canOpenPage(page) ||
+    (presentation.relatedPage === page && presentation.page !== page)
+  ) {
     return null;
   }
   const fullPage = presentation.page === page;

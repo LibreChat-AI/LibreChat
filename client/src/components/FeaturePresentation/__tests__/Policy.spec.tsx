@@ -16,7 +16,7 @@ const features = Object.fromEntries(pages.map((page) => [page, consumer]));
 
 function setup(
   page: NavigationPage,
-  { allowed = true, enabled = true, disabled = false, ready = true } = {},
+  { allowed = true, enabled = true, disabled = false, ready = true, trailingSlash = false } = {},
 ) {
   const links: NavLink[] = allowed
     ? [
@@ -50,7 +50,7 @@ function setup(
         element: <div>{'Chat'}</div>,
       },
     ],
-    { initialEntries: [pageRegistry[page].path] },
+    { initialEntries: [pageRegistry[page].path + (trailingSlash ? '/' : '')] },
   );
   render(
     <Provider>
@@ -90,4 +90,9 @@ it('does not treat unresolved startup and role data as permission denial', () =>
   expect(router.state.location.pathname).toBe('/agent-builder');
   expect(screen.getByRole('status')).toBeInTheDocument();
   expect(consumer).not.toHaveBeenCalled();
+});
+
+it.each(pages)('renders the authorized %s page with a trailing slash', async (page) => {
+  setup(page, { trailingSlash: true });
+  expect(await screen.findByText('Feature content')).toBeInTheDocument();
 });

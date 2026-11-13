@@ -138,7 +138,7 @@ export function FeaturePresentationProvider({
   );
   const expand = useCallback(
     (target: NavigationPage) => {
-      if (!canOpenPage(target)) {
+      if (!canOpenPage(target) || (relatedPage === target && page !== target)) {
         return;
       }
       if (!relatedPage) {
@@ -152,6 +152,7 @@ export function FeaturePresentationProvider({
     [
       canOpenPage,
       relatedPage,
+      page,
       location.pathname,
       location.search,
       location.hash,
@@ -190,13 +191,17 @@ export function FeaturePresentationProvider({
       if (!canUse(target)) {
         return;
       }
+      if (relatedPage === target && page !== target) {
+        onPanelOpen(pageRegistry[target].navId);
+        return;
+      }
       if (canOpenPage(target) && getPageSettings(navigation, target).defaultView === 'page') {
         expand(target);
         return;
       }
       openPanel(pageRegistry[target].navId);
     },
-    [canUse, canOpenPage, navigation, expand, openPanel],
+    [canUse, relatedPage, page, onPanelOpen, canOpenPage, navigation, expand, openPanel],
   );
   const register = useCallback(
     (slot: Slot) => {
