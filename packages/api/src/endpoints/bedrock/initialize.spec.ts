@@ -32,6 +32,7 @@ jest.mock('@aws-sdk/client-bedrock-runtime', () => ({
 }));
 
 jest.mock('~/utils', () => ({
+  ...jest.requireActual('~/utils'),
   checkUserKeyExpiry: jest.fn(),
 }));
 
@@ -43,7 +44,7 @@ const createMockParams = (
   overrides: Partial<{
     config: Record<string, unknown>;
     body: Record<string, unknown>;
-    user: { id: string };
+    user: Record<string, unknown>;
     model_parameters: Record<string, unknown>;
     env: Record<string, string | undefined>;
   }> = {},
@@ -441,6 +442,66 @@ describe('initializeBedrock', () => {
 
       expect(result.llmConfig).toHaveProperty('endpointHost', 'reverse-proxy.example.com');
       expect(result.llmConfig).not.toHaveProperty('client');
+    });
+  });
+
+  describe('Dynamic Bearer Token', () => {
+    /** `exp` is required for the ID token to pass the OpenID freshness check */
+    const createIdToken = (exp: number = Math.floor(Date.now() / 1000) + 3600) =>
+      `header.${Buffer.from(JSON.stringify({ sub: 'oidc-subject', exp })).toString(
+        'base64url',
+      )}.signature`;
+
+    const createOpenIDUser = (idToken: string) => ({
+      id: 'test-user-id',
+      provider: 'openid',
+      openidId: 'oidc-subject',
+      openidTokens: {
+        access_token: 'access-token-abc',
+        id_token: idToken,
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      },
+    });
+
+    it('should resolve {{LIBRECHAT_OPENID_ID_TOKEN}} into the client bearer token', async () => {
+      const idToken = createIdToken();
+      process.env.BEDROCK_AWS_BEARER_TOKEN = '{{LIBRECHAT_OPENID_ID_TOKEN}}';
+      process.env.BEDROCK_REVERSE_PROXY = 'gateway.example.com';
+      const params = createMockParams({ user: createOpenIDUser(idToken) });
+
+      const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
+
+      expect(result.llmConfig.client).toHaveProperty('token', { token: idToken });
+      expect(result.llmConfig.client).toHaveProperty('authSchemePreference', ['httpBearerAuth']);
+      expect(result.llmConfig.client).toHaveProperty('endpoint', 'https://gateway.example.com');
+      expect(result.llmConfig).not.toHaveProperty('credentials');
+    });
+
+    it('should resolve user field placeholders in the bearer token', async () => {
+      process.env.BEDROCK_AWS_BEARER_TOKEN = 'tenant-{{LIBRECHAT_USER_ID}}';
+      const params = createMockParams({ user: { id: 'user-123' } });
+
+      const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
+
+      expect(result.llmConfig.client).toHaveProperty('token', { token: 'tenant-user-123' });
+      expect(result.llmConfig.client).toHaveProperty('authSchemePreference', ['httpBearerAuth']);
+    });
+
+    it('should pass a static bearer token through unchanged when no placeholder is present', async () => {
+      process.env.BEDROCK_AWS_BEARER_TOKEN = 'static-bedrock-api-key';
+      const params = createMockParams({ user: createOpenIDUser(createIdToken()) });
+
+      const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
+
+      expect(result.llmConfig.client).toHaveProperty('token', { token: 'static-bedrock-api-key' });
+    });
+
+    it('should require re-authentication rather than forward an expired ID token', async () => {
+      process.env.BEDROCK_AWS_BEARER_TOKEN = '{{LIBRECHAT_OPENID_ID_TOKEN}}';
+      const expired = createIdToken(Math.floor(Date.now() / 1000) - 3600);
+      const params = createMockParams({ user: createOpenIDUser(expired) });
+
+      await expect(initializeBedrock(params)).rejects.toThrow(/re-authentication is required/);
     });
   });
 
