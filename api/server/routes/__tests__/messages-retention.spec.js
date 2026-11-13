@@ -16,6 +16,8 @@ jest.mock('@librechat/api', () => ({
   stripPrivateMessageFields: jest.requireActual(
     '../../../../packages/api/src/protection/private/view',
   ).stripPrivateMessageFields,
+  stripProviderItems: jest.requireActual('../../../../packages/api/src/utils/message')
+    .stripProviderItems,
   unescapeLaTeX: jest.fn((value) => value),
   countTokens: jest.fn().mockResolvedValue(10),
   createContentFilter: jest.fn(() => (_req, _res, next) => next()),
