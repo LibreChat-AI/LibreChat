@@ -162,7 +162,9 @@ const SplitText: React.FC<SplitTextProps> = ({
       <p
         ref={ref}
         dir="auto"
-        className={`split-parent inline overflow-hidden break-words whitespace-normal ${TEXT_ALIGN[textAlign]} ${className}`}
+        /* Balanced: the heading is sized by its length, not the width it lands in, so an
+           unbalanced wrap on a narrow screen can leave its last word alone on a line. */
+        className={`split-parent inline overflow-hidden text-balance break-words whitespace-normal ${TEXT_ALIGN[textAlign]} ${className}`}
       >
         {/* The paragraph's auto direction ignores word boxes with their own dir. */}
         <span className="sr-only">{text}</span>
