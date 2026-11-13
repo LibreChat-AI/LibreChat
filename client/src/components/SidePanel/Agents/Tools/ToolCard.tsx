@@ -3,6 +3,10 @@ import { TooltipAnchor, VerifiedIcon } from '@librechat/client';
 import { Check, Globe, Info, Settings, Star, User } from 'lucide-react';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { AgentItem, ItemStatus } from './items/types';
+import MCPServerContact, {
+  shouldDisplayMCPServerContact,
+  useMCPServerContactEnabled,
+} from '~/components/MCP/MCPServerContact';
 import { hasConfigurableSettings } from './items/configurable';
 import { useLocalize, useAuthContext } from '~/hooks';
 import { getIconForItem } from './items/icons';
@@ -94,6 +98,7 @@ function ToolCardImpl({
   const localize = useLocalize();
   const { name, description } = useDisplayStrings(item);
   const { user } = useAuthContext();
+  const mcpServerContactEnabled = useMCPServerContactEnabled();
   const isNative = item.kind === 'builtin';
   const kindLabel = localize(KIND_LABEL_KEYS[item.kind]);
   const canFavorite = onToggleFavorite !== undefined && item.kind !== 'action';
@@ -106,6 +111,8 @@ function ToolCardImpl({
     item.id === 'web_search' &&
     !canConfigure &&
     onConfigure !== undefined;
+  const showMcpContact =
+    mcpServerContactEnabled && item.kind === 'mcp' && shouldDisplayMCPServerContact(item.server);
   const DetailIcon = canConfigure ? Settings : Info;
 
   return (
@@ -127,6 +134,7 @@ function ToolCardImpl({
         aria-pressed={selected}
         className={cn(
           'touch:pb-9 flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl p-4 text-start',
+          showMcpContact && 'pb-9',
           'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:ring-2',
         )}
       >
@@ -220,6 +228,12 @@ function ToolCardImpl({
           </div>
         ) : null}
       </button>
+      {showMcpContact && item.kind === 'mcp' && (
+        <MCPServerContact
+          server={item.server}
+          className="[&_a]:!text-text-secondary pointer-events-none absolute right-20 bottom-3 left-4 z-10 text-xs [&_a]:pointer-events-auto [&_a]:font-normal"
+        />
+      )}
       {(canFavorite || canConfigure || showInfoOnly) && (
         <div className="absolute inset-e-2 bottom-2 flex items-center gap-1">
           {(canConfigure || showInfoOnly) && (

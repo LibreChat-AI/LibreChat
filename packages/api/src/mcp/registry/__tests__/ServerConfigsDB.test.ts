@@ -204,6 +204,25 @@ describe('ServerConfigsDB', () => {
       expect(retrieved?.description).toBe('Updated description');
     });
 
+    it('should persist support contact through create, update, and retrieval', async () => {
+      const config: ParsedServerConfig = {
+        ...createSSEConfig('Support Contact Server'),
+        support_contact: { name: 'Original Support', email: 'original@example.com' },
+      };
+      const created = await serverConfigsDB.add('temp-name', config, userId);
+
+      expect(created.config.support_contact).toEqual(config.support_contact);
+
+      const updatedConfig: ParsedServerConfig = {
+        ...config,
+        support_contact: { name: 'Updated Support', email: 'updated@example.com' },
+      };
+      await serverConfigsDB.update(created.serverName, updatedConfig, userId);
+
+      const retrieved = await serverConfigsDB.get(created.serverName, userId);
+      expect(retrieved?.support_contact).toEqual(updatedConfig.support_contact);
+    });
+
     it('returns the config as persisted, so an overlapping update is not mistaken for this one', async () => {
       const created = await serverConfigsDB.add(
         'temp-name',

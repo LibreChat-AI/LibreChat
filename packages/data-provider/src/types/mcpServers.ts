@@ -1,4 +1,5 @@
 import type { MCPOptions, MCPServerUserInput } from '../mcp';
+import type { SupportContact } from './agents';
 
 /**
  * Base MCP Server interface
@@ -36,6 +37,10 @@ export type MCPServerUpdateParams = {
   config?: MCPServerUserInput; // UI fields only (title, description, url, oauth, iconPath)
 };
 
+export type MCPServerOwnerContact = {
+  name?: string;
+};
+
 /**
  * Response for MCP server list endpoint
  */
@@ -44,6 +49,9 @@ export type MCPServerDBObjectResponse = {
   serverName: string;
   /** True if access is only via agent (not directly shared with user) */
   consumeOnly?: boolean;
+  support_contact?: SupportContact;
+  /** Response-only fallback resolved from the server's first owner. */
+  owner_contact?: MCPServerOwnerContact;
   /** True when chat request fields are required before the server can connect. */
   requestScoped?: boolean;
 } & MCPOptions;

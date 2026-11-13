@@ -60,7 +60,8 @@ const {
   deleteMCPServerController,
 } = require('~/server/controllers/mcp');
 const { grantPermission } = require('~/server/services/PermissionService');
-const { seedDefaultRoles } = require('~/models');
+const db = require('~/models');
+const { seedDefaultRoles } = db;
 
 let mongoServer;
 let SystemGrant;
@@ -317,6 +318,103 @@ describe('getMCPServersList', () => {
     expect(payload.dbServer.title).toBe('DB Server');
     expect(payload.dbServer.url).toBeUndefined();
   });
+
+  it('returns configured support contact without an owner fallback', async () => {
+    const reqUser = await createUser();
+    const dbId = new mongoose.Types.ObjectId();
+    mockResolveAllMcpConfigs.mockResolvedValue({
+      dbServer: {
+        ...createDbConfig(dbId),
+        support_contact: { name: 'Support Team', email: 'support@example.com' },
+      },
+    });
+
+    const res = createRes();
+    await getMCPServersList({ user: reqUser }, res);
+
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.dbServer.support_contact).toEqual({
+      name: 'Support Team',
+      email: 'support@example.com',
+    });
+    expect(payload.dbServer.owner_contact).toBeUndefined();
+  });
+
+  it('returns the first MCP owner as fallback contact after redaction', async () => {
+    const reqUser = await createUser();
+    const owner = await User.create({
+      name: 'Server Owner',
+      email: 'owner@example.com',
+      provider: 'local',
+      role: SystemRoles.USER,
+    });
+    const dbId = new mongoose.Types.ObjectId();
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: owner._id,
+      resourceType: ResourceType.MCPSERVER,
+      resourceId: dbId,
+      accessRoleId: AccessRoleIds.MCPSERVER_OWNER,
+      grantedBy: owner._id,
+    });
+    mockResolveAllMcpConfigs.mockResolvedValue({
+      dbServer: { ...createDbConfig(dbId), author: reqUser.id },
+    });
+
+    const res = createRes();
+    await getMCPServersList({ user: reqUser }, res);
+
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.dbServer.url).toBeUndefined();
+    expect(payload.dbServer.support_contact).toBeUndefined();
+    expect(payload.dbServer.owner_contact).toEqual({ name: 'Server Owner' });
+  });
+
+  it('uses the legacy author fallback when no MCP owner ACL exists', async () => {
+    const reqUser = await createUser();
+    const author = await User.create({
+      name: 'Legacy Author',
+      email: 'legacy@example.com',
+      provider: 'local',
+      role: SystemRoles.USER,
+    });
+    const dbId = new mongoose.Types.ObjectId();
+    mockResolveAllMcpConfigs.mockResolvedValue({
+      dbServer: { ...createDbConfig(dbId), author: author._id.toString() },
+    });
+
+    const res = createRes();
+    await getMCPServersList({ user: reqUser }, res);
+
+    expect(res.json.mock.calls[0][0].dbServer.owner_contact).toEqual({ name: 'Legacy Author' });
+  });
+
+  it('does not add owner fallback to operator-managed servers', async () => {
+    const reqUser = await createUser();
+    mockResolveAllMcpConfigs.mockResolvedValue({ yamlServer: { ...yamlConfig } });
+
+    const res = createRes();
+    await getMCPServersList({ user: reqUser }, res);
+
+    expect(res.json.mock.calls[0][0].yamlServer.owner_contact).toBeUndefined();
+  });
+
+  it('keeps the list available when owner lookup fails', async () => {
+    const reqUser = await createUser();
+    const dbId = new mongoose.Types.ObjectId();
+    mockResolveAllMcpConfigs.mockResolvedValue({ dbServer: createDbConfig(dbId) });
+    const ownerLookup = jest
+      .spyOn(db, 'aggregateAclEntries')
+      .mockRejectedValueOnce(new Error('DB'));
+
+    const res = createRes();
+    await getMCPServersList({ user: reqUser }, res);
+
+    expect(res.status).not.toHaveBeenCalledWith(500);
+    expect(res.json.mock.calls[0][0].dbServer.title).toBe('DB Server');
+    expect(res.json.mock.calls[0][0].dbServer.owner_contact).toBeUndefined();
+    ownerLookup.mockRestore();
+  });
 });
 
 describe('getMCPServerById', () => {
@@ -346,6 +444,18 @@ describe('getMCPServerById', () => {
     const payload = res.json.mock.calls[0][0];
     expect(payload.url).toBeUndefined();
     expect(payload.oauth.authorization_url).toBeUndefined();
+  });
+
+  it('does not resolve owner contacts on the detail route', async () => {
+    const reqUser = await createUser();
+    const ownerLookup = jest.spyOn(db, 'aggregateAclEntries');
+    mockRegistryInstance.getServerConfig.mockResolvedValue({ ...yamlConfig });
+
+    const res = createRes();
+    await getMCPServerById({ user: reqUser, params: { serverName: 'yamlServer' } }, res);
+
+    expect(ownerLookup).not.toHaveBeenCalled();
+    ownerLookup.mockRestore();
   });
 });
 

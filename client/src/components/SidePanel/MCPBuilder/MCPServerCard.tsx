@@ -3,6 +3,7 @@ import { MCPIcon } from '@librechat/client';
 import { PermissionBits, hasPermissions } from 'librechat-data-provider';
 import type { MCPServerStatusIconProps } from '~/components/MCP/MCPServerStatusIcon';
 import type { MCPServerDefinition } from '~/hooks';
+import MCPServerContact from '~/components/MCP/MCPServerContact';
 import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
 import { useMCPServerManager, useLocalize } from '~/hooks';
 import { getStatusDotColor } from './MCPStatusBadge';
@@ -145,6 +146,7 @@ export default function MCPServerCard({
         <div className="min-w-0 flex-1">
           <div className="text-text-primary truncate text-sm font-medium">{displayName}</div>
           {description && <p className="text-text-secondary truncate text-xs">{description}</p>}
+          <MCPServerContact server={server} className="text-xs" />
         </div>
 
         {/* Actions */}

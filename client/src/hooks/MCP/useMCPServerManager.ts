@@ -23,6 +23,8 @@ import type {
   MCPServersResponse,
   MCPConnectionStatusResponse,
   MCPOAuthStatusResponse,
+  SupportContact,
+  MCPServerOwnerContact,
 } from 'librechat-data-provider';
 import type { MCPServerInitState } from '~/store/mcp';
 import type { ConfigFieldDetail } from '~/common';
@@ -54,6 +56,8 @@ export interface MCPServerDefinition {
   dbId?: string; // MongoDB ObjectId for database servers (used for permissions)
   effectivePermissions: number; // Permission bits (VIEW=1, EDIT=2, DELETE=4, SHARE=8)
   consumeOnly?: boolean;
+  support_contact?: SupportContact;
+  owner_contact?: MCPServerOwnerContact;
   /** True when chat request fields are required before the server can connect. */
   requestScoped?: boolean;
 }
@@ -134,7 +138,8 @@ export function useMCPServerManager({
     const definitions: MCPServerDefinition[] = [];
     if (loadedServers) {
       for (const [serverName, metadata] of Object.entries(loadedServers)) {
-        const { dbId, consumeOnly, requestScoped, ...config } = metadata;
+        const { dbId, consumeOnly, requestScoped, support_contact, owner_contact, ...config } =
+          metadata;
 
         // Get effective permissions from the permissions map using _id
         // Fall back to 1 (VIEW) for YAML-based servers without _id
@@ -145,8 +150,10 @@ export function useMCPServerManager({
           dbId,
           effectivePermissions,
           consumeOnly,
+          support_contact,
+          owner_contact,
           requestScoped,
-          config,
+          config: { ...config, support_contact },
         });
       }
     }

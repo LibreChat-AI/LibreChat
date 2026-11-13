@@ -3351,6 +3351,8 @@ export const interfaceSchema = z
      *  page (`true`), directly under the composer (`composer`), or not at all (`false`). A
      *  configured `customFooter` still renders when this is false. */
     landingFooter: z.union([z.boolean(), z.literal('composer')]).optional(),
+    /** Shows support and owner contacts for MCP servers in the client. */
+    mcpServerContact: z.boolean().default(false),
     /** Who a response names above its content: every author (`always`), or only an agent other
      *  than the one the header's model selector already shows (`whenDifferent`), which drops the
      *  avatar and name row from that agent's responses. */
@@ -3629,6 +3631,7 @@ export const interfaceSchema = z
   })
   .prefault({
     modelSelect: true,
+    mcpServerContact: false,
     runningChatRename: true,
     codeHighlightThrottleMs: DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS,
     agentSelectorLimit: DEFAULT_AGENT_SELECTOR_LIMIT,

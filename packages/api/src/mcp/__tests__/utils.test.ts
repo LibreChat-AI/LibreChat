@@ -405,6 +405,7 @@ describe('redactServerSecrets', () => {
       url: 'https://example.com/mcp',
       title: 'My Server',
       description: 'A test server',
+      support_contact: { name: 'Support Team', email: 'support@example.com' },
       iconPath: '/icons/test.png',
       chatMenu: true,
       requiresOAuth: false,
@@ -419,6 +420,10 @@ describe('redactServerSecrets', () => {
     const redacted = redactServerSecrets(config);
     expect(redacted.title).toBe('My Server');
     expect(redacted.description).toBe('A test server');
+    expect(redacted.support_contact).toEqual({
+      name: 'Support Team',
+      email: 'support@example.com',
+    });
     expect(redacted.iconPath).toBe('/icons/test.png');
     expect(redacted.chatMenu).toBe(true);
     expect(redacted.requiresOAuth).toBe(false);
@@ -429,6 +434,29 @@ describe('redactServerSecrets', () => {
     expect(redacted.consumeOnly).toBe(false);
     expect(redacted.inspectionFailed).toBe(false);
     expect(redacted.customUserVars).toEqual(config.customUserVars);
+  });
+
+  it('should preserve support contact while redacting view-only connection secrets', () => {
+    const config: ParsedServerConfig = {
+      type: 'sse',
+      url: 'https://private.example.com/mcp',
+      source: 'user',
+      support_contact: { name: 'Support Team', email: 'support@example.com' },
+      oauth: {
+        client_id: 'client-id',
+        client_secret: 'client-secret',
+        authorization_url: 'https://private.example.com/authorize',
+        token_url: 'https://private.example.com/token',
+      },
+    };
+
+    const redacted = redactServerSecrets(config, { canEdit: false });
+
+    expect(redacted.support_contact).toEqual(config.support_contact);
+    expect(redacted.url).toBeUndefined();
+    expect(redacted.oauth?.client_secret).toBeUndefined();
+    expect(redacted.oauth?.authorization_url).toBeUndefined();
+    expect(redacted.oauth?.token_url).toBeUndefined();
   });
 
   it('should expose request-scoped behavior without exposing placeholder-bearing fields', () => {

@@ -221,6 +221,8 @@ interface:
   # runningChatRename: true
   # Minimum interval between syntax-highlighting passes while streamed code changes (default: 300 ms)
   # codeHighlightThrottleMs: 300
+  # Show MCP server support/owner contacts on MCP cards and detail views (default: false).
+  # mcpServerContact: true
   # How long a conversation's message history stays cached in the browser after leaving it (default: 60000 ms),
   # and how many of the most recently left conversations keep that grace (default: 1). Older ones are refetched.
   # historyCacheTtlMs: 60000

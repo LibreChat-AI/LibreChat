@@ -3,6 +3,14 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import type { AgentItem } from '../items/types';
 import ToolCard from '../ToolCard';
 
+let mockMcpServerContactEnabled = true;
+
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({
+    data: { interface: { mcpServerContact: mockMcpServerContactEnabled } },
+  }),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize:
     () =>
@@ -69,6 +77,74 @@ describe('ToolCard', () => {
     };
     render(<ToolCard item={mcp} selected={false} onToggle={jest.fn()} />);
     expect(screen.queryByText('com_ui_tools_count[count=14]')).not.toBeInTheDocument();
+    expect(screen.queryByText('com_ui_mcp_contact:')).not.toBeInTheDocument();
+  });
+
+  test('renders the configured support contact for MCP cards', () => {
+    const mcp: AgentItem = {
+      kind: 'mcp',
+      id: 'everything',
+      name: 'Everything',
+      description: 'Everything server',
+      iconKey: 'mcp',
+      server: {
+        serverName: 'everything',
+        isConfigured: true,
+        tools: [],
+        support_contact: { name: 'Platform Support', email: 'support@example.com' },
+      } as never,
+      toolCount: 14,
+    };
+
+    render(<ToolCard item={mcp} selected={false} onToggle={jest.fn()} />);
+
+    const contactLink = screen.getByRole('link', { name: 'Platform Support' });
+    expect(contactLink).toHaveAttribute('href', 'mailto:support@example.com');
+  });
+
+  test('hides MCP contacts when the interface option is disabled', () => {
+    mockMcpServerContactEnabled = false;
+    const mcp: AgentItem = {
+      kind: 'mcp',
+      id: 'everything',
+      name: 'Everything',
+      description: 'Everything server',
+      iconKey: 'mcp',
+      server: {
+        serverName: 'everything',
+        isConfigured: true,
+        tools: [],
+        support_contact: { name: 'Platform Support', email: 'support@example.com' },
+      } as never,
+      toolCount: 14,
+    };
+
+    render(<ToolCard item={mcp} selected={false} onToggle={jest.fn()} />);
+
+    expect(screen.queryByRole('link', { name: 'Platform Support' })).not.toBeInTheDocument();
+    mockMcpServerContactEnabled = true;
+  });
+
+  test('renders the owner fallback for MCP cards', () => {
+    const mcp: AgentItem = {
+      kind: 'mcp',
+      id: 'everything',
+      name: 'Everything',
+      description: 'Everything server',
+      iconKey: 'mcp',
+      server: {
+        serverName: 'everything',
+        isConfigured: true,
+        tools: [],
+        owner_contact: { name: 'Server Owner' },
+      } as never,
+      toolCount: 14,
+    };
+
+    render(<ToolCard item={mcp} selected={false} onToggle={jest.fn()} />);
+
+    expect(screen.getByText('Server Owner')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Server Owner' })).not.toBeInTheDocument();
   });
 
   test('renders public and shared-author badges for another user public skill', () => {

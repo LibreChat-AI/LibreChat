@@ -240,6 +240,13 @@ const BaseOptionsSchema = z.object({
   title: z.string().regex(MCP_SERVER_TITLE_PATTERN, MCP_SERVER_TITLE_ERROR).optional(),
   /** Description of the MCP server */
   description: z.string().optional(),
+  /** Optional support contact displayed to users of the MCP server */
+  support_contact: z
+    .object({
+      name: z.string().optional(),
+      email: z.union([z.literal(''), z.string().email()]).optional(),
+    })
+    .optional(),
   /**
    * Controls whether the MCP server is initialized during application startup.
    * - true (default): Server is initialized during app startup and included in app-level connections

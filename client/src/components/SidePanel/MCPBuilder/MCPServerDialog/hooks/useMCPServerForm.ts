@@ -8,6 +8,7 @@ import {
   useUpdateMCPServerMutation,
   useDeleteMCPServerMutation,
 } from '~/data-provider/MCP';
+import { getSubmittedSupportContact, getSupportContactFormValues } from '../utils/contact';
 import { extractServerNameFromUrl, isValidUrl, normalizeUrl } from '../utils/urlUtils';
 import { getMCPServerErrorMessage } from '../utils/error';
 import { getOAuthConfig } from '../utils/oauth';
@@ -49,6 +50,10 @@ export interface AuthConfig {
 export interface MCPServerFormData {
   title: string;
   description?: string;
+  support_contact: {
+    name: string;
+    email: string;
+  };
   icon?: string;
   url: string;
   type: 'streamable-http' | 'sse';
@@ -95,6 +100,7 @@ export function useMCPServerForm({ server, onSuccess, onClose }: UseMCPServerFor
       return {
         title: server.config.title || '',
         description: server.config.description || '',
+        support_contact: getSupportContactFormValues(server.config.support_contact),
         url: 'url' in server.config ? server.config.url : '',
         type: (server.config.type as 'streamable-http' | 'sse') || 'streamable-http',
         icon: server.config.iconPath || '',
@@ -122,6 +128,7 @@ export function useMCPServerForm({ server, onSuccess, onClose }: UseMCPServerFor
     return {
       title: '',
       description: '',
+      support_contact: getSupportContactFormValues(),
       url: '',
       type: 'streamable-http',
       icon: '',
@@ -192,6 +199,10 @@ export function useMCPServerForm({ server, onSuccess, onClose }: UseMCPServerFor
         ...(formData.description && { description: formData.description }),
         ...(formData.icon && { iconPath: formData.icon }),
       };
+      const supportContact = getSubmittedSupportContact(formData.support_contact);
+      if (supportContact) {
+        config.support_contact = supportContact;
+      }
 
       // Add OAuth configuration
       const oauthConfig = getOAuthConfig(formData.auth);

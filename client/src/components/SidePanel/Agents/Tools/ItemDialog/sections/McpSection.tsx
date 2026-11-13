@@ -25,6 +25,7 @@ import {
 import { matchesMcpServer, mcpAllToken, mcpServerToken } from '../../items/selectors';
 import { getStatusColor, getStatusTextKey } from '~/components/MCP/mcpServerUtils';
 import MCPServerStatusIcon from '~/components/MCP/MCPServerStatusIcon';
+import MCPServerContact from '~/components/MCP/MCPServerContact';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
 import ApprovalOption from '../../../ApprovalOption';
@@ -452,6 +453,8 @@ export default function McpSection({ item }: Props) {
           {item.description}
         </p>
       )}
+
+      <MCPServerContact server={liveServer} className="text-sm" />
 
       <div className="flex flex-col">
         <div className="border-border-light bg-surface-secondary flex items-center justify-between rounded-xl border px-3 py-2.5">

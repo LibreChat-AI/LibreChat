@@ -144,7 +144,10 @@ export function AgentPanelProvider({
           ),
           requestScoped: serverConfig?.requestScoped,
           metadata,
+          dbId: serverConfig?.dbId,
           consumeOnly: serverConfig?.consumeOnly,
+          support_contact: serverConfig?.support_contact,
+          owner_contact: serverConfig?.owner_contact,
         });
       }
     }
@@ -181,7 +184,10 @@ export function AgentPanelProvider({
           Object.keys(serverConfig?.customUserVars ?? {}).length > 0,
         ),
         requestScoped: serverConfig?.requestScoped,
+        dbId: serverConfig?.dbId,
         consumeOnly: serverConfig?.consumeOnly,
+        support_contact: serverConfig?.support_contact,
+        owner_contact: serverConfig?.owner_contact,
       });
     }
 
