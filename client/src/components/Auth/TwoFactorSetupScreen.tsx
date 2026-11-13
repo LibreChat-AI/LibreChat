@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Button } from '@librechat/client';
+import { Button, useToastContext } from '@librechat/client';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   readTwoFactorSetupToken,
@@ -8,6 +8,7 @@ import {
 } from 'librechat-data-provider';
 import {
   useAcknowledgeTwoFactorSetupMutation,
+  useCancelTwoFactorSetupMutation,
   useConfirmTwoFactorSetupMutation,
   useEnableTwoFactorSetupMutation,
   useFinalizeTwoFactorSetupMutation,
@@ -18,6 +19,7 @@ import {
   SetupPhase,
   VerifyPhase,
 } from '~/components/Nav/SettingsTabs/Account/TwoFactorPhases';
+import { isCredentialRetirementIncomplete } from '~/components/Nav/SettingsTabs/Account/errors';
 import { useAuthContext, useLocalize } from '~/hooks';
 import { ErrorMessage } from './ErrorMessage';
 import { isSafeRedirect } from '~/utils';
@@ -57,6 +59,7 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const localize = useLocalize();
+  const { showToast } = useToastContext();
   const { completeAuthentication } = useAuthContext();
   const phaseRef = useRef<HTMLDivElement>(null);
   /**
@@ -79,6 +82,13 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
   const { mutate: acknowledgeSetup, isLoading: isAcknowledging } =
     useAcknowledgeTwoFactorSetupMutation();
   const { mutate: finalizeSetup, isLoading: isFinalizing } = useFinalizeTwoFactorSetupMutation();
+  const { mutate: cancelSetup, isLoading: isCancelling } = useCancelTwoFactorSetupMutation();
+  /**
+   * A commit racing the sign-out could hand back a session after the cookies were cleared, so each
+   * side waits for the other: the control is disabled while a setup request is in flight, and the
+   * setup actions do nothing while the sign-out is.
+   */
+  const isBusy = isGenerating || isVerifying || isAcknowledging || isFinalizing || isCancelling;
   const redirectTo = searchParams.get('redirect_to');
   const restartLoginPath =
     redirectTo && isSafeRedirect(redirectTo)
@@ -123,7 +133,33 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
     [restartLogin],
   );
 
+  /**
+   * Leaving is a server round trip, not just a navigation: the refresh session this browser still
+   * holds would hand the user straight back to setup on the next visit to the login page. The
+   * credential that proves who is leaving is the setup token, because a user in setup holds no
+   * access token to sign out with. Navigating waits for the server, so a failed sign-out is
+   * reported instead of leaving a live session behind a login screen.
+   */
+  const handleBackToLogin = useCallback(() => {
+    setError(null);
+    cancelSetup(
+      { tempToken },
+      {
+        onSuccess: restartLogin,
+        onError: (mutationError) => {
+          if (!restartLoginWhenExpired(mutationError)) {
+            setError(localize('com_auth_two_factor_setup_cancel_error'));
+          }
+        },
+      },
+    );
+  }, [cancelSetup, localize, restartLogin, restartLoginWhenExpired, tempToken]);
+
   const handleGenerate = useCallback(() => {
+    if (isCancelling) {
+      return;
+    }
+
     setError(null);
     enableSetup(
       { tempToken },
@@ -141,10 +177,10 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
         },
       },
     );
-  }, [enableSetup, localize, restartLoginWhenExpired, tempToken]);
+  }, [enableSetup, isCancelling, localize, restartLoginWhenExpired, tempToken]);
 
   const handleVerify = useCallback(() => {
-    if (verificationToken.length !== 6) {
+    if (isCancelling || verificationToken.length !== 6) {
       return;
     }
 
@@ -171,7 +207,7 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
         },
       },
     );
-  }, [confirmSetup, localize, restartLoginWhenExpired, tempToken, verificationToken]);
+  }, [confirmSetup, isCancelling, localize, restartLoginWhenExpired, tempToken, verificationToken]);
 
   const handleDownload = useCallback(() => {
     if (!backupCodes.length) {
@@ -195,6 +231,16 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
         {
           onSuccess: ({ token: authToken, user }) => completeAuthentication(authToken, user),
           onError: (mutationError) => {
+            /** Enrollment committed but handed back no session: sign in with the new factor. */
+            if (isCredentialRetirementIncomplete(mutationError)) {
+              /** The toast outlives the navigation, so the login screen still says what happened. */
+              showToast({
+                message: localize('com_auth_two_factor_setup_sessions_incomplete'),
+                status: 'warning',
+              });
+              restartLogin();
+              return;
+            }
             if (!restartLoginWhenSpent(mutationError)) {
               setError(localize('com_auth_two_factor_setup_finalize_error'));
             }
@@ -202,10 +248,21 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
         },
       );
     },
-    [completeAuthentication, finalizeSetup, localize, restartLoginWhenSpent],
+    [
+      completeAuthentication,
+      finalizeSetup,
+      localize,
+      restartLogin,
+      restartLoginWhenSpent,
+      showToast,
+    ],
   );
 
   const handleComplete = useCallback(() => {
+    if (isCancelling) {
+      return;
+    }
+
     setError(null);
     /** Acknowledgement nonces are single-use, so a retry reuses the finalization credential. */
     if (finalizationToken) {
@@ -234,6 +291,7 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
     acknowledgementToken,
     acknowledgeSetup,
     finalizationToken,
+    isCancelling,
     localize,
     restartLoginWhenSpent,
     runFinalize,
@@ -304,6 +362,15 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
           />
         )}
       </div>
+      <Button
+        type="button"
+        variant="link"
+        onClick={handleBackToLogin}
+        disabled={isBusy}
+        className="w-full"
+      >
+        {localize('com_auth_back_to_login')}
+      </Button>
     </div>
   );
 });

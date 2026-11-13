@@ -19,10 +19,6 @@ jest.mock('~/hooks', () => ({
    * routing tests don't exercise the preview flow itself — stub it
    * to a no-op so it doesn't blow up jsdom rendering. */
   useAttachmentPreviewSync: () => ({ status: 'ready', previewError: undefined, isPolling: false }),
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
-    ref: { current: null },
-  }),
 }));
 
 jest.mock('../LogLink', () => ({
@@ -31,6 +27,10 @@ jest.mock('../LogLink', () => ({
 
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
+  useExpandCollapse: (isExpanded: boolean) => ({
+    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
+    ref: { current: null },
+  }),
   FileContainer: ({ file, displayName }: { file: { filename?: string }; displayName?: string }) => (
     <div data-testid="file-container">{displayName ?? file.filename ?? ''}</div>
   ),

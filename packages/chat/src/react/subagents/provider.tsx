@@ -2,8 +2,13 @@ import { useMemo } from 'react';
 import { useSetAtom } from 'jotai';
 import type { ReactNode } from 'react';
 import type { ChatSurface, SubagentPanelActions } from './context';
-import { ChatSurfaceContext, SubagentPanelActionsContext } from './context';
+import {
+  ChatSurfaceContext,
+  SubagentPanelStateContext,
+  SubagentPanelActionsContext,
+} from './context';
 import { activeSubagentPanel, subagentPanelFocusRequest } from './state';
+import { subagentPanelState } from './runtime';
 
 /** Mounts the host's surface and binds the activity panel's actions to it. */
 export function ChatSurfaceProvider({
@@ -30,7 +35,9 @@ export function ChatSurfaceProvider({
   return (
     <ChatSurfaceContext.Provider value={value}>
       <SubagentPanelActionsContext.Provider value={actions}>
-        {children}
+        <SubagentPanelStateContext.Provider value={subagentPanelState}>
+          {children}
+        </SubagentPanelStateContext.Provider>
       </SubagentPanelActionsContext.Provider>
     </ChatSurfaceContext.Provider>
   );

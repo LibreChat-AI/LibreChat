@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { UIResourceRenderer as LegacyUIResourceRenderer } from '@mcp-ui/client';
 import type { TStartupConfig, UIResource } from 'librechat-data-provider';
 import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
@@ -28,6 +28,42 @@ const renderEnabled = (ui: React.ReactElement) =>
 describe('UIResourceRenderer', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('loads several resources inside a paragraph without invalid markup or announcements', async () => {
+    /** The lazy component keeps its module once resolved, so only the first render in this file can see it pending. */
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const resources = ['first', 'second', 'third'].map(
+      (id): UIResource => ({
+        resourceId: id,
+        uri: `ui://${id}`,
+        mimeType: 'text/html',
+        text: `<p>${id}</p>`,
+      }),
+    );
+
+    /** Markdown places an inline resource in a span inside the paragraph that holds its marker. */
+    renderEnabled(
+      <p>
+        <span>
+          {resources.map((resource) => (
+            <UIResourceRenderer key={resource.resourceId} resource={resource} />
+          ))}
+        </span>
+      </p>,
+    );
+
+    expect(screen.getAllByText('Loading interactive view...')).toHaveLength(3);
+    expect(mockLegacyRenderer).not.toHaveBeenCalled();
+    /** A paragraph cannot hold a block element, and React says so when a fallback is one. */
+    expect(
+      consoleError.mock.calls.filter(([message]) => String(message).includes('validateDOMNesting')),
+    ).toEqual([]);
+    /** The viewer opened none of these, so a single load must not announce itself once per resource. */
+    expect(screen.queryAllByRole('status')).toHaveLength(0);
+
+    expect(await screen.findAllByTestId('legacy-ui-resource')).toHaveLength(3);
+    expect(screen.queryByText('Loading interactive view...')).not.toBeInTheDocument();
   });
 
   it.each([
@@ -63,7 +99,7 @@ describe('UIResourceRenderer', () => {
     expect(mockLegacyRenderer).not.toHaveBeenCalled();
   });
 
-  it('forces text/html through the raw HTML renderer without popup permissions', () => {
+  it('forces text/html through the raw HTML renderer without popup permissions', async () => {
     const resource: UIResource = {
       resourceId: 'html-resource',
       uri: 'ui://html',
@@ -79,7 +115,7 @@ describe('UIResourceRenderer', () => {
       />,
     );
 
-    expect(screen.getByTestId('legacy-ui-resource')).toBeInTheDocument();
+    expect(await screen.findByTestId('legacy-ui-resource')).toBeInTheDocument();
     expect(mockLegacyRenderer).toHaveBeenCalledWith(
       expect.objectContaining({
         resource: expect.not.objectContaining({ contentType: expect.anything() }),
@@ -90,42 +126,52 @@ describe('UIResourceRenderer', () => {
     );
   });
 
-  it.each(['text/html; charset=utf-8', 'TEXT/HTML'])('normalizes HTML MIME type %s', (mimeType) => {
-    const resource: UIResource = {
-      resourceId: 'html-resource',
-      uri: 'ui://html',
-      mimeType,
-      text: '<p>Safe iframe content</p>',
-    };
+  it.each(['text/html; charset=utf-8', 'TEXT/HTML'])(
+    'normalizes HTML MIME type %s',
+    async (mimeType) => {
+      const resource: UIResource = {
+        resourceId: 'html-resource',
+        uri: 'ui://html',
+        mimeType,
+        text: '<p>Safe iframe content</p>',
+      };
 
-    renderEnabled(<UIResourceRenderer resource={resource} />);
+      renderEnabled(<UIResourceRenderer resource={resource} />);
 
-    expect(mockLegacyRenderer).toHaveBeenCalledWith(
-      expect.objectContaining({
-        resource: expect.objectContaining({ mimeType: 'text/html' }),
-        supportedContentTypes: ['rawHtml'],
-      }),
-      expect.any(Object),
-    );
-  });
+      await waitFor(() =>
+        expect(mockLegacyRenderer).toHaveBeenCalledWith(
+          expect.objectContaining({
+            resource: expect.objectContaining({ mimeType: 'text/html' }),
+            supportedContentTypes: ['rawHtml'],
+          }),
+          expect.any(Object),
+        ),
+      );
+    },
+  );
 
-  it.each([undefined, null])('defaults an absent MIME type (%s) to legacy HTML', (mimeType) => {
-    const resource = {
-      resourceId: 'legacy-resource',
-      uri: 'ui://legacy',
-      mimeType,
-      text: '<p>Legacy resource</p>',
-    } as unknown as UIResource;
+  it.each([undefined, null])(
+    'defaults an absent MIME type (%s) to legacy HTML',
+    async (mimeType) => {
+      const resource = {
+        resourceId: 'legacy-resource',
+        uri: 'ui://legacy',
+        mimeType,
+        text: '<p>Legacy resource</p>',
+      } as unknown as UIResource;
 
-    renderEnabled(<UIResourceRenderer resource={resource} />);
+      renderEnabled(<UIResourceRenderer resource={resource} />);
 
-    expect(mockLegacyRenderer).toHaveBeenCalledWith(
-      expect.objectContaining({
-        resource: expect.objectContaining({ mimeType: 'text/html' }),
-      }),
-      expect.any(Object),
-    );
-  });
+      await waitFor(() =>
+        expect(mockLegacyRenderer).toHaveBeenCalledWith(
+          expect.objectContaining({
+            resource: expect.objectContaining({ mimeType: 'text/html' }),
+          }),
+          expect.any(Object),
+        ),
+      );
+    },
+  );
 
   it('does not reinterpret an explicit empty MIME type as HTML', () => {
     const resource: UIResource = {

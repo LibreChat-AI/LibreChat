@@ -74,7 +74,7 @@ jest.mock('~/server/services/ToolService', () => ({
 }));
 
 jest.mock('~/server/controllers/ModelController', () => ({
-  getModelsConfig: jest.fn().mockResolvedValue({}),
+  getEndpointModelsConfig: jest.fn().mockResolvedValue({}),
 }));
 
 let agentClientArgs;
@@ -102,7 +102,7 @@ const { createInitializeClient, initializeClient } = require('./initialize');
 const { processAddedConvo } = require('./addedConvo');
 const { getSkillDbMethods, getSkillToolDeps } = require('./skillDeps');
 const { loadAgentTools } = require('~/server/services/ToolService');
-const { getModelsConfig } = require('~/server/controllers/ModelController');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const { logger } = require('@librechat/data-schemas');
 const { User, AclEntry } = require('~/db/models');
 const { createAgent, createSkill, updateAgent } = require('~/models');
@@ -125,7 +125,7 @@ describe('initializeClient — processAgent ACL gate', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {
@@ -1091,13 +1091,51 @@ describe('initializeClient — processAgent ACL gate', () => {
     expect(initializeParams.skillAuthoringAvailable).toBe(true);
   });
 
+  it.each([
+    ['honors a skills opt-out against an ordinary spec', false, false],
+    ['ignores a skills opt-out against a spec that hides the badge row', true, true],
+  ])('%s', async (_label, hideBadgeRow, expectedEnabled) => {
+    const endpointOption = makeEndpointOption();
+    endpointOption.spec = 'spec-skills';
+    endpointOption.agent = Promise.resolve({
+      id: Constants.EPHEMERAL_AGENT_ID,
+      name: 'Ephemeral Primary',
+      provider: 'openai',
+      model: 'gpt-4',
+      tools: [],
+    });
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+    const req = makeReq();
+    req.config.endpoints.agents = { capabilities: ['skills'] };
+    req.config.modelSpecs = {
+      list: [{ name: 'spec-skills', skills: true, ...(hideBadgeRow ? { hideBadgeRow } : {}) }],
+    };
+    /** Only an API caller can post this against a hidden badge row, so the
+     *  spec's own configuration stays authoritative there. */
+    req.body.ephemeralAgent = { skills: false };
+
+    await initializeClient({
+      req,
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption,
+    });
+
+    const initializeParams = mockInitializeAgent.mock.calls[0][0];
+    expect(initializeParams.agent.skills_enabled).toBe(expectedEnabled);
+  });
+
   it('loads model validation and skill permissions without serial waits', async () => {
     const models = deferred();
     const createPermission = deferred();
     const req = makeReq();
     req.config.endpoints.agents = { capabilities: ['skills'] };
     mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
-    getModelsConfig.mockReturnValueOnce(models.promise);
+    getEndpointModelsConfig.mockReturnValueOnce(models.promise);
+    mockValidateAgentModel.mockImplementationOnce(async ({ agent, getEndpointModels }) => {
+      await getEndpointModels(agent.provider);
+      return { isValid: true };
+    });
     const canCreateSkillSpy = jest
       .spyOn(getSkillToolDeps(), 'canCreateSkill')
       .mockReturnValue(createPermission.promise);
@@ -1110,12 +1148,15 @@ describe('initializeClient — processAgent ACL gate', () => {
         endpointOption: makeEndpointOption(),
       });
 
-      expect(getModelsConfig).toHaveBeenCalledWith(req);
       expect(canCreateSkillSpy).toHaveBeenCalledWith({ req });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockValidateAgentModel).toHaveBeenCalledTimes(1);
+      expect(getEndpointModelsConfig).toHaveBeenCalledTimes(1);
+      expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, 'openai');
+      expect(mockInitializeAgent).not.toHaveBeenCalled();
 
       models.resolve({});
       await new Promise((resolve) => setImmediate(resolve));
-      expect(mockValidateAgentModel).toHaveBeenCalledTimes(1);
       expect(mockInitializeAgent).not.toHaveBeenCalled();
 
       createPermission.resolve(false);
@@ -1133,7 +1174,11 @@ describe('initializeClient — processAgent ACL gate', () => {
     delete req.resolvedConversation;
     const getConvoSpy = jest.spyOn(db, 'getConvo').mockReturnValue(conversation.promise);
     const getChatProjectSpy = jest.spyOn(db, 'getChatProject').mockReturnValue(project.promise);
-    getModelsConfig.mockReturnValueOnce(models.promise);
+    getEndpointModelsConfig.mockReturnValueOnce(models.promise);
+    mockValidateAgentModel.mockImplementationOnce(async ({ agent, getEndpointModels }) => {
+      await getEndpointModels(agent.provider);
+      return { isValid: true };
+    });
     mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
 
     try {
@@ -1245,7 +1290,7 @@ describe('initializeClient — processAgent ACL gate', () => {
           ],
         },
       };
-      getModelsConfig.mockResolvedValueOnce(catalog);
+      getEndpointModelsConfig.mockResolvedValueOnce(catalog);
       mockValidateAgentModel.mockImplementation(actualApi.validateAgentModel);
       mockInitializeAgent.mockImplementation(actualApi.initializeAgent);
       loadAgentTools.mockResolvedValue({ tools: [], toolContextMap: {}, toolDefinitions: [] });
@@ -1308,7 +1353,7 @@ describe('initializeClient — subagent loading', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {
@@ -3714,6 +3759,39 @@ describe('initializeClient — subagent loading', () => {
       }),
     ).rejects.toThrow(`no longer have access to subagent ${SUBAGENT_ID}`);
     expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates a selected subagent through the same endpoint model loader as the primary', async () => {
+    await createViewableAgent(SUBAGENT_ID);
+    const primaryConfig = makePrimaryConfig({
+      subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+    });
+    const subagentConfig = makeSubagentConfig(SUBAGENT_ID);
+    let call = 0;
+    mockInitializeAgent.mockImplementation(() =>
+      Promise.resolve(++call === 1 ? primaryConfig : subagentConfig),
+    );
+    const req = makeSubagentReq();
+
+    await initializeClient({
+      req,
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+    await agentClientArgs.agent.lazySubagentConfigs[0].resolve({
+      signal: new AbortController().signal,
+    });
+
+    const validations = mockValidateAgentModel.mock.calls.map(([params]) => params);
+    expect(validations.map(({ agent }) => agent.id)).toEqual([PRIMARY_ID, SUBAGENT_ID]);
+    expect(validations[1].getEndpointModels).toBe(validations[0].getEndpointModels);
+    for (const params of validations) {
+      expect(params).not.toHaveProperty('modelsConfig');
+    }
+    expect(getEndpointModelsConfig).not.toHaveBeenCalled();
+    await validations[1].getEndpointModels('openai');
+    expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, 'openai');
   });
 
   it('preserves subagent tool context for ON_TOOL_EXECUTE (Codex P1 regression guard)', async () => {

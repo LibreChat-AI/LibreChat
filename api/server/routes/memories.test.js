@@ -16,7 +16,7 @@ const mockOpaqueDeleteById = jest.fn((_req, res) => res.status(202).json({ deleg
 let mockFilters;
 
 jest.mock('@librechat/api', () => ({
-  Tokenizer: { getTokenCount: jest.fn(() => 1) },
+  countTokens: jest.fn(async () => 1),
   generateCheckAccess: jest.fn(() => (_req, _res, next) => next()),
   inspectContent: jest.fn(() => null),
   extractMemoryContent: jest.fn(() => []),

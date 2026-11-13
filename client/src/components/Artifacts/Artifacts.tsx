@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import * as Tabs from '@radix-ui/react-tabs';
+import { CopyButton } from '@librechat/chat/components';
 import { useSetRecoilState, useResetRecoilState } from 'recoil';
 import { Button, Spinner, useMediaQuery, Radio, useToastContext } from '@librechat/client';
 import {
@@ -27,7 +28,6 @@ import { copyWithinDocument, openUndockedWindow, prepareUndockedDocument } from 
 import { artifactsOpenedArtifactId, artifactsPaneFocusRequest, undockedArtifacts } from './state';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
 import { useArtifactsContext, useShareContext, useMutationState } from '~/Providers';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import useArtifacts from '~/hooks/Artifacts/useArtifacts';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';

@@ -20,3 +20,5 @@ export type { ThinkReplayItem } from './providerItems';
 export { buildIndexWithRetry, createIndexesWithRetry, isIndexBuildInProgress } from './retry';
 export { isFieldNameRejection } from './fields';
 export type { IndexBuildOptions } from './retry';
+
+export { SERVER_AUTHORED_MESSAGE_FILTER, isServerAuthoredMessage } from './authored';

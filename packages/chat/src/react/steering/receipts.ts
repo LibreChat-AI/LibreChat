@@ -4,11 +4,20 @@ import { DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS } from 'librechat-data-pr
 import type { TAgentQueuedTurnReceipt as AgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueuedTurnReceiptSource } from '../../core';
 import {
+  queuedTurnLookupIds,
+  removePendingSteers,
+  ownedPromotedSteerIds,
+  appendAppliedSteerIds,
+  withoutPromotedSteers,
+  reconcileServerQueuedTurns,
+  mergeSettledQueuedTurnEvidence,
+} from '../../core';
+import {
   queuedMessagesByConvoId,
   settledQueuedTurnReceiptsByConvoId,
   pendingQueuedTurnEnqueueIdsByConvoId,
 } from '../steer/queue';
-import { reconcileServerQueuedTurns, mergeSettledQueuedTurnEvidence } from '../../core';
+import { pendingSteersByConvoId, appliedSteerIdsByConvoId } from '../steer/atoms';
 import { useSteerHost } from '../steer/host';
 
 export interface QueuedTurnReceipts {
@@ -48,16 +57,10 @@ export default function useQueuedTurnReceipts({
    * operator to widen this rather than wait for one. */
   const reconciliationWindowMs =
     queuedTurnReconciliationTimeoutMs ?? DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS;
+  const pendingSteers = useAtomValue(pendingSteersByConvoId(queueKey));
   const knownClientRequestIds = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          queuedMessages.flatMap((item) =>
-            item.server != null && item.clientRequestId != null ? [item.clientRequestId] : [],
-          ),
-        ),
-      ).slice(0, 100),
-    [queuedMessages],
+    () => queuedTurnLookupIds(pendingSteers, queuedMessages),
+    [queuedMessages, pendingSteers],
   );
   const reconciliationUntil = queuedMessages.reduce<number | undefined>((latest, item) => {
     if (item.server?.status !== 'uncertain' || item.server.uncertainSince == null) {
@@ -136,10 +139,21 @@ export default function useQueuedTurnReceipts({
       ) {
         jotaiStore.set(settledQueuedTurnReceiptsByConvoId(queueKey), nextSettled);
       }
+      /** The receipt list is the durable steer-to-turn mapping: whatever FINAL
+       *  this pane missed, a promoted turn retires its steer's local copies. */
+      const promotedIds = ownedPromotedSteerIds(receipts);
+      if (promotedIds.length > 0) {
+        jotaiStore.set(appliedSteerIdsByConvoId(queueKey), (prev) =>
+          appendAppliedSteerIds(prev, promotedIds),
+        );
+        jotaiStore.set(pendingSteersByConvoId(queueKey), (prev) =>
+          removePendingSteers(prev, promotedIds),
+        );
+      }
       if (source !== 'direct') {
         jotaiStore.set(queuedMessagesByConvoId(queueKey), (previous) =>
           reconcileServerQueuedTurns(
-            previous,
+            withoutPromotedSteers(previous, promotedIds),
             receipts,
             terminalForReconciliation,
             source === 'snapshot',

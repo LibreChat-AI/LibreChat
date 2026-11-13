@@ -1,5 +1,5 @@
 import React, { useMemo, useEffect } from 'react';
-import { ChevronLeft, RotateCcw } from 'lucide-react';
+import { RotateCcw } from 'lucide-react';
 import { Alert, Button, ControlCombobox } from '@librechat/client';
 import { useFormContext, useWatch, Controller } from 'react-hook-form';
 import {
@@ -17,19 +17,17 @@ import { componentMapping } from '~/components/SidePanel/Parameters/components';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import Sections from '~/components/SidePanel/Parameters/Sections';
+import BackButton from '~/components/SidePanel/BackButton';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { useLiveAnnouncer } from '~/Providers';
 import { Panel } from '~/common';
 import { cn } from '~/utils';
 
-function getModelPlaceholderKey(modelsPending: boolean, provider: string) {
+function getModelPlaceholderKey(modelsPending: boolean) {
   if (modelsPending) {
     return 'com_ui_loading';
   }
-  if (provider) {
-    return 'com_ui_select_model';
-  }
-  return 'com_ui_select_provider_first';
+  return 'com_agents_select_model';
 }
 
 export default function ModelPanel({
@@ -142,15 +140,7 @@ export default function ModelPanel({
   return (
     <div className="mb-1 flex w-full flex-col gap-3 text-sm">
       <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 pt-1">
-        <Button
-          variant="outline"
-          size="icon"
-          onClick={() => setActivePanel(Panel.builder)}
-          aria-label={localize('com_ui_back_to_builder')}
-          className="text-text-secondary hover:bg-surface-secondary shrink-0 rounded-xl"
-        >
-          <ChevronLeft className="h-5 w-5 rtl:-scale-x-100" strokeWidth={1.75} aria-hidden="true" />
-        </Button>
+        <BackButton onClick={() => setActivePanel(Panel.builder)} />
         <h2 className="text-text-primary text-center text-base font-semibold">
           {localize('com_ui_model_parameters')}
         </h2>
@@ -161,12 +151,11 @@ export default function ModelPanel({
       </header>
       <div>
         {/* Endpoint aka Provider for Agents */}
-        <div className="mb-3" aria-busy={modelsPending}>
+        <div className="mb-3">
           <label
             id="provider-label"
             className={cn(
               'text-text-secondary text-2xs mb-1 block font-medium tracking-wide uppercase',
-              modelsPending && 'opacity-60',
             )}
             htmlFor="provider"
           >
@@ -215,7 +204,7 @@ export default function ModelPanel({
                     }))}
                     className={cn(error ? 'border-border-destructive border-2' : '')}
                     ariaLabel={localize('com_ui_provider')}
-                    disabled={selectionDisabled}
+                    disabled={providers.length === 0}
                     isCollapsed={false}
                     showCarat={true}
                   />
@@ -251,7 +240,7 @@ export default function ModelPanel({
                   <ControlCombobox
                     selectId="model"
                     selectedValue={field.value || ''}
-                    selectPlaceholder={localize(getModelPlaceholderKey(modelsPending, provider))}
+                    selectPlaceholder={localize(getModelPlaceholderKey(modelsPending))}
                     searchPlaceholder={localize('com_ui_select_model')}
                     setValue={(value) => {
                       field.onChange(value);

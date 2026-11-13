@@ -80,7 +80,11 @@ mcpServers:
     command: node
     args:
       - e2e/setup/fake-mcp-server.js
-    # __E2E_DYNAMIC_MCP_STDIO_ENV__
+    # A deployment `${VAR}` reference, the shape most OAuth MCP servers carry; remembered
+    # approvals must still work for it.
+    env:
+      E2E_MCP_DEPLOYMENT: '${E2E_MCP_DEPLOYMENT}'
+      # __E2E_DYNAMIC_MCP_STDIO_ENV__
     title: E2E Memory
     description: Local MCP fixture used by mock end-to-end tests.
     timeout: 30000
@@ -151,6 +155,9 @@ mcpServers:
 # - Mock Provider B uses the unified single button with spreadsheet/csv routed
 #   to llmDeliveryPath 'none' (unified-upload.spec.ts).
 fileConfig:
+  # Preserve original generated images while testing the separate model image budget.
+  imageGeneration:
+    percentage: 100
   endpoints:
     'Mock Run Files':
       defaultLLMDeliveryPath:
@@ -213,9 +220,12 @@ endpoints:
       mode: bypass
       # The probe below is an `ask` rule and a hook match, so it is never offered
       # "Always allow"; the remembered-approval scenarios assert exactly that.
+      # The rule uses the documented `mcp:<server>:<tool>` form with a glob, and the
+      # hook returns no decision for a plain call, so under `bypass` only this rule
+      # pauses the probe.
       allowAlways: true
       ask:
-        - approval_probe_mcp_e2e-memory
+        - 'mcp:e2e-memory:approval_*'
       reason: E2E approval required before running {tool}.
       hooks:
         - module: e2e/setup/tool-approval-hook.js

@@ -22,3 +22,7 @@ export { resolveBuildInfo } from './build';
 export type { BuildInfo } from './build';
 export { buildPreLoginInterface, withSafePolicyLinks } from './interface';
 export * from './migrations';
+
+export * from './persistence';
+
+export * from './postgres';

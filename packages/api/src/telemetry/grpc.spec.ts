@@ -4,6 +4,7 @@ import { Server, ServerCredentials } from '@grpc/grpc-js';
 import type { sendUnaryData, ServerUnaryCall, ServiceDefinition } from '@grpc/grpc-js';
 import { initializeTelemetry, resetTelemetryForTests, shutdownTelemetry } from './sdk';
 import { resetConfigDigestForTests, setConfigDigest } from './digest';
+import { observeToolExecution } from './tools';
 
 const LOGS_EXPORT_PATH = '/opentelemetry.proto.collector.logs.v1.LogsService/Export';
 const TRACES_EXPORT_PATH = '/opentelemetry.proto.collector.trace.v1.TraceService/Export';
@@ -101,10 +102,20 @@ describe('OTLP/gRPC export', () => {
     });
     startedStatus = controller.status;
 
-    trace.getTracer('librechat.grpc.spec').startActiveSpan(SPAN_NAME, (span) => {
+    await trace.getTracer('librechat.grpc.spec').startActiveSpan(SPAN_NAME, async (span) => {
       traceId = span.spanContext().traceId;
       logger.info(`${INFO_MESSAGE} sk-${SECRET_SUFFIX}`);
       logger.debug(DEBUG_MESSAGE);
+      await observeToolExecution(
+        {
+          toolName: 'search_mcp_docs',
+          toolCallId: 'grpc-tool-call',
+          userId: 'grpc-user',
+          conversationId: 'grpc-conversation',
+          mode: 'foreground',
+        },
+        async () => ({ content: 'private-tool-output-canary' }),
+      );
       span.end();
     });
 
@@ -138,6 +149,24 @@ describe('OTLP/gRPC export', () => {
     expect(payload.includes(Buffer.from(traceId, 'hex'))).toBe(true);
     expect(payload.includes(SECRET_SUFFIX)).toBe(false);
     expect(payload.includes(DEBUG_MESSAGE)).toBe(false);
+  });
+
+  it('exports structured tool lifecycle records without tool output', () => {
+    const payload = Buffer.concat(receivedLogs);
+    for (const value of [
+      'librechat.tool.execution.started',
+      'librechat.tool.execution.completed',
+      'gen_ai.tool.call.id',
+      'grpc-tool-call',
+      'search_mcp_docs',
+      'enduser.id',
+      'grpc-user',
+      'grpc-conversation',
+      'librechat.tool.duration_ms',
+    ]) {
+      expect(payload.includes(value)).toBe(true);
+    }
+    expect(payload.includes('private-tool-output-canary')).toBe(false);
   });
 
   it('names the build in the resource and the loaded config on each record', () => {

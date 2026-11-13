@@ -1,6 +1,6 @@
 import React from 'react';
 import '@testing-library/jest-dom';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import Header from '../Header';
 
 const mockEndpoint = { current: 'agents' };
@@ -79,9 +79,34 @@ describe('Header stacking', () => {
     backgroundTasks.mockClear();
     pullRequestChip.mockClear();
     headerMenu.mockClear();
+    headerMenu.mockImplementation(() => null);
     mockEndpoint.current = 'agents';
     mockSmallScreen.current = false;
     mockConversation.current = codeConversation;
+  });
+
+  test('does not mount the mobile action tree on desktop startup', () => {
+    render(<Header />);
+    expect(headerMenu).not.toHaveBeenCalled();
+  });
+
+  test('retains mobile action state when the viewport returns to desktop', () => {
+    headerMenu.mockImplementation(() => <input aria-label="Menu draft" defaultValue="" />);
+    const { rerender } = render(<Header />);
+    expect(screen.queryByRole('textbox', { name: 'Menu draft' })).not.toBeInTheDocument();
+    mockSmallScreen.current = true;
+    rerender(<Header readOnly />);
+    const input = screen.getByRole('textbox', { name: 'Menu draft' });
+    fireEvent.change(input, { target: { value: 'unsaved dialog state' } });
+    mockSmallScreen.current = false;
+    rerender(<Header />);
+    expect(screen.getByRole('textbox', { name: 'Menu draft' })).toBe(input);
+    expect(input).toHaveValue('unsaved dialog state');
+    expect(headerMenu.mock.calls.at(-1)[0]).toMatchObject({ className: 'hidden' });
+    mockSmallScreen.current = true;
+    rerender(<Header readOnly />);
+    expect(screen.getByRole('textbox', { name: 'Menu draft' })).toBe(input);
+    expect(input).toHaveValue('unsaved dialog state');
   });
 
   test('keeps header controls above the z-10 composer approval review', () => {

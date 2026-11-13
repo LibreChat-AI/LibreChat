@@ -67,10 +67,23 @@ async function openBatch(page: Page, agent: AgentDetail, label: string) {
   const response = await sendMessage(page, `E2E_ASK_USER_QUESTIONS:${label}`);
   expect(response.ok()).toBeTruthy();
   await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
-  const popover = page
-    .locator('.popover')
-    .filter({ has: page.getByRole('button', { name: MOVE_TO_CHAT }) });
-  await expect(popover).toBeVisible({ timeout: 30000 });
+  /* The batch arrives in the chat, never over the composer. */
+  const chat = messagesView(page);
+  await expect(chat.getByRole('button', { name: MOVE_TO_COMPOSER })).toBeVisible({
+    timeout: 30000,
+  });
+  await expect(popoverOf(page)).toHaveCount(0);
+  return chat;
+}
+
+const popoverOf = (page: Page) =>
+  page.locator('.popover').filter({ has: page.getByRole('button', { name: MOVE_TO_CHAT }) });
+
+/** Moves the live batch from its chat card into the composer popover. */
+async function openPopover(page: Page) {
+  await messagesView(page).getByRole('button', { name: MOVE_TO_COMPOSER }).click();
+  const popover = popoverOf(page);
+  await expect(popover).toBeVisible();
   return popover;
 }
 
@@ -96,23 +109,23 @@ test.describe('ask question keyboard control', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label);
+      const card = await openBatch(page, agent, label);
 
       /* The batch arrives while focus sits in the empty composer that sent it. */
-      await expect(optionRow(popover, 'Staging')).toBeFocused();
+      await expect(optionRow(card, 'Staging')).toBeFocused();
       await page.keyboard.press('Enter');
 
       /* The next question has no pick yet, so focus lands in its answer field,
          never on an unpicked option a held Enter could choose. */
-      await expect(popover.getByText(questions.region, { exact: true })).toBeVisible();
-      await expect(answerField(popover, questions.region)).toBeFocused();
+      await expect(card.getByText(questions.region, { exact: true })).toBeVisible();
+      await expect(answerField(card, questions.region)).toBeFocused();
       await page.keyboard.type('typed-region');
       await page.keyboard.press('Enter');
 
-      await expect(popover.getByText(questions.notes, { exact: true })).toBeVisible();
-      await expect(answerField(popover, questions.notes)).toBeFocused();
+      await expect(card.getByText(questions.notes, { exact: true })).toBeVisible();
+      await expect(answerField(card, questions.notes)).toBeFocused();
       await page.keyboard.press('Shift+Tab');
-      await expect(optionRow(popover, 'Call me first')).toBeFocused();
+      await expect(optionRow(card, 'Call me first')).toBeFocused();
 
       const resumes: Request[] = [];
       page.on('request', (request) => {
@@ -123,7 +136,7 @@ test.describe('ask question keyboard control', () => {
 
       /* On the last question the first Enter only picks. */
       await page.keyboard.press('Enter');
-      await expect(optionRow(popover, 'Call me first')).toHaveAttribute('aria-pressed', 'true');
+      await expect(optionRow(card, 'Call me first')).toHaveAttribute('aria-pressed', 'true');
       expect(resumes).toHaveLength(0);
 
       const [resume] = await Promise.all([
@@ -135,7 +148,9 @@ test.describe('ask question keyboard control', () => {
         region: 'typed-region',
         notes: 'call',
       });
-      await expect(popover).toBeHidden({ timeout: 30000 });
+      await expect(card.getByRole('button', { name: MOVE_TO_COMPOSER })).toBeHidden({
+        timeout: 30000,
+      });
     } finally {
       await cleanupAgent(page, agentId);
     }
@@ -152,7 +167,8 @@ test.describe('ask question keyboard control', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label);
+      await openBatch(page, agent, label);
+      const popover = await openPopover(page);
 
       const resumes: string[] = [];
       page.on('request', (request) => {
@@ -161,6 +177,7 @@ test.describe('ask question keyboard control', () => {
         }
       });
 
+      /* Moving the batch in from the card hands focus to its first option. */
       await expect(optionRow(popover, 'Staging')).toBeFocused();
       await page.keyboard.press('Escape');
 
@@ -188,11 +205,7 @@ test.describe('ask question keyboard control', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label);
-      await popover.getByRole('button', { name: MOVE_TO_CHAT }).click();
-      await expect(popover).toBeHidden();
-
-      const chat = messagesView(page);
+      const chat = await openBatch(page, agent, label);
       const field = answerField(chat, questions.environment);
       await expect(field).toBeVisible();
 

@@ -1,14 +1,16 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { openAgentBuilder } from '../agents.helpers';
 import {
   messagesView,
   MOCK_ENDPOINTS,
+  mockReply,
   NEW_CHAT_PATH,
   selectMockEndpoint,
   selectModelSpec,
   sendMessage,
+  sendMessageAndWaitForCompletion,
 } from '../helpers';
+import { expect, test } from '../fixtures';
 
 const messageInput = (page: Page) => page.getByRole('textbox', { name: 'Message input' });
 const slowRun = (label: string) => `E2E_SLOW_REPLY:${label}`;
@@ -122,6 +124,60 @@ test.describe('composer redesign contracts', () => {
         thinkingBudget: 1024,
       }),
     );
+    await expect(page.getByTestId('composer-thinking-button')).toHaveCount(0);
+  });
+
+  test('Hidden enforced model spec hides the reasoning control @scenario:hidden-enforced-model-spec-hides-the-reasoning-control', async ({
+    page,
+  }) => {
+    /* `excludeHiddenModelSpecs` drops a `showInMenu: false` spec from the served list while the
+       server keeps resolving it. Serving the list without the spec reproduces that for a
+       conversation already stored on it. */
+    const hiddenSpec = 'e2e-skill-scope';
+    let hideSpec = false;
+    await page.route('**/api/config', async (route) => {
+      const response = await route.fetch();
+      if (!hideSpec) {
+        await route.fulfill({ response });
+        return;
+      }
+      const config = await response.json();
+      const list = Array.isArray(config.modelSpecs?.list) ? config.modelSpecs.list : [];
+      await route.fulfill({
+        response,
+        json: {
+          ...config,
+          modelSpecs: {
+            ...(config.modelSpecs ?? {}),
+            enforce: true,
+            list: list.filter((spec: { name?: string }) => spec.name !== hiddenSpec),
+          },
+        },
+      });
+    });
+    await openComposer(page);
+    await selectModelSpec(page, 'E2E Skill Scope');
+    await sendMessageAndWaitForCompletion(page, `hidden-spec-${Date.now()}`);
+    await expect(page.getByTestId('composer-thinking-button')).toBeVisible();
+
+    hideSpec = true;
+    const settled = Promise.all([
+      page.waitForResponse((res) => new URL(res.url()).pathname === '/api/config'),
+      page.waitForResponse(
+        (res) => /^\/api\/convos\/[^/]+$/.test(new URL(res.url()).pathname) && res.ok(),
+      ),
+    ]);
+    await page.reload();
+    await settled;
+    await expect(mockReply(page).first()).toBeVisible();
+    /* Two frames let React commit the queries that settled while the page loaded. */
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await expect(messageInput(page)).toBeVisible();
     await expect(page.getByTestId('composer-thinking-button')).toHaveCount(0);
   });
 

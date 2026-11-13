@@ -1,17 +1,23 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import { useToolContentPending } from '@librechat/chat/react';
-import CopyButton from '~/components/Messages/Content/CopyButton';
-import LangIcon from '~/components/Messages/Content/LangIcon';
+import { CopyButton, LangIcon } from '@librechat/chat/components';
 import { useLocalize } from '~/hooks';
 
 interface CodeWindowHeaderProps {
   language: string;
+  /** Shown in place of `language`, such as a file's full path. */
+  label?: string;
   code: string;
   diffStats?: { additions: number; deletions: number };
 }
 
-export default function CodeWindowHeader({ language, code, diffStats }: CodeWindowHeaderProps) {
+export default function CodeWindowHeader({
+  language,
+  label,
+  code,
+  diffStats,
+}: CodeWindowHeaderProps) {
   const localize = useLocalize();
   const [isCopied, setIsCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -31,9 +37,11 @@ export default function CodeWindowHeader({ language, code, diffStats }: CodeWind
 
   return (
     <div className="text-text-secondary flex items-center justify-between px-1.5 py-1.5 font-sans text-xs">
-      <span className="flex items-center gap-1.5 ps-1.5 text-xs font-medium">
+      <span className="flex min-w-0 items-center gap-1.5 ps-1.5 text-xs font-medium">
         <LangIcon lang={language} className="size-3.5 shrink-0" />
-        {language}
+        <span className="min-w-0 truncate" dir="ltr">
+          {label ?? language}
+        </span>
         {diffStats && (
           <>
             <span className="flex items-center gap-1 font-normal tabular-nums" aria-hidden="true">

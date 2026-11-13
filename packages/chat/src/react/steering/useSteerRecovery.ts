@@ -3,6 +3,7 @@ import { useStore } from 'jotai';
 import type { PendingSteer } from '../../core';
 import {
   getSteerErrorCode,
+  canPromoteLeftover,
   carriedSteerContext,
   isDefiniteSteerRejection,
   isLegacyDeliveryUncertain,
@@ -185,6 +186,10 @@ export default function useSteerRecovery(conversationId: string): SteerRecoveryA
           generationCreatedAt: steer.generationCreatedAt,
         }),
         ...(steer.preempt === true && { preempt: true }),
+        ...(canPromoteLeftover(steer) && {
+          promoteLeftover: true,
+          ...(steer.codeApprovalMode != null && { codeApprovalMode: steer.codeApprovalMode }),
+        }),
       })
         .then((response) => {
           const acceptAck = () => {

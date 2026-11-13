@@ -1,5 +1,10 @@
 import { useCallback } from 'react';
-import { documentVisibility } from '@librechat/chat';
+import {
+  documentVisibility,
+  applyActivityLabelPart,
+  offsetActivityPhaseBoundary,
+  findActivityLabelMessageIndex,
+} from '@librechat/chat';
 import type { ResumableServices, ResumableStreamParams } from '@librechat/chat/react';
 import type { ResumableParts } from '@librechat/chat';
 import {
@@ -7,9 +12,6 @@ import {
   applySteerPart,
   applyReasoningLabel,
   findSteerMessageIndex,
-  applyActivityLabelPart,
-  offsetActivityPhaseBoundary,
-  findActivityLabelMessageIndex,
   findReasoningLabelMessageIndex,
 } from '~/utils';
 import { useGetUserBalance, fetchStreamStatus } from '~/data-provider';

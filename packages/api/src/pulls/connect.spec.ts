@@ -1,5 +1,8 @@
+import express from 'express';
+import request from 'supertest';
+import { TERMS_NOT_ACCEPTED_CODE } from 'librechat-data-provider';
 import { getTenantId, tenantStorage } from '@librechat/data-schemas';
-import type { Request, Response } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
 import type { PullRequestOAuth, PullRequestOAuthState } from './oauth';
 import type { ServerRequest } from '~/types';
 import {
@@ -8,6 +11,7 @@ import {
   createPullRequestConnectionHandlers,
 } from './connect';
 import { generateOAuthCsrfToken, OAUTH_CSRF_COOKIE, OAUTH_SESSION_COOKIE } from '~/oauth/csrf';
+import { createTermsAcceptanceGate } from '~/middleware/terms';
 
 const env = {
   JWT_SECRET: 'jwt-secret',
@@ -421,6 +425,67 @@ describe('createPullRequestConnectionRouter', () => {
   it('registers nothing without a signing secret', () => {
     const router = createPullRequestConnectionRouter({ ...deps, env: {} });
     expect(routesOf(router as never)).toEqual([]);
+  });
+
+  describe('when the user must still accept the terms', () => {
+    const termsRequired = {
+      ...configWith(oauthSettings),
+      interfaceConfig: { termsOfService: { modalAcceptance: true } },
+    };
+
+    /** Signs the caller in and then runs the terms gate, as the app's `requireJwtAuth` does. */
+    function mount(user: Record<string, unknown>, config: unknown = termsRequired) {
+      const getAppConfig = jest.fn().mockResolvedValue(config);
+      const termsGate = createTermsAcceptanceGate({ getAppConfig });
+      const requireJwtAuth: RequestHandler = (req, res, next) => {
+        Object.assign(req, { user });
+        void termsGate(req, res, next);
+      };
+      const app = express();
+      app.use(
+        '/api/pull-requests',
+        createPullRequestConnectionRouter({ ...deps, env, getAppConfig, requireJwtAuth }),
+      );
+      return app;
+    }
+
+    it.each(['get', 'head'] as const)(
+      'refuses a %s before it signs a state or sets a cookie',
+      async (method) => {
+        const response = await request(mount({ id: 'u1', termsAccepted: false }))[method](
+          '/api/pull-requests/oauth/connect',
+        );
+        expect(response.status).toBe(403);
+        expect(response.headers['set-cookie']).toBeUndefined();
+        if (method === 'get') {
+          expect(response.body).toEqual({
+            code: TERMS_NOT_ACCEPTED_CODE,
+            message: expect.any(String),
+          });
+        }
+      },
+    );
+
+    it.each([
+      ['has accepted', { id: 'u1', termsAccepted: true }, termsRequired],
+      [
+        'is not asked to by the deployment',
+        { id: 'u1', termsAccepted: false },
+        configWith(oauthSettings),
+      ],
+    ])('starts the connection once the user %s', async (_label, user, config) => {
+      const response = await request(mount(user, config)).get('/api/pull-requests/oauth/connect');
+      expect(response.status).toBe(200);
+      expect(response.body.url).toEqual(expect.stringContaining('github.com'));
+      expect(String(response.headers['set-cookie'])).toContain(OAUTH_CSRF_COOKIE);
+    });
+
+    it('still reads the connection status', async () => {
+      const response = await request(mount({ id: 'u1', termsAccepted: false })).get(
+        '/api/pull-requests/oauth/status',
+      );
+      expect(response.status).toBe(200);
+    });
   });
 });
 

@@ -39,6 +39,7 @@ jest.mock('~/server/controllers/auth/TwoFactorAuthController', () => ({
   confirm2FASetupWithTempToken: jest.fn((req, res) => res.status(204).end()),
   acknowledge2FASetup: jest.fn((req, res) => res.status(204).end()),
   finalize2FASetup: jest.fn((req, res) => res.status(204).end()),
+  cancel2FASetup: jest.fn((req, res) => res.status(204).end()),
 }));
 
 jest.mock('~/server/controllers/auth/PasskeyController', () => ({

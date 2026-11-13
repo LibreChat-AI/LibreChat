@@ -98,10 +98,7 @@ export type DeleteAssistantBody = {
   endpoint: types.AssistantsEndpoint;
 };
 
-export type DeleteAssistantMutationOptions = MutationOptions<
-  void,
-  Pick<DeleteAssistantBody, 'assistant_id'>
->;
+export type DeleteAssistantMutationOptions = MutationOptions<void, DeleteAssistantBody>;
 
 export type UpdateActionResponse = [AssistantDocument, Assistant, Action];
 export type UpdateActionOptions = MutationOptions<UpdateActionResponse, UpdateActionVariables>;

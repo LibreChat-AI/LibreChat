@@ -68,7 +68,6 @@ export default function ReadFileCall({
   stepId,
   isSubmitting,
   runStepStatus,
-  runStepDurationMs,
   initialProgress = 0.1,
   args,
   output = '',
@@ -81,7 +80,6 @@ export default function ReadFileCall({
   initialProgress: number;
   isSubmitting: boolean;
   runStepStatus?: PartMetadata['runStepStatus'];
-  runStepDurationMs?: PartMetadata['runStepDurationMs'];
   args?: string | Record<string, unknown>;
   output?: string;
   attachments?: TAttachment[];
@@ -104,7 +102,7 @@ export default function ReadFileCall({
       output,
       hasInput: !!filePath,
       panelReady: output.length > 0,
-      keepRow: intent != null,
+      keepLabelRow: intent != null,
       onExpand,
       runStepStatus,
     });
@@ -118,7 +116,7 @@ export default function ReadFileCall({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div
           className={TOOL_ROW_CLASSES}
@@ -131,7 +129,6 @@ export default function ReadFileCall({
             onClick={toggleCode}
             inProgressText={intent ?? localize('com_ui_reading_file', { 0: fileName })}
             finishedText={finishedText}
-            durationMs={runStepDurationMs}
             icon={
               <FileText
                 className={cn(
@@ -147,7 +144,7 @@ export default function ReadFileCall({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasOutput && (
             <div
               className={cn(
@@ -155,7 +152,7 @@ export default function ReadFileCall({
                 'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
               )}
             >
-              <CodeWindowHeader language={fileName} code={output} />
+              <CodeWindowHeader language={fileName} label={filePath || undefined} code={output} />
               <pre
                 dir="ltr"
                 className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"

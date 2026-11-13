@@ -70,6 +70,10 @@ jest.mock('@librechat/api', () => ({
   getNewS3URL: jest.fn(),
   deleteAllSharedLinksWithCleanup: (...args) => mockDeleteAllSharedLinksWithCleanup(...args),
   eraseUserData: jest.requireActual('../../../../packages/api/src/user/erasure.ts').eraseUserData,
+  createUserDeletionAttempt: jest.requireActual('../../../../packages/api/src/user/erasure.ts')
+    .createUserDeletionAttempt,
+  cancelUserDataDeletion: jest.requireActual('../../../../packages/api/src/user/erasure.ts')
+    .cancelUserDataDeletion,
   revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
   GenerationJobManager: {
     getAccountCleanupJobIdsForUser: (...args) => mockGetCleanupBlockingJobIdsForUser(...args),
@@ -98,6 +102,7 @@ jest.mock('~/models', () => ({
   deleteUserById: (...args) => mockDeleteUserById(...args),
   deleteAllUserPluginAuths: (...args) => mockDeleteAllUserPluginAuths(...args),
   beginAgentTriggerUserDeletion: (...args) => mockBeginAgentTriggerUserDeletion(...args),
+  isAgentTriggerUserDeletionOwner: jest.fn().mockResolvedValue(true),
   cancelAgentTriggerUserDeletion: (...args) => mockCancelAgentTriggerUserDeletion(...args),
   deleteMessages: (...args) => mockDeleteMessages(...args),
   deletePresets: (...args) => mockDeletePresets(...args),
@@ -429,7 +434,10 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(mockBeginAgentTriggerUserDeletion).toHaveBeenCalledTimes(1);
     expect(mockDeleteMessages).toHaveBeenCalled();
-    expect(mockDeleteUserById).toHaveBeenCalledWith(USER_ID);
+    expect(mockDeleteUserById).toHaveBeenCalledWith(USER_ID, {
+      startedAt: mockBeginAgentTriggerUserDeletion.mock.calls[0][1],
+      attemptId: mockBeginAgentTriggerUserDeletion.mock.calls[0][2],
+    });
     expect(mockDeleteUserCodeEnvironments).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserPurge).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserDeletion).not.toHaveBeenCalled();

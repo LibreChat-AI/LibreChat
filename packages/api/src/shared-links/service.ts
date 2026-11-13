@@ -1,14 +1,19 @@
 import mongoose from 'mongoose';
-import { logger } from '@librechat/data-schemas';
+import { logger, createMethods } from '@librechat/data-schemas';
 import {
   PrincipalType,
   ResourceType,
   AccessRoleIds,
   PermissionBits,
 } from 'librechat-data-provider';
-import type { Model, Types, DeleteResult, UpdateQuery } from 'mongoose';
-import type { IAclEntry, ISharedLink } from '@librechat/data-schemas';
+import type { AllMethods } from '@librechat/data-schemas';
+import type { Types } from 'mongoose';
 import { AccessControlService } from '~/acl/accessControlService';
+
+let _methods: AllMethods | undefined;
+function getMethods(): AllMethods {
+  return (_methods ??= createMethods(mongoose));
+}
 
 let _aclService: AccessControlService | null = null;
 function getAclService(): AccessControlService {
@@ -19,7 +24,7 @@ function getAclService(): AccessControlService {
 }
 
 interface RawSharedLink {
-  _id?: Types.ObjectId;
+  _id?: string | Types.ObjectId;
   conversationId: string;
   title?: string;
   user?: string;
@@ -29,6 +34,11 @@ interface RawSharedLink {
   expiredAt?: Date;
 }
 
+/**
+ * The share page reads a link's config and its messages together, so the first view of a legacy
+ * link runs this twice at once, in one process or two: both find no grant and both write one.
+ * The grants are therefore made as unique entries, which the database refuses to insert twice.
+ */
 export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void> {
   const shareId = share._id;
   if (!shareId) {
@@ -57,6 +67,7 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
           accessRoleId: AccessRoleIds.SHARED_LINK_OWNER,
           grantedBy: share.user,
           expiredAt: share.expiredAt,
+          uniqueEntry: true,
         });
         existingOwner = true;
         ownerGranted = true;
@@ -85,6 +96,7 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
           accessRoleId: AccessRoleIds.SHARED_LINK_VIEWER,
           grantedBy: share.user,
           expiredAt: share.expiredAt,
+          uniqueEntry: true,
         });
         publicGranted = true;
       } catch (err) {
@@ -110,9 +122,7 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
     return;
   }
 
-  await mongoose.connection
-    .db!.collection('sharedlinks')
-    .updateOne({ _id: shareId }, { $unset: { isPublic: 1 } });
+  await getMethods().clearSharedLinkLegacyVisibility(resourceId);
 
   logger.info('[autoMigrateLegacyLink] Migrated legacy shared link', {
     shareId: share.shareId,
@@ -145,7 +155,10 @@ export async function grantCreationPermissions(
       resourceId,
       error: err instanceof Error ? err.message : String(err),
     });
-    await mongoose.models.SharedLink.deleteOne({ _id: sharedLinkId });
+    await Promise.all([
+      getMethods().deleteSharedLinkById(resourceId),
+      cleanupSharedLinkPermissions(resourceId),
+    ]);
     throw err;
   }
 
@@ -166,7 +179,7 @@ export async function grantCreationPermissions(
         error: err instanceof Error ? err.message : String(err),
       });
       await Promise.all([
-        mongoose.models.SharedLink.deleteOne({ _id: sharedLinkId }),
+        getMethods().deleteSharedLinkById(resourceId),
         getAclService().removeAllPermissions({
           resourceType: ResourceType.SHARED_LINK,
           resourceId,
@@ -181,8 +194,7 @@ export async function ensureLinkPermissions(
   sharedLinkId: string | Types.ObjectId,
   userId: string,
 ): Promise<void> {
-  const SharedLink = mongoose.models.SharedLink as Model<ISharedLink>;
-  const rawDoc = await SharedLink.findById(sharedLinkId).lean();
+  const rawDoc = await getMethods().findSharedLinkById(sharedLinkId.toString());
 
   if (!rawDoc) {
     return;
@@ -192,7 +204,7 @@ export async function ensureLinkPermissions(
    * back through the migration: the owner grant alone does not mean the public one was
    * ever created. `autoMigrateLegacyLink` skips the grants that are already in place. */
   if ('isPublic' in rawDoc) {
-    await autoMigrateLegacyLink(rawDoc as Parameters<typeof autoMigrateLegacyLink>[0]);
+    await autoMigrateLegacyLink(rawDoc);
     return;
   }
 
@@ -231,117 +243,79 @@ export async function ensureLinkPermissions(
 
 export async function cleanupSharedLinkPermissions(
   resourceId: string | Types.ObjectId,
-): Promise<DeleteResult> {
-  return getAclService().removeAllPermissions({
-    resourceType: ResourceType.SHARED_LINK,
-    resourceId,
-  });
+): Promise<{ acknowledged: boolean; deletedCount: number }> {
+  return getMethods().deleteSharedLinkAclEntries([resourceId.toString()]);
 }
 
 export async function cleanupBulkSharedLinkPermissions(
   resourceIds: (string | Types.ObjectId)[],
-): Promise<DeleteResult> {
-  const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
-  return AclEntry.deleteMany({
-    resourceType: ResourceType.SHARED_LINK,
-    resourceId: { $in: resourceIds },
-  });
+): Promise<{ acknowledged: boolean; deletedCount: number }> {
+  return getMethods().deleteSharedLinkAclEntries(resourceIds.map((id) => id.toString()));
 }
 
 export async function updateSharedLinkPermissionsExpiration(
   resourceId: string | Types.ObjectId,
   expiredAt: Date | null,
 ): Promise<void> {
-  const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
-  const update: UpdateQuery<IAclEntry> =
-    expiredAt instanceof Date ? { $set: { expiredAt } } : { $unset: { expiredAt: 1 } };
-
-  await AclEntry.updateMany(
-    {
-      resourceType: ResourceType.SHARED_LINK,
-      resourceId,
-    },
-    update,
-  );
+  await getMethods().updateSharedLinkAclExpiration(resourceId.toString(), expiredAt);
 }
 
 export async function deleteSharedLinkWithCleanup(
   user: string,
   shareId: string,
 ): Promise<{ _id?: string; success: boolean; shareId: string; message: string } | null> {
-  const SharedLink = mongoose.models.SharedLink as Model<ISharedLink>;
-  const result = await SharedLink.findOneAndDelete({ shareId, user }).lean();
-
+  const result = await getMethods().deleteSharedLink(user, shareId);
   if (!result) {
     return null;
   }
-
-  const resourceId = result._id;
-  if (resourceId) {
-    cleanupSharedLinkPermissions(resourceId).catch((err) => {
+  if (result._id) {
+    cleanupSharedLinkPermissions(result._id).catch((err) => {
       logger.error('[deleteSharedLinkWithCleanup] ACL cleanup failed', {
         shareId,
         error: err instanceof Error ? err.message : String(err),
       });
     });
   }
-
-  return {
-    _id: resourceId?.toString(),
-    success: true,
-    shareId,
-    message: 'Share deleted successfully',
-  };
+  return result;
 }
 
 export async function deleteConvoSharedLinksWithCleanup(
   user: string,
   conversationId: string,
 ): Promise<{ message: string; deletedCount: number }> {
-  const SharedLink = mongoose.models.SharedLink as Model<ISharedLink>;
-  const links = await SharedLink.find({ user, conversationId }).select('_id').lean();
-  const ids = links.map((l) => l._id);
-  const result = await SharedLink.deleteMany({ user, conversationId });
-
-  if (ids.length > 0) {
-    cleanupBulkSharedLinkPermissions(ids).catch((err) => {
+  const { deletedIds, ...result } = await getMethods().deleteConvoSharedLink(user, conversationId);
+  if (deletedIds.length > 0) {
+    cleanupBulkSharedLinkPermissions(deletedIds).catch((err) => {
       logger.error('[deleteConvoSharedLinksWithCleanup] ACL cleanup failed', {
         conversationId,
         error: err instanceof Error ? err.message : String(err),
       });
     });
   }
-
-  return {
-    message: 'Shared links deleted successfully',
-    deletedCount: result.deletedCount,
-  };
+  return result;
 }
 
 export async function deleteAllSharedLinksWithCleanup(
   user: string,
   options: { awaitCleanup?: boolean } = {},
 ): Promise<{ message: string; deletedCount: number }> {
-  const SharedLink = mongoose.models.SharedLink as Model<ISharedLink>;
-  const links = await SharedLink.find({ user }).select('_id').lean();
-  const ids = links.map((l) => l._id);
-  if (options.awaitCleanup && ids.length > 0) {
-    /** The links identify the ACL resources, so they must outlive a failed cleanup for a retry. */
-    await cleanupBulkSharedLinkPermissions(ids);
-  }
-  const result = await SharedLink.deleteMany({ user });
-
-  if (!options.awaitCleanup && ids.length > 0) {
-    cleanupBulkSharedLinkPermissions(ids).catch((err) => {
+  const { deletedIds, ...result } = await getMethods().deleteAllSharedLinks(
+    user,
+    options.awaitCleanup
+      ? async (ids) => {
+          if (ids.length > 0) {
+            await cleanupBulkSharedLinkPermissions(ids);
+          }
+        }
+      : undefined,
+  );
+  if (!options.awaitCleanup && deletedIds.length > 0) {
+    cleanupBulkSharedLinkPermissions(deletedIds).catch((err) => {
       logger.error('[deleteAllSharedLinksWithCleanup] ACL cleanup failed', {
         user,
         error: err instanceof Error ? err.message : String(err),
       });
     });
   }
-
-  return {
-    message: 'All shared links deleted successfully',
-    deletedCount: result.deletedCount,
-  };
+  return result;
 }

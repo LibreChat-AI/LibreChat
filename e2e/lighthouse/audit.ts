@@ -5,6 +5,7 @@ import type Result from 'lighthouse/types/lhr/lhr';
 import type { Cookie } from '@playwright/test';
 
 import { runLighthouse } from './process.mts';
+import { sanitizeLighthouseArtifacts } from './artifacts.mts';
 
 /** Median budgets keyed by Lighthouse audit id. */
 export type MedianBudgets = Record<string, number>;
@@ -72,6 +73,7 @@ export async function auditPage({
     `--extra-headers=${JSON.stringify({ Cookie: cookie })}`,
     '--output=json',
     '--output=html',
+    '--save-assets',
   ];
 
   try {
@@ -80,13 +82,7 @@ export async function auditPage({
       await runLighthouse({ cli, flags, output, run, runs });
     }
   } finally {
-    // Lighthouse embeds extraHeaders in reports; keep disposable session cookies out of artifacts.
-    for (const file of fs.existsSync(directory) ? fs.readdirSync(directory) : []) {
-      if (!/\.report\.(json|html)$/.test(file)) continue;
-      const filename = path.join(directory, file);
-      const content = fs.readFileSync(filename, 'utf8');
-      fs.writeFileSync(filename, cookie ? content.replaceAll(cookie, '[redacted]') : content);
-    }
+    sanitizeLighthouseArtifacts(directory, cookies);
   }
 
   const reports = fs.readdirSync(directory).filter((file) => /^lhr-.*\.report\.json$/.test(file));

@@ -80,6 +80,15 @@ export function buildBalanceUpdateFields(
     updateFields.tokenCredits = config.startBalance;
   }
 
+  if (updateFields.tokenCredits != null) {
+    const grantedAt = userRecord?.lastRefill ?? new Date();
+    updateFields.allotment = updateFields.tokenCredits;
+    updateFields.allottedAt = grantedAt;
+    if (!userRecord?.lastRefill) {
+      updateFields.lastRefill = grantedAt;
+    }
+  }
+
   const isAutoRefillConfigValid =
     config.autoRefillEnabled &&
     config.refillIntervalValue != null &&
@@ -118,7 +127,7 @@ export function buildBalanceUpdateFields(
 
   // Initialize lastRefill if it's missing when auto-refill is enabled
   if (config.autoRefillEnabled && !userRecord?.lastRefill) {
-    updateFields.lastRefill = new Date();
+    updateFields.lastRefill ??= new Date();
   }
 
   return updateFields;
@@ -142,9 +151,11 @@ export function createSetBalanceConfig({
     try {
       const balanceLocals = res.locals as BalanceLocals;
       const user = req.user as IUser & { _id: string | ObjectId };
+      /** Login routes carry a lean user document, which has `_id` but no `id` */
+      const principalId = user?.id ?? user?._id?.toString();
       const appConfig = await getAppConfig({
         role: user?.role,
-        userId: user?.id,
+        userId: principalId,
         tenantId: user?.tenantId,
       });
       const balanceConfig = getBalanceConfig(appConfig);
@@ -175,9 +186,13 @@ export function createSetBalanceConfig({
         }
 
         if (userBalanceRecord == null) {
-          const { tokenCredits, ...syncFields } = updateFields;
+          // The grant tuple is insert-only so a racing creator keeps its own period and allotment.
+          const { tokenCredits, allotment, allottedAt, lastRefill, ...syncFields } = updateFields;
           balanceLocals.balanceData = await upsertBalanceFields(userId, syncFields, {
             tokenCredits,
+            allotment,
+            allottedAt,
+            lastRefill,
           });
           return;
         }

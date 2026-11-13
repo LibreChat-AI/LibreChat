@@ -1,0 +1,406 @@
+name: Change Quality
+run-name: >-
+  ${{ github.event_name == 'issue_comment' && format('Quality PR #{0} request {1}', github.event.issue.number, github.event.comment.id) || format('Change Quality {0}', github.ref_name) }}
+
+on:
+  merge_group:
+    types: [checks_requested]
+  pull_request:
+    paths:
+      - 'scripts/quality/**'
+      - 'scripts/crap*'
+      - '.github/workflows/change-quality.yml'
+      - '.github/workflows/quality-decision.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/actions/mongodb-binary/**'
+      - 'packages/data-schemas/src/postgres/**'
+      - 'packages/data-schemas/src/types/favorite*'
+      - 'packages/data-schemas/src/methods/favorite*'
+      - 'packages/data-schemas/src/methods/index*'
+      - 'packages/data-schemas/jest.postgres*'
+      - 'packages/api/src/app/persistence*'
+      - 'packages/api/src/app/postgres*'
+      - 'packages/data-provider/src/config*'
+      - 'api/models/index*'
+      - 'api/server/index*'
+      - 'api/server/experimental*'
+      - 'config/postgres*'
+      - 'config/delete-user*'
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base ref to compare with
+        default: origin/dev
+        type: string
+      scope:
+        description: Report scopes (all or comma-separated data-schemas,api,server)
+        default: all
+        type: string
+      check:
+        description: Checks to run
+        default: both
+        type: choice
+        options: [risk, mutation, both]
+      static:
+        description: Include static mutants
+        default: 'off'
+        type: choice
+        options: ['on', 'off']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'issue_comment' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  QUALITY_BASE: ${{ github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
+  QUALITY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  queue-request:
+    name: Request queue quality decision
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Quality Decision publishes this group from trusted default-branch code.'
+
+  request:
+    name: Accept quality request
+    concurrency:
+      group: quality-decision-${{ github.event.issue.number }}
+      cancel-in-progress: false
+      queue: max
+    if: >-
+      github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/quality') && github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      actions: write
+      statuses: write
+    outputs:
+      accepted: ${{ steps.request.outputs.accepted }}
+      head: ${{ steps.request.outputs.head }}
+      base: ${{ steps.request.outputs.base }}
+      scope: ${{ steps.request.outputs.scope }}
+      check: ${{ steps.request.outputs.check }}
+      static: ${{ steps.request.outputs.static }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/quality
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+      - id: request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/quality/comment.mts request
+
+  verify:
+    needs: [request]
+    if: always() && github.event_name != 'merge_group' && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')
+    name: Verify quality tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+          cache: npm
+      - run: npm ci
+      - name: Check reporter types
+        run: >-
+          npx --no-install tsc --noEmit --target ES2023 --module NodeNext
+          --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck
+          --strict --types node scripts/quality/*.mts
+      - name: Test change selection and metrics
+        run: node --test scripts/crap.test.mts scripts/quality/*.test.mts
+
+  select:
+    needs: [request]
+    if: always() && github.event_name != 'merge_group' && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')
+    env:
+      QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
+      QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
+    name: Select changed source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      reports: ${{ steps.select.outputs.reports }}
+      mutationWorkspaces: ${{ steps.select.outputs.mutationWorkspaces }}
+      hasMutations: ${{ steps.select.outputs.hasMutations }}
+      hasChanges: ${{ steps.select.outputs.hasChanges }}
+      postgresChanged: ${{ steps.postgres.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+      - name: Fetch requested commits
+        if: github.event_name == 'issue_comment'
+        run: |
+          git fetch --no-tags origin "$QUALITY_BASE" "$QUALITY_HEAD"
+      - name: Select workspaces
+        id: select
+        if: github.event_name != 'pull_request'
+        env:
+          QUALITY_SCOPE: ${{ needs.request.outputs.scope || inputs.scope || 'all' }}
+          QUALITY_CHECK: ${{ needs.request.outputs.check || inputs.check || 'both' }}
+        run: node scripts/quality/changes.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" --scope "$QUALITY_SCOPE" --check "${QUALITY_CHECK:-both}"
+
+      - name: Select PostgreSQL schema and lifecycle changes
+        id: postgres
+        if: github.event_name != 'issue_comment'
+        run: |
+          if git diff --name-only "$QUALITY_BASE...$QUALITY_HEAD" | grep -Eq '^(packages/data-schemas/src/(postgres/|types/favorite|methods/(favorite|index))|packages/api/src/app/(persistence|postgres)|packages/data-provider/src/config|api/(models/index|server/(index|experimental))|config/(postgres|delete-user)|packages/data-schemas/jest.postgres|package-lock.json|.github/workflows/change-quality.yml)'; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  postgres:
+    name: PostgreSQL 16 contracts and readiness
+    needs: [select]
+    if: always() && needs.select.result == 'success' && needs.select.outputs.postgresChanged == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PG_TEST_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.QUALITY_HEAD }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+          cache: npm
+      - run: npm ci
+      - run: npm run build:data-provider && npm run build:data-schemas && npm run build:api
+      - run: npm run test:postgres --workspace packages/data-schemas
+      - run: npx --no-install jest src/app/persistence.spec.ts src/app/postgres.spec.ts src/favorites/handlers.spec.ts src/user/erasure.spec.ts --coverage=false --runInBand
+        working-directory: packages/api
+      - run: npx --no-install jest --config config/jest.config.js --runTestsByPath config/__tests__/delete-user.recovery.spec.js --coverage=false --runInBand
+
+  reports:
+    name: ${{ matrix.task.check == 'risk' && 'Change risk' || format('Mutation testing {0}/4', matrix.task.shard) }} (${{ matrix.workspace }})
+    needs: [request, select, verify]
+    if: always() && needs.select.result == 'success' && needs.verify.result == 'success' && needs.select.outputs.hasChanges == 'true'
+    runs-on: ubuntu-latest
+    # Whole edited database functions can produce thousands of mutation cases.
+    timeout-minutes: ${{ matrix.task.check == 'mutation' && 240 || 45 }}
+    defaults:
+      run:
+        working-directory: source
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.reports) }}
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
+      QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
+      QUALITY_STATIC: ${{ needs.request.outputs.static || inputs.static || 'off' }}
+      PG_TEST_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      REDIS_URI: redis://127.0.0.1:6379
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.QUALITY_HEAD }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out quality tooling
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+      - name: Start Redis cluster for API coverage
+        if: matrix.workspace == 'api' && matrix.task.check == 'risk'
+        working-directory: tooling/redis-config
+        timeout-minutes: 5
+        run: |
+          docker run --detach --network host --name quality-redis-cluster \
+            --volume "$PWD:/cluster" --workdir /cluster redis:7 \
+            bash -c 'bash start-cluster.sh && tail -f /dev/null'
+          for attempt in $(seq 1 30); do
+            if docker exec quality-redis-cluster redis-cli -p 7001 cluster info | grep -q 'cluster_state:ok'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs quality-redis-cluster
+          exit 1
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+          cache: npm
+          cache-dependency-path: |
+            source/package-lock.json
+            tooling/package-lock.json
+      - run: npm ci
+      - name: Install quality tooling
+        working-directory: tooling
+        run: npm ci --ignore-scripts --workspaces=false
+      - name: Build shared packages
+        run: |
+          npm run build:data-provider
+          if [ "$QUALITY_WORKSPACE" != data-schemas ]; then
+            npm run build:data-schemas
+            npm run build:api
+          fi
+        env:
+          QUALITY_WORKSPACE: ${{ matrix.workspace }}
+      - name: Provision MongoDB memory-server binary
+        uses: ./tooling/.github/actions/mongodb-binary
+        with:
+          working-directory: source
+      - name: Generate advisory report
+        env:
+          QUALITY_WORKSPACE: ${{ matrix.workspace }}
+          QUALITY_CHECK: ${{ matrix.task.check }}
+          QUALITY_SHARD: ${{ matrix.task.shard }}
+        run: |
+          args=()
+          if [ "$QUALITY_CHECK" = mutation ]; then
+            args+=(--shard "$QUALITY_SHARD")
+          fi
+          node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" \
+            --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK" --static "${QUALITY_STATIC:-off}" "${args[@]}"
+      # Quality decisions require downloadable reports, so upload failures remain blocking.
+      - name: Upload reports
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v6
+        with:
+          name: change-${{ matrix.task.check }}-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}${{ matrix.task.check == 'mutation' && format('-shard-{0}', matrix.task.shard) || '' }}
+          path: source/coverage/changes/${{ matrix.workspace }}/${{ matrix.task.check }}${{ matrix.task.check == 'mutation' && format('-{0}', matrix.task.shard) || '' }}/
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+
+      - name: Stop Redis cluster
+        if: always() && matrix.workspace == 'api' && matrix.task.check == 'risk'
+        run: docker rm -f quality-redis-cluster || true
+
+  mutation-summary:
+    name: Mutation report (${{ matrix.workspace }})
+    needs: [request, select, reports]
+    env:
+      QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
+    if: always() && needs.select.outputs.hasMutations == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: ${{ fromJSON(needs.select.outputs.mutationWorkspaces) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}-shard-*
+          path: coverage/shards
+      - name: Verify and combine mutation results
+        env:
+          QUALITY_WORKSPACE: ${{ matrix.workspace }}
+        run: >-
+          node scripts/quality/merge.mts --directory coverage/shards
+          --workspace "$QUALITY_WORKSPACE"
+          --head "$QUALITY_HEAD"
+          --prefix "change-mutation-$QUALITY_WORKSPACE-$QUALITY_HEAD-"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        timeout-minutes: 3
+        with:
+          name: change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}
+          path: coverage/changes/${{ matrix.workspace }}/mutation/
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+
+  progress:
+    name: Update quality progress
+    concurrency:
+      group: quality-decision-${{ github.event.issue.number }}
+      cancel-in-progress: false
+      queue: max
+    needs: [request, select, verify]
+    if: always() && needs.request.outputs.accepted == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/quality
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/quality/comment.mts progress

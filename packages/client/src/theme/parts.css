@@ -1,0 +1,121 @@
+/**
+ * Icon sizes, status row type and the in-flight label sweep that `@librechat/client` and
+ * `@librechat/chat` components render. They ship here rather than in the SPA's stylesheet so a
+ * consumer that imports only `@librechat/client/style.css` gets the sizes and motion the app shows.
+ */
+.icon-sm {
+  stroke-width: 2;
+  height: 1rem;
+  width: 1rem;
+}
+.icon-md,
+.icon-md-heavy {
+  stroke-width: 1.5;
+  height: 1.125rem;
+  width: 1.125rem;
+}
+.icon-md-heavy {
+  stroke-width: 2.5;
+}
+.icon-lg {
+  stroke-width: 1.5;
+  height: 1.5rem;
+  width: 1.5rem;
+}
+.icon-xl {
+  stroke-width: 1.5;
+  height: 1.75rem;
+  width: 1.75rem;
+}
+.icon-2xl {
+  stroke-width: 1.5;
+  height: 2rem;
+  width: 2rem;
+}
+
+.tool-status-text {
+  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));
+  line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes shimmer-rtl {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* The sweep every in-flight label shares: a running tool call, streaming
+   reasoning, the elapsed timer. Painted from theme roles rather than fixed
+   black/white keyed off `.dark`, so a stored or custom theme restates it the
+   way it restates any other color. Unset, the base falls back to whatever
+   `--text-primary` is in scope AT THE LABEL; resolving it in a `:root`
+   declaration instead would freeze the default and ignore theme scopes applied
+   further down. Dark declares a base outright: its established value is dimmer
+   than that theme's text color rather than equal to it. */
+.shimmer {
+  display: inline-block;
+  position: relative;
+  background: linear-gradient(
+    90deg,
+    rgb(var(--shimmer-base, var(--text-primary)) / var(--shimmer-base-alpha, 1)) 25%,
+    rgb(var(--shimmer-dip) / var(--shimmer-dip-alpha, 1)) 50%,
+    rgb(var(--shimmer-base, var(--text-primary)) / var(--shimmer-base-alpha, 1)) 75%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 4s linear infinite;
+}
+
+[dir='rtl'] .shimmer,
+.shimmer:dir(rtl) {
+  animation-name: shimmer-rtl;
+}
+
+/* Halting the animation alone is not a fallback: the background would settle
+   at position 0 and show only half the sweep, stranding the tail of the label
+   in the near-invisible dip. Drop the gradient and hand the glyphs back to the
+   color they would have had. */
+@media (prefers-reduced-motion: reduce) {
+  .shimmer,
+  [dir='rtl'] .shimmer {
+    background: none;
+    animation: none;
+    -webkit-text-fill-color: currentcolor;
+  }
+}
+
+/**
+ * Type scale of the tool and status rows `@librechat/chat` renders. The label
+ * follows the chat font setting (`--markdown-font-size`) at nine tenths, the
+ * same as the message text around it. It ships here rather than in the SPA's
+ * stylesheet so a consumer rendering the package's parts without the app's
+ * CSS keeps the row height and type size the app shows.
+ */
+.progress-text-wrapper {
+  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));
+  line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));
+}
+
+.progress-text-content {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.progress-text-wrapper button {
+  font-size: inherit;
+  line-height: inherit;
+}

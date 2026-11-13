@@ -1,6 +1,11 @@
 jest.mock('../connect', () => jest.fn().mockResolvedValue(true));
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   ensureRequiredCollectionsExist: jest.fn().mockResolvedValue(undefined),
+  createChannelStorageConfigReader: jest.fn(() => ({
+    initialize: jest.fn(),
+    getConfig: jest.fn(),
+  })),
   createMessageBudgetReader: jest.fn(() => ({ initialize: jest.fn(), getBudget: jest.fn() })),
   matchModelName: jest.fn(),
   findMatchingPattern: jest.fn(),
@@ -36,7 +41,7 @@ describe('migrate-shared-link-permissions', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {
@@ -164,6 +169,28 @@ describe('migrate-shared-link-permissions', () => {
     expect(result.aborted).toBeUndefined();
     expect(result.dryRun).toBe(true);
     expect(result.summary.withIsPublicFalse).toBe(1);
+  });
+
+  test('returns a zeroed summary during dry run when no SharedLinks exist', async () => {
+    const result = await migrateSharedLinkPermissions({ dryRun: true });
+
+    expect(result.dryRun).toBe(true);
+    expect(result.summary).toEqual({
+      totalLinks: 0,
+      withUser: 0,
+      withoutUser: 0,
+      withIsPublicTrue: 0,
+      withIsPublicFalse: 0,
+      withIsPublicField: 0,
+      alreadyMigratedOwner: 0,
+      alreadyMigratedPublic: 0,
+    });
+  });
+
+  test('returns early without a summary on a live run when no SharedLinks exist', async () => {
+    const result = await migrateSharedLinkPermissions({ dryRun: false });
+
+    expect(result).toEqual({ migrated: 0, errors: 0, skipped: 0, dryRun: false });
   });
 
   test('grants PUBLIC VIEWER to ownerless public legacy links', async () => {

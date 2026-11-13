@@ -44,6 +44,7 @@ jest.mock('~/server/services/PermissionService', () => ({
     });
     return results;
   },
+  preparePermissionPrincipals: jest.fn(async (principals) => principals),
   ensureGroupPrincipalExists: jest.fn(),
   getEffectivePermissions: jest.fn(),
   ensurePrincipalExists: jest.fn(),

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { expect, test } from '@playwright/test';
 import type { APIRequestContext, Locator, Page, Route } from '@playwright/test';
 import type { User } from '../../../types';
 import {
@@ -12,6 +11,7 @@ import {
 import { deleteConversations, withMongo } from '../db';
 import { getE2EUser } from '../../../setup/user';
 import cleanupUser from '../../../setup/cleanupUser';
+import { expect, test } from '../fixtures';
 
 test.describe.configure({ timeout: 120_000 });
 

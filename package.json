@@ -110,8 +110,9 @@
     "test:packages:data-schemas": "cd packages/data-schemas && npm run test:ci",
     "test:packages:chat": "npm run build:data-provider && cd packages/chat && npm run test:ci",
     "test:config": "jest --config config/jest.config.js",
+    "test:dependencies": "node --test scripts/dependencies.test.mjs",
     "test:all": "npm run test:client && npm run test:api && npm run test:packages:api && npm run test:packages:data-provider && npm run test:packages:data-schemas && npm run test:packages:chat",
-    "test:turbo": "turbo run test:ci --concurrency=2 --filter=@librechat/frontend --filter=@librechat/client --filter=@librechat/backend --filter=@librechat/api --filter=librechat-data-provider --filter=@librechat/data-schemas --filter=@librechat/chat",
+    "test:turbo": "turbo run test:ci --concurrency=2",
     "e2e:update": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.local.ts --update-snapshots",
     "e2e:report": "npx playwright show-report e2e/playwright-report",
     "lint:fix": "npm run build:client-package && eslint . --fix --pass-on-unpruned-suppressions",
@@ -165,7 +166,8 @@
     "migrate:code-file-duplicates:batch": "node config/migrate-code-file-duplicates.js --batch-size=50",
     "lighthouse": "npm run e2e:prepare && npm run lighthouse:run",
     "lighthouse:run": "playwright test --config=e2e/playwright.config.lighthouse.ts",
-    "lighthouse:regression": "cross-env LIGHTHOUSE_REGRESSION=serial-reads npm run lighthouse:run"
+    "lighthouse:regression": "cross-env LIGHTHOUSE_REGRESSION=serial-reads npm run lighthouse:run",
+    "postgres": "node config/postgres.js"
   },
   "repository": {
     "type": "git",
@@ -185,6 +187,10 @@
     "@eslint/js": "^9.20.0",
     "@playwright/test": "^1.62.1",
     "@shadcn/lint": "^0.1.0",
+    "@stryker-mutator/api": "10.1.1",
+    "@stryker-mutator/core": "10.1.1",
+    "@stryker-mutator/instrumenter": "10.1.1",
+    "@stryker-mutator/jest-runner": "10.1.1",
     "@types/react-virtualized": "^9.22.0",
     "brace-expansion": "^2.1.2",
     "caniuse-lite": "^1.0.30001741",
@@ -201,6 +207,7 @@
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^5.1.0",
     "eslint-plugin-simple-import-sort": "^12.1.1",
+    "eslint-plugin-sonarjs": "4.2.2",
     "globals": "^15.14.0",
     "husky": "^9.1.7",
     "jest": "^30.2.0",
@@ -267,7 +274,38 @@
     "monaco-editor": {
       "dompurify": "3.4.17"
     },
-    "test-exclude": "^8.0.0",
+    "test-exclude": {
+      ".": "^8.0.0",
+      "glob": "^14.0.3",
+      "minimatch": "^11.0.3"
+    },
+    "@jest/reporters@30": {
+      "glob": "^14.0.3"
+    },
+    "jest-config@30": {
+      "glob": "^14.0.3"
+    },
+    "jest-runtime@30": {
+      "glob": "^14.0.3"
+    },
+    "rimraf": {
+      "glob": "^14.0.4"
+    },
+    "workbox-build": {
+      "glob": "^14.0.4"
+    },
+    "@typescript-eslint/typescript-estree@8": {
+      "minimatch": "^11.0.3"
+    },
+    "nodemon": {
+      "minimatch": "^11.0.5"
+    },
+    "@stryker-mutator/core": {
+      "minimatch": "^11.0.5"
+    },
+    "typed-rest-client": {
+      "qs": "^6.16.1"
+    },
     "js-yaml": "^4.3.2",
     "ws": "^8.21.0",
     "@opentelemetry/core": "^2.9.0",
