@@ -1812,6 +1812,89 @@ describe('RedisEventTransport', () => {
     await manager.destroy();
   });
 
+  it.each([
+    { fenced: false, publishDuringRead: false },
+    { fenced: true, publishDuringRead: false },
+    { fenced: false, publishDuringRead: true },
+    { fenced: true, publishDuringRead: true },
+  ])(
+    'preserves resolved skills across preliminary metadata: %p',
+    async ({ fenced, publishDuringRead }) => {
+      const publisher = createMockPublisher();
+      const ownerSubscriber = createMockSubscriber();
+      const readerSubscriber = createMockSubscriber();
+      const ownerTransport = new RedisEventTransport(
+        publisher as unknown as Redis,
+        ownerSubscriber as unknown as Redis,
+      );
+      const readerTransport = new RedisEventTransport(
+        publisher as unknown as Redis,
+        readerSubscriber as unknown as Redis,
+      );
+      const readerHandler = getMessageHandler(readerSubscriber);
+      const streamId = 'cross-replica-preliminary-skills';
+      publisher.publish.mockImplementation(async (channel: string, payload: string) => {
+        if (readerTransport.getSubscriberCount(streamId) > 0) {
+          readerHandler(channel, payload);
+        }
+        return 1;
+      });
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+      const owner = new GenerationJobManagerClass();
+      owner.configure({ jobStore, eventTransport: ownerTransport, isRedis: true });
+      const reader = new GenerationJobManagerClass();
+      reader.configure({ jobStore, eventTransport: readerTransport, isRedis: true });
+      const message = {
+        messageId: 'user-1',
+        parentMessageId: 'parent-1',
+        conversationId: streamId,
+        text: 'Hello',
+      };
+      const job = await owner.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { userMessage: message },
+      });
+      const created = {
+        created: true as const,
+        message: {
+          ...message,
+          sender: 'User',
+          isCreatedByUser: true,
+          alwaysAppliedSkills: ['always-skill'],
+          manualSkills: ['manual-skill'],
+        },
+        streamId,
+      };
+      if (publishDuringRead) {
+        const getJob = jobStore.getJob.bind(jobStore);
+        jest.spyOn(jobStore, 'getJob').mockImplementationOnce(async (id) => {
+          const preliminary = await getJob(id);
+          await owner.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+          return preliminary;
+        });
+      }
+      const received: unknown[] = [];
+      const subscription = await reader.subscribe(
+        streamId,
+        (event) => received.push(event),
+        undefined,
+        undefined,
+        fenced ? { expectedCreatedAt: job.createdAt } : undefined,
+      );
+      try {
+        if (!publishDuringRead) {
+          expect(received).toEqual([]);
+          await owner.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+        }
+        await Promise.resolve();
+        expect(received).toEqual([created]);
+      } finally {
+        subscription?.unsubscribe();
+        await owner.destroy();
+        await reader.destroy();
+      }
+    },
+  );
+
   it('deduplicates a cross-replica created fallback when the original publishes later', async () => {
     const mockPublisher = createMockPublisher();
     const generatingSubscriber = createMockSubscriber();
@@ -1966,6 +2049,98 @@ describe('RedisEventTransport', () => {
     subscription?.unsubscribe();
     await generatingManager.destroy();
     await attachingManager.destroy();
+  });
+
+  describe.each(['ready', 'synchronization'] as const)('terminal during %s', (phase) => {
+    it.each([
+      { type: 'done', cancel: 'none', throws: false },
+      { type: 'error', cancel: 'none', throws: false },
+      { type: 'done', cancel: 'before return', throws: false },
+      { type: 'done', cancel: 'after return', throws: false },
+      { type: 'done', cancel: 'none', throws: true },
+      { type: 'error', cancel: 'none', throws: true },
+    ] as const)(
+      'preserves $type delivery with cancellation $cancel (callback throws: $throws)',
+      async ({ type, cancel, throws }) => {
+        const publisher = createMockPublisher();
+        const subscriber = createMockSubscriber();
+        const transport = new RedisEventTransport(
+          publisher as unknown as Redis,
+          subscriber as unknown as Redis,
+        );
+        const store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+        const streamId = 'terminal-during-attachment';
+        const job = await store.createJob(streamId, 'user-1');
+        const final = { final: true as const, responseMessage: { messageId: 'terminal-reply' } };
+        await store.updateJob(streamId, {
+          status: 'complete',
+          completedAt: Date.now(),
+          finalEvent: JSON.stringify(final),
+        });
+        const manager = new GenerationJobManagerClass();
+        manager.configure({ jobStore: store, eventTransport: transport, isRedis: true });
+        const messageHandler = getMessageHandler(subscriber);
+        const controller = new AbortController();
+        const terminal = {
+          type,
+          generationId: job.createdAt,
+          data: final,
+          error: 'remote failure',
+        };
+        publisher.publish.mockImplementation(async (channel: string, payload: string) => {
+          if (phase === 'ready') {
+            messageHandler(channel, JSON.stringify(terminal));
+            if (cancel === 'before return') controller.abort();
+          }
+          messageHandler(channel, payload);
+          return 1;
+        });
+        const sync = transport.syncReorderBuffer.bind(transport);
+        jest.spyOn(transport, 'syncReorderBuffer').mockImplementation(async (...args) => {
+          if (phase === 'synchronization') {
+            deliverSequencedMessage(messageHandler, streamId, { ...terminal, seq: 0 });
+            await sync(...args);
+            if (cancel === 'before return') controller.abort();
+            return;
+          }
+          return sync(...args);
+        });
+        const callbackError = new Error('subscriber callback failed');
+        const warn = jest.spyOn(logger, 'warn');
+        const onDone = jest.fn(() => {
+          if (throws && type === 'done') throw callbackError;
+        });
+        const onError = jest.fn(() => {
+          if (throws && type === 'error') throw callbackError;
+        });
+        try {
+          const subscription = await manager.subscribe(streamId, jest.fn(), onDone, onError, {
+            signal: controller.signal,
+          });
+          if (cancel === 'before return') expect(subscription).toBeNull();
+          else expect(subscription).not.toBeNull();
+          expect(onDone).not.toHaveBeenCalled();
+          expect(onError).not.toHaveBeenCalled();
+          if (cancel === 'after return') controller.abort();
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          const delivered = type === 'done' ? onDone : onError;
+          const other = type === 'done' ? onError : onDone;
+          expect(delivered).toHaveBeenCalledTimes(cancel === 'none' ? 1 : 0);
+          if (cancel === 'none')
+            expect(delivered).toHaveBeenCalledWith(type === 'done' ? final : 'remote failure');
+          expect(other).not.toHaveBeenCalled();
+          if (throws)
+            expect(warn).toHaveBeenCalledWith(expect.stringContaining('terminal'), {
+              type: 'Error',
+            });
+          expect(transport.getSubscriberCount(streamId)).toBe(0);
+          subscription?.unsubscribe();
+          subscription?.unsubscribe();
+        } finally {
+          await manager.destroy();
+        }
+      },
+    );
   });
 
   it('keeps the replay frontier aligned after publication failure and reconnect', async () => {

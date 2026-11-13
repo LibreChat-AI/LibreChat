@@ -251,6 +251,20 @@ describe('ProjectResources', () => {
     );
   });
 
+  it.each(['Описание.md', '日本語.md', '100% done.md', 'a%20b.md'])(
+    'percent-encodes the multipart filename of %s for the upload route to decode',
+    async (filename) => {
+      mockUploadMutateAsync.mockResolvedValue(uploadedFile);
+      renderResources();
+      fireEvent.change(screen.getByTestId('project-upload-input'), {
+        target: { files: [new File(['x'], filename)] },
+      });
+      await waitFor(() => expect(mockUploadMutateAsync).toHaveBeenCalledTimes(1));
+      const formData = mockUploadMutateAsync.mock.calls[0][0] as FormData;
+      expect((formData.get('file') as File).name).toBe(encodeURIComponent(filename));
+    },
+  );
+
   it('retries a failed association without uploading another binary', async () => {
     mockUploadMutateAsync.mockResolvedValue(uploadedFile);
     mockAddMutateAsync.mockRejectedValueOnce({

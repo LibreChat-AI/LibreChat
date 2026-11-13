@@ -4,7 +4,7 @@ on:
   workflow_run:
     workflows:
       - Docker Build Smoke Tests
-      - Docker Compose Build Latest Main Image Tag (Manual Dispatch)
+      - Publish Latest Stable Release Images (Manual Dispatch)
       - Docker Dev Branch Images Build
       - Docker Dev Images Build
       - Docker Dev Staging Images Build

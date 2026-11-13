@@ -34,7 +34,7 @@ const MarkdownLite = memo(
       [
         rehypeHighlight,
         {
-          detect: true,
+          detect: false,
           ignoreMissing: true,
           subset: langSubset,
         },

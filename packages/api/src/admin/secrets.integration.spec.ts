@@ -261,9 +261,16 @@ function nextPrincipalId(): string {
   return `admin-${principalCounter}`;
 }
 
+const LIFECYCLE_TIMEOUT_MS = 180_000;
+
 beforeAll(async () => {
-  jest.resetModules();
-  const dataSchemas = await import('@librechat/data-schemas');
+  const [dataSchemas, handlersModule, secretsModule, server] = await Promise.all([
+    import('@librechat/data-schemas'),
+    import('./config'),
+    import('./secrets'),
+    MongoMemoryServer.create(),
+  ]);
+  mongoServer = server;
   ({
     decryptV3,
     loadOCRConfig,
@@ -275,19 +282,17 @@ beforeAll(async () => {
   jest.spyOn(dataSchemas.logger, 'info').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'debug').mockReturnValue(dataSchemas.logger);
 
-  ({ createAdminConfigHandlers } = await import('./config'));
-  ({ getSecretPreview, encryptConfigSecretFields, UNPREVIEWED_SECRET_MASK } = await import(
-    './secrets'
-  ));
+  ({ createAdminConfigHandlers } = handlersModule);
+  ({ getSecretPreview, encryptConfigSecretFields, UNPREVIEWED_SECRET_MASK } = secretsModule);
 
-  mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   dataSchemas.createModels(mongoose);
+  await mongoose.models.Config.init();
   configMethods = dataSchemas.createMethods(mongoose);
   ({ patchConfigFields } = configMethods);
 
   handlers = createRealHandlers();
-});
+}, LIFECYCLE_TIMEOUT_MS);
 
 /** Handlers over the real Config collection; `getAppConfig` supplies a librechat.yaml base. */
 function createRealHandlers(
@@ -310,8 +315,8 @@ function createRealHandlers(
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
-});
+  await mongoServer?.stop();
+}, LIFECYCLE_TIMEOUT_MS);
 
 describe('config secret registry — real handlers against a real Config collection', () => {
   describe.each(SECRET_FIELD_CASES)(

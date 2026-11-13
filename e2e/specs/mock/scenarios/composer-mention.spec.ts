@@ -72,7 +72,10 @@ test.describe('mention popover', () => {
     /* The filter also matches the endpoint's own models (their value is the endpoint name), so
        walk to the endpoint row itself rather than assuming it ranks first. */
     await combobox.fill(target.label);
-    const endpointRow = page.getByRole('option', { name: target.label, exact: true });
+    /* Only the mention list's own rows: the model menu the setup picked from is still fading
+       out for a moment after it closes, and offers an option of the same name until it does. */
+    const listbox = page.locator(`[id="${await combobox.getAttribute('aria-controls')}"]`);
+    const endpointRow = listbox.getByRole('option', { name: target.label, exact: true });
     await expect(endpointRow).toBeVisible();
     const endpointId = await endpointRow.getAttribute('id');
     for (let step = 0; step < 10; step++) {

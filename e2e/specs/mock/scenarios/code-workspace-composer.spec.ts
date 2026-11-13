@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import {
   installCodeMocks,
@@ -7,6 +6,7 @@ import {
   singleMachine,
   workspace,
 } from './codeWorkspaceMocks';
+import { expect, test } from '../fixtures';
 
 const APPROVAL = '[data-testid="code-approval-mode"]';
 const WORKSPACE = '[data-testid="code-workspace"]';

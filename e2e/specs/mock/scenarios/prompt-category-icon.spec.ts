@@ -35,8 +35,8 @@ const SLOT_CATEGORIES = [
 ] as const;
 const STOCK: Record<Mode, IThemeRGB> = { light: defaultTheme, dark: darkTheme };
 const CLICKHOUSE_MUTED: Record<Mode, string> = {
-  light: 'rgb(105, 110, 121)',
-  dark: 'rgb(179, 182, 189)',
+  light: 'rgb(83, 87, 95)',
+  dark: 'rgb(204, 207, 211)',
 };
 
 const rgbCss = (triplet: string | undefined) => `rgb(${(triplet ?? '').split(' ').join(', ')})`;

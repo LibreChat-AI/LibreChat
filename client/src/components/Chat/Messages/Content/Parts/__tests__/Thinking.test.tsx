@@ -4,6 +4,11 @@ import { ThinkingButton, ThinkingLabel } from '../Thinking';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  CopyButton: () => <button type="button" data-testid="copy-thoughts" />,
   useExpandCollapse: () => ({ style: {}, ref: { current: null } }),
 }));
 
@@ -14,11 +19,6 @@ jest.mock('~/store/fontSize', () => ({
 jest.mock('jotai', () => ({
   ...jest.requireActual('jotai'),
   useAtomValue: () => 'text-xl',
-}));
-
-jest.mock('~/components/Messages/Content/CopyButton', () => ({
-  __esModule: true,
-  default: () => <button type="button" data-testid="copy-thoughts" />,
 }));
 
 /** Every activity row — a tool call, a grouped thought, a phase summary — is

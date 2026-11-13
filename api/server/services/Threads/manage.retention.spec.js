@@ -23,7 +23,7 @@ describe('Assistants message retention', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   it('seeds Project membership once and preserves a concurrent move without revalidation', async () => {

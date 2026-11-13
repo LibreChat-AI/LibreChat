@@ -23,6 +23,10 @@ interface ControlComboboxProps {
   selectedValue: string;
   displayValue?: string;
   items: OptionWithIcon[];
+  /** Custom option content; the string label still supplies searchable text. */
+  renderOption?: (item: OptionWithIcon) => React.ReactNode;
+  /** Fixed virtualized row height, before UI scaling. */
+  optionHeight?: number;
   setValue: (value: string) => void;
   onBlur?: React.FocusEventHandler<HTMLButtonElement>;
   ariaLabel: string;
@@ -75,6 +79,8 @@ function ControlCombobox({
   selectedValue,
   displayValue,
   items,
+  renderOption,
+  optionHeight = ROW_HEIGHT,
   setValue,
   onBlur,
   ariaLabel,
@@ -308,7 +314,7 @@ function ControlCombobox({
             <SelectRenderer
               store={select}
               items={matches}
-              itemSize={ROW_HEIGHT * remScale}
+              itemSize={optionHeight * remScale}
               overscan={5}
             >
               {({ value, icon, label, ...item }) => (
@@ -317,15 +323,17 @@ function ControlCombobox({
                   {...item}
                   className={cn(
                     'flex w-full cursor-pointer items-center px-3 text-sm',
-                    'text-text-primary hover:bg-surface-tertiary',
-                    'data-[active-item]:bg-surface-tertiary',
+                    'text-text-primary hover:bg-surface-hover',
+                    'data-[active-item]:bg-surface-hover',
                   )}
                   render={<Ariakit.SelectItem value={value} />}
                 >
                   {icon != null && iconSide === 'left' && (
                     <div className={optionIconClassName}>{icon}</div>
                   )}
-                  <span className="grow truncate text-start">{label}</span>
+                  <span className={cn('min-w-0 grow text-start', !renderOption && 'truncate')}>
+                    {renderOption ? renderOption({ value: value ?? null, icon, label }) : label}
+                  </span>
                   {icon != null && iconSide === 'right' && (
                     <div className={optionIconClassName}>{icon}</div>
                   )}

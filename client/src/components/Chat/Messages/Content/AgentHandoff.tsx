@@ -1,20 +1,26 @@
 import React, { useEffect, useId, useMemo, useRef, useState, useCallback } from 'react';
 import copy from 'copy-to-clipboard';
 import { ChevronDown } from 'lucide-react';
-import { Button } from '@librechat/client';
 import { unescapeJsonString } from '@librechat/chat';
 import { EModelEndpoint, Constants } from 'librechat-data-provider';
+import { Button, disclosureChevronVariants } from '@librechat/client';
 import {
   useToolContentRequest,
   useToolContentPending,
   toolPanelSpacingClassName,
 } from '@librechat/chat/react';
+import {
+  PANE_COPY_REVEAL,
+  TOOL_ROW_CLASSES,
+  ROW_GLYPH_SLOT,
+  CopyButton,
+  useExpandCollapse,
+} from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import MessageIcon from '~/components/Share/MessageIcon';
-import { useLocalize, useExpandCollapse } from '~/hooks';
 import { useAgentsMapContext } from '~/Providers';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 interface AgentHandoffProps {
@@ -163,42 +169,45 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
   }, [contentPending, copyText]);
 
   return (
-    <div className="my-2">
-      <Button
-        variant="ghost"
-        className={cn(
-          'tool-status-text text-text-secondary hover:text-text-primary h-auto justify-start rounded-none p-0 font-normal hover:bg-transparent',
-          !hasInfo && 'pointer-events-none disabled:opacity-100',
-        )}
-        disabled={!hasInfo}
-        onClick={hasInfo ? () => setShowInfo(!showInfo) : undefined}
-        aria-expanded={hasInfo ? showInfo : undefined}
-        aria-controls={hasInfo ? contentId : undefined}
-        aria-label={`${localize('com_ui_transferred_to')} ${agentName}`}
-      >
-        <div className="ring-border-light flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full ring-1">
-          <MessageIcon
-            message={
-              {
-                endpoint: EModelEndpoint.agents,
-                isCreatedByUser: false,
-              } as TMessage
-            }
-            agent={targetAgent || undefined}
-          />
-        </div>
-        <span className="select-none">{localize('com_ui_transferred_to')}</span>
-        <span className="text-text-primary font-medium select-none">{agentName}</span>
-        {hasInfo && (
-          <ChevronDown
-            className={cn(
-              'text-text-secondary size-4 shrink-0 translate-y-[1px] transition-transform duration-200 ease-out',
-              showInfo && 'rotate-180',
-            )}
-            aria-hidden="true"
-          />
-        )}
-      </Button>
+    <div>
+      <div className={TOOL_ROW_CLASSES}>
+        <Button
+          variant="disclosure"
+          className="group/disclosure min-w-0"
+          disabled={!hasInfo}
+          onClick={hasInfo ? () => setShowInfo(!showInfo) : undefined}
+          aria-expanded={hasInfo ? showInfo : undefined}
+          aria-controls={hasInfo ? contentId : undefined}
+          aria-label={`${localize('com_ui_transferred_to')} ${agentName}`}
+        >
+          <span className={ROW_GLYPH_SLOT} aria-hidden="true">
+            <span className="ring-border-light flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-full ring-1">
+              <MessageIcon
+                message={
+                  {
+                    endpoint: EModelEndpoint.agents,
+                    isCreatedByUser: false,
+                  } as TMessage
+                }
+                agent={targetAgent || undefined}
+              />
+            </span>
+          </span>
+          <span className="tool-status-text text-text-secondary min-w-0 truncate font-medium">
+            <span>{localize('com_ui_transferred_to')}</span>{' '}
+            <span className="text-text-primary">{agentName}</span>
+          </span>
+          {hasInfo && (
+            <ChevronDown
+              className={cn(
+                disclosureChevronVariants({ expanded: showInfo }),
+                'ms-auto size-4 shrink-0 translate-y-[0.0625rem]',
+              )}
+              aria-hidden="true"
+            />
+          )}
+        </Button>
+      </div>
       <div id={contentId} style={expandStyle} aria-hidden={!showInfo || undefined}>
         <div className="overflow-hidden" ref={expandRef}>
           {hasInfo && (
@@ -206,27 +215,25 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
               aria-labelledby={headingId}
               className={cn(
                 toolPanelSpacingClassName,
-                'group/handoff border-border-medium ms-8 max-w-3xl border-s-2 py-1 ps-4 pe-1',
+                'group/copy border-border-light bg-surface-secondary overflow-hidden rounded-lg border p-3',
               )}
             >
               <div className="mb-1.5 flex min-h-5 items-center justify-between gap-2">
                 <span
                   id={headingId}
-                  className="text-text-secondary text-2xs font-semibold tracking-wide uppercase"
+                  className="text-text-secondary text-3xs font-medium tracking-wide uppercase"
                 >
                   {localize('com_ui_handoff_instructions')}
                 </span>
                 <CopyButton
                   isCopied={isCopied}
                   iconOnly
+                  compact
                   onClick={handleCopy}
                   disabled={contentPending}
                   label={localize('com_ui_copy_to_clipboard')}
                   copiedLabel={localize('com_ui_copied_to_clipboard')}
-                  /** Only the reveal-on-hover behavior is local; the icon
-                   *  crossfade, tooltip, hover and focus ring come from the
-                   *  shared primitive. */
-                  className="shrink-0 opacity-60 group-focus-within/handoff:opacity-100 group-hover/handoff:opacity-100 focus-visible:opacity-100"
+                  className={cn('-my-1 shrink-0', PANE_COPY_REVEAL)}
                 />
               </div>
               {fields.length === 1 ? (

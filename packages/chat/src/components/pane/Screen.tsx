@@ -3,11 +3,13 @@ import { useLocalize } from '@librechat/client';
 import { buildTree } from 'librechat-data-provider';
 import type { TChatProject, TFile, TMessage } from 'librechat-data-provider';
 import type { ReactElement, ReactNode, RefObject } from 'react';
+import type { ChatScreenMessagesProps, ChatScreenMessagesSlots } from './messages';
 import type { ChatPaneProps } from './ChatPane';
 import type { ChatPaneChrome } from './chrome';
 import { useChatContext } from '../../react/chat/context';
 import { getChatPaneChrome } from './chrome';
 import { getChatPaneView } from './view';
+import ScreenMessages from './messages';
 import ChatPane from './ChatPane';
 
 /** What the composer slot needs from the pane's decisions. */
@@ -20,6 +22,8 @@ export type ChatScreenComposerProps = {
   /** The composer's placeholder on a project's welcome screen. */
   placeholder?: string;
 };
+
+export type { ChatScreenMessagesProps, ChatScreenMessagesSlots };
 
 export type ChatScreenProps = Pick<
   ChatPaneProps,
@@ -36,30 +40,31 @@ export type ChatScreenProps = Pick<
   /** The project the route opens a new chat in. */
   project?: TChatProject;
   /** The deployment shows the full footer on the welcome screen. */
-  landingFooter: boolean;
+  landingFooter: boolean | 'composer';
   /** The deployment configured footer content. */
   configuredFooter: boolean;
   /** The pane's header, given the pane's decisions (a subagent thread's parent, read-only). */
   renderHeader?: (chrome: ChatPaneChrome) => ReactNode;
   /** The badge of the routed conversation's project. */
   renderBadge?: (projectId: string) => ReactNode;
-  /** The message list, given the session's messages and the tree built from them. */
-  renderMessages: (props: {
-    messagesTree: TMessage[] | null;
-    messages: TMessage[] | null;
-  }) => ReactNode;
+  /** Replaces the message list; the package list, filled with `messagesSlots`, by default. */
+  renderMessages?: (props: ChatScreenMessagesProps) => ReactNode;
+  /** The slots of the default message list. */
+  messagesSlots?: ChatScreenMessagesSlots;
   /** The composer, unless the thread is read-only. */
   renderComposer?: (props: ChatScreenComposerProps) => ReactNode;
-  /** The footer: the full one below the column, or the configured one inside the composer band. */
-  renderFooter?: (placement: 'full' | 'band') => ReactNode;
+  /** The footer: the full one below the column or under the composer, or the configured one
+   *  inside the composer band. */
+  renderFooter?: (placement: 'full' | 'composer' | 'band') => ReactNode;
   /** Rendered beside the composer band, given the band and whether the welcome screen shows. */
   renderMascot?: (bandRef: RefObject<HTMLDivElement>, isLanding: boolean) => ReactNode;
 };
 
 /**
  * A chat screen: builds the message tree from the session, decides the pane's layout, heading,
- * footers, project and read-only state, and lays them out in `ChatPane`. The app supplies the
- * surfaces as slots; the slots that depend on a decision receive it instead of recomputing it.
+ * footers, project and read-only state, and lays them out in `ChatPane`. The message list is the
+ * package's own unless replaced; the app supplies its chrome (header, welcome screen, composer,
+ * footer) as slots, and the slots that depend on a decision receive it instead of recomputing it.
  */
 export default function ChatScreen({
   index = 0,
@@ -76,6 +81,7 @@ export default function ChatScreen({
   renderHeader,
   renderBadge,
   renderMessages,
+  messagesSlots,
   renderComposer,
   renderFooter,
   renderMascot,
@@ -110,7 +116,13 @@ export default function ChatScreen({
       heading={chrome.title ?? localize('com_ui_new_chat')}
       header={renderHeader?.(chrome)}
       badge={chrome.projectId != null ? renderBadge?.(chrome.projectId) : null}
-      messages={renderMessages({ messagesTree, messages })}
+      messages={
+        renderMessages ? (
+          renderMessages({ messagesTree, messages })
+        ) : (
+          <ScreenMessages messagesTree={messagesTree} messages={messages} slots={messagesSlots} />
+        )
+      }
       landing={landing}
       renderColumn={renderColumn}
       starters={starters}
@@ -124,8 +136,9 @@ export default function ChatScreen({
             ? localize('com_ui_new_chat_in_project', { name: landingProject.name })
             : undefined,
       })}
+      composerFooter={chrome.composerFooter ? renderFooter?.('composer') : null}
       bandFooter={chrome.bandFooter ? renderFooter?.('band') : null}
-      footer={chrome.fullFooter ? renderFooter?.('full') : null}
+      footer={chrome.fullFooter && !chrome.composerFooter ? renderFooter?.('full') : null}
       renderMascot={renderMascot ? (bandRef) => renderMascot(bandRef, view.isLanding) : undefined}
     />
   );

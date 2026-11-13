@@ -126,6 +126,55 @@ describe('handleFrame', () => {
     expect(run.stream?.signal.aborted).toBe(true);
   });
 
+  it('adopts promoted steers before converting the leftovers the final still reports', async () => {
+    const { host, emit } = attach();
+    const promoted = {
+      steerId: 'steer-1',
+      clientSteerId: 'client-1',
+      receipt: { queuedTurnId: 'queued-turn-1' },
+    };
+    const other = { steerId: 'steer-2', text: 'not promoted', createdAt: 2 };
+    (host.steers.adoptPromoted as jest.Mock).mockReturnValue(['steer-1', 'client-1']);
+    await emit({
+      type: 'final',
+      data: {
+        final: true,
+        conversation: { conversationId: 'c-1' },
+        responseMessage: { messageId: 'r-1', conversationId: 'c-1' },
+        promotedSteers: [promoted],
+        pendingSteers: [
+          { steerId: 'steer-1', clientSteerId: 'client-1', text: 'promoted', createdAt: 1 },
+          other,
+        ],
+      },
+    } as unknown as ChatEvent);
+    expect(host.steers.adoptPromoted).toHaveBeenCalledWith('c-1', [promoted]);
+    expect(host.steers.convertToQueued).toHaveBeenCalledWith('c-1', [other], expect.anything());
+    expect((host.steers.adoptPromoted as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(
+      (host.steers.convertToQueued as jest.Mock).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('converts every reported leftover when the server promoted none', async () => {
+    const { host, emit } = attach();
+    const pendingSteers = [{ steerId: 'steer-1', text: 'legacy server', createdAt: 1 }];
+    await emit({
+      type: 'final',
+      data: {
+        final: true,
+        conversation: { conversationId: 'c-1' },
+        responseMessage: { messageId: 'r-1', conversationId: 'c-1' },
+        pendingSteers,
+      },
+    } as ChatEvent);
+    expect(host.steers.adoptPromoted).toHaveBeenCalledWith('c-1', []);
+    expect(host.steers.convertToQueued).toHaveBeenCalledWith(
+      'c-1',
+      pendingSteers,
+      expect.anything(),
+    );
+  });
+
   it('ignores an unnegotiated lifecycle reconciliation frame', async () => {
     const { host, emit } = attach();
     await emit({ type: 'final', data: { final: true, reconcile: true } } as ChatEvent);

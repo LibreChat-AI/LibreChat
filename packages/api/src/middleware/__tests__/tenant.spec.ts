@@ -574,3 +574,22 @@ describe('requirePreAuthTenantContext', () => {
     expect(next).not.toHaveBeenCalled();
   });
 });
+
+describe('reserved tenant partition', () => {
+  it('rejects a reserved tenant restored from the authenticated user', () => {
+    const req = mockReq({ tenantId: '_', role: 'user' });
+    const res = mockRes();
+    const next = jest.fn();
+    tenantContextMiddleware(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+  it('rejects the reserved tenant when a request resumes after an async boundary', async () => {
+    const req = mockReq({ tenantId: '_', role: 'user' });
+    const res = mockRes();
+    const next = jest.fn();
+    await restoreTenantContextFromReq(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+});

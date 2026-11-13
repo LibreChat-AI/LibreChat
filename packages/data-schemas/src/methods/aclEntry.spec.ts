@@ -520,6 +520,97 @@ describe('AclEntry Model Tests', () => {
     });
   });
 
+  describe('Grants made as a unique entry', () => {
+    const grantPublic = (uniqueEntry?: boolean) =>
+      methods.grantPermission(
+        PrincipalType.PUBLIC,
+        null,
+        ResourceType.SHARED_LINK,
+        resourceId,
+        PermissionBits.VIEW,
+        grantedById,
+        undefined,
+        undefined,
+        undefined,
+        uniqueEntry,
+      );
+    const grantUser = (principalId: mongoose.Types.ObjectId | string) =>
+      methods.grantPermission(
+        PrincipalType.USER,
+        principalId,
+        ResourceType.SHARED_LINK,
+        resourceId,
+        PermissionBits.VIEW,
+        grantedById,
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+    const publicEntries = () =>
+      AclEntry.find({ principalType: PrincipalType.PUBLIC, resourceId }).lean();
+    const duplicateKey = () => {
+      throw Object.assign(new Error('E11000 duplicate key error'), { code: 11000 });
+    };
+
+    test('names the entry after the principal and the resource', async () => {
+      const first = await grantPublic(true);
+      await AclEntry.deleteMany({});
+      const again = await grantPublic(true);
+      const owner = await grantUser(userId);
+      await AclEntry.deleteOne({ _id: owner?._id });
+      const ownerByString = await grantUser(userId.toString());
+      const otherUser = await grantUser(new mongoose.Types.ObjectId());
+
+      expect(again?._id.toString()).toBe(first?._id.toString());
+      expect(ownerByString?._id.toString()).toBe(owner?._id.toString());
+      expect(new Set([first, owner, otherUser].map((entry) => entry?._id.toString())).size).toBe(3);
+    });
+
+    test('updates an entry that already exists under another id', async () => {
+      const existing = await grantPublic();
+
+      const entry = await grantPublic(true);
+
+      expect(entry?._id.toString()).toBe(existing?._id.toString());
+      expect(await publicEntries()).toHaveLength(1);
+    });
+
+    /**
+     * Without the option every one of these finds no entry and inserts its own, because the
+     * upsert matches on fields no unique index covers.
+     */
+    test('leaves one entry when the same grant runs concurrently', async () => {
+      const entries = await Promise.all(Array.from({ length: 16 }, () => grantPublic(true)));
+
+      expect(new Set(entries.map((entry) => entry?._id.toString())).size).toBe(1);
+      expect(await publicEntries()).toHaveLength(1);
+    });
+
+    test('replays the grant as an update when another writer inserted the entry first', async () => {
+      const existing = await grantPublic(true);
+      const findOneAndUpdate = jest.spyOn(AclEntry, 'findOneAndUpdate');
+      findOneAndUpdate.mockImplementationOnce(duplicateKey);
+
+      const entry = await grantPublic(true);
+
+      expect(findOneAndUpdate).toHaveBeenCalledTimes(2);
+      expect(entry?._id.toString()).toBe(existing?._id.toString());
+      expect(await publicEntries()).toHaveLength(1);
+      findOneAndUpdate.mockRestore();
+    });
+
+    test('does not replay a duplicate key for an ordinary grant', async () => {
+      const findOneAndUpdate = jest.spyOn(AclEntry, 'findOneAndUpdate');
+      findOneAndUpdate.mockImplementationOnce(duplicateKey);
+
+      await expect(grantPublic()).rejects.toMatchObject({ code: 11000 });
+
+      expect(findOneAndUpdate).toHaveBeenCalledTimes(1);
+      findOneAndUpdate.mockRestore();
+    });
+  });
+
   describe('Resource Access Queries', () => {
     test('should find accessible resources', async () => {
       /** Create multiple resources with different permissions */

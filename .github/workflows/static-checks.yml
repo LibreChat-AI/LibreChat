@@ -18,7 +18,13 @@ on:
       - 'eslint-suppressions.json'
       - '**/eslint-suppressions.json'
       - '.github/workflows/static-checks.yml'
+      - '.github/actions/mongodb-binary/**'
+      - '.husky/pre-push'
       - '!**.md'
+  # The merge queue tests the commit about to land on dev. It has no path filter; the checks
+  # below stay scoped to what the queued change touches, read against the merge group base.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -44,8 +50,12 @@ jobs:
         with:
           # Full history is load-bearing: changed-file steps diff against the
           # PR base and the ESLint regression gate reads the base ref's
-          # config via git show — a shallow checkout breaks both.
+          # config via git show, so a shallow checkout breaks both. Blobless
+          # keeps every commit and tree (merge-base, three-dot diffs) and
+          # fetches only the base-side file contents a step actually reads,
+          # instead of every blob on every branch.
           fetch-depth: 0
+          filter: blob:none
 
       # scripts/static-checks.mts mirrors these filters to run the same checks
       # locally on a commit's diff — keep the two in sync.
@@ -118,6 +128,7 @@ jobs:
               - 'config/**'
               - 'packages/**'
               - '.github/workflows/static-checks.yml'
+              - '.github/actions/mongodb-binary/**'
               - '!**.md'
             i18n:
               - 'scripts/i18n*.mts'
@@ -132,7 +143,9 @@ jobs:
               - '!**.md'
             runner:
               - 'scripts/i18n*.mts'
+              - 'scripts/pre-push*.mts'
               - 'scripts/static-checks.mts'
+              - '.husky/pre-push'
               - '.github/workflows/static-checks.yml'
             unused_packages:
               - 'api/**'
@@ -147,19 +160,63 @@ jobs:
               - 'packages/data-schemas/package.json'
               - 'package.json'
               - 'package-lock.json'
+              - 'scripts/imports*.mts'
               - '.github/workflows/static-checks.yml'
               - '!**.md'
 
-      - name: Set up Node.js 24.22.1
+      - name: Set up Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
+
+      # Same key and path list as the E2E workflows, so one installed tree per
+      # lockfile serves both. Exact key only: a tree installed from another
+      # lockfile is never restored. Saved separately, and only after a
+      # successful install, because that step is continue-on-error and a
+      # partial tree must never become the cache every later job restores.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            packages/channel-gateway/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         id: install_dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         continue-on-error: true
         run: npm ci
+
+      - name: Save node_modules cache
+        if: steps.install_dependencies.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            packages/channel-gateway/node_modules
+            api/node_modules
+          key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
+
+      - name: Test scoped dependency overrides
+        if: steps.cache-node-modules.outputs.cache-hit == 'true' || steps.install_dependencies.outcome == 'success'
+        run: npm run test:dependencies
 
       # The @shadcn/lint design rules read each primitive's `cva` variants through
       # the @librechat/client entry point, which resolves to packages/client/dist.
@@ -178,8 +235,8 @@ jobs:
         if: always() && steps.paths.outputs.eslint == 'true'
         continue-on-error: true
         run: |
-          # Extract the base commit SHA from the pull_request event payload.
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          # Extract the base commit SHA from the pull_request or merge_group event payload.
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           echo "Base commit SHA: $BASE_SHA"
 
           # Get changed files (only JS/TS files in api/, client/, or packages/)
@@ -224,7 +281,7 @@ jobs:
         if: always() && steps.paths.outputs.eslint == 'true'
         continue-on-error: true
         run: |
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           mapfile -d '' -t CHANGED_FILES < <(
             git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
               grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
@@ -257,7 +314,7 @@ jobs:
         if: always() && steps.paths.outputs.eslint == 'true'
         continue-on-error: true
         run: |
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           mapfile -d '' -t CHANGED_FILES < <(
             git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
               grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
@@ -302,12 +359,14 @@ jobs:
         if: always() && steps.paths.outputs.runner == 'true'
         continue-on-error: true
         run: |
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           node scripts/static-checks.mts --against "$BASE_SHA" --list
           # An explicit target, because --list never executes a check and a
           # script-only PR activates no group — so neither would exercise the
           # execution path this step exists to protect.
           node scripts/static-checks.mts package.json --only json
+          # The pre-push hook, driven through real pushes to local bare remotes.
+          node --test scripts/pre-push.test.mts
 
       - name: Validate ESLint config on config changes
         id: eslint_config
@@ -329,7 +388,7 @@ jobs:
           # --against the PR base, not just the baseline path: the check also asks
           # whether the changed files still owe what they record, and that needs
           # the diff rather than one file name.
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           node scripts/static-checks.mts --against "$BASE_SHA" --only suppressions
 
       - name: Check CSS colour literals
@@ -337,7 +396,7 @@ jobs:
         if: always() && steps.paths.outputs.css_colors == 'true'
         continue-on-error: true
         run: |
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           node scripts/static-checks.mts --against "$BASE_SHA" --only css-colors
 
       - name: Restore data-provider build cache
@@ -398,6 +457,12 @@ jobs:
         if: always() && steps.paths.outputs.config == 'true'
         continue-on-error: true
         run: cp api/test/.env.test.example api/test/.env.test
+
+      - name: Provision MongoDB memory-server binary
+        id: config_mongodb
+        if: always() && steps.paths.outputs.config == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/mongodb-binary
 
       - name: Run config migration tests
         id: config_tests
@@ -468,60 +533,16 @@ jobs:
         if: always() && steps.paths.outputs.unused_packages == 'true'
         id: extract-used-code
         continue-on-error: true
+        # Source files only, as git lists them: installed node_modules and build
+        # output are excluded, and one listing covers every nested directory.
         run: |
-          extract_deps_from_code() {
-            local folder=$1
-            local output_file=$2
-
-            # Initialize empty output file
-            > "$output_file"
-
-            if [[ -d "$folder" ]]; then
-              # Extract require() statements (use explicit includes for portability)
-              grep -rEho "require\\(['\"]([a-zA-Z0-9@/._-]+)['\"]\\)" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/require\\(['\"]([a-zA-Z0-9@/._-]+)['\"]\\)/\1/" >> "$output_file" || true
-
-              # Extract ES6 imports - import x from 'module'
-              grep -rEho "import .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/import .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # import 'module' (side-effect imports)
-              grep -rEho "import ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/import ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # export { x } from 'module' or export * from 'module'
-              grep -rEho "export .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/export .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # import type { x } from 'module' (TypeScript)
-              grep -rEho "import type .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.ts' --include='*.tsx' 2>/dev/null | \
-                sed -E "s/import type .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # Remove subpath imports but keep the base package
-              # For scoped packages: '@scope/pkg/subpath' -> '@scope/pkg'
-              # For regular packages: 'pkg/subpath' -> 'pkg'
-              # Scoped packages (must keep @scope/package, strip anything after)
-              sed -i -E 's|^(@[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)/.*|\1|' "$output_file" 2>/dev/null || true
-              # Non-scoped packages (keep package name, strip subpath)
-              sed -i -E 's|^([a-zA-Z0-9_-]+)/.*|\1|' "$output_file" 2>/dev/null || true
-
-              sort -u "$output_file" -o "$output_file"
-            fi
-          }
-
-          extract_deps_from_code "." root_used_code.txt
-          extract_deps_from_code "client" client_used_code.txt
-          extract_deps_from_code "api" api_used_code.txt
-
-          # Extract dependencies used by workspace packages
-          # These packages are used in the workspace but dependencies are provided by parent package.json
-          extract_deps_from_code "packages/client" packages_client_used_code.txt
-          extract_deps_from_code "packages/api" packages_api_used_code.txt
+          node --test scripts/imports.test.mts
+          node scripts/imports.mts \
+            .=root_used_code.txt \
+            client=client_used_code.txt \
+            api=api_used_code.txt \
+            packages/client=packages_client_used_code.txt \
+            packages/api=packages_api_used_code.txt
 
       - name: Get @librechat/client dependencies
         if: always() && steps.paths.outputs.unused_packages == 'true'
@@ -711,6 +732,7 @@ jobs:
           CONFIG_API_OUTCOME: ${{ steps.config_api.outcome }}
           CONFIG_AUTH_OUTCOME: ${{ steps.config_auth.outcome }}
           CONFIG_ENV_OUTCOME: ${{ steps.config_env.outcome }}
+          CONFIG_MONGODB_OUTCOME: ${{ steps.config_mongodb.outcome }}
           CONFIG_TESTS_OUTCOME: ${{ steps.config_tests.outcome }}
           FIND_I18N_OUTCOME: ${{ steps.find_unused_i18n.outcome }}
           I18N_OUTCOME: ${{ steps.i18n.outcome }}
@@ -752,6 +774,7 @@ jobs:
           record_failure "Config API build" "$CONFIG_API_OUTCOME"
           record_failure "Config auth preparation" "$CONFIG_AUTH_OUTCOME"
           record_failure "Config environment preparation" "$CONFIG_ENV_OUTCOME"
+          record_failure "Config MongoDB binary" "$CONFIG_MONGODB_OUTCOME"
           record_failure "Config migration tests" "$CONFIG_TESTS_OUTCOME"
           record_failure "Unused i18n scan" "$FIND_I18N_OUTCOME"
           record_failure "Unused i18n keys" "$I18N_OUTCOME"
@@ -798,9 +821,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          # fetch-depth: 0 is load-bearing — the gate reads the base ref's
+          # fetch-depth: 0 is load-bearing: the gate reads the base ref's
           # config via `git show`, which a shallow checkout cannot resolve.
+          # Blobless still has every commit and tree; `git show` fetches the
+          # one base blob it needs on demand.
           fetch-depth: 0
+          filter: blob:none
 
       - name: Detect config changes
         id: paths
@@ -813,11 +839,11 @@ jobs:
               - 'scripts/eslint/**'
               - '.github/workflows/static-checks.yml'
 
-      - name: Set up Node.js 24.22.1
+      - name: Set up Node.js 24.22.3
         if: steps.paths.outputs.eslint_config == 'true'
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
 
       - name: Install dependencies
@@ -884,7 +910,7 @@ jobs:
             exit 1
           fi
 
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
             echo "::error title=ESLint sweep::Base commit is unavailable — this gate requires the checkout above to keep fetch-depth: 0."
             exit 1
@@ -947,3 +973,25 @@ jobs:
             exit 1
           fi
           echo "No coverage loss and no new diagnostics versus the base config."
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. No job here may be skipped.
+  gate:
+    name: static
+    needs:
+      - static-checks
+      - eslint-sweep
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every static check job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/merge-gate.mjs verify

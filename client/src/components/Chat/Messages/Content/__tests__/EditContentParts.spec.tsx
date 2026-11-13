@@ -387,7 +387,7 @@ describe('EditContentParts', () => {
         text: 'Check the service',
         conversationId: parentMessage.conversationId,
       }),
-      expect.objectContaining({ overrideFiles: parentMessage.files }),
+      expect.objectContaining({ overrideFiles: parentMessage.files ?? [] }),
     );
     expect(setSiblingIdx).toHaveBeenCalledWith(-1);
     expect(enterEdit).toHaveBeenCalledWith(true);

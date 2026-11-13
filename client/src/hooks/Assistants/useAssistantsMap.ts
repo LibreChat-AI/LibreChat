@@ -1,8 +1,11 @@
 import { useMemo } from 'react';
 import { EModelEndpoint } from 'librechat-data-provider';
-import type { TAssistantsMap } from 'librechat-data-provider';
+import type { TAssistantsMap, AssistantListResponse } from 'librechat-data-provider';
+import { useCatalogReady } from '~/hooks/useCatalogWarmup';
 import { useListAssistantsQuery } from '~/data-provider';
 import { mapAssistants } from '~/utils';
+
+const selectAssistants = (res: AssistantListResponse) => mapAssistants(res.data);
 
 /**
  * Root feeds this straight into `AssistantsMapContext.Provider`, so the
@@ -13,19 +16,22 @@ import { mapAssistants } from '~/utils';
  */
 export default function useAssistantsMap({
   isAuthenticated,
+  enabled,
 }: {
   isAuthenticated: boolean;
+  enabled?: boolean;
 }): TAssistantsMap {
+  const ready = useCatalogReady('assistants');
   const { data: assistants } = useListAssistantsQuery(EModelEndpoint.assistants, undefined, {
-    select: (res) => mapAssistants(res.data),
-    enabled: isAuthenticated,
+    select: selectAssistants,
+    enabled: isAuthenticated && (enabled ?? ready),
   });
   const { data: azureAssistants } = useListAssistantsQuery(
     EModelEndpoint.azureAssistants,
     undefined,
     {
-      select: (res) => mapAssistants(res.data),
-      enabled: isAuthenticated,
+      select: selectAssistants,
+      enabled: isAuthenticated && (enabled ?? ready),
     },
   );
 

@@ -5,14 +5,19 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
-import { render, act } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render, act, waitFor } from '@testing-library/react';
+import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   FileSources,
+  roleDefaults,
+  SystemRoles,
+  QueryKeys,
+  dataService,
   readTwoFactorSetupToken,
   clearTwoFactorSetupToken,
   persistTwoFactorSetupToken,
 } from 'librechat-data-provider';
+import type { TRole, TUser } from 'librechat-data-provider';
 import type { TAuthConfig } from '~/common';
 import {
   SESSION_KEY,
@@ -30,6 +35,8 @@ import {
   resetChatFilterSessionAtom,
 } from '~/components/Conversations/chatFilters';
 import { AuthContextProvider, useAuthContext } from '../AuthContext';
+import { useGetRole as useRoleQuery } from '~/data-provider/roles';
+import store from '~/store';
 
 const mockNavigate = jest.fn();
 jest.mock('react-router-dom', () => ({
@@ -42,6 +49,10 @@ const mockApiBaseUrl = jest.fn(() => '');
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
   setTokenHeader: jest.fn(),
+  dataService: {
+    ...jest.requireActual('librechat-data-provider').dataService,
+    getRole: jest.fn(),
+  },
   apiBaseUrl: () => mockApiBaseUrl(),
 }));
 
@@ -956,7 +967,7 @@ describe('AuthContextProvider — custom role detection and fetching', () => {
   const mockUseGetRole = jest.requireMock('~/data-provider').useGetRole;
   const staffPermissions = {
     name: 'STAFF',
-    permissions: { PROMPTS: { USE: true, CREATE: false } },
+    permissions: { PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false } },
   };
 
   beforeEach(() => {
@@ -1370,5 +1381,178 @@ describe('AuthContextProvider: browser setup destination', () => {
     act(() => options.onSuccess({ twoFASetupRequired: true, tempToken: 'enrollment' }));
     expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
     expect(mockNavigate).toHaveBeenLastCalledWith('/login/2fa/setup', { replace: true });
+  });
+});
+
+describe('AuthContextProvider: role request priority', () => {
+  const mockUseGetRole = jest.requireMock('~/data-provider').useGetRole;
+  let queryClient: QueryClient;
+  let requests: string[];
+  let resolveRoles: Map<string, (role: TRole) => void>;
+
+  const roleData = (name: string): TRole => ({
+    name,
+    permissions: {
+      ...roleDefaults[SystemRoles.USER].permissions,
+      PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false },
+    },
+  });
+
+  function Discovery() {
+    const { isAuthenticated } = useAuthContext();
+    useQuery(
+      ['auth-priority-discovery'],
+      async () => {
+        requests.push('discovery');
+        return [];
+      },
+      { enabled: isAuthenticated },
+    );
+    return <TestConsumer />;
+  }
+
+  function renderPriorityProvider() {
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot>
+          <MemoryRouter>
+            <AuthContextProvider authConfig={authConfig}>
+              <Discovery />
+            </AuthContextProvider>
+          </MemoryRouter>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+  }
+
+  function authenticate(role: string) {
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', {
+        id: 'priority-user',
+        role,
+      } as TUser);
+    });
+  }
+
+  beforeEach(() => {
+    jest.useRealTimers();
+    jest.clearAllMocks();
+    sessionStorage.clear();
+    capturedAuthContext = undefined;
+    requests = [];
+    resolveRoles = new Map();
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: 3, retryDelay: 0 }, mutations: { retry: false } },
+      logger: { log: console.log, warn: console.warn, error: jest.fn() },
+    });
+    mockUseGetRole.mockImplementation(useRoleQuery);
+    jest
+      .mocked(dataService.getRole)
+      .mockReset()
+      .mockImplementation((name) => {
+        requests.push(name);
+        return new Promise<TRole>((resolve) => resolveRoles.set(name, resolve));
+      });
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    mockUseGetRole.mockReturnValue({ data: null });
+    sessionStorage.clear();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it.each([
+    ['USER', ['USER']],
+    ['ADMIN', ['USER', 'ADMIN']],
+    ['STAFF', ['USER', 'STAFF']],
+  ])('starts %s permissions once before descendant discovery', async (role, expectedRoles) => {
+    const { getByTestId } = renderPriorityProvider();
+    authenticate(role);
+
+    expect(requests).toEqual([...expectedRoles, 'discovery']);
+    expect(dataService.getRole).toHaveBeenCalledTimes(expectedRoles.length);
+    expect(JSON.parse(getByTestId('consumer').getAttribute('data-roles') ?? '{}')).toEqual({
+      USER: null,
+      ADMIN: null,
+    });
+
+    await act(async () => {
+      for (const name of expectedRoles) {
+        resolveRoles.get(name)?.(roleData(name));
+      }
+    });
+    await waitFor(() => {
+      expect(JSON.parse(getByTestId('consumer').getAttribute('data-roles') ?? '{}')).toEqual({
+        USER: roleData('USER'),
+        ADMIN: role === 'ADMIN' ? roleData('ADMIN') : null,
+        ...(role === 'STAFF' ? { STAFF: roleData('STAFF') } : {}),
+      });
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(expectedRoles.length);
+    expect(queryClient.getQueryData([QueryKeys.roles, '_'])).toBeUndefined();
+  });
+
+  it('does not fetch roles for an unauthenticated stored user or a user without a role', () => {
+    const { unmount } = renderPriorityProvider();
+    expect(requests).toEqual([]);
+    unmount();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot
+          initializeState={({ set }) => set(store.user, { id: 'stored', role: 'ADMIN' } as TUser)}
+        >
+          <MemoryRouter>
+            <AuthContextProvider authConfig={authConfig}>
+              <Discovery />
+            </AuthContextProvider>
+          </MemoryRouter>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    expect(requests).toEqual([]);
+    authenticate('');
+    expect(requests).toEqual(['discovery']);
+    expect(dataService.getRole).not.toHaveBeenCalled();
+  });
+
+  it('keeps failures permissionless and preserves remount retry and invalidation', async () => {
+    const failure = new Error('role unavailable');
+    jest
+      .mocked(dataService.getRole)
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValue(roleData('USER'));
+    const { getByTestId, rerender } = renderPriorityProvider();
+    authenticate('USER');
+
+    await waitFor(() => {
+      expect(queryClient.getQueryState([QueryKeys.roles, 'USER'])?.status).toBe('error');
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryState([QueryKeys.roles, 'USER'])?.fetchFailureCount).toBe(1);
+    expect(JSON.parse(getByTestId('consumer').getAttribute('data-roles') ?? '{}')).toEqual({
+      USER: null,
+      ADMIN: null,
+    });
+
+    function AnotherRoleObserver() {
+      useRoleQuery('USER');
+      return null;
+    }
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <AnotherRoleObserver />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(queryClient.getQueryState([QueryKeys.roles, 'USER'])?.status).toBe('success');
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await queryClient.invalidateQueries([QueryKeys.roles, 'USER']);
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(3);
+    expect(queryClient.getQueryData([QueryKeys.roles, 'USER'])).toEqual(roleData('USER'));
   });
 });

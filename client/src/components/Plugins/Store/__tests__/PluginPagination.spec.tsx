@@ -1,7 +1,7 @@
 import 'test/matchMedia.mock';
 import React from 'react';
-import { render, screen } from 'test/layout-test-utils';
 import userEvent from '@testing-library/user-event';
+import { fireEvent, render, screen } from 'test/layout-test-utils';
 import PluginPagination from '../PluginPagination';
 
 describe('PluginPagination', () => {
@@ -9,6 +9,52 @@ describe('PluginPagination', () => {
 
   beforeEach(() => {
     onChangePage.mockClear();
+  });
+
+  it.each(['Enter', ' '])('keeps keyboard activation within page bounds for %p', async (key) => {
+    const { rerender } = render(
+      <PluginPagination currentPage={1} maxPage={5} onChangePage={onChangePage} />,
+    );
+    const user = userEvent.setup();
+    screen.getByRole('button', { name: /prev/i }).focus();
+    await user.keyboard(key === 'Enter' ? '{Enter}' : ' ');
+    expect(onChangePage).not.toHaveBeenCalled();
+
+    rerender(<PluginPagination currentPage={5} maxPage={5} onChangePage={onChangePage} />);
+    screen.getByRole('button', { name: /next/i }).focus();
+    await user.keyboard(key === 'Enter' ? '{Enter}' : ' ');
+    expect(onChangePage).not.toHaveBeenCalled();
+  });
+
+  it.each(['Enter', ' '])('activates each valid page control once for %p', async (key) => {
+    render(<PluginPagination currentPage={2} maxPage={5} onChangePage={onChangePage} />);
+    const user = userEvent.setup();
+    for (const [name, page] of [
+      [/prev/i, 1],
+      [/next/i, 3],
+      [/^4$/, 4],
+    ] as const) {
+      onChangePage.mockClear();
+      screen.getByRole('button', { name }).focus();
+      await user.keyboard(key === 'Enter' ? '{Enter}' : ' ');
+      expect(onChangePage).toHaveBeenCalledTimes(1);
+      expect(onChangePage).toHaveBeenCalledWith(page);
+    }
+  });
+
+  it('prevents Space scrolling on every page control', () => {
+    render(<PluginPagination currentPage={1} maxPage={2} onChangePage={onChangePage} />);
+    for (const control of screen.getAllByRole('button')) {
+      expect(fireEvent.keyDown(control, { key: ' ' })).toBe(false);
+    }
+  });
+
+  it('uses the visible localized text as each navigation control name', () => {
+    render(<PluginPagination currentPage={1} maxPage={1} onChangePage={onChangePage} />);
+    for (const name of [/prev/i, /next/i]) {
+      const control = screen.getByRole('button', { name });
+      expect(control).toHaveAccessibleName(control.textContent ?? '');
+    }
   });
 
   it('should render the previous button as enabled when not on the first page', () => {

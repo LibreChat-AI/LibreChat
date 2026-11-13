@@ -4,7 +4,7 @@ import {
   isForcedTemporaryRetention,
   RetentionMode,
 } from 'librechat-data-provider';
-import type { DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
+import type { ClientSession, DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
 import type { UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { SearchParams } from 'meilisearch';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
@@ -14,6 +14,7 @@ import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
 import { prepareSubagentContentDeletion } from './subagentContent';
+import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { tenantStorage } from '~/config/tenantContext';
 import logger from '~/config/winston';
@@ -341,6 +342,7 @@ async function findOneAndMergeMessageProvenance(
   userSubmittedPaths: readonly string[],
   userSubmittedMessageFieldPaths: readonly UserSubmittedMessageFieldPath[],
   options: {
+    session?: ClientSession;
     upsert: boolean;
     stampModelOutputOnInsert?: boolean;
     unsetContextMeta?: boolean;
@@ -364,6 +366,7 @@ async function findOneAndMergeMessageProvenance(
   /** A small optimistic loop keeps the merge atomic while using only classic update operators. */
   for (let attempt = 0; attempt < MAX_PROVENANCE_CAS_ATTEMPTS; attempt += 1) {
     const current = await Message.findOne(identity)
+      .session(options.session ?? null)
       .select(
         options.prepareAppUpdate
           ? (options.privateMessagePaths ?? '')
@@ -429,14 +432,19 @@ async function findOneAndMergeMessageProvenance(
             },
           }),
         },
-        { upsert: options.upsert && current == null, new: true, timestamps: options.timestamps },
+        {
+          upsert: options.upsert && current == null,
+          new: true,
+          timestamps: options.timestamps,
+          session: options.session,
+        },
       );
       if (message != null) {
         options.onWrite?.(current == null, message._id);
         return message;
       }
     } catch (err) {
-      if (!isDuplicateKeyError(err) || !options.upsert) {
+      if (options.session || !isDuplicateKeyError(err) || !options.upsert) {
         throw err;
       }
     }
@@ -521,8 +529,7 @@ const traceTenantScope = (tenantId?: string) =>
 
 const SERVER_AUTHORED_SAMPLED_RESPONSE = {
   langfuseSampled: true,
-  isCreatedByUser: false,
-  isUserSubmitted: { $ne: true },
+  ...SERVER_AUTHORED_MESSAGE_FILTER,
 } as const;
 
 export const CLIENT_MESSAGE_SELECT: string = [
@@ -537,6 +544,7 @@ export const CLIENT_MESSAGE_SELECT: string = [
   '-privateText',
   '-privateTextTokens',
   '-contextMeta',
+  '-langfuseCentralTraceExportEnabled',
   '-langfuseSampled',
   '-langfuseDestinationIds',
   '-langfuseRunId',
@@ -591,6 +599,11 @@ export type BackgroundToolResultClaim =
       messageId?: string;
     }
   | { status: 'acquired'; results: BackgroundToolResultRecord[]; messageId?: string };
+
+export type BranchLinkRow = Pick<
+  IMessage,
+  'messageId' | 'parentMessageId' | 'isCreatedByUser' | 'reasoningOverride'
+>;
 
 export type SubagentThreadViewMessageRecord = Pick<
   IMessage,
@@ -943,11 +956,7 @@ export interface MessageMethods {
     limitPerThread: number;
   }): Promise<ParentSubagentTaskRecord[]>;
   getMessage(params: { user: string; messageId: string }): Promise<IMessage | null>;
-  getBranchReasoningOverride(params: {
-    user: string;
-    conversationId: string;
-    parentMessageId: string;
-  }): Promise<IMessage['reasoningOverride'] | null>;
+  getBranchLinks(params: { user: string; conversationId: string }): Promise<BranchLinkRow[]>;
   getMessagesByCursor(
     filter: FilterQuery<IMessage>,
     options?: {
@@ -1076,6 +1085,8 @@ type SteplessToolCallFallback = {
 };
 
 export interface MessageDependencies {
+  /** Private data-schemas port: only canonical turn saves participate in this transaction. */
+  saveSession?: ClientSession;
   /** Read from deployment config, never from a message/request or a principal override. */
   getMCPAppMessageBudget?: () => Promise<number | undefined>;
 }
@@ -1154,7 +1165,17 @@ export function createMessageMethods(
     const fields = normalizeUserSubmittedMessageFieldPaths(update.userSubmittedMessageFieldPaths);
     delete update.userSubmittedPaths;
     delete update.userSubmittedMessageFieldPaths;
-    if (!hasBoundAppSnapshots(update.attachments) && paths.length === 0 && fields.length === 0) {
+    // A duplicate-key fallback cannot continue an aborted transaction. Inspect the
+    // same snapshot first so existing App rows enter the canonical budgeted writer directly.
+    const existingApps = deps.saveSession
+      ? await Message.findOne(identity).session(deps.saveSession).select('attachments').lean()
+      : null;
+    if (
+      !hasBoundAppSnapshots(update.attachments) &&
+      !hasBoundAppSnapshots(existingApps?.attachments) &&
+      paths.length === 0 &&
+      fields.length === 0
+    ) {
       try {
         // Preserve the single-write common path. If an App row is excluded, its existing
         // unique (messageId, user, tenantId) index rejects the upsert; budget that row below.
@@ -1171,6 +1192,7 @@ export function createMessageMethods(
             new: true,
             timestamps: options.timestamps,
             includeResultMetadata: true,
+            session: deps.saveSession,
           },
         );
         if (fast.value) {
@@ -1178,11 +1200,12 @@ export function createMessageMethods(
           return fast.value;
         }
       } catch (error) {
-        if (!isDuplicateKeyError(error)) throw error;
+        if (deps.saveSession || !isDuplicateKeyError(error)) throw error;
       }
     }
     return findOneAndMergeMessageProvenance(Message, identity, update, paths, fields, {
       ...options,
+      session: deps.saveSession,
       privateMessagePaths: privateMessagePaths(),
       prepareAppUpdate: (current, sanitized) =>
         prepareAppUpdate(sanitized, current, options.unsetContextMeta, options.retentionOnInsert),
@@ -1349,7 +1372,7 @@ export function createMessageMethods(
               updatedAt: now,
             },
           },
-          { upsert: true, new: true, timestamps: false },
+          { upsert: true, new: true, timestamps: false, session: deps.saveSession },
         );
         return existingOrInserted?.toObject();
       }
@@ -1385,7 +1408,7 @@ export function createMessageMethods(
             isTemporary: message.isTemporary === true ? true : { $ne: true },
           },
           { $set: { expiredAt: deadline } },
-          { timestamps: false },
+          { timestamps: false, session: deps.saveSession },
         );
         if (result.modifiedCount > 0) {
           message.expiredAt = deadline;
@@ -1401,12 +1424,14 @@ export function createMessageMethods(
         await Message.updateOne(
           { _id: message._id, isTemporary: { $ne: false } },
           { $set: { isTemporary: false } },
+          { session: deps.saveSession },
         );
         message.isTemporary = false;
       }
 
       return message.toObject();
     } catch (err: unknown) {
+      if (deps.saveSession) throw err;
       logger.error('Error saving message:', err);
       logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
 
@@ -4208,37 +4233,22 @@ export function createMessageMethods(
   }
 
   /**
-   * The reasoning level a branch runs at: the override on the nearest user message at or above
-   * `parentMessageId` that carries one, or `null` when none does. One read of the conversation's
-   * links and levels, projected to those fields; the walk itself is in memory.
+   * Every message of a conversation, on every branch, reduced to the fields a parent-chain walk
+   * reads. One small read answers which level a branch last ran at and which rows a later history
+   * read can skip; the walks themselves are in memory.
    */
-  async function getBranchReasoningOverride({
+  async function getBranchLinks({
     user,
     conversationId,
-    parentMessageId,
   }: {
     user: string;
     conversationId: string;
-    parentMessageId: string;
-  }): Promise<IMessage['reasoningOverride'] | null> {
+  }): Promise<BranchLinkRow[]> {
     const Message = mongoose.models.Message as Model<IMessage>;
-    const rows = await Message.find(
+    return Message.find(
       { user, conversationId },
       { _id: 0, messageId: 1, parentMessageId: 1, isCreatedByUser: 1, reasoningOverride: 1 },
-    ).lean<
-      Pick<IMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser' | 'reasoningOverride'>[]
-    >();
-    const byId = new Map(rows.map((row) => [row.messageId, row]));
-    const visited = new Set<string>();
-    let current = byId.get(parentMessageId);
-    while (current != null && !visited.has(current.messageId)) {
-      visited.add(current.messageId);
-      if (current.isCreatedByUser === true && current.reasoningOverride != null) {
-        return current.reasoningOverride;
-      }
-      current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
-    }
-    return null;
+    ).lean<BranchLinkRow[]>();
   }
 
   /**
@@ -4484,7 +4494,7 @@ export function createMessageMethods(
     getMessagesForSubagentThreadView,
     listSubagentTasksForThreads,
     getMessage,
-    getBranchReasoningOverride,
+    getBranchLinks,
     getMessagesByCursor,
     searchMessages,
     deleteMessages,

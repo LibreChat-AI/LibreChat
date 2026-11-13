@@ -14,6 +14,7 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
 } from '~/types/triggerDelivery';
 import {
@@ -130,6 +131,42 @@ function transientFailure(overrides: Partial<AgentTriggerDeliveryFailure> = {}) 
 }
 
 describe('agent trigger delivery methods', () => {
+  it('normalizes native Mongo owner IDs on enqueue and terminal read projections', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const input = enqueueInput({ user });
+    const queued = await methods.enqueueAgentTriggerDelivery(input);
+    const raw = await Delivery.findById(queued.delivery.id).lean();
+    expect(raw?.user).toBeInstanceOf(mongoose.Types.ObjectId);
+    expect(queued.delivery.user).toBe(user.toHexString());
+    expect((await methods.getAgentTriggerDelivery(input.deliveryKey))?.user).toBe(
+      user.toHexString(),
+    );
+
+    await Delivery.updateOne(
+      { _id: queued.delivery.id },
+      {
+        $set: {
+          status: 'dead',
+          attempts: 1,
+          lastError: transientFailure({
+            code: 'CHANNEL_AUTHORITY_CHANGED',
+            status: 403,
+            retryable: false,
+          }),
+        },
+      },
+    );
+    const terminal = await methods.getAgentTriggerDelivery(input.deliveryKey);
+    expect(terminal).toMatchObject({
+      user: user.toHexString(),
+      status: 'dead',
+      attempts: 1,
+    });
+    expect(terminal?.envelope).toEqual(input.envelope);
+    expect(terminal?.deliveryKey).toBe(input.deliveryKey);
+    expect(terminal?.tenantId).toBe(input.tenantId);
+  });
+
   it('never lets receipt metric failures affect storage correctness', () => {
     setAgentEventActorReceiptMetricObserver(() => {
       throw new Error('metrics unavailable');
@@ -1503,6 +1540,7 @@ describe('agent trigger delivery methods', () => {
   it.each([
     AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
     AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+    AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
   ])('keeps %s fenced through lease recovery', async (capability) => {
     const queued = await methods.enqueueAgentTriggerDelivery(
       enqueueInput({
@@ -1524,7 +1562,11 @@ describe('agent trigger delivery methods', () => {
       methods.claimNextAgentTriggerDelivery({
         ...claimInput,
         workerId: 'old-worker',
-        workerCapabilities: [AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1],
+        /** Everything an earlier worker advertises, short of this capability. */
+        workerCapabilities: [
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+        ].filter((earlier) => earlier !== capability),
         claimToken: 'old-claim',
       }),
     ).resolves.toBeNull();

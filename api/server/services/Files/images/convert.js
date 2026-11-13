@@ -12,7 +12,7 @@ const { resizeImageBuffer } = require('./resize');
  * @param {Buffer | Express.Multer.File} file - The file object, containing either a path or a buffer.
  * @param {'low' | 'high'} [resolution='high'] - The desired resolution for the output image.
  * @param {string} [basename=''] - The basename of the input file, if it is a buffer.
- * @returns {Promise<{filepath: string, bytes: number, width: number, height: number, storageKey?: string, storageRegion?: string}>} An object containing the path, size, dimensions, and optional storage metadata of the converted image.
+ * @returns {Promise<{filepath: string, bytes: number, width: number, height: number, sha256: string, storageKey?: string, storageRegion?: string}>} Metadata and digest of the stored converted image.
  * @throws Throws an error if there is an issue during the conversion process.
  */
 async function convertImage(req, file, resolution = 'high', basename = '') {
@@ -38,7 +38,11 @@ async function convertImage(req, file, resolution = 'high', basename = '') {
       type,
     } = await resizeImageBuffer(inputBuffer, resolution);
 
-    const { buffer: outputBuffer, fileName: newFileName } = await convertImageBuffer({
+    const {
+      buffer: outputBuffer,
+      fileName: newFileName,
+      sha256,
+    } = await convertImageBuffer({
       buffer: resizedBuffer,
       type,
       fileName: path.basename(file.path ?? basename),
@@ -59,7 +63,7 @@ async function convertImage(req, file, resolution = 'high', basename = '') {
     });
 
     const bytes = Buffer.byteLength(outputBuffer);
-    return { filepath: savedFilePath, ...storageMetadata, bytes, width, height };
+    return { filepath: savedFilePath, ...storageMetadata, bytes, width, height, sha256 };
   } catch (err) {
     logger.error(err);
     throw err;
