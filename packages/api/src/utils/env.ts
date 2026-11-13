@@ -322,7 +322,7 @@ function processBodyPlaceholders(value: string, body: RequestBody): string {
 /**
  * Replaces agent field placeholders within a string.
  * Recognized placeholders: `{{LIBRECHAT_AGENT_<FIELD>}}` where `<FIELD>` ∈ ALLOWED_AGENT_FIELDS.
- * Only persisted agents resolve; ephemeral ids are left for a final pass to strip.
+ * Only persisted agents resolve; missing or ephemeral identities become an empty value.
  *
  * @param value - The string value to process
  * @param agent - The agent serving the request
