@@ -90,6 +90,23 @@ describe('ChatSessionProvider', () => {
     expect(pane).toHaveBeenLastCalledWith({ messages, isLoading: false });
   });
 
+  it('loads history but defers resume until the host has the saved record', () => {
+    const { host, useMessages } = createHost({
+      messages: null,
+      isLoading: false,
+      isFetching: false,
+    });
+    render(
+      <ChatHostProvider host={host}>
+        <ChatSessionProvider conversationId="convo-1" historyReady={false}>
+          {() => null}
+        </ChatSessionProvider>
+      </ChatHostProvider>,
+    );
+    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false });
+    expect(mockUseResumeOnLoad).toHaveBeenLastCalledWith('convo-1', expect.any(Function), 0, false);
+  });
+
   it('asks the host for a streaming-aware query while the pane submits', () => {
     getDefaultStore().set(isSubmittingFamily(1), true);
     const { host, useMessages } = createHost({ messages, isLoading: false, isFetching: false });

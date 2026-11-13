@@ -52,9 +52,9 @@ jest.mock('./MessagesView', () => ({
   __esModule: true,
   default: () => <MockCadence name="message-cadence" />,
 }));
-jest.mock('~/components/Chat/Subagents/SharedSubagentActivityDialog', () => ({
-  __esModule: true,
-  default: () => <MockCadence name="subagent-cadence" />,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  SharedSubagentActivityDialog: () => <MockCadence name="subagent-cadence" />,
 }));
 jest.mock('./ShareArtifacts', () => ({
   ShareArtifactsContainer: ({ mainContent }: { mainContent: React.ReactNode }) => mainContent,

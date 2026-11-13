@@ -30,6 +30,7 @@ export const JOB_STORE_V2_REQUIRED_METHODS = [
   'claimParkedSteersDetailed',
   'consumeParkedSteer',
   'discardSteerLeftover',
+  'promoteSteerLeftover',
   'settleEarlyBufferRecovery',
   'finalizeEarlyBufferOverflow',
   'hasSubscriberAttached',

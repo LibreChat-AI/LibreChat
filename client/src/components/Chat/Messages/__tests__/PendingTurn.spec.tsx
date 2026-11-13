@@ -84,7 +84,7 @@ describe('PendingTurn', () => {
     expect(row.querySelector('.message-render')).not.toBeNull();
     expect(row.querySelector('.user-turn')).not.toBeNull();
     expect(row).toHaveTextContent('queued follow-up');
-    expect(screen.getByRole('status')).toHaveTextContent('com_ui_queued_turn_starting');
+    expect(screen.getByRole('status')).toHaveTextContent('Starting as the next turn');
     expect(container.querySelectorAll('button')).toHaveLength(0);
   });
 

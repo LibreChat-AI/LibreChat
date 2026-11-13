@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Input } from '@librechat/client';
-import CopyButton from '~/components/Messages/Content/CopyButton';
+import { CopyButton } from '@librechat/chat/components';
 import { useCopyToClipboard, useLocalize } from '~/hooks';
 import { useLiveAnnouncer } from '~/Providers';
 

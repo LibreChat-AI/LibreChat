@@ -1,7 +1,7 @@
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { Button, useRemScale } from '@librechat/client';
-import { FileContainer } from '@librechat/chat/components';
+import { FileContainer, useExpandCollapse } from '@librechat/chat/components';
 import { Loader2, AlertCircle, Download, ChevronDown, Files as FilesIcon } from 'lucide-react';
 import {
   ARTIFACT_ROW_NAV_SPACING,
@@ -20,8 +20,8 @@ import {
   isTextAttachment,
   renderAttachmentKey,
 } from './attachmentTypes';
-import { useLocalize, useAttachmentPreviewSync, useExpandCollapse } from '~/hooks';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
+import { useLocalize, useAttachmentPreviewSync } from '~/hooks';
 import Image from '~/components/Chat/Messages/Content/Image';
 import ToolMermaidArtifact from './ToolMermaidArtifact';
 import ToolArtifactCard from './ToolArtifactCard';
@@ -262,7 +262,7 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
       </button>
       <div id={panelId} style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef} aria-hidden={!isExpanded}>
-          <div className="flex flex-col gap-2.5 pt-2">
+          <div className="flex flex-col gap-2.5 pt-1">
             {groupedAttachments.files.length > 0 && (
               <div className="flex flex-wrap items-center gap-2.5">
                 {groupedAttachments.files.map((attachment, index) => (

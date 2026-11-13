@@ -7,7 +7,6 @@ import {
   FileSources,
   getCodeEnvRefs,
   canToolResourceConsume,
-  hasToolResourceDestination,
 } from 'librechat-data-provider';
 import type {
   AgentToolResources,
@@ -20,7 +19,12 @@ import type { IMongoFile, AppConfig, IUser } from '@librechat/data-schemas';
 import type { FilterQuery, QueryOptions, ProjectionType } from 'mongoose';
 import type { CodeExecutionContext } from './execution';
 import type { ServerRequest } from '~/types';
-
+import {
+  getCodeFileDestination,
+  selectCodeFileGenerations,
+  planCodeSnapshotMounts,
+} from '~/files/code/destinations';
+import { allowsFileResource } from '~/files/consumers';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { TOOL_RESOURCE_KEYS } from './orphans';
 
@@ -327,6 +331,7 @@ const categorizeFileForToolResources = ({
   requestFileSet,
   processedResourceFiles,
   agentScoped = false,
+  codeFileIds,
   agentId,
   userId,
 }: {
@@ -336,12 +341,17 @@ const categorizeFileForToolResources = ({
   processedResourceFiles: Set<string>;
   /** Whether this file's vectors were embedded under the agent's entity_id. */
   agentScoped?: boolean;
+  codeFileIds: ReadonlySet<string>;
   /** The agent whose vector namespace this turn will search, when one is scoped. */
   agentId?: string;
   /** Owner of the unscoped namespace, which is where anything not agent-scoped lands. */
   userId?: string;
 }): void => {
-  if (file.metadata?.codeEnvRef || file.metadata?.codeEnvRefs) {
+  if (
+    file.context !== FileContext.execute_code_snapshot &&
+    codeFileIds.has(file.file_id) &&
+    (file.metadata?.codeEnvRef || file.metadata?.codeEnvRefs)
+  ) {
     addFileToResource({
       file,
       resourceType: EToolResources.execute_code,
@@ -443,6 +453,8 @@ const withDeferredCandidates = (
 const computeProvisionState = async ({
   req,
   attachments,
+  codeFileIds,
+  codeSnapshotMounts,
   resourcePrincipal,
   enabledToolResources,
   tool_resources,
@@ -463,6 +475,8 @@ const computeProvisionState = async ({
 }: {
   req?: ServerRequest;
   attachments: Array<TFile>;
+  codeFileIds: ReadonlySet<string>;
+  codeSnapshotMounts: ReadonlyMap<string, string>;
   agentId?: string;
   codeRouteKey?: string;
   /** Base URL of the deployment this turn runs on, used to probe its own refs. */
@@ -488,28 +502,8 @@ const computeProvisionState = async ({
     return undefined;
   }
 
-  /* The legacy chooser makes the destination an explicit user decision, so a file it
-   * uploaded carries no reference for the destinations the user declined, and queueing on
-   * a missing reference would read those declines as work to do. The decision belongs to
-   * the file, not to this request: the endpoint deciding this turn need not be the one it
-   * was uploaded under. Records predating the marker were written by the chooser flow,
-   * so their existing resource membership/reference is the only durable destination evidence. */
-  const cameFromChooser = (file: TFile): boolean => {
-    const choice = file.metadata?.destinationChosen;
-    return choice == null ? true : choice;
-  };
-
-  /* Search intent survives vector cleanup without claiming the vectors still exist.
-   * A chooser's other destinations remain declined unless membership or a copy proves them. */
-  const allowsResource = (file: TFile, resourceType: EToolResources): boolean => {
-    if (!cameFromChooser(file)) {
-      return true;
-    }
-    const isPersistedResource =
-      file.file_id != null &&
-      persistedResourceMembership?.get(resourceType)?.has(file.file_id) === true;
-    return isPersistedResource || hasToolResourceDestination(file, resourceType);
-  };
+  const allowsResource = (file: TFile, resource: EToolResources): boolean =>
+    allowsFileResource(file, resource, persistedResourceMembership);
   const provisionable = attachments.filter(
     (file) =>
       file != null &&
@@ -603,7 +597,12 @@ const computeProvisionState = async ({
   const canProbeRoute = activeCodeRouteKey === 'default' || codeBaseUrl != null;
   const filesWithIdentifiers =
     needsCodeEnv && checkSessionsAlive && canProbeRoute
-      ? provisionable.filter((f) => f?.file_id && codeEnvRefForRoute(f, activeCodeRouteKey))
+      ? provisionable.filter(
+          (f) =>
+            f.context !== FileContext.execute_code_snapshot &&
+            codeFileIds.has(f.file_id) &&
+            codeEnvRefForRoute(f, activeCodeRouteKey),
+        )
       : [];
 
   /** Code API auth is optional: deployments may use a legacy key, JWT bearer minting,
@@ -654,6 +653,7 @@ const computeProvisionState = async ({
   const codeEnvFiles: TFile[] = [];
   const codeEnvRecoveryNames: NonNullable<ProvisionState['codeEnvRecoveryNames']> = new Map();
   const vectorDBFiles: TFile[] = [];
+  const displacedCodeFileIds = new Set<string>();
 
   for (const file of provisionable) {
     if (!file?.file_id) {
@@ -680,6 +680,7 @@ const computeProvisionState = async ({
      * the sandbox refuses aborts the tool batch over a file meant for the model. */
     if (
       needsCodeEnv &&
+      codeFileIds.has(file.file_id) &&
       allowsResource(file, EToolResources.execute_code) &&
       canToolResourceConsume(EToolResources.execute_code, file.type ?? '')
     ) {
@@ -693,7 +694,18 @@ const computeProvisionState = async ({
        *  added to execute_code resources, so the check runs before the processed
        *  guard. Clear both the legacy ref and its route entry, else getCodeEnvRefs
        *  keeps resolving the dead session over the re-provisioned one. */
-      if (isStale) {
+      const plannedName = codeSnapshotMounts.get(file.file_id);
+      const displaced =
+        routeRef != null &&
+        plannedName != null &&
+        (plannedName !==
+          (routeRef.sandboxFilename ?? getCodeFileDestination(file, activeCodeRouteKey)) ||
+          (file.context === FileContext.execute_code &&
+            plannedName !== getCodeFileDestination(file, activeCodeRouteKey)));
+      if (file.context === FileContext.execute_code_snapshot || displaced) {
+        codeEnvFiles.push(file);
+        if (displaced) displacedCodeFileIds.add(file.file_id);
+      } else if (isStale) {
         if (routeRef?.sandboxFilename) {
           codeEnvRecoveryNames.set(file.file_id, {
             name: routeRef.sandboxFilename,
@@ -749,12 +761,22 @@ const computeProvisionState = async ({
     }
   }
 
+  // A renamed receipt is not byte identity. Only its primary-storage reupload may mount it.
+  const codeResource = tool_resources[EToolResources.execute_code];
+  if (codeResource && displacedCodeFileIds.size > 0) {
+    codeResource.file_ids = codeResource.file_ids?.filter((id) => !displacedCodeFileIds.has(id));
+    codeResource.files = codeResource.files?.filter(
+      (file) => !displacedCodeFileIds.has(file.file_id),
+    );
+  }
+
   if (codeEnvFiles.length === 0 && vectorDBFiles.length === 0) {
     return undefined;
   }
   return {
     codeEnvFiles,
     codeEnvRecoveryNames,
+    codeEnvDestinations: new Map(codeSnapshotMounts),
     vectorDBFiles,
     aliveFileIds: aliveFileIds ?? new Set(),
     agentScopedFileIds: new Set(scopedIds),
@@ -775,6 +797,8 @@ export const primeResources = async ({
   checkSessionsAlive,
   loadCodeApiKey,
   provisionCandidates,
+  excludedCodeFileIds,
+  codeSnapshotMounts: admittedSnapshotMounts,
   screenPersistentFiles,
   adoptLegacySearchEmbeddings,
   hasEntityEmbeddings,
@@ -802,6 +826,9 @@ export const primeResources = async ({
    *  provisioning only and never returned as attachments: re-delivering an earlier
    *  upload to the model on every later turn is not the intent. */
   provisionCandidates?: Array<TFile>;
+  /** Pre-admission code losers may still be needed by search or prompt delivery. */
+  excludedCodeFileIds?: ReadonlySet<string>;
+  codeSnapshotMounts?: ReadonlyMap<string, string>;
   /** True when this endpoint still shows the explicit upload-destination chooser. */
   /** Applies the caller's endpoint and content policies. Persistent agent files are read
    *  here rather than by the caller, so the caller has no chance to screen them itself
@@ -964,35 +991,77 @@ export const primeResources = async ({
           agentId,
         });
       }
+    }
 
-      if (screenPersistentFiles) {
-        const admitted = screenPersistentFiles(persistedResourceFiles);
-        /* The tool primers read tool_resources ids directly and re-check only access, so
-         * a record dropped here still reaches the Code API or RAG unless its id goes with
-         * it. Screening the hydrated list alone screens nothing. */
-        if (admitted.length !== persistedResourceFiles.length) {
-          const admittedIds = new Set(
-            admitted.map((file) => file.file_id).filter((id): id is string => id != null),
-          );
-          const rejectedIds = persistedResourceFiles
-            .map((file) => file.file_id)
-            .filter((id): id is string => id != null && !admittedIds.has(id));
-          const runtimeResources = [
-            tool_resources[EToolResources.execute_code],
-            tool_resources[EToolResources.file_search],
-          ];
-          for (const resource of runtimeResources) {
-            if (resource?.file_ids == null) {
-              continue;
-            }
-            resource.file_ids = resource.file_ids.filter((id: string) => !rejectedIds.includes(id));
+    const files = _attachments ? await _attachments : [];
+    const codeCandidates = withDeferredCandidates(
+      persistedResourceFiles,
+      withDeferredCandidates(
+        files.filter((file): file is TFile => file != null),
+        provisionCandidates,
+      ),
+    );
+    const eligibleCodeFiles = codeCandidates.filter(
+      (file) =>
+        !excludedCodeFileIds?.has(file.file_id) &&
+        allowsFileResource(file, EToolResources.execute_code, persistedResourceMembership),
+    );
+    const codeFileIds = new Set(
+      selectCodeFileGenerations(
+        eligibleCodeFiles,
+        persistedResourceFileIds,
+        codeRouteKey,
+      ).files.flatMap((file) => (file ? [file.file_id] : [])),
+    );
+    const codeSnapshotMounts = planCodeSnapshotMounts(
+      eligibleCodeFiles.filter((file) => codeFileIds.has(file.file_id)),
+      persistedResourceFileIds,
+      codeRouteKey,
+      admittedSnapshotMounts,
+    );
+    const supersededCodeFileIds = new Set(
+      codeCandidates.filter((file) => !codeFileIds.has(file.file_id)).map((file) => file.file_id),
+    );
+    const codeResource = tool_resources[EToolResources.execute_code];
+    if (codeResource?.file_ids) {
+      codeResource.file_ids = codeResource.file_ids.filter((id) => !supersededCodeFileIds.has(id));
+    }
+
+    persistedResourceFiles = persistedResourceFiles.filter(
+      (file) =>
+        codeFileIds.has(file.file_id) ||
+        (enabledToolResources?.has(EToolResources.file_search) &&
+          allowsFileResource(file, EToolResources.file_search, persistedResourceMembership)) ||
+        contextFileIds.has(file.file_id) ||
+        imageEditFileIdSet.has(file.file_id),
+    );
+    if (screenPersistentFiles && persistedResourceFileIds.size > 0) {
+      const admitted = screenPersistentFiles(persistedResourceFiles);
+      /* The tool primers read tool_resources ids directly and re-check only access, so
+       * a record dropped here still reaches the Code API or RAG unless its id goes with
+       * it. Screening the hydrated list alone screens nothing. */
+      if (admitted.length !== persistedResourceFiles.length) {
+        const admittedIds = new Set(
+          admitted.map((file) => file.file_id).filter((id): id is string => id != null),
+        );
+        const rejectedIds = persistedResourceFiles
+          .map((file) => file.file_id)
+          .filter((id): id is string => id != null && !admittedIds.has(id));
+        const runtimeResources = [
+          tool_resources[EToolResources.execute_code],
+          tool_resources[EToolResources.file_search],
+        ];
+        for (const resource of runtimeResources) {
+          if (resource?.file_ids == null) {
+            continue;
           }
-          for (const id of rejectedIds) {
-            toolResourceFileIds.delete(id);
-          }
+          resource.file_ids = resource.file_ids.filter((id: string) => !rejectedIds.includes(id));
         }
-        persistedResourceFiles = admitted;
+        for (const id of rejectedIds) {
+          toolResourceFileIds.delete(id);
+        }
       }
+      persistedResourceFiles = admitted;
     }
 
     for (const file of persistedResourceFiles) {
@@ -1008,6 +1077,7 @@ export const primeResources = async ({
           tool_resources,
           requestFileSet,
           processedResourceFiles,
+          codeFileIds,
           agentScoped: agentId != null && isAgentScopedFile(file),
           agentId,
           userId: resourcePrincipal?.id,
@@ -1042,6 +1112,8 @@ export const primeResources = async ({
           ...(provisionCandidates ?? []),
           ...resourceProvisionCandidates,
         ]),
+        codeFileIds,
+        codeSnapshotMounts,
         resourcePrincipal,
         enabledToolResources,
         tool_resources,
@@ -1071,7 +1143,6 @@ export const primeResources = async ({
       };
     }
 
-    const files = await _attachments;
     const requestAttachmentFileIds = new Set<string>();
 
     for (const file of files) {
@@ -1084,6 +1155,7 @@ export const primeResources = async ({
         tool_resources,
         requestFileSet,
         processedResourceFiles,
+        codeFileIds,
         userId: resourcePrincipal?.id,
       });
 
@@ -1111,6 +1183,8 @@ export const primeResources = async ({
         ...(provisionCandidates ?? []),
         ...resourceProvisionCandidates,
       ]),
+      codeFileIds,
+      codeSnapshotMounts,
       resourcePrincipal,
       enabledToolResources,
       tool_resources,

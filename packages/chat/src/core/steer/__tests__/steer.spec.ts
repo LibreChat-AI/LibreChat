@@ -12,6 +12,7 @@ import {
   mergeRestagedQuotes,
   collectDroppedSteerQuotes,
   carriedSteerContext,
+  canPromoteLeftover,
 } from '../steer';
 
 const buildEvent = (overrides: Partial<TSteerAppliedEvent> = {}): TSteerAppliedEvent => ({
@@ -51,6 +52,31 @@ describe('carriedSteerContext', () => {
       manualSkills: ['writer'],
       reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
     });
+  });
+});
+
+describe('canPromoteLeftover', () => {
+  it('lets a steer whose words and quotes all ride the POST become a durable queued turn', () => {
+    expect(canPromoteLeftover({})).toBe(true);
+    expect(canPromoteLeftover({ quotes: ['excerpt'], manualSkills: [] })).toBe(true);
+  });
+
+  it('keeps a steer carrying tab-only context on the local restore path', () => {
+    expect(canPromoteLeftover({ manualSkills: ['writer'] })).toBe(false);
+    expect(
+      canPromoteLeftover({
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      }),
+    ).toBe(false);
+    expect(
+      canPromoteLeftover({
+        queuedOrigin: {
+          item: { id: 'row', text: 'row', createdAt: 1 },
+          beforeIds: [],
+          afterIds: [],
+        },
+      }),
+    ).toBe(false);
   });
 });
 

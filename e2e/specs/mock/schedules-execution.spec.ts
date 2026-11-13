@@ -233,7 +233,13 @@ test.describe('scheduled chat execution', () => {
     const save = editDialog.getByRole('button', { name: 'Save' });
     await save.scrollIntoViewIfNeeded();
     await expect(save).toBeInViewport();
+    /** The reload discards a request still in flight, so the save has to land before it. */
+    const saved = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'PATCH' && response.url().includes('/api/schedules/'),
+    );
     await save.click();
+    expect((await saved).ok()).toBeTruthy();
 
     await page.reload();
     await openSchedulesPanel(page);

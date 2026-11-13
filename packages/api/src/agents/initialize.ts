@@ -125,6 +125,7 @@ import {
 } from '../projects/context';
 import { assertChatProjectInstructions, ChatProjectResourcesChangedError } from '../projects/turn';
 import { extractAgentContent, extractSkillContent } from '../protection/adapters/submissions';
+import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
@@ -147,6 +148,8 @@ import { resolveAgentCodeExecution } from '~/code/agent';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { applyBackgroundToolCalls } from './background';
 import { admitCurrentFileBudget } from './files/budget';
+import { allowsFileResource } from '~/files/consumers';
+import { applyDeferredToolLoading } from './deferral';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
 import { getAgentInferencePolicy } from './input';
@@ -988,6 +991,8 @@ export interface InitializeAgentParams {
     /** Serializable tool definitions for event-driven mode */
     toolDefinitions?: LCTool[];
     hasDeferredTools?: boolean;
+    /** Whether the `deferred_tools` capability is enabled for this agent's run. */
+    deferredToolsEnabled?: boolean;
     mcpToolAliases?: MCPToolAlias[];
     actionsEnabled?: boolean;
     /** Action tool names backed by OAuth — excluded from background dispatch. */
@@ -1920,12 +1925,44 @@ export async function initializeAgent(
     currentFiles = requestUsageFiles.concat(toolUsageFiles);
   }
   if (currentFiles?.length) {
-    /* Before any check reads the route: endpoint filtering, model-bound limits and content
-     * inspection below all have to judge each file by the route this turn delivers it by. */
     currentFiles = applyTurnDelivery(currentFiles, {
       routing: deliveryRouting,
       consumers: fileConsumers,
     });
+  }
+  const excludedCodeFileIds = new Set<string>();
+  let codeSnapshotMounts: Map<string, string> | undefined;
+  if (wantsCodeFiles) {
+    const membership = new Map<EToolResources, ReadonlySet<string>>([
+      [EToolResources.execute_code, new Set(agent.tool_resources?.execute_code?.file_ids)],
+      [EToolResources.file_search, new Set(agent.tool_resources?.file_search?.file_ids)],
+    ]);
+    const candidates = [...(currentFiles ?? []), ...deferredProvisionFiles].filter((file) =>
+      allowsFileResource(file, EToolResources.execute_code, membership),
+    );
+    const privateIds = new Set(
+      Object.values(agent.tool_resources ?? {}).flatMap((resource) => resource?.file_ids ?? []),
+    );
+    const selected = new Set(
+      selectCodeFileGenerations(
+        candidates,
+        privateIds,
+        codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
+      ).files.flatMap((file) => (file ? [file.file_id] : [])),
+    );
+    for (const file of candidates)
+      if (!selected.has(file.file_id)) excludedCodeFileIds.add(file.file_id);
+    codeSnapshotMounts = planCodeSnapshotMounts(
+      candidates.filter((file) => selected.has(file.file_id)),
+      privateIds,
+      codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
+    );
+    const needed = (file: IMongoFile | TFile): boolean =>
+      !excludedCodeFileIds.has(file.file_id) ||
+      isModelBoundAttachmentFile(file) ||
+      (wantsSearchFiles && allowsFileResource(file, EToolResources.file_search, membership));
+    currentFiles = currentFiles?.filter(needed);
+    deferredProvisionFiles = deferredProvisionFiles.filter(needed);
   }
 
   let endpointFileType: EModelEndpoint | undefined;
@@ -2094,6 +2131,8 @@ export async function initializeAgent(
     adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
     hasEntityEmbeddings: db.hasEntityEmbeddings,
     provisionCandidates: deferredProvisionFiles as unknown as TFile[],
+    excludedCodeFileIds,
+    codeSnapshotMounts,
     codeRouteKey: codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
     codeBaseUrl: codeExecutionContext.baseUrl,
     codeExecutionProfile: codeExecutionContext.executionProfile,
@@ -2245,14 +2284,15 @@ export async function initializeAgent(
   }
 
   const {
-    toolRegistry,
+    toolRegistry: loadedToolRegistry,
     toolContextMap,
     dynamicToolContextMap,
     userMCPAuthMap,
     toolDefinitions: loadedToolDefinitions,
     mcpAvailableTools,
     requestScopedConnections,
-    hasDeferredTools,
+    hasDeferredTools: loadedHasDeferredTools,
+    deferredToolsEnabled,
     mcpToolAliases,
     actionsEnabled,
     oauthActionToolNames,
@@ -2313,6 +2353,8 @@ export async function initializeAgent(
   }
 
   let toolDefinitions = loadedToolDefinitions;
+  let toolRegistry = loadedToolRegistry;
+  let hasDeferredTools = loadedHasDeferredTools;
 
   /**
    * Tolerant filter: anything `loadTools` couldn't resolve (capability
@@ -2726,6 +2768,32 @@ export async function initializeAgent(
   }
   if (intentSanitized.semanticIntentBlockedToolNames.length > 0) {
     semanticIntentBlockedToolNames = intentSanitized.semanticIntentBlockedToolNames;
+  }
+
+  /**
+   * Deferral runs on the final definition set so system tools registered above
+   * (code, memory, file authoring, the skill catalog) can be deferred like MCP
+   * tools, and a definition the intent pass replaced is deferred in its final
+   * form. A loader that returned early for an agent with no configured tools
+   * reports no capability, so the endpoint's capability list decides then.
+   */
+  const deferralEnabled =
+    deferredToolsEnabled ??
+    (appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? []).includes(
+      AgentCapabilities.deferred_tools,
+    );
+  if (deferralEnabled) {
+    const deferral = applyDeferredToolLoading({
+      toolDefinitions,
+      toolRegistry,
+      toolOptions: agent.tool_options,
+      capabilityToolNames,
+      provider: agent.provider,
+      hasDeferredTools,
+    });
+    toolDefinitions = deferral.toolDefinitions;
+    toolRegistry = deferral.toolRegistry;
+    hasDeferredTools = deferral.hasDeferredTools;
   }
 
   const hasFinalAgentTools =

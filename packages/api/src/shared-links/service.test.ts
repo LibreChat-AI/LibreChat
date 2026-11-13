@@ -8,6 +8,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createModels, createMethods } from '@librechat/data-schemas';
 import { PrincipalType, AccessRoleIds } from 'librechat-data-provider';
 import type { IAclEntry, ISharedLink } from '@librechat/data-schemas';
+import { AccessControlService } from '~/acl/accessControlService';
 import {
   autoMigrateLegacyLink,
   grantCreationPermissions,
@@ -182,6 +183,44 @@ describe('autoMigrateLegacyLink', () => {
       principalType: PrincipalType.USER,
     }).lean();
     expect(ownerEntries).toHaveLength(1);
+  });
+
+  /**
+   * The share page requests a link's config and its messages together, and both requests run the
+   * migration. Each finds no grant, so each used to write its own.
+   */
+  test('grants each principal once when a legacy link is first viewed by concurrent requests', async () => {
+    const links = await Promise.all(Array.from({ length: 40 }, () => createLegacyLink(true)));
+
+    /** One link at a time keeps each link's requests overlapping instead of queueing for a socket. */
+    for (const link of links) {
+      await Promise.all(
+        Array.from({ length: 8 }, () =>
+          autoMigrateLegacyLink({
+            _id: link._id,
+            conversationId: link.conversationId,
+            user: userId,
+            shareId: link.shareId,
+            isPublic: true,
+          }),
+        ),
+      );
+    }
+
+    const entries = await AclEntry.find({
+      resourceId: { $in: links.map((link) => link._id) },
+    }).lean();
+    const grants = new Map<string, number>();
+    for (const entry of entries) {
+      const grant = `${entry.resourceId.toString()}:${entry.principalType}`;
+      grants.set(grant, (grants.get(grant) ?? 0) + 1);
+    }
+    expect(grants.size).toBe(links.length * 2);
+    expect([...grants.values()].every((count) => count === 1)).toBe(true);
+    const migrated = await mongoose.connection
+      .db!.collection('sharedlinks')
+      .countDocuments({ _id: { $in: links.map((link) => link._id) }, isPublic: { $exists: true } });
+    expect(migrated).toBe(0);
   });
 });
 
@@ -406,5 +445,51 @@ describe('deleteAllSharedLinksWithCleanup', () => {
     const result = await deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true });
     expect(result.deletedCount).toBe(1);
     expect(await AclEntry.countDocuments({ resourceId: link._id })).toBe(0);
+  });
+});
+
+describe('persistence failures', () => {
+  test.each([1, 2])(
+    'compensates link and ACL after grant %s partially writes then fails',
+    async (failingGrant) => {
+      const link = await createTestLink();
+      const original = AccessControlService.prototype.grantPermission;
+      let calls = 0;
+      const grant = jest
+        .spyOn(AccessControlService.prototype, 'grantPermission')
+        .mockImplementation(async function (this: AccessControlService, params) {
+          const result = await original.call(this, params);
+          if (++calls === failingGrant) {
+            throw new Error('grant failed');
+          }
+          return result;
+        });
+      try {
+        await expect(grantCreationPermissions(link._id, userId, true)).rejects.toThrow(
+          'grant failed',
+        );
+        expect(await SharedLink.findById(link._id)).toBeNull();
+        expect(await AclEntry.countDocuments({ resourceId: link._id })).toBe(0);
+      } finally {
+        grant.mockRestore();
+      }
+    },
+  );
+
+  test('expiration update failures reject instead of reporting success', async () => {
+    const link = await createTestLink();
+    const update = jest.spyOn(AclEntry, 'updateMany').mockRejectedValueOnce(new Error('acl down'));
+    await expect(updateSharedLinkPermissionsExpiration(link._id, null)).rejects.toThrow('acl down');
+    update.mockRestore();
+  });
+
+  test('ordinary deletion remains successful when ACL cleanup fails', async () => {
+    const link = await createTestLink();
+    const cleanup = jest.spyOn(AclEntry, 'deleteMany').mockRejectedValueOnce(new Error('acl down'));
+    await expect(deleteSharedLinkWithCleanup(userId, link.shareId!)).resolves.toMatchObject({
+      success: true,
+    });
+    expect(await SharedLink.findById(link._id)).toBeNull();
+    cleanup.mockRestore();
   });
 });

@@ -9,6 +9,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
+import { unroute } from './fixtures';
 
 const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 
@@ -626,6 +627,9 @@ async function clickForkVisibleMessages(
   await render.scrollIntoViewIfNeeded();
   await render.hover();
   await render.getByRole('button', { name: 'Open Fork Menu' }).click();
+  const popover = page.getByRole('dialog', { name: 'Fork conversation' });
+  await popover.getByRole('button', { name: 'More options' }).click();
+  await popover.getByRole('radio', { name: 'Visible', exact: true }).click();
 
   const [response] = await Promise.all([
     page.waitForResponse(
@@ -635,7 +639,7 @@ async function clickForkVisibleMessages(
         res.status() === 200,
       { timeout: 30000 },
     ),
-    page.getByRole('button', { name: 'Visible messages only', exact: true }).click(),
+    popover.getByRole('button', { name: 'Fork', exact: true }).click(),
   ]);
 
   return (await response.json()) as ForkResponse;
@@ -1268,7 +1272,7 @@ test.describe('message tree stream operations', () => {
     await expect(page.getByRole('textbox', { name: 'Message input' })).toBeEnabled({
       timeout: 30000,
     });
-    await page.unroute('**/api/agents/chat**', failGenerationStart);
+    await unroute(page, '**/api/agents/chat**', failGenerationStart);
 
     await sendAndExpectReply(page, afterFailurePrompt, afterFailureReply);
     const messages = await waitForMessages(

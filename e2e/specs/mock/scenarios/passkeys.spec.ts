@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import { expect, test } from '@playwright/test';
 import type {
   APIRequestContext,
   Browser,
@@ -7,7 +6,14 @@ import type {
   CDPSession,
   Page,
 } from '@playwright/test';
-import { seedPasskey, deleteUserByEmail, countUserPasskeys, enableTwoFactorFlag } from '../db';
+import {
+  seedPasskey,
+  deleteUserByEmail,
+  countUserPasskeys,
+  enableTwoFactorFlag,
+  seedPasswordReset,
+} from '../db';
+import { closeContext, expect, test, unroute } from '../fixtures';
 import { NEW_CHAT_PATH } from '../helpers';
 import { getPrimaryE2EUser } from '../../../setup/users.mock';
 
@@ -161,7 +167,9 @@ test.describe('passkeys', () => {
   let context: BrowserContext | undefined;
 
   test.afterEach(async () => {
-    await context?.close();
+    if (context) {
+      await closeContext(context);
+    }
     context = undefined;
     if (user) {
       await deleteUserByEmail(user.email);
@@ -426,14 +434,15 @@ test.describe('passkeys', () => {
         data: { email: user.email },
       });
       expect(resetRequest.ok()).toBeTruthy();
-      const { link } = (await resetRequest.json()) as { link?: string };
-      expect(link).toBeTruthy();
-      const resetUrl = new URL(link as string);
+      expect(await resetRequest.json()).toEqual({
+        message: 'If an account with that email exists, a password reset link has been sent to it.',
+      });
+      const resetToken = await seedPasswordReset(user.email);
       const newPassword = 'passkey-e2e-password-2';
       const reset = await request.post('/api/auth/resetPassword', {
         data: {
-          userId: resetUrl.searchParams.get('userId'),
-          token: resetUrl.searchParams.get('token'),
+          userId: user.id,
+          token: resetToken,
           password: newPassword,
           confirm_password: newPassword,
         },
@@ -494,7 +503,7 @@ test.describe('passkeys', () => {
       cappedDialog.getByText('You have reached the maximum number of passkeys'),
     ).toBeVisible();
 
-    await page.unroute('**/api/config');
+    await unroute(page, '**/api/config');
     await page.keyboard.press('Escape');
     await expect(cappedDialog).toBeHidden();
     await page

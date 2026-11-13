@@ -21,6 +21,7 @@ const {
   timeAuthUserLookup,
   getHttpsProxyAgent,
   isAccessTokenJwt,
+  getOpenIDBearerAudiences,
   math,
 } = require('@librechat/api');
 const { updateUser, findUser, isAgentTriggerPrincipalActive } = require('~/models');
@@ -35,17 +36,12 @@ function decodeJwtExpiry(token) {
   }
 }
 
-const parseOpenIdAudiences = () =>
-  (process.env.OPENID_AUDIENCE ?? '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-
 const getOpenIdJwtAudience = () => {
-  const audiences = [process.env.OPENID_CLIENT_ID, ...parseOpenIdAudiences()].filter(Boolean);
-  const uniqueAudiences = [...new Set(audiences)];
-
-  return uniqueAudiences.length > 1 ? uniqueAudiences : uniqueAudiences[0];
+  const audiences = getOpenIDBearerAudiences(
+    process.env.OPENID_CLIENT_ID,
+    process.env.OPENID_AUDIENCE,
+  );
+  return audiences.length > 1 ? audiences : audiences[0];
 };
 
 /** The configured audiences a reused bearer is weighed against when deciding whether it is an access token */
@@ -53,7 +49,11 @@ const getOpenIdAudienceConfig = () => {
   const clientId = process.env.OPENID_CLIENT_ID;
   return {
     clientId,
-    resources: new Set(parseOpenIdAudiences().filter((audience) => audience !== clientId)),
+    resources: new Set(
+      getOpenIDBearerAudiences(undefined, process.env.OPENID_AUDIENCE).filter(
+        (audience) => audience !== clientId,
+      ),
+    ),
   };
 };
 

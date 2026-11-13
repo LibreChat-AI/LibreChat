@@ -1,4 +1,8 @@
-import { CREDITS_PER_USD, getRefillEligibilityDate } from 'librechat-data-provider';
+import {
+  CREDITS_PER_USD,
+  getGrantedAllotment,
+  getRefillEligibilityDate,
+} from 'librechat-data-provider';
 import type { BalanceDisplay, BalanceRefillMode, TBalanceResponse } from 'librechat-data-provider';
 import type { CurrencyConfig } from './tokens';
 import { formatCost } from './tokens';
@@ -15,7 +19,8 @@ export type BalanceTone = 'normal' | 'warning' | 'danger';
 export interface BalanceSummary {
   display: BalanceDisplay;
   credits: number;
-  /** Credits one period grants: the refill amount under auto-refill, else the starting balance. */
+  /** Credits the current period started with: the stored grant, else the configured refill
+   *  amount under auto-refill, else the starting balance. */
   allotment: number | null;
   /** Whole percent of the allotment spent, 0–100; 100 once credits run out, else null without
    *  an allotment to measure against. */
@@ -70,7 +75,7 @@ export function summarizeBalance(
 ): BalanceSummary {
   const credits = Number.isFinite(balance.tokenCredits) ? balance.tokenCredits : 0;
   const refillAmount = balance.autoRefillEnabled ? positive(balance.refillAmount) : null;
-  const allotment = refillAmount ?? positive(startBalance);
+  const allotment = getGrantedAllotment(balance) ?? refillAmount ?? positive(startBalance);
   const usedPercent = getUsedPercent(credits, allotment);
 
   let tone: BalanceTone = 'normal';

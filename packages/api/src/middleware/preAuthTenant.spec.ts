@@ -184,3 +184,25 @@ describe('preAuthTenantMiddleware', () => {
     );
   });
 });
+
+describe('reserved tenant header boundary', () => {
+  it('rejects the tenantless persistence sentinel before invoking unauthenticated handlers', () => {
+    const previous = process.env.TRUST_TENANT_HEADER;
+    process.env.TRUST_TENANT_HEADER = 'true';
+    const response = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+    try {
+      preAuthTenantMiddleware(
+        { headers: { 'x-tenant-id': '_' } } as unknown as Request,
+        response as unknown as Response,
+        next,
+      );
+      expect(response.status).toHaveBeenCalledWith(400);
+      expect(response.json).toHaveBeenCalledWith({ error: 'Reserved tenant identifier' });
+      expect(next).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.TRUST_TENANT_HEADER;
+      else process.env.TRUST_TENANT_HEADER = previous;
+    }
+  });
+});

@@ -222,8 +222,8 @@ describe('Button', () => {
      *  text through itself while every neighbour sits on `bg-presentation`. */
     expect(screen.getByRole('button', { name: 'Toggle' })).toHaveClass(
       'bg-presentation',
-      'border-border-chrome',
-      'rounded-xl',
+      'border-border-light',
+      'rounded-theme-control',
       'duration-0',
       'hover:bg-surface-active-alt',
     );
@@ -241,7 +241,7 @@ describe('Button', () => {
     );
 
     const button = screen.getByRole('button', { name: 'Back' });
-    expect(button).toHaveClass('rounded-xl', 'h-theme-button-sm', 'bg-presentation');
+    expect(button).toHaveClass('rounded-theme-control', 'h-theme-button-sm', 'bg-presentation');
     expect(button).not.toHaveClass('rounded-lg');
 
     rerender(

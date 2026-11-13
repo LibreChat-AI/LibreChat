@@ -108,7 +108,11 @@ export default function ToolApproval({
   const localize = useLocalize();
   const invalidJsonId = useId();
   const allowAlwaysHintId = useId();
-  const { actionId, allowed_decisions: allowedDecisions, description } = approval;
+  const { actionId, description } = approval;
+  /** A stored approval can lack the decision list. The hooks below still run on an empty one, and
+   *  the card renders nothing for it rather than crashing the message. */
+  const hasDecisions = Array.isArray(approval.allowed_decisions);
+  const allowedDecisions = hasDecisions ? approval.allowed_decisions : [];
   const rememberScope = approval.remember_scope;
   const rememberUnavailable = approval.remember_unavailable;
   const unavailableLabels: Record<NonNullable<typeof rememberUnavailable>, TranslationKeys> = {
@@ -340,6 +344,10 @@ export default function ToolApproval({
   const descriptionNode = safeDescription != null && safeDescription.length > 0 && (
     <p className="text-text-secondary text-sm">{safeDescription}</p>
   );
+
+  if (!hasDecisions) {
+    return null;
+  }
 
   if (deferToComposer) {
     return (

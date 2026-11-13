@@ -661,8 +661,8 @@ describe('HoverButtons feedback affordance', () => {
   it('offers feedback on a settled response when a handler is supplied', () => {
     renderSettledResponse(jest.fn());
 
-    expect(screen.getByTitle('Love this')).toBeInTheDocument();
-    expect(screen.getByTitle('Needs improvement')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Love this' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Needs improvement' })).toBeInTheDocument();
   });
 
   /** `useMessageActions` withholds the handler when `interface.feedback` is false, so
@@ -670,8 +670,8 @@ describe('HoverButtons feedback affordance', () => {
   it('hides feedback when no handler is supplied', () => {
     renderSettledResponse();
 
-    expect(screen.queryByTitle('Love this')).toBeNull();
-    expect(screen.queryByTitle('Needs improvement')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Love this' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Needs improvement' })).toBeNull();
     expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
   });
 });

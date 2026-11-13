@@ -1,23 +1,27 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { FOLD_GLYPH_CLASS } from '@librechat/chat/components';
 import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { setDefaultMessagesHost, useStreamedAttachments } from '@librechat/chat/react';
+import { useAttachments, FOLD_GLYPH_CLASS, litFoldPath } from '@librechat/chat/components';
 import type { EventSubmission, TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { MessagesHost } from '@librechat/chat/react';
 import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
-import useAttachments from '~/hooks/Messages/useAttachments';
 import { ParallelColumns } from '../ParallelContent';
 import ContentParts from '../ContentParts';
-import { litFoldPath } from '../rail';
 import { Text } from '../Parts';
 
 /** No previewed subagent run here leaves a file in doubt, so no owner is ever asked for. */
+/** The one host member `useAttachments` reads: the SSE atom this spec drives. */
+setDefaultMessagesHost({ useStreamedAttachments } as unknown as MessagesHost);
+
 jest.mock('~/data-provider', () => ({
   useSubagentAttachmentCallsQueries: () => [],
 }));
 
 jest.mock('~/hooks', () => ({
+  scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
   useLocalize: () => (key: string, values?: Record<string | number, string>) => {
     if (key === 'com_ui_ran_n_actions') {
       return `Ran ${values?.[0]} actions`;
@@ -30,11 +34,18 @@ jest.mock('~/hooks', () => ({
     }
     return key;
   },
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
     ref: { current: null },
   }),
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useProgress: (initial: number) => (initial >= 1 ? 1 : initial),
   scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
 }));
@@ -131,7 +142,9 @@ jest.mock('lucide-react', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useMediaQuery: () => false,
+  useLocalize: () => (key: string) => key,
   Button: ({
     children,
     variant: _variant,
@@ -241,11 +254,10 @@ jest.mock('../Image', () => ({
   default: () => <div data-testid="image" />,
 }));
 
-jest.mock('../Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Container: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }));
-
 jest.mock('../SiblingHeader', () => ({
   __esModule: true,
   default: ({ agentId }: { agentId?: string }) => (
@@ -1451,7 +1463,7 @@ describe('ContentParts: synthesized activity folds', () => {
 
     const group = screen.getByRole('button', { name: /Running 2 actions.*1\/2 failed/ });
     expect(group).toHaveAttribute('aria-expanded', 'true');
-    expect(group).toHaveTextContent('1/2 failed');
+    expect(group).not.toHaveTextContent('1/2 failed');
     expect(screen.getAllByTestId('failed-reveal-pill')).toHaveLength(1);
 
     rerender(
@@ -2580,5 +2592,41 @@ describe('fold paths in parallel columns', () => {
     const cache = new WeakMap<Element, Element[]>();
     expect(litFoldPath(root, screen.getByTestId('lane-output-0'), 350, cache)).toEqual([]);
     expect(litFoldPath(root, screen.getByTestId('lane-output-1'), 350, cache)).toEqual([]);
+  });
+});
+
+describe('generated single-call hierarchy', () => {
+  const baseProps = {
+    messageId: 'single-tool',
+    isCreatedByUser: false,
+    isLast: true,
+    isSubmitting: false,
+    showThinking: false,
+    isLatestMessage: true,
+  };
+  it('opens a single MCP result directly without a second group header', () => {
+    const title = 'Opened the model page';
+    const child = {
+      type: ContentTypes.ACTIVITY_LABEL,
+      activity_label: title,
+      pending: false,
+    } as TMessageContentParts;
+    renderContentParts({
+      ...baseProps,
+      content: [makeMcpToolCall('only'), child, makePhasePart(0, 2, title)],
+    });
+    fireEvent.click(screen.getByRole('button', { name: title }));
+    expect(
+      within(screen.getByTestId('activity-phase-panel')).queryByRole('button', { name: title }),
+    ).not.toBeInTheDocument();
+  });
+  it('keeps multiple MCP calls under their generated phase', () => {
+    const title = 'Opened both model pages';
+    renderContentParts({
+      ...baseProps,
+      content: [makeMcpToolCall('first'), makeMcpToolCall('second'), makePhasePart(0, 2, title)],
+    });
+    fireEvent.click(screen.getByRole('button', { name: title }));
+    expect(screen.getByRole('button', { name: /Ran 2 actions/ })).toBeInTheDocument();
   });
 });

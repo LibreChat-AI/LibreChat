@@ -75,6 +75,15 @@ async function handleFinal(ctx: StreamContext, data: ChatFinalFrame): Promise<vo
     finalConvoId,
     data.responseMessage ? [data.responseMessage] : undefined,
   );
+  // Leftovers the server already made durable queued turns are adopted as
+  // server-owned rows first, so neither conversion below can re-queue them.
+  const promotedSteerIds = new Set(
+    host.steers.adoptPromoted(
+      finalConvoId,
+      Array.isArray(data.promotedSteers) ? data.promotedSteers : [],
+    ),
+  );
+  const settledSteerIds = new Set([...finalAppliedSteerIds, ...promotedSteerIds]);
   // Steers the run never injected ride the final event; convert them
   // to queued follow-ups before the run-end signal fires the drain
   // (also resets the applied-id set for the finished run).
@@ -86,8 +95,8 @@ async function handleFinal(ctx: StreamContext, data: ChatFinalFrame): Promise<vo
       Array.isArray(data.pendingSteers)
       ? (data.pendingSteers as TPendingSteer[]).filter(
           (steer) =>
-            !finalAppliedSteerIds.has(steer.steerId) &&
-            (steer.clientSteerId == null || !finalAppliedSteerIds.has(steer.clientSteerId)),
+            !settledSteerIds.has(steer.steerId) &&
+            (steer.clientSteerId == null || !settledSteerIds.has(steer.clientSteerId)),
         )
       : [],
     {

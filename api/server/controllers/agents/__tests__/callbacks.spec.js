@@ -6,6 +6,8 @@ jest.mock('nanoid', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  captureResponseAccountingUsage: (...args) =>
+    jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
   writeGuarded: (res, chunk) => {
     if (res.writableEnded === true || res.destroyed === true) {
       return false;
@@ -40,6 +42,7 @@ jest.mock('@librechat/api', () => ({
   isCodeArtifactToolOutput: jest.requireActual('@librechat/api').isCodeArtifactToolOutput,
   isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
   collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
+  getImageAttachmentContent: jest.requireActual('@librechat/api').getImageAttachmentContent,
   captureSubagentIdentity: jest.requireActual('@librechat/api').captureSubagentIdentity,
   feedSubagentAggregator: jest.requireActual('@librechat/api').feedSubagentAggregator,
   createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
@@ -759,6 +762,39 @@ describe('createToolEndCallback', () => {
       { owner: 'agent-b', link: 'https://example.com/agent-b' },
     ]);
   });
+
+  it.each(
+    ['createToolEndCallback', 'createResponsesToolEndCallback'].flatMap((factoryName) => [
+      [factoryName, true],
+      [factoryName, false],
+    ]),
+  )(
+    '%s persists original images with model images enabled: %s',
+    async (factoryName, modelImagesEnabled) => {
+      const { saveBase64Image } = require('~/server/services/Files/process');
+      saveBase64Image.mockResolvedValue({ file_id: 'original-image' });
+      const callback = require('../callbacks')[factoryName]({ req, res, artifactPromises });
+      const content = modelImagesEnabled
+        ? [{ type: 'image_url', image_url: { url: 'data:image/png;base64,model' } }]
+        : [];
+      const artifact = {
+        content,
+        imageAttachments: [
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,original' } },
+        ],
+      };
+      await callback(
+        { output: { name: 'flux', tool_call_id: 'image-call', artifact } },
+        { run_id: 'run-image', thread_id: 'thread-image', provider: 'anthropic' },
+      );
+      await Promise.all(artifactPromises);
+      expect(saveBase64Image).toHaveBeenCalledWith(
+        'data:image/png;base64,original',
+        expect.objectContaining({ req, endpoint: 'anthropic' }),
+      );
+      expect(artifact.content).toBe(content);
+    },
+  );
 
   it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
     '%s preserves memory payloads and their execution owner',

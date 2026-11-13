@@ -1,9 +1,47 @@
 import React from 'react';
 import '@testing-library/jest-dom';
+import * as Ariakit from '@ariakit/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { TooltipAnchor } from './Tooltip';
 
 describe('TooltipAnchor', () => {
+  /** Message rows mount hundreds of anchors in one commit; an anchor that renders its provider
+   *  tree again once its own element attaches doubles the cost of that whole commit. */
+  describe('render cost', () => {
+    test.each(['top', 'right'] as const)(
+      'renders a %s anchor once on mount in a left-to-right layout',
+      (side) => {
+        const provider = jest.spyOn(Ariakit, 'TooltipProvider');
+        render(
+          <TooltipAnchor description="Once" aria-label="Once" side={side}>
+            <span>icon</span>
+          </TooltipAnchor>,
+        );
+
+        expect(screen.getByLabelText('Once')).toBeInTheDocument();
+        expect(provider).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    test('opens its tooltip without rendering the anchor again', async () => {
+      const provider = jest.spyOn(Ariakit, 'TooltipProvider');
+      render(
+        <TooltipAnchor description="Opens" aria-label="Opens">
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+
+      const anchor = screen.getByLabelText('Opens');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+
+      expect(await screen.findByRole('tooltip', undefined, { timeout: 3000 })).toHaveTextContent(
+        'Opens',
+      );
+      expect(provider).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('zIndex', () => {
     /** Lets a tooltip clear a host layer above the stylesheet's default (150). */
     test('applies the zIndex prop to the tooltip popup', async () => {

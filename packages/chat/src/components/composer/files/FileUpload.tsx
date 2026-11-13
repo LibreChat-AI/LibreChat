@@ -5,7 +5,6 @@ import { cn, Button, useLocalize } from '@librechat/client';
 type FileUploadProps = {
   onFileSelected: (jsonData: Record<string, unknown>) => void;
   className?: string;
-  containerClassName?: string;
   successText?: string;
   invalidText?: string;
   validator?: ((data: Record<string, unknown>) => boolean) | null;
@@ -16,15 +15,13 @@ type FileUploadProps = {
 const FileUpload: React.FC<FileUploadProps> = ({
   onFileSelected,
   className = '',
-  containerClassName = '',
   successText = null,
   invalidText = null,
   validator = null,
   text = null,
   id = '1',
 }) => {
-  const [statusColor, setStatusColor] = useState<string>('text-text-secondary');
-  const [status, setStatus] = useState<null | string>(null);
+  const [status, setStatus] = useState<null | 'success' | 'invalid'>(null);
   const localize = useLocalize();
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
@@ -38,13 +35,11 @@ const FileUpload: React.FC<FileUploadProps> = ({
       const jsonData = JSON.parse(e.target?.result as string);
       if (validator && !validator(jsonData)) {
         setStatus('invalid');
-        setStatusColor('text-text-destructive');
         return;
       }
 
       if (validator) {
         setStatus('success');
-        setStatusColor('text-status-success');
       }
 
       onFileSelected(jsonData);
@@ -72,14 +67,10 @@ const FileUpload: React.FC<FileUploadProps> = ({
     <>
       <Button
         type="button"
-        variant="ghost"
-        size="sm"
+        variant="field-import"
         onClick={handleClick}
-        className={cn(
-          'text-text-secondary hover:bg-surface-hover hover:text-status-success focus:ring-text-primary me-1 flex h-auto cursor-pointer items-center rounded bg-transparent px-2 py-1 text-xs font-normal transition-colors',
-          statusColor,
-          containerClassName,
-        )}
+        data-status={status ?? undefined}
+        className="me-1 flex w-full cursor-pointer items-center"
         aria-label={statusText}
       >
         <FileUp className="me-1 flex size-5.5 items-center stroke-1" aria-hidden="true" />

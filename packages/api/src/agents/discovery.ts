@@ -8,7 +8,6 @@ import {
 import type {
   Agent,
   GraphEdge,
-  TModelsConfig,
   TEndpointOption,
   AgentSubagentGraph,
 } from 'librechat-data-provider';
@@ -68,7 +67,8 @@ export interface DiscoverConnectedAgentsParams {
   agent_ids?: string[];
   endpointOption?: Partial<TEndpointOption>;
   allowedProviders: Set<string>;
-  modelsConfig: TModelsConfig;
+  /** Each referenced agent's provider is known only once it is loaded, so its models load then. */
+  getEndpointModels: ValidateAgentModelParams['getEndpointModels'];
   loadTools: InitializeAgentParams['loadTools'];
   requestFiles?: InitializeAgentParams['requestFiles'];
   conversationId?: string | null;
@@ -246,7 +246,7 @@ async function initializeReferencedAgent(
       req: params.req,
       res: params.res,
       agent,
-      modelsConfig: params.modelsConfig,
+      getEndpointModels: params.getEndpointModels,
       logViolation: deps.logViolation,
     }),
     params.signal,

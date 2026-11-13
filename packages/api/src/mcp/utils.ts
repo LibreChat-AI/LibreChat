@@ -520,14 +520,25 @@ export function isChatSelectableMCPServer(
   return config.chatMenu !== false && config.consumeOnly !== true;
 }
 
+/** How `filterChatSelectableMCPServers` resolves the servers a user can reach. */
+export interface ChatSelectableLookup {
+  userId: string;
+  role?: string;
+  getAccessibleMCPServers?: (
+    userId: string,
+    role?: string,
+  ) => Promise<Record<string, Pick<ParsedServerConfig, 'chatMenu' | 'consumeOnly'>>>;
+}
+
 /**
  * Narrows a chat picker selection to the servers that picker is allowed to
  * offer, so a stale client, a replayed body, or a hand-written request cannot
  * reach a server the menu hides.
  *
- * Pass only the picker's own selection. Servers a model spec pins
- * (`modelSpec.mcpServers`) are the operator's choice and stay attached even
- * when hidden, so they must be added after this call, not through it.
+ * A server this drops was never offered by the picker. When a model spec
+ * configures one (`modelSpec.mcpServers`), it is the operator's choice and stays
+ * attached; `resolveEphemeralMCPServers` classifies spec servers through this
+ * call and keeps the ones it drops.
  *
  * The accessible set comes from the registry — the same resolution that feeds
  * the client's catalog, with its own tier precedence already applied — rather
@@ -548,18 +559,7 @@ export function isChatSelectableMCPServer(
  */
 export async function filterChatSelectableMCPServers(
   selectedServers: string[] | null | undefined,
-  {
-    userId,
-    role,
-    getAccessibleMCPServers,
-  }: {
-    userId: string;
-    role?: string;
-    getAccessibleMCPServers?: (
-      userId: string,
-      role?: string,
-    ) => Promise<Record<string, Pick<ParsedServerConfig, 'chatMenu' | 'consumeOnly'>>>;
-  },
+  { userId, role, getAccessibleMCPServers }: ChatSelectableLookup,
 ): Promise<string[]> {
   if (!Array.isArray(selectedServers) || selectedServers.length === 0) {
     return [];

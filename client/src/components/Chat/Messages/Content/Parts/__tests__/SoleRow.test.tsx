@@ -1,19 +1,38 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { MemoryRouter } from 'react-router-dom';
 import { render, screen } from '@testing-library/react';
 import { SoleToolContext } from '@librechat/chat/react';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import FileAuthoringCall from '../FileAuthoringCall';
 import ReadFileCall from '../ReadFileCall';
 import MemoryCall from '../MemoryCall';
 import SkillCall from '../SkillCall';
+import BashCall from '../BashCall';
+
+/** No skills access, so `SkillCall` keeps the tool output it always showed. */
+jest.mock('~/data-provider', () => ({
+  useSkillsInfiniteQuery: () => ({ data: undefined }),
+  useGetSkillQuery: () => ({ data: undefined }),
+}));
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-  useProgress: (initialProgress: number) => initialProgress,
+  useHasAccess: () => false,
+  useLocalize: () => (key: string, values?: Record<string, string>) =>
+    key === 'com_ui_duration_seconds' ? `${values?.[0]}s` : key,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
     ref: { current: null },
   }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (initialProgress: number) => initialProgress,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
@@ -25,9 +44,11 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
 
 const renderSole = (ui: React.ReactElement, sole = true) =>
   render(
-    <RecoilRoot>
-      <SoleToolContext.Provider value={sole}>{ui}</SoleToolContext.Provider>
-    </RecoilRoot>,
+    <MemoryRouter>
+      <RecoilRoot>
+        <SoleToolContext.Provider value={sole}>{ui}</SoleToolContext.Provider>
+      </RecoilRoot>
+    </MemoryRouter>,
   );
 
 describe('a sole call keeps its row when its panel would be empty', () => {
@@ -137,4 +158,77 @@ describe('a sole call keeps its row when its panel would be empty', () => {
     );
     expect(screen.getByTestId('progress-text')).toBeInTheDocument();
   });
+});
+
+describe('generated title replaces a completed descriptive row', () => {
+  it.each(['read', 'skill'])('shows the %s panel without a second header', (kind) => {
+    renderSole(
+      <GeneratedToolLabelContext.Provider value>
+        {kind === 'read' ? (
+          <ReadFileCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ intent: 'Read config', path: 'src/config.ts' }}
+            output="config contents"
+            runStepStatus="completed"
+          />
+        ) : (
+          <SkillCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ skillName: 'pdf' }}
+            output="loaded skill"
+            runStepStatus="completed"
+          />
+        )}
+      </GeneratedToolLabelContext.Provider>,
+    );
+    expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+  });
+});
+
+it('keeps an empty named skill row under a generated title', () => {
+  renderSole(
+    <GeneratedToolLabelContext.Provider value>
+      <SkillCall
+        initialProgress={1}
+        isSubmitting={false}
+        args={{ skillName: 'pdf' }}
+        output=""
+        runStepStatus="completed"
+      />
+    </GeneratedToolLabelContext.Provider>,
+  );
+  expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+});
+
+it('uses a generated title for a failed file tool with an error panel', () => {
+  renderSole(
+    <GeneratedToolLabelContext.Provider value>
+      <ReadFileCall
+        initialProgress={1}
+        isSubmitting={false}
+        args={{ path: 'config.ts' }}
+        output="Error: tool call failed: missing file"
+        runStepStatus="failed"
+      />
+    </GeneratedToolLabelContext.Provider>,
+  );
+  expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+});
+
+it('shows a command duration in seconds even when its row is replaced by a title', () => {
+  renderSole(
+    <GeneratedToolLabelContext.Provider value>
+      <BashCall
+        initialProgress={1}
+        isSubmitting={false}
+        args={{ command: 'echo hi' }}
+        output="hi"
+        runStepStatus="completed"
+        runStepDurationMs={10200}
+      />
+    </GeneratedToolLabelContext.Provider>,
+  );
+  expect(screen.getByText('10.2s')).toBeInTheDocument();
 });

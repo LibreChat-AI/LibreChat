@@ -11,6 +11,8 @@ const mockDeleteAssistant = jest.fn((_req, res) => res.status(204).end());
 
 jest.mock('~/server/controllers/assistants/chatV1', () => mockChatV1);
 jest.mock('~/server/controllers/assistants/chatV2', () => mockChatV2);
+/** Enrollment in the account barrier needs the job manager and an authenticated user. */
+jest.mock('~/server/middleware/assistants/run', () => (controller) => controller);
 jest.mock('~/server/controllers/assistants/v1', () => ({
   createAssistant: mockCreateAssistantV1,
   patchAssistant: mockPatchAssistantV1,
