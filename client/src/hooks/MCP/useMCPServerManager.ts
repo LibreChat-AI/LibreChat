@@ -770,6 +770,7 @@ export function useMCPServerManager({
                   label: config.title,
                   description: config.description,
                   sensitive: config.sensitive,
+                  optional: config.optional,
                 }))
               : []),
           authenticated: serverData?.authenticated ?? false,
@@ -821,6 +822,7 @@ export function useMCPServerManager({
           title: field.label || field.authField,
           description: field.description,
           sensitive: field.sensitive,
+          optional: field.optional,
         };
       });
     }

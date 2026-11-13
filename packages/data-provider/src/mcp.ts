@@ -365,6 +365,14 @@ const BaseOptionsSchema = z.object({
          * values (e.g. username, project key, base URL) to render as plain text.
          */
         sensitive: z.boolean().optional(),
+        /**
+         * When true the variable is an override rather than a requirement: the server keeps
+         * exposing its tools while it is unset, using whatever default the deployment
+         * configured. Use it for "shared admin credential by default, user may substitute
+         * their own"; leave it off for values without which the server cannot work at all,
+         * so its tools stay hidden until they are supplied.
+         */
+        optional: z.boolean().optional(),
       }),
     )
     .optional(),

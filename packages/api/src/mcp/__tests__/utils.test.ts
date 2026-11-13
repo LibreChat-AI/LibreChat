@@ -1403,6 +1403,42 @@ describe('getMissingCustomUserVars', () => {
       getMissingCustomUserVars(config, { THINGY_TOKEN: 'abc123', UNRELATED: 'value' }),
     ).toEqual([]);
   });
+
+  describe('optional variables', () => {
+    const mixedConfig: Pick<ParsedServerConfig, 'customUserVars'> = {
+      customUserVars: {
+        THINGY_TOKEN: { title: 'Token', description: 'required token' },
+        THINGY_OVERRIDE: { title: 'Override', description: 'own account', optional: true },
+      },
+    };
+
+    it('never reports a variable marked optional, whatever the user provided', () => {
+      expect(getMissingCustomUserVars(mixedConfig, undefined)).toEqual(['THINGY_TOKEN']);
+      expect(getMissingCustomUserVars(mixedConfig, { THINGY_OVERRIDE: '' })).toEqual([
+        'THINGY_TOKEN',
+      ]);
+      expect(getMissingCustomUserVars(mixedConfig, { THINGY_TOKEN: 'abc123' })).toEqual([]);
+    });
+
+    it('keeps a server with only optional variables ungated', () => {
+      const config: Pick<ParsedServerConfig, 'customUserVars'> = {
+        customUserVars: {
+          THINGY_OVERRIDE: { title: 'Override', description: 'own account', optional: true },
+        },
+      };
+      expect(hasCustomUserVars(config)).toBe(true);
+      expect(getMissingCustomUserVars(config, undefined)).toEqual([]);
+    });
+
+    it('still gates when optional is explicitly false', () => {
+      const config: Pick<ParsedServerConfig, 'customUserVars'> = {
+        customUserVars: {
+          THINGY_TOKEN: { title: 'Token', description: 'required token', optional: false },
+        },
+      };
+      expect(getMissingCustomUserVars(config, undefined)).toEqual(['THINGY_TOKEN']);
+    });
+  });
 });
 
 describe('isChatSelectableMCPServer', () => {
