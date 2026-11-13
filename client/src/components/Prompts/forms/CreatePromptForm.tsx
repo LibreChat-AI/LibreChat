@@ -94,8 +94,8 @@ const CreatePromptForm = ({
   const promptText = watch('prompt');
   const isCreating = createPromptMutation.isLoading;
   const isBlocked = !isDirty || isSubmitting || !isValid || isCreating;
-  /** Floating labels notch out the surface behind them: the dialog sits on `surface-primary`, the page on `presentation` */
-  const labelBgClassName = isDialog ? 'bg-surface-primary' : 'bg-surface-primary-alt';
+  /** Floating labels notch out the surface behind them: the dialog sits on `surface-dialog`, the page on `presentation` */
+  const labelBgClassName = isDialog ? 'bg-surface-dialog' : 'bg-surface-primary-alt';
 
   const onSubmit = (data: CreateFormValues) => {
     const { name, category, oneliner, command, ...rest } = data;
@@ -126,7 +126,7 @@ const CreatePromptForm = ({
         {isSmallScreen ? (
           <div className="mb-2 flex items-center justify-between gap-2">
             {!isDialog && <OpenSidebar />}
-            <CategorySelector portal={!isDialog} />
+            <CategorySelector portal={!isDialog} className="border-border-inset-medium" />
           </div>
         ) : null}
         <div className="mb-1 flex flex-col items-center justify-between font-bold sm:text-xl md:mb-0 md:text-2xl">
@@ -170,14 +170,14 @@ const CreatePromptForm = ({
             />
             {!isSmallScreen && (
               <div>
-                <CategorySelector portal={!isDialog} />
+                <CategorySelector portal={!isDialog} className="border-border-inset-medium" />
               </div>
             )}
           </div>
         </div>
         <div className="flex w-full flex-col gap-4 md:mt-[1.075rem]">
           <div className="flex flex-col">
-            <header className="border-border-medium flex items-center justify-between rounded-t-xl border bg-transparent p-2">
+            <header className="border-border-inset-medium flex items-center justify-between rounded-t-xl border bg-transparent p-2">
               <div className="ms-1 flex items-center gap-2">
                 <FileText className="text-text-secondary size-4" aria-hidden="true" />
                 <h2 className="text-text-primary text-sm font-semibold">
@@ -188,7 +188,7 @@ const CreatePromptForm = ({
                 <VariablesDropdown fieldName="prompt" portal={!isDialog} />
               </div>
             </header>
-            <div className="border-border-medium min-h-32 rounded-b-xl border border-t-0 p-3 sm:p-4">
+            <div className="border-border-inset-medium min-h-32 rounded-b-xl border border-t-0 p-3 sm:p-4">
               <Controller
                 name="prompt"
                 control={control}

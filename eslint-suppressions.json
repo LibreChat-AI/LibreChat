@@ -845,9 +845,6 @@
   "client/src/components/SidePanel/Agents/FileContext.tsx": {
     "design/disabled-recipe": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 14
     }
   },
   "client/src/components/SidePanel/Agents/MCPIcon.tsx": {
@@ -906,7 +903,7 @@
   },
   "client/src/components/SidePanel/Agents/Tools/SkillsDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 4
     }
   },
   "client/src/components/SidePanel/Agents/Tools/SkillsSection.tsx": {

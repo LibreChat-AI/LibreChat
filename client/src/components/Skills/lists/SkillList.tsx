@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { EmptyState } from '@librechat/client';
 import { useSearchParams } from 'react-router-dom';
+import { ChevronRight, Sparkles } from 'lucide-react';
 import type { TSkillSummary } from 'librechat-data-provider';
 import SkillListItem from './SkillListItem';
 import { Collapse } from '~/components/ui';
@@ -51,9 +52,11 @@ export default function SkillList({
       <Collapse open={sectionOpen}>
         <div className="flex flex-col gap-px">
           {skills.length === 0 ? (
-            <p className="text-text-secondary px-3 py-4 text-center text-xs">
-              {localize('com_ui_skills_empty')}
-            </p>
+            <EmptyState
+              icon={Sparkles}
+              title={localize('com_ui_skills_empty')}
+              description={localize('com_ui_skills_empty_hint')}
+            />
           ) : (
             skills.map((skill) => (
               <SkillListItem
