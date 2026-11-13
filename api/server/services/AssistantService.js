@@ -1,6 +1,6 @@
 const { klona } = require('klona');
 const { sleep } = require('@librechat/agents');
-const { sendEvent } = require('@librechat/api');
+const { sendEvent, trackAssistantRun, trackAssistantStep } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const {
   StepTypes,
@@ -134,7 +134,7 @@ function hasToolCallChanged(previousCall, currentCall) {
  * @param {ThreadMessage[]} messages - The accumulated messages for the run.
  * @return {InProgressFunction} a function to handle steps in progress.
  */
-function createInProgressHandler(openai, thread_id, messages) {
+function createInProgressHandler(openai, thread_id, messages, productTracking) {
   openai.index = 0;
   openai.mappedOrder = new Map();
   openai.seenToolCalls = new Map();
@@ -148,6 +148,7 @@ function createInProgressHandler(openai, thread_id, messages) {
    * @type {InProgressFunction}
    */
   async function in_progress({ step }) {
+    trackAssistantStep(productTracking, step);
     if (step.type === StepTypes.TOOL_CALLS) {
       const { tool_calls } = step.step_details;
 
@@ -316,11 +317,13 @@ async function runAssistant({
   accumulatedSteps = [],
   accumulatedMessages = [],
   in_progress: inProgress,
+  productTracking,
 }) {
   const appConfig = openai.req.config;
   let steps = accumulatedSteps;
   let messages = accumulatedMessages;
-  const in_progress = inProgress ?? createInProgressHandler(openai, thread_id, messages);
+  const in_progress =
+    inProgress ?? createInProgressHandler(openai, thread_id, messages, productTracking);
   openai.in_progress = in_progress;
 
   const runManager = new RunManager({
@@ -363,10 +366,12 @@ async function runAssistant({
     run_id,
     thread_id,
     runManager,
+    productTracking,
     pollIntervalMs,
     timeout: timeoutMs,
   });
 
+  trackAssistantRun(productTracking, run);
   if (!run.required_action) {
     const sortedMessages = messages.sort((a, b) => a.created_at - b.created_at);
     return {
@@ -405,6 +410,7 @@ async function runAssistant({
     accumulatedSteps: steps,
     accumulatedMessages: messages,
     in_progress,
+    productTracking,
   });
 }
 

@@ -5,6 +5,8 @@ const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const {
   refreshS3Url,
+  createAgentBindingObserver,
+  observeAgentSave,
   splitMCPToolKey,
   buildServerNameAliases,
   findShadowedServerNames,
@@ -911,7 +913,7 @@ const createAgentHandler = async (req, res) => {
       agentData.mcpServerNames = Array.from(resolvedServerNames);
     }
 
-    const agent = await db.createAgent(agentData);
+    const agent = await db.createAgent(agentData, { onChanged: createAgentBindingObserver(req) });
 
     try {
       await Promise.all([
@@ -1422,13 +1424,15 @@ const updateAgentHandler = async (req, res) => {
 
     let updatedAgent =
       Object.keys(updateData).length > 0
-        ? await db.updateAgent({ id }, updateData, {
-            updatingUserId: req.user.id,
-            expectedMCPAccess: {
-              names: existingAgent.mcpServerNames ?? [],
-              updatedAt: existingAgent.updatedAt,
-            },
-          })
+        ? await observeAgentSave(req, () =>
+            db.updateAgent({ id }, updateData, {
+              updatingUserId: req.user.id,
+              expectedMCPAccess: {
+                names: existingAgent.mcpServerNames ?? [],
+                updatedAt: existingAgent.updatedAt,
+              },
+            }),
+          )
         : existingAgent;
 
     // Add version count to the response
@@ -1710,7 +1714,7 @@ const duplicateAgentHandler = async (req, res) => {
 
     let newAgent;
     try {
-      newAgent = await db.createAgent(newAgentData);
+      newAgent = await db.createAgent(newAgentData, { onChanged: createAgentBindingObserver(req) });
     } catch (error) {
       await db.deleteActions({ agentId: newAgentId, user: userId }).catch((cleanupError) => {
         logger.error(
@@ -2222,7 +2226,10 @@ const revertAgentVersionHandler = async (req, res) => {
         }),
     });
 
-    let updatedAgent = await db.revertAgentVersion({ id }, version_index, revertOptions);
+    let updatedAgent = await db.revertAgentVersion({ id }, version_index, {
+      ...revertOptions,
+      onChanged: createAgentBindingObserver(req),
+    });
     const revertUpdates = {};
     if (
       hasLegacyEdgeSource ||

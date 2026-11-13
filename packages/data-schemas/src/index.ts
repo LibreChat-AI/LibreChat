@@ -214,3 +214,4 @@ export * from './postgres/mongo';
 export { migrateMCPReservationIndex } from './migrations/mcpReservations';
 
 export { repairAuthorizationDuplicates } from './migrations/authorization';
+export type { AgentBindingState, AgentBindingObserver } from './methods/agent';

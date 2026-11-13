@@ -23,6 +23,7 @@ import {
   usePromptGroupPermissions,
 } from '~/hooks';
 import { cn, findPromptGroup, getPromptMutationErrorKey } from '~/utils';
+import { usePromptOpened } from '~/hooks/Prompts/usePromptTracking';
 import LangfusePromptMeta from '../display/LangfusePromptMeta';
 import PromptResolvedBody from '../display/PromptResolvedBody';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
@@ -98,6 +99,7 @@ const VersionsPanel = React.memo(
                 const { _id: promptVersionId = '', prompt } = selectedPrompt;
                 makeProductionMutation.mutate({
                   id: promptVersionId,
+                  deployment: 'explicit',
                   groupId,
                   productionPrompt: { prompt },
                 });
@@ -308,6 +310,11 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
     canEdit,
     canDelete,
   } = usePromptGroupPermissions(group);
+  usePromptOpened(
+    'editor',
+    !isLoadingGroup && !permissionsLoading && canView && Boolean(group?._id),
+    group?._id,
+  );
 
   const methods = useForm({
     defaultValues: {
@@ -363,6 +370,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
       if (alwaysMakeProd && data.prompt._id != null && data.prompt._id && data.prompt.groupId) {
         makeProductionMutation.mutate({
           id: data.prompt._id,
+          deployment: 'automatic',
           groupId: data.prompt.groupId,
           productionPrompt: { prompt: data.prompt.prompt },
         });

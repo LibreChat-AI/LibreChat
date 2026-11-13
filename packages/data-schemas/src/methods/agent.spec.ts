@@ -536,6 +536,64 @@ describe('Agent Methods', () => {
       await AclEntry.deleteMany({});
     });
 
+    test('notifies confirmed binding creation without content and isolates observer failures', async () => {
+      const { agentId, authorId } = createTestIds();
+      const onChanged = jest.fn(() => {
+        throw new Error('tracker unavailable');
+      });
+      const instructionsPrompt = {
+        source: 'native',
+        groupId: new mongoose.Types.ObjectId().toString(),
+        selection: { type: 'production' },
+      };
+      const agent = await createAgent(
+        {
+          id: agentId,
+          author: authorId,
+          provider: 'test',
+          model: 'test-model',
+          instructions: 'private',
+          instructionsPrompt,
+        },
+        { onChanged },
+      );
+      expect((await getAgent({ id: agentId }))?.id).toBe(agent.id);
+      expect(onChanged).toHaveBeenCalledWith(undefined, {
+        id: agentId,
+        instructionsPrompt,
+        skills: undefined,
+      });
+    });
+
+    test('notifies successful restore with confirmed bindings but not a conflicting restore', async () => {
+      const { agentId, authorId } = createTestIds();
+      const original = {
+        source: 'native',
+        groupId: new mongoose.Types.ObjectId().toString(),
+        selection: { type: 'production' },
+      };
+      const created = await createAgent({
+        id: agentId,
+        author: authorId,
+        provider: 'test',
+        model: 'test-model',
+        instructionsPrompt: original,
+      });
+      const oldRevision = (created as IAgent & { updatedAt: Date }).updatedAt;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await updateAgent({ id: agentId }, { instructionsPrompt: null });
+      const onChanged = jest.fn();
+      await expect(
+        revertAgentVersion({ id: agentId }, 0, { expectedUpdatedAt: oldRevision, onChanged }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      expect(onChanged).not.toHaveBeenCalled();
+      await revertAgentVersion({ id: agentId }, 0, { onChanged });
+      expect(onChanged).toHaveBeenCalledWith(
+        { id: agentId, instructionsPrompt: null, skills: undefined },
+        { id: agentId, instructionsPrompt: original, skills: undefined },
+      );
+    });
+
     test('should create and get an agent', async () => {
       const { agentId, authorId } = createTestIds();
 

@@ -1,5 +1,10 @@
 const { sleep } = require('@librechat/agents');
-const { sendEvent, getAssistantRun } = require('@librechat/api');
+const {
+  sendEvent,
+  getAssistantRun,
+  trackAssistantRun,
+  trackAssistantStep,
+} = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const {
   Constants,
@@ -38,6 +43,7 @@ class StreamRunManager {
 
     /** @type {ServerRequest} */
     this.req = fields.req;
+    this.productTracking = fields.productTracking;
     /** The run's handle on the account cleanup barrier, for the work started without an await. */
     this.assistantRun = getAssistantRun(fields.req);
     /** @type {Express.Response} */
@@ -217,6 +223,7 @@ class StreamRunManager {
    */
   async handleRunEvent(event) {
     this.run = event.data;
+    trackAssistantRun(this.productTracking, this.run);
     logger.debug('Run event:', this.run);
     if (event.event === AssistantStreamEvents.ThreadRunRequiresAction) {
       await this.onRunRequiresAction(event);
@@ -234,6 +241,7 @@ class StreamRunManager {
     logger.debug('Run step event:', event.data);
 
     const step = event.data;
+    trackAssistantStep(this.productTracking, step);
     this.steps.set(step.id, step);
 
     if (event.event === AssistantStreamEvents.ThreadRunStepCreated) {

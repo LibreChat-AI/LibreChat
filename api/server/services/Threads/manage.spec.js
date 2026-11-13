@@ -10,6 +10,7 @@ const mockSpendTokens = jest.fn().mockResolvedValue();
 
 jest.mock('@librechat/api', () => ({
   countTokens: jest.fn().mockResolvedValue(0),
+  getConversationWriteContext: jest.requireActual('@librechat/api').getConversationWriteContext,
   /* The real predicate, because what may raise an unseen indicator is the behaviour under test
      here; a stub would assert only that this file calls something. */
   isAnnounceableReply: jest.requireActual('@librechat/api').isAnnounceableReply,

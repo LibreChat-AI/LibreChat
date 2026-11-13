@@ -511,3 +511,21 @@ describe('runAfterSeed', () => {
     expect(write).toHaveBeenCalledTimes(1);
   });
 });
+
+it('records one conversation start after the insert, never on later saves', async () => {
+  const userId = new mongoose.Types.ObjectId().toString();
+  const req: TurnConversationRequest = {
+    ...createRequest(userId),
+    productTracking: { enabled: true },
+    productTracker: jest.fn(),
+  };
+  const fields = seedFields(req, randomUUID());
+  await seedTurnConversation(store, fields);
+  await seedTurnConversation(store, fields);
+  expect(req.productTracker).toHaveBeenCalledTimes(1);
+  expect(req.productTracker).toHaveBeenCalledWith({
+    name: 'librechat.chat.conversation.started',
+    feature: 'chat',
+    conversationId: fields.conversationId,
+  });
+});

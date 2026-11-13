@@ -8,6 +8,7 @@ import {
   SkillsScope,
   actionDelimiter,
   isActionTool,
+  safelyTrack,
 } from 'librechat-data-provider';
 import type { FilterQuery, Model, PipelineStage, ProjectionType, Types } from 'mongoose';
 import type { AgentSortOption, AgentToolResources } from 'librechat-data-provider';
@@ -253,8 +254,34 @@ export class AgentSortCursorError extends Error {
   }
 }
 
+/** Stored object links, without agent instructions or other content. */
+export type AgentBindingState = Pick<IAgent, 'id' | 'instructionsPrompt' | 'skills'>;
+
+export type AgentBindingObserver = (
+  previous: AgentBindingState | undefined,
+  next: AgentBindingState,
+) => void | Promise<void>;
+
+function notifyAgentBindings(
+  observer: AgentBindingObserver | undefined,
+  previous: AgentBindingState | undefined,
+  next: AgentBindingState,
+): void {
+  if (!observer) return;
+  const bindingState = (agent: AgentBindingState): AgentBindingState => ({
+    id: agent.id,
+    instructionsPrompt: agent.instructionsPrompt,
+    skills: agent.skills,
+  });
+  safelyTrack(
+    () => observer(previous ? bindingState(previous) : undefined, bindingState(next)),
+    undefined,
+  );
+}
+
 /** Options a caller passes after authorizing a restore against the agent it read. */
 export interface RevertAgentVersionOptions {
+  onChanged?: AgentBindingObserver;
   /** Authorized tools; replace the snapshot's, which were never checked for this user. */
   tools?: string[];
   /** Index resolved for `tools`. Derived from the restored tools when omitted. */
@@ -1103,7 +1130,10 @@ export function createAgentMethods(
     ids: string[],
     access?: AgentGraphAccessContext,
   ) => Promise<AgentGraphNode[]>;
-  createAgent: (agentData: Record<string, unknown>) => Promise<IAgent>;
+  createAgent: (
+    agentData: Record<string, unknown>,
+    options?: { onChanged?: AgentBindingObserver },
+  ) => Promise<IAgent>;
   getAgentIdsByMCPServerName: (serverName: string) => Promise<Types.ObjectId[]>;
   getAgentsWithMCPServerNames: () => Promise<Array<Pick<IAgent, '_id' | 'mcpServerNames'>>>;
   getAgentModelSummaries: (
@@ -1261,7 +1291,10 @@ export function createAgentMethods(
   /**
    * Create an agent with the provided data.
    */
-  async function createAgent(agentData: Record<string, unknown>): Promise<IAgent> {
+  async function createAgent(
+    agentData: Record<string, unknown>,
+    options: { onChanged?: AgentBindingObserver } = {},
+  ): Promise<IAgent> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
     if (Array.isArray(agentData.skills) && agentData.skills.length > 0) {
       const prunedSkills = await filterExistingSkillIds(
@@ -1296,7 +1329,7 @@ export function createAgentMethods(
         extractMCPServerNames(agentData.tools as string[] | undefined),
     };
 
-    return await withCodeEnvironmentReferences(
+    const agent = await withCodeEnvironmentReferences(
       mongoose,
       codeEnvironmentReferences(agentData),
       async () => (await Agent.create(initialAgentData)).toObject() as IAgent,
@@ -1304,6 +1337,8 @@ export function createAgentMethods(
         await Agent.deleteOne({ _id: createdAgent._id });
       },
     );
+    notifyAgentBindings(options.onChanged, undefined, agent);
+    return agent;
   }
 
   /**
@@ -2872,6 +2907,7 @@ export function createAgentMethods(
       /** The agent was read above, so a miss is the revision filter refusing a newer write. */
       throw new AgentRevisionConflictError();
     }
+    notifyAgentBindings(options.onChanged, agent.toObject() as IAgent, revertedAgent);
     return revertedAgent;
   }
 

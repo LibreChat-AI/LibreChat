@@ -11,6 +11,11 @@ import ChatGroupItem from '../ChatGroupItem';
 const mockMutate = jest.fn();
 const mockRecordUsageMutate = jest.fn();
 const mockSubmitPrompt = jest.fn();
+const mockTrack = jest.fn();
+jest.mock('~/Providers/TrackingContext', () => ({
+  useProductTracking: () => mockTrack,
+  useProductTrackingContext: () => () => undefined,
+}));
 const mockShowToast = jest.fn();
 /** Native groups resolve from local text with no request; a test overrides this
  *  per-call (`mockResolvedValueOnce`/`mockRejectedValueOnce`/a controllable
@@ -298,12 +303,16 @@ describe('ChatGroupItem chat-route click', () => {
   it('submits and records a native prompt with no spinner', async () => {
     const user = userEvent.setup();
     const { container } = renderChatGroup(
-      makeGroup({ productionPrompt: { prompt: 'Native text' } }),
+      makeGroup({ productionId: 'revision-1', productionPrompt: { prompt: 'Native text' } }),
     );
 
     await user.click(getCardButton());
 
     await waitFor(() => expect(mockSubmitPrompt).toHaveBeenCalledWith('Native text'));
+    expect(mockTrack.mock.calls[0][0].name).toBe('librechat.prompts.resolved');
+    expect(mockTrack.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSubmitPrompt.mock.invocationCallOrder[0],
+    );
     expect(mockResolve).toHaveBeenCalledTimes(1);
     expect(mockRecordUsageMutate).toHaveBeenCalledTimes(1);
     expect(container.querySelector('svg.spinner')).not.toBeInTheDocument();

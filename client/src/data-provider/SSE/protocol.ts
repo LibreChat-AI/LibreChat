@@ -59,7 +59,7 @@ const responseHeaders = (headers: Headers): Record<string, string> => {
 export async function postGenerationRequest<T>(
   url: string,
   body: unknown,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; headers?: Record<string, string> },
 ): Promise<T> {
   let response: Response;
   try {
@@ -67,6 +67,7 @@ export async function postGenerationRequest<T>(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...options?.headers,
         ...generationProtocolHeaders(),
       },
       body: JSON.stringify(withGenerationProtocolBody(body)),

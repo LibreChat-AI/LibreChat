@@ -1,10 +1,13 @@
 import { useCallback, useMemo } from 'react';
+import { v4 } from 'uuid';
+import { safelyTrack } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { MutableRefObject } from 'react';
 import type { DuringRunAction } from '../../core';
 import type { ComposerTake } from './composer';
 import type { QueueEnqueue } from './enqueue';
 import type { SubmitSteer } from './submit';
+import { useSteerHost } from '../steer/host';
 
 export interface DuringRunActions {
   steerFromComposer: (text: string, preempt?: boolean) => boolean;
@@ -18,6 +21,7 @@ export interface DuringRunActions {
  *  and send, or interrupt the step and steer, each taking the composer's staged
  *  attachments, quotes and picks with the words. */
 export default function useDuringRunActions({
+  conversationId,
   composerDisabledRef,
   filesLoading,
   canSteer,
@@ -34,6 +38,7 @@ export default function useDuringRunActions({
   armDrainAfterAbort,
   stopGenerating,
 }: {
+  conversationId: string | null | undefined;
   composerDisabledRef: MutableRefObject<boolean>;
   filesLoading: boolean;
   canSteer: boolean;
@@ -50,6 +55,22 @@ export default function useDuringRunActions({
   armDrainAfterAbort: () => void;
   stopGenerating: () => void;
 }): DuringRunActions {
+  const host = useSteerHost();
+  const trackProduct = host.useProductTracking?.();
+  const enqueueExplicit = useCallback<QueueEnqueue['enqueue']>(
+    (text, options) => {
+      const clientRequestId = v4();
+      safelyTrack(trackProduct, {
+        name: 'librechat.chat.message.submitted',
+        feature: 'chat',
+        kind: 'send',
+        submissionId: clientRequestId,
+        conversationId: conversationId ?? undefined,
+      });
+      enqueue(text, { ...options, clientRequestId });
+    },
+    [conversationId, enqueue, trackProduct],
+  );
   const { takeComposerFiles, takeComposerContext, takeComposerQuotes, restoreComposerQuotes } =
     composer;
   /** Composer-originated steer: consumes the composer's attachments and quote
@@ -65,7 +86,7 @@ export default function useDuringRunActions({
         /** A live steer cannot change the provider request already in flight.
          * Preserve a staged reasoning choice as a full queued turn. */
         if (pendingReasoningOverride != null) {
-          enqueue(mergedText, { files, ...takeComposerContext() });
+          enqueueExplicit(mergedText, { files, ...takeComposerContext() });
           takeComposerDraft();
           return true;
         }
@@ -81,7 +102,7 @@ export default function useDuringRunActions({
       filesLoading,
       canSteer,
       pendingReasoningOverride,
-      enqueue,
+      enqueueExplicit,
       takeComposerFiles,
       takeComposerContext,
       takeComposerQuotes,
@@ -99,7 +120,7 @@ export default function useDuringRunActions({
         return false;
       }
       return takeComposerFiles(text.trim(), (mergedText, files) => {
-        enqueue(mergedText, { files, ...takeComposerContext() });
+        enqueueExplicit(mergedText, { files, ...takeComposerContext() });
         takeComposerDraft();
         return true;
       });
@@ -107,7 +128,7 @@ export default function useDuringRunActions({
     [
       composerDisabledRef,
       filesLoading,
-      enqueue,
+      enqueueExplicit,
       takeComposerFiles,
       takeComposerContext,
       takeComposerDraft,
@@ -121,7 +142,7 @@ export default function useDuringRunActions({
         return false;
       }
       return takeComposerFiles(text.trim(), (mergedText, files) => {
-        enqueue(mergedText, { front: true, files, ...takeComposerContext() });
+        enqueueExplicit(mergedText, { front: true, files, ...takeComposerContext() });
         takeComposerDraft();
         armDrainAfterAbort();
         stopGenerating();
@@ -132,7 +153,7 @@ export default function useDuringRunActions({
       composerDisabledRef,
       filesLoading,
       canControlGeneration,
-      enqueue,
+      enqueueExplicit,
       takeComposerFiles,
       takeComposerContext,
       takeComposerDraft,

@@ -31,6 +31,7 @@ import {
 import { computeShareChanges, dedupeNewShares, principalKey } from './shareChanges';
 import UnifiedPeopleSearch from './PeoplePicker/UnifiedPeopleSearch';
 import PeoplePickerAdminSettings from './PeoplePickerAdminSettings';
+import { useProductTracking } from '~/Providers/TrackingContext';
 import PublicSharingToggle from './PublicSharingToggle';
 import { SelectedPrincipalsList } from './PeoplePicker';
 import { MenuContainerContext } from './container';
@@ -57,6 +58,7 @@ export default function GenericGrantAccessDialog({
   children?: React.ReactNode;
 }) {
   const localize = useLocalize();
+  const track = useProductTracking();
   const { user } = useAuthContext();
   const { showToast } = useToastContext();
   const [isCopying, setIsCopying] = useState(false);
@@ -239,6 +241,21 @@ export default function GenericGrantAccessDialog({
   };
 
   const handleModalOpenChange = (open: boolean) => {
+    if (open && !isModalOpen && resourceDbId) {
+      if (resourceType === ResourceType.PROMPTGROUP) {
+        track({
+          name: 'librechat.prompts.sharing.opened',
+          feature: 'prompts',
+          groupId: resourceDbId,
+        });
+      } else if (resourceType === ResourceType.SKILL) {
+        track({
+          name: 'librechat.skills.sharing.opened',
+          feature: 'skills',
+          skillId: resourceDbId,
+        });
+      }
+    }
     if (!open) {
       resetDraft();
     }

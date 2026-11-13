@@ -4,6 +4,7 @@ import type { RecordAuditEntry } from '~/admin/audit';
 import type { PermissionChange } from './types';
 import type { ServerRequest } from '~/types';
 import { getAuditActor, isAuditFailClosed } from '~/admin/audit';
+import { trackRequestProductFact } from '~/tracking/request';
 import { PERMISSION_AUDIT_UNAVAILABLE } from './codes';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { buildAuditContext } from '~/admin/context';
@@ -258,7 +259,23 @@ export async function runAuditedPermissionUpdate<T>({
   const deferred: AuditPlanItem[] = [];
   /** Set once the write is durable; a later error must not relabel recorded changes as failed. */
   let committed = false;
+  let sharingChanged = false;
   const afterWrite = async () => {
+    if (!committed && sharingChanged) {
+      if (resourceType === ResourceType.PROMPTGROUP) {
+        trackRequestProductFact(req, {
+          name: 'librechat.prompts.sharing.changed',
+          feature: 'prompts',
+          groupId: resourceId,
+        });
+      } else if (resourceType === ResourceType.SKILL) {
+        trackRequestProductFact(req, {
+          name: 'librechat.skills.sharing.changed',
+          feature: 'skills',
+          skillId: resourceId,
+        });
+      }
+    }
     committed = true;
     await flushDeferred();
   };
@@ -273,6 +290,7 @@ export async function runAuditedPermissionUpdate<T>({
   };
   try {
     const result = await update(async ({ aclChanges, insightsChanges }) => {
+      sharingChanged = aclChanges.some((change) => buildEvent(change) !== null);
       let items: AuditPlanItem[];
       try {
         const insightsDeps =

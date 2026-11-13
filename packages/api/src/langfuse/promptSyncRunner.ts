@@ -2,6 +2,7 @@ import type {
   PromptCatalogSyncDeps,
   PromptCatalogSyncResult,
   PromptCatalogSyncSource,
+  PromptCatalogProductTracker,
 } from './promptCatalogSync';
 import type { DistributedLock } from '~/cache/lock';
 import { syncLangfusePromptCatalog } from './promptCatalogSync';
@@ -11,6 +12,7 @@ export interface LangfusePromptSyncRunnerDeps {
   lock: DistributedLock;
   promptService: PromptCatalogSyncDeps['promptService'];
   logger: PromptCatalogSyncDeps['logger'];
+  trackProductFact?: PromptCatalogProductTracker;
 }
 
 /** Per-request inputs: the source identity, a connection-bound page lister
@@ -20,6 +22,7 @@ export interface LangfusePromptSyncRequest {
   listPrompts: PromptCatalogSyncDeps['listPrompts'];
   lockLeaseMs: number;
   maxPages: number;
+  trackProductFact?: PromptCatalogProductTracker;
 }
 
 export type LangfusePromptSyncRunner = (
@@ -34,7 +37,13 @@ export function createLangfusePromptSyncRunner(
 ): LangfusePromptSyncRunner {
   const { lock, promptService, logger } = deps;
 
-  return async function syncPromptCatalog({ source, listPrompts, lockLeaseMs, maxPages }) {
+  return async function syncPromptCatalog({
+    source,
+    listPrompts,
+    lockLeaseMs,
+    maxPages,
+    trackProductFact = deps.trackProductFact,
+  }) {
     const syncDeps: PromptCatalogSyncDeps = {
       listPrompts,
       promptService,
@@ -42,6 +51,7 @@ export function createLangfusePromptSyncRunner(
       lockLeaseMs,
       maxPages,
       logger,
+      ...(trackProductFact ? { trackProductFact } : {}),
     };
 
     return syncLangfusePromptCatalog(source, syncDeps);

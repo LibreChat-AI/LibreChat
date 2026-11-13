@@ -118,7 +118,9 @@ function setupSteering({
   const armDrainAfterAbort = jest.fn();
   const stopGenerating = jest.fn();
   const notify = jest.fn();
+  const trackProduct = jest.fn();
   const host = createHost(withCancellation ? cancelUploads : undefined, clearFilesToDelete, notify);
+  host.useProductTracking = () => trackProduct;
   const { result } = renderHook(
     () => {
       const composer = useComposerTake({
@@ -129,6 +131,7 @@ function setupSteering({
         discardFiles,
       });
       return useDuringRunActions({
+        conversationId,
         composerDisabledRef: { current: false },
         filesLoading,
         canSteer,
@@ -156,6 +159,7 @@ function setupSteering({
   );
   return {
     actions: result.current,
+    trackProduct,
     notify,
     files: () => currentFiles,
     store,
@@ -187,6 +191,32 @@ beforeEach(() => {
 });
 
 describe('during-run pasted text fallback', () => {
+  it('records an explicit queued send once with the same durable request identity', () => {
+    const setup = setupSteering({ files: new Map(), effectiveAction: 'queue' });
+    act(() => {
+      expect(setup.actions.queueFromComposer('private queued text')).toBe(true);
+    });
+    const requestId = setup.enqueue.mock.calls[0][1]?.clientRequestId;
+    expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(setup.trackProduct).toHaveBeenCalledTimes(1);
+    expect(setup.trackProduct).toHaveBeenCalledWith({
+      name: 'librechat.chat.message.submitted',
+      feature: 'chat',
+      kind: 'send',
+      conversationId,
+      submissionId: requestId,
+    });
+    expect(JSON.stringify(setup.trackProduct.mock.calls)).not.toContain('private queued text');
+  });
+
+  it('does not record refused composer submissions', () => {
+    const setup = setupSteering({ filesLoading: true });
+    act(() => {
+      expect(setup.actions.queueFromComposer('blocked')).toBe(false);
+    });
+    expect(setup.trackProduct).not.toHaveBeenCalled();
+  });
+
   it.each(['steer', 'queue', 'interrupt'] as const)(
     'accepts a paste-only draft through %s without waiting for its upload',
     (effectiveAction) => {
@@ -196,7 +226,10 @@ describe('during-run pasted text fallback', () => {
       });
       const expected = formatPastedText(pastedText);
       if (effectiveAction === 'queue') {
-        expect(chat.enqueue).toHaveBeenCalledWith(expected, { files: [] });
+        expect(chat.enqueue).toHaveBeenCalledWith(expected, {
+          files: [],
+          clientRequestId: expect.any(String),
+        });
       } else {
         expect(chat.submitSteer).toHaveBeenCalledWith(
           expected,
@@ -335,6 +368,7 @@ describe('during-run pasted text fallback', () => {
     });
     expect(chat.submitSteer).not.toHaveBeenCalled();
     expect(chat.enqueue).toHaveBeenCalledWith(`Prompt\n\n${formatPastedText(pastedText)}`, {
+      clientRequestId: expect.any(String),
       files: [expect.objectContaining({ file_id: 'done-file' })],
       quotes: ['quote'],
       manualSkills: ['skill'],
@@ -349,6 +383,7 @@ describe('during-run pasted text fallback', () => {
       expect(chat.actions.interruptAndSend('')).toBe(true);
     });
     expect(chat.enqueue).toHaveBeenCalledWith(formatPastedText(pastedText), {
+      clientRequestId: expect.any(String),
       files: [],
       front: true,
     });
@@ -365,7 +400,10 @@ describe('during-run pasted text fallback', () => {
     act(() => {
       expect(chat.actions.queueFromComposer('')).toBe(true);
     });
-    expect(chat.enqueue).toHaveBeenCalledWith(formatPastedText(pastedText), { files: [] });
+    expect(chat.enqueue).toHaveBeenCalledWith(formatPastedText(pastedText), {
+      files: [],
+      clientRequestId: expect.any(String),
+    });
     expect(chat.cancelUploads).toHaveBeenCalledWith(['paste-key', 'pending-paste', 'paste-temp']);
     expect(isComposerFileTaken('source-id')).toBe(true);
     expect(chat.discardFiles).toHaveBeenCalledWith(['source-key', 'source-id']);

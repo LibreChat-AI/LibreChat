@@ -34,6 +34,7 @@ const {
   EModelEndpoint,
   defaultSocialLogins,
   resolveMCPAppsPolicy,
+  getProductTrackingConfig,
 } = require('librechat-data-provider');
 const { logger, SystemCapabilities, configCapability } = require('@librechat/data-schemas');
 const { hasCapability, getHeldCapabilities } = require('~/server/middleware/roles/capabilities');
@@ -242,6 +243,7 @@ router.get('/', async function (req, res) {
         ...preLoginPayload,
         socialLogins: baseConfig?.registration?.socialLogins ?? defaultSocialLogins,
         turnstile: baseConfig?.turnstileConfig,
+        productTracking: getProductTrackingConfig(baseConfig?.config?.telemetry),
         rum: getRumConfig(baseConfig?.config?.telemetry),
         clientLimits: getClientLimits(baseConfig?.config?.clientLimits),
       };
@@ -360,6 +362,7 @@ router.get('/', async function (req, res) {
       ...resolveCodeWorkspaceInheritanceCapability(process.env.CODE_ENVIRONMENT_DECISION_VERSION),
       ...(codeEnvironmentTransitionVersion != null ? { codeEnvironmentTransitionVersion } : {}),
       ...(cloudFront ? { cloudFront } : {}),
+      productTracking: getProductTrackingConfig(appConfig?.config?.telemetry),
       rum: getRumConfig(appConfig?.config?.telemetry),
       clientLimits: getClientLimits(appConfig?.config?.clientLimits),
       fileUploadSseEnabled: isEnabled(process.env.FILE_UPLOAD_SSE_ENABLED),

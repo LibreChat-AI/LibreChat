@@ -20,6 +20,8 @@ const {
   joinChatProjectInstructions,
   applyForcedTemporaryRequest,
   getAssistantRun,
+  createAssistantProductTracking,
+  trackAssistantRun,
 } = require('@librechat/api');
 const {
   Time,
@@ -120,6 +122,12 @@ const chatV2 = async (req, res) => {
 
   /** @type {string} - The conversation UUID - created if undefined */
   const conversationId = convoId ?? v4();
+  const productTracking = createAssistantProductTracking(req, {
+    conversationId,
+    agentId: assistant_id,
+    model,
+    provider: endpoint,
+  });
 
   const cache = getLogStores(CacheKeys.ABORT_KEYS);
   const cacheKey = `${req.user.id}:${conversationId}`;
@@ -144,7 +152,10 @@ const chatV2 = async (req, res) => {
     responseMessageId,
   });
 
-  const handleError = assistantRun.guardErrors(res, createErrorHandler({ req, res, getContext }));
+  const handleError = assistantRun.guardErrors(
+    res,
+    createErrorHandler({ req, res, getContext, productTracking }),
+  );
 
   try {
     res.on(
@@ -468,6 +479,7 @@ const chatV2 = async (req, res) => {
             thread_id,
             run_id,
             in_progress: openai.in_progress,
+            productTracking,
           });
           return;
         }
@@ -488,7 +500,7 @@ const chatV2 = async (req, res) => {
         sendInitialResponse();
 
         // todo: retry logic
-        response = await runAssistant({ openai, thread_id, run_id });
+        response = await runAssistant({ openai, thread_id, run_id, productTracking });
         return;
       }
 
@@ -508,6 +520,7 @@ const chatV2 = async (req, res) => {
       const allConfig = appConfig.endpoints?.all;
 
       const streamRunManager = new StreamRunManager({
+        productTracking,
         req,
         res,
         openai,
@@ -556,6 +569,7 @@ const chatV2 = async (req, res) => {
       steps: response.steps,
     });
 
+    trackAssistantRun(productTracking, response.run);
     if (response.run.status === RunStatus.CANCELLED) {
       logger.debug('[/assistants/chat/] Run cancelled, handled by `abortRun`');
       return res.end();
@@ -618,6 +632,7 @@ const chatV2 = async (req, res) => {
     if (!response.run.usage) {
       await sleep(3000);
       completedRun = await openai.beta.threads.runs.retrieve(response.run.id, { thread_id });
+      trackAssistantRun(productTracking, completedRun);
       if (completedRun.usage) {
         await recordUsage({
           ...completedRun.usage,

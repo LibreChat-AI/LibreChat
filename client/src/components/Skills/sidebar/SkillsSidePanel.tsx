@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { useParams } from 'react-router-dom';
+import { useParams, useLocation } from 'react-router-dom';
 import type { TSkillListResponse } from 'librechat-data-provider';
+import { useFeatureObservation } from '~/hooks/useProductObservation';
 import { PanelContent, ListLoading } from '~/components/ui';
 import SkillListSkeleton from '../lists/SkillListSkeleton';
 import { useSkillsInfiniteQuery } from '~/data-provider';
@@ -25,6 +26,7 @@ interface SkillsSidePanelProps {
 
 export default function SkillsSidePanel({ className }: SkillsSidePanelProps) {
   const { skillId: activeSkillId } = useParams();
+  const location = useLocation();
   const [searchTerm, setSearchTerm] = useState('');
   const [sectionOpen, setSectionOpen] = useState(true);
   const debouncedSearch = useDebounce(searchTerm, 250);
@@ -42,6 +44,11 @@ export default function SkillsSidePanel({ className }: SkillsSidePanelProps) {
 
   /** A collapsed sidebar keeps this panel mounted, so stop draining pages into it */
   const sidebarExpanded = useRecoilValue(store.sidebarExpanded);
+  useFeatureObservation(
+    'skills',
+    'sidebar',
+    sidebarExpanded && !location.pathname.startsWith('/insights'),
+  );
 
   const { containerRef } = useNavScrolling<TSkillListResponse>({
     nextCursor,

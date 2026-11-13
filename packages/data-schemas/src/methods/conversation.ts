@@ -305,6 +305,7 @@ export interface ConversationMethods {
   saveConvo(
     ctx: {
       userId: string;
+      onCreated?: (conversationId: string) => void | Promise<void>;
       isTemporary?: boolean;
       expiredAt?: Date;
       interfaceConfig?: AppConfig['interfaceConfig'];
@@ -2422,11 +2423,13 @@ export function createConversationMethods(
   async function saveConvo(
     {
       userId,
+      onCreated,
       isTemporary,
       expiredAt,
       interfaceConfig,
     }: {
       userId: string;
+      onCreated?: (conversationId: string) => void | Promise<void>;
       isTemporary?: boolean;
       expiredAt?: Date;
       interfaceConfig?: AppConfig['interfaceConfig'];
@@ -2956,6 +2959,15 @@ export function createConversationMethods(
         }
       };
       await runAfterTransaction(deps?.saveSession, maintainProject);
+      if (conversationResult.lastErrorObject?.updatedExisting === false && onCreated) {
+        await runAfterTransaction(deps?.saveSession, async () => {
+          try {
+            await onCreated(conversation.conversationId);
+          } catch {
+            // A host observer cannot turn a durable conversation into a failed save.
+          }
+        });
+      }
 
       return conversation.toObject();
     } catch (error) {
