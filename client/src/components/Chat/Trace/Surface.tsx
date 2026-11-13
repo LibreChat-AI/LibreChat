@@ -1,4 +1,4 @@
-import { Suspense, useId, useRef, useEffect } from 'react';
+import { Suspense, useId, useRef, useState, useEffect } from 'react';
 import { useAtom } from 'jotai';
 import { X } from 'lucide-react';
 import { Button, Spinner } from '@librechat/client';
@@ -74,6 +74,30 @@ export default function TraceSurface({
   const [traceConversationId, setTraceConversationId] = useAtom(traceViewerConversationAtom);
   const open = conversationId != null && traceConversationId === conversationId;
 
+  /** What had focus when the trace opened, read before the loading fallback or the viewer
+   *  moves focus into the trace, so either one returns it there when the trace closes. */
+  const [wasOpen, setWasOpen] = useState(open);
+  const [opener, setOpener] = useState<HTMLElement | null>(null);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setOpener(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    }
+  }
+
+  useEffect(() => {
+    if (open || opener == null) {
+      return;
+    }
+    /** Only reclaim focus the trace took with it, as the viewer does. */
+    const active = document.activeElement;
+    if (active != null && active !== document.body) {
+      return;
+    }
+    const target = opener.isConnected ? opener : document.getElementById('header-menu-button');
+    target?.focus();
+  }, [open, opener]);
+
   useEffect(() => {
     if (traceConversationId != null && traceConversationId !== conversationId) {
       setTraceConversationId(null);
@@ -92,7 +116,11 @@ export default function TraceSurface({
       </div>
       {open && (
         <Suspense fallback={<ViewerLoading onClose={() => setTraceConversationId(null)} />}>
-          <Viewer conversationId={conversationId} onClose={() => setTraceConversationId(null)} />
+          <Viewer
+            conversationId={conversationId}
+            returnFocusTo={opener}
+            onClose={() => setTraceConversationId(null)}
+          />
         </Suspense>
       )}
     </div>
