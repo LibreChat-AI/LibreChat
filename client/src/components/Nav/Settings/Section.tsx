@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { cn } from '~/utils';
 
 interface SectionProps {
@@ -6,11 +6,12 @@ interface SectionProps {
   icon?: ReactNode;
   danger?: boolean;
   children: ReactNode;
+  sectionRef?: Ref<HTMLElement>;
 }
 
-export default function Section({ heading, icon, danger, children }: SectionProps) {
+export default function Section({ heading, icon, danger, children, sectionRef }: SectionProps) {
   return (
-    <section className="mb-7">
+    <section ref={sectionRef} className="mb-7">
       <h3
         className={cn(
           'mb-1 flex items-center gap-1.5 px-1 text-xs font-medium tracking-wide uppercase',
