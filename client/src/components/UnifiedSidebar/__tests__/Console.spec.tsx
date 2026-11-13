@@ -393,8 +393,23 @@ describe('Console navigation', () => {
     await act(async () => rerenderConsole({ railExpanded: false }));
     expect(screen.getByRole('img', { name: 'Another Brand' })).toHaveAttribute(
       'src',
-      '/assets/logo.svg',
+      'assets/logo.svg',
     );
     expect(props.onSelect).not.toHaveBeenCalled();
+  });
+
+  it('resolves the branding asset under a configured app base', async () => {
+    const base = document.createElement('base');
+    base.href = 'https://example.test/librechat/';
+    document.head.prepend(base);
+    try {
+      await renderConsole({ railExpanded: false, appTitle: 'Another Brand' });
+      expect(screen.getByRole('img', { name: 'Another Brand' })).toHaveProperty(
+        'src',
+        'https://example.test/librechat/assets/logo.svg',
+      );
+    } finally {
+      base.remove();
+    }
   });
 });

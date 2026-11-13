@@ -99,7 +99,7 @@ function Console({
     >
       <div className="flex h-9 shrink-0 items-center justify-center gap-2 px-1">
         <img
-          src="/assets/logo.svg"
+          src="assets/logo.svg"
           alt={railExpanded ? '' : appTitle}
           className="size-6 shrink-0 object-contain"
         />
