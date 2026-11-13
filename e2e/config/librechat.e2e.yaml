@@ -180,6 +180,10 @@ endpoints:
   # Default capabilities plus run_in_background (off by default upstream) so the
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
+    sdkRuntimes:
+      e2e-sdk:
+        module: ./e2e/setup/sdk-runtime.cjs
+        roles: [ADMIN]
     subagentActivity:
       contentRecoveryEnabled: true
     fileSharing:

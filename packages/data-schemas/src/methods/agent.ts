@@ -2778,6 +2778,7 @@ export function createAgentMethods(
 
     const unsetOnRestore: Record<string, 1> = {};
     for (const field of [
+      'sdk_runtime',
       'code_environment_id',
       'code_workspace_id',
       'code_environment_ids',
