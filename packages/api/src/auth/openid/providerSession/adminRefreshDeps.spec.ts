@@ -31,16 +31,17 @@ describe('buildAdminRefreshProviderSessionDeps', () => {
       bridgeGraceMs: 60000,
       upsertSession: jest.fn(),
       deleteSession: jest.fn(),
+      getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
     };
   }
 
-  it('returns an empty object, touching nothing else, when the mode is off', async () => {
+  it('returns only the refresh-token-expiry getter, touching nothing else, when the mode is off', async () => {
     const authorizer = makeAuthorizer('off');
     const input = makeBuildInput(authorizer);
 
     const deps = await buildAdminRefreshProviderSessionDeps(input);
 
-    expect(deps).toEqual({});
+    expect(deps).toEqual({ getRefreshTokenExpiryMs: input.getRefreshTokenExpiryMs });
     expect(input.findProviderSessionBinding).not.toHaveBeenCalled();
     expect(input.getProviderSessionClient).not.toHaveBeenCalled();
     expect(input.getRefreshTokenBridge).not.toHaveBeenCalled();
@@ -65,6 +66,7 @@ describe('buildAdminRefreshProviderSessionDeps', () => {
       expect(deps.storeRefreshTokenBridge).toBe(input.storeRefreshTokenBridge);
       expect(deps.deleteRefreshTokenBridges).toBe(input.deleteRefreshTokenBridges);
       expect(deps.bridgeGraceMs).toBe(input.bridgeGraceMs);
+      expect(deps.getRefreshTokenExpiryMs).toBe(input.getRefreshTokenExpiryMs);
     }
   });
 
@@ -91,6 +93,7 @@ describe('prepareAdminOpenIdRefresh', () => {
       bridgeGraceMs: 60000,
       upsertSession: jest.fn(),
       deleteSession: jest.fn(),
+      getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
     };
   }
 
@@ -102,7 +105,9 @@ describe('prepareAdminOpenIdRefresh', () => {
     expect(result.grantRefreshToken).toBe('refresh-token');
     expect(result.binding).toEqual({ ref: null });
     expect(result.bridged).toBe(false);
-    expect(result.providerSessionDeps).toEqual({});
+    expect(result.providerSessionDeps).toEqual({
+      getRefreshTokenExpiryMs: input.getRefreshTokenExpiryMs,
+    });
   });
 
   it('carries the bound ref through to the returned binding under enforce', async () => {

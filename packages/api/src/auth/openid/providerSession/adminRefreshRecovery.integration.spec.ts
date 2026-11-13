@@ -179,6 +179,7 @@ function buildDepsInput(
     bridgeGraceMs: bridgeService.OPENID_REFRESH_BRIDGE_GRACE_MS,
     upsertSession: jest.fn(methods.upsertSession),
     deleteSession: jest.fn(methods.deleteSession),
+    getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
     ...overrides,
   };
 }

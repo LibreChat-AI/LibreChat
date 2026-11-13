@@ -11,7 +11,6 @@ jest.mock(
       info: jest.fn(),
       warn: jest.fn(),
     },
-    DEFAULT_REFRESH_TOKEN_EXPIRY: 1000 * 60 * 60 * 24 * 7,
   }),
   { virtual: true },
 );
@@ -301,6 +300,7 @@ describe('admin OAuth code exchange', () => {
   describe('provider-session authorization', () => {
     const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-123' };
     const openidUser = { ...user, openidId: 'sub-123' } as unknown as IUser;
+    const getRefreshTokenExpiryMs = jest.fn(() => 1000 * 60 * 60 * 24 * 90);
 
     it('authorizes before returning tokens when a ref is bound', async () => {
       const { cache } = createCache();
@@ -318,6 +318,7 @@ describe('admin OAuth code exchange', () => {
 
       const result = await exchangeAdminCode(cache, code, undefined, undefined, {
         authorizeProviderSession,
+        getRefreshTokenExpiryMs,
       });
 
       expect(authorizeProviderSession).toHaveBeenCalledWith({
@@ -345,7 +346,10 @@ describe('admin OAuth code exchange', () => {
       );
 
       await expect(
-        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+        exchangeAdminCode(cache, code, undefined, undefined, {
+          authorizeProviderSession,
+          getRefreshTokenExpiryMs,
+        }),
       ).rejects.toThrow(AdminExchangeError);
     });
 
@@ -365,7 +369,10 @@ describe('admin OAuth code exchange', () => {
       );
 
       await expect(
-        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+        exchangeAdminCode(cache, code, undefined, undefined, {
+          authorizeProviderSession,
+          getRefreshTokenExpiryMs,
+        }),
       ).rejects.toBe(unavailableError);
     });
 
@@ -388,11 +395,17 @@ describe('admin OAuth code exchange', () => {
       );
 
       await expect(
-        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+        exchangeAdminCode(cache, code, undefined, undefined, {
+          authorizeProviderSession,
+          getRefreshTokenExpiryMs,
+        }),
       ).rejects.toBe(unavailableError);
 
       await expect(
-        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+        exchangeAdminCode(cache, code, undefined, undefined, {
+          authorizeProviderSession,
+          getRefreshTokenExpiryMs,
+        }),
       ).resolves.toMatchObject({ token: 'jwt-token' });
     });
 
@@ -411,11 +424,17 @@ describe('admin OAuth code exchange', () => {
       );
 
       await expect(
-        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+        exchangeAdminCode(cache, code, undefined, undefined, {
+          authorizeProviderSession,
+          getRefreshTokenExpiryMs,
+        }),
       ).rejects.toThrow(AdminExchangeError);
 
       await expect(
-        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+        exchangeAdminCode(cache, code, undefined, undefined, {
+          authorizeProviderSession,
+          getRefreshTokenExpiryMs,
+        }),
       ).resolves.toBeNull();
     });
 
@@ -427,6 +446,7 @@ describe('admin OAuth code exchange', () => {
 
       const result = await exchangeAdminCode(cache, code, undefined, undefined, {
         authorizeProviderSession,
+        getRefreshTokenExpiryMs,
       });
 
       expect(authorizeProviderSession).not.toHaveBeenCalled();
@@ -438,7 +458,10 @@ describe('admin OAuth code exchange', () => {
       const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
       const code = await generateAdminExchangeCode(cache, openidUser, 'jwt-token', 'refresh-token');
 
-      await exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession });
+      await exchangeAdminCode(cache, code, undefined, undefined, {
+        authorizeProviderSession,
+        getRefreshTokenExpiryMs,
+      });
 
       expect(authorizeProviderSession).toHaveBeenCalledWith({
         ref: null,

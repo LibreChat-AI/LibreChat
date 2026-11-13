@@ -63,9 +63,7 @@ export interface OpenIDSessionRefreshDeps {
     ) => Promise<OpenIDTokenSet>;
   };
   logger: OpenIDLogger;
-  defaultRefreshTokenExpiry: number;
   isEnabled: (value?: string) => boolean;
-  math: (value: string | undefined, fallback: number) => number;
   createAuthIdentityContext: (args: {
     user?: AuthIdentitySource | null;
     requestUser?: AuthIdentitySource | null;
@@ -146,6 +144,10 @@ export interface OpenIDSessionRefreshDeps {
     ownerId?: string;
     operation: (context: LeaseContext) => Promise<T>;
   }) => Promise<T>;
+  /** The refresh-token lifetime backing a provider-session grant, evaluated per call; the
+   *  caller owns `REFRESH_TOKEN_EXPIRY` and its default. Mirrors
+   *  `packages/api/src/auth/openid/recovery.ts`'s dep of the same name. */
+  getRefreshTokenExpiryMs: () => number;
   providerSessionAuthorizer: ProviderSessionAuthorizer;
   getProviderSessionClient: () => { issuer: string; clientId: string } | null;
 }
@@ -230,9 +232,7 @@ export function createOpenIDSessionRefreshService(
     crypto,
     openIdClient,
     logger,
-    defaultRefreshTokenExpiry: DEFAULT_REFRESH_TOKEN_EXPIRY,
     isEnabled,
-    math,
     createAuthIdentityContext,
     isOpenIDSessionIdentityMatch,
     createOpenIDRefreshIdentityTuple,
@@ -258,6 +258,7 @@ export function createOpenIDSessionRefreshService(
     assertOpenIDRefreshFlightAvailable,
     assertOpenIDRefreshSessionGenerationAvailable,
     withOpenIDRefreshFlightLease,
+    getRefreshTokenExpiryMs,
     providerSessionAuthorizer,
     getProviderSessionClient,
   } = deps;
@@ -668,10 +669,7 @@ export function createOpenIDSessionRefreshService(
   /** Horizon for a provider-session check: not the token's own expiry, but how long this
    *  authorization should be trusted before the next grant or publication re-checks it. */
   function providerSessionExpiry(): Date {
-    return providerSessionCredentialExpiry(
-      new Date(),
-      math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
-    );
+    return providerSessionCredentialExpiry(new Date(), getRefreshTokenExpiryMs());
   }
 
   function attachBrowserRefreshTokenMarker<T extends MarkedOIDCTokens | null>(
@@ -878,10 +876,7 @@ export function createOpenIDSessionRefreshService(
     }
 
     if (canWriteRefreshTokenCookie(res)) {
-      const expiryInMilliseconds = math(
-        process.env.REFRESH_TOKEN_EXPIRY,
-        DEFAULT_REFRESH_TOKEN_EXPIRY,
-      );
+      const expiryInMilliseconds = getRefreshTokenExpiryMs();
       const expirationDate = new Date(Date.now() + expiryInMilliseconds);
       /**
        * The durable Session record is what authorizes local image access for OpenID users

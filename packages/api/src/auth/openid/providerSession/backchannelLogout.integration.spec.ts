@@ -143,9 +143,7 @@ function buildReuseDeps(
     },
     openIdClient: { refreshTokenGrant: jest.fn() },
     logger: makeLogger(),
-    defaultRefreshTokenExpiry: 1000 * 60 * 60 * 24 * 90,
     isEnabled: jest.fn(() => true),
-    math: jest.fn((_value: string | undefined, fallback: number) => fallback),
     createAuthIdentityContext: jest.fn(() => ({
       appUserId: 'user-1',
       openidSubject: 'sub-1',
@@ -185,6 +183,7 @@ function buildReuseDeps(
         markLeaseSettled: jest.fn(),
       }),
     ),
+    getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
     providerSessionAuthorizer: {
       establish: jest.fn().mockResolvedValue({ ok: true }),
       authorize: jest.fn().mockResolvedValue({ ok: true }),
