@@ -84,6 +84,14 @@ export default function useResumablePane({
   const setSubmission = useSetAtom(submissionByIndex(runIndex));
   const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
 
+  const updateGenerationEpoch = useCallback(
+    (...args: Parameters<ResumablePane['setGenerationEpoch']>) => {
+      if (!isAddedRequest && args[1] == null) assignment?.begin(args[0]);
+      return setGenerationEpoch(...args);
+    },
+    [isAddedRequest, assignment, setGenerationEpoch],
+  );
+
   const publishRunEnd = useSetAtom(runEndByIndex(runIndex));
   const setRunEnd = useCallback(
     (end: RunEnd, options?: { retainDetached?: boolean }) => {
@@ -126,7 +134,7 @@ export default function useResumablePane({
       setShowStopButton,
       setSubmission,
       setStreamId,
-      setGenerationEpoch,
+      setGenerationEpoch: updateGenerationEpoch,
       setPendingAction: (conversationId, action) =>
         jotaiStore.set(pendingApprovalActionFamily(conversationId), action),
       clearComposerDrafts: (conversationId, options) =>
@@ -171,7 +179,7 @@ export default function useResumablePane({
       setAbortScroll,
       setSubmission,
       setShowStopButton,
-      setGenerationEpoch,
+      updateGenerationEpoch,
       setRunEnd,
       clearDrainAfterAbort,
     ],
