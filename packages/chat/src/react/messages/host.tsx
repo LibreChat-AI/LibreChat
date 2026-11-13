@@ -176,6 +176,13 @@ export type MessageAudioProps = {
   renderButton?: (props: MessageAudioButtonProps) => ReactNode;
 };
 
+/** A model response's usage control, rendered with the host's config and accounting data. */
+export type MessageUsageProps = {
+  message: TMessage;
+  conversationId?: string;
+  isLast?: boolean;
+};
+
 /**
  * Everything the message list reads from the app: viewer preferences, and render slots for the
  * pieces of a row that have not moved into this package yet. Members are hooks or slots, called
@@ -201,6 +208,7 @@ export interface MessagesHost {
   useHasPendingTurn: (conversationId: string) => boolean;
   /** Renders the app's read-aloud control, or `null` while read-aloud is off. */
   renderMessageAudio: (props: MessageAudioProps) => ReactNode;
+  renderMessageUsage?: (props: MessageUsageProps) => ReactNode;
   /** The element the app's conversation screenshot captures; none outside a screenshot provider. */
   useScreenshotTarget: () => RefObject<HTMLDivElement> | undefined;
   /** Whether the viewer asked the thread to follow new content to the bottom. */
@@ -342,4 +350,9 @@ export function MessageIconSlot(props: MessageIconProps): ReactNode {
 /** A row's read-aloud control, drawn by the host's slot. */
 export function MessageAudioSlot(props: MessageAudioProps): ReactNode {
   return useMessagesHost().renderMessageAudio(props);
+}
+
+/** A response's token details, when the host enables usage reporting. */
+export function MessageUsageSlot(props: MessageUsageProps): ReactNode {
+  return useMessagesHost().renderMessageUsage?.(props) ?? null;
 }

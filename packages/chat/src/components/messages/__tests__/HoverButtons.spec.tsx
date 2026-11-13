@@ -37,7 +37,11 @@ const answer = {
   text: 'The answer is 4.',
 } as TMessage;
 
-function renderButtons(overrides: Partial<MessagesHost> = {}, isSubmitting = false) {
+function renderButtons(
+  overrides: Partial<MessagesHost> = {},
+  isSubmitting = false,
+  message = answer,
+) {
   const chat = { index: 0, isSubmitting } as ChatContract;
   return render(
     <ChatContext.Provider value={chat}>
@@ -46,7 +50,7 @@ function renderButtons(overrides: Partial<MessagesHost> = {}, isSubmitting = fal
           index={0}
           isLast={true}
           isEditing={false}
-          message={answer}
+          message={message}
           conversation={conversation}
           enterEdit={jest.fn()}
           regenerate={jest.fn()}
@@ -61,6 +65,23 @@ function renderButtons(overrides: Partial<MessagesHost> = {}, isSubmitting = fal
 }
 
 describe('HoverButtons', () => {
+  it.each([false, true])('offers usage for a response, streaming=%s', (streaming) => {
+    const renderMessageUsage = jest.fn(() => <span>Usage details</span>);
+    renderButtons({ renderMessageUsage }, streaming);
+    expect(renderMessageUsage).toHaveBeenCalledWith({
+      message: answer,
+      conversationId: 'convo-1',
+      isLast: true,
+    });
+    expect(screen.getByText('Usage details')).toBeInTheDocument();
+  });
+
+  it('does not offer provider usage on a user message', () => {
+    const renderMessageUsage = jest.fn(() => null);
+    renderButtons({ renderMessageUsage }, false, question);
+    expect(renderMessageUsage).not.toHaveBeenCalled();
+  });
+
   it('draws no read-aloud control when the host renders none', () => {
     renderButtons();
 
