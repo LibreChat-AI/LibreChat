@@ -179,6 +179,13 @@ function Layout() {
 function mount(path = '/parameters', initialConversation?: TConversation, queryComposer = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, cacheTime: 0 } } });
   clients.push(client);
+  const emptyChat = queryComposer ? (
+    <ChatRouteOwner>
+      <QueryComposer />
+    </ChatRouteOwner>
+  ) : (
+    <output data-testid="redirect" />
+  );
   const router = createMemoryRouter(
     [
       {
@@ -192,12 +199,8 @@ function mount(path = '/parameters', initialConversation?: TConversation, queryC
               <ChatRouteOwner>
                 <LiveChat />
               </ChatRouteOwner>
-            ) : queryComposer ? (
-              <ChatRouteOwner>
-                <QueryComposer />
-              </ChatRouteOwner>
             ) : (
-              <output data-testid="redirect" />
+              emptyChat
             ),
           },
         ],
