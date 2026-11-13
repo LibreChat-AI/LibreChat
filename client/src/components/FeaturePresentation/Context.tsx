@@ -106,8 +106,10 @@ export function FeaturePresentationProvider({
   const [mounted, setMounted] = useAtom(state.mounted);
   const [returnUrl, setReturnUrl] = useAtom(state.returnUrl);
   const [chatLocation, setChatLocation] = useAtom(state.chatLocation);
+  const chatLocationRef = useRef(chatLocation);
   const updateChatLocation = useCallback(
     (next: Location) => {
+      chatLocationRef.current = next;
       setChatLocation(next);
       setReturnUrl(getChatReturnUrl(next.pathname + next.search + next.hash));
     },
@@ -115,6 +117,7 @@ export function FeaturePresentationProvider({
   );
   useLayoutEffect(() => {
     if (/^\/c(?:\/|$)/.test(location.pathname)) {
+      chatLocationRef.current = undefined;
       setChatLocation(undefined);
       setReturnUrl(getChatReturnUrl(location.pathname + location.search + location.hash));
     }
@@ -141,7 +144,7 @@ export function FeaturePresentationProvider({
       if (!canOpenPage(target) || (relatedPage === target && page !== target)) {
         return;
       }
-      if (!relatedPage) {
+      if (!relatedPage && !chatLocationRef.current) {
         setChatLocation(undefined);
         setReturnUrl(getChatReturnUrl(location.pathname + location.search + location.hash));
       }
@@ -170,7 +173,12 @@ export function FeaturePresentationProvider({
       focusTarget.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
       onPanelOpen(pageRegistry[target].navId);
-      navigate(getChatReturnUrl(returnUrl));
+      const destination = chatLocationRef.current;
+      navigate(
+        getChatReturnUrl(
+          destination ? destination.pathname + destination.search + destination.hash : returnUrl,
+        ),
+      );
     },
     [canUse, onPanelOpen, navigate, returnUrl],
   );
@@ -181,7 +189,10 @@ export function FeaturePresentationProvider({
       }
       onPanelOpen(navId);
       if (relatedPage) {
-        navigate(getChatReturnUrl(returnUrl));
+        const target = chatLocationRef.current;
+        navigate(
+          getChatReturnUrl(target ? target.pathname + target.search + target.hash : returnUrl),
+        );
       }
     },
     [links, onPanelOpen, relatedPage, navigate, returnUrl],
