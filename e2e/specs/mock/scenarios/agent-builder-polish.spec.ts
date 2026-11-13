@@ -73,7 +73,8 @@ test('the Memory tool offers where memories are kept as two cards @scenario:memo
   const own = scope.getByRole('radio', { name: /This agent only/ });
   await expect(shared).toBeChecked();
   await expect(own).not.toBeChecked();
-  await own.check({ force: true });
+  /** The radio itself is visually hidden; the card around it is the target a person presses. */
+  await scope.getByText('This agent only', { exact: true }).click();
   await expect(own).toBeChecked();
   await expect(shared).not.toBeChecked();
 });
