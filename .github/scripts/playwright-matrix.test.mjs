@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { condition, interpolate } from './expressions.mjs';
 
 const scriptsDir = fileURLToPath(new URL('.', import.meta.url));
@@ -127,6 +127,7 @@ const everyLane = { select: true, shards: true, mcp: true, apps: true, gate: tru
 function gateFails(results, mcpRun = '') {
   return condition(workflow.jobs.e2e.steps[0].if, {
     needs: {
+      shard_timings: { result: results.timings ?? 'success' },
       e2e_shards: { result: results.shards ?? 'success' },
       mcp_apps: { result: results.apps ?? 'success' },
       mcp_tool_list_changed: { result: results.mcp ?? 'success' },
@@ -249,11 +250,76 @@ test('graduated spec skips keep the same pool across shards and remain opt-in', 
   assert.deepEqual(fallback.matrix, prMatrix);
 });
 
+/** What the `shard_timings` hand-off step outputs for one restored cache file, or for none. */
+function handOff(t, cached) {
+  const scratch = mkdtempSync(join(scriptsDir, '.playwright-matrix-test-'));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  if (cached !== undefined) {
+    mkdirSync(join(scratch, 'e2e', '.generated'), { recursive: true });
+    writeFileSync(join(scratch, 'e2e', '.generated', 'shard-timings.json'), cached);
+  }
+  writeFileSync(join(scratch, 'output'), '');
+  const step = workflow.jobs.shard_timings.steps.find((entry) => entry.id === 'read');
+  const result = spawnSync('bash', ['-e', '-c', step.run], {
+    cwd: scratch,
+    encoding: 'utf8',
+    timeout: 10000,
+    env: { PATH: process.env.PATH, GITHUB_OUTPUT: join(scratch, 'output') },
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  return readFileSync(join(scratch, 'output'), 'utf8');
+}
+
+test('every shard plans from the one copy of the timings its run resolved', (t) => {
+  const resolver = workflow.jobs.shard_timings;
+  assert.equal(resolver.outputs.timings, '${{ steps.read.outputs.timings }}');
+  assert.ok(shards.needs.includes('shard_timings'));
+  const full = shards.steps.find((entry) => entry.if === "matrix.suite == 'full'");
+  assert.equal(full.env.E2E_SHARD_TIMINGS, '${{ needs.shard_timings.outputs.timings }}');
+  assert.match(full.run, /--timings "\$TIMINGS"/);
+  assert.ok(shards.steps.every((step) => !JSON.stringify(step.with ?? {}).includes('timings')));
+  assert.equal(
+    handOff(t, JSON.stringify({ files: { 'a.spec.ts': 1.5, 'b.spec.ts': 'slow' } }, null, 2)),
+    'timings={"files":{"a.spec.ts":1.5}}\n',
+  );
+});
+
+test('missing or malformed recorded timings leave every shard on the committed file', (t) => {
+  const full = shards.steps.find((entry) => entry.if === "matrix.suite == 'full'");
+  assert.match(full.run, /^TIMINGS=e2e\/timings\.mock\.json\nif \[ -n "\$E2E_SHARD_TIMINGS" \]/);
+  for (const cached of [undefined, '', '{not json', '[]', '{"files":[1]}', '{"files":{}}']) {
+    assert.equal(handOff(t, cached), '', String(cached));
+  }
+});
+
+test('timings are saved only by a push, under the path and key prefix the shards restore from', () => {
+  const recorder = yaml.load(
+    readFileSync(new URL('../workflows/playwright-timings.yml', import.meta.url), 'utf8'),
+  ).jobs.record;
+  const find = recorder.steps.find((entry) => entry.id === 'runs');
+  assert.match(find.run, /--workflow playwright-mock\.yml --branch dev --event push/);
+  assert.match(find.run, /--status success/);
+  const restore = workflow.jobs.shard_timings.steps.find((entry) => entry.id === 'restore');
+  const save = recorder.steps.find((entry) => entry.uses?.startsWith('actions/cache/save@'));
+  assert.equal(restore['continue-on-error'], true);
+  assert.equal(save.with.path, restore.with.path);
+  assert.ok(save.with.key.startsWith(restore.with['restore-keys']));
+  const saves = (event, built) =>
+    condition(save.if, {
+      github: { event_name: event },
+      steps: { build: { outputs: { built } } },
+    });
+  assert.equal(saves('push', 'true'), true);
+  assert.equal(saves('push', ''), false);
+  assert.equal(saves('pull_request', 'true'), false);
+});
+
 test('the required gate still waits for all shards and rejects failures without fighting cancellation', () => {
   const gate = workflow.jobs.e2e;
   assert.equal(gate.name, 'e2e');
   assert.deepEqual(gate.needs, [
     'codegraph_select',
+    'shard_timings',
     'e2e_shards',
     'mcp_tool_list_changed',
     'mcp_apps',
@@ -277,6 +343,7 @@ test('a push to dev runs every lane on the pull request matrix with nothing narr
   assert.deepEqual(matrix, prMatrix);
   assert.equal(gateFails({}), false);
   assert.equal(gateFails({ shards: 'failure' }), true);
+  assert.equal(gateFails({ timings: 'failure' }), true);
   assert.equal(gateFails({ apps: 'failure' }), true);
   assert.equal(gateFails({ mcp: 'failure' }), true);
   /** No selector ran on a push, so a skipped MCP lane is a fault there, not a decision. */
