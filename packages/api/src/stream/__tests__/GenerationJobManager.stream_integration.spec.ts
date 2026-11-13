@@ -1,6 +1,6 @@
 /* eslint jest/no-standalone-expect: ["error", { "additionalTestBlockFunctions": ["testRedis"] }] */
 import type { Redis, Cluster } from 'ioredis';
-import type { ServerSentEvent, StreamEvent, CreatedEvent } from '~/types';
+import type { ServerSentEvent, StreamEvent, CreatedEvent, StreamSubscription } from '~/types';
 import type { IJobStoreV2 } from '~/stream/interfaces/IJobStore';
 import {
   GenerationJobManagerClass,
@@ -872,6 +872,183 @@ describe('GenerationJobManager Integration Tests', () => {
       await jobStore.destroy();
     });
 
+    test.each([false, true])(
+      'waits for initialized skills across replicas (resume: %s)',
+      async (resume) => {
+        const owner = createRedisManager();
+        const reader = createRedisManager();
+        const streamId = `cross-skill-start-${Date.now()}`;
+        const message = {
+          messageId: 'skill-user',
+          parentMessageId: 'parent',
+          conversationId: streamId,
+          text: 'Hello',
+        };
+        const job = await owner.createJob(streamId, 'test-user', streamId, {
+          initialMetadata: { userMessage: message },
+        });
+        const received: ServerSentEvent[] = [];
+        let announceCreated: (event: ServerSentEvent) => void = () => undefined;
+        const announced = new Promise<ServerSentEvent>((resolve) => {
+          announceCreated = resolve;
+        });
+        const onChunk = (event: ServerSentEvent) => {
+          received.push(event);
+          announceCreated(event);
+        };
+        let subscription: StreamSubscription | null;
+        if (resume) {
+          const result = await reader.subscribeWithResume(streamId, onChunk, undefined, undefined, {
+            expectedCreatedAt: job.createdAt,
+          });
+          expect(result.resumeState?.userMessage).toMatchObject(message);
+          result.subscription?.activate();
+          subscription = result.subscription;
+        } else {
+          subscription = await reader.subscribe(streamId, onChunk, undefined, undefined, {
+            expectedCreatedAt: job.createdAt,
+          });
+        }
+        try {
+          expect(received).toEqual([]);
+          const created = {
+            created: true as const,
+            message: {
+              ...message,
+              sender: 'User',
+              isCreatedByUser: true,
+              alwaysAppliedSkills: ['always-skill'],
+              manualSkills: ['manual-skill'],
+            },
+            streamId,
+          };
+          await owner.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+          await expect(announced).resolves.toEqual(created);
+          expect(received).toEqual([created]);
+        } finally {
+          subscription?.unsubscribe();
+          await owner.destroy();
+          await reader.destroy();
+        }
+      },
+    );
+
+    test('replays initialization OAuth before accepting the initialized skill metadata', async () => {
+      const owner = createRedisManager();
+      const reader = createRedisManager();
+      const streamId = `cross-skill-oauth-${Date.now()}`;
+      const message = {
+        messageId: 'oauth-user',
+        conversationId: streamId,
+        text: 'Hello',
+      };
+      const job = await owner.createJob(streamId, 'test-user', streamId, {
+        initialMetadata: { userMessage: message },
+      });
+      const toolCall = {
+        id: 'oauth-call',
+        name: 'oauth_mcp_example',
+        args: '',
+        type: 'tool_call' as const,
+      };
+      await owner.emitChunk(streamId, buildMCPAuthRunStepEvent({ stepId: 'oauth-step', toolCall }));
+      await owner.emitChunk(
+        streamId,
+        buildMCPAuthRunStepDeltaEvent({
+          stepId: 'oauth-step',
+          toolCall,
+          authURL: 'https://example.test/authorize',
+          options: { expiresAt: Date.now() + 60_000 },
+        }),
+      );
+      const onError = jest.fn();
+      let announceCreated: (event: ServerSentEvent) => void = () => undefined;
+      const announced = new Promise<ServerSentEvent>((resolve) => {
+        announceCreated = resolve;
+      });
+      const resumed = await reader.subscribeWithResume(
+        streamId,
+        announceCreated,
+        undefined,
+        onError,
+        {
+          expectedCreatedAt: job.createdAt,
+        },
+      );
+      try {
+        expect(resumed.subscription).not.toBeNull();
+        expect(resumed.resumeState?.pendingOAuthPrompts).toEqual([
+          expect.objectContaining({ authURL: 'https://example.test/authorize' }),
+        ]);
+        resumed.subscription?.activate();
+        expect(onError).not.toHaveBeenCalled();
+        const created = {
+          created: true as const,
+          streamId,
+          message: {
+            ...message,
+            sender: 'User',
+            isCreatedByUser: true,
+            alwaysAppliedSkills: ['always-skill'],
+          },
+        };
+        await owner.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+        await expect(announced).resolves.toEqual(created);
+      } finally {
+        resumed.subscription?.unsubscribe();
+        await owner.destroy();
+        await reader.destroy();
+      }
+    });
+
+    test('hydrates initialized skill metadata published between resume snapshot and attachment', async () => {
+      const owner = createRedisManager();
+      const reader = createRedisManager();
+      const streamId = `cross-skill-gap-${Date.now()}`;
+      const message = { messageId: 'gap-user', conversationId: streamId, text: 'Hello' };
+      const job = await owner.createJob(streamId, 'test-user', streamId, {
+        initialMetadata: { userMessage: message },
+      });
+      const created = {
+        created: true as const,
+        streamId,
+        message: {
+          ...message,
+          sender: 'User',
+          isCreatedByUser: true,
+          alwaysAppliedSkills: ['always-skill'],
+        },
+      };
+      const getResumeState = reader.getResumeState.bind(reader);
+      jest.spyOn(reader, 'getResumeState').mockImplementationOnce(async (...args) => {
+        const snapshot = await getResumeState(...args);
+        await owner.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+        return snapshot;
+      });
+      const onError = jest.fn();
+      const resumed = await reader.subscribeWithResume(
+        streamId,
+        () => undefined,
+        undefined,
+        onError,
+        {
+          expectedCreatedAt: job.createdAt,
+        },
+      );
+      try {
+        expect(resumed.subscription).not.toBeNull();
+        expect(resumed.resumeState?.userMessage).toMatchObject({
+          alwaysAppliedSkills: ['always-skill'],
+        });
+        resumed.subscription?.activate();
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        resumed.subscription?.unsubscribe();
+        await owner.destroy();
+        await reader.destroy();
+      }
+    });
+
     test('should emit created event from metadata on cross-replica subscribe', async () => {
       const replicaAJobStore = new RedisJobStore(ioredisClient!);
       await replicaAJobStore.initialize();
@@ -881,6 +1058,7 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await replicaAJobStore.createJob(streamId, userId);
       await replicaAJobStore.updateJob(streamId, {
+        createdEventEmitted: true,
         userMessage: {
           messageId: 'msg-123',
           parentMessageId: '00000000-0000-0000-0000-000000000000',

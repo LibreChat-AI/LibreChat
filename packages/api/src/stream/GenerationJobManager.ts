@@ -864,6 +864,8 @@ interface PreparedSubscription {
   runtime: RuntimeJobState;
   jobData: SerializableJobData | null;
   deferDeliveryUntilActivated: boolean;
+  /** Only suppress created when the resume snapshot included its authoritative metadata. */
+  createdEventCovered?: boolean;
 }
 
 type DeferredDelivery =
@@ -5274,7 +5276,8 @@ class GenerationJobManagerClass {
     }
 
     let subscriptionActive = true;
-    let createdEventDelivered = options?.skipBufferReplay === true;
+    let createdEventDelivered =
+      options?.skipBufferReplay === true && (prepared?.createdEventCovered ?? true);
     let terminalEventDelivered = false;
     let terminalEventQueued = false;
     let terminalPersistenceTimer: NodeJS.Timeout | null = null;
@@ -5574,7 +5577,11 @@ class GenerationJobManagerClass {
 
     let initialReplayUnavailable = false;
     const stillMatchesExpectedGeneration = async (): Promise<boolean> => {
-      if (options?.expectedCreatedAt == null && !needsDurableInitialReplay) {
+      if (
+        options?.expectedCreatedAt == null &&
+        !needsDurableInitialReplay &&
+        (!this._isRedis || options?.skipBufferReplay === true)
+      ) {
         return true;
       }
       const currentJob = await this.jobStore.getJob(streamId);
@@ -5583,11 +5590,15 @@ class GenerationJobManagerClass {
         (currentJob?.durableEventCount ?? 0) > 0 &&
         (currentJob?.status === 'running' || currentJob?.status === 'requires_action');
       const expectedCreatedAt = options?.expectedCreatedAt ?? runtime.createdAt;
-      return (
-        currentJob?.createdAt === expectedCreatedAt &&
-        runtime.createdAt === expectedCreatedAt &&
-        this.runtimeState.get(streamId) === runtime
-      );
+      if (
+        currentJob?.createdAt !== expectedCreatedAt ||
+        runtime.createdAt !== expectedCreatedAt ||
+        this.runtimeState.get(streamId) !== runtime
+      ) {
+        return false;
+      }
+      jobData = currentJob;
+      return true;
     };
 
     try {
@@ -5724,10 +5735,15 @@ class GenerationJobManagerClass {
               }
             }
           }
-        } else if (this._isRedis && hasEarlyReplaySubscribers && jobData?.userMessage) {
+        } else if (
+          this._isRedis &&
+          hasEarlyReplaySubscribers &&
+          jobData?.createdEventEmitted === true &&
+          jobData.userMessage
+        ) {
           /**
-           * Cross-replica fallback: metadata can be visible before the generating
-           * replica publishes `created`. Emit the fallback before releasing buffered
+           * Only replay metadata committed by `created`, not the preliminary turn
+           * saved before agent/skill initialization. Emit before releasing buffered
            * live events so `created` remains the first user-facing event. deliverChunk
            * suppresses the original publication whether it is already pending or
            * arrives after synchronization.
@@ -6175,7 +6191,11 @@ class GenerationJobManagerClass {
                 replayHandler(bufferedEvent);
               }
             }
-          } else if (hasEarlyReplaySubscribers && jobData?.userMessage) {
+          } else if (
+            hasEarlyReplaySubscribers &&
+            jobData?.createdEventEmitted === true &&
+            jobData.userMessage
+          ) {
             const fallbackCreatedEvent: t.ServerSentEvent = {
               created: true,
               message: {
@@ -6442,6 +6462,10 @@ class GenerationJobManagerClass {
     };
     let resumeState: t.ResumeState | null = null;
     let jobData: SerializableJobData | null = null;
+    let createdEventCovered = true;
+    const recordCreatedSnapshot = (covered: boolean): void => {
+      createdEventCovered = covered;
+    };
     const removeCaptureHandler = (): void => {
       runtime.resumeCaptureHandlers.delete(capturePendingEvent);
     };
@@ -6508,6 +6532,7 @@ class GenerationJobManagerClass {
           const [candidateState, candidateJob] = await Promise.all([
             this.getResumeState(streamId, options?.expectedCreatedAt, {
               durableOnly: false,
+              onCreatedSnapshot: recordCreatedSnapshot,
               onContentSnapshot: (snapshot) => {
                 recoveryContentSnapshot = snapshot;
               },
@@ -6540,6 +6565,7 @@ class GenerationJobManagerClass {
         [resumeState, jobData] = await Promise.all([
           this.getResumeState(streamId, options?.expectedCreatedAt, {
             durableOnly: pendingOverflow != null,
+            onCreatedSnapshot: recordCreatedSnapshot,
             onContentSnapshot: (snapshot) => {
               recoveryContentSnapshot = snapshot;
             },
@@ -6686,6 +6712,7 @@ class GenerationJobManagerClass {
           runtime,
           jobData,
           deferDeliveryUntilActivated: true,
+          createdEventCovered,
         },
       );
       if (pendingEvents.length > 0) {
@@ -6722,6 +6749,11 @@ class GenerationJobManagerClass {
       }
       if (!liveJob || liveJob.createdAt !== runtime.createdAt) {
         return cancelResumeSubscription();
+      }
+      if (!createdEventCovered && liveJob.createdEventEmitted === true && resumeState != null) {
+        /* Created can commit between the metadata snapshot and SUBSCRIBE. Reuse this
+           fenced read so a missed publication still hydrates skills in the sync. */
+        resumeState.userMessage = liveJob.userMessage;
       }
       const liveOverflow = liveJob.earlyBufferOverflow;
       if (liveOverflow != null) {
@@ -9059,6 +9091,7 @@ class GenerationJobManagerClass {
       /** Synchronous eligibility guard on both canonical reads; false means no snapshot. */
       readIf?: (job: Readonly<SerializableJobData>) => boolean;
       onContentSnapshot?: (snapshot: Awaited<ReturnType<IJobStore['getContentParts']>>) => void;
+      onCreatedSnapshot?: (createdEventEmitted: boolean) => void;
     },
   ): Promise<t.ResumeState | null> {
     const recoveryStartedAt =
@@ -9109,6 +9142,8 @@ class GenerationJobManagerClass {
       await this.completeJob(streamId, GENERATION_RECOVERY_FAILED_ERROR, jobData.createdAt);
       throw new Error(GENERATION_RECOVERY_FAILED_ERROR);
     }
+
+    options?.onCreatedSnapshot?.(jobData.createdEventEmitted === true);
 
     /** Independent reads (streamId-only): parallel to collapse 3 Redis round trips into 1.
      *  Safe despite readCachedGraph's cache-drop side effect — each call catches its own
