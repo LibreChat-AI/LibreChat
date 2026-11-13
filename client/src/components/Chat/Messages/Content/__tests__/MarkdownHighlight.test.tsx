@@ -3,11 +3,16 @@ import { RecoilRoot } from 'recoil';
 import ReactMarkdown from 'react-markdown';
 import { render } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { getRehypePlugins, getMarkdownComponents } from '../markdownConfig';
+import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from '../markdownConfig';
+import { getLoadedRehypeModules, loadRehypeModules } from '../rehype';
 import { ArtifactProvider, CodeBlockProvider } from '~/Providers';
 import MarkdownErrorBoundary from '../MarkdownErrorBoundary';
+import MarkdownBlocks from '../MarkdownBlocks';
 import MarkdownLite from '../MarkdownLite';
 import Markdown from '../Markdown';
+
+/** KaTeX and highlight.js load on first need in the app; load them up front here. */
+beforeAll(() => loadRehypeModules());
 
 jest.mock('~/components/Messages/Content/CodeBlock', () => ({
   __esModule: true,
@@ -21,7 +26,9 @@ const WholeMessage = ({ content }: { content: string }) => (
     <CodeBlockProvider>
       <ReactMarkdown
         rehypePlugins={
-          getRehypePlugins() as React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']
+          getRehypePlugins(getLoadedRehypeModules()) as React.ComponentProps<
+            typeof ReactMarkdown
+          >['rehypePlugins']
         }
         components={getMarkdownComponents()}
       >
@@ -104,5 +111,29 @@ describe.each(renderers)('%s highlighting', (_name, Renderer) => {
     const code = renderContent('Use `const answer = 42;` here.');
     expect(code).not.toHaveAttribute('data-language');
     expect(code?.textContent).toBe('const answer = 42;');
+  });
+});
+
+describe('plugins arriving after the first render', () => {
+  it('re-renders memoized blocks once highlighting loads', () => {
+    const content = 'Intro paragraph.\n\n```python\nprint("hello")\n```\n';
+    const blocks = (rehypePlugins: ReturnType<typeof getRehypePlugins>) => (
+      <ArtifactProvider>
+        <CodeBlockProvider>
+          <MarkdownBlocks
+            content={content}
+            streaming={true}
+            remarkPlugins={getRemarkPlugins()}
+            rehypePlugins={rehypePlugins}
+            components={getMarkdownComponents()}
+          />
+        </CodeBlockProvider>
+      </ArtifactProvider>
+    );
+    const { container, rerender } = render(blocks(getRehypePlugins(null)));
+    expect(container.querySelector('[class*="hljs-"]')).toBeNull();
+
+    rerender(blocks(getRehypePlugins(getLoadedRehypeModules())));
+    expect(container.querySelector('[class*="hljs-"]')).not.toBeNull();
   });
 });

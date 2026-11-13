@@ -266,6 +266,41 @@ export default defineConfig(({ command }) => ({
               test: /node_modules[\\/]zod[\\/]/,
               priority: 1,
             },
+            /**
+             * The lazy devtools import the query core and the external-store shim, which every
+             * page uses. Unclaimed, the `query-devtools` group captured them, so the boot chunks
+             * imported it and loaded the devtools and superjson on every visit.
+             */
+            /**
+             * Math and highlighting load on first need (`components/Chat/Messages/Content/rehype`).
+             * The catch-all puts every `rehype-` package in `markdown-processing`, which boot loads,
+             * so without these claims the lazy import resolved to code already downloaded.
+             */
+            /**
+             * The syntax-tree utilities are shared with react-markdown at boot. Left unclaimed,
+             * the groups below captured them as dependencies, and boot then imported (and
+             * downloaded) those chunks for the utilities, KaTeX and highlight.js included.
+             */
+            {
+              name: 'markdown-processing',
+              test: /node_modules[\\/](unist-util-[^\\/]+|hast-util-[^\\/]+|hastscript|property-information|comma-separated-tokens|space-separated-tokens|web-namespaces)[\\/]/,
+              priority: 2,
+            },
+            {
+              name: 'math-katex',
+              test: /node_modules[\\/](katex|rehype-katex)[\\/]/,
+              priority: 1,
+            },
+            {
+              name: 'markdown_highlight',
+              test: /node_modules[\\/](highlight\.js|lowlight|rehype-highlight)[\\/]/,
+              priority: 1,
+            },
+            {
+              name: 'tanstack-vendor',
+              test: /node_modules[\\/](@tanstack[\\/](query-core|react-query)|use-sync-external-store)[\\/]/,
+              priority: 1,
+            },
             {
               name(id: string) {
                 const fullId = id.replace(/\\/g, '/');

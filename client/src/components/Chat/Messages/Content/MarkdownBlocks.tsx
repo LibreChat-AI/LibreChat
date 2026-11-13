@@ -81,7 +81,10 @@ const MarkdownBlock = memo(
     prev.codeBaseIndex === next.codeBaseIndex &&
     prev.artifactBaseIndex === next.artifactBaseIndex &&
     prev.mermaidBaseIndex === next.mermaidBaseIndex &&
-    prev.animate === next.animate,
+    prev.animate === next.animate &&
+    /* The list is rebuilt every render, so identity says nothing; its length changes once,
+       when math and highlighting finish loading, and every block must re-render then. */
+    prev.rehypePlugins.length === next.rehypePlugins.length,
 );
 MarkdownBlock.displayName = 'MarkdownBlock';
 

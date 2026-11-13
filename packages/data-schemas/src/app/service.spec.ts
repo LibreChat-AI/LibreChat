@@ -2,10 +2,21 @@ import {
   EModelEndpoint,
   AgentCapabilities,
   defaultAssistantsVersion,
+  setPiiRegexProgramSizer,
 } from 'librechat-data-provider';
 import type { DeepPartial, TCustomConfig } from 'librechat-data-provider';
 import { AppService, loadFiltersConfig, loadSummarizationConfig } from './service';
 import logger from '~/config/winston';
+
+/** The server registers RE2; these specs exercise config loading, so any compilable pattern sizes. */
+setPiiRegexProgramSizer((pattern) => {
+  try {
+    new RegExp(pattern);
+    return pattern.length;
+  } catch {
+    return null;
+  }
+});
 
 jest.mock('~/config/winston', () => ({
   __esModule: true,
