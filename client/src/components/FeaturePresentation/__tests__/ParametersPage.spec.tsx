@@ -452,6 +452,7 @@ it.each(['https://example.com/c/unsafe', '//example.com/c/unsafe', '/parameters'
 
 it('preserves an explicit model-spec selection without requiring discovery', async () => {
   configModelSpecs = {
+    enforce: false,
     prioritize: true,
     list: [
       {
