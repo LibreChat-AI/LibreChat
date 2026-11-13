@@ -47,7 +47,6 @@ const background = createBackgroundResponseHandlers({
 });
 const continueTools = createStoredToolContinuation({
   getMessage: db.getMessage,
-  getConvo: db.getConvo,
   logger,
 });
 

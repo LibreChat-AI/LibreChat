@@ -32,7 +32,7 @@ export function storedToolContinuationReference(
 
 /** Normalize an owned stored caller-tool batch before either foreground or durable admission. */
 export function createStoredToolContinuation(
-  deps: Pick<StoredForegroundResponseDependencies, 'getMessage' | 'getConvo' | 'logger'>,
+  deps: Pick<StoredForegroundResponseDependencies, 'getMessage' | 'logger'>,
 ): RequestHandler {
   return async (req, res, next) => {
     const body: unknown = req.body;
@@ -58,18 +58,15 @@ export function createStoredToolContinuation(
       );
     if (!userId) return void missing();
     try {
-      // These injected database reads retain the authenticated tenant scope as
-      // well as the explicit owner. Never resolve a call by its call_id alone.
+      // Resolve the owned response in the authenticated tenant, never by call_id.
+      // Conversation/project admission remains authoritative after execution
+      // enrollment (or during durable producer admission). Do not duplicate it
+      // here or replace its fresh read with a pre-enrollment snapshot.
       const message = await deps.getMessage({
         user: userId,
         messageId: request.previous_response_id,
       });
-      if (
-        !message?.conversationId ||
-        message.isCreatedByUser ||
-        message.isUserSubmitted ||
-        !(await deps.getConvo(userId, message.conversationId))
-      )
+      if (!message?.conversationId || message.isCreatedByUser || message.isUserSubmitted)
         return void missing();
       const calls = storedClientToolCalls(message);
       const items = typeof input === 'string' ? [] : input;

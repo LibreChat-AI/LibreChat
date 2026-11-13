@@ -18,6 +18,7 @@ import {
   responseClientToolNames,
 } from './foreground';
 import { createStoredToolContinuation, storedToolContinuationReference } from './continuation';
+import { resolveApiConversationProject } from '~/projects/turn';
 import { createStoredForegroundResponseReader } from './stored';
 import { declaredClientToolNames } from './clientTools';
 
@@ -101,16 +102,30 @@ const payload = () => ({ model: 'agent', previous_response_id: responseId, input
 
 function appFor(
   scope = owner,
-  overrides: Partial<Parameters<typeof createStoredToolContinuation>[0]> = {},
+  overrides: Partial<Parameters<typeof createStoredToolContinuation>[0]> & {
+    getConvo?: typeof db.getConvo;
+  } = {},
 ) {
   const app = express();
+  const dependencies = { ...db, logger, ...overrides };
   app.use(express.json());
   app.use((req, _res, next) => {
     Object.assign(req, { user: { id: scope.userId, tenantId: scope.tenantId } });
     tenantStorage.run(scope, next);
   });
-  app.post('/', createStoredToolContinuation({ ...db, logger, ...overrides }), async (req, res) => {
+  app.post('/', createStoredToolContinuation(dependencies), async (req, res) => {
     const reference = storedToolContinuationReference(req, scope, req.body.previous_response_id);
+    if (reference) {
+      const project = await resolveApiConversationProject(
+        {
+          ...scope,
+          conversationId: reference.conversationId,
+          rejectSubagentThread: true,
+        },
+        { ...dependencies, logger: { ...logger, warn: jest.fn() }, logPrefix: '[Test]' },
+      );
+      if (!project.ok) return void res.status(project.status).json({ error: project.reason });
+    }
     const history = reference
       ? await loadForegroundResponseHistory(
           {
@@ -305,4 +320,48 @@ it('does not accept caller results for an unanswered server tool', () =>
     await save({ ...pending(), tools: [] });
     const rejected = await request(appFor()).post('/').send(payload()).expect(400);
     expect(rejected.body).toHaveProperty('error');
+  }));
+
+it.each([false, true])(
+  'reads the owned conversation once through admission and project checks: client tools=%s',
+  (clientTools) =>
+    scoped(async () => {
+      await save(clientTools ? pending() : { ...pending(), output: [], tools: [] });
+      const getConvo = jest.fn(db.getConvo);
+      const response = await request(appFor(owner, { getConvo }))
+        .post('/')
+        .send(clientTools ? payload() : { ...payload(), input: 'Continue the conversation' })
+        .expect(200);
+      expect(getConvo).toHaveBeenCalledTimes(1);
+      expect(getConvo).toHaveBeenCalledWith(owner.userId, conversationId);
+      expect(response.body.reference).toEqual({ conversationId, parentMessageId: responseId });
+    }),
+);
+
+it('still rejects a read-only subagent conversation at project admission', () =>
+  scoped(async () => {
+    await save();
+    await mongoose.models.Conversation.updateOne(
+      { user: owner.userId, conversationId },
+      {
+        $set: {
+          subagentThread: {
+            rootConversationId: 'root',
+            parentConversationId: 'parent',
+            parentMessageId: 'parent-message',
+            parentToolCallId: 'parent-call',
+            subagentType: 'child',
+            subagentKind: 'agent',
+            depth: 1,
+          },
+        },
+      },
+    );
+    const getConvo = jest.fn(db.getConvo);
+    const response = await request(appFor(owner, { getConvo }))
+      .post('/')
+      .send(payload())
+      .expect(409);
+    expect(response.body.error).toBe('read_only');
+    expect(getConvo).toHaveBeenCalledTimes(1);
   }));
