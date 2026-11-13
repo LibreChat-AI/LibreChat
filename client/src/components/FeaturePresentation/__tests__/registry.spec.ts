@@ -1,4 +1,10 @@
-import { getChatReturnUrl, getPageForNavId, getPageForPath, getPageSettings } from '../registry';
+import {
+  getChatReturnUrl,
+  getPageForNavId,
+  getPageForPath,
+  getPageSettings,
+  getRelatedPage,
+} from '../registry';
 
 describe('feature page registry', () => {
   it.each([
@@ -16,6 +22,9 @@ describe('feature page registry', () => {
   it('leaves existing detail URLs to their feature routes', () => {
     expect(getPageForPath('/prompts/prompt-a')).toBeUndefined();
     expect(getPageForPath('/skills/skill-a/edit')).toBeUndefined();
+    expect(getRelatedPage('/skills/skill-a/edit')).toBe('skills');
+    expect(getRelatedPage('/prompts/prompt-a')).toBe('prompts');
+    expect(getRelatedPage('/skills-extra/skill-a')).toBeUndefined();
     expect(getPageSettings(undefined, 'agentBuilder')).toEqual({
       enabled: false,
       defaultView: 'panel',

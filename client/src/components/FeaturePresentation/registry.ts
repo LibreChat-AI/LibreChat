@@ -23,6 +23,20 @@ export function getPageForPath(pathname: string): NavigationPage | undefined {
   );
 }
 
+/** Resource routes belong to a feature journey, not to its collection presentation slot. */
+export function getRelatedPage(pathname: string): NavigationPage | undefined {
+  const page = getPageForPath(pathname);
+  if (page) {
+    return page;
+  }
+  if (/^\/skills\/[^/]+(?:\/edit)?\/?$/.test(pathname)) {
+    return 'skills';
+  }
+  if (/^\/prompts\/[^/]+\/?$/.test(pathname)) {
+    return 'prompts';
+  }
+}
+
 export function getPageSettings(
   navigation: NavigationConfig | undefined,
   page: NavigationPage,

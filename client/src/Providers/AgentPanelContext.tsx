@@ -71,6 +71,9 @@ export function AgentPanelProvider({
   const [activePanel, setActivePanel] = useAtom(session.activePanel);
   const [agent_id, setAgentId] = useAtom(session.agentId);
   const explicitlySelected = useRef(false);
+  const retainAgentSession = useCallback(() => {
+    explicitlySelected.current = true;
+  }, []);
   const setCurrentAgentId = useCallback(
     (value: SetStateAction<string | undefined>) => {
       explicitlySelected.current = true;
@@ -231,6 +234,7 @@ export function AgentPanelProvider({
     setActivePanel,
     endpointsConfig,
     setCurrentAgentId,
+    retainAgentSession,
     availableMCPServers,
     availableMCPServersMap,
   };

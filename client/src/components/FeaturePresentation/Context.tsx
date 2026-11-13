@@ -1,19 +1,34 @@
-import { createContext, useCallback, useContext, useLayoutEffect, useMemo } from 'react';
+import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef } from 'react';
 import { atom, useAtom } from 'jotai';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { NavigationPage, NavigationView, NavigationConfig } from 'librechat-data-provider';
-import type { ComponentType, ReactNode } from 'react';
+import type { ComponentType, ReactNode, MutableRefObject } from 'react';
+import type { Location } from 'react-router-dom';
 import type { NavLink } from '~/common';
-import { getChatReturnUrl, getPageForPath, getPageSettings, pageRegistry } from './registry';
+import {
+  getChatReturnUrl,
+  getPageForPath,
+  getPageSettings,
+  getRelatedPage,
+  pageRegistry,
+} from './registry';
 
 type Feature = ComponentType<{ visible: boolean }>;
 type Slot = { node: HTMLDivElement; page: NavigationPage; view: NavigationView; visible: boolean };
+export type PageAvailability =
+  | { status: 'ready' | 'loading' }
+  | { status: 'error'; retry: () => void };
+
 type Presentation = {
+  availability: Partial<Record<NavigationPage, PageAvailability>>;
+  chatLocation?: Location;
+  updateChatLocation: (location: Location) => void;
   ready: boolean;
   links: NavLink[];
   openPanel: (navId: string) => void;
   page?: NavigationPage;
+  relatedPage?: NavigationPage;
   view: NavigationView;
   expand: (page: NavigationPage) => void;
   minimize: (page: NavigationPage) => void;
@@ -29,13 +44,26 @@ export function useFeaturePresentation() {
   return useContext(Context);
 }
 
-function Session({ Feature, slot }: { Feature: Feature; slot?: Slot }) {
+function Session({
+  Feature,
+  slot,
+  focusTarget,
+}: {
+  Feature: Feature;
+  slot?: Slot;
+  focusTarget: MutableRefObject<HTMLElement | null>;
+}) {
   const container = useMemo(() => document.createElement('div'), []);
   container.className = 'flex min-h-0 flex-1 flex-col';
   useLayoutEffect(() => {
     slot?.node.appendChild(container);
+    const target = focusTarget.current;
+    if (slot?.visible && target && container.contains(target)) {
+      target.focus({ preventScroll: true });
+      focusTarget.current = null;
+    }
     return () => container.remove();
-  }, [container, slot?.node]);
+  }, [container, slot?.node, slot?.visible, focusTarget]);
   return createPortal(<Feature visible={slot?.visible ?? false} />, container);
 }
 
@@ -47,7 +75,11 @@ export function FeaturePresentationProvider({
   navigation,
   onPanelOpen,
   ready = true,
+  availability = {},
+  revealPage = (show: () => void) => show(),
 }: {
+  availability?: Partial<Record<NavigationPage, PageAvailability>>;
+  revealPage?: (show: () => void) => void;
   ready?: boolean;
   children: ReactNode;
   links: NavLink[];
@@ -57,17 +89,28 @@ export function FeaturePresentationProvider({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const focusTarget = useRef<HTMLElement | null>(null);
   const state = useMemo(
     () => ({
       slots: atom<Slot[]>([]),
       mounted: atom<Partial<Record<NavigationPage, boolean>>>({}),
       returnUrl: atom('/c/new'),
+      chatLocation: atom<Location | undefined>(undefined),
     }),
     [],
   );
   const [slots, setSlots] = useAtom(state.slots);
   const [mounted, setMounted] = useAtom(state.mounted);
   const [returnUrl, setReturnUrl] = useAtom(state.returnUrl);
+  const [chatLocation, setChatLocation] = useAtom(state.chatLocation);
+  const updateChatLocation = useCallback(
+    (next: Location) => {
+      setChatLocation(next);
+      setReturnUrl(getChatReturnUrl(next.pathname + next.search + next.hash));
+    },
+    [setChatLocation, setReturnUrl],
+  );
+  const relatedPage = getRelatedPage(location.pathname);
   const routePage = getPageForPath(location.pathname);
   const page = routePage && features[routePage] ? routePage : undefined;
   const canUse = useCallback(
@@ -79,27 +122,43 @@ export function FeaturePresentationProvider({
     (target: NavigationPage) =>
       ready &&
       features[target] != null &&
+      (availability[target]?.status ?? 'ready') === 'ready' &&
       canUse(target) &&
       getPageSettings(navigation, target).enabled,
-    [ready, features, canUse, navigation],
+    [ready, features, canUse, navigation, availability],
   );
   const expand = useCallback(
     (target: NavigationPage) => {
       if (!canOpenPage(target)) {
         return;
       }
-      if (!page) {
+      if (!relatedPage) {
+        setChatLocation(undefined);
         setReturnUrl(getChatReturnUrl(location.pathname + location.search + location.hash));
       }
-      navigate(pageRegistry[target].path);
+      focusTarget.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      revealPage(() => navigate(pageRegistry[target].path));
     },
-    [canOpenPage, page, location.pathname, location.search, location.hash, navigate, setReturnUrl],
+    [
+      canOpenPage,
+      relatedPage,
+      location.pathname,
+      location.search,
+      location.hash,
+      navigate,
+      setReturnUrl,
+      setChatLocation,
+      revealPage,
+    ],
   );
   const minimize = useCallback(
     (target: NavigationPage) => {
       if (!canUse(target)) {
         return;
       }
+      focusTarget.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
       onPanelOpen(pageRegistry[target].navId);
       navigate(getChatReturnUrl(returnUrl));
     },
@@ -111,11 +170,11 @@ export function FeaturePresentationProvider({
         return;
       }
       onPanelOpen(navId);
-      if (page) {
+      if (relatedPage) {
         navigate(getChatReturnUrl(returnUrl));
       }
     },
-    [links, onPanelOpen, page, navigate, returnUrl],
+    [links, onPanelOpen, relatedPage, navigate, returnUrl],
   );
   const open = useCallback(
     (target: NavigationPage) => {
@@ -143,9 +202,13 @@ export function FeaturePresentationProvider({
   const value = useMemo<Presentation>(
     () => ({
       ready,
+      availability,
+      chatLocation,
+      updateChatLocation,
       links,
       openPanel,
       page,
+      relatedPage,
       view: page ? 'page' : 'panel',
       expand,
       minimize,
@@ -153,7 +216,21 @@ export function FeaturePresentationProvider({
       canOpenPage,
       register,
     }),
-    [ready, links, openPanel, page, expand, minimize, open, canOpenPage, register],
+    [
+      ready,
+      availability,
+      chatLocation,
+      updateChatLocation,
+      links,
+      openPanel,
+      page,
+      relatedPage,
+      expand,
+      minimize,
+      open,
+      canOpenPage,
+      register,
+    ],
   );
 
   return (
@@ -164,12 +241,15 @@ export function FeaturePresentationProvider({
         if (!ready || !Feature || !canUse(target) || (!mounted[target] && page !== target)) {
           return null;
         }
-        if (page === target && !canOpenPage(target)) {
+        if (
+          (availability[target]?.status ?? 'ready') !== 'ready' ||
+          (page === target && !canOpenPage(target))
+        ) {
           return null;
         }
         const view = page === target ? 'page' : 'panel';
         const slot = slots.find((entry) => entry.page === target && entry.view === view);
-        return <Session key={target} Feature={Feature} slot={slot} />;
+        return <Session key={target} Feature={Feature} slot={slot} focusTarget={focusTarget} />;
       })}
     </Context.Provider>
   );

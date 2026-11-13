@@ -4,13 +4,15 @@ import type { NavigationPage } from 'librechat-data-provider';
 import { FeatureSlot, useFeaturePresentation } from './Context';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
+import CollectionError from '~/components/ui/CollectionError';
 import { useLocalize } from '~/hooks';
 
 export default function FeaturePage({ page }: { page: NavigationPage }) {
   const presentation = useFeaturePresentation();
   const isSmallScreen = useDrawerViewport();
   const localize = useLocalize();
-  if (presentation && !presentation.ready) {
+  const availability = presentation?.availability[page];
+  if (presentation && (!presentation.ready || availability?.status === 'loading')) {
     return (
       <div
         role="status"
@@ -20,6 +22,9 @@ export default function FeaturePage({ page }: { page: NavigationPage }) {
         <Spinner />
       </div>
     );
+  }
+  if (availability?.status === 'error') {
+    return <CollectionError onRetry={availability.retry} />;
   }
   if (!presentation?.canOpenPage(page)) {
     return <Navigate to="/c/new" replace />;
