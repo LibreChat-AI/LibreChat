@@ -1,0 +1,19 @@
+{
+  "name": "librechat-integration-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal BFF gateway for third-party LibreChat Agents API integration",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^11.10.0",
+    "express": "^4.21.2"
+  }
+}
