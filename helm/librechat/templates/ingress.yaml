@@ -15,6 +15,7 @@ apiVersion: extensions/v1beta1
 kind: Ingress
 metadata:
   name: {{ include "librechat.fullname" $ }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "librechat.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
