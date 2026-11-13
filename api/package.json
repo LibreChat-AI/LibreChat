@@ -100,7 +100,7 @@
     "mime": "^3.0.0",
     "module-alias": "^2.2.3",
     "mongodb": "^6.14.2",
-    "mongoose": "^8.24.1",
+    "mongoose": "^8.24.9",
     "multer": "^2.5.0",
     "nanoid": "^3.3.18",
     "node-fetch": "^2.7.0",

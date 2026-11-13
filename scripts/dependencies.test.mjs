@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { once } from 'node:events';
 import { runInNewContext } from 'node:vm';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
@@ -48,7 +48,12 @@ function patched(consumer, dependency, major) {
 
 test('Glob consumers resolve patched majors without changing unrelated matchers', () => {
   for (const [, consumer] of globConsumers) patched(consumer, 'glob', 14);
-  for (const name of ['test-exclude', '@typescript-eslint/typescript-estree', 'nodemon']) {
+  for (const name of [
+    'test-exclude',
+    '@typescript-eslint/typescript-estree',
+    'nodemon',
+    'eslint-plugin-sonarjs',
+  ]) {
     patched(from(name), 'minimatch', 11);
   }
   for (const name of ['eslint-plugin-import', 'eslint-plugin-react', 'eslint-plugin-jsx-a11y']) {
@@ -350,4 +355,156 @@ test('Jest retains extension hints for missing modules', (t) => {
       return true;
     },
   );
+});
+
+test('the lockfile retains patched database, HTTP, XML, and matcher dependencies', () => {
+  const lock = JSON.parse(readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8'));
+  const { satisfies } = require('semver');
+  const ranges = {
+    mongoose: '^8.24.7',
+    hono: '^4.13.16',
+    '@hono/node-server': '^2.1.6',
+    'fast-xml-parser': '>=5.11.3',
+    minimatch: '<7 || >=11.0.1',
+  };
+  for (const [name, range] of Object.entries(ranges)) {
+    const entries = Object.entries(lock.packages).filter(
+      ([path]) => path.endsWith(`/node_modules/${name}`) || path === `node_modules/${name}`,
+    );
+    assert.ok(entries.length, name);
+    for (const [path, { version }] of entries) {
+      assert.ok(satisfies(version, range), `${path}: ${version}`);
+    }
+  }
+});
+
+test('Mongoose sanitizes countDocuments and connection-level query filters before dispatch', async () => {
+  const { Mongoose } = require('mongoose');
+  for (const level of ['query', 'connection']) {
+    const db = new Mongoose();
+    const connection = db.createConnection();
+    if (level === 'connection') connection.set('sanitizeFilter', true);
+    const Model = connection.model(
+      'Sanitized',
+      new db.Schema(
+        { password: String },
+        {
+          bufferCommands: false,
+        },
+      ),
+    );
+    for (const operation of ['findOne', 'countDocuments']) {
+      const query = Model[operation]({ password: { $ne: null } });
+      if (level === 'query') query.setOptions({ sanitizeFilter: true });
+      await assert.rejects(
+        query.exec(),
+        { name: 'CastError', path: 'password' },
+        `${level}/${operation}`,
+      );
+      assert.deepEqual(query.getFilter(), { password: { $eq: { $ne: null } } });
+    }
+    await connection.destroy();
+  }
+});
+
+test('Mongoose keeps inherited discriminator names subject to casting and strict schemas', () => {
+  const { Mongoose } = require('mongoose');
+  const db = new Mongoose();
+  const Base = db.model('Base', new db.Schema({ age: Number }));
+  Base.discriminator('Child', new db.Schema({ extra: String }));
+  for (const name of ['constructor', 'toString', 'hasOwnProperty']) {
+    const doc = new Base({ __t: name, age: '42', notInSchema: true });
+    assert.ok(doc instanceof db.Document, name);
+    assert.equal(doc.age, 42, name);
+    assert.equal(doc.toObject().notInSchema, undefined, name);
+  }
+});
+
+test('Mongoose rejects virtual prototype paths and does not mutate inherited functions', (t) => {
+  const { Mongoose } = require('mongoose');
+  const db = new Mongoose();
+  const schema = new db.Schema({ meta: {} });
+  const marker = 'dependencySecurityMarker';
+  t.after(() => {
+    delete Object.prototype[marker];
+    delete Object.prototype.toString[marker];
+  });
+  assert.throws(() => schema.virtual(`__proto__.${marker}`), /Cannot set special property/);
+  assert.equal(Object.hasOwn(Object.prototype, marker), false);
+  const Model = db.model('Inherited', schema);
+  new Model({ [`meta.toString.${marker}`]: true });
+  Model.hydrate({ toString: { [marker]: true } });
+  Model.findOneAndReplace({}, { toString: { [marker]: true } });
+  assert.equal(Object.hasOwn(Object.prototype.toString, marker), false);
+});
+
+test('Hono rejects cross-origin hyperlink auditing but permits same-origin pings', async () => {
+  const { Hono } = require('hono');
+  const { csrf } = require('hono/csrf');
+  const app = new Hono();
+  app.use('*', csrf());
+  app.post('/action', (c) => c.text('accepted'));
+  for (const [origin, status] of [
+    ['https://attacker.example', 403],
+    ['https://app.example', 200],
+  ]) {
+    const res = await app.request('https://app.example/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/ping', Origin: origin },
+      body: 'PING',
+    });
+    assert.equal(res.status, status, origin);
+  }
+});
+
+test('Hono validates multipart form fields with additional content-type parameters', async () => {
+  const { Hono } = require('hono');
+  const { validator } = require('hono/validator');
+  const app = new Hono();
+  app.post(
+    '/form',
+    validator('form', (value) => value),
+    (c) => c.json(c.req.valid('form')),
+  );
+  const body =
+    '--boundary\r\nContent-Disposition: form-data; name="role"\r\n\r\nuser\r\n--boundary--\r\n';
+  for (const contentType of [
+    'multipart/form-data; boundary=boundary',
+    'multipart/form-data; charset=utf-8; boundary=boundary',
+    'multipart/form-data;  boundary=boundary',
+  ]) {
+    const res = await app.request('/form', {
+      method: 'POST',
+      headers: { 'Content-Type': contentType },
+      body,
+    });
+    assert.equal(res.status, 200, contentType);
+    assert.deepEqual(await res.json(), { role: 'user' }, contentType);
+  }
+});
+
+test('Hono node-server rejects raw path backslashes without rejecting encoded or query backslashes', async (t) => {
+  const { Hono } = require('hono');
+  const { serve } = require('@hono/node-server');
+  const app = new Hono();
+  app.get('*', (c) => c.text('accepted'));
+  const server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' });
+  await once(server, 'listening');
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  for (const [path, status] of [
+    ['/public\\..\\admin/secret', 400],
+    ['/admin%5csecret', 200],
+    ['/?path=\\admin', 200],
+  ]) {
+    const actual = await new Promise((resolve, reject) => {
+      const req = request({ hostname: '127.0.0.1', port: server.address().port, path }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(actual, status, path);
+  }
 });
