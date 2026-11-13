@@ -95,6 +95,7 @@ export default defineConfig(({ command }) => ({
       },
     },
     themeCacheVersion(),
+    bootLoadingLabels(),
     copyPublicAssets(),
     VitePWA({
       /** `auto` emits a parser-blocking `<script>` at the end of `<head>`. On a slow
@@ -529,6 +530,41 @@ export function themeCacheVersion(): Plugin {
       });
     },
   };
+}
+
+/**
+ * The shell's loading indicator announces itself before i18n loads, so the build inlines each
+ * locale's `com_ui_loading` and the boot script picks the one for the language it detected.
+ */
+export function bootLoadingLabels(): Plugin {
+  return {
+    name: 'boot-loading-labels',
+    transformIndexHtml: (html) =>
+      html.replace(
+        "'__BOOT_LOADING_LABELS__'",
+        JSON.stringify(readLoadingLabels()).replace(/</g, '\\u003c'),
+      ),
+  };
+}
+
+function readLoadingLabels(): Record<string, string> {
+  const localesDir = path.join(import.meta.dirname, 'src/locales');
+  const labels: Record<string, string> = {};
+  for (const entry of fs.readdirSync(localesDir, { withFileTypes: true })) {
+    const file = path.join(localesDir, entry.name, 'translation.json');
+    if (!entry.isDirectory() || !fs.existsSync(file)) {
+      continue;
+    }
+    const label = JSON.parse(fs.readFileSync(file, 'utf8')).com_ui_loading;
+    if (typeof label !== 'string') {
+      continue;
+    }
+    const code = entry.name.toLowerCase();
+    labels[code] = label;
+    /* A bare language (`zh`, `pt`) takes its first regional variant, as the detector would. */
+    labels[code.split('-')[0]] ??= label;
+  }
+  return labels;
 }
 
 interface SourcemapExclude {
