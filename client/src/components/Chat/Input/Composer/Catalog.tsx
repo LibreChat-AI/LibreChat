@@ -182,7 +182,7 @@ export function CatalogContent({
           <div className="bg-surface-dialog sticky top-0 z-10 flex flex-wrap items-center gap-2 pt-1 pb-3">
             <div className="min-w-0 flex-1">
               <FilterInput
-                type="text"
+                type="search"
                 surface="dialog"
                 inputId={`${viewLabelId}-search`}
                 label={searchLabel}
