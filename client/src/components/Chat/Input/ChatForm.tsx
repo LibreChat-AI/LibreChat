@@ -1,22 +1,10 @@
 import { memo, useRef, useMemo, useEffect, useState, Suspense, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
-import { useWatch } from 'react-hook-form';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { isInlineablePastedText } from '@librechat/chat';
-import { useDirection } from '@radix-ui/react-direction';
-import {
-  submitFromComposer,
-  composerClearance,
-  ComposerField,
-  ComposerFrame,
-} from '@librechat/chat/components';
-import {
-  PastedTextDialog,
-  QuoteButton,
-  composerHintId,
-  ComposerHints as Hints,
-} from '@librechat/chat/components';
+import { PastedTextDialog, QuoteButton, composerHintId } from '@librechat/chat/components';
+import { submitFromComposer, composerClearance, ComposerFrame } from '@librechat/chat/components';
 import {
   useSteering,
   useComposerItems,
@@ -75,6 +63,7 @@ import { useTargetContext } from '~/Providers/TargetContext';
 import useAttachTarget from '~/hooks/Input/useAttachTarget';
 import { handedComposerFilesFamily } from '~/store/handoff';
 import { chatDirectionAtom } from '~/store/chatDirection';
+import { DraftField, DraftHints } from './Composer/Draft';
 import ProjectLandingChip from '../ProjectLandingChip';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import useDictation from '~/hooks/Input/useDictation';
@@ -288,7 +277,6 @@ const ChatForm = memo(function ChatForm({
    *  answer box, or is locked behind the batch card that owns the answer. A
    *  collapsed batch is neither, it hands the composer back to the thread. */
   const composerReserved = answerMode.composerAnswers || answerMode.composerLocked;
-  const textValue = useWatch({ control: methods.control, name: 'text' });
 
   const { consumeDraft, preserveText, settleText } = useAutoSave({
     index,
@@ -350,11 +338,7 @@ const ChatForm = memo(function ChatForm({
   );
   /** The chip's actions hide while a replacement upload or inline move is in flight, so the
    * same original cannot be acted on twice. */
-  const { isActionPending } = pastedTextEdit;
-  const isPasteActionPending = useCallback(
-    (file: ExtendedFile) => isActionPending(file),
-    [isActionPending],
-  );
+  const isPasteActionPending = pastedTextEdit.isActionPending;
 
   const { submitMessage, submitPrompt } = useSubmitMessage();
   const codeWorkspace = useCodeWorkspace(conversation, addedConvo);
@@ -434,9 +418,7 @@ const ChatForm = memo(function ChatForm({
     (kind: 'other' | 'interrupt' | 'preempt') => {
       const text = methods.getValues('text');
       let consumed = false;
-      if (kind === 'interrupt') {
-        consumed = steering.interruptSteer(text);
-      } else if (kind === 'preempt') {
+      if (kind === 'interrupt' || kind === 'preempt') {
         consumed = steering.interruptSteer(text);
       } else if (steering.effectiveAction !== 'queue') {
         consumed = steering.queueFromComposer(text);
@@ -494,12 +476,6 @@ const ChatForm = memo(function ChatForm({
       [methods],
     ),
   });
-
-  const interfaceDirection = useDirection();
-  /** An empty `dir="auto"` field resolves to LTR, which would park an RTL interface's placeholder on
-   *  the wrong edge, so the empty field follows the interface until text gives it a direction. */
-  const autoDirection = textValue ? 'auto' : interfaceDirection;
-  const textDirection = chatDirection === 'auto' ? autoDirection : chatDirection;
 
   const composerItems = useComposerItems(conversationId, quotesEnabled);
   const attachTarget = useAttachTarget(conversation, disableInputs);
@@ -562,9 +538,6 @@ const ChatForm = memo(function ChatForm({
     speechToText: SpeechToText,
     index,
   });
-  /** The waveform stands in for the placeholder until words arrive, and is
-   *  then the only thing drawn on that line. */
-  const listening = dictation.active && (textValue?.trim() ?? '') === '';
   const uploadingCount = useMemo(() => {
     let count = 0;
     for (const file of files.values()) {
@@ -798,10 +771,10 @@ const ChatForm = memo(function ChatForm({
         </>
       }
       hints={
-        <Hints
+        <DraftHints
+          control={methods.control}
           index={index}
           enterToSend={enterToSend}
-          hasText={(textValue?.trim() ?? '') !== ''}
           isSubmitting={isSubmitting}
           duringRunActive={steering.duringRunActive}
           canControlGeneration={steering.canControlGeneration}
@@ -835,17 +808,16 @@ const ChatForm = memo(function ChatForm({
         onSave={pastedTextEdit.saveEdit}
       />
       {endpoint && (
-        <ComposerField
+        <DraftField
+          control={methods.control}
+          chatDirection={chatDirection}
           textAreaRef={textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>}
           inputRef={ref}
-          value={textValue ?? ''}
-          listening={listening}
           dictationActive={dictation.active}
           locked={answerMode.composerLocked}
           ariaLabel={localize('com_ui_message_input')}
           textareaProps={{
             ...registerProps,
-            dir: textDirection,
             disabled:
               disableInputs || isNotAppendable || answerMode.composerLocked || isPreparingFromUrl,
             onPaste: handlePaste,
