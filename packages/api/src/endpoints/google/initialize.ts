@@ -107,6 +107,7 @@ export async function initializeGoogle(
         user,
         body: requestBody,
         stripUnresolved: true,
+        preserveAgentId: true,
       })
     : undefined;
 

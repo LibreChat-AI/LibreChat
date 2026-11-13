@@ -23,7 +23,7 @@ const {
   resolveJsonSchemaRefs,
   sanitizeGeminiSchema,
   processMCPEnv,
-  withMCPAgentContext,
+  createAgentMCPTool,
   preProcessGraphTokens,
   createMCPReauthenticationPrompt,
   createMCPInitializationOAuthPrompts,
@@ -849,7 +849,11 @@ async function reconnectServer({
  * @param {import('librechat-data-provider').TMCPAppsPolicy} [params.mcpApps] - Request-admitted MCP Apps policy.
  * @returns { Promise<Array<typeof tool | { _call: (toolInput: Object | string) => unknown}>> } An object with `_call` method to execute the tool input.
  */
-async function createMCPTools({
+function createMCPTools(params) {
+  return createAgentMCPTool(params, createMCPToolsImpl);
+}
+
+async function createMCPToolsImpl({
   agentId,
   res,
   mcpPermissionContext,
@@ -871,7 +875,6 @@ async function createMCPTools({
   jobCreatedAt,
   unattended,
 }) {
-  requestBody = withMCPAgentContext(requestBody, agentId);
   let recoveryPolicy;
   const serverConfig =
     config ??
@@ -1004,7 +1007,12 @@ async function createMCPTools({
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  * @returns { Promise<typeof tool | { _call: (toolInput: Object | string) => unknown}> } An object with `_call` method to execute the tool input.
  */
-async function createMCPTool({
+function createMCPTool(params) {
+  return createAgentMCPTool(params, createMCPToolImpl);
+}
+
+async function createMCPToolImpl({
+  invokeTool,
   agentId,
   res,
   mcpPermissionContext,
@@ -1030,7 +1038,6 @@ async function createMCPTool({
   unattended,
   recoveryPolicy,
 }) {
-  requestBody = withMCPAgentContext(requestBody, agentId);
   const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
   /** `loadTools` already resolved the server for this key; parsing is the fallback. */
   const [parsedToolName, parsedServerName] = splitMCPToolKey(
@@ -1195,7 +1202,7 @@ async function createMCPTool({
   }
 
   return createToolInstance({
-    agentId,
+    invokeTool,
     scheduledBearerInvocation: bindScheduledMCPBearerInvocation(
       requestScopedConnections,
       agentId,
@@ -1235,7 +1242,7 @@ async function createMCPTool({
 }
 
 function createToolInstance({
-  agentId,
+  invokeTool,
   scheduledBearerInvocation,
   scheduledMCPInvocation,
   res,
@@ -1363,7 +1370,7 @@ function createToolInstance({
        * as the jwt-bearer assertion.
        */
       return await oauthPrompt.run(() =>
-        mcpManager.callTool({
+        invokeTool(mcpManager, {
           scheduledBearerInvocation,
           scheduledMCPInvocation,
           serverName,
@@ -1377,10 +1384,7 @@ function createToolInstance({
             signal: derivedSignal,
           },
           user: effectiveUser,
-          requestBody: withMCPAgentContext(
-            config?.configurable?.requestBody ?? capturedRequestBody,
-            agentId,
-          ),
+          requestBody: config?.configurable?.requestBody ?? capturedRequestBody,
           requestScopedConnections:
             config?.configurable?.requestScopedConnections ?? capturedRequestScopedConnections,
           customUserVars,

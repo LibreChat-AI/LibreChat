@@ -26,6 +26,7 @@ jest.mock('~/utils', () => ({
 }));
 
 import { initializeGoogle } from './initialize';
+import { resolveConfigHeaders } from '~/utils/headers';
 
 function createDb(): EndpointDbMethods {
   return {
@@ -69,6 +70,41 @@ describe('initializeGoogle', () => {
   afterAll(() => {
     process.env = originalEnv;
   });
+
+  it.each(['google', 'all'])(
+    'resolves %s agent headers after initialization without touching provider auth',
+    async (endpoint) => {
+      const apiKey = 'literal-${NOT_AN_ENV_VAR}-{{LIBRECHAT_AGENT_ID}}';
+      process.env.GOOGLE_KEY = apiKey;
+      process.env.GOOGLE_AUTH_HEADER = 'true';
+      mockIsEnabled.mockImplementation((value) => value === 'true');
+      mockGetGoogleConfig.mockImplementationOnce((credentials, options) =>
+        jest.requireActual('./llm').getGoogleConfig(credentials, options),
+      );
+      const req = createReq();
+      if (!req.config) throw new Error('Expected initialized test config');
+      const configuredHeaders = { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' };
+      req.config.endpoints =
+        endpoint === 'google'
+          ? { google: { headers: configuredHeaders } }
+          : { all: { headers: configuredHeaders } };
+      const result = await initializeGoogle({
+        req,
+        endpoint: EModelEndpoint.google,
+        model_parameters: { model: 'gemini-2.5-flash' },
+        db: createDb(),
+      });
+      const headers = (result.llmConfig as { customHeaders?: Record<string, string> })
+        .customHeaders;
+      expect(headers?.['X-Agent-Id']).toBe('{{LIBRECHAT_AGENT_ID}}');
+      expect(headers?.Authorization).toBe(`Bearer ${apiKey}`);
+      resolveConfigHeaders({ llmConfig: result.llmConfig, agent: { id: 'agent_root' } });
+      const resolved = (result.llmConfig as { customHeaders?: Record<string, string> })
+        .customHeaders;
+      expect(resolved?.['X-Agent-Id']).toBe('agent_root');
+      expect(resolved?.Authorization).toBe(`Bearer ${apiKey}`);
+    },
+  );
 
   it('forces Vertex AI ADC config and ignores GOOGLE_KEY for vertexai endpoint', async () => {
     process.env.GOOGLE_KEY = 'test-api-key';

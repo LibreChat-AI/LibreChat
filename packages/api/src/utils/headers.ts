@@ -2,7 +2,7 @@ import type { AnthropicClientOptions } from '@librechat/agents';
 import type { Agent } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { RequestBody, RunLLMConfig } from '~/types';
-import { resolveHeaders } from './env';
+import { resolveHeaders, processAgentPlaceholders } from './env';
 
 const TENANT_ID_HEADER_PLACEHOLDERS = [
   '{{LIBRECHAT_USER_TENANTID}}',
@@ -151,9 +151,9 @@ const resolvedHeaderMaps = new WeakSet<object>();
  * config, mutating it in place. Handles the OpenAI-compatible
  * `configuration.defaultHeaders` (OpenAI / Azure / custom) and the native
  * Anthropic `clientOptions.defaultHeaders` (including Vertex) carriers, plus
- * tenant-only substitution in native Google `customHeaders`. Google's map is
- * otherwise resolved at initialization so provider-managed authorization never
- * passes through environment or user-template expansion.
+ * tenant and agent substitution in native Google `customHeaders`. Google's
+ * credential and user templates resolve at initialization; provider-managed
+ * authorization stays opaque during this final pass.
  *
  * Resolution runs at request time so request-body placeholders (e.g.
  * `{{LIBRECHAT_BODY_CONVERSATIONID}}`) resolve against the live request. It is a
@@ -213,7 +213,14 @@ export function resolveConfigHeaders({
   if (customHeadersContainer.customHeaders != null) {
     const headers = customHeadersContainer.customHeaders;
     if (!resolvedHeaderMaps.has(headers)) {
-      customHeadersContainer.customHeaders = resolveTenantPlaceholders(headers, tenantId);
+      const resolved = resolveTenantPlaceholders(headers, tenantId);
+      for (const [name, value] of Object.entries(headers)) {
+        resolved[name] =
+          name.toLowerCase() === 'authorization'
+            ? value
+            : processAgentPlaceholders(resolved[name], agent ?? {});
+      }
+      customHeadersContainer.customHeaders = resolved;
       resolvedHeaderMaps.add(customHeadersContainer.customHeaders);
     }
   }

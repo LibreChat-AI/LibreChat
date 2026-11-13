@@ -580,7 +580,7 @@ export abstract class UserConnectionManager {
         logPrefix: `[MCP][User: ${userId}][${serverName}]`,
       });
       const creationGuard: ConnectionCreationGuard = { cancelledBy: null };
-      this.registerConnectionCreation(requestConnectionKey, creationGuard);
+      this.registerConnectionCreation(baseConnectionKey, creationGuard);
       const connectionPromise = this.createUserConnectionWithLifecycleRestarts(
         {
           ...opts,
@@ -614,7 +614,7 @@ export abstract class UserConnectionManager {
           return connection;
         })
         .finally(() => {
-          this.unregisterConnectionCreation(requestConnectionKey, creationGuard);
+          this.unregisterConnectionCreation(baseConnectionKey, creationGuard);
           if (requestScopedConnections.pending.get(requestConnectionKey) === connectionPromise)
             requestScopedConnections.pending.delete(requestConnectionKey);
         });

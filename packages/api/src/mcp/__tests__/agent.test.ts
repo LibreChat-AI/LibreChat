@@ -6,6 +6,7 @@ import {
   getMissingRuntimeBodyPlaceholderFields,
 } from '../utils';
 import { withMCPAgentContext } from '../request';
+import { createAgentMCPTool } from '../agent';
 import { processMCPEnv } from '~/utils/env';
 
 const config: MCPOptions = {
@@ -15,6 +16,39 @@ const config: MCPOptions = {
 };
 
 describe('MCP executing agent context', () => {
+  it.each(['agent_root', 'agent_child'])(
+    'binds construction and invocation for %s in TypeScript',
+    async (agentId) => {
+      const input = {
+        agentId,
+        requestBody: { agentId: 'agent_spoofed', conversationId: 'conversation' },
+      };
+      const callTool = jest.fn().mockResolvedValue(['ok', null]);
+      const tool = createAgentMCPTool(input, ({ requestBody, invokeTool }) => ({
+        requestBody,
+        invoke: () =>
+          invokeTool(
+            { callTool },
+            {
+              serverName: 'analytics',
+              toolName: 'select',
+              provider: 'openai',
+              flowManager: {} as Parameters<typeof invokeTool>[1]['flowManager'],
+              requestBody: { agentId: 'agent_override', messageId: 'runtime' },
+            },
+          ),
+      }));
+      expect(tool.requestBody.agentId).toBe(agentId);
+      await expect(tool.invoke()).resolves.toEqual(['ok', null]);
+      expect(callTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestBody: { agentId, messageId: 'runtime' },
+        }),
+      );
+      expect(input.requestBody.agentId).toBe('agent_spoofed');
+    },
+  );
+
   it('replaces browser-supplied identity with the tool owner without mutating the request', () => {
     const body = { conversationId: 'conversation', agentId: 'agent_spoofed' };
     const root = withMCPAgentContext(body, 'agent_root');

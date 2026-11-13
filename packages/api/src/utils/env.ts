@@ -231,8 +231,10 @@ const OPENID_ACCESS_CREDENTIAL_PLACEHOLDER_PATTERN =
  * users under that one string). Only for final resolution passes — staged
  * flows that resolve again later with more context must not strip.
  */
-export function stripUnresolvedPlaceholders(value: string): string {
-  return value.replace(RESOLVABLE_PLACEHOLDER_PATTERN, '');
+export function stripUnresolvedPlaceholders(value: string, preserveAgentId = false): string {
+  return value.replace(RESOLVABLE_PLACEHOLDER_PATTERN, (placeholder) =>
+    preserveAgentId && placeholder === '{{LIBRECHAT_AGENT_ID}}' ? placeholder : '',
+  );
 }
 
 /**
@@ -328,7 +330,7 @@ function processBodyPlaceholders(value: string, body: RequestBody): string {
  * @param agent - The agent serving the request
  * @returns The processed string with placeholders replaced
  */
-function processAgentPlaceholders(value: string, agent: Partial<Agent>): string {
+export function processAgentPlaceholders(value: string, agent: Partial<Agent>): string {
   if (!agent.id || isEphemeralAgentId(agent.id) || !/^agent_[A-Za-z0-9_-]+$/.test(agent.id)) {
     return value.replaceAll('{{LIBRECHAT_AGENT_ID}}', '');
   }
@@ -652,6 +654,8 @@ export function resolveHeaders(options?: {
   agent?: Partial<Agent>;
   customUserVars?: Record<string, string>;
   stripUnresolved?: boolean;
+  /** Google initialization resolves credentials before the agent identity is available. */
+  preserveAgentId?: boolean;
 }): Record<string, string> {
   const { headers, user, body, agent, customUserVars, stripUnresolved = false } = options ?? {};
   const inputHeaders = headers ?? {};
@@ -683,7 +687,7 @@ export function resolveHeaders(options?: {
         return;
       }
 
-      resolvedHeaders[key] = stripUnresolvedPlaceholders(processed);
+      resolvedHeaders[key] = stripUnresolvedPlaceholders(processed, options?.preserveAgentId);
     });
   }
 
