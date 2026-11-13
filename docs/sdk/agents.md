@@ -72,10 +72,22 @@ are unchanged. The binding grants no authority by itself.
 
 Protocol 1 runs inside the LibreChat process. It establishes saved identity and execution binding;
 it does not claim remote process isolation or an HTTP registration/event-ingestion protocol.
-Native agent chains containing a runtime binding are rejected rather than silently ignoring chain
-members. A runtime can construct its own SDK graph while retaining the host configuration.
+Native agent chains and configured native subagent compositions containing a runtime binding
+are rejected rather than silently ignoring execution bindings. A runtime can construct its own SDK graph while retaining the host configuration.
 
 Before enabling a runtime for a role, verify text/tool events, final persistence, retry, stop,
 approval/resume when used, org switching, and latency against the same native agent. A factory
 that drops the host's handlers or hooks does not satisfy the integration contract. Loading an
 unknown module/version fails closed; normal agents require no runtime module or extra database read.
+
+## Rollout and rollback
+
+Deploy the supporting code to every replica before adding `sdkRuntimes` configuration and
+registering bindings. Older servers do not understand this field and could execute the agent
+as a native agent. Creation, update, duplication, and version restoration reject non-null
+bindings unless the runtime is configured for the caller's role.
+
+Before downgrading any replica, remove the runtime configuration to stop new bindings and
+clear existing bindings with `sdk_runtime: null`. Verify that no active runs or current agent
+bindings depend on a runtime before the downgrade. Removing configuration alone disables
+execution on supported servers; it does not rewrite stored agents.

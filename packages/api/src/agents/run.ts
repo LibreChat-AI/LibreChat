@@ -69,6 +69,7 @@ import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
 import type { ProvisionState } from '~/agents/resources';
 import type { RunFileSession } from './files/session';
+import type { SdkAgentRuntimeLoader } from './sdk';
 import type { RunFadingTiers } from './fading';
 import type * as t from '~/types';
 import {
@@ -2294,6 +2295,7 @@ export async function createRun({
   toolApprovalAllows,
   toolInputValidationErrors,
   sessionStartSource,
+  loadSdkRuntime,
   streaming = true,
   streamUsage = true,
 }: {
@@ -2448,6 +2450,7 @@ export async function createRun({
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
   toolInputValidationErrors?: Map<string, ToolInputValidationError>;
+  loadSdkRuntime?: SdkAgentRuntimeLoader;
 } & Pick<
   RunConfig,
   'tokenCounter' | 'customHandlers' | 'indexTokenCountMap' | 'initialSessions'
@@ -2524,7 +2527,7 @@ export async function createRun({
 
   const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
   const buildAgentInput = (agent: RunAgent, opts: { isSubagent?: boolean } = {}): AgentInputs => {
-    if (opts.isSubagent === true && agent.sdk_runtime != null) {
+    if (agent.id !== agents[0]?.id && agent.sdk_runtime != null) {
       throw new SdkAgentRuntimeError('sdk_runtime_composition_unsupported');
     }
     if (!preparedCodeFileAgents.has(agent)) {
@@ -3291,6 +3294,7 @@ export async function createRun({
     ? await createSdkAgentRun({
         registration,
         config: runConfig,
+        loadModule: loadSdkRuntime,
         signal,
         identity: {
           agentId: agents[0].id,

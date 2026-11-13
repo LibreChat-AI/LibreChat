@@ -134,8 +134,24 @@ test.describe('agent management file lifecycle', () => {
         headers,
         data: { sdk_runtime: { id: 'not-configured', protocolVersion: 1 } },
       });
-      expect(changed.status(), await changed.text()).toBe(200);
+      expect(changed.status(), await changed.text()).toBe(400);
+      // Simulate an existing binding whose operator configuration was removed.
+      await withMongo(async (db) => {
+        await db
+          .collection('agents')
+          .updateOne(
+            { id: agent.id, tenantId: managementTenantId },
+            { $set: { sdk_runtime: { id: 'not-configured', protocolVersion: 1 } } },
+          );
+      });
       expect(await run()).not.toContain('E2E reply sdk-runtime');
+      const cleared = await request.patch(`${agentsPath}/${agent.id}`, {
+        headers,
+        data: { sdk_runtime: null },
+      });
+      expect(cleared.status(), await cleared.text()).toBe(200);
+      expect((await cleared.json()).sdk_runtime).toBeNull();
+      expect(await run()).toContain('E2E reply sdk-runtime');
     } finally {
       await request.delete(`${agentsPath}/${agent.id}`, { headers });
     }

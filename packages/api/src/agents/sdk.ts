@@ -23,7 +23,9 @@ export interface SdkAgentRuntime {
   }): ReturnType<typeof Run.create>;
 }
 
-type AgentBinding = Pick<Agent, 'id' | 'sdk_runtime'>;
+export type SdkAgentRuntimeLoader = (module: string) => unknown;
+
+type AgentBinding = Pick<Agent, 'id' | 'sdk_runtime' | 'subagents'>;
 type RuntimeConfig = Pick<NonNullable<TAgentsEndpoint>, 'sdkRuntimes'>;
 
 export class SdkAgentRuntimeError extends Error {
@@ -46,7 +48,35 @@ const runtimeModuleSchema = z.object({
 });
 
 // Only operator configuration chooses modules. Node caches modules; no per-turn filesystem scan.
-const requireRuntime = createRequire(resolve(process.cwd(), 'package.json'));
+const requireRuntime = (module: string): unknown =>
+  createRequire(resolve(process.cwd(), 'package.json'))(module);
+
+/** Classifies binding rejection at the legacy duplicate/restore error boundary. */
+export function getSdkAgentWriteErrorStatus(error: unknown): number {
+  return error instanceof z.ZodError &&
+    error.issues.some((issue) => issue.path[0] === 'sdk_runtime')
+    ? 400
+    : 500;
+}
+
+/** Applies an explicit write only after the operator has enabled its execution binding. */
+export function applySdkAgentBindingWrite(
+  patch: { sdk_runtime?: SdkRuntimeBinding | null },
+  binding: SdkRuntimeBinding | null | undefined,
+  endpoint: RuntimeConfig | undefined,
+  role: string | undefined,
+): void {
+  if (binding === undefined) return;
+  if (binding != null) {
+    try {
+      resolveSdkAgentBinding([{ id: '', sdk_runtime: binding }], endpoint, role);
+    } catch (error) {
+      if (!(error instanceof SdkAgentRuntimeError)) throw error;
+      throw new z.ZodError([{ code: 'custom', path: ['sdk_runtime'], message: error.message }]);
+    }
+  }
+  patch.sdk_runtime = binding;
+}
 
 export function resolveSdkAgentBinding(
   agents: readonly AgentBinding[],
@@ -55,7 +85,7 @@ export function resolveSdkAgentBinding(
 ): { binding: SdkRuntimeBinding; module: string } | undefined {
   if (!agents.some((agent) => agent.sdk_runtime != null)) return undefined;
   const binding = agents[0]?.sdk_runtime;
-  if (agents.length !== 1 || binding == null) {
+  if (agents.length !== 1 || binding == null || agents[0]?.subagents?.enabled === true) {
     throw new SdkAgentRuntimeError('sdk_runtime_composition_unsupported');
   }
   const configured = Object.prototype.hasOwnProperty.call(endpoint?.sdkRuntimes ?? {}, binding.id)
@@ -82,7 +112,7 @@ export async function createSdkAgentRun({
   config: RunConfig;
   identity: Omit<SdkAgentIdentity, 'runtimeId' | 'runId'>;
   signal?: AbortSignal;
-  loadModule?: (module: string) => unknown;
+  loadModule?: SdkAgentRuntimeLoader;
 }): ReturnType<typeof Run.create> {
   signal?.throwIfAborted();
   if (!identity.agentId || !identity.userId) {

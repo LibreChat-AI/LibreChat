@@ -1,8 +1,11 @@
+import { agentsEndpointSchema } from 'librechat-data-provider';
 import { HumanMessage } from '@librechat/agents/langchain/messages';
 import { Run, Providers, GraphEvents, FakeChatModel } from '@librechat/agents';
+import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { RunConfig } from '@librechat/agents';
+import { createSdkAgentRun, resolveSdkAgentBinding, applySdkAgentBindingWrite } from './sdk';
 import { agentManagementCreateSchema, projectAgentManagementResponse } from './management';
-import { createSdkAgentRun, resolveSdkAgentBinding } from './sdk';
+import { createRun } from './run';
 
 const binding = { id: 'schema-advisor', protocolVersion: 1 as const };
 const identity = {
@@ -32,6 +35,69 @@ function args() {
 }
 
 describe('SDK agent registration and native execution', () => {
+  it('dispatches the root through the full host path, including isolated-input prebuilding', async () => {
+    const factory = jest.fn(async ({ config: cfg }: { config: RunConfig }) => {
+      const run = await Run.create(cfg);
+      if (!run.Graph) throw new Error('Missing graph');
+      run.Graph.overrideModel = new FakeChatModel({ responses: ['Host SDK reply'] });
+      return run;
+    });
+    const deltas: string[] = [];
+    const run = await createRun({
+      runId: 'host-sdk-run',
+      conversationId: identity.conversationId,
+      signal: new AbortController().signal,
+      messages: [new HumanMessage('hello')],
+      tokenCounter: () => 1,
+      user: { id: identity.userId, role: 'ADMIN', tenantId: identity.tenantId } as IUser,
+      appConfig: { endpoints: { agents: agentsEndpointSchema.parse(endpoint) } } as AppConfig,
+      agents: [
+        {
+          id: identity.agentId,
+          name: 'SDK agent',
+          description: '',
+          created_at: 0,
+          avatar: null,
+          provider: Providers.OPENAI,
+          model: 'gpt-4.1',
+          model_parameters: {
+            model: 'gpt-4.1',
+            temperature: null,
+            maxContextTokens: null,
+            max_context_tokens: null,
+            max_output_tokens: null,
+            top_p: null,
+            frequency_penalty: null,
+            presence_penalty: null,
+          },
+          sdk_runtime: binding,
+        },
+      ],
+      customHandlers: {
+        [GraphEvents.ON_MESSAGE_DELTA]: {
+          handle: async () => {
+            deltas.push('delta');
+          },
+        },
+      },
+      loadSdkRuntime: () => ({ protocolVersion: 1, createRun: factory }),
+    });
+    expect(factory).toHaveBeenCalledTimes(1);
+    await run.processStream({ messages: [new HumanMessage('hello')] }, { version: 'v2' });
+    expect(deltas).toContain('delta');
+  });
+  it('gates all binding writes and retains explicit removal', () => {
+    const patch: { sdk_runtime?: typeof binding | null } = {};
+    expect(() => applySdkAgentBindingWrite(patch, binding, undefined, 'ADMIN')).toThrow();
+    expect(() => applySdkAgentBindingWrite(patch, binding, endpoint, 'USER')).toThrow();
+    expect(patch).toEqual({});
+    applySdkAgentBindingWrite(patch, binding, endpoint, 'ADMIN');
+    expect(patch.sdk_runtime).toEqual(binding);
+    applySdkAgentBindingWrite(patch, undefined, undefined, undefined);
+    expect(patch.sdk_runtime).toEqual(binding);
+    applySdkAgentBindingWrite(patch, null, undefined, undefined);
+    expect(patch.sdk_runtime).toBeNull();
+  });
   it('round-trips the binding through management without executable fields', () => {
     const data = agentManagementCreateSchema.parse({
       name: 'Advisor',
