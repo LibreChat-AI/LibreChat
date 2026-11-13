@@ -621,7 +621,10 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                   pendingLabel={
                     channel.workspaceId ? 'com_ui_channels_workspace_not_assigned' : undefined
                   }
-                  className="sr-only"
+                  dot={false}
+                  /* An active connection is the quiet default and the dot says it; every other
+                     state needs an action, so its name is shown, not left to the dot's color. */
+                  className={channel.status === 'active' ? 'sr-only' : undefined}
                 />
               </div>
               <div className="flex shrink-0 items-center gap-0.5">

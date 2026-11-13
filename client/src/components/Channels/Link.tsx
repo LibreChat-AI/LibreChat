@@ -10,6 +10,7 @@ import type {
   ChannelLinkView,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
+import { withBasePath } from '~/utils/redirect';
 import { useLocalize } from '~/hooks';
 
 export const linkErrorKeys: Record<ChannelIdentityError, TranslationKeys> = {
@@ -302,7 +303,7 @@ function OwnedLink({
             )}
             {unusable && (
               <Button asChild size="lg" variant="outline" className="w-full">
-                <a href="/">{localize('com_ui_channel_link_go_home')}</a>
+                <a href={withBasePath('/')}>{localize('com_ui_channel_link_go_home')}</a>
               </Button>
             )}
             {retryable && (

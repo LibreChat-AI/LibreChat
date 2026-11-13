@@ -164,7 +164,8 @@ test('each connection is a row: the Slack mark with a status dot, the name, and 
   // The state is the dot on the mark; its words stay for assistive technology only.
   expect(rows[0].querySelector('.bg-status-warning')).toBeInTheDocument();
   expect(rows[1].querySelector('.bg-status-success')).toBeInTheDocument();
-  expect(within(rows[0]).getByText('com_ui_channels_pending')).toHaveClass('sr-only');
+  /** Only the active state is left to the dot; a state that needs an action is named on the row. */
+  expect(within(rows[0]).getByText('com_ui_channels_pending')).not.toHaveClass('sr-only');
   expect(within(rows[1]).getByText('com_ui_channels_active')).toHaveClass('sr-only');
 
   // Every row's action waits for hover or focus, like the X.

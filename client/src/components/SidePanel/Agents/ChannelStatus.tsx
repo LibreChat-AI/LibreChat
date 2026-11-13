@@ -21,10 +21,13 @@ export default function ChannelStatus({
   status,
   pendingLabel = 'com_ui_channels_pending',
   className,
+  dot = true,
 }: {
   status: AgentChannel['status'];
   pendingLabel?: TranslationKeys;
   className?: string;
+  /** Off where the status dot is already drawn elsewhere, such as on the row's icon. */
+  dot?: boolean;
 }) {
   const localize = useLocalize();
   return (
@@ -34,7 +37,9 @@ export default function ChannelStatus({
         className,
       )}
     >
-      <span aria-hidden="true" className={`size-1.5 rounded-full ${statusColors[status]}`} />
+      {dot && (
+        <span aria-hidden="true" className={`size-1.5 rounded-full ${statusColors[status]}`} />
+      )}
       {localize(status === 'pending_install' ? pendingLabel : statusLabels[status])}
     </span>
   );

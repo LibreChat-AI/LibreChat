@@ -188,6 +188,23 @@ test('a link that cannot be used gets its own heading, no stepper and a way back
   expect(screen.queryByRole('button', { name: 'com_ui_channel_link_accept' })).toBeNull();
 });
 
+test('the way back keeps a subdirectory deployment inside the app', async () => {
+  const base = document.createElement('base');
+  base.setAttribute('href', '/librechat/');
+  document.head.append(base);
+  try {
+    api.preview.mockResolvedValue({ ok: true, value: { ...pending, state: 'revoked' } });
+    renderPage(
+      <Link api={api} accountLabel="Account A" principalKey="tenant:user-a" ticket="ticket" />,
+    );
+    expect(
+      await screen.findByRole('link', { name: 'com_ui_channel_link_go_home' }),
+    ).toHaveAttribute('href', '/librechat/');
+  } finally {
+    base.remove();
+  }
+});
+
 test('a pending link past its expiry says so instead of leaving a silent disabled button', async () => {
   api.preview.mockResolvedValue({
     ok: true,
