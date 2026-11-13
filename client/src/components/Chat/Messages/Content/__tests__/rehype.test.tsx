@@ -28,6 +28,8 @@ describe('needsRehype', () => {
     ['a backtick fence', '```js\nconst a = 1;\n```'],
     ['a tilde fence', '~~~\nplain\n~~~'],
     ['an indented block', 'Intro\n\n    indented code'],
+    ['a deeper indented block', 'Intro\n\n        const answer = 42;'],
+    ['an indented block in a quote', '> Intro\n>\n>     quoted code'],
   ])('loads the plugins for %s', (_label, text) => {
     expect(needsRehype(text)).toBe(true);
   });

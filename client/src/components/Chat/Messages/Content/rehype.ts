@@ -48,13 +48,13 @@ export const getLoadedRehypeModules = (): RehypeModules | null => loaded;
  * Math needs a remark-math delimiter, and highlighting needs a code block: fenced, or indented
  * for the renderers that auto-detect the language. Anything else passes through both untouched.
  */
-const NEEDS_REHYPE = /\$|\\\(|\\\[|```|~~~|^(?: {4}|\t)\S/m;
+const NEEDS_REHYPE = /\$|\\\(|\\\[|```|~~~|^[ \t>]*?(?: {4}|\t)/m;
 
 export const needsRehype = (text: string): boolean => NEEDS_REHYPE.test(text);
 
 /**
- * The math and highlighting plugins for `text`, or null while they load or when `text` has
- * nothing for them to transform. Without them the output is identical except that math and
+ * The math and highlighting plugins, or null until they have loaded. `text` decides whether this
+ * render starts the load: text with nothing for them to transform never does. Without them the output is identical except that math and
  * fenced code are unformatted, so callers render immediately and upgrade when this resolves.
  */
 export function useRehypeModules(text: string): RehypeModules | null {
@@ -75,7 +75,9 @@ export function useRehypeModules(text: string): RehypeModules | null {
     };
   }, [needed, modules]);
 
-  return needed ? (modules ?? loaded) : null;
+  /* Detection only decides whether to fetch: once loaded, every renderer gets the plugins, so a
+     pattern the check misses can never strip formatting the text would otherwise get. */
+  return modules ?? loaded;
 }
 
 /** Chat messages: a language is highlighted only when the fence names it. */
