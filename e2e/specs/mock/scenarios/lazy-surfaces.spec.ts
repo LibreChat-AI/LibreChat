@@ -90,13 +90,18 @@ test.describe('surfaces that load on demand', () => {
       await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
       await sendMessageAndWaitForCompletion(page, replyPrompt('trace'));
 
-      await page.getByRole('button', { name: 'View trace' }).click();
+      const traceButton = page.getByRole('button', { name: 'View trace' });
+      await traceButton.click();
       const loading = page.getByRole('status').filter({ hasText: 'Loading' });
       await expect(loading).toBeVisible();
 
       release();
       await expect(page.getByTestId('trace-viewer')).toBeVisible();
       await expect(loading).toBeHidden();
+
+      /* The loading state held focus before the viewer mounted; closing still returns it. */
+      await page.getByRole('button', { name: 'Close trace' }).click();
+      await expect(traceButton).toBeFocused();
     });
 
     test('a trace still loading can be closed, so a stalled download never traps the chat @scenario:trace-loading-can-be-dismissed', async ({
@@ -117,11 +122,13 @@ test.describe('surfaces that load on demand', () => {
       await expect(close).toBeFocused();
       await page.keyboard.press('Escape');
       await expect(close).toBeHidden();
+      await expect(traceButton).toBeFocused();
       await expect(input).toBeEditable();
 
       await traceButton.click();
       await close.click();
       await expect(close).toBeHidden();
+      await expect(traceButton).toBeFocused();
       await input.fill('still composing');
       await expect(input).toHaveValue('still composing');
     });
