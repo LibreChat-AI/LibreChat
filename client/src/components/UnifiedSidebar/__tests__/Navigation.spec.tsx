@@ -105,7 +105,10 @@ describe('Console navigation host adapter', () => {
     localStorage.setItem('nav:console:expanded', 'false');
     renderNavigation({ panelExpanded: false });
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'rail' })).toHaveAttribute('aria-expanded', 'false'),
+      expect(screen.getByRole('button', { name: 'rail' })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      ),
     );
     expect(screen.getByRole('button', { name: 'panel' })).toHaveAttribute('aria-expanded', 'false');
   });

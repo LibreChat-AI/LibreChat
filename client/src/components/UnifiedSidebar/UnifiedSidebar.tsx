@@ -96,13 +96,9 @@ function UnifiedSidebar({
   const links = useUnifiedSidebarLinks();
   const presentation = useFeaturePresentation();
   const isInsightsRoute = location.pathname.startsWith('/insights');
-  const pageActiveId =
-    routeActiveId ??
-    (presentation?.page
-      ? pageRegistry[presentation.page].navId
-      : isInsightsRoute
-        ? 'insights'
-        : undefined);
+  const featureActiveId = presentation?.page ? pageRegistry[presentation.page].navId : undefined;
+  const insightsActiveId = isInsightsRoute ? 'insights' : undefined;
+  const pageActiveId = routeActiveId ?? featureActiveId ?? insightsActiveId;
   const panelExpanded = expanded && pageActiveId == null;
   const collapsedWidth = consoleLayout ? 0 : COLLAPSED_WIDTH;
 

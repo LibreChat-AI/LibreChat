@@ -73,6 +73,8 @@ function Navigation({
     }
   }, [switchToHistory, setActive]);
 
+  const togglePanel = panelExpanded ? onCollapse : onExpand;
+
   return (
     <Console
       links={links}
@@ -81,7 +83,7 @@ function Navigation({
       activeId={routeActiveId ?? effectiveActive}
       onSelect={onSelect ?? selectPanel}
       panelExpanded={panelExpanded}
-      onTogglePanel={routeActiveId ? undefined : panelExpanded ? onCollapse : onExpand}
+      onTogglePanel={routeActiveId ? undefined : togglePanel}
       panelToggleRef={panelToggleRef}
       onNewChat={handleNewChat}
       appTitle={appTitle}

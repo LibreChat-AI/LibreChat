@@ -47,11 +47,8 @@ const NewChat = memo(function NewChat({
         <Button
           asChild
           variant="nav"
-          size="icon"
-          className={cn(
-            'h-9 w-full shrink-0 motion-reduce:transition-none',
-            railExpanded && 'justify-start px-2',
-          )}
+          size={railExpanded ? 'sm' : 'icon'}
+          className={cn('w-full shrink-0', railExpanded && 'justify-start')}
         >
           <a
             href="/c/new"
@@ -89,10 +86,7 @@ function Console({
   const panelLabel = localize(panelExpanded ? 'com_nav_close_sidebar' : 'com_nav_open_sidebar');
   const panelHint = useShortcutHint('toggleSidebar', panelLabel);
   const panelKey = useShortcutAriaKey('toggleSidebar');
-  const rowClass = cn(
-    'h-9 w-full shrink-0 motion-reduce:transition-none',
-    railExpanded && 'justify-start px-2',
-  );
+  const rowClass = cn('w-full shrink-0', railExpanded && 'justify-start');
 
   return (
     <nav
@@ -117,7 +111,7 @@ function Console({
         render={
           <Button
             variant="nav"
-            size="icon"
+            size={railExpanded ? 'sm' : 'icon'}
             className={rowClass}
             aria-label={railLabel}
             aria-expanded={railExpanded}
@@ -145,7 +139,7 @@ function Console({
               <Button
                 ref={!onTogglePanel && activeId === link.id ? panelToggleRef : undefined}
                 variant="nav"
-                size="icon"
+                size={railExpanded ? 'sm' : 'icon'}
                 className={rowClass}
                 aria-label={localize(link.title)}
                 aria-pressed={activeId === link.id}
@@ -179,7 +173,7 @@ function Console({
               id={panelExpanded ? CLOSE_SIDEBAR_ID : undefined}
               data-testid={panelExpanded ? 'close-sidebar-button' : 'open-sidebar-button'}
               variant="nav"
-              size="icon"
+              size={railExpanded ? 'sm' : 'icon'}
               className={rowClass}
               aria-label={panelLabel}
               aria-expanded={panelExpanded}

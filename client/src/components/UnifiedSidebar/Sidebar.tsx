@@ -36,6 +36,8 @@ function Sidebar({
   onResizeStart: (e: React.MouseEvent<HTMLElement>) => void;
   onResizeKeyboard: (direction: 'shrink' | 'grow') => void;
 }) {
+  const opacityTransition = expanded ? 'opacity 200ms ease 80ms' : 'opacity 150ms ease';
+  const transition = reducedMotion ? 'none' : opacityTransition;
   return (
     <>
       <div className="flex h-full w-full overflow-hidden">
@@ -61,11 +63,7 @@ function Sidebar({
             expanded ? 'opacity-100' : 'pointer-events-none opacity-0',
           )}
           style={{
-            transition: reducedMotion
-              ? 'none'
-              : expanded
-                ? 'opacity 200ms ease 80ms'
-                : 'opacity 150ms ease',
+            transition,
           }}
           aria-hidden={!expanded}
         >
@@ -85,11 +83,7 @@ function Sidebar({
           expanded ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
         style={{
-          transition: reducedMotion
-            ? 'none'
-            : expanded
-              ? 'opacity 200ms ease 80ms'
-              : 'opacity 150ms ease',
+          transition,
         }}
         onMouseDown={onResizeStart}
         onKeyDown={(e) => {
