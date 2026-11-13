@@ -116,6 +116,8 @@ const GATEWAY_ERROR_MARKER = 'E2E_GATEWAY_ERROR:';
 const BARE_GATEWAY_ERROR_MARKER = 'E2E_BARE_GATEWAY_ERROR:';
 const GATEWAY_ERROR_STATUS = { MODEL_RATE_LIMIT: 429, MODEL_NOT_FOUND: 404 };
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
+/** Display and inline math, so a spec can tell KaTeX rendered (it loads on first need). */
+const MATH_REPLY_MARKER = 'E2E_MATH_REPLY';
 const STREAMING_MARKDOWN_REPLY_MARKER = 'E2E_STREAMING_MARKDOWN_REPLY';
 const HIGHLIGHT_CODE_MARKER = 'E2E_HIGHLIGHT_CODE:';
 const STATEFUL_CODE_MARKER = 'E2E_STATEFUL_CODE:';
@@ -722,6 +724,13 @@ function replyResponses(text) {
     };
   }
 
+  if (text.includes(MATH_REPLY_MARKER)) {
+    return {
+      responses: [
+        ['E2E math reply:', '', '$$E = mc^2$$', '', 'Water is \\(\\ce{H2O}\\).'].join('\n'),
+      ],
+    };
+  }
   if (text.includes(MARKDOWN_REPLY_MARKER)) {
     return {
       responses: [

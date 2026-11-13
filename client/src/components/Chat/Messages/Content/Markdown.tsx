@@ -5,6 +5,7 @@ import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import MarkdownErrorBoundary from './MarkdownErrorBoundary';
 import { FADE_HYDRATION_THRESHOLD } from './animate';
 import MarkdownBlocks from './MarkdownBlocks';
+import { useRehypeModules } from './rehype';
 
 type TContentProps = {
   content: string;
@@ -16,6 +17,7 @@ const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TCont
   const { isSubmitting = false } = useMessage();
   const smoothStreaming = useSmoothStreaming();
   const LaTeXParsing = useLaTeXParsing();
+  const rehypeModules = useRehypeModules(content);
   const isInitializing = content === '';
 
   const streaming = isLatestMessage && isSubmitting;
@@ -54,7 +56,7 @@ const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TCont
         content={content}
         streaming={streaming}
         remarkPlugins={getRemarkPlugins(LaTeXParsing)}
-        rehypePlugins={getRehypePlugins()}
+        rehypePlugins={getRehypePlugins(rehypeModules)}
         components={getMarkdownComponents()}
         animate={animate}
         hydrated={hydratedRef.current}

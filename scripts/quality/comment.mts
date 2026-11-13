@@ -7,6 +7,8 @@ import { reportSelection } from './changes.mts';
 export const GATE = 'Quality decision';
 const PREFIX = '<!-- quality-request ';
 const SHA = /^[a-f0-9]{40}$/u;
+// GitHub App bots do not have collaborator permissions; trust exact account identities instead.
+const TRUSTED_BOTS = [{ login: 'lia-by-librechat[bot]', id: 328778573 }] as const;
 const positive = (value: number) => Number.isSafeInteger(value) && value > 0;
 
 export function parseCommand(body: string) {
@@ -47,7 +49,7 @@ export interface Request extends Command {
 export interface Comment {
   id: number;
   body: string;
-  user: { login: string; type: string };
+  user: { login: string; type: string; id?: number };
 }
 interface Pull {
   number: number;
@@ -97,7 +99,7 @@ export function readRequest(comment: Comment): Request | undefined {
       ![value.request, value.pr, value.run, value.attempt].every(positive) ||
       !SHA.test(value.head) ||
       !SHA.test(value.base) ||
-      !/^[a-z\d-]+$/iu.test(value.actor) ||
+      !/^[a-z\d-]+(?:\[bot\])?$/iu.test(value.actor) ||
       !['queued', 'running', 'completed', 'ignored'].includes(value.phase) ||
       typeof value.staticMutants !== 'boolean' ||
       !Array.isArray(value.scopes) ||
@@ -303,16 +305,22 @@ async function updateGate(api: API, context: Context, pr: number) {
 
 /** Authorization precedes parsing or any expensive work. No comment text is executed. */
 export async function acceptRequest(api: API, context: Context, pr: number, comment: Comment) {
-  if (comment.user.type === 'Bot' || !/^\/quality(?:\s|$)/u.test(comment.body.trim())) return;
-  const permission = await api.request<{
-    permission: string;
-    user?: { permissions?: { push?: boolean } };
-  }>('GET', `collaborators/${encodeURIComponent(comment.user.login)}/permission`);
-  if (
-    !permission.user?.permissions?.push &&
-    !['admin', 'maintain', 'write'].includes(permission.permission)
-  )
-    return;
+  if (!/^\/quality(?:\s|$)/u.test(comment.body.trim())) return;
+  const trustedBot =
+    comment.user.type === 'Bot' &&
+    TRUSTED_BOTS.some(({ login, id }) => comment.user.login === login && comment.user.id === id);
+  if (!trustedBot) {
+    if (comment.user.type !== 'User') return;
+    const permission = await api.request<{
+      permission: string;
+      user?: { permissions?: { push?: boolean } };
+    }>('GET', `collaborators/${encodeURIComponent(comment.user.login)}/permission`);
+    if (
+      !permission.user?.permissions?.push &&
+      !['admin', 'maintain', 'write'].includes(permission.permission)
+    )
+      return;
+  }
   const pull = await api.request<Pull>('GET', `pulls/${pr}`);
   if (pull.state !== 'open') return;
   let command: Command;

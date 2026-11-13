@@ -25,6 +25,7 @@ export * from './Endpoint';
 
 export type { TranslationKeys } from './useLocalize';
 
+export { default as useOnline } from './useOnline';
 export { default as useTimeout } from './useTimeout';
 export { default as useNewConvo } from './useNewConvo';
 export { default as useLocalize } from './useLocalize';

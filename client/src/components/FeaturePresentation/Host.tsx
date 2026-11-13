@@ -6,7 +6,6 @@ import { ChatProvider } from '@librechat/chat/react';
 import type { ReactNode } from 'react';
 import type { ChatFormValues } from '~/common';
 import { useSidebarDestinationState } from '~/hooks/Nav/useUnifiedSidebarLinks';
-import { AgentEditor } from '~/components/SidePanel/Agents/AgentPanelSwitch';
 import { useGetStartupConfig, useGetEndpointsQuery } from '~/data-provider';
 import { activePanelAtom } from '~/Providers/ActivePanelContext';
 import { ChatFormProvider } from '~/Providers/ChatFormContext';
@@ -14,8 +13,15 @@ import { getPageSettings, getPageForPath } from './registry';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { FeaturePresentationProvider } from './Context';
 import useRevealChat from '~/hooks/Nav/useRevealChat';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
 import { featureContent } from './Content';
 import { useAuthContext } from '~/hooks';
+
+const AgentEditor = lazyWithRecovery(() =>
+  import('~/components/SidePanel/Agents/AgentPanelSwitch').then((module) => ({
+    default: module.AgentEditor,
+  })),
+);
 
 function AgentSession({ visible }: { visible: boolean }) {
   const methods = useForm<ChatFormValues>({ defaultValues: { text: '' } });

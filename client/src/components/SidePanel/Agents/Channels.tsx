@@ -1,30 +1,35 @@
 import { useId, useRef, useState, useEffect, useCallback } from 'react';
-import { Info, Plus, Power, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
+import { X, Info, Plus, Power, User, Users, Pencil, Settings } from 'lucide-react';
 import {
   Alert,
   Button,
   ControlCombobox,
   InfoHoverCard,
-  Input,
   Label,
-  Tag,
-  Textarea,
-  Separator,
-  TooltipAnchor,
   OGDialog,
   OGDialogContent,
   OGDialogTitle,
   OGDialogFooter,
+  ChoiceCards,
+  TooltipAnchor,
 } from '@librechat/client';
 import type { AgentChannel } from 'librechat-data-provider';
+import type { SetupStep } from './ChannelSetup';
 import type { TranslationKeys } from '~/hooks';
 import { useSlackWorkspaces } from '~/components/Channels/useSlackWorkspaces';
+import ChannelSetup, { ManifestView, SetupActions } from './ChannelSetup';
+import ChannelStatus, { statusColors } from './ChannelStatus';
 import { channelErrorLabel } from '~/utils/channelErrors';
+import DeleteChannelDialog from './DeleteChannelDialog';
+import { ChannelHeaderIcon } from './ChannelDetails';
+import Loading from '~/components/Channels/Loading';
 import WorkspaceChannel from './WorkspaceChannel';
-import ChannelStatus from './ChannelStatus';
+import ChannelsDialog from './ChannelsDialog';
+import ChannelUsage from './ChannelUsage';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 const actionLabels: Record<AgentChannel['status'], TranslationKeys> = {
   pending_install: 'com_ui_channels_setup',
@@ -33,10 +38,75 @@ const actionLabels: Record<AgentChannel['status'], TranslationKeys> = {
   deleting: 'com_ui_channels_manage',
 };
 
+const modeLabels: Record<AgentChannel['credentialMode'], TranslationKeys> = {
+  per_user: 'com_ui_channel_link_per_user',
+  shared: 'com_ui_channel_link_shared',
+};
+
+function modeOptions(localize: (key: TranslationKeys) => string) {
+  return [
+    {
+      value: 'per_user',
+      label: localize('com_ui_channel_link_per_user'),
+      description: localize('com_ui_channels_per_user_help'),
+      icon: <Users className="size-5" strokeWidth={1.5} />,
+    },
+    {
+      value: 'shared',
+      label: localize('com_ui_channel_link_shared'),
+      description: localize('com_ui_channels_owner_help'),
+      icon: <User className="size-5" strokeWidth={1.5} />,
+    },
+  ];
+}
+
 function channelActionLabel(channel: AgentChannel, userId: string): TranslationKeys {
   if (channel.createdBy !== userId) return 'com_ui_channels_read_only';
   if (channel.workspaceId) return 'com_ui_channels_manage';
   return actionLabels[channel.status];
+}
+
+/** Managing is an icon with a tooltip; setting up and read-only stay as words. */
+function RowAction({
+  label,
+  disabled,
+  onOpen,
+}: {
+  label: TranslationKeys;
+  disabled: boolean;
+  onOpen: (button: HTMLButtonElement) => void;
+}) {
+  const localize = useLocalize();
+  if (label !== 'com_ui_channels_manage') {
+    return (
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        disabled={disabled}
+        onClick={(event) => onOpen(event.currentTarget)}
+      >
+        {localize(label)}
+      </Button>
+    );
+  }
+  return (
+    <TooltipAnchor
+      description={localize(label)}
+      render={
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label={localize(label)}
+          disabled={disabled}
+          onClick={(event) => onOpen(event.currentTarget)}
+        >
+          <Settings className="size-3.5" aria-hidden="true" />
+        </Button>
+      }
+    />
+  );
 }
 
 function Channel({
@@ -46,6 +116,7 @@ function Channel({
   userId,
   tenantId,
   enabled,
+  isAdmin,
 }: {
   agentId: string;
   channel: AgentChannel;
@@ -53,14 +124,21 @@ function Channel({
   userId: string;
   tenantId?: string;
   enabled: boolean;
+  isAdmin: boolean;
 }) {
   const localize = useLocalize();
   const queryClient = useQueryClient();
   const id = useId();
-  const [panel, setPanel] = useState<'setup' | 'delete' | 'mode' | null>(
+  const [panel, setPanel] = useState<'setup' | 'mode' | null>(
     channel.status === 'pending_install' ? 'setup' : null,
   );
   const setup = panel === 'setup';
+  const modeView = panel === 'mode';
+  const [disableReason, setDisableReason] = useState<'disable' | 'mode' | null>(null);
+  const [modeChoice, setModeChoice] = useState<AgentChannel['credentialMode']>(
+    channel.credentialMode,
+  );
+  const [step, setStep] = useState<SetupStep>(1);
   const [appId, setAppId] = useState(channel.slack?.appId ?? '');
   const [botToken, setBotToken] = useState('');
   const [signingSecret, setSigningSecret] = useState('');
@@ -88,7 +166,18 @@ function Channel({
     manifest.isSuccess &&
     !manifest.isFetching &&
     Boolean(appId.trim() && botToken.trim() && (!needsSigningSecret || signingSecret.trim()));
+  const botName = manifest.data?.features.bot_user.display_name;
   const manifestText = manifest.data ? JSON.stringify(manifest.data, null, 2) : '';
+  const [manifestCopied, setManifestCopied] = useState(false);
+  const copyManifest = () => {
+    void navigator.clipboard?.writeText(manifestText).then(() => {
+      if (!active.current) return;
+      setManifestCopied(true);
+      setTimeout(() => {
+        if (active.current) setManifestCopied(false);
+      }, 3000);
+    });
+  };
   const readiness = useRef({ enabled, canActivate });
   readiness.current = { enabled, canActivate };
   const clearCredentials = () => {
@@ -99,8 +188,10 @@ function Channel({
   };
   const mutation = useMutation({
     mutationKey: [MutationKeys.agentChannels, userId, tenantId, agentId, channel.channelId],
+    /** Credentials are cleared after every attempt, so a failed one returns to entering them. */
+    onError: () => setStep(2),
     // Cached callbacks retain only a revocable holder, never render snapshots of secrets.
-    mutationFn: async (action: 'activate' | 'disable' | 'delete' | 'mode') => {
+    mutationFn: async (action: 'activate' | 'disable' | 'mode') => {
       try {
         if (!active.current || !readiness.current.enabled || channel.createdBy !== userId)
           throw new Error('Channel unavailable');
@@ -110,7 +201,7 @@ function Channel({
           return await dataService.changeAgentChannelMode(
             agentId,
             channel.channelId,
-            channel.credentialMode === 'shared' ? 'per_user' : 'shared',
+            modeChoice,
             channel.revision,
           );
         }
@@ -128,15 +219,15 @@ function Channel({
           clearCredentials();
           return await dataService.activateAgentChannel(agentId, channel.channelId, { slack });
         }
-        if (action === 'disable')
-          return await dataService.disableAgentChannel(agentId, channel.channelId);
-        await dataService.deleteAgentChannel(agentId, channel.channelId);
+        return await dataService.disableAgentChannel(agentId, channel.channelId);
       } finally {
         clearCredentials();
       }
     },
-    onSuccess: async () => {
-      if (active.current) onClose();
+    onSuccess: async (_data, action) => {
+      // Disabling to change the identity stays in this dialog and lands on the cards.
+      const changeMode = action === 'disable' && disableReason === 'mode';
+      if (active.current && !changeMode) onClose();
       await queryClient.invalidateQueries([QueryKeys.agentChannels, userId, tenantId, agentId]);
       await queryClient.invalidateQueries([
         QueryKeys.agentChannelManifest,
@@ -145,259 +236,214 @@ function Channel({
         agentId,
         channel.channelId,
       ]);
+      if (changeMode && active.current) {
+        setDisableReason(null);
+        setModeChoice(channel.credentialMode);
+        setPanel('mode');
+      }
     },
   });
   const busy = !enabled || mutation.isLoading || channel.status === 'deleting';
+  const manifestProps = {
+    loading: manifest.isLoading,
+    failed: manifest.isError,
+    onRetry: () => void manifest.refetch(),
+    text: manifest.data ? manifestText : '',
+    copied: manifestCopied,
+    onCopy: copyManifest,
+  };
   return (
     <>
-      <div className="min-h-0 space-y-4 overflow-y-auto px-6 pb-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="font-medium">{localize('com_ui_channels_slack')}</span>
-          <ChannelStatus status={channel.status} />
-        </div>
-        <dl className="border-border-light bg-surface-secondary space-y-3 rounded-lg border p-3 text-sm">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <dt className="text-text-secondary">{localize('com_ui_channels_connection_type')}</dt>
-            <dd>
-              <Tag
-                variant="neutral"
-                label={localize(
-                  channel.credentialMode === 'shared'
-                    ? 'com_ui_channel_link_shared'
-                    : 'com_ui_channel_link_per_user',
-                )}
-              />
-            </dd>
-          </div>
-          <div className="flex items-start justify-between gap-4">
-            <dt className="text-text-secondary shrink-0">
-              {localize('com_ui_channels_connection_id_label')}
-            </dt>
-            <dd className="text-text-primary min-w-0 text-end font-mono text-xs break-all">
-              {channel.channelId}
-            </dd>
-          </div>
-          {channel.slack?.teamId && (
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <dt className="text-text-secondary">{localize('com_ui_channels_workspace_label')}</dt>
-              <dd className="text-text-primary font-mono text-xs">{channel.slack.teamId}</dd>
-            </div>
-          )}
-          {channel.slack?.appId && (
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <dt className="text-text-secondary">{localize('com_ui_channels_app_id')}</dt>
-              <dd className="text-text-primary font-mono text-xs">{channel.slack.appId}</dd>
-            </div>
-          )}
-        </dl>
+      <div className="min-h-0 space-y-4 overflow-y-auto px-6 pb-4">
         {mutation.isError && (
-          <p role="alert" className="text-text-primary text-sm">
-            {localize(channelErrorLabel(mutation.error))}
-          </p>
+          <Alert variant="error">{localize(channelErrorLabel(mutation.error))}</Alert>
         )}
         {mutation.isError && mutation.variables === 'activate' && (
           <p className="text-text-secondary text-sm">
             {localize('com_ui_channels_activation_retry')}
           </p>
         )}
-        {panel === 'mode' && (
-          <div
-            role="group"
-            aria-label={localize('com_ui_channel_link_mode_confirm')}
-            className="space-y-2"
-          >
-            <p>{localize('com_ui_channel_link_mode_confirm')}</p>
-            <p>
-              {localize(
-                channel.credentialMode === 'shared'
-                  ? 'com_ui_channel_link_per_user_notice'
-                  : 'com_ui_channels_shared_notice',
-              )}
+        {modeView && (
+          <div className="space-y-3">
+            <ChoiceCards
+              options={modeOptions(localize)}
+              value={modeChoice}
+              onChange={(value) => setModeChoice(value as AgentChannel['credentialMode'])}
+              disabled={busy}
+              aria-label={localize('com_ui_channel_link_mode')}
+            />
+            <p className="text-text-secondary text-xs">
+              {localize('com_ui_channel_link_mode_confirm')}
             </p>
-            <div className="flex gap-2">
-              <Button type="button" disabled={busy} onClick={() => mutation.mutate('mode')}>
-                {localize(
-                  channel.credentialMode === 'shared'
-                    ? 'com_ui_channel_link_switch_per_user'
-                    : 'com_ui_channel_link_switch_shared',
+          </div>
+        )}
+        {!modeView && (
+          <>
+            {channel.status === 'active' && botName && (
+              <ChannelUsage
+                name={botName}
+                perUser={channel.credentialMode === 'per_user'}
+                isAdmin={isAdmin}
+              />
+            )}
+            {setup ? (
+              <ChannelSetup
+                id={id}
+                step={step}
+                manifest={manifestProps}
+                botName={botName}
+                isAdmin={isAdmin}
+                appId={appId}
+                onAppId={setAppId}
+                botToken={botToken}
+                onBotToken={(value) => {
+                  credentials.current.botToken = value;
+                  setBotToken(value);
+                }}
+                signingSecret={signingSecret}
+                onSigningSecret={(value) => {
+                  credentials.current.signingSecret = value;
+                  setSigningSecret(value);
+                }}
+                signingLabel={signingLabel}
+                needsSigningSecret={needsSigningSecret}
+                busy={busy}
+              />
+            ) : (
+              <div className="border-border-light divide-border-light divide-y rounded-xl border empty:hidden">
+                {(channel.status === 'active' || channel.status === 'disabled') && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm">
+                    <span className="text-text-secondary flex min-w-0 items-center gap-2">
+                      {channel.credentialMode === 'shared' ? (
+                        <User className="size-4 shrink-0" aria-hidden="true" />
+                      ) : (
+                        <Users className="size-4 shrink-0" aria-hidden="true" />
+                      )}
+                      <span className="truncate">
+                        {localize(modeLabels[channel.credentialMode])}
+                      </span>
+                    </span>
+                    <div className="-me-1.5">
+                      <TooltipAnchor
+                        description={localize('com_ui_channel_link_change_mode')}
+                        render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-xs"
+                            aria-label={localize('com_ui_channel_link_change_mode')}
+                            disabled={busy}
+                            onClick={() => {
+                              clearCredentials();
+                              if (channel.status === 'active') {
+                                setDisableReason('mode');
+                                return;
+                              }
+                              setModeChoice(channel.credentialMode);
+                              setPanel('mode');
+                            }}
+                          >
+                            <Pencil className="size-3.5" aria-hidden="true" />
+                          </Button>
+                        }
+                      />
+                    </div>
+                  </div>
                 )}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                onClick={() => setPanel(null)}
-              >
-                {localize('com_ui_cancel')}
-              </Button>
-            </div>
-          </div>
-        )}
-        {panel === 'delete' && (
-          <div
-            className="space-y-2"
-            role="group"
-            aria-label={localize('com_ui_channels_delete_confirm')}
-          >
-            <p className="text-sm">{localize('com_ui_channels_delete_confirm')}</p>
-            <div className="flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                onClick={() => setPanel(null)}
-              >
-                {localize('com_ui_cancel')}
-              </Button>
-              <Button
-                type="button"
-                variant="destructive"
-                disabled={busy}
-                onClick={() => mutation.mutate('delete')}
-              >
-                {localize('com_ui_delete')}
-              </Button>
-            </div>
-          </div>
-        )}
-        <div className="space-y-3">
-          {setup && (
-            <>
-              <h4 className="text-sm font-medium">{localize('com_ui_channels_install_step')}</h4>
-              <p className="text-text-secondary text-sm">
-                {localize('com_ui_channels_instructions')}
-              </p>
-            </>
-          )}
-          {manifest.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
-          {manifest.isError && (
-            <div role="alert" className="space-y-2 text-sm">
-              <p>{localize('com_ui_channels_manifest_error')}</p>
-              <Button type="button" variant="outline" onClick={() => void manifest.refetch()}>
-                {localize('com_ui_channels_retry')}
-              </Button>
-            </div>
-          )}
-          {manifest.data && (
-            <details open className="space-y-2 text-sm">
-              <summary className="cursor-pointer">{localize('com_ui_channels_manifest')}</summary>
-              <Label className="sr-only" htmlFor={`${id}-manifest`}>
-                {localize('com_ui_channels_manifest')}
-              </Label>
-              <Textarea id={`${id}-manifest`} rows={8} value={manifestText} readOnly />
-            </details>
-          )}
-        </div>
-        {setup && (
-          <div id={`${id}-setup`} className="space-y-3">
-            <h4 className="text-sm font-medium">{localize('com_ui_channels_credentials_step')}</h4>
-            <div className="space-y-1">
-              <Label htmlFor={`${id}-app`}>{localize('com_ui_channels_app_id')}</Label>
-              <Input
-                id={`${id}-app`}
-                autoComplete="off"
-                value={appId}
-                disabled={busy}
-                onChange={(event) => setAppId(event.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor={`${id}-token`}>{localize('com_ui_channels_bot_token')}</Label>
-              <Input
-                id={`${id}-token`}
-                type="password"
-                autoComplete="new-password"
-                value={botToken}
-                disabled={busy}
-                onChange={(event) => {
-                  credentials.current.botToken = event.target.value;
-                  setBotToken(event.target.value);
-                }}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor={`${id}-secret`}>{localize(signingLabel)}</Label>
-              <Input
-                id={`${id}-secret`}
-                type="password"
-                required={needsSigningSecret}
-                aria-required={needsSigningSecret}
-                autoComplete="new-password"
-                value={signingSecret}
-                disabled={busy}
-                onChange={(event) => {
-                  credentials.current.signingSecret = event.target.value;
-                  setSigningSecret(event.target.value);
-                }}
-              />
-            </div>
-            <Button
-              type="button"
-              disabled={busy || channel.status === 'active' || !canActivate}
-              onClick={() => mutation.mutate('activate')}
-            >
-              {localize('com_ui_channels_activate')}
-            </Button>
-          </div>
+                <div className="px-3 py-2 empty:hidden">
+                  <ManifestView
+                    id={id}
+                    {...manifestProps}
+                    defaultOpen={false}
+                    copyClassName="-me-1.5"
+                  />
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
-      <Separator />
-      <OGDialogFooter className="flex-wrap gap-2 px-6 py-4 sm:justify-between">
-        <Button
-          type="button"
-          variant="destructive-soft"
-          disabled={busy || panel === 'delete'}
-          onClick={() => {
-            clearCredentials();
-            setPanel('delete');
-          }}
-        >
-          <Trash2 className="size-4" aria-hidden="true" />
-          {localize('com_ui_delete')}
-        </Button>
-        <div className="flex flex-wrap gap-2">
-          {channel.status !== 'active' && (
+      <OGDialogFooter className="gap-2 px-6 pt-2 pb-6 sm:justify-end">
+        {modeView && (
+          <>
+            <Button type="button" variant="outline" disabled={busy} onClick={() => setPanel(null)}>
+              {localize('com_ui_cancel')}
+            </Button>
             <Button
               type="button"
-              variant="outline"
-              disabled={busy}
-              aria-expanded={setup}
-              aria-controls={`${id}-setup`}
-              onClick={() => {
-                clearCredentials();
-                mutation.reset();
-                setPanel(setup ? null : 'setup');
-              }}
+              variant="submit"
+              disabled={busy || !channel.revision || modeChoice === channel.credentialMode}
+              onClick={() => mutation.mutate('mode')}
             >
-              {localize(setup ? 'com_ui_cancel' : 'com_ui_channels_setup')}
+              {localize('com_ui_save')}
             </Button>
-          )}
-          {channel.status === 'disabled' && channel.revision && (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => {
-                clearCredentials();
-                setPanel('mode');
-              }}
-            >
-              {localize('com_ui_channel_link_change_mode')}
-            </Button>
-          )}
-          {channel.status === 'active' && (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => mutation.mutate('disable')}
-            >
-              <Power className="size-4" aria-hidden="true" />
-              {localize('com_ui_channels_disable')}
-            </Button>
-          )}
-        </div>
+          </>
+        )}
+        {setup && (
+          <SetupActions
+            step={step}
+            onStep={setStep}
+            busy={busy}
+            canActivate={canActivate}
+            alreadyActive={channel.status === 'active'}
+            onActivate={() => mutation.mutate('activate')}
+          />
+        )}
+        {channel.status !== 'active' && !setup && !modeView && (
+          <Button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              clearCredentials();
+              mutation.reset();
+              setStep(1);
+              setPanel('setup');
+            }}
+          >
+            {localize('com_ui_channels_setup')}
+          </Button>
+        )}
+        {channel.status === 'active' && !modeView && (
+          <Button
+            type="button"
+            variant="destructive"
+            className="me-auto"
+            disabled={busy}
+            onClick={() => setDisableReason('disable')}
+          >
+            <Power className="size-4" aria-hidden="true" />
+            {localize('com_ui_channels_disable')}
+          </Button>
+        )}
       </OGDialogFooter>
+      <DeleteChannelDialog
+        open={disableReason != null}
+        onOpenChange={(open) => {
+          if (!open && !mutation.isLoading) setDisableReason(null);
+        }}
+        onConfirm={() => mutation.mutate('disable')}
+        loading={mutation.isLoading}
+        error={
+          mutation.isError && mutation.variables === 'disable'
+            ? localize(channelErrorLabel(mutation.error))
+            : undefined
+        }
+        title={
+          disableReason === 'mode'
+            ? 'com_ui_channels_mode_disable_title'
+            : 'com_ui_channels_disable_title'
+        }
+        description={
+          disableReason === 'mode'
+            ? 'com_ui_channels_mode_disable_first'
+            : 'com_ui_channels_disable_confirm'
+        }
+        confirmLabel={
+          disableReason === 'mode'
+            ? 'com_ui_channels_mode_disable_confirm'
+            : 'com_ui_channels_disable'
+        }
+      />
     </>
   );
 }
@@ -407,13 +453,15 @@ interface ChannelsProps {
   agentId?: string;
   userId: string;
   tenantId?: string;
+  /** Admins also see what the deployment must run for Slack to reach LibreChat. */
+  isAdmin?: boolean;
 }
 export default function Channels(props: ChannelsProps) {
   return (
     <OwnedChannels key={JSON.stringify([props.userId, props.tenantId, props.agentId])} {...props} />
   );
 }
-function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
+function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsProps) {
   const localize = useLocalize();
   const queryClient = useQueryClient();
   const id = useId();
@@ -427,6 +475,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
   const [dialog, setDialog] = useState<string | null>(null);
   const [newWorkspaceConnection, setNewWorkspaceConnection] = useState<string | null>(null);
   const [credentialMode, setCredentialMode] = useState<AgentChannel['credentialMode']>('per_user');
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [workspaceId, setWorkspaceId] = useState('');
   const workspaces = useSlackWorkspaces(
     JSON.stringify([tenantId ?? '_', userId]),
@@ -460,6 +509,16 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
       refetchIntervalInBackground: false,
     },
   );
+  const [rowDelete, setRowDelete] = useState<AgentChannel | null>(null);
+  const rowDeleteRef = useRef<HTMLButtonElement | null>(null);
+  const removeRow = useMutation({
+    mutationKey: [MutationKeys.agentChannels, userId, tenantId, agentId, 'delete'],
+    mutationFn: (channelId: string) => dataService.deleteAgentChannel(agentId!, channelId),
+    onSuccess: async () => {
+      setRowDelete(null);
+      await queryClient.invalidateQueries([QueryKeys.agentChannels, userId, tenantId, agentId]);
+    },
+  });
   const create = useMutation({
     mutationKey: [MutationKeys.agentChannels, userId, tenantId, agentId],
     mutationFn: () => {
@@ -501,35 +560,21 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
           >
             {localize('com_ui_channels_title')}
           </h3>
-          <TooltipAnchor
-            description={localize('com_ui_channels_description')}
-            side="top"
-            render={
-              <button
-                type="button"
-                aria-label={localize('com_ui_channels_description')}
-                className="text-text-tertiary hover:text-text-secondary focus-visible:ring-ring-primary flex size-4 shrink-0 items-center justify-center rounded focus:outline-hidden focus-visible:ring-2"
-              >
-                <Info className="size-3.5" aria-hidden="true" />
-              </button>
-            }
-          />
+          <InfoHoverCard text={localize('com_ui_channels_description')}>
+            <Info className="text-text-tertiary size-3.5" aria-hidden="true" />
+          </InfoHoverCard>
         </div>
         <Button
           type="button"
-          variant="section-action"
-          size="compact"
+          variant="section-add"
           disabled={!agentId || !userId || !channels.isSuccess}
           aria-label={localize('com_ui_channels_add')}
           onClick={(event) => {
             triggerRef.current = event.currentTarget;
-            create.reset();
-            setCredentialMode('per_user');
-            setWorkspaceId('');
-            setDialog('add');
+            setLibraryOpen(true);
           }}
         >
-          <Plus className="size-3.5" strokeWidth={1.75} aria-hidden="true" />
+          <Plus className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
           {localize('com_ui_add')}
         </Button>
       </div>
@@ -542,41 +587,110 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
         </p>
       )}
       {channels.isError && (
-        <div role="alert" className="space-y-2 text-sm">
-          <p>{localize('com_ui_channels_list_error')}</p>
+        <div className="flex flex-col items-start gap-2">
+          <Alert variant="error">{localize('com_ui_channels_list_error')}</Alert>
           <Button type="button" variant="outline" onClick={() => void channels.refetch()}>
             {localize('com_ui_channels_retry')}
           </Button>
         </div>
       )}
-      {channels.data?.map((channel) => (
-        <div key={channel.channelId} className="flex items-center justify-between gap-2 text-sm">
-          <div className="flex min-w-0 items-center gap-2">
-            {localize('com_ui_channels_slack')}
-            <ChannelStatus
-              status={channel.status}
-              pendingLabel={
-                channel.workspaceId ? 'com_ui_channels_workspace_not_assigned' : undefined
-              }
-            />
-          </div>
-          <Button
-            type="button"
-            variant="section-action"
-            size="compact"
-            disabled={
-              channels.isError || channel.status === 'deleting' || channel.createdBy !== userId
-            }
-            onClick={(event) => {
-              triggerRef.current = event.currentTarget;
-              setNewWorkspaceConnection(null);
-              setDialog(channel.channelId);
-            }}
-          >
-            {localize(channelActionLabel(channel, userId))}
-          </Button>
-        </div>
-      ))}
+      {channels.data != null && channels.data.length > 0 && (
+        <ul className="flex flex-col gap-0.5">
+          {channels.data.map((channel) => (
+            <li
+              key={channel.channelId}
+              className="group hover:bg-surface-secondary flex items-center gap-2.5 rounded-lg px-2 py-1.5"
+            >
+              <span className="relative shrink-0" aria-hidden="true">
+                <span className="bg-surface-fixed flex size-7 items-center justify-center overflow-hidden rounded-md">
+                  <img src="assets/slack.svg" alt="" className="size-4" />
+                </span>
+                <span
+                  className={cn(
+                    'ring-surface-primary absolute -end-0.5 -bottom-0.5 size-2.5 rounded-full ring-2',
+                    statusColors[channel.status],
+                  )}
+                />
+              </span>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="text-text-primary truncate text-sm font-medium">
+                  {localize('com_ui_channels_slack')}
+                </span>
+                <ChannelStatus
+                  status={channel.status}
+                  pendingLabel={
+                    channel.workspaceId ? 'com_ui_channels_workspace_not_assigned' : undefined
+                  }
+                  dot={false}
+                  /* An active connection is the quiet default and the dot says it; every other
+                     state needs an action, so its name is shown, not left to the dot's color. */
+                  className={channel.status === 'active' ? 'sr-only' : undefined}
+                />
+              </div>
+              <div className="flex shrink-0 items-center gap-0.5">
+                <div className="no-touch:opacity-0 flex items-center group-hover:opacity-100 group-has-[:focus-visible]:opacity-100">
+                  <RowAction
+                    label={channelActionLabel(channel, userId)}
+                    disabled={
+                      channels.isError ||
+                      channel.status === 'deleting' ||
+                      channel.createdBy !== userId
+                    }
+                    onOpen={(button) => {
+                      triggerRef.current = button;
+                      setNewWorkspaceConnection(null);
+                      setDialog(channel.channelId);
+                    }}
+                  />
+                </div>
+                {channel.createdBy === userId && channel.status !== 'deleting' && (
+                  <div className="no-touch:opacity-0 shrink-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100">
+                    <TooltipAnchor
+                      description={localize('com_ui_channels_delete_connection')}
+                      render={
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label={localize('com_ui_channels_delete_connection')}
+                          onClick={(event) => {
+                            rowDeleteRef.current = event.currentTarget;
+                            removeRow.reset();
+                            setRowDelete(channel);
+                          }}
+                        >
+                          <X className="size-3.5" aria-hidden="true" />
+                        </Button>
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <DeleteChannelDialog
+        open={rowDelete != null}
+        onOpenChange={(open) => {
+          if (!open && !removeRow.isLoading) setRowDelete(null);
+        }}
+        onConfirm={() => rowDelete && removeRow.mutate(rowDelete.channelId)}
+        loading={removeRow.isLoading}
+        error={removeRow.isError ? localize(channelErrorLabel(removeRow.error)) : undefined}
+        triggerRef={rowDeleteRef}
+      />
+      <ChannelsDialog
+        open={libraryOpen}
+        onOpenChange={setLibraryOpen}
+        onSelect={() => {
+          setLibraryOpen(false);
+          create.reset();
+          setCredentialMode('per_user');
+          setWorkspaceId('');
+          setDialog('add');
+        }}
+      />
       <OGDialog
         open={dialog !== null}
         onOpenChange={(open) => {
@@ -586,14 +700,15 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
         <OGDialogContent
           ref={setContentRef}
           tabIndex={-1}
-          className="w-11/12 max-w-lg gap-0 overflow-visible p-0"
+          className="w-11/12 max-w-2xl gap-0 overflow-visible p-0"
+          showCloseButton={dialog !== 'add'}
           focusOutline="hidden"
           aria-describedby={undefined}
           onOpenAutoFocus={(event) => {
-            if (dialog === 'add' || selected?.workspaceId) {
-              event.preventDefault();
-              contentRef.current?.focus();
-            }
+            // Focus the dialog itself: the first control is the details icon, and focusing it
+            // would open its hover card the moment the dialog appears.
+            event.preventDefault();
+            contentRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
@@ -601,10 +716,23 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
           }}
         >
           <div className="flex max-h-[85dvh] flex-col">
-            <div className="space-y-1 px-6 pt-6 pb-4">
-              <OGDialogTitle>
-                {localize(dialog === 'add' ? 'com_ui_channels_add' : connectionTitle)}
-              </OGDialogTitle>
+            <div
+              className={cn(
+                'flex items-center gap-3 px-6 pb-4',
+                dialog === 'add' ? 'pt-6' : 'pt-4',
+              )}
+            >
+              {dialog !== 'add' && selected && <ChannelHeaderIcon channel={selected} />}
+              <div className="min-w-0 space-y-1">
+                <OGDialogTitle>
+                  {localize(dialog === 'add' ? 'com_ui_channels_add_slack' : connectionTitle)}
+                </OGDialogTitle>
+                {dialog === 'add' && workspaces.isSuccess && !useWorkspace && (
+                  <p id={`${id}-mode`} className="text-text-secondary text-sm">
+                    {localize('com_ui_channel_link_mode')}
+                  </p>
+                )}
+              </div>
             </div>
             <div
               className="flex min-h-0 flex-1 flex-col"
@@ -616,9 +744,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
             >
               {dialog === 'add' && (
                 <div className="space-y-4 overflow-y-auto px-6 pb-6">
-                  {workspaces.isLoading && (
-                    <p role="status">{localize('com_ui_channels_loading')}</p>
-                  )}
+                  {workspaces.isLoading && <Loading label="com_ui_channels_loading" />}
                   {workspaces.isError && (
                     <Alert variant="error">
                       <p>{localize('com_ui_channels_workspace_load_error')}</p>
@@ -694,50 +820,18 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                     </div>
                   )}
                   {workspaces.isSuccess && !useWorkspace && (
-                    <>
-                      <p className="text-text-secondary text-sm">
-                        {localize('com_ui_channels_manual_help')}
-                      </p>
-                      <h4 className="text-sm font-medium">
-                        {localize('com_ui_channel_link_mode')}
-                      </h4>
-                      <div
-                        role="group"
-                        aria-label={localize('com_ui_channel_link_mode')}
-                        className="flex flex-wrap gap-2"
-                      >
-                        <Button
-                          type="button"
-                          variant="outline-toggle"
-                          disabled={create.isLoading}
-                          aria-pressed={credentialMode === 'per_user'}
-                          onClick={() => setCredentialMode('per_user')}
-                        >
-                          {localize('com_ui_channel_link_per_user')}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline-toggle"
-                          disabled={create.isLoading}
-                          aria-pressed={credentialMode === 'shared'}
-                          onClick={() => setCredentialMode('shared')}
-                        >
-                          {localize('com_ui_channel_link_shared')}
-                        </Button>
-                      </div>
-                      <p className="text-text-secondary text-sm">
-                        {localize(
-                          credentialMode === 'shared'
-                            ? 'com_ui_channels_owner_help'
-                            : 'com_ui_channels_per_user_help',
-                        )}
-                      </p>
-                    </>
+                    <ChoiceCards
+                      options={modeOptions(localize)}
+                      value={credentialMode}
+                      onChange={(value) =>
+                        setCredentialMode(value as AgentChannel['credentialMode'])
+                      }
+                      disabled={create.isLoading}
+                      aria-labelledby={`${id}-mode`}
+                    />
                   )}
                   {create.isError && (
-                    <p role="alert" className="text-sm">
-                      {localize(channelErrorLabel(create.error))}
-                    </p>
+                    <Alert variant="error">{localize(channelErrorLabel(create.error))}</Alert>
                   )}
                   <div className="flex justify-end gap-2">
                     <Button
@@ -789,6 +883,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                     channel={selected}
                     userId={userId}
                     tenantId={tenantId}
+                    isAdmin={isAdmin}
                     enabled={channels.isSuccess && !channels.isFetching}
                     onClose={() =>
                       setDialog((current) => (current === selected.channelId ? null : current))

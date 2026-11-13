@@ -77,6 +77,8 @@ export type MessagePartsShare = {
 export type MessagePartsImageProps = {
   imagePath: string;
   altText: string;
+  alignRight?: boolean;
+  className?: string;
   width?: number;
   height?: number;
 };

@@ -1,3 +1,5 @@
+import { Suspense } from 'react';
+import { Spinner } from '@librechat/client';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { NavLink } from '~/common';
 import {
@@ -7,7 +9,19 @@ import {
 } from '~/components/FeaturePresentation/Context';
 import { getPageForNavId } from '~/components/FeaturePresentation/registry';
 import { useActivePanel, resolveActivePanel } from '~/Providers';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
+
+/** Panels load on first open; a pending chunk still needs a visible loading state. */
+function PanelLoading() {
+  const localize = useLocalize();
+  return (
+    <div role="status" className="text-text-secondary flex flex-1 items-center justify-center py-8">
+      <Spinner size={20} />
+      <span className="sr-only">{localize('com_ui_loading')}</span>
+    </div>
+  );
+}
 
 export default function Nav({ links, visible = true }: { links: NavLink[]; visible?: boolean }) {
   const { active } = useActivePanel();
@@ -22,19 +36,21 @@ export default function Nav({ links, visible = true }: { links: NavLink[]; visib
         effectiveActive === EModelEndpoint.agents && 'scrollbar-gutter-stable',
       )}
     >
-      <FeatureVisibility.Provider value={visible}>
-        {links.map((link) => {
-          if (link.id !== effectiveActive || !link.Component) {
-            return null;
-          }
-          const page = getPageForNavId(link.id);
-          return page && presentation?.canOpenPage(page) ? (
-            <FeatureSlot key={link.id} page={page} view="panel" visible={visible} />
-          ) : (
-            <link.Component key={link.id} />
-          );
-        })}
-      </FeatureVisibility.Provider>
+      <Suspense fallback={<PanelLoading />}>
+        <FeatureVisibility.Provider value={visible}>
+          {links.map((link) => {
+            if (link.id !== effectiveActive || !link.Component) {
+              return null;
+            }
+            const page = getPageForNavId(link.id);
+            return page && presentation?.canOpenPage(page) ? (
+              <FeatureSlot key={link.id} page={page} view="panel" visible={visible} />
+            ) : (
+              <link.Component key={link.id} />
+            );
+          })}
+        </FeatureVisibility.Provider>
+      </Suspense>
     </div>
   );
 }

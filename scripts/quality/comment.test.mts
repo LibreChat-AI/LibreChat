@@ -28,6 +28,11 @@ const command = (id = 10, body = '/quality both scopes=all static=off'): Comment
   body,
   user: { login: 'maintainer', type: 'User' },
 });
+const lia = {
+  login: 'lia-by-librechat[bot]',
+  type: 'Bot',
+  id: 328778573,
+} satisfies Comment['user'];
 const record: Request = {
   request: 10,
   pr: 1,
@@ -190,7 +195,7 @@ test('commands validate choices and lists as data, with all scopes and static of
   }
 });
 
-test('read access, triage, bots and closed PRs cannot start work or clear the gate', async () => {
+test('read access, triage, untrusted bots and closed PRs cannot start work or clear the gate', async () => {
   for (const permission of ['read', 'triage', 'none']) {
     const api = new GitHub();
     api.permission = permission;
@@ -212,6 +217,103 @@ async function accept(api: GitHub, ctx: Context, pr: number, comment: Comment) {
   if (result) await refreshPull(api, ctx, pr);
   return result;
 }
+
+test('trusted bots start exact-head requests without collaborator permissions and publish completion', async () => {
+  const api = new GitHub();
+  api.permission = 'none';
+  const accepted = await accept(api, context, 1, { ...command(), user: lia });
+  assert.equal(accepted?.request.actor, lia.login);
+  assert.equal(accepted?.request.head, head);
+  assert.equal(
+    api.calls.some(({ path }) => path.endsWith('/permission')),
+    false,
+  );
+  assert.equal(readRequest(api.comments[0])?.actor, lia.login);
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
+  await publishRun(api, context, run());
+  assert.equal(readRequest(api.comments[0])?.conclusion, 'success');
+  assert.equal(api.statuses.at(-1)?.state, 'success');
+  api.head = next;
+  await refreshPull(api, context, 1);
+  assert.match(api.comments[0].body, /Outdated:/);
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
+});
+
+test('only exact trusted bot identities can submit commands or disturb an active request', async () => {
+  for (const user of [
+    { ...lia, id: undefined },
+    { ...lia, id: lia.id + 1 },
+    { ...lia, login: 'untrusted[bot]' },
+    { ...lia, login: 'lia-by-librechat-copy[bot]' },
+    { ...lia, type: 'Organization' },
+    bot('').user,
+  ]) {
+    for (const body of ['/quality check-all', '/quality ignore', '/quality both static=on']) {
+      const api = new GitHub();
+      running(api);
+      const original = api.comments[0].body;
+      assert.equal(
+        await acceptRequest(api, { ...context, run: 56 }, 1, { ...command(11, body), user }),
+        undefined,
+      );
+      assert.equal(api.calls.length, 0);
+      assert.equal(api.comments.length, 1);
+      assert.equal(api.comments[0].body, original);
+      assert.equal(api.runs.get(55)?.status, 'in_progress');
+      assert.equal(api.statuses.length, 0);
+    }
+  }
+});
+
+test('trusted command bots cannot forge publisher records', () => {
+  const body = renderRequest({ ...record, actor: lia.login }, context, head);
+  assert.equal(readRequest({ ...command(), body, user: lia }), undefined);
+  assert.equal(readRequest(bot(body))?.actor, lia.login);
+  for (const actor of ['lia-by-librechat[bot]extra', 'lia-by-librechat[other]', 'bad\nactor']) {
+    assert.equal(readRequest(bot(renderRequest({ ...record, actor }, context, head))), undefined);
+  }
+});
+
+test('trusted bots respect closed PRs and command validation before cancelling work', async () => {
+  const api = new GitHub();
+  running(api);
+  api.state = 'closed';
+  assert.equal(
+    await acceptRequest(api, { ...context, run: 56 }, 1, { ...command(11), user: lia }),
+    undefined,
+  );
+  assert.equal(api.comments.length, 1);
+  assert.equal(api.statuses.length, 0);
+  api.state = 'open';
+  assert.equal(
+    await acceptRequest(api, { ...context, run: 56 }, 1, {
+      ...command(11, '/quality mutation scopes=server'),
+      user: lia,
+    }),
+    undefined,
+  );
+  assert.equal(cancellations(api).length, 0);
+  assert.equal(api.runs.get(55)?.status, 'in_progress');
+  assert.equal(api.statuses.length, 0);
+  assert.ok(api.calls.every(({ path }) => !path.endsWith('/reactions')));
+});
+
+test('trusted bots can explicitly ignore only after stopping the active quality run', async () => {
+  const api = new GitHub();
+  api.permission = 'none';
+  running(api);
+  const accepted = await acceptRequest(api, { ...context, run: 56 }, 1, {
+    ...command(11, '/quality ignore'),
+    user: lia,
+  });
+  assert.equal(accepted?.request.actor, lia.login);
+  assert.equal(cancellations(api).length, 1);
+  const stoppedAt = api.calls.findIndex(({ path }) => path.endsWith('/force-cancel'));
+  const clearedAt = api.calls.findIndex(({ path }) => path.startsWith('statuses/'));
+  assert.ok(stoppedAt < clearedAt);
+  assert.equal(readRequest(api.comments[1])?.check, 'ignore');
+  assert.equal(api.statuses.at(-1)?.state, 'success');
+});
 
 test('one exact-head request comment moves through progress and completion with artifact links', async () => {
   const api = new GitHub();
