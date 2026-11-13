@@ -98,7 +98,12 @@ export async function openChat(
   page: Page,
   chat: BenchChat,
 ): Promise<{ nodes: number; rows: number }> {
-  await page.addInitScript(() => localStorage.setItem('textToSpeech', 'false'));
+  await page.addInitScript((theme) => {
+    localStorage.setItem('textToSpeech', 'false');
+    if (theme) {
+      localStorage.setItem('color-theme', theme);
+    }
+  }, process.env.FADE_PERF_THEME);
   await page.goto(`/c/${chat.id}`, { timeout: 180_000 });
   await expect(messagesView(page).locator('.message-render').first()).toBeAttached({
     timeout: 180_000,

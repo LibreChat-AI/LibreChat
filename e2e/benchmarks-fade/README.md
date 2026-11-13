@@ -39,6 +39,7 @@ by side.
 | Variable                 | Effect                                                               |
 | ------------------------ | -------------------------------------------------------------------- |
 | `FADE_PERF_CPU`          | Slows the renderer by this factor, as DevTools CPU throttling does.  |
+| `FADE_PERF_THEME`        | The color theme to open the chat in, such as `dark`.                 |
 | `FADE_PERF_PROMPT`       | The fake model's scripted reply for the live run.                    |
 | `FADE_PERF_CSS`          | A stylesheet laid over the shipped one, to try a remedy.             |
 | `FADE_PERF_SKIP_LIVE`    | `1` stops the frame spec after the idle and label traces.            |
