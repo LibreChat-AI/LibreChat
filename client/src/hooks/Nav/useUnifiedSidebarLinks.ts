@@ -125,11 +125,11 @@ export default function useUnifiedSidebarLinks() {
   const presentation = useFeaturePresentation();
   const { data: startupConfig } = useGetStartupConfig();
   return useMemo(
-    () =>
+    (): NavLink[] =>
       (presentation?.links ?? []).map((link) => {
         const page = getPageForNavId(link.id);
         if (presentation?.relatedPage && (link.Component || link.id === 'conversations') && !page) {
-          return { ...link, onClick: () => presentation.openPanel(link.id) };
+          return { ...link, view: 'panel', onClick: () => presentation.openPanel(link.id) };
         }
         if (
           !page ||
@@ -140,7 +140,14 @@ export default function useUnifiedSidebarLinks() {
         ) {
           return link;
         }
-        return { ...link, onClick: () => presentation.open(page) };
+        const resourceEditor = presentation.relatedPage === page && presentation.page !== page;
+        const view =
+          !resourceEditor &&
+          presentation.canOpenPage(page) &&
+          getPageSettings(startupConfig?.interface?.navigation, page).defaultView === 'page'
+            ? 'page'
+            : 'panel';
+        return { ...link, view, onClick: () => presentation.open(page) };
       }),
     [presentation, startupConfig?.interface?.navigation],
   );
