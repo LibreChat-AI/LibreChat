@@ -6,6 +6,7 @@ import {
   UNSAFE_RouteContext,
 } from 'react-router-dom';
 import { useFeaturePresentation } from './Context';
+import { getRelatedPage } from './registry';
 
 /** Keep the live chat route, including its composer and transport, mounted behind a feature page. */
 export default function PresentationWorkspace() {
@@ -22,7 +23,7 @@ export default function PresentationWorkspace() {
   }>();
   if (chat) {
     retained.current = { outlet, location: locationContext, route: routeContext };
-  } else if (!presentation?.page) {
+  } else if (!getRelatedPage(location.pathname)) {
     retained.current = undefined;
   }
   return (
@@ -33,7 +34,12 @@ export default function PresentationWorkspace() {
         className={chat ? 'flex h-full min-h-0 flex-col' : 'hidden'}
       >
         {retained.current && (
-          <UNSAFE_LocationContext.Provider value={retained.current.location}>
+          <UNSAFE_LocationContext.Provider
+            value={{
+              ...retained.current.location,
+              location: presentation?.chatLocation ?? retained.current.location.location,
+            }}
+          >
             <UNSAFE_RouteContext.Provider value={retained.current.route}>
               {retained.current.outlet}
             </UNSAFE_RouteContext.Provider>

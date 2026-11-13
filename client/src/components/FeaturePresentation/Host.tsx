@@ -1,16 +1,19 @@
 import { useCallback } from 'react';
 import { useSetAtom } from 'jotai';
 import { useForm } from 'react-hook-form';
+import { useLocation } from 'react-router-dom';
 import { ChatProvider } from '@librechat/chat/react';
 import type { ReactNode } from 'react';
 import type { ChatFormValues } from '~/common';
+import { useSidebarDestinationState } from '~/hooks/Nav/useUnifiedSidebarLinks';
 import { AgentEditor } from '~/components/SidePanel/Agents/AgentPanelSwitch';
 import { useGetStartupConfig, useGetEndpointsQuery } from '~/data-provider';
-import { useSidebarDestinations } from '~/hooks/Nav/useUnifiedSidebarLinks';
 import { activePanelAtom } from '~/Providers/ActivePanelContext';
 import { ChatFormProvider } from '~/Providers/ChatFormContext';
+import { getPageSettings, getPageForPath } from './registry';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { FeaturePresentationProvider } from './Context';
+import useRevealChat from '~/hooks/Nav/useRevealChat';
 import { featureContent } from './Content';
 import { useAuthContext } from '~/hooks';
 
@@ -28,12 +31,17 @@ function AgentSession({ visible }: { visible: boolean }) {
 const features = { ...featureContent, agentBuilder: AgentSession };
 
 export default function PresentationHost({ children }: { children: ReactNode }) {
-  const links = useSidebarDestinations();
   const { data: config, isSuccess: configReady } = useGetStartupConfig();
   const { isSuccess: endpointsReady } = useGetEndpointsQuery();
+  const { pathname } = useLocation();
+  const mcpPage =
+    getPageForPath(pathname) === 'mcpSettings' &&
+    getPageSettings(config?.interface?.navigation, 'mcpSettings').enabled;
+  const { links, mcpAvailability } = useSidebarDestinationState({ requestMCP: mcpPage });
   const { user, roles } = useAuthContext();
   const rolesReady = roles?.USER != null && (!user?.role || roles?.[user.role] != null);
   const setActive = useSetAtom(activePanelAtom);
+  const revealPage = useRevealChat();
   const { setSidebarOpen } = useSidebarToggle();
   const onPanelOpen = useCallback(
     (id: string) => {
@@ -45,6 +53,8 @@ export default function PresentationHost({ children }: { children: ReactNode }) 
   return (
     <FeaturePresentationProvider
       ready={configReady && endpointsReady && rolesReady}
+      availability={mcpPage ? { mcpSettings: mcpAvailability } : undefined}
+      revealPage={revealPage}
       links={links}
       features={features}
       navigation={config?.interface?.navigation}

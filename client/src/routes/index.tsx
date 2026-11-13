@@ -8,6 +8,7 @@ import {
   TwoFactorSetupScreen,
   RequestPasswordReset,
 } from '~/components/Auth';
+import ChatRouteOwner from '~/components/FeaturePresentation/Route';
 import FeaturePage from '~/components/FeaturePresentation/Page';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
@@ -154,7 +155,11 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'c/:conversationId?',
-                  element: <ChatRoute />,
+                  element: (
+                    <ChatRouteOwner>
+                      <ChatRoute />
+                    </ChatRouteOwner>
+                  ),
                 },
                 {
                   path: 'agent-builder',

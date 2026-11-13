@@ -10,14 +10,14 @@ import { useGetEndpointsQuery, useGetStartupConfig, useInsightsAccessQuery } fro
 import { getPageForNavId, getPageSettings } from '~/components/FeaturePresentation/registry';
 import ConversationsSection from '~/components/UnifiedSidebar/ConversationsSection';
 import { useFeaturePresentation } from '~/components/FeaturePresentation/Context';
-import useSideNavLinks from '~/hooks/Nav/useSideNavLinks';
+import { useSideNavDestinations } from '~/hooks/Nav/useSideNavLinks';
 import { getRoutePanelLinks } from './routePanels';
 import { useAuthContext } from '~/hooks';
 import store from '~/store';
 
 const defaultInterface = { ...getConfigDefaults().interface, navigation: resolveNavigation() };
 
-export function useSidebarDestinations() {
+export function useSidebarDestinationState({ requestMCP = false } = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuthContext();
@@ -57,7 +57,8 @@ export function useSidebarDestinations() {
     [keyExpiry.expiresAt, userProvidesKey],
   );
 
-  const allSideNavLinks = useSideNavLinks({
+  const { links: allSideNavLinks, mcpAvailability } = useSideNavDestinations({
+    requestMCP,
     keyProvided,
     endpoint,
     endpointType,
@@ -113,7 +114,11 @@ export function useSidebarDestinations() {
     sideNavLinks,
   ]);
 
-  return links;
+  return { links, mcpAvailability };
+}
+
+export function useSidebarDestinations() {
+  return useSidebarDestinationState().links;
 }
 
 export default function useUnifiedSidebarLinks() {
@@ -123,7 +128,12 @@ export default function useUnifiedSidebarLinks() {
     () =>
       (presentation?.links ?? []).map((link) => {
         const page = getPageForNavId(link.id);
-        if (presentation?.page && link.id === 'conversations') {
+        if (
+          presentation?.relatedPage &&
+          (link.Component || link.id === 'conversations') &&
+          !page &&
+          !link.onClick
+        ) {
           return { ...link, onClick: () => presentation.openPanel(link.id) };
         }
         if (

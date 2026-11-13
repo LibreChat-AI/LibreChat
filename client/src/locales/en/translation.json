@@ -3217,8 +3217,6 @@
   "com_ui_skill_new_file": "New File",
   "com_ui_skill_new_folder": "New Folder",
   "com_ui_skill_no_edit_permission": "You don't have permission to edit this skill",
-  "com_ui_skill_no_selection": "Select a skill",
-  "com_ui_skill_no_selection_desc": "Choose a skill from the sidebar to view its details.",
   "com_ui_skill_not_found": "Skill not found",
   "com_ui_skill_not_found_description": "It may have been deleted or you may no longer have access to it.",
   "com_ui_skill_role_editor_desc": "Can view and edit the skill",

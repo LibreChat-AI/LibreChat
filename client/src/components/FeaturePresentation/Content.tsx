@@ -1,4 +1,5 @@
 import { useForm } from 'react-hook-form';
+import { useLocation } from 'react-router-dom';
 import { ChatProvider } from '@librechat/chat/react';
 import type { NavigationPage } from 'librechat-data-provider';
 import type { ComponentType, ReactNode } from 'react';
@@ -11,7 +12,6 @@ import Parameters from '~/components/SidePanel/Parameters/Panel';
 import { SchedulePanel } from '~/components/SidePanel/Schedules';
 import { ChatFormProvider } from '~/Providers/ChatFormContext';
 import { MemoryPanel } from '~/components/SidePanel/Memories';
-import { useFeaturePresentation } from './Context';
 import PresentationActions from './Actions';
 
 function Session({ children, page }: { children: ReactNode; page: NavigationPage }) {
@@ -35,10 +35,10 @@ function Skills({ visible }: { visible: boolean }) {
 }
 
 function Prompts({ visible }: { visible: boolean }) {
-  const presentation = useFeaturePresentation();
+  const { pathname } = useLocation();
   return (
     <Session page="prompts">
-      <PromptsAccordion visible={visible} isChatRoute={presentation?.page !== 'prompts'} />
+      <PromptsAccordion visible={visible} isChatRoute={pathname.startsWith('/c/')} />
     </Session>
   );
 }
