@@ -27,7 +27,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
   if (originalMode === undefined) {
     delete process.env.AUTH_USER_CACHE_MODE;
   } else {

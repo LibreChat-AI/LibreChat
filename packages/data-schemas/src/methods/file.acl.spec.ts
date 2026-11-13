@@ -61,7 +61,7 @@ describe('File Access Control', () => {
       await collections[key].deleteMany({});
     }
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {
