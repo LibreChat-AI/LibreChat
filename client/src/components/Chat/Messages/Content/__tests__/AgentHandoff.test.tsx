@@ -14,6 +14,10 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',

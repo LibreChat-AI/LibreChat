@@ -87,15 +87,6 @@ export default function Parameters() {
       return;
     }
 
-    // const defaultValueMap = new Map();
-    // const paramKeys = new Set(
-    //   parameters.map((setting) => {
-    //     if (setting.default != null) {
-    //       defaultValueMap.set(setting.key, setting.default);
-    //     }
-    //     return setting.key;
-    //   }),
-    // );
     const paramKeys = new Set(
       parameters.filter((setting) => setting != null).map((setting) => setting.key),
     );
@@ -109,13 +100,6 @@ export default function Parameters() {
       const conversationKeys = Object.keys(updatedConversation);
       const updatedKeys: string[] = [];
       conversationKeys.forEach((key) => {
-        // const defaultValue = defaultValueMap.get(key);
-        // if (paramKeys.has(key) && defaultValue != null && prev[key] != null) {
-        //   updatedKeys.push(key);
-        //   updatedConversation[key] = defaultValue;
-        //   return;
-        // }
-
         if (paramKeys.has(key)) {
           return;
         }

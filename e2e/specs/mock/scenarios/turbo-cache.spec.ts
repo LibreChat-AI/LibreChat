@@ -23,24 +23,18 @@ type DryTask = {
 };
 
 const TURBO = resolve(repoRoot, 'node_modules/.bin/turbo');
-const rootScripts = (
-  JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as {
-    scripts: Record<string, string>;
-  }
-).scripts;
-/** The workspaces `npm run test:turbo` selects, read from the script itself. */
-const SUITES = [...rootScripts['test:turbo'].matchAll(/--filter=(\S+)/g)].map((match) => match[1]);
-
 function plan(
   task: string,
   env: Record<string, string> = {},
-  filters: string[] = SUITES,
+  discoverAll = false,
 ): Map<string, DryTask> {
   const base = { ...process.env };
   delete base.VITE_ENABLE_LOGGER;
+  const useRunner = task === 'test:ci' && !discoverAll;
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const result = spawnSync(
-    TURBO,
-    ['run', task, '--dry=json', ...filters.map((name) => `--filter=${name}`)],
+    useRunner ? npm : TURBO,
+    useRunner ? ['run', 'test:turbo', '--', '--dry=json'] : ['run', task, '--dry=json'],
     {
       cwd: repoRoot,
       encoding: 'utf8',
@@ -53,6 +47,10 @@ function plan(
     tasks: DryTask[];
   };
   return new Map(tasks.map((entry) => [entry.taskId, entry]));
+}
+
+function suites(tasks: Map<string, DryTask>): DryTask[] {
+  return [...tasks.values()].filter((entry) => entry.taskId.endsWith('#test:ci'));
 }
 
 function get(tasks: Map<string, DryTask>, id: string): DryTask {
@@ -68,14 +66,15 @@ test.describe('the parallel test runner', () => {
   });
 
   test('the runner covers every workspace with a test suite @scenario:test-turbo-covers-every-workspace-suite', () => {
-    const everySuite = [...plan('test:ci', {}, []).keys()].filter((id) => id.endsWith('#test:ci'));
-    expect(SUITES.map((name) => `${name}#test:ci`).sort()).toEqual(everySuite.sort());
+    const everySuite = suites(plan('test:ci', {}, true)).map((entry) => entry.taskId);
+    const selected = suites(plan('test:ci')).map((entry) => entry.taskId);
+    expect(selected.sort()).toEqual(everySuite.sort());
   });
 
   test('every suite runs instead of replaying a cached result @scenario:test-turbo-always-runs-every-suite', () => {
     const tasks = plan('test:ci');
-    for (const name of SUITES) {
-      expect(get(tasks, `${name}#test:ci`).resolvedTaskDefinition.cache, name).toBe(false);
+    for (const suite of suites(tasks)) {
+      expect(suite.resolvedTaskDefinition.cache, suite.taskId).toBe(false);
     }
   });
 
@@ -86,6 +85,9 @@ test.describe('the parallel test runner', () => {
     );
     expect(get(tasks, '@librechat/api#test:ci').dependencies).toEqual(
       expect.arrayContaining(['librechat-data-provider#build', '@librechat/data-schemas#build']),
+    );
+    expect(get(tasks, '@librechat/channel-gateway#test:ci').dependencies).toContain(
+      'librechat-data-provider#build',
     );
     expect(get(tasks, '@librechat/backend#test:ci').dependencies).toEqual(
       expect.arrayContaining([
@@ -107,11 +109,11 @@ test.describe('the parallel test runner', () => {
       'TMPDIR',
     ];
     const tasks = plan('test:ci', Object.fromEntries(names.map((name) => [name, '/tmp/x'])));
-    for (const suite of SUITES) {
-      const passed = (get(tasks, `${suite}#test:ci`).environmentVariables.passthrough ?? []).map(
-        (entry) => entry.slice(0, entry.indexOf('=')),
+    for (const suite of suites(tasks)) {
+      const passed = (suite.environmentVariables.passthrough ?? []).map((entry) =>
+        entry.slice(0, entry.indexOf('=')),
       );
-      expect(passed, suite).toEqual(expect.arrayContaining(names));
+      expect(passed, suite.taskId).toEqual(expect.arrayContaining(names));
     }
   });
 });

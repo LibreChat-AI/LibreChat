@@ -1,12 +1,15 @@
 import { createElement } from 'react';
 import { createStore, Provider } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
+import { useEventHandlers } from '@librechat/chat/react';
 import { dataService, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { EventSubmission, TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { useIsReplacingConversationCodeEnvironment } from '~/data-provider/CodeEnvironments';
-import useEventHandlers from '../useEventHandlers';
+import { StreamHostTestProvider } from 'test/streamHost';
+
+let mockConversationId = 'saved';
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -17,7 +20,7 @@ jest.mock('recoil', () => ({
   useRecoilCallback: () => jest.fn(),
 }));
 jest.mock('react-router-dom', () => ({
-  useParams: () => ({ conversationId: 'saved' }),
+  useParams: () => ({ conversationId: mockConversationId }),
   useNavigate: () => jest.fn(),
   useLocation: () => ({ pathname: '/c/saved' }),
 }));
@@ -29,21 +32,6 @@ jest.mock('~/hooks/AuthContext', () => ({ useAuthContext: () => ({}) }));
 jest.mock('~/Providers', () => ({ useLiveAnnouncer: () => ({ announcePolite: jest.fn() }) }));
 jest.mock('~/hooks/Agents', () => ({ useApplyAgentTemplate: () => jest.fn() }));
 jest.mock('~/hooks/Chat/useFocusRegeneratedResponse', () => () => jest.fn());
-jest.mock('../useContentHandler', () => () => ({
-  contentHandler: jest.fn(),
-  resetContentHandler: jest.fn(),
-}));
-jest.mock('../useAttachmentHandler', () => () => jest.fn());
-jest.mock('../useStepHandler', () => () => ({
-  stepHandler: jest.fn(),
-  clearStepMaps: jest.fn(),
-  resetSubagentAtoms: jest.fn(),
-  resetPtcAtoms: jest.fn(),
-  prunePtcTraces: jest.fn(),
-  syncStepMessage: jest.fn(),
-  cancelPendingDeltaFlush: jest.fn(),
-  flushPendingDeltas: jest.fn(),
-}));
 jest.mock('~/data-provider', () => ({
   ...jest.requireActual('~/data-provider/CodeEnvironments'),
   startupConfigKey: ['startup'],
@@ -102,7 +90,10 @@ const submission = {
 } as EventSubmission;
 
 describe('local cancellation decision reconciliation', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockConversationId = 'saved';
+  });
   afterEach(() => jest.restoreAllMocks());
 
   it.each(['streamed', 'minimal', 'navigated'])(
@@ -117,7 +108,11 @@ describe('local cancellation decision reconciliation', () => {
         createElement(
           Provider,
           { store },
-          createElement(QueryClientProvider, { client: queryClient }, children),
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(StreamHostTestProvider, null, children),
+          ),
         );
       const messages = kind === 'minimal' ? [] : [user, response];
       let current = { ...submission.conversation, ...attempted } as TConversation;

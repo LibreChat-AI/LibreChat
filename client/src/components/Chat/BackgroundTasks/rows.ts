@@ -131,6 +131,7 @@ const subagentRow = (child: ParentSubagentSummary, stopping: ReadonlySet<string>
     id: `subagent:${subagentTaskKey(child.threadId, taskId)}`,
     kind: 'subagent',
     name: child.title,
+    taskId,
     messageId: child.parentMessageId,
     toolCallId: child.parentToolCallId,
     threadId: child.threadId,

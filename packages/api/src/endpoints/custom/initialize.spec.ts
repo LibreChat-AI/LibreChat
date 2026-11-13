@@ -1,4 +1,4 @@
-import { AuthType, ErrorTypes } from 'librechat-data-provider';
+import { AuthType, ErrorTypes, EModelEndpoint } from 'librechat-data-provider';
 import type { BaseInitializeParams } from '~/types';
 
 const mockValidateEndpointURL = jest.fn();
@@ -353,6 +353,7 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
   const { fetchModels } = jest.requireMock('~/endpoints/models');
 
   function createTokenConfigParams(overrides: {
+    provider?: EModelEndpoint.anthropic;
     apiKey?: string;
     baseURL?: string;
     userBaseURL?: string;
@@ -366,6 +367,7 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
       baseURL,
       models: { fetch: true },
       headers: overrides.headers,
+      provider: overrides.provider,
     });
 
     const db = {
@@ -391,6 +393,21 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     fetchModels.mockReset().mockResolvedValue([]);
+  });
+
+  it('forwards the native provider to token-config discovery', async () => {
+    await initializeCustom(
+      createTokenConfigParams({
+        provider: EModelEndpoint.anthropic,
+        baseURL: 'https://api.anthropic.com',
+      }),
+    );
+    expect(fetchModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: EModelEndpoint.anthropic,
+        baseURL: 'https://api.anthropic.com',
+      }),
+    );
   });
 
   it('forwards configured headers and user object to fetchModels for admin-trusted base URL', async () => {
@@ -511,7 +528,14 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
 
   it('uses a static tokenConfig for billing and skips the model fetch', async () => {
     const tokenConfig = {
-      'gpt-4': { prompt: 1.5, completion: 4.5, context: 32000, cacheRead: 0.3, cacheWrite: 1.8 },
+      'gpt-4': {
+        prompt: 1.5,
+        completion: 4.5,
+        context: 32000,
+        cacheRead: 0.3,
+        cacheWrite: 1.8,
+        cacheWrite1h: 2.9,
+      },
     };
     mockGetCustomEndpointConfig.mockReturnValue({
       apiKey: 'sk-test-key',
@@ -546,7 +570,9 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
       context: 32000,
       cacheRead: 0.3,
       cacheWrite: 1.8,
+      cacheWrite1h: 2.9,
       write: 1.8,
+      write1h: 2.9,
       read: 0.3,
     });
   });

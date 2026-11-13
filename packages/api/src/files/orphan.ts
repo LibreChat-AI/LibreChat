@@ -15,6 +15,8 @@ export type StoredUploadRef = {
   tenantId?: string;
   /** Whether a vector copy exists; the delete strategies remove it only when this is set. */
   embedded?: boolean;
+  embeddingOwnersComplete?: boolean;
+  unrecordedUpload?: true;
   /** Secondary-copy references, such as a code environment ref, that delete strategies read. */
   metadata?: Record<string, unknown>;
 };
@@ -61,6 +63,9 @@ export async function withStoredUploadCleanup<T>(
           user: req.user?.id,
           tenantId: req.user?.tenantId,
           ...stored,
+          // This rollback describes only the current upload, not a legacy file record.
+          embeddingOwnersComplete: true,
+          unrecordedUpload: true,
         };
         await resolveDeleteFile()?.(req as never, ref);
       }
@@ -120,15 +125,36 @@ export function createStoredUploadDelete({
   getDeleteFile: (source: string) => DeleteStoredFile | undefined;
 }): DeleteStoredFile {
   return async (req, file) => {
-    const deleters = [getDeleteFile(source)];
+    const sources = [source];
     if (file.embedded === true && source !== FileSources.vectordb) {
-      deleters.push(getDeleteFile(FileSources.vectordb));
+      sources.push(FileSources.vectordb);
     }
     const hasCodeEnvRef = file.metadata?.codeEnvRef != null || file.metadata?.codeEnvRefs != null;
     if (hasCodeEnvRef && source !== FileSources.execute_code) {
-      deleters.push(getDeleteFile(FileSources.execute_code));
+      sources.push(FileSources.execute_code);
     }
-    const results = await Promise.allSettled(deleters.map((deleteFile) => deleteFile?.(req, file)));
+    const results = await Promise.allSettled(
+      sources.map(async (destination) => {
+        // No record exists to retry this rollback. Attempt each store independently;
+        // the vector task owns erasure, not the primary strategy's inline RAG cleanup.
+        const ref =
+          destination === source && source !== FileSources.vectordb && file.embedded === true
+            ? { ...file, embedded: false }
+            : file;
+        const result = await getDeleteFile(destination)?.(req, ref);
+        if (
+          destination === FileSources.vectordb &&
+          file.embedded === true &&
+          (result == null ||
+            typeof result !== 'object' ||
+            !('deleted' in result) ||
+            result.deleted !== true)
+        ) {
+          throw new Error('Vector deletion was not confirmed');
+        }
+        return result;
+      }),
+    );
     const failed = results.find((result) => result.status === 'rejected');
     if (failed != null) {
       throw (failed as PromiseRejectedResult).reason;

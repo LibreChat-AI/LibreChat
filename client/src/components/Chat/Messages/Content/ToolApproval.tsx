@@ -1,5 +1,6 @@
 import { useId, useContext, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
+import { useComposerPresentsApproval, useOptionalChatSurface } from '@librechat/chat/react';
 import {
   X,
   Check,
@@ -9,14 +10,22 @@ import {
   ShieldQuestion,
   TriangleAlert,
 } from 'lucide-react';
+import {
+  isReboundSubmitChord,
+  resolveComposerKeyDown,
+  bindingFromEvent,
+  bindingsMatch,
+  bindingHash,
+  boundApprovalLabel,
+} from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
+import type { KeyboardEvent } from 'react';
 import type { TranslationKeys } from '~/hooks';
-import { useComposerPresentsApproval } from '~/components/Chat/approval/state';
-import { boundApprovalLabel } from '~/components/Chat/approval/preview';
 import { useApprovalContext, useResumeSubmit } from './ApprovalContext';
+import { cn, forceResize, insertTextAtCursor, logger } from '~/utils';
+import { NO_HOST_BINDINGS } from '~/hooks/Input/useComposerBindings';
 import { ChatContext } from '~/Providers/ChatContext';
 import { useLocalize } from '~/hooks';
-import { cn, logger } from '~/utils';
 
 /**
  * The resume route rejects an `edit` whose `editedArguments` isn't a plain object
@@ -99,7 +108,11 @@ export default function ToolApproval({
   const localize = useLocalize();
   const invalidJsonId = useId();
   const allowAlwaysHintId = useId();
-  const { actionId, allowed_decisions: allowedDecisions, description } = approval;
+  const { actionId, description } = approval;
+  /** A stored approval can lack the decision list. The hooks below still run on an empty one, and
+   *  the card renders nothing for it rather than crashing the message. */
+  const hasDecisions = Array.isArray(approval.allowed_decisions);
+  const allowedDecisions = hasDecisions ? approval.allowed_decisions : [];
   const rememberScope = approval.remember_scope;
   const rememberUnavailable = approval.remember_unavailable;
   const unavailableLabels: Record<NonNullable<typeof rememberUnavailable>, TranslationKeys> = {
@@ -125,6 +138,10 @@ export default function ToolApproval({
     getRegisteredCount,
   } = useApprovalContext();
   const { submitToolApproval } = useResumeSubmit();
+  const chatSurface = useOptionalChatSurface();
+  const enterToSend = chatSurface?.enterToSend ?? false;
+  const { shortcutsEnabled, submitOverride, yieldedChords } =
+    chatSurface?.composerBindings ?? NO_HOST_BINDINGS;
 
   const retainedDecision = getDecision(actionId, toolCallId);
   const initialDecision =
@@ -252,9 +269,85 @@ export default function ToolApproval({
     return null;
   }
 
+  /** Every card submits the whole batch, the same as the lead card's button,
+   *  so a field can submit from any card once every call has a decision. */
+  const submitFromField = (repeat: boolean) => {
+    if (!repeat && ready && !locked) {
+      submitToolApproval(actionId);
+    }
+  };
+
+  const isComposingKey = (e: KeyboardEvent<HTMLTextAreaElement>) =>
+    e.nativeEvent.isComposing || e.key === 'Process' || e.keyCode === 229;
+
+  /** The reason and response fields are prose, so they follow the composer's
+   *  Enter table, Enter-to-send included. */
+  const handleTextKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const isComposing = isComposingKey(e);
+    if (!isComposing && isReboundSubmitChord(e.nativeEvent, { shortcutsEnabled, submitOverride })) {
+      e.preventDefault();
+      submitFromField(e.repeat);
+      return;
+    }
+    const action = resolveComposerKeyDown(e.nativeEvent, {
+      isComposing,
+      isSubmitting: false,
+      allowSubmitWhileGenerating: false,
+      hasDuringRunModifier: false,
+      shortcutsEnabled,
+      enterToSend,
+      submitOverride,
+      yieldedChords,
+    });
+    if (action === 'none') {
+      return;
+    }
+    e.preventDefault();
+    if (action === 'newline') {
+      insertTextAtCursor(e.currentTarget, '\n');
+      forceResize(e.currentTarget);
+      return;
+    }
+    if (action === 'submit') {
+      submitFromField(e.repeat);
+    }
+  };
+
+  /** The edit field holds JSON, where plain Enter is always a newline. The
+   *  submit chord is the composer's: Ctrl/Cmd+Enter by default, the rebound
+   *  chord when one is set, and none while shortcuts are off or unbound. */
+  const handleEditKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (isComposingKey(e)) {
+      return;
+    }
+    if (isReboundSubmitChord(e.nativeEvent, { shortcutsEnabled, submitOverride })) {
+      e.preventDefault();
+      submitFromField(e.repeat);
+      return;
+    }
+    const binding = bindingFromEvent(e.nativeEvent);
+    if (binding == null || binding.key !== 'Enter' || yieldedChords.has(bindingHash(binding))) {
+      return;
+    }
+    const isPlainEnter = !binding.ctrl && !binding.meta && !binding.alt && !binding.shift;
+    const isSubmitChord =
+      submitOverride === undefined
+        ? (binding.ctrl || binding.meta) && !binding.shift && !binding.alt
+        : !isPlainEnter && bindingsMatch(binding, submitOverride);
+    if (!isSubmitChord) {
+      return;
+    }
+    e.preventDefault();
+    submitFromField(e.repeat);
+  };
+
   const descriptionNode = safeDescription != null && safeDescription.length > 0 && (
     <p className="text-text-secondary text-sm">{safeDescription}</p>
   );
+
+  if (!hasDecisions) {
+    return null;
+  }
 
   if (deferToComposer) {
     return (
@@ -348,6 +441,7 @@ export default function ToolApproval({
             value={editText}
             disabled={locked}
             onChange={(e) => updateDecisionDraft({ editText: e.target.value })}
+            onKeyDown={handleEditKeyDown}
             minRows={3}
             maxRows={16}
             className={cn(fieldClasses, 'font-mono text-xs')}
@@ -368,6 +462,7 @@ export default function ToolApproval({
           value={responseText}
           disabled={locked}
           onChange={(e) => updateDecisionDraft({ responseText: e.target.value })}
+          onKeyDown={handleTextKeyDown}
           minRows={2}
           maxRows={12}
           placeholder={localize('com_ui_tool_response_placeholder')}
@@ -381,6 +476,7 @@ export default function ToolApproval({
           value={reason}
           disabled={locked}
           onChange={(e) => updateDecisionDraft({ reason: e.target.value })}
+          onKeyDown={handleTextKeyDown}
           minRows={1}
           maxRows={6}
           placeholder={localize('com_ui_reject_reason_placeholder')}
@@ -401,13 +497,13 @@ export default function ToolApproval({
           </Button>
           {status === 'expired' && (
             <span className="text-text-warning flex items-center text-xs">
-              <TriangleAlert className="mr-1.5 h-4 w-4" aria-hidden="true" />
+              <TriangleAlert className="me-1.5 h-4 w-4" aria-hidden="true" />
               {localize('com_ui_approval_expired')}
             </span>
           )}
           {status === 'error' && (
             <span className="text-text-warning flex items-center text-xs">
-              <TriangleAlert className="mr-1.5 h-4 w-4" aria-hidden="true" />
+              <TriangleAlert className="me-1.5 h-4 w-4" aria-hidden="true" />
               {localize('com_ui_approval_error')}
             </span>
           )}

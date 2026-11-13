@@ -101,7 +101,6 @@ export interface AgentTriggerDeliveryRecord {
   coalesceKey?: string;
   coalesceFrom?: Date;
   coalesceUntil?: Date;
-  batchSize?: number;
   batchBytes?: number;
   batchMemberIds?: Array<{ toString(): string } | string>;
   batchRootId?: { toString(): string } | string;
@@ -547,6 +546,8 @@ export function createAgentTriggerDeliveryEngine(
             logger.info('[agent-triggers] delivery deferred without consuming an attempt', {
               deliveryKey: delivery.deliveryKey,
               reason,
+              ...(error instanceof AgentTriggerExecutionError &&
+                error.code != null && { code: error.code }),
               availableAt: availableAt.toISOString(),
             });
           }

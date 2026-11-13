@@ -142,17 +142,25 @@ export async function openAgentBuilder(
 }
 
 /** Closes the narrow-layout drawer `openAgentBuilder` opened, so it cannot
- *  cover the composer. A no-op on the desktop layout, where the builder is a rail. */
+ *  cover the composer. A no-op on the desktop layout, where the builder is a rail.
+ *  Some actions (Select Agent) close the drawer themselves, and the drawer turns
+ *  `inert` a frame after its close button leaves; reading the attribute once can
+ *  land in between, so this retries until the drawer is closed either way. */
 export async function closeMobileDrawer(page: Page) {
   if ((page.viewportSize()?.width ?? DESKTOP_WIDTH) > NARROW_MAX_WIDTH) {
     return;
   }
   const drawer = page.locator(`#${MOBILE_DRAWER_ID}`);
-  if (await drawer.evaluate((element) => element.hasAttribute('inert'))) {
-    return;
-  }
-  await page.getByRole('button', { name: 'Close sidebar', exact: true }).click();
-  await expect(drawer).toHaveAttribute('inert', /.*/);
+  const closeButton = page.getByRole('button', { name: 'Close sidebar', exact: true });
+  await expect(async () => {
+    if (await drawer.evaluate((element) => element.hasAttribute('inert'))) {
+      return;
+    }
+    if (await closeButton.isVisible()) {
+      await closeButton.click({ timeout: 2_000 });
+    }
+    await expect(drawer).toHaveAttribute('inert', /.*/, { timeout: 2_000 });
+  }).toPass();
 }
 
 export async function selectMockModel(page: Page, clickBackToBuilder = false) {

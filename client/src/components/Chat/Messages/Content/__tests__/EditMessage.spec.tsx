@@ -39,15 +39,15 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks/Chat', () => ({
-  useGetAddedConvo: () => () => null,
-}));
-
-jest.mock('../Container', () => ({
+jest.mock('~/hooks/Conversations/useGetAddedConvo', () => ({
   __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  default: () => () => null,
 }));
 
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Container: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
 const message = {
   messageId: 'user-1',
   parentMessageId: 'root',
@@ -211,7 +211,7 @@ describe('EditMessage', () => {
           conversationId: message.conversationId,
         }),
         expect.objectContaining({
-          overrideFiles: message.files,
+          overrideFiles: message.files ?? [],
           overrideManualSkills: message.manualSkills,
           overrideQuotes: message.quotes,
         }),
@@ -241,7 +241,7 @@ describe('EditMessage', () => {
           parentMessageId: message.parentMessageId,
           conversationId: message.conversationId,
         }),
-        expect.objectContaining({ overrideFiles: message.files }),
+        expect.objectContaining({ overrideFiles: message.files ?? [] }),
       ),
     );
     expect(setSiblingIdx).toHaveBeenCalledWith(-1);

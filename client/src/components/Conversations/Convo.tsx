@@ -274,7 +274,14 @@ function Conversation({
       return;
     }
 
-    if (currentConvoId === conversationId || isPopoverActive) {
+    if (isPopoverActive) {
+      return;
+    }
+
+    if (isActiveConvo) {
+      if (isSmallScreen) {
+        toggleNav();
+      }
       return;
     }
 
@@ -345,7 +352,7 @@ function Conversation({
       className={cn(
         'group focus-visible:ring-text-primary relative flex h-12 w-full items-center rounded-lg outline-hidden focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:h-9',
         isActiveConvo || isPopoverActive
-          ? 'bg-surface-nav-selected before:bg-text-primary before:absolute before:top-1 before:bottom-1 before:left-0 before:w-0.5 before:rounded-full'
+          ? 'bg-surface-nav-selected before:bg-text-primary before:absolute before:inset-s-0 before:top-1 before:bottom-1 before:w-0.5 before:rounded-full'
           : 'hover:bg-surface-nav-hover',
       )}
       onPointerEnter={(event) => {
@@ -382,6 +389,25 @@ function Conversation({
       style={{ cursor: renaming ? 'default' : 'pointer' }}
       data-testid="convo-item"
     >
+      <span
+        className={cn(
+          'flex shrink-0 items-center',
+          (projectBadgeProjectId || (showPullRequest && pullRequestDescribed)) && 'ps-2',
+        )}
+      >
+        {projectBadgeProjectId && (
+          <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
+        )}
+        {showPullRequest && (
+          <PullRequestRowMark
+            conversationId={conversationId ?? ''}
+            labelId={pullRequestLabelId}
+            onDescribed={setPullRequestDescribed}
+            rowRef={containerRef}
+            selected={isActiveConvo || isPopoverActive}
+          />
+        )}
+      </span>
       {renaming ? (
         <RenameForm
           titleInput={titleInput}
@@ -422,7 +448,7 @@ function Conversation({
                 size={34}
                 strokeWidth={1.9}
                 bgOpacity={0.14}
-                className="pointer-events-none absolute -top-[0.4375rem] -left-[0.4375rem] size-[2.125rem]"
+                className="pointer-events-none absolute -inset-s-[0.4375rem] -top-[0.4375rem] size-[2.125rem]"
               />
             )}
             {isUnseen && !isGenerating && (
@@ -430,7 +456,7 @@ function Conversation({
               <span
                 aria-hidden="true"
                 className={cn(
-                  'bg-status-info pointer-events-none absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2',
+                  'bg-status-info pointer-events-none absolute -inset-e-0.5 -bottom-0.5 size-2 rounded-full ring-2',
                   isActiveConvo || isPopoverActive
                     ? 'ring-surface-nav-selected'
                     : 'ring-surface-sidebar group-hover:ring-surface-nav-hover',
@@ -441,15 +467,12 @@ function Conversation({
         </ConvoLink>
       )}
       {isSharedBadgeVisible && (
-        <Link2 className="icon-sm text-text-secondary mr-1 shrink-0" aria-hidden="true" />
-      )}
-      {projectBadgeProjectId && (
-        <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
+        <Link2 className="icon-sm text-text-secondary me-1 shrink-0" aria-hidden="true" />
       )}
       {conversation.pinned === true && (
         <UnpinButton
           testId="convo-unpin-button"
-          className="mr-1"
+          className="me-1"
           keepVisible={isPopoverActive}
           onClick={(e) => {
             e.stopPropagation();
@@ -459,7 +482,7 @@ function Conversation({
       )}
       <div
         className={cn(
-          'mr-1 flex shrink-0 origin-left items-center justify-center',
+          'me-1 flex shrink-0 origin-left items-center justify-center rtl:origin-right',
           actionVisibilityClassName,
           actionWidthClassName,
         )}
@@ -470,20 +493,6 @@ function Conversation({
         {/* Only render ConvoOptions when user interacts (hover/focus) or for active conversation */}
         {actionContent}
       </div>
-      {/* After the action slot on purpose: that slot grows from zero on hover, and anything before
-          it slides left under the pointer, so the mark would move out from under the cursor that
-          is trying to reach it. The title is the only thing that gives way. */}
-      {showPullRequest && (
-        <span className="flex shrink-0 items-center">
-          <PullRequestRowMark
-            conversationId={conversationId ?? ''}
-            labelId={pullRequestLabelId}
-            onDescribed={setPullRequestDescribed}
-            rowRef={containerRef}
-            selected={isActiveConvo || isPopoverActive}
-          />
-        </span>
-      )}
     </div>
   );
 }

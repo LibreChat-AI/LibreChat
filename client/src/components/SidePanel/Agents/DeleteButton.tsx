@@ -100,6 +100,7 @@ function DeleteButton({
         <Button
           size="sm"
           variant="outline"
+          className="h-9"
           aria-label={localize('com_ui_delete_agent')}
           title={localize('com_ui_delete_agent')}
           type="button"
@@ -116,7 +117,7 @@ function DeleteButton({
           <>
             <div className="flex w-full flex-col items-center gap-2">
               <div className="grid w-full items-center gap-2">
-                <Label htmlFor="delete-agent" className="text-left text-sm font-medium">
+                <Label htmlFor="delete-agent" className="text-start text-sm font-medium">
                   {localize('com_ui_delete_agent_confirm')}
                 </Label>
               </div>

@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const { findSharedLinkById } = require('~/models');
 const express = require('express');
 const {
   AccessRoleIds,
@@ -19,7 +19,13 @@ const {
   checkShareAccess,
   checkSharePublicAccess,
 } = require('~/server/middleware/checkSharePublicAccess');
-const { requireJwtAuth, checkBan, uaParser, canAccessResource } = require('~/server/middleware');
+const {
+  requireJwtAuth,
+  checkBan,
+  uaParser,
+  canAccessResource,
+  configMiddleware,
+} = require('~/server/middleware');
 const { checkPeoplePickerAccess } = require('~/server/middleware/checkPeoplePickerAccess');
 const db = require('~/models');
 const { findMCPServerByObjectId, getSkillById } = db;
@@ -152,8 +158,7 @@ const rejectSharedLinkOwnerPermissionChanges = async (req, res, next) => {
   }
 
   try {
-    const SharedLink = mongoose.models.SharedLink;
-    const link = await SharedLink.findById(req.params.resourceId, 'user').lean();
+    const link = await findSharedLinkById(req.params.resourceId);
     const ownerId = link?.user?.toString();
     const touchesOwner = ownerId
       ? userMutations.some((principal) => principal.id?.toString() === ownerId)
@@ -198,6 +203,7 @@ router.put(
   checkShareAccessUnlessAgentAdmin,
   checkSharePublicAccess,
   rejectSharedLinkOwnerPermissionChanges,
+  configMiddleware,
   updateResourcePermissions,
 );
 

@@ -60,31 +60,6 @@ const getUserPluginAuthValue = async (userId, authField, throwError = true, plug
   }
 };
 
-// const updateUserPluginAuth = async (userId, authField, pluginKey, value) => {
-//   try {
-//     const encryptedValue = encrypt(value);
-
-//     const pluginAuth = await PluginAuth.findOneAndUpdate(
-//       { userId, authField },
-//       {
-//         $set: {
-//           value: encryptedValue,
-//           pluginKey
-//         }
-//       },
-//       {
-//         new: true,
-//         upsert: true
-//       }
-//     );
-
-//     return pluginAuth;
-//   } catch (err) {
-//     logger.error('[getUserPluginAuthValue]', err);
-//     return err;
-//   }
-// };
-
 /**
  *
  * @async

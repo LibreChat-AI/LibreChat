@@ -1,6 +1,13 @@
 import type { ScheduledMCPResourceBinding } from 'librechat-data-provider';
 import type { ParsedServerConfig } from '~/mcp/types';
+import { encryptConfigSecrets, resolveRuntimeConfigSecrets } from '~/admin/secrets';
 import { getScheduledMCPConfigurationRevision } from './configuration';
+
+/** Encryption reads `CREDS_KEY` when data-schemas loads, before any spec code runs. */
+jest.mock('@librechat/data-schemas', () => {
+  process.env.CREDS_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  return jest.requireActual('@librechat/data-schemas');
+});
 
 const binding: ScheduledMCPResourceBinding = {
   url: 'https://warehouse.example/mcp',
@@ -93,6 +100,37 @@ it('excludes rotating client/API secrets and display/inspection bookkeeping', ()
       binding,
     ),
   ).toBe(getScheduledMCPConfigurationRevision(config, binding));
+});
+
+/** The server as the admin config API stores it, read back by the MCP runtime (decrypted). */
+function storedByAdmin(key: string, clientSecret: string): ParsedServerConfig {
+  const { mcpServers } = encryptConfigSecrets({
+    mcpServers: {
+      warehouse: {
+        ...config,
+        apiKey: { ...config.apiKey!, key },
+        oauth: { ...config.oauth, client_secret: clientSecret },
+      },
+    },
+  });
+  return resolveRuntimeConfigSecrets({ mcpConfig: mcpServers }).mcpConfig.warehouse;
+}
+
+it('keeps the fence when an admin rotates a stored client/API secret in place', () => {
+  const before = storedByAdmin('fixture-api-key-0001', 'fixture-client-secret-0001');
+  const rotated = storedByAdmin('fixture-api-key-0002', 'fixture-client-secret-0002');
+  /** The runtime reads the new secrets, with the masked previews stored beside them. */
+  expect(rotated.apiKey).toMatchObject({ key: 'fixture-api-key-0002', keyPreview: '...0002' });
+  expect(rotated.oauth).toMatchObject({
+    client_secret: 'fixture-client-secret-0002',
+    client_secretPreview: '...0002',
+  });
+  expect(getScheduledMCPConfigurationRevision(rotated, binding)).toBe(
+    getScheduledMCPConfigurationRevision(before, binding),
+  );
+  expect(getScheduledMCPConfigurationRevision(rotated, binding)).toBe(
+    getScheduledMCPConfigurationRevision(config, binding),
+  );
 });
 
 it('fences effective operator routing across environment changes', () => {

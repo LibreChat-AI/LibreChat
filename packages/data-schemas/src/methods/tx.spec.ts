@@ -6,6 +6,7 @@ import {
   cacheTokenValues,
   premiumTokenValues,
   premiumCacheTokenValues,
+  ONE_HOUR_CACHE_WRITE_FACTOR,
   defaultRate,
 } from './tx';
 import { matchModelName, findMatchingPattern } from './test-helpers';
@@ -1619,6 +1620,7 @@ describe('Google Model Tests', () => {
     'gemini-3.1-pro-preview',
     'gemini-3.1-pro-preview-customtools',
     'gemini-3.1-flash-lite-preview',
+    'gemini-4-argon',
     'gemini-3.8-flash',
     'gemini-3.7-flash',
     'gemini-3.6-flash',
@@ -1671,6 +1673,7 @@ describe('Google Model Tests', () => {
       'gemini-3.1-pro-preview': 'gemini-3.1',
       'gemini-3.1-pro-preview-customtools': 'gemini-3.1',
       'gemini-3.1-flash-lite-preview': 'gemini-3.1-flash-lite',
+      'gemini-4-argon': 'gemini-4-argon',
       'gemini-3.8-flash': 'gemini-3.8-flash',
       'gemini-3.7-flash': 'gemini-3.7-flash',
       'gemini-3.6-flash': 'gemini-3.6-flash',
@@ -1840,6 +1843,24 @@ describe('Google Model Tests', () => {
     expect(getCacheMultiplier({ model, cacheType: 'read' })).toBe(
       cacheTokenValues['gemini-3.8-flash'].read,
     );
+  });
+
+  it('should apply the introductory Gemini 4 Argon rates', () => {
+    for (const model of ['gemini-4-argon', 'models/gemini-4-argon']) {
+      expect(getValueKey(model, EModelEndpoint.google)).toBe('gemini-4-argon');
+      expect(getMultiplier({ model, tokenType: 'prompt', endpoint: EModelEndpoint.google })).toBe(
+        2,
+      );
+      expect(
+        getMultiplier({ model, tokenType: 'completion', endpoint: EModelEndpoint.google }),
+      ).toBe(10);
+      expect(getCacheMultiplier({ model, cacheType: 'write' })).toBe(2);
+      expect(getCacheMultiplier({ model, cacheType: 'read' })).toBe(0.1);
+    }
+  });
+
+  it('should not apply a long-context premium tier to Gemini 4 Argon', () => {
+    expect(getPremiumRate('gemini-4-argon', 'prompt', 900000)).toBeNull();
   });
 
   it('should apply the introductory Flash rates to Gemini 3.6, 3.7 and 3.8 Flash', () => {
@@ -2838,6 +2859,21 @@ describe('Mistral Large Pricing', () => {
     });
   });
 
+  it('should price Mistral Large 4 at its list $1.36 / $4.18 per MTok', () => {
+    const modelVariations = ['mistral-large-4', 'mistral-large-4-0', 'mistralai/mistral-large-4'];
+
+    modelVariations.forEach((model) => {
+      expect(getValueKey(model)).toBe('mistral-large-4');
+      expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(1.36);
+      expect(getMultiplier({ model, tokenType: 'completion' })).toBe(4.18);
+    });
+  });
+
+  it('should not let Mistral Large 4 shadow the Mistral Large 3 rates', () => {
+    expect(getValueKey('mistral-large-2512')).not.toBe('mistral-large-4');
+    expect(getMultiplier({ model: 'mistral-large-latest', tokenType: 'prompt' })).toBe(0.5);
+  });
+
   it('should keep Mistral Large 2.1 (2411) at $2 / $6 per MTok', () => {
     expect(getValueKey('mistral-large-2411')).toBe('mistral-large-2411');
     expect(getMultiplier({ model: 'mistral-large-2411', tokenType: 'prompt' })).toBe(2);
@@ -3051,9 +3087,11 @@ describe('Long-Context Premium Cache Pricing', () => {
   it('should scale cache write/read by the same long-context multiplier as input', () => {
     for (const model of premiumCacheModels) {
       const inputRatio = premiumTokenValues[model].prompt / tokenValues[model].prompt;
-      expect(premiumCacheTokenValues[model].write).toBeCloseTo(
-        cacheTokenValues[model].write * inputRatio,
-      );
+      if (premiumCacheTokenValues[model].write != null) {
+        expect(premiumCacheTokenValues[model].write).toBeCloseTo(
+          cacheTokenValues[model].write * inputRatio,
+        );
+      }
       expect(premiumCacheTokenValues[model].read).toBeCloseTo(
         cacheTokenValues[model].read * inputRatio,
       );
@@ -3065,7 +3103,7 @@ describe('Long-Context Premium Cache Pricing', () => {
       const { threshold } = premiumCacheTokenValues[model];
       for (const cacheType of ['write', 'read'] as const) {
         expect(getCacheMultiplier({ model, cacheType, inputTokenCount: threshold + 1 })).toBe(
-          premiumCacheTokenValues[model][cacheType],
+          premiumCacheTokenValues[model][cacheType] ?? null,
         );
         expect(getCacheMultiplier({ model, cacheType, inputTokenCount: threshold })).toBe(
           cacheTokenValues[model][cacheType],
@@ -3081,6 +3119,67 @@ describe('Long-Context Premium Cache Pricing', () => {
       expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount: 5_000_000 })).toBe(
         getCacheMultiplier({ model, cacheType: 'read' }),
       );
+    }
+  });
+});
+
+describe('One-Hour Cache Write Pricing', () => {
+  const claudeModels = [
+    'claude-sonnet-5-5',
+    'claude-opus-5-5',
+    'claude-haiku-4-5',
+    'claude-haiku-5-5',
+  ];
+
+  it('prices 1-hour writes at the prompt rate times the 1-hour factor', () => {
+    for (const model of claudeModels) {
+      expect(getCacheMultiplier({ model, cacheType: 'write1h' })).toBeCloseTo(
+        getMultiplier({ model, tokenType: 'prompt' }) * ONE_HOUR_CACHE_WRITE_FACTOR,
+      );
+    }
+  });
+
+  it('keeps the 5-minute write rate below the 1-hour rate', () => {
+    for (const model of claudeModels) {
+      expect(getCacheMultiplier({ model, cacheType: 'write' })).toBeLessThan(
+        getCacheMultiplier({ model, cacheType: 'write1h' }) as number,
+      );
+    }
+  });
+
+  it('follows the long-context prompt tier above the premium threshold', () => {
+    const model = 'claude-haiku-5-5';
+    const { threshold } = premiumTokenValues[model];
+    expect(
+      getCacheMultiplier({ model, cacheType: 'write1h', inputTokenCount: threshold + 1 }),
+    ).toBe(premiumTokenValues[model].prompt * ONE_HOUR_CACHE_WRITE_FACTOR);
+    expect(getCacheMultiplier({ model, cacheType: 'write1h', inputTokenCount: threshold })).toBe(
+      tokenValues[model].prompt * ONE_HOUR_CACHE_WRITE_FACTOR,
+    );
+  });
+
+  it('uses an endpoint write1h override, else twice the configured prompt rate', () => {
+    const model = 'custom-claude';
+    const prompt = tokenValues['claude-sonnet-5-5'].prompt;
+    expect(
+      getCacheMultiplier({
+        model,
+        cacheType: 'write1h',
+        endpointTokenConfig: { [model]: { prompt, completion: prompt, write1h: prompt * 3 } },
+      }),
+    ).toBe(prompt * 3);
+    expect(
+      getCacheMultiplier({
+        model,
+        cacheType: 'write1h',
+        endpointTokenConfig: { [model]: { prompt, completion: prompt } },
+      }),
+    ).toBe(prompt * ONE_HOUR_CACHE_WRITE_FACTOR);
+  });
+
+  it('leaves the 5-minute write rate unchanged', () => {
+    for (const model of claudeModels) {
+      expect(getCacheMultiplier({ model, cacheType: 'write' })).toBe(cacheTokenValues[model].write);
     }
   });
 });
@@ -3157,6 +3256,50 @@ describe('dot-prefixed Kimi K3 aliases', () => {
         tokenValues['moonshot'].completion,
       );
     }
+  });
+});
+
+describe('Bedrock NVIDIA Nemotron pricing', () => {
+  it.each([
+    ['nvidia.nemotron-super-3-120b', 0.15, 0.65],
+    ['nvidia.nemotron-nano-3-30b', 0.06, 0.24],
+    ['nvidia.nemotron-nano-9b-v2', 0.06, 0.23],
+    ['nvidia.nemotron-nano-12b-v2', 0.2, 0.6],
+  ])('bills %s at its Bedrock rate, not the default', (model, prompt, completion) => {
+    for (const id of [model, `us.${model}`]) {
+      expect(getValueKey(id)).toBe(model);
+      expect(getMultiplier({ model: id, tokenType: 'prompt' })).toBe(prompt);
+      expect(getMultiplier({ model: id, tokenType: 'completion' })).toBe(completion);
+    }
+  });
+});
+
+describe('Bedrock vendor-prefixed pricing', () => {
+  it.each([
+    ['ai21.jamba-1-5-large', 'ai21.jamba-1-5-large-v1:0', 2.0, 8.0],
+    ['ai21.jamba-1-5-mini', 'ai21.jamba-1-5-mini-v1:0', 0.2, 0.4],
+    ['mistral.magistral-small-2509', 'mistral.magistral-small-2509', 0.5, 1.5],
+    ['mistral.ministral-3-3b-instruct', 'mistral.ministral-3-3b-instruct', 0.1, 0.1],
+    ['mistral.ministral-3-8b-instruct', 'mistral.ministral-3-8b-instruct', 0.15, 0.15],
+    ['mistral.ministral-3-14b-instruct', 'mistral.ministral-3-14b-instruct', 0.2, 0.2],
+    ['openai.gpt-6.1-terra', 'openai.gpt-6.1-terra', 1.1, 5.5],
+    ['writer.palmyra-vision-7b', 'writer.palmyra-vision-7b', 0.15, 0.6],
+    ['writer.palmyra-x4', 'writer.palmyra-x4-v1:0', 2.5, 10.0],
+    ['writer.palmyra-x5', 'writer.palmyra-x5-v1:0', 0.6, 6.0],
+  ])('bills %s at its Bedrock rate, not the default', (key, model, prompt, completion) => {
+    for (const id of [model, `us.${model}`]) {
+      expect(getValueKey(id)).toBe(key);
+      expect(getMultiplier({ model: id, tokenType: 'prompt' })).toBe(prompt);
+      expect(getMultiplier({ model: id, tokenType: 'completion' })).toBe(completion);
+    }
+  });
+
+  it('bills the GPT-6.1 Terra global profile below the regional one', () => {
+    const model = 'global.openai.gpt-6.1-terra';
+    expect(getValueKey(model)).toBe(model);
+    expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(1.0);
+    expect(getMultiplier({ model, tokenType: 'completion' })).toBe(5.0);
+    expect(getMultiplier({ model: 'eu.openai.gpt-6.1-terra', tokenType: 'prompt' })).toBe(1.1);
   });
 });
 
@@ -3257,6 +3400,60 @@ describe('Opus 5.5 pricing', () => {
   });
 });
 
+describe('Haiku 5.5 pricing', () => {
+  const models = [
+    'claude-haiku-5-5',
+    'claude-haiku-5.5',
+    'anthropic/claude-haiku-5-5',
+    'global.anthropic.claude-haiku-5-5',
+  ];
+
+  it.each(models)('prices %s at its standard rates up to the prompt-size threshold', (model) => {
+    const { threshold } = premiumTokenValues['claude-haiku-5-5'];
+    for (const inputTokenCount of [1000, threshold]) {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(
+        tokenValues['claude-haiku-5-5'].prompt,
+      );
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+        tokenValues['claude-haiku-5-5'].completion,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+        cacheTokenValues['claude-haiku-5-5'].write,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(
+        cacheTokenValues['claude-haiku-5-5'].read,
+      );
+    }
+  });
+
+  it.each(models)('prices %s at its long-prompt rates above the threshold', (model) => {
+    const inputTokenCount = premiumTokenValues['claude-haiku-5-5'].threshold + 1;
+    expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(
+      premiumTokenValues['claude-haiku-5-5'].prompt,
+    );
+    expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+      premiumTokenValues['claude-haiku-5-5'].completion,
+    );
+    expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+      premiumCacheTokenValues['claude-haiku-5-5'].write,
+    );
+    expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(
+      premiumCacheTokenValues['claude-haiku-5-5'].read,
+    );
+  });
+
+  it('does not fall back to the default rate', () => {
+    expect(getMultiplier({ model: 'claude-haiku-5-5', tokenType: 'prompt' })).not.toBe(defaultRate);
+  });
+
+  it('keeps Haiku 4.5 on its own flat rates', () => {
+    expect(premiumTokenValues['claude-haiku-4-5']).toBeUndefined();
+    expect(getMultiplier({ model: 'claude-haiku-4-5', tokenType: 'prompt' })).toBe(
+      tokenValues['claude-haiku-4-5'].prompt,
+    );
+  });
+});
+
 describe('Sonnet 5.5 pricing', () => {
   it.each([
     'claude-sonnet-5-5',
@@ -3283,6 +3480,7 @@ describe('Sonnet 5.5 pricing', () => {
 
 describe.each([
   ['gpt-6-sol', 2, 0.2, 2.5, 10],
+  ['gpt-6.1-terra', 1, 0.05, 1.25, 5],
   ['gpt-6-luna', 0.1, 0.01, 0.125, 0.5],
 ] as const)('%s published pricing', (model, input, read, write, output) => {
   it.each([272000, 272001])(
@@ -3306,4 +3504,78 @@ describe.each([
       }
     },
   );
+});
+
+describe('Terra native and Bedrock pricing isolation', () => {
+  it.each([
+    ['us.openai.gpt-6.1-terra', 1.1, 5.5],
+    ['global.openai.gpt-6.1-terra', 1, 5],
+  ] as const)(
+    'keeps %s on Bedrock rates above the native long-context threshold',
+    (model, prompt, completion) => {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount: 300000 })).toBe(prompt);
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount: 300000 })).toBe(
+        completion,
+      );
+    },
+  );
+  it('preserves administrator pricing overrides', () => {
+    const model = 'gpt-6.1-terra';
+    const endpointTokenConfig = { [model]: { prompt: 3, completion: 9 } };
+    expect(
+      getMultiplier({ model, tokenType: 'prompt', inputTokenCount: 300000, endpointTokenConfig }),
+    ).toBe(3);
+    expect(
+      getMultiplier({
+        model,
+        tokenType: 'completion',
+        inputTokenCount: 300000,
+        endpointTokenConfig,
+      }),
+    ).toBe(9);
+  });
+});
+
+describe('Claude Fable 5.2 pricing', () => {
+  it.each(['claude-fable-5-2', 'anthropic/claude-fable-5-2', 'anthropic.claude-fable-5-2'])(
+    'uses the release-specific rates for %s at every context length',
+    (model) => {
+      expect(getValueKey(model)).toBe('claude-fable-5-2');
+      for (const inputTokenCount of [1000, 200001, 999999]) {
+        expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(8);
+        expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(40);
+        expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(0.2);
+        expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(10);
+        expect(getCacheMultiplier({ model, cacheType: 'write1h', inputTokenCount })).toBe(16);
+      }
+    },
+  );
+
+  it('preserves the prices of previous Fable releases', () => {
+    expect(tokenValues['claude-fable-5']).toEqual({ prompt: 10, completion: 50 });
+    expect(tokenValues['claude-fable-5-1']).toEqual({ prompt: 10, completion: 50 });
+    expect(cacheTokenValues['claude-fable-5-1']).toEqual({ write: 12.5, read: 0.25 });
+  });
+});
+
+describe('Claude Mythos 5.2 pricing', () => {
+  it.each(['claude-mythos-5-2', 'anthropic/claude-mythos-5-2', 'anthropic.claude-mythos-5-2'])(
+    'uses the release-specific rates for %s at every context length',
+    (model) => {
+      expect(getValueKey(model)).toBe('claude-mythos-5-2');
+      for (const inputTokenCount of [1000, 200001, 999999]) {
+        expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(8);
+        expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(40);
+        expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(0.2);
+        expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(10);
+        expect(getCacheMultiplier({ model, cacheType: 'write1h', inputTokenCount })).toBe(16);
+      }
+    },
+  );
+
+  it('preserves the prices of previous Mythos releases', () => {
+    expect(tokenValues['claude-mythos-5']).toEqual({ prompt: 10, completion: 50 });
+    expect(tokenValues['claude-mythos-5-1']).toEqual({ prompt: 10, completion: 50 });
+    expect(cacheTokenValues['claude-mythos-5-1']).toEqual({ write: 12.5, read: 0.25 });
+  });
 });

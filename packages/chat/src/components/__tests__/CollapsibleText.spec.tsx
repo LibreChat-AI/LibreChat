@@ -308,3 +308,27 @@ describe('CollapsibleText', () => {
     }
   });
 });
+
+it('uses the same expansion control for a server-budgeted body and requests it only on reveal', () => {
+  const reveal = jest.fn();
+  const scroll = stubScrollHeight(100);
+  try {
+    const { rerender } = render(
+      <CollapsibleText enabled hasMore onExpand={reveal}>
+        <p>Retained prefix</p>
+      </CollapsibleText>,
+    );
+    expect(reveal).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_more' }));
+    expect(reveal).toHaveBeenCalledTimes(1);
+    rerender(
+      <CollapsibleText enabled onExpand={reveal}>
+        <p>Complete retained body</p>
+      </CollapsibleText>,
+    );
+    expect(screen.getByText('Complete retained body')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).toBeNull();
+  } finally {
+    scroll.mockRestore();
+  }
+});

@@ -1,11 +1,18 @@
 import React, { createContext, useContext, ReactNode, useCallback, useMemo, useState } from 'react';
+import { Cloud } from 'lucide-react';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import type { TPromptGroup } from 'librechat-data-provider';
 import type { PromptOption } from '~/common';
-import { usePromptGroupsNav, useHasAccess, useCatalogReady, activateCatalog } from '~/hooks';
+import {
+  usePromptGroupsNav,
+  useHasAccess,
+  useCatalogReady,
+  activateCatalog,
+  useLocalize,
+} from '~/hooks';
+import { mapPromptGroups, isExternalPromptGroup } from '~/utils';
 import { useGetAllPromptGroups } from '~/data-provider';
 import { CategoryIcon } from '~/components/Prompts';
-import { mapPromptGroups } from '~/utils';
 
 type AllPromptGroupsData =
   | {
@@ -29,6 +36,7 @@ type PromptGroupsContextType =
 const PromptGroupsContext = createContext<PromptGroupsContextType>(null);
 
 export const PromptGroupsProvider = ({ children }: { children: ReactNode }) => {
+  const localize = useLocalize();
   const hasAccess = useHasAccess({
     permissionType: PermissionTypes.PROMPTS,
     permission: Permissions.USE,
@@ -54,19 +62,31 @@ export const PromptGroupsProvider = ({ children }: { children: ReactNode }) => {
   const { data: allGroupsData, isLoading: isLoadingAll } = useGetAllPromptGroups(undefined, {
     enabled: promptsEnabled && allPromptsActive,
     select: (data) => {
-      const mappedArray: PromptOption[] = data.map((group) => ({
-        id: group._id ?? '',
-        type: 'prompt',
-        value: group.command ?? group.name,
-        label: `${group.command != null && group.command ? `/${group.command} - ` : ''}${
-          group.name
-        }: ${
-          (group.oneliner?.length ?? 0) > 0
-            ? group.oneliner
-            : (group.productionPrompt?.prompt ?? '')
-        }`,
-        icon: <CategoryIcon category={group.category ?? ''} className="h-5 w-5" />,
-      }));
+      const mappedArray: PromptOption[] = data.map((group) => {
+        if (isExternalPromptGroup(group)) {
+          return {
+            id: group._id ?? '',
+            type: 'prompt',
+            value: group.command ?? group.name,
+            label: group.name,
+            description: localize('com_ui_prompt_source_langfuse'),
+            icon: <Cloud className="h-5 w-5" />,
+          };
+        }
+        return {
+          id: group._id ?? '',
+          type: 'prompt',
+          value: group.command ?? group.name,
+          label: `${group.command != null && group.command ? `/${group.command} - ` : ''}${
+            group.name
+          }: ${
+            (group.oneliner?.length ?? 0) > 0
+              ? group.oneliner
+              : (group.productionPrompt?.prompt ?? '')
+          }`,
+          icon: <CategoryIcon category={group.category ?? ''} className="h-5 w-5" />,
+        };
+      });
 
       const promptsMap = mapPromptGroups(data);
 

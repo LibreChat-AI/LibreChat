@@ -351,6 +351,96 @@ describe('getCodeBridgeWorkerStatus', () => {
     );
   });
 
+  describe('workspace operations a newer worker advertises', () => {
+    const statusWith = (workspaceTools: object) =>
+      getCodeBridgeWorkerStatus({
+        baseURL: 'https://code.example.com/v1',
+        token: 'token',
+        workerId: 'personal-vm',
+        fetchImpl: jest.fn().mockResolvedValue(
+          Response.json({
+            protocolVersion: 1,
+            workerId: 'personal-vm',
+            online: true,
+            ready: true,
+            leaseExpiresInMs: 45_000,
+            capabilities: {
+              statefulWorkspace: false,
+              runtimes: [],
+              sandboxProfile: 'native-srt',
+              workspaceTools,
+            },
+          }),
+        ),
+      });
+
+    test('drops names this build does not know and keeps the workspace usable', async () => {
+      await expect(
+        statusWith({
+          protocolVersion: 1,
+          operations: ['read_file', 'stream_logs', 'write_file', 'import_file'],
+          workspaces: [
+            { id: 'project-a' },
+            { id: 'docs', operations: ['read_file', 'stream_logs'] },
+            { id: 'future', operations: ['stream_logs'] },
+          ],
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          status: 'ready',
+          operations: ['read_file', 'write_file', 'import_file'],
+          workspaces: [
+            { id: 'project-a' },
+            { id: 'docs', operations: ['read_file'] },
+            { id: 'future', operations: [] },
+          ],
+        }),
+      );
+    });
+
+    test('drops unknown names from a legacy capability list too', async () => {
+      await expect(statusWith({ operations: ['read_file', 'stream_logs'] })).resolves.toEqual(
+        expect.objectContaining({ operations: ['read_file'] }),
+      );
+    });
+
+    test('treats a worker offering only unknown operations as offering no workspace tools', async () => {
+      const status = await statusWith({
+        protocolVersion: 1,
+        operations: ['stream_logs'],
+        workspaces: [{ id: 'project-a' }],
+      });
+      expect(status.status).toBe('ready');
+      expect(status.operations).toBeUndefined();
+      expect(status.workspaces).toBeUndefined();
+    });
+
+    test.each([
+      ['a non-string name', ['read_file', 42]],
+      ['a malformed name', ['read_file', 'Read File']],
+      ['a duplicate name', ['read_file', 'read_file']],
+      ['an unbounded list', ['read_file', ...Array.from({ length: 64 }, (_, i) => `op_${i}`)]],
+    ])('still rejects %s', async (_label, operations) => {
+      await expect(
+        statusWith({ protocolVersion: 1, operations, workspaces: [{ id: 'project-a' }] }),
+      ).rejects.toEqual(
+        expect.objectContaining<Partial<CodeBridgeStatusError>>({ reason: 'invalid' }),
+      );
+    });
+
+    test('still rejects a root claiming a known operation the worker does not offer', async () => {
+      await expect(
+        statusWith({
+          protocolVersion: 1,
+          operations: ['read_file', 'stream_logs'],
+          workspaces: [{ id: 'project-a', operations: ['execute_command'] }],
+        }),
+      ).rejects.toEqual(
+        expect.objectContaining<Partial<CodeBridgeStatusError>>({ reason: 'invalid' }),
+      );
+    });
+  });
+
   test('rejects an upstream response before buffering more than 256 KiB', async () => {
     const fetchImpl = jest
       .fn()

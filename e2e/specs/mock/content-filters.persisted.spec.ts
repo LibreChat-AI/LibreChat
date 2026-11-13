@@ -104,6 +104,25 @@ async function captureMongoSnapshot(selectors: MongoSnapshotSelector[]): Promise
   });
 }
 
+/** The visible seed reply can precede the browser's deferred read-receipt write. */
+async function waitForSeedRead(conversationId: string): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        withMongo((db) =>
+          db.collection('conversations').countDocuments({
+            conversationId,
+            lastResponseAt: { $type: 'date' },
+            lastSeenAt: { $type: 'date' },
+            isMarkedUnread: { $ne: true },
+            $expr: { $gte: ['$lastSeenAt', '$lastResponseAt'] },
+          }),
+        ),
+      { message: 'Seed read receipt must settle before snapshot assertions', timeout: 30000 },
+    )
+    .toBe(1);
+}
+
 async function expectNoMongoSideEffects<T>(
   collections: string[],
   operation: () => Promise<T>,
@@ -553,6 +572,7 @@ test.describe('persisted source-aware content filters', () => {
           'persisted message conversation id',
         );
         fixtures.conversationIds.push(fixtures.messageConversationId);
+        await waitForSeedRead(fixtures.messageConversationId);
 
         const cloneSafeConversation = async (label: string): Promise<string> => {
           const cloned = await duplicateConversation(
@@ -1888,6 +1908,7 @@ test.describe('persisted source-aware content filters', () => {
         'granular first conversation id',
       );
       fixtures.conversationIds.push(firstConversationId);
+      await waitForSeedRead(firstConversationId);
 
       const secondConversation = await duplicateConversation(request, token, firstConversationId);
       expectSuccess(secondConversation, 201);
@@ -2029,6 +2050,7 @@ test.describe('persisted source-aware content filters', () => {
         'legacy persisted conversation id',
       );
       fixtures.conversationIds.push(fixtures.messageConversationId);
+      await waitForSeedRead(fixtures.messageConversationId);
 
       const storedMessage = await createStoredMessage(
         request,

@@ -47,7 +47,7 @@ jest.mock('~/hooks', () => ({
  * escapes the `~/hooks` mock above. Mirrors its contract closely enough that
  * the panel-switch assertions still exercise the `onNewChat` wiring.
  */
-jest.mock('~/hooks/Chat/useNewChat', () => ({
+jest.mock('~/hooks/Conversations/useNewChat', () => ({
   __esModule: true,
   default: ({ onNewChat }: { onNewChat?: () => void } = {}) => ({
     newConversation: mockNewConversation,
@@ -143,6 +143,22 @@ describe('ExpandedPanel', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     localStorage.clear();
+  });
+
+  describe('sidebar toggle button', () => {
+    it('collapses without forwarding the click event as an afterSlide callback', () => {
+      const { onCollapse } = renderPanel({ expanded: true });
+      fireEvent.click(screen.getByTestId('close-sidebar-button'));
+      expect(onCollapse).toHaveBeenCalledTimes(1);
+      expect(onCollapse).toHaveBeenCalledWith();
+    });
+
+    it('expands without forwarding the click event', () => {
+      const { onExpand } = renderPanel({ expanded: false });
+      fireEvent.click(screen.getByTestId('open-sidebar-button'));
+      expect(onExpand).toHaveBeenCalledTimes(1);
+      expect(onExpand).toHaveBeenCalledWith();
+    });
   });
 
   describe('NavIconButton collapse toggle', () => {

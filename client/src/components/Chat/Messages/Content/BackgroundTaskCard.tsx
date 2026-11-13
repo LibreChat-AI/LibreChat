@@ -1,16 +1,15 @@
 import { useMemo } from 'react';
 import { Button } from '@librechat/client';
-import type { BackgroundTaskStatus, BackgroundTaskView } from './Parts/background';
+import { useSubagentTaskPanel } from '@librechat/chat/react';
+import { backgroundTaskMessageKey, backgroundTaskNoteKey } from '@librechat/chat/components';
+import { formatBackgroundCodeOutput, parseToolName, getToolDisplayLabel } from '@librechat/chat';
+import type { BackgroundTaskStatus, BackgroundTaskView } from '@librechat/chat';
 import type { TranslationKeys } from '~/hooks';
-import { backgroundTaskMessageKey, backgroundTaskNoteKey } from './Parts/guidance';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { ToolIcon, getToolIconType, OutputRenderer } from './ToolOutput';
-import { useSubagentTaskPanel } from '~/components/Chat/Subagents/task';
-import { formatBackgroundCodeOutput } from './Parts/background';
-import { parseToolName } from '~/utils/toolLabels';
-import { getToolDisplayLabel, cn } from '~/utils';
 import SubagentProgress from './SubagentProgress';
-import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 const STATUS: Record<BackgroundTaskStatus, { label: TranslationKeys; dot: string }> = {
   dispatched: { label: 'com_ui_subagent_thread_status_dispatched', dot: 'bg-text-tertiary' },
@@ -40,7 +39,7 @@ export default function BackgroundTaskCard({
   mcpServerNames?: readonly string[];
 }) {
   const localize = useLocalize();
-  const { conversationId } = useMessageContext();
+  const { conversationId } = useMessagePartsHost().useMessage();
   const isSubagent = task.toolName === 'subagent';
   const durableTask = useMemo(
     () =>

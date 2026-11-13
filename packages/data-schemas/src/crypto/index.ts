@@ -162,16 +162,3 @@ export async function getRandomValues(length: number): Promise<string> {
   webcrypto.getRandomValues(randomValues);
   return Buffer.from(randomValues).toString('hex');
 }
-
-/**
- * Computes SHA-256 hash for the given input.
- * @param input - The input to hash.
- * @returns The SHA-256 hash of the input.
- */
-export async function hashBackupCode(input: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(input);
-  const hashBuffer = await webcrypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-}

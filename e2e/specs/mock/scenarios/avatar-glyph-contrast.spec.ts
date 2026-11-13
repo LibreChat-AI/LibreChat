@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { NEW_CHAT_PATH } from '../helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * The default user avatar's glyph is a graphical object under WCAG 1.4.11 (Non-text Contrast), so

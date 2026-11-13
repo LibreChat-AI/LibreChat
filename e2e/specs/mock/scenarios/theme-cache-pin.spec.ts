@@ -87,7 +87,7 @@ test.describe('the theme cache resolver output pin', () => {
   test('a fallback that acts only beside another source asks for an epoch bump @scenario:theme-pin-joint-fallback', () => {
     const result = runPin([
       {
-        bundle: 'client',
+        bundle: 'provider',
         from: '"rgb-series-8": customColors?.["rgb-text-secondary"] ?? baseColors["rgb-text-secondary"]',
         to: '"rgb-series-8": baseColors["rgb-text-secondary"]',
       },
@@ -99,7 +99,7 @@ test.describe('the theme cache resolver output pin', () => {
   test('a fallback that acts only when two sources meet asks for an epoch bump @scenario:theme-pin-conjunctive-fallback', () => {
     const result = runPin([
       {
-        bundle: 'client',
+        bundle: 'provider',
         from: '...customColors,\n\t\t\t...codeSurfaceFallback,',
         to: '...customColors,\n\t\t\t...(customColors?.["rgb-status-error"] !== void 0 && customColors?.["rgb-status-warning"] !== void 0 && customColors?.["rgb-border-light"] === void 0 ? { "rgb-border-light": customColors["rgb-status-error"] } : {}),\n\t\t\t...codeSurfaceFallback,',
       },
@@ -111,7 +111,7 @@ test.describe('the theme cache resolver output pin', () => {
   test('swapping precedence between sources that share a validator asks for an epoch bump @scenario:theme-pin-shared-validator-precedence', () => {
     const result = runPin([
       {
-        bundle: 'client',
+        bundle: 'provider',
         from: '["dialogTitleFontFamily", "displayFontFamily"],',
         to: '["dialogTitleFontFamily", "fontFamily"],\n\t["dialogTitleFontFamily", "displayFontFamily"],',
       },
@@ -123,7 +123,7 @@ test.describe('the theme cache resolver output pin', () => {
   test('a shadow role that stops canonicalizing None asks for an epoch bump @scenario:theme-pin-shadow-none-case', () => {
     const result = runPin([
       {
-        bundle: 'client',
+        bundle: 'provider',
         from: 'result[key].trim().toLowerCase() === "none"',
         to: 'result[key] === "none"',
       },
@@ -135,7 +135,7 @@ test.describe('the theme cache resolver output pin', () => {
   test('a shadow role that stops trimming None asks for an epoch bump @scenario:theme-pin-shadow-none-padding', () => {
     const result = runPin([
       {
-        bundle: 'client',
+        bundle: 'provider',
         from: 'result[key].trim().toLowerCase() === "none"',
         to: 'result[key].toLowerCase() === "none"',
       },

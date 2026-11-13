@@ -33,8 +33,14 @@ const Action: mongoose.Schema<IAction> = new Schema<IAction>({
     default: 'action_prototype',
   },
   settings: Schema.Types.Mixed,
-  agent_id: String,
-  assistant_id: String,
+  agent_id: {
+    type: String,
+    index: true,
+  },
+  assistant_id: {
+    type: String,
+    index: true,
+  },
   metadata: {
     api_key: String,
     auth: AuthSchema,

@@ -22,10 +22,6 @@ jest.mock('~/hooks', () => ({
    * deferred-preview lifecycle. Stub to a no-op for tests that
    * don't exercise the preview flow. */
   useAttachmentPreviewSync: () => ({ status: 'ready', previewError: undefined, isPolling: false }),
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
-    ref: { current: null },
-  }),
 }));
 
 const mockHandleDownload = jest.fn();
@@ -33,13 +29,18 @@ jest.mock('../LogLink', () => ({
   useAttachmentLink: () => ({ handleDownload: mockHandleDownload }),
 }));
 
-jest.mock('~/components/Chat/Input/Files/FileContainer', () => ({
-  __esModule: true,
-  default: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  useExpandCollapse: (isExpanded: boolean) => ({
+    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
+    ref: { current: null },
+  }),
+  FileContainer: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
     <button type="button" data-testid="file-container" onClick={onClick}>
       {file.filename ?? ''}
     </button>
   ),
+  FilePreview: () => <div data-testid="file-preview" />,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/Image', () => ({
@@ -52,11 +53,6 @@ jest.mock('~/components/Messages/Content/Mermaid/Mermaid', () => ({
   default: ({ children }: { children: string }) => (
     <div data-testid="mermaid-render">{children}</div>
   ),
-}));
-
-jest.mock('~/components/Chat/Input/Files/FilePreview', () => ({
-  __esModule: true,
-  default: () => <div data-testid="file-preview" />,
 }));
 
 jest.mock('~/utils', () => ({

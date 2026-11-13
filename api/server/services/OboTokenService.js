@@ -5,6 +5,7 @@ const { CacheKeys } = require('librechat-data-provider');
 const {
   createOpenIDOboIdentityTuple,
   getSkewedTokenCacheTtlMs,
+  getUserLogId,
   getTokenExpiresAtMs,
   hasUsableTokenExpiry,
   normalizeExpiresIn,
@@ -94,6 +95,7 @@ async function delay(ms) {
 }
 
 async function performOboExchange({ user, accessToken, scopes, config, tokensCache, cacheKey }) {
+  const userLogId = getUserLogId(user);
   const requestGrant = async () =>
     client.genericGrantRequest(config, 'urn:ietf:params:oauth:grant-type:jwt-bearer', {
       scope: scopes,
@@ -111,7 +113,7 @@ async function performOboExchange({ user, accessToken, scopes, config, tokensCac
     }
 
     logger.warn(
-      `[OboTokenService] Transient OBO exchange failure for user: ${user.openidId}, retrying once`,
+      `[OboTokenService] Transient OBO exchange failure for user: ${userLogId}, retrying once`,
       error,
     );
     await delay(OBO_RETRY_DELAY_MS);
@@ -141,7 +143,7 @@ async function performOboExchange({ user, accessToken, scopes, config, tokensCac
   await tokensCache.set(cacheKey, tokenResponse, getSkewedTokenCacheTtlMs(expiresAt, now));
 
   logger.debug(
-    `[OboTokenService] Successfully obtained and cached OBO token for user: ${user.openidId}`,
+    `[OboTokenService] Successfully obtained and cached OBO token for user: ${userLogId}`,
   );
   return tokenResponse;
 }
@@ -168,6 +170,7 @@ async function exchangeOboToken(user, accessToken, scopes, fromCache = true, ide
     throw new Error('Access token is required for OBO exchange');
   }
 
+  const userLogId = getUserLogId(user);
   if (!scopes) {
     throw new Error('Scopes are required for OBO exchange');
   }
@@ -192,23 +195,23 @@ async function exchangeOboToken(user, accessToken, scopes, fromCache = true, ide
     const cachedToken = await tokensCache.get(cacheKey);
     if (cachedToken) {
       if (hasUsableTokenExpiry(cachedToken.expires_at)) {
-        logger.debug(`[OboTokenService] Using cached token for user: ${user.openidId}`);
+        logger.debug(`[OboTokenService] Using cached token for user: ${userLogId}`);
         return cachedToken;
       }
       logger.debug(
-        `[OboTokenService] Ignoring cached OBO token without usable expiry for user: ${user.openidId}`,
+        `[OboTokenService] Ignoring cached OBO token without usable expiry for user: ${userLogId}`,
       );
     }
 
     const inFlight = inFlightExchanges.get(cacheKey);
     if (inFlight) {
-      logger.debug(`[OboTokenService] Joining in-flight OBO exchange for user: ${user.openidId}`);
+      logger.debug(`[OboTokenService] Joining in-flight OBO exchange for user: ${userLogId}`);
       return inFlight;
     }
   }
 
   logger.debug(
-    `[OboTokenService] Requesting new OBO token for user: ${user.openidId}, scopes: ${scopes}`,
+    `[OboTokenService] Requesting new OBO token for user: ${userLogId}, scopes: ${scopes}`,
   );
 
   const exchangePromise = performOboExchange({

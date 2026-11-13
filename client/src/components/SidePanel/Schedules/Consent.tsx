@@ -102,7 +102,7 @@ export default function Consent({
                         {target.resource.credentialMode}
                       </p>
                       {target.resource.issuer && (
-                        <p className="text-text-secondary text-xs break-all">
+                        <p className="text-text-secondary text-xs wrap-anywhere">
                           {localize('com_ui_schedule_consent_issuer', {
                             issuer: target.resource.issuer,
                           })}

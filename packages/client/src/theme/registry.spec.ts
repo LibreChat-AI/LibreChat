@@ -1,7 +1,8 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { IThemeAppearance, IThemeRGB, ThemeDefinition } from './types';
 import {
+  darkTheme,
+  defaultTheme,
   collectThemeWarnings,
   darkAppearanceDefaults,
   defaultAppearanceFor,
@@ -13,11 +14,10 @@ import {
   layerRoleSources,
   themeColorTokens,
   validateThemeDefinition,
-} from './registry';
+} from 'librechat-data-provider';
+import type { IThemeAppearance, IThemeRGB, ThemeDefinition } from 'librechat-data-provider';
 import { describeResolvedTheme } from './utils/applyTheme';
 import { clickHouseTheme } from './themes/clickhouse';
-import { defaultTheme } from './themes/default';
-import { darkTheme } from './themes/dark';
 import * as themeEntry from './index';
 
 const compactTheme: ThemeDefinition = {
@@ -289,7 +289,12 @@ describe('theme registry', () => {
         name: 'corner-reference',
         modes: {
           light: {
-            appearance: { radius2xl: '3px', radiusXl: '5px', roundControlRadius: '7px' },
+            appearance: {
+              radius2xl: '3px',
+              radiusXl: '5px',
+              radiusLg: '4px',
+              roundControlRadius: '7px',
+            },
           },
         },
       },
@@ -298,6 +303,7 @@ describe('theme registry', () => {
 
     expect(resolved.appearance.popoverRadius).toBe('3px');
     expect(resolved.appearance.menuPanelRadius).toBe('5px');
+    expect(resolved.appearance.compactPanelRadius).toBe('4px');
     expect(resolved.appearance.composerActionRadius).toBe('7px');
   });
 

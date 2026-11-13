@@ -14,6 +14,7 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
 } from '~/types/triggerDelivery';
 import {
@@ -53,14 +54,22 @@ let counter = 0;
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
-  await mongoose.connect(mongoServer.getUri());
+  const uri = new URL(mongoServer.getUri());
+  uri.searchParams.set('readPreference', 'secondaryPreferred');
+  await mongoose.connect(uri.href);
   Delivery = createAgentTriggerDeliveryModel(mongoose);
   LaneSequence = createAgentTriggerLaneSequenceModel(mongoose);
   UserPurge = createAgentTriggerUserPurgeModel(mongoose);
   User = createUserModel(mongoose);
   createConversationModel(mongoose);
   createMessageModel(mongoose);
-  await Promise.all([Delivery.init(), LaneSequence.init(), UserPurge.init(), User.init()]);
+  // Secondary-read connections disable Mongoose's automatic index creation.
+  await Promise.all([
+    Delivery.createIndexes(),
+    LaneSequence.createIndexes(),
+    UserPurge.createIndexes(),
+    User.createIndexes(),
+  ]);
   methods = createAgentTriggerDeliveryMethods(mongoose, {
     releaseBatchProjections: createMessageMethods(mongoose).releaseBackgroundToolResultClaims,
   });
@@ -122,6 +131,42 @@ function transientFailure(overrides: Partial<AgentTriggerDeliveryFailure> = {}) 
 }
 
 describe('agent trigger delivery methods', () => {
+  it('normalizes native Mongo owner IDs on enqueue and terminal read projections', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const input = enqueueInput({ user });
+    const queued = await methods.enqueueAgentTriggerDelivery(input);
+    const raw = await Delivery.findById(queued.delivery.id).lean();
+    expect(raw?.user).toBeInstanceOf(mongoose.Types.ObjectId);
+    expect(queued.delivery.user).toBe(user.toHexString());
+    expect((await methods.getAgentTriggerDelivery(input.deliveryKey))?.user).toBe(
+      user.toHexString(),
+    );
+
+    await Delivery.updateOne(
+      { _id: queued.delivery.id },
+      {
+        $set: {
+          status: 'dead',
+          attempts: 1,
+          lastError: transientFailure({
+            code: 'CHANNEL_AUTHORITY_CHANGED',
+            status: 403,
+            retryable: false,
+          }),
+        },
+      },
+    );
+    const terminal = await methods.getAgentTriggerDelivery(input.deliveryKey);
+    expect(terminal).toMatchObject({
+      user: user.toHexString(),
+      status: 'dead',
+      attempts: 1,
+    });
+    expect(terminal?.envelope).toEqual(input.envelope);
+    expect(terminal?.deliveryKey).toBe(input.deliveryKey);
+    expect(terminal?.tenantId).toBe(input.tenantId);
+  });
+
   it('never lets receipt metric failures affect storage correctness', () => {
     setAgentEventActorReceiptMetricObserver(() => {
       throw new Error('metrics unavailable');
@@ -1495,6 +1540,7 @@ describe('agent trigger delivery methods', () => {
   it.each([
     AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
     AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+    AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
   ])('keeps %s fenced through lease recovery', async (capability) => {
     const queued = await methods.enqueueAgentTriggerDelivery(
       enqueueInput({
@@ -1516,7 +1562,11 @@ describe('agent trigger delivery methods', () => {
       methods.claimNextAgentTriggerDelivery({
         ...claimInput,
         workerId: 'old-worker',
-        workerCapabilities: [AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1],
+        /** Everything an earlier worker advertises, short of this capability. */
+        workerCapabilities: [
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+        ].filter((earlier) => earlier !== capability),
         claimToken: 'old-claim',
       }),
     ).resolves.toBeNull();
@@ -5498,6 +5548,7 @@ describe('agent trigger delivery methods', () => {
   });
 
   it('serializes account deletion against action admission on each delivery row', async () => {
+    expect(mongoose.connection.getClient().options.readPreference?.mode).toBe('secondaryPreferred');
     const user = new mongoose.Types.ObjectId();
     const fenceStartedAt = new Date(START);
     await User.create({
@@ -5529,8 +5580,13 @@ describe('agent trigger delivery methods', () => {
       admissionId: 'admission-before-purge',
     };
 
+    const fenceReads = jest.spyOn(User.collection, 'findOne');
     await expect(methods.admitAgentEventActorAction(admission)).resolves.toBe(true);
     await methods.prepareAgentTriggerUserPurge(user, fenceStartedAt);
+    expect(fenceReads).toHaveBeenLastCalledWith(
+      { _id: user, agentTriggerDeletionStartedAt: fenceStartedAt },
+      expect.objectContaining({ readPreference: { mode: 'primary' } }),
+    );
     await expect(
       methods.countActiveAgentTriggerDeliveriesByUser(user, new Date(START.getTime() + 60_001)),
     ).resolves.toBe(1);
@@ -5545,7 +5601,12 @@ describe('agent trigger delivery methods', () => {
       Delivery.countDocuments({ user, actorActionAdmissionClosedAt: fenceStartedAt }),
     ).resolves.toBe(2);
 
+    fenceReads.mockClear();
     await expect(methods.cancelAgentTriggerUserPurge(user, fenceStartedAt)).resolves.toBe(true);
+    expect(fenceReads).toHaveBeenCalledWith(
+      { _id: user, agentTriggerDeletionStartedAt: fenceStartedAt },
+      expect.objectContaining({ readPreference: { mode: 'primary' } }),
+    );
     await expect(
       Delivery.countDocuments({ user, actorActionAdmissionClosedAt: { $exists: true } }),
     ).resolves.toBe(0);
@@ -5631,7 +5692,15 @@ describe('agent trigger delivery methods', () => {
     await methods.enqueueAgentTriggerDelivery(enqueueInput({ user }));
     await methods.prepareAgentTriggerUserPurge(user, fenceStartedAt, 'tenant-1');
 
+    const fenceReads = jest.spyOn(User.collection, 'find');
     await expect(methods.recoverAgentTriggerUserPurges()).resolves.toBe(0);
+    expect(fenceReads).toHaveBeenCalledWith(
+      { _id: { $in: [user] } },
+      expect.objectContaining({
+        projection: { agentTriggerDeletionStartedAt: 1 },
+        readPreference: { mode: 'primary' },
+      }),
+    );
     expect(await Delivery.countDocuments({ user })).toBe(1);
     expect(await UserPurge.countDocuments({ _id: user })).toBe(1);
 

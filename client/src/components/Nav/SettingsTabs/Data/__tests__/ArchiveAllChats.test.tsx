@@ -50,7 +50,7 @@ jest.mock('~/hooks/Conversations/useGetConversation', () => ({
   default: () => mockGetConversation,
 }));
 
-jest.mock('~/hooks/Chat/useNewChat', () => ({
+jest.mock('~/hooks/Conversations/useNewChat', () => ({
   __esModule: true,
   default: () => ({ startNewChat: mockStartNewChat }),
 }));

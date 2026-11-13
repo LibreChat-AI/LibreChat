@@ -254,16 +254,6 @@ export function useCodeState() {
 }
 
 /**
- * @deprecated Use useMutationState() and/or useCodeState() instead
- * This hook causes components to re-render on every keystroke
- */
-export function useEditorContext() {
-  const mutation = useMutationState();
-  const code = useCodeState();
-  return { ...mutation, ...code };
-}
-
-/**
  * The text an artifact's editing surface should show: its active buffer when
  * the artifact owns it, the copy retained when another artifact's edit
  * displaced it, and nothing when the artifact never had unsaved text. Every

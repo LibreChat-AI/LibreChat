@@ -8,7 +8,7 @@ export default function SkeletonForm() {
       </div>
       <div className="flex h-full w-full flex-col md:flex-row">
         {/* Left Section */}
-        <div className="border-border-medium-alt flex-1 overflow-y-auto p-4 md:max-h-[calc(100vh-9.375rem)] md:border-r">
+        <div className="border-border-medium-alt flex-1 overflow-y-auto p-4 md:max-h-[calc(100vh-9.375rem)] md:border-e">
           <Skeleton className="h-96" />
         </div>
       </div>

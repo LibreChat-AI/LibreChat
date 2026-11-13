@@ -836,6 +836,55 @@ describe('parts', () => {
       ]);
     });
 
+    it('removes the stored filename when the attachment view drops it', () => {
+      const stored = {
+        file_id: 'a',
+        filepath: '/files/a.pdf',
+        filename: 'a.pdf',
+        type: 'application/pdf',
+      };
+      const { filename: _filename, ...unnamed } = stored;
+      const message = createMessage({ isCreatedByUser: true, text: 'File', files: [stored] });
+      const view = toUIMessage(message);
+      const parts = view.parts.map((part) => {
+        if (part.type !== 'file') {
+          return part;
+        }
+        const { filename: _dropped, ...rest } = part;
+        return rest;
+      });
+
+      expect(fromUIMessage({ ...view, parts }, message).files).toStrictEqual([unnamed]);
+      expect(fromUIMessage(view, message)).toStrictEqual(message);
+    });
+
+    it('removes the stored image file name when the view drops it', () => {
+      const part = samples[ContentTypes.IMAGE_FILE] as TMessageContentParts;
+      const { filename: _dropped, ...edited } = toUIPart(part) as Extract<
+        UIMessagePart,
+        { type: 'file' }
+      >;
+
+      const restored = fromUIPart(edited) as Extract<
+        TMessageContentParts,
+        { type: ContentTypes.IMAGE_FILE }
+      >;
+      expect(restored.image_file).not.toHaveProperty('filename');
+      expect(fromUIPart(toUIPart(part) as UIMessagePart)).toStrictEqual(part);
+    });
+
+    it('keeps an empty stored attachment filename the view never showed', () => {
+      const stored = {
+        file_id: 'a',
+        filepath: '/files/a.pdf',
+        filename: '',
+        type: 'application/pdf',
+      };
+      const message = createMessage({ isCreatedByUser: true, text: 'File', files: [stored] });
+
+      expect(fromUIMessage(toUIMessage(message), message).files).toStrictEqual([stored]);
+    });
+
     it('keeps an explicit null parent instead of the stored one', () => {
       const message = createMessage({
         text: 'Hi',

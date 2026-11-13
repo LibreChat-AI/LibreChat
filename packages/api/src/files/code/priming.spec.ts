@@ -1,3 +1,5 @@
+import { createReadStream } from 'node:fs';
+import { PassThrough, Readable } from 'node:stream';
 import { FileContext } from 'librechat-data-provider';
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
 import {
@@ -5,11 +7,16 @@ import {
   getCodeFileLocation,
   getCodeFileContextLine,
   appendCodeFileContextLine,
+  CodeSourceMissingError,
+  openCodeFileSource,
+  setMissingCodeFilesContext,
+  createCodeReuploadFailures,
 } from './priming';
 
 const file = (id: string, name: string, ref: Partial<CodeEnvRef> = {}, time = 1): TFile =>
   ({
     file_id: id,
+    user: 'user',
     filename: name,
     type: 'text/csv',
     createdAt: new Date(time),
@@ -21,6 +28,127 @@ const file = (id: string, name: string, ref: Partial<CodeEnvRef> = {}, time = 1)
 const fresh = { lastModified: new Date().toISOString() };
 
 describe('selectCodeFiles', () => {
+  it.each(['default', 'stateful'] as const)(
+    'reuses a fresh unnamed legacy ref with timestamp-only metadata on %s',
+    async (routeKey) => {
+      const legacy = {
+        ...file('legacy', 'rows.csv', { executionProfile: routeKey }),
+        context: FileContext.execute_code,
+      };
+      const getFileInfo = jest.fn(async () => fresh);
+      const result = await selectCodeFiles({ files: [legacy], routeKey, getFileInfo });
+
+      expect(result.selected).toHaveLength(1);
+      expect(result.selected[0]).toMatchObject({
+        ref: legacy.metadata!.codeEnvRef,
+        sourceRef: legacy.metadata!.codeEnvRef,
+        sandboxName: 'rows.csv',
+        isActive: true,
+      });
+      expect(result.skippedNoRef).toBe(0);
+      expect(result.skippedSuperseded).toBe(0);
+      await expect(result.selected[0].getUploadTime()).resolves.toBe(fresh.lastModified);
+      await expect(result.selected[0].getUploadTime()).resolves.toBe(fresh.lastModified);
+      expect(getFileInfo).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps the newest snapshot at the live path across legacy records and route recovery', async () => {
+    const legacy = {
+      ...file('legacy', 'rows.csv', { sandboxFilename: 'rows.csv' }),
+      context: FileContext.execute_code,
+    };
+    const snapshot = {
+      ...file('snapshot', 'rows.csv', {}, 2),
+      context: FileContext.execute_code_snapshot,
+    };
+    snapshot.metadata = { codeEnvSource: snapshot.metadata?.codeEnvRef, sourceDispatchedAt: 2 };
+    const result = await selectCodeFiles({
+      files: [legacy, snapshot],
+      routeKey: 'stateful',
+      getFileInfo: async () => fresh,
+    });
+    expect(result.selected.map(({ file }) => file.file_id)).toEqual(['snapshot']);
+    expect(result.selected[0].sandboxName).toBe('rows.csv');
+    expect(result.selected[0].ref).toBeUndefined();
+    expect(result.skippedSuperseded).toBe(1);
+  });
+
+  describe.each([
+    {
+      label: 'converted image',
+      capture: 'nested/chart.png',
+      name: 'nested/chart.webp',
+      canonical: 'nested/chart.webp',
+      type: 'image/webp',
+    },
+    {
+      label: 'assigned text alias',
+      capture: 'report.txt',
+      name: 'report-assigned.txt',
+      canonical: 'report.txt',
+      type: 'text/plain',
+    },
+  ])('$label', ({ capture, name, canonical, type }) => {
+    it.each([
+      ['default', false],
+      ['default', true],
+      ['stateful', false],
+      ['stateful', true],
+    ] as const)(
+      'keeps literal snapshot paths ahead of legacy receipts on %s (stale=%s)',
+      async (routeKey, stale) => {
+        const legacy = {
+          ...file('legacy', capture, {
+            sandboxFilename: name,
+            executionProfile: routeKey,
+          }),
+          type,
+          context: FileContext.execute_code,
+        };
+        const snapshot = {
+          ...file('snapshot', name, {}, 2),
+          type,
+          context: FileContext.execute_code_snapshot,
+        };
+        const result = await selectCodeFiles({
+          files: [legacy, snapshot],
+          routeKey,
+          getFileInfo: async () => (stale ? null : fresh),
+        });
+        expect(result.selected).toHaveLength(2);
+        expect(result.skippedSuperseded).toBe(0);
+        expect(result.selected.find((entry) => entry.file.file_id === 'snapshot')).toMatchObject({
+          sandboxName: name,
+          isActive: false,
+        });
+        expect(result.selected.find((entry) => entry.file.file_id === 'legacy')).toMatchObject({
+          sandboxName:
+            canonical === name ? expect.stringMatching(/^nested\/chart-.+\.webp$/) : canonical,
+          isActive: false,
+          sourceRef: { file_id: 'legacy' },
+        });
+        const alias = result.selected.find((entry) => entry.file.file_id === 'legacy')!.sandboxName;
+        legacy.metadata!.codeEnvRef!.sandboxFilename = alias;
+        const repeated = await selectCodeFiles({
+          files: [legacy, snapshot],
+          routeKey,
+          getFileInfo: async () => (stale ? null : fresh),
+        });
+        expect(repeated.selected.find((entry) => entry.file.file_id === 'legacy')).toMatchObject({
+          sandboxName: alias,
+          isActive: !stale && alias === canonical,
+        });
+        const oldBranch = await selectCodeFiles({
+          files: [legacy],
+          routeKey,
+          getFileInfo: async () => (stale ? null : fresh),
+        });
+        expect(oldBranch.selected[0].sandboxName).toBe(canonical);
+      },
+    );
+  });
+
   it('preserves provisioned aliases across turns and reuses legacy metadata probes', async () => {
     const getFileInfo = jest.fn(async (ref: CodeEnvRef) => ({
       ...fresh,
@@ -119,10 +247,17 @@ describe('selectCodeFiles', () => {
     });
     expect(recovered.selected).toHaveLength(2);
     expect(new Set(recovered.selected.map((f) => f.sandboxName)).size).toBe(2);
-    const restored = recovered.selected.map(({ file: original, sandboxName, sourceRef }) => ({
-      ...original,
-      metadata: { codeEnvRef: { ...sourceRef, sandboxFilename: sandboxName } },
-    }));
+    const restored = recovered.selected.map(({ file: original, sandboxName, sourceRef }) => {
+      if (!sourceRef.file_id || !sourceRef.storage_session_id)
+        throw new Error('Expected owned legacy copy');
+      const ref: CodeEnvRef = {
+        ...sourceRef,
+        file_id: sourceRef.file_id,
+        storage_session_id: sourceRef.storage_session_id,
+        sandboxFilename: sandboxName,
+      };
+      return { ...original, metadata: { codeEnvRef: ref } };
+    });
     const next = await selectCodeFiles({
       files: restored,
       routeKey: 'default',
@@ -198,6 +333,39 @@ describe('selectCodeFiles', () => {
       first.selected[0].sandboxName,
     );
   });
+
+  it.each([
+    ['default', true],
+    ['default', false],
+    ['stateful', true],
+    ['stateful', false],
+  ] as const)(
+    'reuploads a displaced private receipt rather than trusting its live bytes on %s (named %s)',
+    async (routeKey, named) => {
+      const shared = { ...file('shared', 'rows.csv'), context: FileContext.execute_code_snapshot };
+      const privateFile = file('private', 'rows.csv', {
+        kind: 'agent',
+        id: 'agent-a',
+        sandboxFilename: named ? 'rows.csv' : undefined,
+        executionProfile: routeKey,
+      });
+      const result = await selectCodeFiles({
+        files: [privateFile, shared],
+        privateFileIds: new Set(['private']),
+        routeKey,
+        getFileInfo: async () => ({ ...fresh, originalFilename: 'rows.csv' }),
+      });
+      expect(result.selected).toHaveLength(2);
+      expect(result.selected.find((entry) => entry.file.file_id === 'shared')?.sandboxName).toBe(
+        'rows.csv',
+      );
+      expect(result.selected.find((entry) => entry.file.file_id === 'private')).toMatchObject({
+        sandboxName: expect.stringMatching(/^rows-.+\.csv$/),
+        isActive: false,
+        sourceRef: { kind: 'agent', id: 'agent-a', file_id: 'private' },
+      });
+    },
+  );
 
   it('keeps the freshness decision paired with the selected image destination', async () => {
     const now = Date.parse('2026-09-10T12:00:00Z');
@@ -365,5 +533,102 @@ describe('code file context', () => {
     expect(getCodeFileContextLine(output, new Set(), 'chart-1.png', 'programmatic')).toBe(
       '\n\t- $LIBRECHAT_CODE_DATA_DIR/chart-1.png (written earlier as chart.png)',
     );
+  });
+});
+
+describe('openCodeFileSource', () => {
+  it.each([
+    { name: 'NoSuchKey' },
+    { code: 'BlobNotFound', statusCode: 404 },
+    { response: { status: 404 } },
+  ])('names a storage miss %#', async (error) => {
+    await expect(openCodeFileSource(() => Promise.reject(error))).rejects.toBeInstanceOf(
+      CodeSourceMissingError,
+    );
+  });
+
+  it('names a local file that only reports ENOENT once the stream is read', async () => {
+    await expect(
+      openCodeFileSource(async () => createReadStream('/nonexistent/librechat-missing.csv')),
+    ).rejects.toBeInstanceOf(CodeSourceMissingError);
+  });
+
+  it('keeps every byte of a stream it held for its first chunk', async () => {
+    const stream = await openCodeFileSource(async () => Readable.from(['first,', 'second']));
+    const chunks: string[] = [];
+    for await (const chunk of stream) {
+      chunks.push(String(chunk));
+    }
+    expect(chunks.join('')).toBe('first,second');
+  });
+
+  it('destroys a stream it was still holding when the turn is cancelled', async () => {
+    const stream = new PassThrough();
+    const controller = new AbortController();
+    const opened = openCodeFileSource(async () => stream, controller.signal);
+    controller.abort();
+
+    await expect(opened).rejects.toMatchObject({ name: 'AbortError' });
+    expect(stream.destroyed).toBe(true);
+  });
+
+  it('passes other storage failures through unchanged', async () => {
+    const denied = { code: 'AccessDenied', status: 403 };
+    await expect(openCodeFileSource(() => Promise.reject(denied))).rejects.toBe(denied);
+    await expect(openCodeFileSource(async () => 'stream')).resolves.toBe('stream');
+  });
+});
+
+describe('createCodeReuploadFailures', () => {
+  const file = (file_id: string, filename: string) => ({ file_id, filename });
+  const missing = new CodeSourceMissingError();
+
+  it('names files whose source storage deleted without requiring recovery', () => {
+    const failures = createCodeReuploadFailures();
+    failures.add(missing, 'missing_backing_object', file('a', 'report.csv'));
+    failures.add(missing, 'missing_backing_object', file('b', ''));
+
+    expect(failures.count).toBe(2);
+    expect(failures.missingCount).toBe(2);
+    expect(failures.requiresRecovery(2, 0)).toBe(false);
+    expect(failures.missingFilesContext()).toContain('"report.csv", "b"');
+  });
+
+  it('treats a Code API 404 as a recovery failure, not a deleted file', () => {
+    const failures = createCodeReuploadFailures();
+    failures.add({ response: { status: 404 } }, 'missing_backing_object', file('a', 'a.csv'));
+
+    expect(failures.missingCount).toBe(0);
+    expect(failures.requiresRecovery(1, 0)).toBe(true);
+    expect(failures.recoveryCategory()).toBe('missing_backing_object');
+  });
+
+  it('requires recovery when every file failed and one failed for another reason', () => {
+    const failures = createCodeReuploadFailures();
+    failures.add(missing, 'missing_backing_object', file('a', 'gone.csv'));
+    failures.add(new Error('denied'), 'resource_access_denied', file('b', 'denied.csv'));
+
+    expect(failures.requiresRecovery(2, 0)).toBe(true);
+    expect(failures.recoveryCategory()).toBe('resource_access_denied');
+    expect(failures.requiresRecovery(3, 1)).toBe(false);
+  });
+
+  it('reports mixed categories and stays quiet with no failures', () => {
+    const failures = createCodeReuploadFailures();
+    expect(failures.requiresRecovery(0, 0)).toBe(false);
+    expect(failures.missingFilesContext()).toBe('');
+    failures.add(new Error('slow'), 'rate_limited', file('a', 'a.csv'));
+    failures.add(new Error('boom'), 'reupload_failed', file('b', 'b.csv'));
+    expect(failures.recoveryCategory()).toBe('mixed_reupload_failure');
+  });
+});
+
+describe('setMissingCodeFilesContext', () => {
+  it('adds the note under its own key and nothing when there is none', () => {
+    const map: Record<string, unknown> = { execute_code: 'files' };
+    setMissingCodeFilesContext(map, undefined);
+    expect(map).toEqual({ execute_code: 'files' });
+    setMissingCodeFilesContext(map, 'note');
+    expect(Object.values(map)).toEqual(['files', 'note']);
   });
 });

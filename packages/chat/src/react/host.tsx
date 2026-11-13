@@ -1,6 +1,12 @@
 import { createContext, useContext } from 'react';
+import type {
+  Agent,
+  TFile,
+  TAttachment,
+  SearchResultData,
+  TMessageContentParts,
+} from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import type { Agent, TFile } from 'librechat-data-provider';
 import type { TShowToast } from '@librechat/client';
 
 /** The message a part renders in, as its host reports it. */
@@ -13,6 +19,10 @@ export type MessagePartMessage = {
   isLatestMessage?: boolean;
   /** Content type of the part after this one, when known. */
   nextType?: string;
+  /** Conversation of that message, when it has one. */
+  conversationId?: string | null;
+  /** Position of the part in the message's content, when it renders one part. */
+  partIndex?: number;
 };
 
 /** How the viewer prefers user-authored text to display. */
@@ -26,10 +36,63 @@ export type MessagePartsUserTextPreferences = {
 };
 
 /** The signed-in user as the parts label it; `undefined` on a public share. */
-export type MessagePartsUser = { name?: string; username?: string } | undefined;
+export type MessagePartsUser = { id?: string; name?: string; username?: string } | undefined;
 
 /** Shows a transient notification. */
 export type MessagePartsToast = (toast: TShowToast) => void;
+
+/** What a caller asks the host's content-parts renderer to draw: a message's parts, and the row
+ *  state around them. Omitted row fields take an assistant reply's defaults: not the user's,
+ *  the last row, and latest while it is submitting. */
+export type ContentPartsSlotProps = {
+  /** Holes stay where a streaming or parallel index has no part yet; positions are part indexes. */
+  content: Array<TMessageContentParts | undefined>;
+  messageId: string;
+  conversationId: string | null;
+  attachments?: TAttachment[];
+  searchResults?: Record<string, SearchResultData>;
+  authorHeader?: ReactNode;
+  isSubmitting: boolean;
+  showThinking: boolean;
+  edit?: boolean;
+  enterEdit?: (cancel?: boolean) => void | null | undefined;
+  siblingIdx?: number;
+  setSiblingIdx?: ((value: number) => void) | null;
+  isCreatedByUser?: boolean;
+  isLast?: boolean;
+  isLatestMessage?: boolean;
+  manualSkills?: string[];
+  renderOwnerId?: string;
+  createdAt?: string | null;
+  foldLiveActivity?: boolean;
+};
+
+/** Where the calling message is rendered: a public share link, or the reader's own chat. */
+export type MessagePartsShare = {
+  isSharedConvo?: boolean;
+  shareId?: string;
+};
+
+/** What a part asks the host's image renderer to draw: an attached image, opened full size on click. */
+export type MessagePartsImageProps = {
+  imagePath: string;
+  altText: string;
+  width?: number;
+  height?: number;
+};
+
+/** What a part asks the host's file preview dialog to show for an attached file. */
+export type MessagePartsFilePreviewProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  fileName: string;
+  fileId?: string;
+  filePath?: string;
+  fileType?: string;
+  fileSource?: string;
+  fileSize?: number;
+  deliveryPath?: TFile['llmDeliveryPath'];
+};
 
 /** What a part asks the host's markdown renderer to draw. */
 export type MessagePartsMarkdownProps = {
@@ -39,6 +102,8 @@ export type MessagePartsMarkdownProps = {
   variant: 'full' | 'lite';
   /** Whether the text belongs to the tail of the active branch. */
   isLatestMessage: boolean;
+  /** `false` draws code blocks without run controls, for text that is shown and never run. */
+  codeExecution?: boolean;
 };
 
 /**
@@ -58,18 +123,30 @@ export interface MessagePartsHost {
   useMessage: () => MessagePartMessage;
   /** Renders markdown with the app's renderer. */
   renderMarkdown: (props: MessagePartsMarkdownProps) => ReactNode;
+  /** Renders an attached image with the app's image viewer. */
+  renderImage: (props: MessagePartsImageProps) => ReactNode;
+  /** Renders the app's preview dialog for an attached file. */
+  renderFilePreview: (props: MessagePartsFilePreviewProps) => ReactNode;
   /** Whether streamed text fades in word by word: the viewer's setting, unless motion is reduced. */
   useSmoothStreaming: () => boolean;
   /** An agent the viewer can see, by id. */
   useAgent: (agentId: string) => Agent | undefined;
+  /** Draws a message's content parts with the app's renderer. */
+  renderContentParts: (props: ContentPartsSlotProps) => ReactNode;
   /** Renders an agent's avatar; `undefined` when the agent is unknown. */
   renderAgentIcon: (agent: Agent | undefined) => ReactNode;
+  /** Renders an agent's bare inline avatar, without the message icon around it. */
+  renderAgentAvatar: (agent: Agent | undefined) => ReactNode;
   /** The viewer's font size utility, applied to reasoning and summary text. */
   useFontSize: () => string;
   /** Whether the viewer wants reasoning expanded by default. */
   useShowThinking: () => boolean;
   /** Whether the viewer wants tool cards and tool groups expanded by default. */
   useAutoExpandTools: () => boolean;
+  /** Whether the viewer wants LaTeX in markdown rendered as math. */
+  useLaTeXParsing: () => boolean;
+  /** The direction chat text is typed in; `auto` resolves it from the text itself. */
+  useChatDirection: () => 'auto' | 'ltr' | 'rtl';
   /** How the viewer prefers user-authored text to display. */
   useUserTextPreferences: () => MessagePartsUserTextPreferences;
   /** The signed-in user. */
@@ -96,6 +173,8 @@ export interface MessagePartsHost {
    * clears that mark for a steer id once the part has seen it.
    */
   useLiveAppliedSteer: (steerId: string) => [boolean, (steerId: string) => void];
+  /** Whether the calling message renders under a public share link, and which. */
+  useShare: () => MessagePartsShare;
 }
 
 const MessagePartsHostContext = createContext<MessagePartsHost | null>(null);

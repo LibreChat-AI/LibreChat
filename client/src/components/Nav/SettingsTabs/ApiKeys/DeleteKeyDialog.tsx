@@ -43,7 +43,7 @@ export default function DeleteKeyDialog({
         title={localize('com_ui_delete_api_key')}
         className="max-w-[28.125rem]"
         main={
-          <div className="space-y-3 text-left">
+          <div className="space-y-3 text-start">
             <p className="text-text-primary text-sm">
               {localize('com_ui_api_key_delete_confirm', { 0: name })}
             </p>

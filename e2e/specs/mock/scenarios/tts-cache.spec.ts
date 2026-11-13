@@ -29,6 +29,15 @@ test.afterAll(async () => {
   await deleteConversations(createdConversationIds);
 });
 
+/**
+ * A third of a second of silence as MPEG-1 Layer III frames. Read-aloud streams the response into
+ * a MediaSource, and bytes the decoder rejects fail the playback, which cancels the request: the
+ * audio was then cached only when the response happened to finish before the decoder gave up.
+ */
+const SILENT_MP3_FRAME = Buffer.alloc(417);
+SILENT_MP3_FRAME.set([0xff, 0xfb, 0x90, 0x00]);
+const SILENT_MP3 = Buffer.concat(Array.from({ length: 12 }, () => SILENT_MP3_FRAME));
+
 /** Stands in for a configured external TTS provider: the e2e config has none. */
 async function routeExternalSpeech(
   target: Page | BrowserContext,
@@ -44,10 +53,7 @@ async function routeExternalSpeech(
   );
   await target.route('**/api/files/speech/tts/manual', (route) => {
     ttsRequests += 1;
-    return route.fulfill({
-      body: Buffer.from([0xff, 0xf3, 0x00, 0x00]),
-      contentType: 'audio/mpeg',
-    });
+    return route.fulfill({ body: SILENT_MP3, contentType: 'audio/mpeg' });
   });
   return { requests: () => ttsRequests };
 }
@@ -66,7 +72,9 @@ async function replyToReadAloud(page: Page, prefix: string) {
   await expect(page.getByText(replyText(label)).first()).toBeVisible({ timeout: 20000 });
   const conversationId = new URL(page.url()).pathname.split('/c/')[1];
   if (conversationId) createdConversationIds.push(conversationId);
-  return page.getByRole('button', { name: 'Read aloud' }).last();
+  /** By test id, not by name: the button is named "Stop" while its message is read aloud, and a
+   *  name-based locator then resolves to the user message's read-aloud button instead. */
+  return page.getByTestId('read-aloud-button');
 }
 
 const cacheStorageNames = (page: Page) => page.evaluate(() => caches.keys());

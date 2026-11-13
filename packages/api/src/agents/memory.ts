@@ -30,21 +30,24 @@ import type {
   MemoryMethods,
   IUser,
   FormattedMemoriesResult,
+  AppConfig,
 } from '@librechat/data-schemas';
 import type { TAttachment, FiltersConfig, MemoryArtifact } from 'librechat-data-provider';
 import type { BaseMessage, ToolMessage } from '@librechat/agents/langchain/messages';
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { Response as ServerResponse } from 'express';
+import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ServerRequest, RunLLMConfig } from '~/types';
-import { resolveConfigHeaders, createSafeUser, getSafeErrorMetadata } from '~/utils';
+import { resolveConfigHeaders, createSafeUser, getSafeErrorMetadata, writeGuarded } from '~/utils';
 import { contentFilterModelBoundBlockResponse } from '~/middleware/contentFilter';
 import { extractMemoryContent } from '~/protection/adapters/submissions';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { buildLangfuseConfig } from '~/langfuse/config';
 import { inspectContent } from '~/protection/runtime';
 import { checkAccess } from '~/middleware/access';
+import { countTokens } from '~/utils/tokenizer';
 import { isMemoryEnabled } from '~/memory';
-import Tokenizer from '~/utils/tokenizer';
 
 type RequiredMemoryMethods = Pick<
   MemoryMethods,
@@ -76,13 +79,18 @@ function normalizeMemoryLLMConfig(llmConfig?: Partial<LLMConfig>): SanitizedMemo
 export const memoryInstructions =
   'Persistent memory is available across conversations within the current memory scope. Saved memories, if any, are shown below. No entries shown here does not mean memory is unavailable. Use memory tools only if provided; claim a memory was saved or deleted only after the action is confirmed.';
 
-export function formatMemoryContext(memory: string | undefined): string | undefined {
+export function formatMemoryContext(
+  memory: string | undefined,
+  { announceEmpty = true }: { announceEmpty?: boolean } = {},
+): string | undefined {
   if (memory == null) {
     return undefined;
   }
-  return memory
-    ? `${memoryInstructions}\n\n# Existing memory about the user:\n${memory}`
-    : memoryInstructions;
+  if (!memory) {
+    /** An empty store is announced only when the model can use memory: nothing else tells it so. */
+    return announceEmpty ? memoryInstructions : undefined;
+  }
+  return `${memoryInstructions}\n\n# Existing memory about the user:\n${memory}`;
 }
 
 export const SET_MEMORY_TOOL_NAME = 'set_memory';
@@ -198,7 +206,7 @@ export const createMemoryTool = ({
             return [`Invalid key "${key}". Must be one of: ${validKeys.join(', ')}`, undefined];
           }
 
-          const tokenCount = Tokenizer.getTokenCount(value, 'o200k_base');
+          const tokenCount = await countTokens(value);
           /** Total excluding this key's prior persisted or in-instance value,
            *  so a rewrite is measured as a replacement rather than an addition. */
           const baseTotalTokens = currentTotalTokens - (currentTokensByKey.get(key) ?? 0);
@@ -778,6 +786,9 @@ export async function processMemory({
   jobCreatedAt,
   user,
   tenantId,
+  appConfig,
+  isTemporary,
+  traceContext,
 }: {
   res: ServerResponse;
   setMemory: MemoryMethods['setMemory'];
@@ -809,6 +820,9 @@ export async function processMemory({
   jobCreatedAt?: number;
   user?: IUser;
   tenantId?: string;
+  appConfig?: AppConfig;
+  isTemporary?: boolean;
+  traceContext?: LangfuseTraceContext;
 }): Promise<(TAttachment | null)[] | undefined> {
   try {
     signal?.throwIfAborted();
@@ -998,6 +1012,23 @@ ${memory ?? 'No existing memories'}`;
       },
       customHandlers,
       returnContent: true,
+      langfuse: {
+        ...buildLangfuseConfig({
+          appConfig,
+          runId: messageId,
+          tenantId: tenantId ?? user?.tenantId,
+          isTemporary,
+          user,
+          traceContext: {
+            ...traceContext,
+            conversationId: traceContext?.conversationId ?? conversationId,
+            provider: traceContext?.provider ?? finalLLMConfig.provider,
+            model: traceContext?.model ?? finalLLMConfig.model,
+          },
+        }),
+        // Share response sampling, but not its feedback trace ID. Keep runId for attachments.
+        deterministicTraceId: false,
+      },
     });
 
     signal?.throwIfAborted();
@@ -1051,6 +1082,9 @@ export async function createMemoryProcessor({
   jobCreatedAt,
   user,
   tenantId,
+  appConfig,
+  isTemporary,
+  traceContext,
 }: {
   res: ServerResponse;
   messageId: string;
@@ -1067,6 +1101,9 @@ export async function createMemoryProcessor({
   jobCreatedAt?: number;
   user?: IUser;
   tenantId?: string;
+  appConfig?: AppConfig;
+  isTemporary?: boolean;
+  traceContext?: LangfuseTraceContext;
 }): Promise<
   | [undefined, undefined]
   | [
@@ -1140,6 +1177,9 @@ export async function createMemoryProcessor({
           deleteMemory: memoryMethods.deleteMemory,
           user,
           tenantId,
+          appConfig,
+          isTemporary,
+          traceContext,
         });
       } catch (error) {
         logger.error('Memory Agent failed to process memory', getSafeErrorMetadata(error));
@@ -1192,7 +1232,7 @@ async function handleMemoryArtifact({
       { expectedCreatedAt: jobCreatedAt },
     );
   } else {
-    res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+    writeGuarded(res, `event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
   return attachment;
 }

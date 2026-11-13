@@ -41,7 +41,7 @@ function PullRequestCard({
         <span className="text-text-primary text-sm font-medium">
           {localize(view.labelKey, { 0: pullRequest.number })}
         </span>
-        <span className="ml-auto flex items-center gap-1.5 text-xs font-medium">
+        <span className="ms-auto flex items-center gap-1.5 text-xs font-medium">
           <span
             className="text-status-success"
             aria-label={localize('com_ui_pr_additions', { 0: pullRequest.additions })}

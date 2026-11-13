@@ -98,6 +98,8 @@ const mockOptionalChainWithEmptyCheck = jest.fn();
 const mockGetThreadData = jest.fn();
 
 jest.mock('~/utils', () => ({
+  createCodeApiRateLimitBudget: (...args: unknown[]) =>
+    jest.requireActual('~/utils').createCodeApiRateLimitBudget(...args),
   extractLibreChatParams: (...args: unknown[]) => mockExtractLibreChatParams(...args),
   getModelMaxTokens: (...args: unknown[]) => mockGetModelMaxTokens(...args),
   optionalChainWithEmptyCheck: (...args: unknown[]) => mockOptionalChainWithEmptyCheck(...args),
@@ -110,9 +112,7 @@ jest.mock('~/endpoints', () => ({
 }));
 
 jest.mock('~/files', () => ({
-  filterFilesByEndpointConfig: jest.fn(() => []),
   filterFilesByEndpointRuntimeConfig: jest.fn(() => []),
-  isLegacyFileUploadUX: jest.fn(() => false),
 }));
 
 jest.mock('~/prompts', () => ({
@@ -141,8 +141,12 @@ jest.mock('../../middleware/modelBoundContent', () => {
 });
 
 import { initializeAgent } from '../initialize';
+import { createProvisionFilesCallback } from '~/files/provision/callback';
+import { createFileProvisionRecovery } from '~/files/operations';
+import { selectCodeFiles } from '~/files/code/priming';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
+import { canAgentGraphPause } from '../hitl/admission';
 
 const realUtils = jest.requireActual<typeof import('~/utils')>('~/utils');
 
@@ -468,9 +472,82 @@ describe('initializeAgent — execution context', () => {
   });
 });
 
-describe('initializeAgent: ChatProject context', () => {
+describe('initializeAgent: allowed providers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  /** The effective config serves `endpoints.agents.allowedProviders` in served names, so a
+   *  YAML `Ollama` arrives as `ollama`. The chat path's model check before this is covered in
+   *  `api/server/services/Endpoints/agents/initialize.spec.js`. */
+  it.each(['ollama', 'Ollama', 'OLLAMA'])(
+    'sets up an agent saved with provider %s on the served ollama endpoint',
+    async (provider) => {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider,
+        overrideProvider: Providers.OPENAI,
+      });
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set(['ollama']),
+          isInitialAgent: true,
+        },
+        db,
+      );
+
+      expect(mockGetProviderConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: 'ollama' }),
+      );
+      const { getOptions } = mockGetProviderConfig.mock.results[0].value;
+      expect(getOptions).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'ollama' }));
+      expect(result.endpoint).toBe('ollama');
+    },
+  );
+
+  it('rejects a provider the allowed list does not name', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: 'OpenRouter',
+      overrideProvider: Providers.OPENAI,
+    });
+
+    await expect(
+      initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set(['ollama']),
+          isInitialAgent: true,
+        },
+        db,
+      ),
+    ).rejects.toThrow(ErrorTypes.INVALID_AGENT_PROVIDER);
+  });
+});
+
+describe('initializeAgent: ChatProject context', () => {
+  const filterMock = jest.requireMock('~/files') as {
+    filterFilesByEndpointRuntimeConfig: jest.Mock;
+  };
+  const realFilters = jest.requireActual<typeof import('~/files/filter')>('~/files/filter');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    filterMock.filterFilesByEndpointRuntimeConfig
+      .mockReset()
+      .mockImplementation(realFilters.filterFilesByEndpointRuntimeConfig);
+  });
+
+  afterEach(() => {
+    filterMock.filterFilesByEndpointRuntimeConfig.mockReset().mockReturnValue([]);
   });
 
   const projectFile: TFile = {
@@ -588,7 +665,7 @@ describe('initializeAgent: ChatProject context', () => {
         res,
         primaryConfig,
         allowedProviders: new Set([Providers.OPENAI]),
-        modelsConfig: { openai: ['test-model'] },
+        getEndpointModels: async () => ({ openai: ['test-model'] }),
         loadTools,
         useChatProjectContext: true,
       },
@@ -651,7 +728,7 @@ describe('initializeAgent: ChatProject context', () => {
         primaryConfig,
         rootConfigs: [primaryConfig],
         allowedProviders: new Set([Providers.OPENAI]),
-        modelsConfig: { openai: ['test-model'] },
+        getEndpointModels: async () => ({ openai: ['test-model'] }),
         loadTools,
         useChatProjectContext: true,
       },
@@ -694,6 +771,336 @@ describe('initializeAgent: ChatProject context', () => {
     expect(agent).not.toHaveProperty('tool_resources');
     expect(db.getFiles).not.toHaveBeenCalled();
   });
+  it('queues cleared Project files for the first search in a new conversation', async () => {
+    const { agent, loadTools, db } = createMocks();
+    agent.tools = [Tools.file_search];
+    const repairing = {
+      ...canonicalFile,
+      embedded: false,
+      source: FileSources.s3,
+      metadata: { searchDestination: true },
+    };
+    const runtime = projectRuntime();
+    runtime.chatProjectContext = {
+      ...projectContext,
+      resources: [toCanonicalProjectResource(repairing)],
+    };
+    const result = await initializeAgent(
+      {
+        runtime,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+      },
+      db,
+    );
+    expect(result.provisionState?.vectorDBFiles).toEqual([
+      expect.objectContaining({
+        file_id: 'project-file',
+        embedded: false,
+        source: FileSources.s3,
+        metadata: { searchDestination: true },
+      }),
+    ]);
+    expect(result.provisionState?.codeEnvFiles).toEqual([]);
+    expect(result.provisionState?.agentScopedFileIds.size).toBe(0);
+    expect(agent.tools).toEqual([Tools.file_search]);
+    expect(db.getFiles).not.toHaveBeenCalled();
+    expect(db.getProjectFiles).not.toHaveBeenCalled();
+  });
+
+  describe('retained Project repair endpoint policy', () => {
+    const MB = 1024 * 1024;
+    const realResources = jest.requireActual<typeof import('../resources')>('../resources');
+
+    beforeEach(() => {
+      jest.mocked(primeResources).mockImplementationOnce(realResources.primeResources);
+    });
+
+    function repairFile(
+      overrides: Partial<ProjectFileRecord & TFile> = {},
+    ): ProjectFileRecord & TFile {
+      return {
+        ...canonicalFile,
+        embedded: false,
+        source: FileSources.s3,
+        storageKey: 'uploads/project.txt',
+        storageRegion: 'us-east-1',
+        tenantId: 'tenant-1',
+        context: FileContext.message_attachment,
+        bytes: MB / 2,
+        metadata: { searchDestination: true },
+        ...overrides,
+      };
+    }
+
+    async function initializeRepairs({
+      projectFiles = [repairFile()],
+      current = [],
+      deferred = [],
+      persistent = [],
+      fileConfig,
+      filters,
+    }: {
+      projectFiles?: ProjectFileRecord[];
+      current?: TFile[];
+      deferred?: TFile[];
+      persistent?: TFile[];
+      fileConfig?: NonNullable<ServerRequest['config']>['fileConfig'];
+      filters?: FiltersConfig;
+    } = {}) {
+      const { agent, loadTools, db } = createMocks();
+      agent.tools = [Tools.file_search];
+      agent.endpoint = EModelEndpoint.openAI;
+      agent.tool_resources = {
+        [EToolResources.file_search]: { file_ids: persistent.map((file) => file.file_id) },
+      };
+      const runtime = projectRuntime();
+      runtime.user!.tenantId = 'tenant-1';
+      runtime.appConfig.fileConfig = fileConfig;
+      runtime.appConfig.filters = filters;
+      runtime.chatProjectContext = {
+        ...projectContext,
+        file_ids: projectFiles.map((file) => file.file_id),
+        resources: projectFiles.map(toCanonicalProjectResource),
+      };
+      const getFiles = jest.fn().mockResolvedValue(persistent);
+      if (current.length > 0 || deferred.length > 0) {
+        getFiles.mockResolvedValueOnce([...current, ...deferred]);
+      }
+      const getProjectFiles = jest.fn().mockResolvedValue(projectFiles);
+      const getDeferredProvisionFiles = jest.fn().mockResolvedValue(deferred);
+      const result = await initializeAgent(
+        {
+          runtime,
+          agent,
+          loadTools,
+          requestFiles: current.map(({ file_id }) => ({ file_id }) as IMongoFile),
+          conversationId: deferred.length > 0 ? 'repair-conversation' : undefined,
+          allowedProviders: new Set([Providers.OPENAI]),
+          useChatProjectContext: true,
+          fileSearchAvailable: true,
+        },
+        {
+          ...db,
+          getFiles,
+          getProjectFiles,
+          getDeferredProvisionFiles,
+          getConvoFiles: jest.fn().mockResolvedValue(deferred.map((file) => file.file_id)),
+        },
+      );
+      return { result, runtime, getFiles, getProjectFiles, getDeferredProvisionFiles };
+    }
+
+    it.each([
+      { policy: 'disabled files', config: { disabled: true } },
+      { policy: 'MIME allowlist', config: { supportedMimeTypes: ['application/pdf'] } },
+      { policy: 'per-file size', config: { fileSizeLimit: 0.25 } },
+      { policy: 'total size', config: { totalSizeLimit: 0.25 } },
+    ])('does not append or queue a repair rejected by $policy', async ({ config }) => {
+      const { result, getFiles, getProjectFiles } = await initializeRepairs({
+        fileConfig: { endpoints: { [EModelEndpoint.openAI]: config } },
+      });
+      expect(result.tool_resources?.[EToolResources.file_search]?.files ?? []).toEqual([]);
+      expect(result.provisionState?.vectorDBFiles ?? []).toEqual([]);
+      expect(getFiles).not.toHaveBeenCalled();
+      expect(getProjectFiles).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { routingMimeType: 'text/csv', allowed: 'text/csv', admitted: true },
+      { routingMimeType: 'text/csv', allowed: 'text/plain', admitted: false },
+      { routingMimeType: undefined, allowed: 'text/plain', admitted: true },
+      { routingMimeType: undefined, allowed: 'text/csv', admitted: false },
+    ])(
+      'screens retained repairs routed as $routingMimeType against $allowed',
+      async ({ routingMimeType, allowed, admitted }) => {
+        const { result, getFiles, getProjectFiles } = await initializeRepairs({
+          projectFiles: [
+            repairFile({
+              type: 'text/plain',
+              metadata: {
+                searchDestination: true,
+                ...(routingMimeType !== undefined ? { routingMimeType } : {}),
+              },
+            }),
+          ],
+          fileConfig: {
+            endpoints: { [EModelEndpoint.openAI]: { supportedMimeTypes: [allowed] } },
+          },
+        });
+        const queued = result.provisionState?.vectorDBFiles ?? [];
+        const attached = result.tool_resources?.[EToolResources.file_search]?.files ?? [];
+        expect(queued).toHaveLength(admitted ? 1 : 0);
+        expect(attached).toHaveLength(admitted ? 1 : 0);
+        if (admitted) {
+          expect(queued[0]).toMatchObject({
+            type: 'text/plain',
+            metadata: {
+              searchDestination: true,
+              ...(routingMimeType !== undefined ? { routingMimeType } : {}),
+            },
+          });
+        }
+        expect(getFiles).not.toHaveBeenCalled();
+        expect(getProjectFiles).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([undefined, false, true])(
+      'queues an admitted repair without rereading it when retainedFileCleanup is %p',
+      async (retainedFileCleanup) => {
+        const { result, runtime, getFiles, getProjectFiles } = await initializeRepairs({
+          fileConfig: {
+            ...(retainedFileCleanup === undefined ? {} : { retainedFileCleanup }),
+            endpoints: {
+              [EModelEndpoint.openAI]: {
+                supportedMimeTypes: ['text/plain'],
+                fileSizeLimit: 0.5,
+                totalSizeLimit: 0.5,
+              },
+            },
+          },
+        });
+        const admitted = runtime.chatProjectContext.resources[0];
+        if (admitted.availability !== 'ready') {
+          throw new Error('Expected a ready Project fixture');
+        }
+        expect(result.provisionState?.vectorDBFiles).toEqual([admitted.file]);
+        expect(result.provisionState?.vectorDBFiles[0]).toBe(admitted.file);
+        expect(result.tool_resources?.[EToolResources.file_search]?.files).toEqual([admitted.file]);
+        expect(admitted.file).toMatchObject({
+          embedded: false,
+          user: 'user-1',
+          tenantId: 'tenant-1',
+          source: FileSources.s3,
+          storageKey: 'uploads/project.txt',
+          storageRegion: 'us-east-1',
+          metadata: { searchDestination: true },
+        });
+        expect(result.provisionState?.agentScopedFileIds.size).toBe(0);
+        expect(getFiles).not.toHaveBeenCalled();
+        expect(getProjectFiles).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([false, true])(
+      'rejects an over-budget Project repair that overlaps current files (deferred: %s)',
+      async (deferred) => {
+        const oversized = repairFile({ bytes: 2 * MB });
+        const { result } = await initializeRepairs({
+          projectFiles: [oversized],
+          current: [oversized],
+          deferred: deferred ? [oversized] : [],
+          fileConfig: { endpoints: { [EModelEndpoint.openAI]: { totalSizeLimit: 1 } } },
+        });
+        expect(result.provisionState?.vectorDBFiles ?? []).toEqual([]);
+        expect(result.tool_resources?.[EToolResources.file_search]?.files ?? []).toEqual([]);
+      },
+    );
+
+    it.each([false, true])(
+      'reserves current admission before deferred candidates (overlap first: %s)',
+      async (overlapFirst) => {
+        const current = repairFile({ file_id: 'current', bytes: (MB * 3) / 4 });
+        const other = repairFile({ file_id: 'deferred', bytes: (MB * 3) / 4 });
+        const { result } = await initializeRepairs({
+          projectFiles: [current, other],
+          current: [current],
+          deferred: overlapFirst ? [current, other] : [other, current],
+          fileConfig: { endpoints: { [EModelEndpoint.openAI]: { totalSizeLimit: 1 } } },
+        });
+        expect(result.provisionState?.vectorDBFiles.map((file) => file.file_id)).toEqual([
+          'current',
+        ]);
+      },
+    );
+
+    it('does not charge duplicate current files twice before admitting other project repairs', async () => {
+      const shared = repairFile({ file_id: 'shared-current', bytes: MB / 2 });
+      const other = repairFile({ file_id: 'other-project', bytes: MB / 2 });
+      const { result } = await initializeRepairs({
+        projectFiles: [shared, other],
+        current: [shared, shared],
+        deferred: [shared, shared],
+        fileConfig: { endpoints: { [EModelEndpoint.openAI]: { totalSizeLimit: 1 } } },
+      });
+      const ids = result.provisionState?.vectorDBFiles.map((file) => file.file_id) ?? [];
+      expect(ids).toEqual(['shared-current', 'other-project']);
+    });
+
+    it('shares one allowance with current, deferred and persistent files, counting overlaps once', async () => {
+      const shared = repairFile({ file_id: 'shared', bytes: MB / 4 });
+      const currentOnly = repairFile({ file_id: 'current', bytes: MB / 8 });
+      const deferredOnly = repairFile({ file_id: 'deferred', bytes: MB / 8 });
+      const persistentOnly = repairFile({ file_id: 'persistent', bytes: MB / 4 });
+      const fits = repairFile({ file_id: 'fits', bytes: MB / 4 });
+      const overflow = repairFile({ file_id: 'overflow', bytes: MB / 8 });
+      const { result, getFiles, getProjectFiles, getDeferredProvisionFiles } =
+        await initializeRepairs({
+          projectFiles: [shared, persistentOnly, fits, overflow],
+          current: [shared, currentOnly],
+          deferred: [shared, deferredOnly],
+          persistent: [shared, persistentOnly],
+          fileConfig: { endpoints: { [EModelEndpoint.openAI]: { totalSizeLimit: 1 } } },
+        });
+      const queuedIds = result.provisionState?.vectorDBFiles.map((file) => file.file_id) ?? [];
+      expect(queuedIds).toEqual(
+        expect.arrayContaining(['shared', 'current', 'deferred', 'persistent', 'fits']),
+      );
+      expect(queuedIds).not.toContain('overflow');
+      expect(new Set(queuedIds).size).toBe(queuedIds.length);
+      expect(result.tool_resources?.[EToolResources.file_search]?.files).toEqual(
+        expect.arrayContaining([expect.objectContaining({ file_id: 'fits' })]),
+      );
+      expect(result.tool_resources?.[EToolResources.file_search]?.files).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ file_id: 'overflow' })]),
+      );
+      expect(filterMock.filterFilesByEndpointRuntimeConfig).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          consumedBytes: (MB * 3) / 4,
+          files: [
+            expect.objectContaining({ file_id: 'fits' }),
+            expect.objectContaining({ file_id: 'overflow' }),
+          ],
+        }),
+      );
+      expect(getFiles).toHaveBeenCalledTimes(2);
+      expect(getProjectFiles).not.toHaveBeenCalled();
+      expect(getDeferredProvisionFiles).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['endpoint', 'content'])(
+      'does not charge persistent files rejected by %s policy',
+      async (policy) => {
+        const persistent = repairFile({
+          file_id: 'rejected-persistent',
+          bytes: (MB * 3) / 4,
+          ...(policy === 'endpoint' ? { type: 'application/pdf' } : { text: 'BLOCKED' }),
+        });
+        const { result } = await initializeRepairs({
+          persistent: [persistent],
+          filters: policy === 'content' ? projectFilePolicy : undefined,
+          fileConfig: {
+            endpoints: {
+              [EModelEndpoint.openAI]: { supportedMimeTypes: ['text/plain'], totalSizeLimit: 1 },
+            },
+          },
+        });
+        expect(result.provisionState?.vectorDBFiles.map((file) => file.file_id)).toEqual([
+          projectFile.file_id,
+        ]);
+        expect(filterMock.filterFilesByEndpointRuntimeConfig).toHaveBeenLastCalledWith(
+          expect.anything(),
+          expect.objectContaining({ consumedBytes: 0 }),
+        );
+      },
+    );
+  });
+
   it('adds Project files for file_search supplied by a manual Skill', async () => {
     const { agent, req, loadTools, db } = createMocks();
     const { Types } = await import('mongoose');
@@ -2339,6 +2746,32 @@ describe('initializeAgent — maxContextTokens', () => {
     },
   );
 
+  it('budgets Bedrock Nemotron with its context window instead of the default', async () => {
+    const model = 'nvidia.nemotron-super-3-120b';
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: Providers.BEDROCK,
+      model,
+      maxOutputTokens: 4096,
+      useRealTokenLookup: true,
+    });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.BEDROCK]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(mockGetModelMaxTokens).toHaveBeenCalledWith(model, EModelEndpoint.bedrock, undefined);
+    expect(result.maxContextTokens).toBe(Math.round((256000 - 4096) * 0.95));
+  });
+
   it('uses user-configured maxContextTokens when provided via model_parameters', async () => {
     const userValue = 50000;
     const { agent, req, res, loadTools, db } = createMocks({
@@ -2894,6 +3327,12 @@ describe('initializeAgent — skill `allowed-tools` union (Phase 6)', () => {
     expect(definedNames).not.toContain('mcp__broken__tool');
   });
   it('removes skill-added Project resources before retrying without denied tools', async () => {
+    const { filterFilesByEndpointRuntimeConfig } = jest.requireMock('~/files') as {
+      filterFilesByEndpointRuntimeConfig: jest.Mock;
+    };
+    filterFilesByEndpointRuntimeConfig.mockImplementationOnce(
+      (_config: unknown, { files }: { files: TFile[] }) => files,
+    );
     const { agent, req, loadTools, db } = createMocks();
     const { Types } = await import('mongoose');
     const skillId = new Types.ObjectId();
@@ -3800,6 +4239,42 @@ describe('initializeAgent — execute_code capability expansion', () => {
     },
   );
 
+  it.each([
+    { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' as const } },
+    Object.fromEntries(
+      Array.from({ length: 1025 }, (_, i) => [`${i}`, { approval_mode: 'ask' as const }]),
+    ),
+    Object.fromEntries(
+      Array.from({ length: 129 }, (_, i) => [
+        `${i}`.padEnd(256, 'é'),
+        { approval_mode: 'ask' as const },
+      ]),
+    ),
+  ])(
+    'rejects legacy option-limit violations before loading tools or priming resources',
+    async (tool_options) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.tool_options = tool_options;
+      const primeCalls = jest.mocked(primeResources).mock.calls.length;
+      await expect(
+        initializeAgent(
+          {
+            req,
+            res,
+            agent,
+            loadTools,
+            endpointOption: { endpoint: EModelEndpoint.agents },
+            allowedProviders: new Set([Providers.OPENAI]),
+            isInitialAgent: true,
+          },
+          db,
+        ),
+      ).rejects.toMatchObject({ code: 'AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED' });
+      expect(loadTools).not.toHaveBeenCalled();
+      expect(primeResources).toHaveBeenCalledTimes(primeCalls);
+    },
+  );
+
   it('rejects a stateful environment excluded by deployment policy', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.tools = ['execute_code'];
@@ -4451,10 +4926,10 @@ describe('initializeAgent — code-generated file thread filter (regression)', (
     const deferredOnly = { file_id: 'deferred', filename: 'b.csv', bytes: 100 };
     const { agent, req, res, loadTools, db } = setupExecuteCodeAgent();
 
-    /* Delivery keeps the shared file; the deferred pass keeps both. */
+    /* Delivery has admitted the shared file; deferred screening sees only new ids. */
     filterFilesByEndpointRuntimeConfig
       .mockReturnValueOnce([shared])
-      .mockReturnValueOnce([shared, deferredOnly]);
+      .mockReturnValueOnce([deferredOnly]);
     const getDeferredProvisionFiles = jest.fn().mockResolvedValue([shared, deferredOnly]);
     const getConvoFiles = jest.fn().mockResolvedValue(['shared', 'deferred']);
     const getToolFilesByIds = jest.fn().mockResolvedValue([shared]);
@@ -4483,9 +4958,12 @@ describe('initializeAgent — code-generated file thread filter (regression)', (
     const chargedToDeferred = filterFilesByEndpointRuntimeConfig.mock.calls
       .map(([, params]) => (params as { consumedBytes?: number }).consumedBytes)
       .find((bytes) => bytes !== undefined);
-    /* The only delivered file is also the shared one, and the deferred pass charges its
-     * own list as it walks it, so nothing is carried in. */
-    expect(chargedToDeferred).toBe(0);
+    expect(chargedToDeferred).toBe(400);
+    expect(filterFilesByEndpointRuntimeConfig).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ files: [deferredOnly], consumedBytes: 400 }),
+    );
 
     /* The persistent screening runs inside the callback, and must see the two unique
      * files rather than three. */
@@ -4872,6 +5350,43 @@ describe('initializeAgent — run-scoped MCP tool definitions', () => {
     expect(loadTools).toHaveBeenCalledWith(
       expect.objectContaining({ accessibleMcpServerNames: accessibleNames }),
     );
+  });
+
+  it('keeps valid authored limits through symbol-only server normalization and chat admission', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      structuredTools: [{ name: 'web_search' }],
+      loadedToolDefinitions: [{ name: 'web_search' }],
+    });
+    const names = Array.from({ length: 1023 }, (_, i) => `${`${i}`.padEnd(58, 'q')}_mcp_!`);
+    agent.tools = ['web_search'];
+    agent.tool_options = Object.fromEntries([
+      ...names.map((name) => [name, { approval_mode: 'ask' as const }]),
+      ['web_search', { approval_mode: 'ask' as const }],
+    ]);
+    req.config!.mcpConfig = { '!': { type: 'stdio', command: 'node', args: [] } };
+    db.getAccessibleMcpServerNames = jest.fn().mockResolvedValue(['!']);
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+    expect(loadTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool_options: expect.objectContaining({
+          [names[0].replace(/!$/, 'server_33')]: { approval_mode: 'ask' },
+        }),
+      }),
+    );
+    expect(
+      canAgentGraphPause({ policy: { enabled: true, mode: 'bypass' }, agents: [result] }),
+    ).toBe(true);
   });
 
   it('threads the normalized MCP request body into tool discovery', async () => {
@@ -5611,6 +6126,90 @@ describe('initializeAgent — linked instructions', () => {
     expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
   });
 
+  it('falls back to empty instructions with a warning, and records no usage, when a Langfuse link is disabled', async () => {
+    const langfuseLink: AgentInstructionsPrompt = {
+      source: 'langfuse',
+      groupId: 'group-1',
+      selection: { type: 'production' },
+    };
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({ status: 'unavailable', reason: 'disabled' });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: langfuseLink, instructions: 'stale inline text' },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('group-1'));
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
+  it('resolves a linked Langfuse agent and records exactly one usage with version-shaped facts', async () => {
+    const langfuseLink: AgentInstructionsPrompt = {
+      source: 'langfuse',
+      groupId: 'group-1',
+      selection: { type: 'production' },
+    };
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Hello {{current_user}}, be concise.',
+      facts: { source: 'langfuse', groupId: 'group-1', version: 3 },
+    });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: langfuseLink },
+      reqOverrides: { user: { id: 'user-1', name: 'Ada' } as never },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(resolveLinkedInstructions).toHaveBeenCalledWith(
+      expect.objectContaining({ link: langfuseLink }),
+    );
+    expect(result.instructions).toBe('Hello Ada, be concise.');
+    expect(result.instructionsPromptFacts).toEqual({
+      source: 'langfuse',
+      groupId: 'group-1',
+      version: 3,
+    });
+    expect(resolveLinkedInstructions.recordUse).toHaveBeenCalledTimes(1);
+    expect(resolveLinkedInstructions.recordUse).toHaveBeenCalledWith({
+      source: 'langfuse',
+      groupId: 'group-1',
+      version: 3,
+    });
+  });
+
+  it('resolves a linked Langfuse agent normally, but records no usage, when recordLinkedPromptUsage is false (resume)', async () => {
+    const langfuseLink: AgentInstructionsPrompt = {
+      source: 'langfuse',
+      groupId: 'group-1',
+      selection: { type: 'exact', version: 3 },
+    };
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Fixed Langfuse instructions.',
+      facts: { source: 'langfuse', groupId: 'group-1', version: 3 },
+    });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: langfuseLink },
+      params: { resolveLinkedInstructions, recordLinkedPromptUsage: false },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('Fixed Langfuse instructions.');
+    expect(resolveLinkedInstructions).toHaveBeenCalledWith(
+      expect.objectContaining({ link: langfuseLink }),
+    );
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
   it('falls back to empty instructions with a warning when no resolver is provided', async () => {
     const result = await run({
       agentOverrides: { instructionsPrompt: link, instructions: 'stale inline text' },
@@ -6246,5 +6845,745 @@ describe('initializeAgent turn delivery routing', () => {
     const [toolsOrder] = loadTools.mock.invocationCallOrder;
     expect(optionsOrder).toBeLessThan(filesOrder);
     expect(filesOrder).toBeLessThan(toolsOrder);
+  });
+});
+
+describe('initializeAgent — inference trust boundary', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each([true, false])(
+    'projects saved settings and request overrides (initial: %s)',
+    async (isInitialAgent) => {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider: Providers.OPENAI,
+        model: 'gpt-4o-mini',
+      });
+      Object.assign(agent.model_parameters, {
+        temperature: 0.2,
+        apiKey: 'untrusted-secret',
+        modelKwargs: { model: 'gpt-4o', service_tier: 'flex' },
+        configuration: { baseURL: 'https://unchecked.invalid' },
+        callbacks: ['not-user-configurable'],
+        fallbacks: [{ provider: 'openAI', clientOptions: { model: 'gpt-4o' } }],
+        unknownConstructorField: true,
+      });
+      mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+
+      await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: {
+            endpoint: EModelEndpoint.agents,
+            model_parameters: { temperature: 0.4, modelKwargs: { model: 'gpt-4o' } },
+          },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent,
+        },
+        db,
+      );
+
+      const { results } = mockGetProviderConfig.mock;
+      const { getOptions } = results[results.length - 1].value;
+      expect(getOptions).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model_parameters: {
+            model: 'gpt-4o-mini',
+            temperature: isInitialAgent ? 0.4 : 0.2,
+          },
+        }),
+      );
+    },
+  );
+
+  it.each(['custom', 'anthropic', 'google'])(
+    'retains canonical settings and endpoint identity for same-agent memory reentry (%s)',
+    async (mode) => {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider: 'Gateway',
+        overrideProvider: Providers.OPENAI,
+        model: 'permitted',
+      });
+      Object.assign(agent.model_parameters, { min_p: 0.7, modelKwargs: { min_p: 0.9 } });
+      const getOptions = jest
+        .fn()
+        .mockImplementation(async ({ model_parameters, inferenceParameters }) => ({
+          llmConfig: {
+            model: model_parameters.model,
+            apiKey: 'trusted-key',
+            modelKwargs: { min_p: inferenceParameters?.min_p ?? 0.1 },
+          },
+          configOptions: { baseURL: 'https://trusted.invalid' },
+        }));
+      mockGetProviderConfig.mockImplementation(({ provider }) => {
+        if (provider !== 'Gateway') throw new Error('Lost original endpoint identity');
+        return {
+          getOptions,
+          overrideProvider: Providers.OPENAI,
+          customEndpointConfig: {
+            customParams: {
+              defaultParamsEndpoint: mode,
+              paramDefinitions: [
+                { key: 'min_p', type: 'number', default: 0.1, range: { min: 0, max: 1 } },
+              ],
+            },
+          },
+        };
+      });
+      mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+      const params = {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI, 'Gateway']),
+        isInitialAgent: true,
+      };
+      const main = await initializeAgent(params, db);
+      const mainConfig = main.model_parameters;
+      expect(mainConfig).toMatchObject({ modelKwargs: { min_p: 0.7 } });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const memory = await initializeAgent(
+          { ...params, agent: { ...main }, isInitialAgent: false },
+          db,
+        );
+        expect(memory.model_parameters).toMatchObject({ modelKwargs: { min_p: 0.7 } });
+        expect(memory).not.toBe(main);
+        expect(main.model_parameters).toBe(mainConfig);
+        expect(getOptions).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            endpoint: 'Gateway',
+            model_parameters: { model: 'permitted' },
+            inferenceParameters: { min_p: 0.7 },
+          }),
+        );
+      }
+      await expect(
+        initializeAgent(
+          {
+            ...params,
+            agent: main,
+            allowedProviders: new Set([Providers.OPENAI]),
+            isInitialAgent: false,
+          },
+          db,
+        ),
+      ).rejects.toThrow('invalid_agent_provider');
+    },
+  );
+
+  it('uses the trusted URL profile before projecting saved and request caching controls', async () => {
+    const key = 'TEST_INFERENCE_GATEWAY_URL';
+    const previous = process.env[key];
+    process.env[key] = 'https://openrouter.ai/api/v1';
+    try {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider: 'Gateway',
+        overrideProvider: Providers.OPENAI,
+        model: 'permitted',
+      });
+      Object.assign(agent.model_parameters, { promptCache: false, promptCacheTtl: '1h' });
+      const endpoint = {
+        name: 'Gateway',
+        apiKey: 'synthetic-key',
+        baseURL: '${TEST_INFERENCE_GATEWAY_URL}',
+        models: { default: ['permitted'], fetch: false },
+      };
+      if (req.config == null) throw new Error('Expected the request configuration fixture');
+      req.config.endpoints = { custom: [endpoint] };
+      const getOptions = jest
+        .fn()
+        .mockResolvedValue({ llmConfig: { model: 'permitted', promptCache: false } });
+      mockGetProviderConfig.mockReturnValue({
+        getOptions,
+        overrideProvider: Providers.OPENAI,
+        customEndpointConfig: endpoint,
+      });
+      mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+      await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI, 'Gateway']),
+          isInitialAgent: true,
+        },
+        db,
+      );
+      expect(getOptions).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpoint: 'Gateway',
+          model_parameters: { model: 'permitted', promptCache: false, promptCacheTtl: '1h' },
+        }),
+      );
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+
+  it('constructs custom request kwargs only from administrator-declared inference values', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: 'Gateway',
+      overrideProvider: Providers.OPENAI,
+      model: 'permitted',
+    });
+    Object.assign(agent.model_parameters, { min_p: 0.1, modelKwargs: { model: 'restricted' } });
+    const getOptions = jest.fn().mockResolvedValue({
+      llmConfig: {
+        model: 'permitted',
+        apiKey: 'trusted-key',
+        configuration: { baseURL: 'https://trusted.invalid' },
+        modelKwargs: { seed: 7 },
+      },
+    });
+    mockGetProviderConfig.mockReturnValue({
+      getOptions,
+      overrideProvider: Providers.OPENAI,
+      customEndpointConfig: {
+        customParams: {
+          defaultParamsEndpoint: 'custom',
+          paramDefinitions: [{ key: 'min_p', type: 'number', range: { min: 0, max: 1 } }],
+        },
+      },
+    });
+    mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+    const initialized = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI, 'Gateway']),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(getOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model_parameters: { model: 'permitted' },
+        inferenceParameters: { min_p: 0.1 },
+      }),
+    );
+    expect(initialized.model_parameters).toMatchObject({
+      model: 'permitted',
+      apiKey: 'trusted-key',
+      configuration: { baseURL: 'https://trusted.invalid' },
+      modelKwargs: { seed: 7 },
+    });
+  });
+});
+
+describe('initializeAgent — deferred system tools', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  /** A loader result shaped like the definitions-only tool loader's. */
+  function mockDeferrableLoad(
+    loadTools: ReturnType<typeof createMocks>['loadTools'],
+    deferredToolsEnabled: boolean,
+  ) {
+    loadTools.mockImplementation(async ({ tools }: { tools: string[] }) => {
+      const loaded = tools
+        .filter((name) => name === Tools.web_search || name === Tools.file_search)
+        .map((name) => ({ name, description: `${name} tool`, parameters: { type: 'object' } }));
+      return {
+        tools: [],
+        toolContextMap: {},
+        userMCPAuthMap: undefined,
+        toolRegistry: new Map(
+          loaded.map((def) => [def.name, { name: def.name, allowed_callers: ['direct'] }]),
+        ),
+        toolDefinitions: loaded,
+        hasDeferredTools: false,
+        deferredToolsEnabled,
+      };
+    });
+  }
+
+  async function initialize(
+    toolOptions: Agent['tool_options'],
+    deferredToolsEnabled = true,
+  ): Promise<Awaited<ReturnType<typeof initializeAgent>>> {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = [Tools.web_search, Tools.file_search, Tools.execute_code];
+    agent.tool_options = toolOptions;
+    mockDeferrableLoad(loadTools, deferredToolsEnabled);
+    return initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      db,
+    );
+  }
+
+  const deferred = (result: Awaited<ReturnType<typeof initializeAgent>>): string[] =>
+    (result.toolDefinitions ?? []).filter((d) => d.defer_loading === true).map((d) => d.name);
+
+  it('defers search and code-execution tools registered during initialization', async () => {
+    const result = await initialize({ '*': { defer_loading: true } });
+
+    expect(deferred(result)).toEqual(
+      expect.arrayContaining(['web_search', 'file_search', 'bash_tool', 'read_file']),
+    );
+    expect(result.hasDeferredTools).toBe(true);
+    const names = (result.toolDefinitions ?? []).map((d) => d.name);
+    expect(names.filter((name) => name === 'tool_search')).toHaveLength(1);
+    for (const def of result.toolDefinitions ?? []) {
+      if (def.defer_loading === true) {
+        expect(result.toolRegistry?.get(def.name)).toBe(def);
+      }
+    }
+  });
+
+  it('defers only the tools a capability marker registered', async () => {
+    const result = await initialize({
+      '*': { defer_loading: false },
+      execute_code: { defer_loading: true },
+    });
+    const names = deferred(result);
+    expect(names).toEqual(expect.arrayContaining(['bash_tool', 'read_file']));
+    expect(names).not.toContain('web_search');
+    expect(names).not.toContain('file_search');
+  });
+
+  it('defers nothing when the deferred_tools capability is off', async () => {
+    const result = await initialize({ '*': { defer_loading: true } }, false);
+    expect(deferred(result)).toEqual([]);
+    expect(result.hasDeferredTools).toBe(false);
+    expect((result.toolDefinitions ?? []).map((d) => d.name)).not.toContain('tool_search');
+  });
+});
+
+describe('initializeAgent — deferral without a loader registry', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('defers late registrations when the loader returned early with no capability or registry', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = [Tools.execute_code];
+    agent.tool_options = { '*': { defer_loading: true } };
+    (req as unknown as { config: unknown }).config = {
+      endpoints: { [EModelEndpoint.agents]: { capabilities: [AgentCapabilities.deferred_tools] } },
+    };
+    loadTools.mockResolvedValue({ toolDefinitions: [] });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      db,
+    );
+
+    const bash = result.toolDefinitions?.find((d) => d.name === 'bash_tool');
+    expect(bash?.defer_loading).toBe(true);
+    expect(result.toolRegistry?.get('bash_tool')).toBe(bash);
+    expect(result.toolRegistry?.has('tool_search')).toBe(true);
+    expect(result.hasDeferredTools).toBe(true);
+  });
+});
+
+describe('snapshot destination admission invariants', () => {
+  const MB = 1024 * 1024;
+  const filterMock = jest.requireMock('~/files') as {
+    filterFilesByEndpointRuntimeConfig: jest.Mock;
+  };
+  const realFilters = jest.requireActual<typeof import('~/files/filter')>('~/files/filter');
+  const realResources = jest.requireActual<typeof import('../resources')>('../resources');
+  beforeEach(() => {
+    jest.clearAllMocks();
+    filterMock.filterFilesByEndpointRuntimeConfig
+      .mockReset()
+      .mockImplementation(realFilters.filterFilesByEndpointRuntimeConfig);
+    jest.mocked(primeResources).mockReset().mockImplementation(realResources.primeResources);
+  });
+  afterEach(() => {
+    filterMock.filterFilesByEndpointRuntimeConfig.mockReset().mockReturnValue([]);
+    jest.mocked(primeResources).mockReset().mockResolvedValue({
+      attachments: [],
+      requestAttachments: [],
+      agentContextAttachments: undefined,
+      tool_resources: undefined,
+      warnings: [],
+    });
+  });
+  function snapshot(id: string, time: number, overrides: Partial<TFile> = {}): TFile {
+    return {
+      file_id: id,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      filename: 'report.txt',
+      filepath: `/uploads/${id}`,
+      source: FileSources.local,
+      type: 'text/plain',
+      bytes: 12 * MB,
+      object: 'file',
+      embedded: false,
+      usage: 0,
+      context: FileContext.execute_code_snapshot,
+      createdAt: new Date(time),
+      metadata: {
+        codeDestination: true,
+        sourceDispatchedAt: time,
+        codeEnvSource: {
+          kind: 'user',
+          id: 'user-1',
+          file_id: 'live-report',
+          storage_session_id: 'sandbox',
+        },
+      },
+      ...overrides,
+    };
+  }
+  async function run(
+    files: TFile[],
+    deferred: TFile[] = [],
+    config: { fileSizeLimit?: number; supportedMimeTypes?: string[]; disabled?: boolean } = {},
+    filters?: FiltersConfig,
+    tools: string[] = [Tools.execute_code],
+  ) {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = tools;
+    agent.endpoint = EModelEndpoint.openAI;
+    req.user!.tenantId = 'tenant-1';
+    req.config!.filters = filters;
+    req.config!.fileConfig = {
+      endpoints: { openAI: { totalSizeLimit: 20, fileSizeLimit: 20, ...config } },
+    };
+    mockExtractLibreChatParams.mockReturnValue({
+      resendFiles: true,
+      modelOptions: { model: agent.model },
+    });
+    const getFiles = jest.fn().mockResolvedValue([...files, ...deferred]);
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'snapshot-conversation',
+        codeEnvAvailable: true,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+      },
+      {
+        ...db,
+        getFiles,
+        getConvoFiles: jest
+          .fn()
+          .mockResolvedValue([...files, ...deferred].map((file) => file.file_id)),
+        getCodeGeneratedFiles: jest
+          .fn()
+          .mockResolvedValue(
+            files.filter((file) => file.context === FileContext.execute_code_snapshot),
+          ),
+        getToolFilesByIds: jest
+          .fn()
+          .mockResolvedValue(
+            files.filter((file) => file.context !== FileContext.execute_code_snapshot),
+          ),
+        getDeferredProvisionFiles: jest.fn().mockResolvedValue(deferred),
+      },
+    );
+    const eager = await selectCodeFiles({
+      files: result.tool_resources?.execute_code?.files ?? [],
+      routeKey: 'default',
+      getFileInfo: async () => ({ lastModified: new Date().toISOString() }),
+    });
+    const staged = new Map<string, string>();
+    const callback = createProvisionFilesCallback({
+      req,
+      agentToolContexts: new Map([['agent-1', result]]),
+      fileStorage: {
+        recovery: createFileProvisionRecovery(),
+        acquireFileProvision: jest.fn().mockResolvedValue(true),
+        releaseFileProvision: jest.fn().mockResolvedValue(true),
+        commitFileProvision: jest.fn().mockResolvedValue(true),
+      },
+      provisionToCodeEnv: async ({ file, sandboxFilename }) => {
+        const name = sandboxFilename ?? file.filename;
+        staged.set(name, file.file_id);
+        return {
+          referenceSet: {},
+          sandboxFilename: name,
+          refUpdate: {
+            file_id: file.file_id,
+            routeKey: 'default',
+            ref: {
+              kind: 'user',
+              id: 'user-1',
+              file_id: file.file_id,
+              storage_session_id: 'sandbox',
+              sandboxFilename: name,
+            },
+          },
+        };
+      },
+      provisionToVectorDB: async ({ file }) => ({
+        embedded: true,
+        fileUpdate: { file_id: file.file_id, embedded: true },
+      }),
+      updateFile: async () => undefined,
+      updateCodeEnvRef: async () => undefined,
+      addEmbeddedEntity: async () => undefined,
+    });
+    await callback(tools, 'agent-1');
+    expect(getFiles).toHaveBeenCalledTimes(1);
+    expect(getFiles).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'user-1', tenantId: 'tenant-1' }),
+      {},
+      {},
+    );
+    return { result, staged, eager };
+  }
+  it.each([false, true])(
+    'selects two 12 MiB versions before the 20 MiB budget (deferred newest %s)',
+    async (deferred) => {
+      const old = snapshot('v1', 100);
+      const newest = snapshot('v2', 200);
+      const { staged } = await run(deferred ? [old] : [old, newest], deferred ? [newest] : []);
+      expect(staged.get('report.txt')).toBe('v2');
+      expect([...staged.values()]).not.toContain('v1');
+    },
+  );
+  it.each(['oversized', 'mime', 'disabled'] as const)(
+    'never revives an older version when the newest is %s',
+    async (policy) => {
+      const overrides: Partial<TFile> = {};
+      const config: Parameters<typeof run>[2] = {};
+      if (policy === 'oversized') overrides.bytes = 25 * MB;
+      if (policy === 'mime') {
+        overrides.type = 'application/pdf';
+        config.supportedMimeTypes = ['text/plain'];
+      }
+      if (policy === 'disabled') config.disabled = true;
+      const { staged } = await run(
+        [snapshot('v1', 100), snapshot('v2', 200, overrides)],
+        [],
+        config,
+      );
+      expect(staged.size).toBe(0);
+    },
+  );
+  it('inspects the selected generation instead of reviving safe older bytes', async () => {
+    await expect(
+      run(
+        [
+          snapshot('v1', 100, { text: 'Safe old content' }),
+          snapshot('v2', 200, { text: 'BLOCKED' }),
+        ],
+        [],
+        {},
+        {
+          files: {
+            pii: {
+              fields: ['extracted_text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'snapshot-policy', label: 'Snapshot policy', regex: 'BLOCKED' },
+              ],
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow();
+  });
+  it.each([
+    { tools: [Tools.execute_code, Tools.file_search] },
+    { tools: [Tools.execute_code] },
+    { tools: [Tools.file_search] },
+  ])('keeps independent consumer records when tools are $tools', async ({ tools }) => {
+    const upload = snapshot('upload', 100, {
+      context: FileContext.message_attachment,
+      bytes: MB,
+      embedded: true,
+      metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+    });
+    const output = snapshot('output', 200, { bytes: MB });
+    const { result, staged } = await run([upload, output], [], {}, undefined, tools);
+    expect(staged.get('report.txt')).toBe(
+      tools.includes(Tools.execute_code) ? 'output' : undefined,
+    );
+    const search = result.tool_resources?.file_search?.files?.map((file) => file.file_id) ?? [];
+    expect(search).toEqual(tools.includes(Tools.file_search) ? ['upload'] : []);
+  });
+  it.each([
+    { deferred: false, tools: [Tools.execute_code, Tools.file_search] },
+    { deferred: true, tools: [Tools.execute_code, Tools.file_search] },
+    { deferred: false, tools: [Tools.execute_code] },
+    { deferred: false, tools: [Tools.file_search] },
+  ])(
+    'keeps newer search-only intent independent (deferred $deferred, tools $tools)',
+    async ({ deferred, tools }) => {
+      const output = snapshot('output', 100, { bytes: MB });
+      const upload = snapshot('search', 200, {
+        context: FileContext.message_attachment,
+        bytes: MB,
+        embedded: !deferred,
+        metadata: { destinationChosen: true, searchDestination: true },
+      });
+      const { result, staged } = await run(
+        deferred ? [output] : [output, upload],
+        deferred ? [upload] : [],
+        {},
+        undefined,
+        tools,
+      );
+      expect(staged.get('report.txt')).toBe(
+        tools.includes(Tools.execute_code) ? 'output' : undefined,
+      );
+      expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id) ?? []).toEqual(
+        tools.includes(Tools.file_search) ? ['search'] : [],
+      );
+    },
+  );
+  it('retains model-bound input independently of its superseded code copy', async () => {
+    const input = snapshot('model-input', 100, {
+      context: FileContext.message_attachment,
+      bytes: MB,
+      llmDeliveryPath: 'text',
+      text: 'Prompt input',
+      metadata: { destinationChosen: true, codeDestination: true },
+    });
+    const { result, staged } = await run([input, snapshot('output', 200, { bytes: MB })]);
+    expect(staged.get('report.txt')).toBe('output');
+    expect(result.attachments?.map((file) => file?.file_id)).toContain('model-input');
+  });
+  it.each(['oversized', 'mime'] as const)(
+    'keeps search input but never restores its old code bytes when newest is %s',
+    async (policy) => {
+      const upload = snapshot('upload', 100, {
+        context: FileContext.message_attachment,
+        bytes: MB,
+        embedded: true,
+        metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+      });
+      const output = snapshot(
+        'output',
+        200,
+        policy === 'oversized' ? { bytes: 25 * MB } : { bytes: MB, type: 'application/pdf' },
+      );
+      const { result, staged } = await run(
+        [upload, output],
+        [],
+        policy === 'mime' ? { supportedMimeTypes: ['text/plain'] } : {},
+        undefined,
+        [Tools.execute_code, Tools.file_search],
+      );
+      expect(staged.size).toBe(0);
+      expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id)).toEqual([
+        'upload',
+      ]);
+    },
+  );
+  it('charges search-needed superseded inputs without reviving them for code when the union exceeds budget', async () => {
+    const upload = snapshot('upload', 100, {
+      context: FileContext.message_attachment,
+      embedded: true,
+      metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+    });
+    const { result, staged } = await run([upload, snapshot('output', 200)], [], {}, undefined, [
+      Tools.execute_code,
+      Tools.file_search,
+    ]);
+    expect(staged.size).toBe(0);
+    expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id)).toEqual([
+      'upload',
+    ]);
+  });
+  it.each([
+    [FileContext.execute_code_snapshot, true, false],
+    [FileContext.execute_code, true, false],
+    [FileContext.execute_code, false, false],
+    [FileContext.execute_code, true, true],
+    [FileContext.execute_code, false, true],
+  ] as const)(
+    'charges independent capture and assigned-path writes separately across repeated initialization (%s, named %s, deferred newest %s)',
+    async (context, named, deferred) => {
+      const original = snapshot('png', 100, {
+        context,
+        filename: 'nested/chart.png',
+        type: 'image/webp',
+        metadata: {
+          codeDestination: true,
+          sourceDispatchedAt: 100,
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-1',
+            storage_session_id: 'sandbox',
+            file_id: 'png-copy',
+            sandboxFilename: named ? 'nested/chart.webp' : undefined,
+          },
+        },
+      });
+      const literal = snapshot('literal', 200, {
+        filename: 'nested/chart.webp',
+        type: 'image/webp',
+      });
+      const first = await run(
+        deferred ? [original] : [original, literal],
+        deferred ? [literal] : [],
+      );
+      expect([...first.staged.values()]).toEqual(['png']);
+      expect(first.staged.has('nested/chart.webp')).toBe(false);
+      expect(first.eager.selected.map((entry) => entry.sandboxName)).not.toContain(
+        'nested/chart.webp',
+      );
+      const again = await run(
+        deferred ? [original] : [original, literal],
+        deferred ? [literal] : [],
+      );
+      expect(again.staged).toEqual(first.staged);
+    },
+  );
+  it.each([false, true])(
+    'normalizes an unreferenced converted upload before code admission (deferred newest %s)',
+    async (deferred) => {
+      const upload = snapshot('converted-upload', 100, {
+        filename: 'chart.png',
+        type: 'image/webp',
+        context: FileContext.message_attachment,
+        metadata: { destinationChosen: false, codeDestination: true },
+      });
+      const output = snapshot('literal', 200, { filename: 'chart.webp', type: 'image/webp' });
+      const { staged } = await run(
+        deferred ? [upload] : [upload, output],
+        deferred ? [output] : [],
+      );
+      expect([...staged.entries()]).toEqual([['chart.webp', 'literal']]);
+    },
+  );
+
+  it('keeps unrelated files subject to their original shared budget and order', async () => {
+    const { staged } = await run([
+      snapshot('first', 100, { filename: 'first.txt' }),
+      snapshot('other', 200, { filename: 'other.txt', bytes: 9 * MB }),
+    ]);
+    expect([...staged.entries()]).toEqual([['first.txt', 'first']]);
   });
 });

@@ -1,3 +1,4 @@
+import { MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { SteerFileFetcher } from '../request';
 import type { SteerMediaClient } from '../media';
@@ -185,6 +186,31 @@ describe('buildSteerMedia', () => {
     expect(result?.content).toEqual([
       { type: 'text', text: 'Attached document(s): notes\nsummarize it' },
     ]);
+  });
+
+  it('derives display previews from trusted text without truncating the model input', async () => {
+    const text = ` \n${'full stored paste '.repeat(30)}`;
+    const doc = { ...imageDoc, type: 'text/plain', text, textPreview: 'stale preview' };
+    const getFiles: SteerFileFetcher = jest.fn(async () => [doc]);
+    const client = createClient({ fileContext: text });
+    const item = {
+      ...steerItem([{ file_id: 'f1' }]),
+      files: [{ file_id: 'f1', textPreview: 'malicious preview' }],
+    };
+    const result = await buildSteerMedia({ client, user, item, getFiles });
+
+    expect(result?.files?.[0].textPreview).toBe(text.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH));
+    expect(result?.files?.[0]).not.toHaveProperty('text');
+    expect(client.addFileContextToMessage).toHaveBeenCalledWith(expect.anything(), [doc], {
+      executeCode: false,
+      fileSearch: false,
+    });
+    expect(client.processAttachments).toHaveBeenCalledWith(expect.anything(), [doc], {
+      executeCode: false,
+      fileSearch: false,
+    });
+    expect(result?.content).toEqual([{ type: 'text', text: `${text}\nlook at this` }]);
+    expect(doc.text).toBe(text);
   });
 
   it('returns undefined when no authorized files remain', async () => {

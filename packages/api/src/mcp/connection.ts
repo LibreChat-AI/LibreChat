@@ -162,6 +162,12 @@ const TOOL_LIST_REFRESH_RETRY_BASE_MS = 250;
 const TOOL_LIST_REFRESH_RETRY_MAX_MS = 30_000;
 /** Max 307/308 redirects to follow per request (prevents redirect loops) */
 const MAX_REDIRECTS = 5;
+/**
+ * `createFetchFunction` is the only redirect authority (SSRF checks, the hop cap, cross-origin
+ * credential stripping, no tool-call replay). `'follow'` leaves redirects to that fetch, so the
+ * SDK's own same-origin follower cannot re-issue a request it declined.
+ */
+const SDK_REDIRECT_POLICY = 'follow' as const;
 const DEFAULT_MCP_STREAMABLE_HTTP_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MCP_STREAMABLE_HTTP_MAX_LINE_BYTES = 5 * 1024 * 1024;
 
@@ -1118,7 +1124,6 @@ export class MCPConnection extends EventEmitter {
   private reportedStandaloneSseConflict = false;
   private agents: Dispatcher[] = [];
   private readonly userId?: string;
-  private lastPingTime: number;
   private lastConnectionCheckAt: number = 0;
   private lastConnectionCheckError?: unknown;
   private lastConnectionCheckCredentialSetId?: string | null;
@@ -1315,7 +1320,6 @@ export class MCPConnection extends EventEmitter {
     this.iconPath = params.serverConfig.iconPath;
     this.timeout = params.serverConfig.timeout;
     this.sseReadTimeout = params.serverConfig.sseReadTimeout;
-    this.lastPingTime = Date.now();
     this.createdAt = Date.now(); // Record creation timestamp for staleness detection
     if (params.oauthTokens) {
       this.oauthTokens = params.oauthTokens;
@@ -1829,6 +1833,7 @@ export class MCPConnection extends EventEmitter {
             Object.keys(headers).map((key) => key.toLowerCase()),
           );
           const transport = new SSEClientTransport(url, {
+            redirectPolicy: SDK_REDIRECT_POLICY,
             requestInit: {
               /** User/OAuth headers override SSE defaults */
               headers: { ...SSE_REQUEST_HEADERS, ...headers },
@@ -1956,6 +1961,7 @@ export class MCPConnection extends EventEmitter {
             Object.keys(headers).map((key) => key.toLowerCase()),
           );
           const transport = new StreamableHTTPClientTransport(url, {
+            redirectPolicy: SDK_REDIRECT_POLICY,
             requestInit: {
               headers,
               signal: abortController.signal,
@@ -2497,12 +2503,6 @@ export class MCPConnection extends EventEmitter {
 
     const originalSend = this.transport.send.bind(this.transport);
     this.transport.send = async (msg) => {
-      if ('result' in msg && !('method' in msg) && Object.keys(msg.result ?? {}).length === 0) {
-        if (Date.now() - this.lastPingTime < FIVE_MINUTES) {
-          throw new Error('Empty result');
-        }
-        this.lastPingTime = Date.now();
-      }
       const method = 'method' in msg ? msg.method : undefined;
       const id = 'id' in msg ? msg.id : undefined;
       if (

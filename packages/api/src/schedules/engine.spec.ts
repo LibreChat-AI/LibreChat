@@ -92,6 +92,7 @@ function makeDeps(
     abortScheduledJob: async () => true,
     clearReconciledJob: async () => undefined,
     isOwnerDeleting: async () => false,
+    isTermsBlocked: async () => false,
     isGloballyDisabled: async () => false,
     countActiveRunsGlobal: async () => 0,
     withGlobalCapacitySlot: (_cap: number, claim: (slot: number) => Promise<unknown>) => claim(0),

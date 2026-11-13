@@ -8,7 +8,11 @@ import type {
   TPendingSteer,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
-import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
+import type {
+  CodeApprovalMode,
+  ScheduleMCPOutcome,
+  ScheduledMCPIdentity,
+} from 'librechat-data-provider';
 import type { RunStep, StandardGraph } from '@librechat/agents';
 import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
@@ -16,6 +20,7 @@ import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
+import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
 
 /**
@@ -124,6 +129,7 @@ export interface SerializableJobData {
    * `checkpoint_ns`, which the saver adapter maps to this storage scope.
    * Legacy paused jobs omit it and use the historical unscoped storage. */
   checkpointNamespace?: string;
+  responseCheckpointConfigJSON?: string;
   completedAt?: number;
   conversationId?: string;
   error?: string;
@@ -205,6 +211,8 @@ export interface SerializableJobData {
    * the discovered tool schemas.
    */
   discoveredTools?: string[];
+  /** Skill identities authored by this generation, reauthorized on resume. */
+  authoredSkills?: AuthoredSkillBinding[];
   /** Bounded collector state for continuing a phase across HITL resume. */
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   /** Exact bounded compaction guidance captured atomically with a HITL pause. */
@@ -250,6 +258,8 @@ export interface SerializableJobData {
    * Unlike `providerDrained`, this identity survives terminal drain so host
    * compensation can distinguish a projected-but-never-started resume. */
   providerExecutionStartedId?: string;
+  /** Winning start attempt within a provider segment; written only by the start CAS. */
+  providerExecutionOwnerId?: string;
   /** False while the identified provider segment can still mutate user data;
    * true before provider startup and after the owner has fully unwound. */
   providerDrained?: boolean;
@@ -307,6 +317,8 @@ export interface SerializableJobData {
    * response / pruning HITL state. No normal terminal payload may be exposed
    * while true. */
   terminalPersistencePending?: boolean;
+  /** Server-enrolled external journal owns final publication and barrier release. */
+  terminalPersistenceOwner?: 'external';
   /** Crash-recovery deadline basis for `terminalPersistencePending`. */
   terminalPersistenceStartedAt?: number;
 
@@ -341,6 +353,8 @@ export interface SerializableJobData {
    * resume request can't be trusted to re-send the flag.
    */
   isTemporary?: boolean;
+  /** Server-established first turn; absence does not authorize a draft projection. */
+  isNewConversation?: boolean;
   /** Original server-authenticated retention deadline, serialized across replicas. */
   retentionExpiresAt?: string;
   agentEventDeliveryKey?: string;
@@ -460,6 +474,28 @@ export class JobPredecessorMismatchError extends Error {
   }
 }
 
+/** Thrown by `createJob` when the owner's account deletion began before the job could be admitted. */
+export class GenerationAdmissionDeniedError extends Error {
+  readonly code = 'ACCOUNT_DELETION_IN_PROGRESS';
+  readonly status = 409;
+
+  constructor() {
+    super('Account deletion is in progress');
+    this.name = 'GenerationAdmissionDeniedError';
+  }
+}
+
+/** Thrown by `createJob` when the account admission check itself failed; carries no lookup diagnostics. */
+export class GenerationAdmissionUnavailableError extends Error {
+  readonly code = 'GENERATION_ADMISSION_UNAVAILABLE';
+  readonly status = 503;
+
+  constructor() {
+    super('Generation admission could not be verified');
+    this.name = 'GenerationAdmissionUnavailableError';
+  }
+}
+
 export type JobMetadataPatch = Partial<
   Pick<
     SerializableJobData,
@@ -473,11 +509,14 @@ export type JobMetadataPatch = Partial<
     | 'conversationId'
     | 'userMessage'
     | 'endpoint'
+    | 'terminalPersistenceOwner'
     | 'iconURL'
     | 'model'
     | 'agent_id'
     | 'isTemporary'
+    | 'isNewConversation'
     | 'retentionExpiresAt'
+    | 'responseCheckpointConfigJSON'
     | 'agentEventDeliveryKey'
     | 'agentEventInvocationKey'
     | 'agentEventInvocationGenerationCreatedAt'
@@ -498,6 +537,7 @@ export type JobMetadataPatch = Partial<
     | 'preserveForScheduleReconcile'
     | 'promptTokens'
     | 'discoveredTools'
+    | 'authoredSkills'
     | 'activityPhaseSnapshot'
     | 'compactionSemanticIndex'
     | 'contextMeta'
@@ -560,6 +600,14 @@ export interface SteerQueueItem {
    * so an older cross-replica arm cannot resurrect after the disarm, while a
    * later explicit arm with a newer revision remains valid. */
   preemptRevision?: number;
+  /** The sending client adopts a server-promoted queued turn in place of its
+   *  chip, so a run that ends without applying this steer may promote it to a
+   *  durable queued turn instead of handing it back for a tab-local queue. */
+  promoteLeftover?: true;
+  /** The sender's code approval mode, kept for a promoted turn only: a durable
+   *  queued turn must start under the mode the sender's own queue row would
+   *  have carried, not the deployment default. */
+  codeApprovalMode?: CodeApprovalMode;
 }
 
 /** Durable acknowledgement keyed by `clientSteerId`. It outlives the queue
@@ -595,9 +643,23 @@ export interface SteerReceipt {
   /** `recovered` means one recovery surface already claimed a leftover. A
    * later retry is settled without re-queuing the same follow-up. */
   state: 'queued' | 'claimed' | 'delivered' | 'leftover' | 'recovered' | 'cancelled';
+  /** Set with `recovered` when the leftover was handed to this durable queued
+   * turn, so that turn's admission can tell its own hand-off from a recovery
+   * that consumed the words elsewhere. */
+  promotedTurnId?: string;
 }
 
-export type SteerReceiptInput = Omit<SteerReceipt, 'item' | 'position' | 'state'>;
+export type SteerReceiptInput = Omit<
+  SteerReceipt,
+  'item' | 'position' | 'state' | 'promotedTurnId'
+>;
+
+/** Outcome of handing a terminal leftover to a durable queued turn:
+ * - `promoted`: this turn owns the words (now, or from an earlier hand-off)
+ * - `refused`: another surface owns them (discarded, recovered, or leased)
+ * - `unparked`: the receipt is a leftover but its parked copy is gone
+ * - `missing`: no receipt for the steer survives */
+export type SteerPromotionOutcome = 'promoted' | 'refused' | 'unparked' | 'missing';
 export type SteerEnqueueReceiptResult = SteerReceipt | SteerEnqueueResult | number;
 
 /** Capability-normalized atomic enqueue result for callers without a stable
@@ -695,6 +757,8 @@ export interface JobStatusTransition {
    * the same stream ID.
    */
   expectCreatedAt?: number;
+  /** Fence an old provider segment after the same generation has resumed. */
+  expectProviderExecutionId?: string;
   /**
    * Additional guard: reject the transition when the store's clock has reached
    * this absolute deadline. The comparison is part of the same atomic operation
@@ -800,6 +864,10 @@ export interface UsageMetadata {
   input_token_details?: {
     /** Tokens written to cache */
     cache_creation?: number;
+    /** Subset of `cache_creation` written to Anthropic's 1-hour cache (see `getModelEndUsage`) */
+    cache_creation_1h?: number;
+    /** Subset of `cache_creation` written to OpenAI's 12-hour cache */
+    cache_creation_12h?: number;
     /** Tokens read from cache */
     cache_read?: number;
     /** OpenAI GPT-5.6+ cache-write tokens (billed above the input rate) */
@@ -1083,6 +1151,10 @@ export interface IJobStore {
  * generation startup.
  */
 export interface IJobStoreV2 extends IJobStore {
+  /** Opt-in contract: status transitions atomically enforce expectProviderExecutionId. */
+  readonly providerGuardedStatusTransitions?: true;
+  readonly providerStartOwnership?: true;
+  readonly providerTerminalPersistence?: true;
   /** Initialize the store (e.g., connect to Redis, start cleanup intervals) */
   initialize(): Promise<void>;
 
@@ -1130,6 +1202,7 @@ export interface IJobStoreV2 extends IJobStore {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean>;
 
   /** Activates the provider only while its exact generation is still running. */
@@ -1137,6 +1210,7 @@ export interface IJobStoreV2 extends IJobStore {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    ownerId?: string,
   ): Promise<boolean>;
 
   /** Includes terminal jobs whose provider still owns user-data writes. */
@@ -1667,6 +1741,21 @@ export interface IJobStoreV2 extends IJobStore {
     ownerTenantId?: string,
     expectedGenerationCreatedAt?: number,
   ): Promise<boolean>;
+
+  /** Owner-gated hand-off of one terminal leftover to the durable queued turn
+   * `queuedTurnId`. Atomically removes it from the parked payload and marks its
+   * receipt `recovered` (stamped with the turn), so neither status recovery nor
+   * a lost-ACK retry can queue the same words again. Idempotent for the same
+   * turn; refuses a receipt from another generation, owner, or state, and an
+   * item leased by a live recovery generation. */
+  promoteSteerLeftover(
+    streamId: string,
+    steerId: string,
+    ownerUserId: string,
+    ownerTenantId: string | undefined,
+    generationCreatedAt: number,
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome>;
 
   /** Drop any queued steers (terminal cleanup backstop). */
   clearSteers(streamId: string): Promise<void>;

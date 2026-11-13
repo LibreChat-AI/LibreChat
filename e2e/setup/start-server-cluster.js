@@ -3,6 +3,7 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { MongoMemoryServer } = require('mongodb-memory-server');
+const { keepIdleConnections } = require('./keepalive');
 
 const DEFAULT_BASE_URL = 'http://localhost:3080';
 const DEFAULT_RUNTIME_ENV_PATH = path.resolve(__dirname, '../specs/.test-results/runtime-env.json');
@@ -102,6 +103,7 @@ function startProxy(baseURL, targetPort) {
     });
     request.pipe(upstream);
   });
+  keepIdleConnections(proxyServer);
   proxyServer.listen(Number(baseURL.port || 80), baseURL.hostname, () => {
     console.log(
       `[e2e] Replica proxy listening at ${baseURL.origin}; primary target is ${targetPort}`,

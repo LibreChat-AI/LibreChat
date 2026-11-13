@@ -58,11 +58,11 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
       <h2 className="sr-only">{localize('com_ui_skill_content')}</h2>
       <div
         className={cn(
-          'border-border-medium relative w-full flex-1 overflow-auto rounded-xl border p-3 text-left transition-all duration-200 sm:p-4',
+          'border-border-medium relative w-full flex-1 overflow-auto rounded-xl border p-3 text-start transition-all duration-200 sm:p-4',
           isEditing ? '' : 'hover:bg-surface-tertiary cursor-pointer',
         )}
       >
-        <div className="absolute top-2 right-2 z-10">
+        <div className="absolute inset-e-2 top-2 z-10">
           <TooltipAnchor
             description={isEditing ? localize('com_ui_save') : localize('com_ui_edit')}
             render={

@@ -2,6 +2,7 @@ const express = require('express');
 const { createAdminGroupsHandlers } = require('@librechat/api');
 const { SystemCapabilities } = require('@librechat/data-schemas');
 const { requireCapability } = require('~/server/middleware/roles/capabilities');
+const { invalidateConfigCaches } = require('~/server/services/Config');
 const { requireJwtAuth } = require('~/server/middleware');
 const db = require('~/models');
 
@@ -16,14 +17,19 @@ const handlers = createAdminGroupsHandlers({
   countGroups: db.countGroups,
   findGroupById: db.findGroupById,
   createGroup: db.createGroup,
-  updateGroupById: db.updateGroupById,
+  updateGroupFieldsTracked: db.updateGroupFieldsTracked,
   deleteGroup: db.deleteGroup,
   addUserToGroup: db.addUserToGroup,
   removeUserFromGroup: db.removeUserFromGroup,
-  removeMemberById: db.removeMemberById,
+  removeMemberByIdTracked: db.removeMemberByIdTracked,
   findUsers: db.findUsers,
   deleteConfig: db.deleteConfig,
   deleteAclEntries: db.deleteAclEntries,
+  restoreConfig: db.restoreConfig,
+  findConfigByPrincipal: db.findConfigByPrincipal,
+  invalidateConfigCaches,
+  recordAuditEntry: db.recordAuditEntry,
+  auditFailClosed: process.env.AUDIT_LOG_FAIL_CLOSED === 'true',
 });
 
 router.use(requireJwtAuth, requireAdminAccess);

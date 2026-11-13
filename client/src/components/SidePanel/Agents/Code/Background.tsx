@@ -71,7 +71,7 @@ export default function Background() {
           id="code-background-tools"
           checked={enabled}
           onCheckedChange={handleChange}
-          className="ml-4"
+          className="ms-4"
           data-testid="code-background-tools"
           aria-label={localize('com_ui_code_background')}
         />

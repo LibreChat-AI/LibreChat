@@ -1,15 +1,50 @@
 import { useMemo } from 'react';
 import { useAtom } from 'jotai';
 import { supportsConversationTitleOwnership } from 'librechat-data-provider';
-import { useRecoilState, useRecoilValue, useResetRecoilState } from 'recoil';
+import { useRecoilState, useRecoilValue, useRecoilCallback, useResetRecoilState } from 'recoil';
 import type { ReactNode } from 'react';
-import type { ChatSettings, ChatConfig, ChatAuth } from '~/hooks/Chat/contract';
+import type {
+  ChatAuth,
+  ChatConfig,
+  ChatSettings,
+  PaneConversation,
+  PaneConversationState,
+} from '~/hooks/Chat/contract';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import { ChatSettingsContext } from '~/Providers/ChatSettingsContext';
 import { duringRunActionAtom } from '~/store/duringRun';
 import { useGetStartupConfig } from '~/data-provider';
+import store, { useGetEphemeralAgent } from '~/store';
 import { useAuthContext } from '~/hooks/AuthContext';
-import store from '~/store';
+
+/** Reads the conversation each mounted pane shows from the app's pane store, at call time. */
+export function usePaneConversations(): ChatSettings['getPaneConversations'] {
+  return useRecoilCallback(
+    ({ snapshot }) =>
+      (): PaneConversation[] =>
+        snapshot
+          .getLoadable(store.conversationKeysAtom)
+          .getValue()
+          .map((index) => ({
+            index,
+            conversationId:
+              snapshot.getLoadable(store.conversationByIndex(index)).getValue()?.conversationId ??
+              null,
+          })),
+    [],
+  );
+}
+
+/** Subscribes to the conversation a pane shows in the app's pane store. */
+export function usePaneConversation(index: string | number) {
+  return useRecoilValue(store.conversationByIndex(index));
+}
+
+/** A pane's conversation and setter in the app's pane store, registering the pane's key. */
+export function usePaneConversationState(index: string | number): PaneConversationState {
+  const { conversation, setConversation } = store.useCreateConversationAtom(index);
+  return useMemo(() => ({ conversation, setConversation }), [conversation, setConversation]);
+}
 
 /** Supplies the chat's app-global preferences from the app's own settings store, the deployment
  *  config and signed-in account from the app's queries, and the transport its turns run over. */
@@ -18,8 +53,10 @@ export default function ChatSettingsProvider({ children }: { children: ReactNode
   const resetVisibleArtifacts = useResetRecoilState(store.visibleArtifacts);
   const saveDrafts = useRecoilValue<boolean>(store.saveDrafts);
   const [isTemporary, setIsTemporary] = useRecoilState<boolean>(store.isTemporary);
-  const { data: startupConfig } = useGetStartupConfig();
-  const { user } = useAuthContext();
+  const getEphemeralAgent = useGetEphemeralAgent();
+  const addedConversation = useRecoilValue(store.conversationByKeySelector(1));
+  const { data: startupConfig, isFetched: startupConfigLoaded } = useGetStartupConfig();
+  const { user, token, isAuthenticated } = useAuthContext();
 
   const config = useMemo<ChatConfig>(() => {
     const ui = startupConfig?.interface;
@@ -31,9 +68,15 @@ export default function ChatSettingsProvider({ children }: { children: ReactNode
       queuedSendLockTimeoutMs: ui?.queuedSendLockTimeoutMs,
       queuedTurnReconciliationTimeoutMs: ui?.queuedTurnReconciliationTimeoutMs,
       steerArmConfirmationTimeoutMs: ui?.steerArmConfirmationTimeoutMs,
+      loaded: startupConfigLoaded,
+      balanceEnabled: startupConfig?.balance?.enabled ?? false,
     };
-  }, [startupConfig]);
-  const auth = useMemo<ChatAuth>(() => ({ user }), [user]);
+  }, [startupConfig, startupConfigLoaded]);
+  const auth = useMemo<ChatAuth>(
+    () => ({ user, token, isAuthenticated }),
+    [user, token, isAuthenticated],
+  );
+  const getPaneConversations = usePaneConversations();
 
   const settings = useMemo<ChatSettings>(
     () => ({
@@ -43,8 +86,13 @@ export default function ChatSettingsProvider({ children }: { children: ReactNode
       saveDrafts,
       isTemporary,
       setIsTemporary,
+      getEphemeralAgent,
+      addedConversation,
       config,
       auth,
+      getPaneConversations,
+      usePaneConversation,
+      usePaneConversationState,
     }),
     [
       duringRunDefaultAction,
@@ -53,8 +101,11 @@ export default function ChatSettingsProvider({ children }: { children: ReactNode
       saveDrafts,
       isTemporary,
       setIsTemporary,
+      getEphemeralAgent,
+      addedConversation,
       config,
       auth,
+      getPaneConversations,
     ],
   );
 

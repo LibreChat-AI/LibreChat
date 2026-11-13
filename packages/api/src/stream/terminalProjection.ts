@@ -14,13 +14,20 @@ import type {
  * authoritative final state:
  * - `fileContext`: text extracted from attachments for the prompt.
  * - `image_urls`: base64 image inputs accumulated during prompt building.
+ * - `documents`, `videos`, `audios`: provider-encoded attachment inputs.
  *
  * Adding a field here is the deliberate decision to exclude it everywhere a
  * terminal event is stored or transmitted. `ProjectedMessageFields` keeps the
  * TypeScript contract aligned so a projected message cannot be read for one of
  * them without a type error.
  */
-export const TRANSIENT_MESSAGE_FIELDS = ['fileContext', 'image_urls'] as const;
+export const TRANSIENT_MESSAGE_FIELDS = [
+  'fileContext',
+  'image_urls',
+  'documents',
+  'videos',
+  'audios',
+] as const;
 
 /**
  * Transient fields on a message's `files` entries. `files` carries the user's

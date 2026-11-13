@@ -1,6 +1,7 @@
 import { useContext, useId, useMemo, useState } from 'react';
 import { Button } from '@librechat/client';
 import { ChevronRight } from 'lucide-react';
+import { useExpandCollapse } from '@librechat/chat/components';
 import {
   Constants,
   alternateName,
@@ -22,8 +23,8 @@ import { isUserProvidedEndpointConfig } from '~/components/Nav/SettingsTabs/Prov
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { supportsCompaction } from '~/hooks/Chat/useCompactConversation';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
-import { useExpandCollapse, useLocalize } from '~/hooks';
 import { ChatContext } from '~/Providers/ChatContext';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 /** A value as `JSON.parse` produces it. */
@@ -283,7 +284,7 @@ export function ErrorDetails({ label, children }: { label: string; children: Rea
         <ChevronRight
           className={cn(
             'size-3.5 transition-transform duration-300 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none',
-            open && 'rotate-90',
+            open ? 'rotate-90' : 'rtl:-scale-x-100',
           )}
           aria-hidden="true"
         />

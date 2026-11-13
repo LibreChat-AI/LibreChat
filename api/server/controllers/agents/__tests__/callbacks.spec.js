@@ -6,6 +6,15 @@ jest.mock('nanoid', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  captureResponseAccountingUsage: (...args) =>
+    jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
+  writeGuarded: (res, chunk) => {
+    if (res.writableEnded === true || res.destroyed === true) {
+      return false;
+    }
+    res.write(chunk);
+    return true;
+  },
   sendEvent: jest.fn(),
   writeAttachmentEvent: jest.fn(),
   createOwnedToolEndHandler: jest.fn((callback) => ({ handle: callback })),
@@ -33,7 +42,9 @@ jest.mock('@librechat/api', () => ({
   isCodeArtifactToolOutput: jest.requireActual('@librechat/api').isCodeArtifactToolOutput,
   isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
   collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
+  getImageAttachmentContent: jest.requireActual('@librechat/api').getImageAttachmentContent,
   captureSubagentIdentity: jest.requireActual('@librechat/api').captureSubagentIdentity,
+  feedSubagentAggregator: jest.requireActual('@librechat/api').feedSubagentAggregator,
   createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
   stampCommandExecutor: jest.requireActual('@librechat/api').stampCommandExecutor,
 }));
@@ -507,6 +518,101 @@ describe('resumable event generation fencing', () => {
     });
   });
 
+  it('retains a duplicate steering boundary between parallel child tools and shifted text', async () => {
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const aggregators = new Map();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      subagentAggregatorsByToolCallId: aggregators,
+    });
+    const base = {
+      parentToolCallId: 'nested-parent-call',
+      parentRunId: 'child-run',
+      subagentRunId: 'nested-run',
+      subagentType: 'researcher',
+      subagentAgentId: 'nested-agent',
+      runId: 'parent-run',
+      depth: 2,
+    };
+    const part = {
+      type: 'steer',
+      steer: 'Use the revised sources',
+      steerId: 'steer-1',
+      clientSteerId: 'client-steer-1',
+      createdAt: 1234,
+    };
+    const boundary = {
+      phase: 'steer_applied',
+      data: { index: 2, steerId: part.steerId, clientSteerId: part.clientSteerId, part },
+    };
+    for (const update of [
+      {
+        phase: 'run_step',
+        data: {
+          id: 'parallel-tools',
+          index: 0,
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [
+              { id: 'query-1', name: 'query', args: '{}', mcpServerName: 'search' },
+              { id: 'query-2', name: 'query', args: '{}' },
+            ],
+          },
+        },
+      },
+      boundary,
+      {
+        phase: 'run_step',
+        data: { id: 'after-step', index: 3, stepDetails: { type: 'message_creation' } },
+      },
+      {
+        phase: 'message_delta',
+        data: { id: 'after-step', delta: { content: [{ type: 'text', text: 'after' }] } },
+      },
+      boundary,
+    ]) {
+      await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, {
+        ...base,
+        ...update,
+      });
+    }
+    const aggregator = aggregators.get(base.parentToolCallId);
+    expect(aggregator.contentParts).toHaveLength(4);
+    expect(aggregator.contentParts[0].tool_call).toMatchObject({
+      id: 'query-1',
+      mcpServerName: 'search',
+    });
+    expect(aggregator.contentParts[1].tool_call.id).toBe('query-2');
+    expect(aggregator.contentParts[2]).toEqual(part);
+    expect(aggregator.contentParts[3]).toMatchObject({ type: 'text', text: 'after' });
+    expect(aggregator.stepMap.get('after-step').index).toBe(3);
+    expect(aggregator.contentParts.filter((content) => content?.type === 'steer')).toHaveLength(1);
+    expect(jest.requireMock('@librechat/data-schemas').logger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 1.5, NaN, Infinity])('ignores invalid steering index %s', async (index) => {
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const aggregators = new Map();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      subagentAggregatorsByToolCallId: aggregators,
+    });
+    await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, {
+      parentToolCallId: 'parent-call',
+      phase: 'steer_applied',
+      data: { index, part: { type: 'steer', steer: 'guidance' } },
+    });
+    expect(aggregators.get('parent-call').contentParts).toEqual([]);
+  });
+
   it('forwards the originating job epoch with deferred attachments', () => {
     const { GenerationJobManager } = require('@librechat/api');
     const { createAttachmentEmitter } = require('../callbacks');
@@ -656,6 +762,39 @@ describe('createToolEndCallback', () => {
       { owner: 'agent-b', link: 'https://example.com/agent-b' },
     ]);
   });
+
+  it.each(
+    ['createToolEndCallback', 'createResponsesToolEndCallback'].flatMap((factoryName) => [
+      [factoryName, true],
+      [factoryName, false],
+    ]),
+  )(
+    '%s persists original images with model images enabled: %s',
+    async (factoryName, modelImagesEnabled) => {
+      const { saveBase64Image } = require('~/server/services/Files/process');
+      saveBase64Image.mockResolvedValue({ file_id: 'original-image' });
+      const callback = require('../callbacks')[factoryName]({ req, res, artifactPromises });
+      const content = modelImagesEnabled
+        ? [{ type: 'image_url', image_url: { url: 'data:image/png;base64,model' } }]
+        : [];
+      const artifact = {
+        content,
+        imageAttachments: [
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,original' } },
+        ],
+      };
+      await callback(
+        { output: { name: 'flux', tool_call_id: 'image-call', artifact } },
+        { run_id: 'run-image', thread_id: 'thread-image', provider: 'anthropic' },
+      );
+      await Promise.all(artifactPromises);
+      expect(saveBase64Image).toHaveBeenCalledWith(
+        'data:image/png;base64,original',
+        expect.objectContaining({ req, endpoint: 'anthropic' }),
+      );
+      expect(artifact.content).toBe(content);
+    },
+  );
 
   it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
     '%s preserves memory payloads and their execution owner',

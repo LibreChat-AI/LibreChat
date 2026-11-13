@@ -629,9 +629,18 @@ test.describe('the recorded design-rule backlog', () => {
     );
     copyFileSync(resolve(repoRoot, 'scripts/i18n.mts'), join(emptyRoot, 'scripts/i18n.mts'));
     copyFileSync(
+      resolve(repoRoot, 'scripts/diagnostics.mts'),
+      join(emptyRoot, 'scripts/diagnostics.mts'),
+    );
+    copyFileSync(
+      resolve(repoRoot, 'scripts/diagnostics.test.mts'),
+      join(emptyRoot, 'scripts/diagnostics.test.mts'),
+    );
+    copyFileSync(
       resolve(repoRoot, 'scripts/typecheck.mts'),
       join(emptyRoot, 'scripts/typecheck.mts'),
     );
+    copyFileSync(resolve(repoRoot, 'scripts/imports.mts'), join(emptyRoot, 'scripts/imports.mts'));
     mkdirSync(join(emptyRoot, 'scripts/eslint'), { recursive: true });
     copyFileSync(
       resolve(repoRoot, 'scripts/eslint/design.mjs'),
@@ -1108,8 +1117,12 @@ function syntheticRoot(): string {
 
   for (const file of [
     'scripts/static-checks.mts',
+    'scripts/diagnostics.mts',
+    /** The suppressions check runs the comparison's spec before it reads the baseline. */
+    'scripts/diagnostics.test.mts',
     'scripts/i18n.mts',
     'scripts/typecheck.mts',
+    'scripts/imports.mts',
     /** The local design rules the config registers and the runner validates against. */
     'scripts/eslint/design.mjs',
     'scripts/eslint/chat.mjs',

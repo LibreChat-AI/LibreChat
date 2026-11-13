@@ -5,11 +5,7 @@ import {
   resolveToolApprovalPolicy,
   isHITLEnabled,
   healToolApprovalPolicy,
-  collectAliasMatcherNames,
-  buildAliasMatcherPattern,
   mapToolApprovalPolicy,
-  buildToolApprovalPayload,
-  buildAskUserQuestionPayload,
   buildPendingAction,
   isToolApprovalPayloadValid,
   toClientPendingAction,
@@ -189,6 +185,175 @@ describe('mapToolApprovalPolicy', () => {
     });
   });
 
+  describe('mcp:<server>:<tool> patterns', () => {
+    const SERVER = 'helpers-scripts-sandbox';
+    const LIST_DIRS = `list_allowed_directories_mcp_${SERVER}`;
+    const policy: TToolApprovalPolicy = {
+      enabled: true,
+      mode: 'dontAsk',
+      deny: [`mcp:${SERVER}:delete_file`],
+      ask: [`mcp:${SERVER}:*`, 'mcp:wpr-sandbox:*'],
+    };
+
+    /** Runs the SDK's real policy hook the way `runtime.ts` does, per called tool. */
+    const decide = async (toolName: string, target: TToolApprovalPolicy = policy) => {
+      const hook = createToolPolicyHook(mapToolApprovalPolicy(target, toolName) ?? {});
+      const result = await hook(
+        {
+          hook_event_name: 'PreToolUse',
+          runId: 'run',
+          toolName,
+          toolInput: {},
+          toolUseId: 'call',
+        } as Parameters<typeof hook>[0],
+        new AbortController().signal,
+      );
+      return result.decision;
+    };
+
+    test('a server-wide ask asks for every tool of that server under dontAsk', async () => {
+      expect(await decide(LIST_DIRS)).toBe('ask');
+      expect(await decide(`read_file_mcp_${SERVER}`)).toBe('ask');
+      expect(isToolBlockedByApprovalPolicy(policy, LIST_DIRS)).toBe(false);
+      expect(isToolApprovalPauseCapable(policy, false, [LIST_DIRS])).toBe(true);
+    });
+
+    test('deny still wins over a server-wide ask', async () => {
+      expect(await decide(`delete_file_mcp_${SERVER}`)).toBe('deny');
+      expect(isToolDeniedByApprovalPolicy(policy, `delete_file_mcp_${SERVER}`)).toBe(true);
+    });
+
+    test('does not reach other servers or non-MCP tools', async () => {
+      expect(await decide('list_allowed_directories_mcp_other')).toBe('deny');
+      expect(await decide('list_allowed_directories')).toBe('deny');
+      expect(isToolBlockedByApprovalPolicy(policy, 'list_allowed_directories')).toBe(true);
+    });
+
+    test('resolves mcp: entries to the called tool and leaves other entries alone', () => {
+      const target: TToolApprovalPolicy = {
+        ask: ['mcp:My Server:run', 'mcp:*:search', 'mcp:x', 'read_*'],
+      };
+      expect(mapToolApprovalPolicy(target, 'run_mcp_My_Server')).toEqual({
+        ask: ['run_mcp_My_Server', 'mcp:x', 'read_*'],
+      });
+      expect(mapToolApprovalPolicy(target, 'search_mcp_github')).toEqual({
+        ask: ['search_mcp_github', 'mcp:x', 'read_*'],
+      });
+      expect(mapToolApprovalPolicy(target)).toEqual(target);
+    });
+
+    test('keeps a colon inside the server name', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        ask: ['mcp:Connector: Company:*'],
+      };
+      expect(await decide('search_mcp_Connector__Company', target)).toBe('ask');
+      expect(isToolBlockedByApprovalPolicy(target, 'search_mcp_Connector__Company')).toBe(false);
+    });
+
+    test('normalizes a globbed server name, including its trimmed edges', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'bypass',
+        deny: ['mcp:My Server*:delete_file', 'mcp:* (Production):delete_file'],
+      };
+      for (const name of ['delete_file_mcp_My_Server_1', 'delete_file_mcp_Acme__Production']) {
+        expect(await decide(name, target)).toBe('deny');
+        expect(isToolDeniedByApprovalPolicy(target, name)).toBe(true);
+      }
+      expect(await decide('read_file_mcp_Acme__Production', target)).toBe('allow');
+    });
+
+    test('a globbed server keeps the edge underscores a supported name keeps', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'bypass',
+        deny: ['mcp:_prod*:delete_file'],
+      };
+      expect(await decide('delete_file_mcp__prod1', target)).toBe('deny');
+      expect(isToolDeniedByApprovalPolicy(target, 'delete_file_mcp__prod1')).toBe(true);
+      expect(await decide('delete_file_mcp_prod1', target)).toBe('deny');
+    });
+
+    test('a glob whose star matches nothing still reaches the trimmed edge', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'bypass',
+        deny: ['mcp:*(Production):delete_file'],
+      };
+      for (const name of ['delete_file_mcp_Production', 'delete_file_mcp_Acme__Production']) {
+        expect(await decide(name, target)).toBe('deny');
+        expect(isToolDeniedByApprovalPolicy(target, name)).toBe(true);
+      }
+      expect(await decide('delete_file_mcp_Staging', target)).toBe('allow');
+    });
+
+    test('a tool name that starts with the delimiter still meets its server rule', async () => {
+      const target: TToolApprovalPolicy = { enabled: true, mode: 'bypass', deny: ['mcp:github:*'] };
+      expect(await decide('_mcp_read_mcp_github', target)).toBe('deny');
+      expect(isToolDeniedByApprovalPolicy(target, '_mcp_read_mcp_github')).toBe(true);
+    });
+
+    test('a server glob widened by normalization still reviews but never grants', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:(*):*'],
+        ask: ['mcp:* (Production):*'],
+      };
+      expect(await decide('read_mcp_github', target)).toBe('deny');
+      expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_github')).toBe(true);
+      expect(await decide('read_mcp_Acme__Production', target)).toBe('ask');
+    });
+
+    test('a server glob never crosses into a server whose name contains the delimiter', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:Workspace:*'],
+      };
+      const other = 'delete_file_mcp_Google_mcp_Workspace';
+      expect(await decide('read_mcp_Workspace', target)).toBe('allow');
+      expect(await decide(other, target)).toBe('deny');
+      expect(isToolBlockedByApprovalPolicy(target, other)).toBe(true);
+      expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_Workspace')).toBe(false);
+    });
+
+    test('a globbed allow never grants an ambiguous key, whichever side holds the delimiter', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:*:get', 'mcp:gitlab:*'],
+        ask: ['mcp:*:get'],
+      };
+      const ambiguous = 'get_mcp_server_version_mcp_gitlab';
+      expect(await decide('get_mcp_github', target)).toBe('ask');
+      expect(await decide('list_mcp_gitlab', target)).toBe('allow');
+      expect(await decide(ambiguous, target)).toBe('ask');
+      expect(
+        await decide(ambiguous, { enabled: true, mode: 'dontAsk', allow: ['mcp:*:get'] }),
+      ).toBe('deny');
+      expect(
+        isToolBlockedByApprovalPolicy(
+          { enabled: true, mode: 'dontAsk', allow: ['mcp:gitlab:*'] },
+          ambiguous,
+        ),
+      ).toBe(true);
+    });
+
+    test('a glob-free entry matches its exact key even when the tool name contains the delimiter', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:Workspace:read_mcp_file'],
+      };
+      expect(await decide('read_mcp_file_mcp_Workspace', target)).toBe('allow');
+      expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_file_mcp_Workspace')).toBe(false);
+      expect(await decide('read_mcp_Workspace', target)).toBe('deny');
+    });
+  });
+
   test('strips enabled regardless of value (LibreChat-only field)', () => {
     expect(mapToolApprovalPolicy({ enabled: false, mode: 'bypass' })).toEqual({
       mode: 'bypass',
@@ -203,89 +368,6 @@ describe('mapToolApprovalPolicy', () => {
       mode: 'default',
       deny: ['rm'],
     });
-  });
-});
-
-describe('buildToolApprovalPayload', () => {
-  const calls = [
-    {
-      name: 'shell',
-      arguments: { command: 'ls' },
-      tool_call_id: 'call_abc',
-      description: 'List files',
-    },
-  ];
-
-  test('produces a tool_approval-discriminated payload', () => {
-    const payload = buildToolApprovalPayload(calls);
-    expect(payload.type).toBe('tool_approval');
-    expect(payload.action_requests).toEqual([
-      {
-        name: 'shell',
-        arguments: { command: 'ls' },
-        tool_call_id: 'call_abc',
-        description: 'List files',
-      },
-    ]);
-  });
-
-  test("default decisions exclude 'respond' (reserved for AskUserQuestion semantics)", () => {
-    const payload = buildToolApprovalPayload(calls);
-    expect(payload.review_configs[0].allowed_decisions).toEqual(['approve', 'reject', 'edit']);
-  });
-
-  test('respects per-tool decision overrides', () => {
-    const payload = buildToolApprovalPayload(calls, {
-      shell: ['approve', 'reject'],
-    });
-    expect(payload.review_configs[0].allowed_decisions).toEqual(['approve', 'reject']);
-  });
-
-  test('produces one review_config per call, in order', () => {
-    const payload = buildToolApprovalPayload([
-      { name: 'a', arguments: {}, tool_call_id: '1' },
-      { name: 'b', arguments: {}, tool_call_id: '2' },
-    ]);
-    expect(payload.review_configs.map((r) => r.action_name)).toEqual(['a', 'b']);
-  });
-
-  test('carries tool_call_id on each review_config (join key for duplicate-tool batches)', () => {
-    const payload = buildToolApprovalPayload([
-      { name: 'mcp:server:search', arguments: { q: 'a' }, tool_call_id: 'call_1' },
-      { name: 'mcp:server:search', arguments: { q: 'b' }, tool_call_id: 'call_2' },
-    ]);
-    expect(payload.review_configs).toEqual([
-      {
-        action_name: 'mcp:server:search',
-        tool_call_id: 'call_1',
-        allowed_decisions: ['approve', 'reject', 'edit'],
-      },
-      {
-        action_name: 'mcp:server:search',
-        tool_call_id: 'call_2',
-        allowed_decisions: ['approve', 'reject', 'edit'],
-      },
-    ]);
-  });
-});
-
-describe('buildAskUserQuestionPayload', () => {
-  test('produces an ask_user_question-discriminated payload', () => {
-    const payload = buildAskUserQuestionPayload({
-      question: 'Which environment?',
-      options: [
-        { label: 'Staging', value: 'staging' },
-        { label: 'Production', value: 'production' },
-      ],
-    });
-    expect(payload.type).toBe('ask_user_question');
-    expect(payload.question.question).toBe('Which environment?');
-    expect(payload.question.options).toHaveLength(2);
-  });
-
-  test('options are optional', () => {
-    const payload = buildAskUserQuestionPayload({ question: 'Free-form?' });
-    expect(payload.question.options).toBeUndefined();
   });
 });
 
@@ -1165,35 +1247,6 @@ describe('healToolApprovalPolicy reverse direction', () => {
     );
 
     expect(healed?.deny).toEqual(['search_mcp_acme', 'acme_search_mcp_acme']);
-  });
-});
-
-describe('collectAliasMatcherNames', () => {
-  const aliases = [
-    { name: 'search_mcp_acme', aliasName: 'acme_search_mcp_acme' },
-    { name: 'acme_list_mcp_acme', aliasName: 'list_mcp_acme' },
-  ];
-
-  it('returns names whose alias matches the regex while the name does not', () => {
-    expect(collectAliasMatcherNames('^acme_search_mcp_acme$', aliases)).toEqual([
-      'search_mcp_acme',
-    ]);
-    expect(collectAliasMatcherNames('^list_mcp_acme$', aliases)).toEqual(['acme_list_mcp_acme']);
-  });
-
-  it('skips names the matcher already matches and invalid patterns', () => {
-    expect(collectAliasMatcherNames('_mcp_acme$', aliases)).toEqual([]);
-    expect(collectAliasMatcherNames('(unclosed', aliases)).toEqual([]);
-    expect(collectAliasMatcherNames(undefined, aliases)).toEqual([]);
-  });
-
-  it('builds an anchored exact-name pattern with escaped names', () => {
-    const pattern = buildAliasMatcherPattern(['a.b_mcp_acme', 'c_mcp_acme']);
-    const regex = new RegExp(pattern);
-    expect(regex.test('a.b_mcp_acme')).toBe(true);
-    expect(regex.test('axb_mcp_acme')).toBe(false);
-    expect(regex.test('c_mcp_acme')).toBe(true);
-    expect(regex.test('xc_mcp_acme')).toBe(false);
   });
 });
 

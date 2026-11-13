@@ -1,5 +1,5 @@
 import React, { useState, useRef, useLayoutEffect, useCallback, memo } from 'react';
-import { disabledInkClasses } from '~/utils';
+import { disabledInkClasses, resolveArrowKey } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 /** Matches the `inset-y-1` the single-row indicator uses. */
@@ -75,7 +75,7 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       Home: 0,
       End: options.length - 1,
     };
-    const target = moves[event.key];
+    const target = moves[resolveArrowKey(event.key, event.currentTarget)];
     if (target == null) {
       return;
     }
@@ -172,14 +172,14 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       ref={containerRef}
       className={`relative ${fullWidth ? 'flex' : 'inline-flex'} ${
         wrap ? 'flex-wrap' : ''
-      } bg-surface-tertiary items-center rounded-lg px-1 ${className}`}
+      } bg-surface-tertiary items-center rounded-lg px-0.75 ${className}`}
       role="radiogroup"
       aria-labelledby={ariaLabelledBy}
     >
       {selectedIndex >= 0 && isMounted && (
         <div
-          className={`border-border-light bg-surface-primary pointer-events-none absolute left-0 rounded-md border shadow-xs transition-all duration-300 ease-out ${
-            wrap ? 'top-0' : 'inset-y-1'
+          className={`bg-surface-primary pointer-events-none absolute left-0 rounded-md shadow-xs transition-all duration-300 ease-out ${
+            wrap ? 'top-0' : 'inset-y-0.75'
           }`}
           style={backgroundStyle}
         />

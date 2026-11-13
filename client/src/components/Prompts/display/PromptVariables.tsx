@@ -46,7 +46,10 @@ const DropdownVariableCard = ({ parsed }: { parsed: ParsedVariable }) => {
     >
       <div className="mb-2 flex items-center gap-2">
         <div className="bg-surface-tertiary flex size-6 items-center justify-center rounded-md">
-          <ChevronRight className="text-text-secondary size-3.5" aria-hidden="true" />
+          <ChevronRight
+            className="text-text-secondary size-3.5 rtl:-scale-x-100"
+            aria-hidden="true"
+          />
         </div>
         <span className="text-text-primary text-sm font-medium">{parsed.name}</span>
         <span className="bg-surface-tertiary text-text-secondary text-3xs rounded-full px-1.5 py-0.5 font-medium">

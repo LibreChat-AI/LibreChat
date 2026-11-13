@@ -45,21 +45,3 @@ RAG Selector labels
 app.kubernetes.io/name: {{ include "rag.fullname" . }}-rag
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
-
-{{/*
-Create the name of the service account to use
-*/}}
-{{- define "rag.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create }}
-{{- default (include "rag.fullname" .) .Values.serviceAccount.name }}
-{{- else }}
-{{- default "default" .Values.serviceAccount.name }}
-{{- end }}
-{{- end }}
-
-
-{{- define "rag.dbsecretValue" -}}
-{{- $secret :=  .Values.postgresql.auth.existingSecret -}}
-{{- $key := "password" -}}
-{{- printf "%s" (include "exec" (dict "command" "kubectl" "args" (list "get" "secret" $secret "-o=jsonpath={.data." $key "}"))) | b64enc -}}
-{{- end -}}

@@ -9,6 +9,12 @@ import {
   messageCarriesFiles,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
+import {
+  pendingQuotesByConvoId,
+  getReasoningStateKey,
+  pendingManualSkillsByConvoId,
+  pendingReasoningOverrideFamily,
+} from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { AttachmentRecovery } from './attachments';
 import type { TranslationKeys } from '~/hooks';
@@ -18,17 +24,13 @@ import {
   useOptionalMessagesOperations,
   useOptionalMessagesConversation,
 } from '~/Providers/MessagesViewContext';
-import {
-  getReasoningStateKey,
-  pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
 import { findAttachmentRecovery, isAttachmentError, mayBeAttachmentError } from './attachments';
+import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useMessageContext } from '~/Providers/MessageContext';
 import { useLocalize, useNavigateToConvo } from '~/hooks';
 import { useForkConvoMutation } from '~/data-provider';
 import { ChatContext } from '~/Providers/ChatContext';
 import { ErrorAction, ErrorActions } from './parts';
-import { useGetAddedConvo } from '~/hooks/Chat';
 import store from '~/store';
 
 /** What the card says the actions do, matched to the ones it offers. */
@@ -103,10 +105,10 @@ function RecoveryActions({
           set(store.pendingComposerTextByConvoId(forkedId), turn.text);
         }
         if ((turn.quotes?.length ?? 0) > 0) {
-          set(store.pendingQuotesByConvoId(forkedId), turn.quotes ?? []);
+          reasoningStore.set(pendingQuotesByConvoId(forkedId), turn.quotes ?? []);
         }
         if ((turn.manualSkills?.length ?? 0) > 0) {
-          set(store.pendingManualSkillsByConvoId(forkedId), turn.manualSkills ?? []);
+          reasoningStore.set(pendingManualSkillsByConvoId(forkedId), turn.manualSkills ?? []);
         }
         if (turn.reasoningOverride != null) {
           reasoningStore.set(

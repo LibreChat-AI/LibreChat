@@ -35,7 +35,7 @@ function Section({ title, fields }: { title: TranslationKeys; fields: Field[] })
         {fields.map((field) => (
           <div key={field.label} className="contents">
             <dt className="text-text-secondary">{localize(field.label)}</dt>
-            <dd className="text-text-primary min-w-0 text-right break-words tabular-nums">
+            <dd className="text-text-primary min-w-0 text-end break-words tabular-nums">
               {field.value}
             </dd>
           </div>
@@ -193,7 +193,7 @@ function AgentCard({ agent, agentId }: { agent: RecordPresentation['agent']; age
       {agent == null && (
         <p className="text-text-secondary text-sm">{localize('com_ui_trace_agent_unavailable')}</p>
       )}
-      <div className="border-border-light bg-surface-primary-alt flex items-center gap-1 rounded-lg border py-0.5 pr-0.5 pl-2.5">
+      <div className="border-border-light bg-surface-primary-alt flex items-center gap-1 rounded-lg border py-0.5 ps-2.5 pe-0.5">
         <span className="text-text-secondary min-w-0 flex-1 truncate font-mono text-xs select-all">
           {agentId}
         </span>
@@ -363,7 +363,7 @@ function Inspector({
     <aside
       aria-labelledby={headingId}
       data-testid="trace-inspector"
-      className="border-border-light bg-presentation flex min-h-0 flex-col max-md:absolute max-md:inset-x-0 max-md:bottom-0 max-md:z-20 max-md:max-h-[65%] max-md:rounded-t-2xl max-md:border-t max-md:shadow-lg md:w-[22rem] md:shrink-0 md:border-l"
+      className="border-border-light bg-presentation flex min-h-0 flex-col max-md:absolute max-md:inset-x-0 max-md:bottom-0 max-md:z-20 max-md:max-h-[65%] max-md:rounded-t-2xl max-md:border-t max-md:shadow-lg md:w-[22rem] md:shrink-0 md:border-s"
     >
       <div className="border-border-light flex items-center gap-2 border-b px-3 py-2">
         {presentation.agent !== undefined &&
@@ -377,7 +377,7 @@ function Inspector({
         <h3 id={headingId} className="min-w-0 flex-1 truncate text-sm font-semibold">
           {presentation.title}
           {presentation.caption != null && (
-            <span className="text-text-secondary ml-1.5 text-xs font-normal">
+            <span className="text-text-secondary ms-1.5 text-xs font-normal">
               {presentation.caption}
             </span>
           )}

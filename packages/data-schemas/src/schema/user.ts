@@ -1,5 +1,8 @@
 import { Schema } from 'mongoose';
 import { SystemRoles, STATEFUL_CODE_ENVIRONMENTS } from 'librechat-data-provider';
+import { applySearchTokens } from '~/models/plugins/searchTokens';
+import { isReservedTenantId } from '~/config/tenantContext';
+import { USER_SEARCH_TOKEN_FIELDS } from '~/utils/search';
 import { IUser } from '~/types';
 
 // Session sub-schema
@@ -167,6 +170,10 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       type: Date,
       select: false,
     },
+    agentTriggerDeletionAttemptId: {
+      type: String,
+      select: false,
+    },
     subagentAdmissionFences: {
       type: [
         {
@@ -230,6 +237,10 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
     tenantId: {
       type: String,
       index: true,
+      validate: {
+        validator: (value: string | undefined) => !isReservedTenantId(value),
+        message: 'Reserved tenant identifier',
+      },
     },
   },
   { timestamps: true },
@@ -244,6 +255,7 @@ userSchema.index({ idOnTheSource: 1, openidIssuer: 1, tenantId: 1 });
    them. The rare cleanup that pulls a deleted agent from every user names the tenant too;
    the one that does not (`$in` over a batch of ids) is a maintenance write, not a page. */
 userSchema.index({ tenantId: 1, 'favorites.agentId': 1 });
+applySearchTokens(userSchema, USER_SEARCH_TOKEN_FIELDS);
 
 const oAuthIdFields = [
   'googleId',

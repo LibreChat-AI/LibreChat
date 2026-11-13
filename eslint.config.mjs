@@ -58,6 +58,7 @@ const chatLiteralAttributes = {
 export default [
   {
     ignores: [
+      'vendor/code/**/*',
       'client/dist/**/*',
       'client/public/**/*',
       'client/coverage/**/*',
@@ -329,6 +330,8 @@ export default [
             'slow-pulse',
             'hide-scrollbar',
             'scrollbar-gutter-spacer',
+            'progress-text-wrapper',
+            'progress-text-content',
             'active',
             // put in the DOM by a dependency, not by Tailwind
             'lucide',
@@ -351,10 +354,28 @@ export default [
             // that stylesheet, so its lint has no Tailwind entry that declares them.
             'markdown',
             'prose',
+            'prose-sm',
             'message-content',
             'submitting',
             'result-streaming',
             'result-thinking',
+            'shimmer',
+            'tool-status-text',
+            'message-render',
+            'message-timestamp',
+            'popover-animate',
+            // The thinking-level slider's spring curves, which have no theme token.
+            'composer-effort-glide',
+            'composer-effort-thumb',
+            'composer-effort-fill',
+            // The thinking button's label roll and the composer popover clock it resizes on.
+            'composer-slot-resize',
+            'composer-label-in-up',
+            'composer-label-in-down',
+            'composer-label-out-up',
+            'composer-label-out-down',
+            'animate-composer-icon',
+            'animate-composer-popover',
           ],
         },
       ],
@@ -471,7 +492,7 @@ export default [
     files: ['**/*.ts', '**/*.tsx'],
     // Package, E2E, and root integration tests are not part of the client
     // TypeScript project. They still get the recommended rules above.
-    ignores: ['packages/**/*', 'client/vite.config.ts', 'e2e/**/*', 'src/tests/**/*'],
+    ignores: ['packages/**/*', 'client/vite.config.ts', 'e2e/**/*'],
     plugins: {
       '@typescript-eslint': typescriptEslintEslintPlugin,
       jest: fixupPluginRules(jest),
@@ -546,14 +567,6 @@ export default [
           destructuredArrayIgnorePattern: '^_',
         },
       ],
-    },
-  },
-  {
-    files: ['./config/translations/**/*.ts'],
-    languageOptions: {
-      parser: tsParser,
-      ecmaVersion: 5,
-      sourceType: 'script',
     },
   },
   {
