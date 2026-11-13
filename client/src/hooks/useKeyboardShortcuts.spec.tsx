@@ -919,6 +919,70 @@ function bindSubmitMessage(binding: string) {
   );
 }
 
+describe('retained chat shortcut boundaries', () => {
+  it.each(['hidden', 'inert', 'display', 'visibility'])(
+    'does not activate an unavailable %s chat owner',
+    (mode) => {
+      renderHarness(undefined, '/agent-builder');
+      const owner = document.createElement('div');
+      if (mode === 'hidden') owner.hidden = true;
+      if (mode === 'inert') owner.setAttribute('inert', '');
+      if (mode === 'display') owner.style.display = 'none';
+      if (mode === 'visibility') owner.style.visibility = 'hidden';
+      const clicks = jest.fn();
+      for (const id of ['send-button', 'stop-generation-button', 'composer-palette-button']) {
+        const button = document.createElement('button');
+        button.dataset.testid = id;
+        button.dataset.uploadShortcut = 'true';
+        button.addEventListener('click', clicks);
+        owner.appendChild(button);
+      }
+      const textarea = document.createElement('textarea');
+      textarea.id = 'prompt-textarea';
+      owner.appendChild(textarea);
+      document.body.appendChild(owner);
+      const featureAction = document.createElement('button');
+      document.body.appendChild(featureAction);
+      featureAction.focus();
+      for (const init of [
+        { key: 'Enter', ctrlKey: true },
+        { key: 'x', ctrlKey: true, shiftKey: true },
+        { key: 'u', ctrlKey: true, shiftKey: true },
+        { key: 'Escape', shiftKey: true },
+      ]) {
+        expect(dispatchKey(init, featureAction).defaultPrevented).toBe(false);
+      }
+      expect(clicks).not.toHaveBeenCalled();
+      expect(featureAction).toHaveFocus();
+      owner.hidden = false;
+      owner.removeAttribute('inert');
+      owner.style.display = '';
+      owner.style.visibility = '';
+      expect(dispatchKey({ key: 'Enter', ctrlKey: true }, featureAction).defaultPrevented).toBe(
+        true,
+      );
+      expect(clicks).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('ignores a hidden owner before selecting a visible send control', () => {
+    renderHarness();
+    const hidden = document.createElement('div');
+    hidden.hidden = true;
+    const button = document.createElement('button');
+    button.dataset.testid = 'send-button';
+    const hiddenClick = jest.fn();
+    button.addEventListener('click', hiddenClick);
+    hidden.appendChild(button);
+    document.body.appendChild(hidden);
+    const visibleClick = appendSendButton();
+    const event = dispatchKey({ key: 'Enter', ctrlKey: true });
+    expect(hiddenClick).not.toHaveBeenCalled();
+    expect(visibleClick).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+});
+
 describe('composer submit shortcuts', () => {
   it('defers a custom Alt+Enter submit binding in the composer to the textarea', () => {
     window.localStorage.setItem('enterToSend', 'false');
