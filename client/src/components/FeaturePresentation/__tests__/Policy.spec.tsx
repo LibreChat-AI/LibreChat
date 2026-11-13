@@ -11,7 +11,7 @@ import { pageRegistry } from '../registry';
 import FeaturePage from '../Page';
 
 const pages = Object.keys(pageRegistry) as NavigationPage[];
-const consumer = jest.fn(() => <div>Feature content</div>);
+const consumer = jest.fn(() => <div>{'Feature content'}</div>);
 const features = Object.fromEntries(pages.map((page) => [page, consumer]));
 
 function setup(
@@ -47,7 +47,7 @@ function setup(
       },
       {
         path: '/c/new',
-        element: <div>Chat</div>,
+        element: <div>{'Chat'}</div>,
       },
     ],
     { initialEntries: [pageRegistry[page].path] },

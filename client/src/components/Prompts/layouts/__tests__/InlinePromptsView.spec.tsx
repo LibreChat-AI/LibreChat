@@ -24,11 +24,14 @@ jest.mock('../../forms/PromptForm', () => ({
 }));
 
 function renderView(path: string) {
-  const router = createMemoryRouter([
-    { path: '/prompts', element: <InlinePromptsView /> },
-    { path: '/prompts/:promptId', element: <InlinePromptsView /> },
-    { path: '/c/new', element: <div>chat</div> },
-  ], { initialEntries: [path] });
+  const router = createMemoryRouter(
+    [
+      { path: '/prompts', element: <InlinePromptsView /> },
+      { path: '/prompts/:promptId', element: <InlinePromptsView /> },
+      { path: '/c/new', element: <div>{'chat'}</div> },
+    ],
+    { initialEntries: [path] },
+  );
   return render(<RouterProvider router={router} />);
 }
 

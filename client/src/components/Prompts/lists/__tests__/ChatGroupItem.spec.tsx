@@ -33,7 +33,10 @@ jest.mock('~/hooks', () => ({
   useSubmitMessage: () => mockUseSubmitMessage(),
   usePromptContentResolver: () => mockResolve,
   usePromptContent: () => ({
-    text: 'Preview text', isLoading: false, error: null, refetch: jest.fn(),
+    text: 'Preview text',
+    isLoading: false,
+    error: null,
+    refetch: jest.fn(),
   }),
 }));
 

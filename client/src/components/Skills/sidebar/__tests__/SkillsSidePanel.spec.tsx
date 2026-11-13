@@ -63,7 +63,10 @@ jest.mock('~/components/ui', () => {
 
 jest.mock('../FilterSkills', () => ({
   __esModule: true,
-  default: ({ searchTerm, onSearchChange }: {
+  default: ({
+    searchTerm,
+    onSearchChange,
+  }: {
     searchTerm: string;
     onSearchChange: React.ChangeEventHandler<HTMLInputElement>;
   }) => <input aria-label="filter skills" value={searchTerm} onChange={onSearchChange} />,
@@ -75,7 +78,11 @@ jest.mock('../../lists/SkillListItem', () => ({
 }));
 
 function renderPanel(visible?: boolean) {
-  return render(<MemoryRouter><SkillsSidePanel visible={visible} /></MemoryRouter>);
+  return render(
+    <MemoryRouter>
+      <SkillsSidePanel visible={visible} />
+    </MemoryRouter>,
+  );
 }
 
 describe('SkillsSidePanel', () => {
@@ -93,30 +100,41 @@ describe('SkillsSidePanel', () => {
     renderPanel();
     const toggle = screen.getByRole('button', { name: 'com_ui_my_skills' });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true }));
+    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: true }),
+    );
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }));
+    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
     fireEvent.click(toggle);
-    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true }));
+    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: true }),
+    );
   });
 
   it('asks for a first page large enough to fill a tall panel', () => {
     renderPanel();
     expect(mockUseSkillsInfiniteQuery).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 50 }), { enabled: true },
+      expect.objectContaining({ limit: 50 }),
+      { enabled: true },
     );
   });
 
   it('uses explicit page visibility when the sidebar is collapsed', () => {
     mockSidebarExpanded = false;
     renderPanel(true);
-    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true }));
+    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: true }),
+    );
   });
 
   it('does not paginate a hidden retained host', () => {
     renderPanel(false);
-    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }));
+    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
   });
 
   it('disables the query and does not display cached skills without USE permission', () => {
@@ -139,16 +157,24 @@ describe('SkillsSidePanel', () => {
     expect(screen.getByText('com_ui_skills_empty')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('filter skills'), { target: { value: 'database' } });
     expect(mockUseSkillsInfiniteQuery).toHaveBeenLastCalledWith(
-      { search: 'database', limit: 50 }, { enabled: true },
+      { search: 'database', limit: 50 },
+      { enabled: true },
     );
     expect(screen.getByText('com_ui_no_results_found')).toBeInTheDocument();
   });
 
   it('renders loaded skills and retains them if a later page fails', () => {
     const skill: TSkillSummary = {
-      _id: 'skill-1', name: 'database', description: 'Query databases', author: 'user',
-      authorName: 'User', version: 1, source: 'inline', fileCount: 0,
-      createdAt: '', updatedAt: '',
+      _id: 'skill-1',
+      name: 'database',
+      description: 'Query databases',
+      author: 'user',
+      authorName: 'User',
+      version: 1,
+      source: 'inline',
+      fileCount: 0,
+      createdAt: '',
+      updatedAt: '',
     };
     mockQuery.data = { pages: [{ skills: [skill], has_more: true, after: 'cursor-2' }] };
     mockQuery.isError = true;
@@ -161,10 +187,21 @@ describe('SkillsSidePanel', () => {
     const view = renderPanel(true);
     fireEvent.change(screen.getByLabelText('filter skills'), { target: { value: 'draft' } });
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_my_skills' }));
-    view.rerender(<MemoryRouter><SkillsSidePanel visible={false} /></MemoryRouter>);
-    view.rerender(<MemoryRouter><SkillsSidePanel visible /></MemoryRouter>);
+    view.rerender(
+      <MemoryRouter>
+        <SkillsSidePanel visible={false} />
+      </MemoryRouter>,
+    );
+    view.rerender(
+      <MemoryRouter>
+        <SkillsSidePanel visible />
+      </MemoryRouter>,
+    );
     expect(screen.getByLabelText('filter skills')).toHaveValue('draft');
-    expect(screen.getByRole('button', { name: 'com_ui_my_skills' })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: 'com_ui_my_skills' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
   });
 
   it('offers retry instead of claiming the collection is empty on failure', () => {
@@ -174,14 +211,20 @@ describe('SkillsSidePanel', () => {
     expect(screen.queryByText('com_ui_skills_empty')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
     expect(mockRefetch).toHaveBeenCalledTimes(1);
-    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }));
+    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
   });
 
   it('shows the shared loading footer only while the next page loads', () => {
     const { rerender } = renderPanel();
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     mockQuery.isFetchingNextPage = true;
-    rerender(<MemoryRouter><SkillsSidePanel /></MemoryRouter>);
+    rerender(
+      <MemoryRouter>
+        <SkillsSidePanel />
+      </MemoryRouter>,
+    );
     expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading');
   });
 });

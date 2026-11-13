@@ -31,9 +31,7 @@ export default function PromptsAccordion({
         ) : null
       }
     >
-      <FilterPrompts>
-        {isChatRoute !== false && <AutoSendPrompt />}
-      </FilterPrompts>
+      <FilterPrompts>{isChatRoute !== false && <AutoSendPrompt />}</FilterPrompts>
     </PromptSidePanel>
   );
 }

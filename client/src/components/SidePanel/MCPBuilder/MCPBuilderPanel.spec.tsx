@@ -38,11 +38,14 @@ jest.mock('~/components/ui', () => {
   return {
     PanelHeader: jest.requireActual('~/components/ui/PanelHeader').default,
     PanelFooter: ({ children }: { children: React.ReactNode }) => children,
-    PanelContent: ReactModule.forwardRef<HTMLDivElement, {
-      children?: React.ReactNode;
-      isLoading: boolean;
-      skeleton: React.ReactNode;
-    }>(({ children, isLoading, skeleton }, ref) => (
+    PanelContent: ReactModule.forwardRef<
+      HTMLDivElement,
+      {
+        children?: React.ReactNode;
+        isLoading: boolean;
+        skeleton: React.ReactNode;
+      }
+    >(({ children, isLoading, skeleton }, ref) => (
       <div ref={ref}>{isLoading ? <div role="status">{skeleton}</div> : children}</div>
     )),
   };
@@ -58,7 +61,11 @@ jest.mock('./MCPServerList', () => ({
 }));
 
 function renderPanel(visible?: boolean, path = '/mcp') {
-  return render(<MemoryRouter initialEntries={[path]}><MCPBuilderPanel visible={visible} /></MemoryRouter>);
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <MCPBuilderPanel visible={visible} />
+    </MemoryRouter>,
+  );
 }
 
 beforeEach(() => {

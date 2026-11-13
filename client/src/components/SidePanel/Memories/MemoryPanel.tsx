@@ -74,7 +74,12 @@ export default function MemoryPanel() {
     permission: Permissions.READ,
   });
 
-  const { data: memData, isLoading, isError, refetch } = useMemoriesQuery({
+  const {
+    data: memData,
+    isLoading,
+    isError,
+    refetch,
+  } = useMemoriesQuery({
     enabled: hasReadAccess,
   });
 

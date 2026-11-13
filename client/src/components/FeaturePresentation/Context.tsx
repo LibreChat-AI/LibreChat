@@ -71,7 +71,8 @@ export function FeaturePresentationProvider({
   const routePage = getPageForPath(location.pathname);
   const page = routePage && features[routePage] ? routePage : undefined;
   const canUse = useCallback(
-    (target: NavigationPage) => links.some((link) => link.id === pageRegistry[target].navId && !link.disabled),
+    (target: NavigationPage) =>
+      links.some((link) => link.id === pageRegistry[target].navId && !link.disabled),
     [links],
   );
   const canOpenPage = useCallback(

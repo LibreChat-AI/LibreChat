@@ -44,11 +44,14 @@ jest.mock('~/components/ui', () => {
   const ReactModule = jest.requireActual<typeof import('react')>('react');
   return {
     PanelHeader: jest.requireActual('~/components/ui/PanelHeader').default,
-    PanelContent: ReactModule.forwardRef<HTMLDivElement, {
-      children?: React.ReactNode;
-      isLoading: boolean;
-      skeleton: React.ReactNode;
-    }>(({ children, isLoading, skeleton }, ref) => (
+    PanelContent: ReactModule.forwardRef<
+      HTMLDivElement,
+      {
+        children?: React.ReactNode;
+        isLoading: boolean;
+        skeleton: React.ReactNode;
+      }
+    >(({ children, isLoading, skeleton }, ref) => (
       <div ref={ref}>{isLoading ? <div role="status">{skeleton}</div> : children}</div>
     )),
   };
@@ -63,7 +66,9 @@ jest.mock('../../dialogs/CreatePromptDialog', () => {
 jest.mock('../../lists/ChatGroupItem', () => ({
   __esModule: true,
   default: ({ group, isChatRoute }: { group: TPromptGroup; isChatRoute: boolean }) => (
-    <div data-testid="prompt-row" data-chat-route={String(isChatRoute)}>{group.name}</div>
+    <div data-testid="prompt-row" data-chat-route={String(isChatRoute)}>
+      {group.name}
+    </div>
   ),
 }));
 jest.mock('@librechat/client', () => ({
@@ -72,7 +77,11 @@ jest.mock('@librechat/client', () => ({
 }));
 
 function renderCollection() {
-  return render(<MemoryRouter initialEntries={['/prompts']}><PromptsCollection /></MemoryRouter>);
+  return render(
+    <MemoryRouter initialEntries={['/prompts']}>
+      <PromptsCollection />
+    </MemoryRouter>,
+  );
 }
 
 describe('PromptsCollection', () => {
@@ -95,13 +104,21 @@ describe('PromptsCollection', () => {
     });
     expect(mockSetName).toHaveBeenLastCalledWith('research');
     expect(mockActivateCatalog).toHaveBeenCalledWith('prompts');
-    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true }));
+    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: true }),
+    );
   });
 
   it('does not release a hidden retained collection catalog', () => {
-    render(<MemoryRouter><PromptsCollection visible={false} /></MemoryRouter>);
+    render(
+      <MemoryRouter>
+        <PromptsCollection visible={false} />
+      </MemoryRouter>,
+    );
     expect(mockActivateCatalog).not.toHaveBeenCalled();
-    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }));
+    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
   });
 
   it('shows loading instead of an empty list', () => {
@@ -137,7 +154,9 @@ describe('PromptsCollection', () => {
     expect(screen.queryByText('com_ui_no_prompts_title')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
     expect(mockRefetch).toHaveBeenCalledTimes(1);
-    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }));
+    expect(mockUseNavScrolling).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
   });
 
   it('keeps loaded rows when fetching another page fails', () => {

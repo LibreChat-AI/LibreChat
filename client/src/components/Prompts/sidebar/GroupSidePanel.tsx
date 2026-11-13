@@ -65,7 +65,7 @@ export default function GroupSidePanel({
     return null;
   }
   if (!hasAccess) {
-    return <div className="p-4 text-text-secondary">{localize('com_ui_feature_no_access')}</div>;
+    return <div className="text-text-secondary p-4">{localize('com_ui_feature_no_access')}</div>;
   }
   const { promptGroups, groupsQuery, isFetchingNextPage, name } = context;
 
