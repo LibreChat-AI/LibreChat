@@ -4,7 +4,7 @@ import { Provider, createStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { BarChart3, MessagesSquare, NotebookPen } from 'lucide-react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { ConsoleProps } from '../Console';
 import type { NavLink } from '~/common';
@@ -81,6 +81,21 @@ function Location() {
   return <output data-testid="location">{useLocation().pathname}</output>;
 }
 
+function browserClick(element: HTMLElement, init?: MouseEventInit) {
+  let prevented = false;
+  // Observe React's cancellation before stopping JSDOM's unsupported navigation.
+  document.addEventListener(
+    'click',
+    (event) => {
+      prevented = event.defaultPrevented;
+      event.preventDefault();
+    },
+    { once: true },
+  );
+  fireEvent.click(element, init);
+  return prevented;
+}
+
 async function renderConsole(overrides: Partial<ConsoleProps> = {}) {
   const store = createStore();
   let props: ConsoleProps = {
@@ -127,8 +142,10 @@ describe('Console navigation', () => {
     mockShowMarketplace = true;
   });
 
-  afterEach(() => {
-    document.documentElement.dir = 'ltr';
+  afterEach(async () => {
+    await act(async () => {
+      document.documentElement.dir = 'ltr';
+    });
   });
 
   it.each([true, false])(
@@ -160,7 +177,7 @@ describe('Console navigation', () => {
   ])('keeps labels=%s independent of panel=%s', async (railExpanded, panelExpanded) => {
     const { props, rerenderConsole } = await renderConsole({ railExpanded, panelExpanded });
     const toggle = screen.getByTestId('console-rail-toggle');
-    toggle.focus();
+    act(() => toggle.focus());
     fireEvent.click(toggle);
     expect(props.onToggleRail).toHaveBeenCalledTimes(1);
     expect(props.onToggleRail).toHaveBeenCalledWith();
@@ -285,7 +302,7 @@ describe('Console navigation', () => {
       'aria-keyshortcuts',
       'Control+B',
     );
-    screen.getByTestId('nav-panel-prompts').focus();
+    act(() => screen.getByTestId('nav-panel-prompts').focus());
     await userEvent.setup().keyboard('{Enter}');
     expect(props.onSelect).toHaveBeenCalledTimes(1);
     expect(props.onSelect).toHaveBeenCalledWith('prompts');
@@ -305,7 +322,7 @@ describe('Console navigation', () => {
     'preserves modified New Chat clicks: %o',
     async (modifiers) => {
       const { props } = await renderConsole();
-      fireEvent.click(screen.getByTestId('new-chat-button'), modifiers);
+      expect(browserClick(screen.getByTestId('new-chat-button'), modifiers)).toBe(false);
       expect(mockNewChat).not.toHaveBeenCalled();
       expect(props.onNewChat).not.toHaveBeenCalled();
       expect(props.onTogglePanel).not.toHaveBeenCalled();
@@ -314,7 +331,9 @@ describe('Console navigation', () => {
 
   it('preserves Marketplace routing without changing rail or panel state', async () => {
     const { props } = await renderConsole();
-    fireEvent.click(screen.getByTestId('nav-agents-marketplace-button'), { ctrlKey: true });
+    expect(
+      browserClick(screen.getByTestId('nav-agents-marketplace-button'), { ctrlKey: true }),
+    ).toBe(false);
     expect(screen.getByTestId('location')).toHaveTextContent('/c/new');
     fireEvent.click(screen.getByTestId('nav-agents-marketplace-button'));
     expect(screen.getByTestId('location')).toHaveTextContent('/agents');
@@ -328,17 +347,20 @@ describe('Console navigation', () => {
       const user = userEvent.setup();
       const { store, props } = await renderConsole({ railExpanded });
       const trigger = screen.getByRole('button', { name: 'com_nav_account_settings' });
+      jest.spyOn(trigger, 'offsetWidth', 'get').mockReturnValue(36);
       if (railExpanded) {
         expect(trigger).toHaveTextContent('Test User');
       } else {
         expect(trigger).not.toHaveTextContent('Test User');
       }
       await user.click(trigger);
-      await user.click(await screen.findByTestId('nav-files'));
+      const files = await screen.findByTestId('nav-files');
+      await user.click(files);
       expect(store.get(showFilesDialogAtom)).toBe(true);
       expect(store.get(filesDialogTriggerAtom)?.current).toBe(trigger);
       await user.click(trigger);
-      await user.click(await screen.findByTestId('nav-settings'));
+      const settings = await screen.findByTestId('nav-settings');
+      await user.click(settings);
       expect(store.get(settingsOpenAtom)).toBe(true);
       expect(props.onTogglePanel).not.toHaveBeenCalled();
       expect(props.onToggleRail).not.toHaveBeenCalled();
@@ -349,20 +371,26 @@ describe('Console navigation', () => {
     const user = userEvent.setup();
     await renderConsole({ railExpanded: false });
     const trigger = screen.getByTestId('nav-user');
+    // JSDOM has no layout; Ariakit restores focus only to visible elements.
+    jest.spyOn(trigger, 'offsetWidth', 'get').mockReturnValue(36);
     await user.click(trigger);
     await user.keyboard('{Escape}');
     await waitFor(() => expect(trigger).toHaveFocus());
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
     await user.click(trigger);
-    await user.click(await screen.findByRole('menuitem', { name: 'com_nav_log_out' }));
+    const logout = await screen.findByRole('menuitem', { name: 'com_nav_log_out' });
+    await user.click(logout);
     expect(mockLogout).toHaveBeenCalledTimes(1);
   });
 
   it('uses upstream branding and logical edges in RTL without selecting another feature', async () => {
-    document.documentElement.dir = 'rtl';
+    await act(async () => {
+      document.documentElement.dir = 'rtl';
+    });
     const { props, rerenderConsole } = await renderConsole({ appTitle: 'Another Brand' });
     expect(screen.getByText('Another Brand')).toBeInTheDocument();
     expect(screen.getByTestId('console-navigation')).toHaveClass('border-e');
-    rerenderConsole({ railExpanded: false });
+    await act(async () => rerenderConsole({ railExpanded: false }));
     expect(screen.getByRole('img', { name: 'Another Brand' })).toHaveAttribute(
       'src',
       '/assets/logo.svg',

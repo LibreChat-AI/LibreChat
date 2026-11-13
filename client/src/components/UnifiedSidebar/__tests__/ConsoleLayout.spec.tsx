@@ -1,13 +1,14 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { render, screen, fireEvent } from '@testing-library/react';
-import type { ReactNode, Ref } from 'react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import type { Dispatch, ReactNode, Ref, SetStateAction } from 'react';
 import { MOBILE_DRAWER_ID } from '../constants';
 import UnifiedSidebar from '../UnifiedSidebar';
 
 const mockSidebarState = { isSmallScreen: false, expanded: true };
 const mockSetSidebarOpen = jest.fn();
 let mockReducedMotion = false;
+let mockSetExpanded: Dispatch<SetStateAction<boolean>> | undefined;
 
 jest.mock('@librechat/client', () => ({
   pxToRem: (value: number) => `${value / 16}rem`,
@@ -17,7 +18,12 @@ jest.mock('@librechat/client', () => ({
 
 jest.mock('~/hooks/Nav/useSidebarState', () => ({
   __esModule: true,
-  default: () => mockSidebarState,
+  default: function useSidebarState() {
+    const { useState } = jest.requireActual<typeof React>('react');
+    const [expanded, setExpanded] = useState(mockSidebarState.expanded);
+    mockSetExpanded = setExpanded;
+    return { ...mockSidebarState, expanded, setExpanded };
+  },
 }));
 
 jest.mock('~/hooks/Nav/useSidebarToggle', () => ({
@@ -56,7 +62,7 @@ jest.mock('~/components/Nav/AgentMarketplaceButton', () => ({
 }));
 jest.mock('~/components/SidePanel/Nav', () => ({
   __esModule: true,
-  default: () => <button data-testid="panel-field">Panel field</button>,
+  default: () => <button data-testid="panel-field" />,
 }));
 
 jest.mock('../ExpandedPanel', () => ({
@@ -77,7 +83,7 @@ jest.mock('../Navigation', () => ({
   }) => (
     <nav data-testid="console-navigation">
       <button ref={panelToggleRef} data-testid="panel-toggle" />
-      <button onClick={() => onSelect?.('prompts')}>Select prompts</button>
+      <button aria-label="Select prompts" onClick={() => onSelect?.('prompts')} />
     </nav>
   ),
 }));
@@ -94,6 +100,7 @@ describe('optional console shell composition', () => {
     mockSidebarState.isSmallScreen = false;
     mockSidebarState.expanded = true;
     mockReducedMotion = false;
+    mockSetExpanded = undefined;
     mockSetSidebarOpen.mockClear();
   });
 
@@ -111,12 +118,13 @@ describe('optional console shell composition', () => {
   });
 
   it('makes the collapsed secondary panel inert and returns focus to its rail control', () => {
-    const view = render(<UnifiedSidebar layout="console" switchToHistory={true} />, {
+    render(<UnifiedSidebar layout="console" switchToHistory={true} />, {
       wrapper: MemoryRouter,
     });
     screen.getByTestId('panel-field').focus();
-    mockSidebarState.expanded = false;
-    view.rerender(<UnifiedSidebar layout="console" switchToHistory={true} />);
+    // Notify the memoized shell through its hook, as the real sidebar atom does.
+    expect(mockSetExpanded).toBeDefined();
+    act(() => mockSetExpanded?.(false));
     expect(screen.getByTestId('panel-toggle')).toHaveFocus();
     const panel = document.getElementById('console-sidebar-panel');
     expect(panel).toHaveAttribute('inert');
@@ -130,10 +138,9 @@ describe('optional console shell composition', () => {
 
   it('forwards selection to the feature presentation host exactly once', () => {
     const onSelect = jest.fn();
-    render(
-      <UnifiedSidebar layout="console" switchToHistory={true} onSelect={onSelect} />,
-      { wrapper: MemoryRouter },
-    );
+    render(<UnifiedSidebar layout="console" switchToHistory={true} onSelect={onSelect} />, {
+      wrapper: MemoryRouter,
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Select prompts' }));
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith('prompts');
