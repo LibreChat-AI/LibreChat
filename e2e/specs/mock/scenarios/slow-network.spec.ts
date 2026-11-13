@@ -86,19 +86,22 @@ test.describe('slow and lost connections', () => {
 
     const keyButton = page.getByRole('button', { name: `Set API Key ${KEY_ENDPOINT}` });
     await expect(keyButton).toBeVisible();
-    const box = await keyButton.boundingBox();
-    expect(box).not.toBeNull();
+    /* Layout size, not the bounding box: the menu scales in, so a box read mid-animation is short. */
+    const size = await keyButton.evaluate((el) => ({
+      width: (el as HTMLElement).offsetWidth,
+      height: (el as HTMLElement).offsetHeight,
+    }));
     const coarse = await page.evaluate(() => matchMedia('(any-pointer: coarse)').matches);
     const minimum = coarse ? 32 : 24;
-    expect(box!.height).toBeGreaterThanOrEqual(minimum);
-    expect(box!.width).toBeGreaterThanOrEqual(minimum);
+    expect(size.height).toBeGreaterThanOrEqual(minimum);
+    expect(size.width).toBeGreaterThanOrEqual(minimum);
 
     /* The larger target spills into the row's padding; the row keeps its neighbours' height. */
     const rowHeight = (label: string) =>
       page
         .getByRole('option', { name: new RegExp(`^${label}`) })
         .first()
-        .evaluate((el) => el.getBoundingClientRect().height);
+        .evaluate((el) => (el as HTMLElement).offsetHeight);
     expect(await rowHeight(KEY_ENDPOINT)).toBe(await rowHeight(NEIGHBOUR_ENDPOINT));
   });
 });
