@@ -78,7 +78,7 @@ jobs:
       queue: max
     if: >-
       github.event_name == 'issue_comment' && github.event.issue.pull_request &&
-      startsWith(github.event.comment.body, '/quality') && github.event.comment.user.type != 'Bot'
+      startsWith(github.event.comment.body, '/quality')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
