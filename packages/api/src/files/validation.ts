@@ -1,5 +1,9 @@
+import { createHash } from 'node:crypto';
 import { Providers } from '@librechat/agents';
-import { mbToBytes, isOpenAILikeProvider } from 'librechat-data-provider';
+import { mbToBytes, EModelEndpoint, isOpenAILikeProvider } from 'librechat-data-provider';
+import type { PDFDocumentLoadingTask } from 'pdfjs-dist/types/src/display/api';
+import { runGuardedEncode } from '~/files/encode/memoryGuard';
+import { getModelMaxTokens } from '~/utils/tokens';
 
 export interface ValidationResult {
   isValid: boolean;
@@ -34,7 +38,7 @@ export async function validatePdf(
   model?: string,
 ): Promise<PDFValidationResult> {
   if (provider === Providers.ANTHROPIC) {
-    return validateAnthropicPdf(pdfBuffer, fileSize, configuredFileSizeLimit);
+    return validateAnthropicPdf(pdfBuffer, fileSize, configuredFileSizeLimit, model);
   }
 
   if (provider === Providers.BEDROCK) {
@@ -58,17 +62,81 @@ export async function validatePdf(
   return { isValid: true };
 }
 
+/** Anthropic's per-request PDF page limit: 600 pages, or 100 on models with a 200k-token context window. */
+const ANTHROPIC_PDF_MAX_PAGES = 600;
+const ANTHROPIC_PDF_MAX_PAGES_200K = 100;
+const ANTHROPIC_CONTEXT_1M = 1_000_000;
+
+export function getAnthropicPdfPageLimit(model?: string): number {
+  const contextWindow = model ? getModelMaxTokens(model, EModelEndpoint.anthropic) : undefined;
+  return contextWindow != null && contextWindow >= ANTHROPIC_CONTEXT_1M
+    ? ANTHROPIC_PDF_MAX_PAGES
+    : ANTHROPIC_PDF_MAX_PAGES_200K;
+}
+
+const PDF_PAGE_COUNT_CACHE_MAX = 256;
+const pdfPageCountCache = new Map<string, number | null>();
+
+/**
+ * Counts a PDF's pages by parsing it, so pages superseded by incremental
+ * updates are not counted twice. History attachments are re-validated on every
+ * turn, so counts are cached (LRU, keyed by content digest) and parsing runs
+ * under the shared encode limiter.
+ * @returns The page count, or `null` if the PDF cannot be parsed.
+ */
+export async function countPdfPages(pdfBuffer: Buffer): Promise<number | null> {
+  const key = createHash('sha256').update(pdfBuffer).digest('hex');
+  if (pdfPageCountCache.has(key)) {
+    const cached = pdfPageCountCache.get(key) ?? null;
+    pdfPageCountCache.delete(key);
+    pdfPageCountCache.set(key, cached);
+    return cached;
+  }
+
+  const count = await runGuardedEncode(pdfBuffer.length, () => parsePdfPageCount(pdfBuffer));
+  if (pdfPageCountCache.size >= PDF_PAGE_COUNT_CACHE_MAX) {
+    const oldest = pdfPageCountCache.keys().next().value;
+    if (oldest !== undefined) {
+      pdfPageCountCache.delete(oldest);
+    }
+  }
+  pdfPageCountCache.set(key, count);
+  return count;
+}
+
+async function parsePdfPageCount(pdfBuffer: Buffer): Promise<number | null> {
+  let loadingTask: PDFDocumentLoadingTask | undefined;
+  try {
+    const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    loadingTask = getDocument({
+      data: new Uint8Array(pdfBuffer),
+      isEvalSupported: false,
+      disableFontFace: true,
+      useSystemFonts: false,
+      verbosity: 0,
+    });
+    return (await loadingTask.promise).numPages;
+  } catch (error) {
+    console.warn('Could not count PDF pages, leaving the page limit to the provider:', error);
+    return null;
+  } finally {
+    await loadingTask?.destroy().catch(() => undefined);
+  }
+}
+
 /**
  * Validates if a PDF meets Anthropic's requirements
  * @param pdfBuffer - The PDF file as a buffer
  * @param fileSize - The file size in bytes
  * @param configuredFileSizeLimit - Optional configured file size limit from fileConfig (in bytes)
+ * @param model - Optional model name, used to pick the page limit
  * @returns Promise that resolves to validation result
  */
 async function validateAnthropicPdf(
   pdfBuffer: Buffer,
   fileSize: number,
   configuredFileSizeLimit?: number,
+  model?: string,
 ): Promise<PDFValidationResult> {
   try {
     const providerLimit = mbToBytes(32);
@@ -109,13 +177,12 @@ async function validateAnthropicPdf(
       };
     }
 
-    const pageMatches = pdfContent.match(/\/Type[\s]*\/Page[^s]/g);
-    const estimatedPages = pageMatches ? pageMatches.length : 1;
-
-    if (estimatedPages > 100) {
+    const pageLimit = getAnthropicPdfPageLimit(model);
+    const pageCount = await countPdfPages(pdfBuffer);
+    if (pageCount != null && pageCount > pageLimit) {
       return {
         isValid: false,
-        error: `PDF has approximately ${estimatedPages} pages, exceeding Anthropic's 100-page limit`,
+        error: `PDF has ${pageCount} pages, exceeding Anthropic's ${pageLimit}-page limit`,
       };
     }
 
