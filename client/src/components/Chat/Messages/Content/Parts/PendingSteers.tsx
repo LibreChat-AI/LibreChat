@@ -148,11 +148,7 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
           receiptState = 'interrupting';
         }
         return (
-          <div
-            key={steer.steerId}
-            role="listitem"
-            className={cn(steer.status !== 'failed' && 'opacity-60')}
-          >
+          <div key={steer.steerId} role="listitem">
             <SteerPart
               steer={steer.text}
               files={steer.files}

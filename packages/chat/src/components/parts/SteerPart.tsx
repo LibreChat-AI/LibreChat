@@ -1,14 +1,13 @@
-import { memo, useMemo, useState, useEffect, useCallback, Fragment } from 'react';
+import { memo, useMemo, useState, useEffect } from 'react';
 import { cn, useLocalize } from '@librechat/client';
-import type { TFile, TMessage } from 'librechat-data-provider';
+import type { TMessage } from 'librechat-data-provider';
 import type { NamedExoticComponent } from 'react';
 import type { SteerReceiptState } from '../composer/steering/Receipt';
-import { hydrateFileDeliveryMetadata, usesImagePreview } from '../../core/files';
-import FileContainer from '../composer/files/FileContainer';
 import MessageTimestamp from '../messages/MessageTimestamp';
 import SteerReceipt from '../composer/steering/Receipt';
 import { useMessagePartsHost } from '../../react/host';
 import CollapsibleText from '../CollapsibleText';
+import MessageFiles from '../messages/Files';
 import MessageQuotes from './MessageQuotes';
 
 export interface SteerPartProps {
@@ -51,19 +50,10 @@ const SteerPart: NamedExoticComponent<SteerPartProps> = memo(function SteerPart(
   onExpand,
 }: SteerPartProps) {
   const localize = useLocalize();
-  const {
-    useUser,
-    useShare,
-    useFileMap,
-    renderImage,
-    renderMarkdown,
-    renderFilePreview,
-    useUserTextPreferences,
-    useLiveAppliedSteer,
-  } = useMessagePartsHost();
+  const { useUser, useShare, renderMarkdown, useUserTextPreferences, useLiveAppliedSteer } =
+    useMessagePartsHost();
   const user = useUser();
   const { isSharedConvo } = useShare();
-  const fileMap = useFileMap();
   const { usernameDisplay, enableUserMsgMarkdown, collapseLongUserMessages } =
     useUserTextPreferences();
 
@@ -79,25 +69,9 @@ const SteerPart: NamedExoticComponent<SteerPartProps> = memo(function SteerPart(
     () => (createdAt != null ? new Date(createdAt).toISOString() : null),
     [createdAt],
   );
-  const hydratedFiles = useMemo(
-    () => hydrateFileDeliveryMetadata(files, undefined, fileMap),
-    [files, fileMap],
-  );
-  const imageFiles = useMemo(() => hydratedFiles?.filter(usesImagePreview) ?? [], [hydratedFiles]);
-  const otherFiles = useMemo(
-    () => hydratedFiles?.filter((file) => !usesImagePreview(file)) ?? [],
-    [hydratedFiles],
-  );
   useEffect(() => {
     if (hasMore && !collapseLongUserMessages) onExpand?.();
   }, [hasMore, collapseLongUserMessages, onExpand]);
-  const [selectedFile, setSelectedFile] = useState<Partial<TFile> | null>(null);
-  const handlePreviewClose = useCallback((open: boolean) => {
-    if (!open) {
-      setSelectedFile(null);
-    }
-  }, []);
-
   /** The receipt draw-in plays exactly once, at the live chip→inline hand-off:
    *  the applied handler stamps the id as it commits the part, the render that
    *  first sees each identity captures it, and the effect consumes it so a
@@ -135,35 +109,18 @@ const SteerPart: NamedExoticComponent<SteerPartProps> = memo(function SteerPart(
       className="group relative my-5 flex w-full justify-end"
       data-testid="steer-part"
     >
-      <div className="user-turn relative flex w-fit max-w-[90%] flex-col items-end sm:max-w-[85%]">
+      <div className="user-turn relative flex w-fit max-w-[90%] min-w-0 flex-col items-end sm:max-w-[85%]">
         <h2 className="sr-only">{label}</h2>
+        {(files?.length ?? 0) > 0 && (
+          <div
+            data-testid="message-attachments"
+            className="flex max-w-full flex-col items-end gap-3 pb-2"
+          >
+            <MessageFiles files={files} />
+          </div>
+        )}
         <div className="rounded-theme-surface rounded-ee-theme-control bg-surface-user-message px-theme-normal flex max-w-full flex-col items-start gap-2 py-2.5">
           <MessageQuotes quotes={quotes} />
-          {(imageFiles.length > 0 || otherFiles.length > 0) && (
-            <div className="flex w-full flex-wrap gap-2">
-              {otherFiles.map((file) => (
-                <FileContainer
-                  key={file.file_id}
-                  file={file as TFile}
-                  onClick={() => setSelectedFile(file)}
-                />
-              ))}
-              {imageFiles.length > 0 && (
-                <div className="ms-auto flex max-w-full flex-wrap justify-end gap-2">
-                  {imageFiles.map((file) => (
-                    <Fragment key={file.file_id}>
-                      {renderImage({
-                        imagePath: file.preview ?? file.filepath ?? '',
-                        height: file.height ?? 1920,
-                        width: file.width ?? 1080,
-                        altText: file.filename ?? localize('com_ui_attached_image'),
-                      })}
-                    </Fragment>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
           <CollapsibleText
             enabled={collapseLongUserMessages || hasMore}
             hasMore={hasMore}
@@ -193,18 +150,6 @@ const SteerPart: NamedExoticComponent<SteerPartProps> = memo(function SteerPart(
           )}
         </div>
       </div>
-      {otherFiles.length > 0 &&
-        renderFilePreview({
-          open: selectedFile !== null,
-          onOpenChange: handlePreviewClose,
-          fileName: selectedFile?.filename ?? '',
-          fileId: selectedFile?.file_id,
-          filePath: selectedFile?.filepath,
-          fileType: selectedFile?.type ?? undefined,
-          fileSource: selectedFile?.source,
-          fileSize: (selectedFile as TFile | null)?.bytes,
-          deliveryPath: selectedFile?.llmDeliveryPath,
-        })}
     </div>
   );
 });

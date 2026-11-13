@@ -91,6 +91,7 @@ export {
 export { messageFooterClasses, revealOnRowHoverClasses } from './components/messages/styles';
 export { getRunStepDurationLabels, getElapsedDurationLabels } from './components/messages/duration';
 export type { RunStepDurationLabels } from './components/messages/duration';
+export { default as MessageFiles } from './components/messages/Files';
 export { default as MessageRow } from './components/messages/MessageRow';
 export { default as WakeupRow } from './components/messages/WakeupRow';
 export { default as PendingTurn } from './components/messages/PendingTurn';

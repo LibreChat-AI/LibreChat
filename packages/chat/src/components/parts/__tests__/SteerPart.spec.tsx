@@ -56,8 +56,13 @@ function createHost(user: MessagePartsUser | null): MessagePartsHost {
   return {
     useMessage: () => ({ messageId: 'msg-1', isSubmitting: false, isLatestMessage: true }),
     renderMarkdown: ({ content }: MessagePartsMarkdownProps) => <span>{content}</span>,
-    renderImage: ({ altText }: MessagePartsImageProps) => (
-      <img alt={altText} data-testid="steer-image" />
+    renderImage: ({ altText, className, alignRight }: MessagePartsImageProps) => (
+      <img
+        alt={altText}
+        data-testid="steer-image"
+        data-aligned-right={String(alignRight)}
+        className={className}
+      />
     ),
     renderFilePreview: ({ open, fileName, deliveryPath }: MessagePartsFilePreviewProps) =>
       open ? (
@@ -214,22 +219,48 @@ describe('SteerPart presentation', () => {
     expect(part).not.toHaveClass('md:-ml-9', '-ml-9');
   });
 
-  it('keeps multiple steer images together at the right while file chips stay at the start', () => {
-    renderPart([
-      { file_id: 'f1', filename: 'notes.pdf', type: 'application/pdf' },
-      { file_id: 'f2', filename: 'shot.png', type: 'image/png', filepath: '/images/shot.png' },
-      { file_id: 'f3', filename: 'second.png', type: 'image/png', filepath: '/images/second.png' },
-    ]);
-    const images = screen.getAllByTestId('steer-image');
-    const imageGroup = images[0].parentElement;
+  it.each(['delivered', 'applied'] as const)(
+    'uses normal chat attachment presentation for %s steers',
+    (receiptState) => {
+      render(
+        <Host user={SEEDED_USER}>
+          <SteerPart
+            steer="steered words"
+            receiptState={receiptState}
+            files={[
+              { file_id: 'f1', filename: 'notes.pdf', type: 'application/pdf' },
+              {
+                file_id: 'f2',
+                filename: 'shot.png',
+                type: 'image/png',
+                filepath: '/images/shot.png',
+              },
+              {
+                file_id: 'f3',
+                filename: 'second.png',
+                type: 'image/png',
+                filepath: '/images/second.png',
+              },
+            ]}
+          />
+        </Host>,
+      );
+      const attachments = screen.getByTestId('message-attachments');
+      const images = screen.getAllByTestId('steer-image');
+      const bubble = screen.getByText('steered words').closest('.bg-surface-user-message');
 
-    expect(images).toHaveLength(2);
-    expect(imageGroup).toContainElement(images[1]);
-    expect(imageGroup).toHaveClass('ms-auto', 'flex-wrap', 'justify-end');
-    expect(imageGroup?.parentElement).toHaveClass('w-full');
-    expect(imageGroup).not.toContainElement(screen.getByTestId('steer-file'));
-    expect(screen.getByTestId('steer-file')).toHaveTextContent('notes.pdf');
-  });
+      expect(attachments).toHaveClass('flex-col', 'items-end', 'gap-3', 'max-w-full');
+      expect(attachments.nextElementSibling).toBe(bubble);
+      expect(bubble).not.toContainElement(attachments);
+      expect(attachments).toContainElement(screen.getByTestId('steer-file'));
+      expect(images).toHaveLength(2);
+      for (const image of images) {
+        expect(attachments).toContainElement(image);
+        expect(image).toHaveAttribute('data-aligned-right', 'true');
+        expect(image).toHaveClass('border-surface-user-message', 'mt-0', 'shadow-none');
+      }
+    },
+  );
 
   it.each(['application/pdf', 'image/png'])(
     'opens extracted previews for %s attachments',
