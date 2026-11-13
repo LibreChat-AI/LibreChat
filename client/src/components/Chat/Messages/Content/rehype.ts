@@ -34,7 +34,7 @@ export function loadRehypeModules(): Promise<RehypeModules> {
       return loaded;
     })
     .catch((error: unknown) => {
-      /* A later render retries; until then the text renders without math or highlighting. */
+      /* `useRehypeModules` retries; until then the text renders without math or highlighting. */
       pending = null;
       throw error;
     });
@@ -52,28 +52,39 @@ const NEEDS_REHYPE = /\$|\\\(|\\\[|```|~~~|^[ \t>]*?(?: {4}|\t)/m;
 
 export const needsRehype = (text: string): boolean => NEEDS_REHYPE.test(text);
 
+/** Attempts after a failed load, spaced 1s, 2s, 4s apart, before waiting for a remount. */
+const MAX_LOAD_RETRIES = 3;
+
 /**
  * The math and highlighting plugins, or null until they have loaded. `text` decides whether this
- * render starts the load: text with nothing for them to transform never does. Without them the output is identical except that math and
- * fenced code are unformatted, so callers render immediately and upgrade when this resolves.
+ * render starts the load: text with nothing for them to transform never does. Without them the
+ * output is identical except that math and fenced code are unformatted, so callers render
+ * immediately and upgrade when this resolves.
  */
 export function useRehypeModules(text: string): RehypeModules | null {
   const needed = needsRehype(text);
   const [modules, setModules] = useState<RehypeModules | null>(loaded);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    if (!needed || modules != null) {
+    if (!needed || modules != null || attempt > MAX_LOAD_RETRIES) {
       return;
     }
     let active = true;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     loadRehypeModules().then(
       (result) => active && setModules(result),
-      () => undefined,
+      () => {
+        if (active) {
+          retry = setTimeout(() => setAttempt((count) => count + 1), 1000 * 2 ** attempt);
+        }
+      },
     );
     return () => {
       active = false;
+      clearTimeout(retry);
     };
-  }, [needed, modules]);
+  }, [needed, modules, attempt]);
 
   /* Detection only decides whether to fetch: once loaded, every renderer gets the plugins, so a
      pattern the check misses can never strip formatting the text would otherwise get. */
