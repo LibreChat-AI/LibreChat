@@ -14,8 +14,13 @@ test.use({ viewport: { width: 1280, height: 960 }, hasTouch: false, isMobile: fa
 
 // Browser coverage of the real popup and OAuth settlement protocol. Slack and workspace
 // HTTP responses are fixtures; database ownership and callback authorization have integration tests.
-for (const theme of ['light', 'dark']) {
-  test(`organization Slack installation, cancellation and disconnect (${theme})`, async ({
+const SCENARIO = {
+  light: '@scenario:slack-workspace-install-cancel-and-disconnect-light',
+  dark: '@scenario:slack-workspace-install-cancel-and-disconnect-dark',
+} as const;
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`organization Slack installation, cancellation and disconnect (${theme}) ${SCENARIO[theme]}`, async ({
     page,
     context,
     baseURL,
@@ -141,7 +146,7 @@ for (const theme of ['light', 'dark']) {
     const slackSection = settings.getByRole('region', { name: 'Slack', exact: true });
     await slackSection.getByRole('button', { name: 'Set up', exact: true }).click();
     const workspacesPanel = page.getByRole('dialog', { name: 'Manage Slack', exact: true });
-    await expect(workspacesPanel.getByText('No Slack apps registered yet.')).toBeVisible();
+    await expect(workspacesPanel.getByText(/^No Slack apps yet\./)).toBeVisible();
     await workspacesPanel.getByRole('button', { name: 'Add Slack app', exact: true }).click();
     const appForm = page.getByRole('dialog', { name: 'Add Slack app', exact: true });
     await appForm.getByLabel('Slack app ID', { exact: true }).fill('A123');
