@@ -23,6 +23,7 @@ const {
   resolveJsonSchemaRefs,
   sanitizeGeminiSchema,
   processMCPEnv,
+  withMCPAgentContext,
   preProcessGraphTokens,
   createMCPReauthenticationPrompt,
   createMCPInitializationOAuthPrompts,
@@ -870,6 +871,7 @@ async function createMCPTools({
   jobCreatedAt,
   unattended,
 }) {
+  requestBody = withMCPAgentContext(requestBody, agentId);
   let recoveryPolicy;
   const serverConfig =
     config ??
@@ -1028,6 +1030,7 @@ async function createMCPTool({
   unattended,
   recoveryPolicy,
 }) {
+  requestBody = withMCPAgentContext(requestBody, agentId);
   const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
   /** `loadTools` already resolved the server for this key; parsing is the fallback. */
   const [parsedToolName, parsedServerName] = splitMCPToolKey(
@@ -1192,6 +1195,7 @@ async function createMCPTool({
   }
 
   return createToolInstance({
+    agentId,
     scheduledBearerInvocation: bindScheduledMCPBearerInvocation(
       requestScopedConnections,
       agentId,
@@ -1231,6 +1235,7 @@ async function createMCPTool({
 }
 
 function createToolInstance({
+  agentId,
   scheduledBearerInvocation,
   scheduledMCPInvocation,
   res,
@@ -1372,7 +1377,10 @@ function createToolInstance({
             signal: derivedSignal,
           },
           user: effectiveUser,
-          requestBody: config?.configurable?.requestBody ?? capturedRequestBody,
+          requestBody: withMCPAgentContext(
+            config?.configurable?.requestBody ?? capturedRequestBody,
+            agentId,
+          ),
           requestScopedConnections:
             config?.configurable?.requestScopedConnections ?? capturedRequestScopedConnections,
           customUserVars,

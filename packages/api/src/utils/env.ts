@@ -165,6 +165,7 @@ const RESOLVABLE_PLACEHOLDER_PATTERN = new RegExp(
     `LIBRECHAT_USER_(?:${ALLOWED_USER_FIELDS.map((field) => field.toUpperCase()).join('|')})`,
     `LIBRECHAT_BODY_(?:${ALLOWED_BODY_FIELDS.map((field) => field.toUpperCase()).join('|')})`,
     OPENID_PLACEHOLDER_NAMES,
+    'LIBRECHAT_AGENT_ID',
   ]
     .map((names) => `\\{\\{(?:${names})\\}\\}`)
     .join('|'),
@@ -320,6 +321,7 @@ function processSingleValue({
    */
   if (!dbSourced) {
     value = extractEnvVariable(value);
+    value = value.replaceAll('{{LIBRECHAT_AGENT_ID}}', body?.agentId ?? '');
   }
 
   /** Runs for both dbSourced and non-dbSourced — it is the only resolution DB-stored servers get */
@@ -412,7 +414,7 @@ export function processMCPEnv(params: {
   }
 
   /** Derive dbSourced from explicit param OR from dbId on the options (failsafe for callers that forget the flag) */
-  const dbSourced = params.dbSourced ?? !!options.dbId;
+  const dbSourced = params.dbSourced === true || !!options.dbId || options.source === 'user';
 
   /** A shared-server editor can inject old auth-field names into any template. Only
    *  server-declared variables may resolve, including destination-bound API key fields. */

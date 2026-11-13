@@ -7,6 +7,7 @@ import {
   canUseAppConnection,
   canBackfillSharedServerInstructions,
   getMissingRuntimeBodyPlaceholderFields,
+  getMCPAgentConnectionKey,
   hasRuntimeUrlPlaceholders,
   isUserSourced,
   requiresEphemeralUserConnection,
@@ -513,7 +514,12 @@ export abstract class UserConnectionManager {
         ? getMCPRequestSignal(requestScopedConnections)
         : opts.signal;
       opts.signal?.throwIfAborted();
-      const requestConnectionKey = getUserConnectionKey(userId, serverName, capabilityProfile);
+      const baseConnectionKey = getUserConnectionKey(userId, serverName, capabilityProfile);
+      const requestConnectionKey = getMCPAgentConnectionKey(
+        baseConnectionKey,
+        config,
+        opts.requestBody,
+      );
       const existing = requestScopedConnections.connections.get(requestConnectionKey) as
         | MCPConnection
         | undefined;

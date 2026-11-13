@@ -769,6 +769,9 @@ actions:
 #     # a `{{LIBRECHAT_BODY_*}}` placeholder here no longer hides the server's tool list.
 #     requestHeaders:
 #       X-Conversation-Id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
+#       # Persisted agent that owns the executing tool, including a subagent's own tools.
+#       # Empty for plain chat or an ephemeral agent. Available on operator-defined servers.
+#       X-Agent-Id: "{{LIBRECHAT_AGENT_ID}}"
 #   puppeteer:
 #     type: stdio
 #     command: npx

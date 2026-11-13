@@ -80,6 +80,7 @@ import { MCPConnectionFactory } from './MCPConnectionFactory';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
 import { guardUnattendedOAuth } from './oauth/unattended';
 import { OAuthLifecycleRelay } from './oauth/pending';
+import { getMCPAgentConnectionKey } from './utils';
 import { isOwnedAbortError } from '~/utils/errors';
 import { markMCPToolResultError } from './status';
 import { withMCPRequestSignal } from './signal';
@@ -350,7 +351,11 @@ export class MCPManager extends UserConnectionManager {
     }
 
     const capabilityProfile = opts.capabilityProfile ?? STANDARD_MCP_CAPABILITY_PROFILE;
-    const connectionKey = getMCPUserConnectionPoolKey(userId, opts.serverName, capabilityProfile);
+    const connectionKey = getMCPAgentConnectionKey(
+      getMCPUserConnectionPoolKey(userId, opts.serverName, capabilityProfile),
+      connectionTarget.serverConfig,
+      opts.requestBody,
+    );
     const requestConnection = opts.requestScopedConnections?.connections.get(connectionKey) as
       | MCPConnection
       | undefined;
@@ -1183,10 +1188,10 @@ Please follow these instructions when using tools from the respective MCP server
         connection.stopReconnecting();
         await this.waitForConnectionBorrowersToDrain(connection);
         recoverySignal.throwIfAborted();
-        const requestConnectionKey = getMCPUserConnectionPoolKey(
-          user.id,
-          serverName,
-          capabilityProfile,
+        const requestConnectionKey = getMCPAgentConnectionKey(
+          getMCPUserConnectionPoolKey(user.id, serverName, capabilityProfile),
+          serverConfig,
+          requestBody,
         );
         if (requestScopedConnections?.connections.get(requestConnectionKey) === connection) {
           requestScopedConnections.connections.delete(requestConnectionKey);

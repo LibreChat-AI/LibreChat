@@ -2,8 +2,17 @@ import { logger } from '@librechat/data-schemas';
 import { Constants } from 'librechat-data-provider';
 
 import type { MCPRuntimeRequestBody, RequestScopedMCPConnectionStore } from './types';
+import type { RequestBody } from '~/types';
 
 export type { MCPRuntimeRequestBody } from './types';
+
+/** Bind MCP templates to the agent that owns the tool, without mutating shared request data. */
+export function withMCPAgentContext(body: RequestBody | undefined, agentId?: string): RequestBody {
+  return {
+    ...body,
+    agentId: agentId && /^agent_[A-Za-z0-9_-]+$/.test(agentId) ? agentId : undefined,
+  };
+}
 
 /**
  * Builds the complete request context that runtime MCP placeholders may resolve.
