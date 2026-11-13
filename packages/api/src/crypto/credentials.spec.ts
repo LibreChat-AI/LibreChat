@@ -58,7 +58,7 @@ describe('getPluginAuthMap with mixed-version records', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   it('decrypts legacy and v3 records stored for the same plugin', async () => {

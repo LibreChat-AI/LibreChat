@@ -2850,7 +2850,7 @@ describe('scheduled reset policy synchronization', () => {
   });
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   });
   beforeEach(async () => {
     await mongoose.connection.dropDatabase();
