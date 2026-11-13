@@ -1,4 +1,4 @@
-import { memo, useRef, useMemo, useEffect, useState, useCallback } from 'react';
+import { memo, useRef, useMemo, useEffect, useState, Suspense, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
 import { useAtom, useAtomValue } from 'jotai';
@@ -70,7 +70,6 @@ import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
-import AskUserQuestionPopover from './AskUserQuestionPopover';
 import { useTargetContext } from '~/Providers/TargetContext';
 import useAttachTarget from '~/hooks/Input/useAttachTarget';
 import { chatDirectionAtom } from '~/store/chatDirection';
@@ -78,20 +77,28 @@ import ProjectLandingChip from '../ProjectLandingChip';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import useDictation from '~/hooks/Input/useDictation';
 import { useGetStartupConfig } from '~/data-provider';
-import CodeWorkspaceMenu from './CodeWorkspaceMenu';
-import CodeApprovalMenu from './CodeApprovalMenu';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
 import TextareaHeader from './TextareaHeader';
-import PromptsCommand from './PromptsCommand';
-import SkillsCommand from './SkillsCommand';
 import AutoPlayAudio from './AutoPlayAudio';
 import { mainTextareaId } from '~/common';
 import Actions from './Composer/Actions';
-import ToolDialogs from './ToolDialogs';
 import Queue from './Composer/Queue';
 import Tray from './Composer/Tray';
 import Bar from './Composer/Bar';
-import Mention from './Mention';
 import store from '~/store';
+
+/**
+ * The composer's popovers, dialogs and code-workspace controls render nothing until a trigger
+ * (`/`, `@`, `+`, an ask, an approval, a workspace), so they load after the chat has painted
+ * instead of with it. Each sits under a null Suspense fallback: it shows nothing either way.
+ */
+const AskUserQuestionPopover = lazyWithRecovery(() => import('./AskUserQuestionPopover'));
+const CodeWorkspaceMenu = lazyWithRecovery(() => import('./CodeWorkspaceMenu'));
+const CodeApprovalMenu = lazyWithRecovery(() => import('./CodeApprovalMenu'));
+const PromptsCommand = lazyWithRecovery(() => import('./PromptsCommand'));
+const SkillsCommand = lazyWithRecovery(() => import('./SkillsCommand'));
+const ToolDialogs = lazyWithRecovery(() => import('./ToolDialogs'));
+const Mention = lazyWithRecovery(() => import('./Mention'));
 
 interface ChatFormProps {
   index: number;
@@ -582,13 +589,15 @@ const ChatForm = memo(function ChatForm({
   const approvalSlot = useMemo(
     () => (
       <div className="flex items-center gap-1.5 empty:hidden">
-        <CodeApprovalMenu
-          conversation={conversation}
-          addedConversation={addedConvo}
-          codeEnvironmentMode={codeWorkspace.mode}
-          setConversation={setConversation}
-          disabled={disableInputs}
-        />
+        <Suspense fallback={null}>
+          <CodeApprovalMenu
+            conversation={conversation}
+            addedConversation={addedConvo}
+            codeEnvironmentMode={codeWorkspace.mode}
+            setConversation={setConversation}
+            disabled={disableInputs}
+          />
+        </Suspense>
         {index === 0 && conversationId != null && (
           <PendingToolApprovalButton
             conversationId={conversationId}
@@ -672,11 +681,13 @@ const ChatForm = memo(function ChatForm({
             {project ? <ProjectLandingChip project={project} /> : null}
             {codeWorkspace.visible ? (
               <div className="min-w-0">
-                <CodeWorkspaceMenu
-                  setConversation={setConversation}
-                  workspace={codeWorkspace}
-                  disabled={disableInputs || isSubmitting}
-                />
+                <Suspense fallback={null}>
+                  <CodeWorkspaceMenu
+                    setConversation={setConversation}
+                    workspace={codeWorkspace}
+                    disabled={disableInputs || isSubmitting}
+                  />
+                </Suspense>
               </div>
             ) : null}
           </>
@@ -684,24 +695,32 @@ const ChatForm = memo(function ChatForm({
       }
       popovers={
         <>
-          <Mention
-            index={index}
-            popoverAtom={plusPopoverAtom}
-            newConversation={generateConversation}
-            textAreaRef={textAreaRef}
-            commandChar="+"
-            placeholder="com_ui_add_model_preset"
-            includeAssistants={false}
-          />
-          <Mention
-            index={index}
-            popoverAtom={mentionPopoverAtom}
-            newConversation={newConversation}
-            textAreaRef={textAreaRef}
-          />
-          <PromptsCommand index={index} textAreaRef={textAreaRef} submitPrompt={submitPrompt} />
+          <Suspense fallback={null}>
+            <Mention
+              index={index}
+              popoverAtom={plusPopoverAtom}
+              newConversation={generateConversation}
+              textAreaRef={textAreaRef}
+              commandChar="+"
+              placeholder="com_ui_add_model_preset"
+              includeAssistants={false}
+            />
+          </Suspense>
+          <Suspense fallback={null}>
+            <Mention
+              index={index}
+              popoverAtom={mentionPopoverAtom}
+              newConversation={newConversation}
+              textAreaRef={textAreaRef}
+            />
+          </Suspense>
+          <Suspense fallback={null}>
+            <PromptsCommand index={index} textAreaRef={textAreaRef} submitPrompt={submitPrompt} />
+          </Suspense>
           {index === 0 && (
-            <AskUserQuestionPopover conversationId={conversationId} textAreaRef={textAreaRef} />
+            <Suspense fallback={null}>
+              <AskUserQuestionPopover conversationId={conversationId} textAreaRef={textAreaRef} />
+            </Suspense>
           )}
           {index === 0 && conversationId != null && (
             <PendingToolApprovalPanel
@@ -709,12 +728,14 @@ const ChatForm = memo(function ChatForm({
               triggerRef={approvalTriggerRef}
             />
           )}
-          <SkillsCommand
-            index={index}
-            textAreaRef={textAreaRef}
-            conversationId={conversationId}
-            agentId={conversation?.agent_id}
-          />
+          <Suspense fallback={null}>
+            <SkillsCommand
+              index={index}
+              textAreaRef={textAreaRef}
+              conversationId={conversationId}
+              agentId={conversation?.agent_id}
+            />
+          </Suspense>
         </>
       }
       hints={
@@ -854,7 +875,9 @@ const ChatForm = memo(function ChatForm({
           actionSlot={actionSlot}
           hasAddedConversation={addedConvo != null}
         />
-        <ToolDialogs />
+        <Suspense fallback={null}>
+          <ToolDialogs />
+        </Suspense>
       </BadgeRowProvider>
       {TextToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
     </ComposerFrame>

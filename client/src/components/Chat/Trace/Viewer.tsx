@@ -89,9 +89,13 @@ function errorMessageKey(error: unknown): TranslationKeys {
 export default function Viewer({
   conversationId,
   onClose,
+  returnFocusTo,
 }: {
   conversationId: string;
   onClose: () => void;
+  /** Where focus goes on close. The surface passes the opener it saw, since a loading
+   *  fallback may have held focus before the viewer mounted. */
+  returnFocusTo?: HTMLElement | null;
 }) {
   const localize = useLocalize();
   const queryClient = useQueryClient();
@@ -99,6 +103,8 @@ export default function Viewer({
   const headingId = useId();
   const searchId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
+  /** Read once, on open: focus is taken and returned for the open the viewer mounted with. */
+  const returnFocusRef = useRef(returnFocusTo);
   const treeRef = useRef<HTMLDivElement>(null);
   const { data: startupConfig } = useGetStartupConfig();
   const settings = resolveTraceViewerConfig(startupConfig?.interface?.traceViewer);
@@ -288,7 +294,8 @@ export default function Viewer({
     model.start;
 
   useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const opener = returnFocusRef.current !== undefined ? returnFocusRef.current : focused;
     closeRef.current?.focus();
     return () => {
       /** Only reclaim focus the trace took with it; a close caused by navigating
