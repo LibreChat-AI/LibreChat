@@ -78,6 +78,8 @@ export type NavLink = {
   label?: string;
   icon: LucideIcon | React.FC;
   Component?: React.ComponentType;
+  /** The host's resolved presentation, independent of whether activation changes the URL. */
+  view?: t.NavigationView;
   onClick?: (e?: React.MouseEvent) => void;
   variant?: 'default' | 'ghost';
   disabled?: boolean;
