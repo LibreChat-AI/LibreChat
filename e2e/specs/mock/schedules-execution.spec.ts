@@ -136,7 +136,9 @@ test.describe('scheduled chat execution', () => {
    * in CI, and anywhere up to three and a half minutes. Creation still has to arm a future
    * occurrence, which is checked before the row is touched.
    */
-  test('a due schedule fires automatically, once, and advances', async ({ page }) => {
+  test('a due schedule fires automatically, once, and advances @scenario:due-schedule-fires-once-on-the-engine-tick', async ({
+    page,
+  }) => {
     test.setTimeout(180000);
     await page.goto('/c/new', { timeout: 15000 });
     const token = await getAccessToken(page);

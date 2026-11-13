@@ -1,14 +1,18 @@
+import yaml from 'js-yaml';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { inOneProject, repoRoot, run } from './lint.helpers';
 
 /**
  * CI splits the mock suite across fifteen memory shards with
- * `.github/scripts/playwright-shards.mjs`, planned from `e2e/timings.mock.json`. These
- * scenarios run the real `plan` and `record` commands over temporary fixtures (and the
- * committed timings) and read what they write; no browser is involved.
+ * `.github/scripts/playwright-shards.mjs`, planned from the timings each run resolves once
+ * for all of its shards, or from `e2e/timings.mock.json` when it has none. These scenarios
+ * run the real `plan` and `record` commands, and the workflow's own hand-off steps, over
+ * temporary fixtures (and the committed timings) and read what they write; no browser is
+ * involved.
  */
 
 const SCRIPT = resolve(repoRoot, '.github/scripts/playwright-shards.mjs');
@@ -75,6 +79,54 @@ function planAll(
     estimates = line![1].trim().split(' ').map(Number);
   }
   return { shards, estimates };
+}
+
+type Step = { id?: string; if?: string; run?: string };
+type Workflow = { jobs: Record<string, { steps: Step[] }> };
+
+/** The Playwright workflow as GitHub reads it. */
+function mockWorkflow(): Workflow {
+  return yaml.load(
+    readFileSync(resolve(repoRoot, '.github/workflows/playwright-mock.yml'), 'utf8'),
+  ) as Workflow;
+}
+
+/** A workflow step's script, run the way the runner runs it, in a scratch checkout. */
+function bash(dir: string, script: string, env: Record<string, string>): string {
+  const result = spawnSync('bash', ['-e', '-c', script], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH ?? '', ...env },
+  });
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  return result.stdout;
+}
+
+/** What the `Shard timings` job hands the shards for one restored cache entry, or for none. */
+function resolved(dir: string, cached?: string): string {
+  if (cached !== undefined) {
+    mkdirSync(join(dir, 'e2e/.generated'), { recursive: true });
+    writeFileSync(join(dir, 'e2e/.generated/shard-timings.json'), cached);
+  }
+  const output = join(dir, 'github-output');
+  writeFileSync(output, '');
+  const step = mockWorkflow().jobs.shard_timings.steps.find((entry) => entry.id === 'read');
+  bash(dir, step?.run ?? 'exit 1', { GITHUB_OUTPUT: output });
+  return readFileSync(output, 'utf8')
+    .replace(/^timings=/, '')
+    .trimEnd();
+}
+
+/**
+ * The timings file a shard plans from, given what the resolver handed it: the lines of the
+ * shard step that run before Playwright lists the suite.
+ */
+function shardTimings(dir: string, handed: string): string {
+  const step = mockWorkflow().jobs.e2e_shards.steps.find(
+    (entry) => entry.if === "matrix.suite == 'full'",
+  );
+  const [handOff] = (step?.run ?? 'exit 1').split('PLAYWRIGHT_JSON_OUTPUT_FILE');
+  return bash(dir, `${handOff}\nprintf '%s' "$TIMINGS"`, { E2E_SHARD_TIMINGS: handed });
 }
 
 function expectExactCover(shards: string[][], expected: string[]): void {
@@ -160,6 +212,48 @@ test('graduated skips leave exactly the kept specs across the shards @scenario:g
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('recorded timings reach every shard as the one copy the run resolved @scenario:recorded-timings-reach-every-shard-as-one-copy', () => {
+  const dir = scratch();
+  try {
+    // A cache entry as the recorder writes it, with one value no plan can use.
+    const recorded = { ...FIXTURE_TIMINGS, 'scenarios/recorded-0.spec.ts': 400 };
+    const handed = resolved(
+      dir,
+      JSON.stringify({ files: { ...recorded, 'scenarios/gone.spec.ts': 'slow' } }, null, 2),
+    );
+    const timings = resolve(dir, shardTimings(dir, handed));
+    expect(JSON.parse(readFileSync(timings, 'utf8'))).toEqual({ files: recorded });
+    const { shards, estimates } = planAll(dir, { files: FIXTURE, timings });
+    expectExactCover(shards, Object.keys(FIXTURE));
+    // The fixture's own timings put that spec at 5 s; the recorded 400 s is what was balanced.
+    expect(Math.max(...estimates), `per-shard estimates ${estimates.join(' ')}`).toBe(400);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('recorded timings that cannot be read leave every shard on the committed file @scenario:unreadable-recorded-timings-fall-back-to-the-committed-file', () => {
+  const unreadable = [
+    undefined,
+    '',
+    '{not json',
+    '[]',
+    '{"files":[1]}',
+    '{"files":{}}',
+    '{"files":{"a.spec.ts":"slow"}}',
+  ];
+  for (const cached of unreadable) {
+    const dir = scratch();
+    try {
+      const handed = resolved(dir, cached);
+      expect(handed, String(cached)).toBe('');
+      expect(shardTimings(dir, handed), String(cached)).toBe('e2e/timings.mock.json');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 
