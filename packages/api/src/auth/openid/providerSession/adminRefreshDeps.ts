@@ -57,9 +57,8 @@ export interface BuildAdminRefreshProviderSessionDepsInput {
   upsertSession: OpenIdSessionDeps['upsertSession'];
   deleteSession: OpenIdSessionDeps['deleteSession'];
   /** The refresh-token lifetime backing a provider-session grant, evaluated per call; threaded
-   *  through to `precheckAdminRefreshBinding`. Omitted callers fall back to the module's own
-   *  `REFRESH_TOKEN_EXPIRY` env read. */
-  getRefreshTokenExpiryMs?: () => number;
+   *  through to `precheckAdminRefreshBinding` and `applyAdminRefresh`. */
+  getRefreshTokenExpiryMs: () => number;
 }
 
 /** `{}` when the deployment mode is `'off'`; otherwise the full binding/check/persistence deps. */
@@ -68,7 +67,7 @@ export async function buildAdminRefreshProviderSessionDeps(
 ): Promise<AdminRefreshProviderSessionDeps> {
   const mode = await deps.authorizer.getMode();
   if (mode === 'off') {
-    return {};
+    return { getRefreshTokenExpiryMs: deps.getRefreshTokenExpiryMs };
   }
   return {
     findProviderSessionBinding: deps.findProviderSessionBinding,

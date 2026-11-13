@@ -44,9 +44,7 @@ describe('OpenID session refresh: provider-session authorization', () => {
         }),
       },
       logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
-      defaultRefreshTokenExpiry: 1000 * 60 * 60 * 24 * 90,
       isEnabled: jest.fn(() => true),
-      math: jest.fn((_value: string | undefined, fallback: number) => fallback),
       createAuthIdentityContext: jest.fn(() => ({
         appUserId: 'user-1',
         openidSubject: 'sub-1',
@@ -86,6 +84,7 @@ describe('OpenID session refresh: provider-session authorization', () => {
           markLeaseSettled: jest.fn(),
         }),
       ),
+      getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
       providerSessionAuthorizer: {
         establish: jest.fn().mockResolvedValue({ ok: true }),
         authorize: jest.fn().mockResolvedValue({ ok: true }),
@@ -214,6 +213,38 @@ describe('OpenID session refresh: provider-session authorization', () => {
       expect.objectContaining({ ref: boundRef, legacy: false }),
     );
     expect(req.session.openidTokens?.providerSession).toEqual(boundRef);
+  });
+
+  it('derives the provider-session horizon from the injected getRefreshTokenExpiryMs, not the REFRESH_TOKEN_EXPIRY env var', async () => {
+    const boundRef = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-1' };
+    const { deps, service, user } = setup();
+    const injectedExpiryMs = 12_345;
+    deps.getRefreshTokenExpiryMs.mockReturnValue(injectedExpiryMs);
+    const originalEnv = process.env.REFRESH_TOKEN_EXPIRY;
+    // Deliberately a very different lifetime so a fallback to the env/default read would be
+    // caught by the assertion below instead of accidentally matching the injected value.
+    process.env.REFRESH_TOKEN_EXPIRY = String(1000 * 60 * 60 * 24 * 365);
+    const req = buildRequest(buildSessionTokens({ providerSession: boundRef }));
+
+    try {
+      const before = Date.now();
+      await service.refreshOpenIDSession(req, undefined, user, 'access_token', undefined, {
+        forceRefresh: true,
+      });
+      const after = Date.now();
+
+      const call = deps.providerSessionAuthorizer.authorize.mock.calls[0][0] as {
+        expiresAt: Date;
+      };
+      expect(call.expiresAt.getTime()).toBeGreaterThanOrEqual(before + injectedExpiryMs);
+      expect(call.expiresAt.getTime()).toBeLessThanOrEqual(after + injectedExpiryMs);
+    } finally {
+      if (originalEnv === undefined) {
+        delete process.env.REFRESH_TOKEN_EXPIRY;
+      } else {
+        process.env.REFRESH_TOKEN_EXPIRY = originalEnv;
+      }
+    }
   });
 
   it('stores the rotated-token bridge before authorize can reject with ProviderSessionUnavailableError', async () => {

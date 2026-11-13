@@ -16,9 +16,7 @@ module.exports = api.createOpenIDSessionRefreshService({
   crypto,
   openIdClient,
   logger,
-  defaultRefreshTokenExpiry: DEFAULT_REFRESH_TOKEN_EXPIRY,
   isEnabled: api.isEnabled,
-  math: api.math,
   createAuthIdentityContext: api.createAuthIdentityContext,
   isOpenIDSessionIdentityMatch: api.isOpenIDSessionIdentityMatch,
   createOpenIDRefreshIdentityTuple: api.createOpenIDRefreshIdentityTuple,
@@ -45,6 +43,8 @@ module.exports = api.createOpenIDSessionRefreshService({
   failOpenIDRefreshFlight: flight.failOpenIDRefreshFlight,
   waitForOpenIDRefreshFlight: flight.waitForOpenIDRefreshFlight,
   withOpenIDRefreshFlightLease: flight.withOpenIDRefreshFlightLease,
+  getRefreshTokenExpiryMs: () =>
+    api.math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
   providerSessionAuthorizer,
   getProviderSessionClient,
 });

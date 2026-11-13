@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Keyv } from 'keyv';
+import { logger } from '@librechat/data-schemas';
 import { OPENID_SESSION_ENDED } from 'librechat-data-provider';
-import { logger, DEFAULT_REFRESH_TOKEN_EXPIRY } from '@librechat/data-schemas';
 import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type {
@@ -11,7 +11,6 @@ import type {
 import { isProviderSessionUnavailableError } from '~/auth/openid/providerSession/errors';
 import { providerSessionCredentialExpiry } from '~/auth/openid/providerSession/ref';
 import { consumeCacheEntry, restoreCacheEntry } from '../cache/consume';
-import { math } from '~/utils/math';
 
 /** Default admin panel URL for local development */
 const DEFAULT_ADMIN_PANEL_URL = 'http://localhost:3000';
@@ -77,9 +76,9 @@ export interface AdminExchangeDeps {
     input: ProviderSessionAuthorizeInput,
   ) => Promise<ProviderSessionAuthorizeOutcome>;
   /** The refresh-token lifetime backing a provider-session grant, evaluated per call; mirrors
-   *  `packages/api/src/auth/openid/recovery.ts`'s dep of the same name. Omitted callers fall
-   *  back to this module's own `REFRESH_TOKEN_EXPIRY` env read. */
-  getRefreshTokenExpiryMs?: () => number;
+   *  `packages/api/src/auth/openid/recovery.ts`'s dep of the same name. Required whenever
+   *  `authorizeProviderSession` is set, since the expiry check below needs it. */
+  getRefreshTokenExpiryMs: () => number;
 }
 
 /**
@@ -218,8 +217,7 @@ export async function exchangeAdminCode(
     const ref = data.providerSession ?? null;
     const minExpiresAt = providerSessionCredentialExpiry(
       new Date(),
-      deps.getRefreshTokenExpiryMs?.() ??
-        math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
+      deps.getRefreshTokenExpiryMs(),
     );
     const expiresAt = new Date(Math.max(data.expiresAt ?? 0, minExpiresAt.getTime()));
     let outcome: ProviderSessionAuthorizeOutcome;
