@@ -68,7 +68,8 @@ test.describe('fork and feedback actions', () => {
     await expect(popover.getByRole('radio', { name: 'Up to here' })).toBeChecked();
 
     /** The less common choices wait behind one text link, and stay out of the accessibility tree. */
-    const more = popover.getByRole('button', { name: 'More options' });
+    /** The link names the action it will take, so it reads "Fewer options" once it is open. */
+    const more = popover.getByRole('button', { name: /^(More|Fewer) options$/ });
     await expect(more).toHaveAttribute('aria-expanded', 'false');
     await expect(popover.getByRole('checkbox', { name: 'Leave out files' })).toHaveCount(0);
     await more.click();
