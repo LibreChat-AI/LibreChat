@@ -197,7 +197,7 @@ describe('RefreshTokenBridge', () => {
         tenantId: 'tenant-1',
       });
       expect(decryptV2).toHaveBeenCalledWith('encrypted:rt-new');
-      expect(result).toBe('rt-new');
+      expect(result).toEqual({ refreshToken: 'rt-new', providerSession: undefined });
     });
 
     it('returns null when bridge does not exist', async () => {
@@ -276,7 +276,7 @@ describe('RefreshTokenBridge', () => {
       });
 
       expect(decryptV2).toHaveBeenCalledWith('encrypted:rt-new');
-      expect(result).toBe('rt-new');
+      expect(result).toEqual({ refreshToken: 'rt-new', providerSession: undefined });
     });
   });
 });

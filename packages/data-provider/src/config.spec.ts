@@ -35,6 +35,7 @@ import {
   resolveEndpointType,
   webSearchSchema,
   isSafeLinkUrl,
+  openidBackchannelLogoutSchema,
 } from './config';
 
 describe('independent browser replay opt-in', () => {
@@ -141,6 +142,51 @@ describe('skill deletion worker config', () => {
     expect(
       configSchema.safeParse({ version: '1.0', skillDeletion: { recheckIntervalMs: 999 } }).success,
     ).toBe(false);
+  });
+});
+
+describe('openid back-channel logout config', () => {
+  it('defaults to disabled', () => {
+    expect(openidBackchannelLogoutSchema.parse({}).mode).toBe('off');
+  });
+
+  it('parses enforce mode', () => {
+    expect(openidBackchannelLogoutSchema.parse({ mode: 'enforce' }).mode).toBe('enforce');
+  });
+
+  it('defaults algorithms, timing and rate-limit fields', () => {
+    expect(openidBackchannelLogoutSchema.parse({})).toEqual({
+      mode: 'off',
+      algorithms: ['RS256'],
+      clockToleranceSec: 60,
+      maxTokenAgeSec: 120,
+      maxBodyBytes: 16384,
+      rateLimit: { windowMs: 60_000, max: 60 },
+      processingTimeoutMs: 5000,
+    });
+  });
+
+  it('rejects an unknown mode', () => {
+    expect(openidBackchannelLogoutSchema.safeParse({ mode: 'always' }).success).toBe(false);
+  });
+
+  it.each(['none', 'HS256', 'HS384', 'HS512'])('rejects algorithm %s', (algorithm) => {
+    expect(openidBackchannelLogoutSchema.safeParse({ algorithms: [algorithm] }).success).toBe(
+      false,
+    );
+  });
+
+  it.each(['RS256', 'RS384', 'RS512', 'PS256', 'PS384', 'PS512', 'ES256', 'ES384', 'ES512'])(
+    'accepts algorithm %s',
+    (algorithm) => {
+      expect(openidBackchannelLogoutSchema.safeParse({ algorithms: [algorithm] }).success).toBe(
+        true,
+      );
+    },
+  );
+
+  it('is configured only through librechat.yaml', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS['registration.openidBackchannelLogout']).toBe('startup');
   });
 });
 

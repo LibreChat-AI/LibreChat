@@ -495,6 +495,12 @@ registration:
   # openidDiscovery:
   #   startupAttempts: 1   # attempts before startup continues; 0 = background retries only
   #   retryDelayMs: 5000   # delay between startup and background attempts
+  # OpenID back-channel logout (default mode 'off' keeps today's behavior; no receiver, no DB ops)
+  # openidBackchannelLogout:
+  #   mode: 'off'   # 'off' | 'record' (associate sessions, fail open) | 'enforce' (deny ended/unassociated sessions)
+  #   algorithms: ['RS256']
+  #   clockToleranceSec: 60
+  #   maxTokenAgeSec: 120
 
 # Example Balance settings
 # balance:

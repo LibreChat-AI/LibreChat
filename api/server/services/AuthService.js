@@ -29,6 +29,8 @@ const {
   clearCloudFrontCookies,
   normalizeExpiresIn,
   createOpenIDSessionIdentity,
+  resolveOpenIDAuthTokenOptions,
+  providerSessionField,
   resolveAppConfigForUser,
   resolvePreAuthAppConfig,
   resetPasswordWithToken,
@@ -673,26 +675,36 @@ const setCloudFrontAuthCookies = (req, res, user, options = {}) => {
  * @param {ServerResponse} res
  * @param {ISession | null} [_session=null]
  * @param {ServerRequest | null} [req=null]
+ * @param {Object} [options={}] - `providerSession`/`authMethod` apply only when a new Session doc
+ *   is created.
+ * @param {import('librechat-data-provider').ProviderSessionRef} [options.providerSession]
+ * @param {import('@librechat/data-schemas').AuthMethod} [options.authMethod]
  * @returns
  */
-const setAuthTokens = async (userId, res, _session = null, req = null) => {
+const setAuthTokens = async (userId, res, _session = null, req = null, options = {}) => {
   try {
     let session = _session;
     let refreshToken;
     let refreshTokenExpires;
     const expiresIn = math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY);
+    const user = await getUserById(userId);
 
     if (session && session._id && session.expiration != null) {
       refreshTokenExpires = session.expiration.getTime();
       refreshToken = await generateRefreshToken(session);
     } else {
-      const result = await createSession(userId, { expiresIn });
+      // `createSession` (packages/data-schemas) only sets `providerSession`/`authMethod` on the
+      // Session doc when they are truthy, so an undefined value here is a no-op.
+      const result = await createSession(userId, {
+        expiresIn,
+        providerSession: options.providerSession,
+        authMethod: options.authMethod,
+      });
       session = result.session;
       refreshToken = result.refreshToken;
       refreshTokenExpires = session.expiration.getTime();
     }
 
-    const user = await getUserById(userId);
     const sessionExpiry = math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY);
     const token = await generateToken(user, sessionExpiry);
 
@@ -710,23 +722,6 @@ const setAuthTokens = async (userId, res, _session = null, req = null) => {
     logger.error('[setAuthTokens] Error in setting authentication tokens:', error);
     throw error;
   }
-};
-
-const resolveOpenIDAuthTokenOptions = (optionsOrUserId, existingRefreshToken, tenantId) => {
-  if (optionsOrUserId != null && typeof optionsOrUserId === 'object') {
-    if (
-      'userId' in optionsOrUserId ||
-      'existingRefreshToken' in optionsOrUserId ||
-      'tenantId' in optionsOrUserId ||
-      'openidSubject' in optionsOrUserId ||
-      'openidIssuer' in optionsOrUserId
-    ) {
-      return optionsOrUserId;
-    }
-    return {};
-  }
-
-  return { userId: optionsOrUserId, existingRefreshToken, tenantId };
 };
 
 const getOpenIDTokenClaims = (tokenset) => {
@@ -783,6 +778,8 @@ const applyOpenIDSessionIdentity = (sessionOpenidTokens, identity) => {
  * @param {string} [options.tenantId] - Optional tenant identifier for CloudFront cookie scoping
  * @param {string} [options.openidSubject] - Optional OpenID subject bound to the session tokens
  * @param {string} [options.openidIssuer] - Optional OpenID issuer bound to the session tokens
+ * @param {import('librechat-data-provider').ProviderSessionRef} [options.providerSession] -
+ *   Optional provider session this credential is bound to.
  * @returns {String} - id_token (preferred) or access_token as the app auth token
  */
 const setOpenIDAuthTokens = (
@@ -794,7 +791,7 @@ const setOpenIDAuthTokens = (
   tenantIdArg,
 ) => {
   try {
-    const { userId, existingRefreshToken, tenantId, openidSubject, openidIssuer } =
+    const { userId, existingRefreshToken, tenantId, openidSubject, openidIssuer, providerSession } =
       resolveOpenIDAuthTokenOptions(optionsOrUserId, existingRefreshTokenArg, tenantIdArg);
 
     if (!tokenset) {
@@ -865,6 +862,7 @@ const setOpenIDAuthTokens = (
         lastRefreshedAt: Date.now(),
       };
       applyOpenIDSessionIdentity(sessionOpenidTokens, sessionIdentity);
+      Object.assign(sessionOpenidTokens, providerSessionField(providerSession));
       /**
        * Capture the access-token's own expiry (unix seconds) when the IdP
        * advertises one. Lets downstream consumers — notably the OBO inline-
@@ -904,6 +902,7 @@ const setOpenIDAuthTokens = (
       expires: expirationDate,
       refreshExpiryMs: expiryInMilliseconds,
       refreshToken,
+      providerSession,
     });
 
     setCloudFrontAuthCookies(req, res, req.user, { userId, tenantId });
@@ -915,10 +914,24 @@ const setOpenIDAuthTokens = (
   }
 };
 
-/** Stores OpenID refresh-token state independently of the shorter Express session. */
-const storeOpenIDSession = async (userId, refreshToken, tenantId, previousRefreshToken) => {
+/** Stores OpenID refresh-token state independently of the shorter Express session; `options`
+ * may include `providerSession` and `authMethod`. */
+const storeOpenIDSession = async (
+  userId,
+  refreshToken,
+  tenantId,
+  previousRefreshToken,
+  options = {},
+) => {
   return storeOpenIdSession(
-    { userId, refreshToken, tenantId, previousRefreshToken },
+    {
+      userId,
+      refreshToken,
+      tenantId,
+      previousRefreshToken,
+      providerSession: options.providerSession,
+      authMethod: options.authMethod,
+    },
     { upsertSession, deleteSession },
   );
 };

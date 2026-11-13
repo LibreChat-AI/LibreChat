@@ -1,6 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { ErrorTypes, SystemRoles } from 'librechat-data-provider';
-import type { AppConfig, UserRecord } from '@librechat/data-schemas';
+import type { AppConfig, AuthMethod, UserRecord } from '@librechat/data-schemas';
 import type {
   GetAppConfig,
   GetBalanceConfig,
@@ -11,6 +11,19 @@ import type {
   LoginUserResolution,
 } from './provision';
 import { createUserOnce } from './provision';
+
+/** True when `LDAP_URL` and `LDAP_USER_SEARCH_BASE` are both set, the condition every LDAP entry
+ *  point (strategy registration, startup config, login routing) uses to treat the deployment as
+ *  LDAP-backed. */
+export function isLdapAuthEnabled(): boolean {
+  return Boolean(process.env.LDAP_URL) && Boolean(process.env.LDAP_USER_SEARCH_BASE);
+}
+
+/** The `authMethod` `/login` records for a request that didn't go through a strategy that
+ *  overrides it (e.g. passkey): `'ldap'` on an LDAP-backed deployment, otherwise `'local'`. */
+export function resolveDefaultLoginAuthMethod(): AuthMethod {
+  return isLdapAuthEnabled() ? 'ldap' : 'local';
+}
 
 /** Finds the account an LDAP login continues as; one owned by another provider fails the login. */
 export async function findLdapUser({

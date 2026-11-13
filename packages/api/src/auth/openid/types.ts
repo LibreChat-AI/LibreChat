@@ -1,3 +1,4 @@
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { OIDCTokens } from '@librechat/data-schemas';
 import type {
   AuthIdentityContext,
@@ -24,6 +25,7 @@ export interface OpenIDClaims {
   oid?: string;
   email?: string;
   iss?: string;
+  sid?: string;
 }
 
 export interface OpenIDTokenSet extends OIDCTokens {
@@ -39,6 +41,8 @@ export interface OpenIDTokenSet extends OIDCTokens {
   __identityClaims?: OpenIDClaims;
   /** Access token that the shared candidate advanced from. */
   __predecessorAccessToken?: string;
+  /** The provider session this result's claims confirmed; carried for shared-flight followers. */
+  providerSession?: ProviderSessionRef;
 }
 
 export interface SharedOpenIDRefreshResult {
@@ -49,6 +53,8 @@ export interface SharedOpenIDRefreshResult {
   appAuthToken: string;
   predecessorAccessToken?: string;
   acceptedIdentity?: AuthIdentityContext;
+  /** The provider session the accepted identity's claims verified. */
+  providerSession?: ProviderSessionRef;
   /** Non-enumerable durable generation marker restored by the flight service. */
   __flightOwnerId?: string;
   __flightCreatedAt?: number;
@@ -66,6 +72,8 @@ export interface SessionOpenIDTokens {
   tenantId?: string;
   openidIssuer?: string;
   accessTokenExpiresAt?: number;
+  /** The provider session this session's tokens were issued or renewed under. */
+  providerSession?: ProviderSessionRef;
   /** Durable coordination generation that authorized this session publication. */
   publicationFlightKey?: string;
   publicationFlightOwnerId?: string;
@@ -150,6 +158,8 @@ export interface RefreshTokenBridgeInput {
   tenantId?: string;
   openidIssuer?: string;
   ttl?: number;
+  /** The provider session the bridged refresh token was issued under. */
+  providerSession?: ProviderSessionRef;
 }
 
 export interface RefreshTokenBridgeDeleteInput {

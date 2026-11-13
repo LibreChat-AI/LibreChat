@@ -57,6 +57,12 @@ export function createRefreshTokenBridgeMethods(mongoose: typeof import('mongoos
       await ensureIndexes();
       const RefreshTokenBridge = getRefreshTokenBridgeModel();
       const filter = bridgeFilter(bridgeData);
+      /** A later rotation that omits `openidIssuer` clears it; `providerSession` only fills via
+       *  `$setOnInsert`, so a rotation that cannot supply it never drops an established binding. */
+      const unset: Record<string, ''> = {};
+      if (bridgeData.openidIssuer == null) {
+        unset.openidIssuer = '';
+      }
       const update: UpdateQuery<IRefreshTokenBridge> = {
         $set: {
           encryptedNewRefreshToken: bridgeData.encryptedNewRefreshToken,
@@ -68,9 +74,12 @@ export function createRefreshTokenBridgeMethods(mongoose: typeof import('mongoos
           oldRefreshTokenHash: bridgeData.oldRefreshTokenHash,
           userId: bridgeData.userId,
           ...(bridgeData.tenantId != null && { tenantId: bridgeData.tenantId }),
+          ...(bridgeData.providerSession != null && {
+            providerSession: bridgeData.providerSession,
+          }),
           createdAt: new Date(),
         },
-        ...(bridgeData.openidIssuer == null && { $unset: { openidIssuer: '' } }),
+        ...(Object.keys(unset).length > 0 && { $unset: unset }),
       };
       return await RefreshTokenBridge.findOneAndUpdate(filter, update, {
         upsert: true,
