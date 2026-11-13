@@ -2,7 +2,7 @@ import React from 'react';
 import { getDefaultStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
 import { PermissionBits } from 'librechat-data-provider';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useNavigate, useLocation } from 'react-router-dom';
 import type { TPromptGroup } from 'librechat-data-provider';
 import { navigationGenerationAtom } from '~/store/navigation';
@@ -336,7 +336,7 @@ describe('ChatGroupItem chat-route click', () => {
 
     /** A dialog opened from a resolved Langfuse read must not survive a chat
      *  change and submit a variable fill into another chat. */
-    getDefaultStore().set(navigationGenerationAtom, 1);
+    act(() => getDefaultStore().set(navigationGenerationAtom, 1));
 
     await waitFor(() => expect(screen.queryByTestId('variable-dialog')).not.toBeInTheDocument());
   });
@@ -493,7 +493,7 @@ describe('ChatGroupItem chat-route click', () => {
      *  navigation starts, before the target conversation's record is
      *  fetched and `conversationId` changes — simulate just that bump,
      *  with the conversation left untouched. */
-    getDefaultStore().set(navigationGenerationAtom, 1);
+    act(() => getDefaultStore().set(navigationGenerationAtom, 1));
 
     await waitFor(() => expect(getCardButton()).not.toBeDisabled());
 

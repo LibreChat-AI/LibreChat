@@ -5,12 +5,19 @@ import type { ReactNode } from 'react';
 import { featureContent } from '../Content';
 
 jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   ChatProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 jest.mock('~/Providers/ChatFormContext', () => ({
   ChatFormProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 jest.mock('../Actions', () => () => null);
+jest.mock('~/components/SidePanel/MCPBuilder/MCPBuilderPanel', () => () => null);
+jest.mock('~/components/SidePanel/Bookmarks/BookmarkPanel', () => () => null);
+jest.mock('~/components/Skills/sidebar/SkillsAccordion', () => () => null);
+jest.mock('~/components/SidePanel/Parameters/Panel', () => () => null);
+jest.mock('~/components/SidePanel/Schedules', () => ({ SchedulePanel: () => null }));
+jest.mock('~/components/SidePanel/Memories', () => ({ MemoryPanel: () => null }));
 jest.mock('~/components/Prompts/sidebar/PromptsAccordion', () => ({
   __esModule: true,
   default: ({ isChatRoute }: { isChatRoute: boolean }) => (
