@@ -39,7 +39,7 @@ const getEndpointFromLocalStorage = (endpointsConfig: TEndpointsConfig) => {
       return endpoint;
     }
 
-    return endpoint && endpointsConfig?.[endpoint] != null ? endpoint : null;
+    return endpoint && mapEndpoints(endpointsConfig).includes(endpoint) ? endpoint : null;
   } catch (error) {
     console.error(error);
     return null;
