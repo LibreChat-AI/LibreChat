@@ -36,6 +36,7 @@ export default function ParametersPage() {
 }
 
 function ParametersContext({ chatUrl }: { chatUrl: string }) {
+  const location = useLocation();
   const presentation = useFeaturePresentation();
   const localize = useLocalize();
   const { data: config } = useGetStartupConfig();
@@ -45,13 +46,12 @@ function ParametersContext({ chatUrl }: { chatUrl: string }) {
   const [activation] = useState(() => {
     const pathname = new URL(chatUrl, window.location.origin).pathname;
     const target = decodeURIComponent(pathname.slice('/c/'.length));
+    const sameJourney = presentation?.ownsChatJourney(location) === true;
+    const savedTargetMismatch =
+      target !== conversation?.conversationId && pathname !== presentation?.chatLocation?.pathname;
     return {
       cold: conversation == null,
-      redirect:
-        conversation != null &&
-        target !== 'new' &&
-        target !== conversation.conversationId &&
-        pathname !== presentation?.chatLocation?.pathname,
+      redirect: conversation != null && (target === 'new' ? !sameJourney : savedTargetMismatch),
     };
   });
   const { data: endpoints } = useGetEndpointsQuery();
