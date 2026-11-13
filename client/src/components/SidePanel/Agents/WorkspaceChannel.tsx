@@ -254,15 +254,16 @@ export default function WorkspaceChannel({
             {workspace.data.workspace.appName && (
               <span className="text-text-secondary">{workspace.data.workspace.teamName}</span>
             )}
-            <a
-              href={`https://slack.com/app_redirect?app=${encodeURIComponent(workspace.data.workspace.appId)}&team=${encodeURIComponent(workspace.data.workspace.teamId)}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1 underline underline-offset-2"
-            >
-              {localize('com_ui_channels_workspace_open_bot')}
-              <ExternalLink className="size-3" aria-hidden="true" />
-            </a>
+            <Button asChild variant="inline-link" className="w-fit">
+              <a
+                href={`https://slack.com/app_redirect?app=${encodeURIComponent(workspace.data.workspace.appId)}&team=${encodeURIComponent(workspace.data.workspace.teamId)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {localize('com_ui_channels_workspace_open_bot')}
+                <ExternalLink className="size-3.5" aria-hidden="true" />
+              </a>
+            </Button>
           </div>
         )}
 
@@ -286,9 +287,9 @@ export default function WorkspaceChannel({
           <Alert variant="info">{localize('com_ui_channels_bot_access_required')}</Alert>
         )}
         {mutation.isError && (
-          <p role="alert">
+          <Alert variant="error">
             {localize(channelErrorLabel(mutation.error, 'com_ui_channels_workspace_route_error'))}
-          </p>
+          </Alert>
         )}
         {!editing && ownsChannel && available && (
           <section
@@ -307,8 +308,8 @@ export default function WorkspaceChannel({
             )}
             {routes.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
             {routes.isError && (
-              <div role="alert">
-                <p>{localize('com_ui_channels_workspace_route_error')}</p>
+              <div className="flex flex-col items-start gap-2">
+                <Alert variant="error">{localize('com_ui_channels_workspace_route_error')}</Alert>
                 <Button type="button" variant="outline" onClick={() => void routes.refetch()}>
                   {localize('com_ui_retry')}
                 </Button>
@@ -428,19 +429,23 @@ export default function WorkspaceChannel({
                   maxLength={128}
                   autoComplete="off"
                   placeholder="C0123456789"
+                  aria-describedby={`${id}-channel-hint`}
                   disabled={busy}
                   onChange={(event) => {
                     setExternalChannel(event.target.value);
                   }}
                 />
+                <p id={`${id}-channel-hint`} className="text-text-secondary text-xs">
+                  {localize('com_ui_channels_workspace_channel_id_hint')}
+                </p>
               </div>
             )}
             {validTarget && target.isLoading && (
               <p role="status">{localize('com_ui_channels_loading')}</p>
             )}
             {settledInput && target.isError && (
-              <div role="alert">
-                <p>{localize('com_ui_channels_workspace_route_error')}</p>
+              <div className="flex flex-col items-start gap-2">
+                <Alert variant="error">{localize('com_ui_channels_workspace_route_error')}</Alert>
                 <Button type="button" variant="outline" onClick={() => void target.refetch()}>
                   {localize('com_ui_retry')}
                 </Button>

@@ -12,6 +12,7 @@ import { compression, defineAlgorithm } from 'vite-plugin-compression2';
 import type { Plugin } from 'vite';
 import { sandpackConsoleIsolation } from './src/lib/sandpack.ts';
 import { bundledThemeBoot, injectThemeCacheVersion } from './src/Providers/bootVersion.ts';
+import { localeAliases, resolveLocale, supportedLocales } from './src/locales/resolve.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -95,9 +96,14 @@ export default defineConfig(({ command }) => ({
       },
     },
     themeCacheVersion(),
+    bootLoadingLabels(),
     copyPublicAssets(),
     VitePWA({
-      injectRegister: 'auto', // 'auto' | 'manual' | 'disabled'
+      /** `auto` emits a parser-blocking `<script>` at the end of `<head>`. On a slow
+       *  HTTP/1.1 link it queues behind every modulepreload, so the body, and with it
+       *  the loading canvas, cannot paint until most of the bundle has downloaded.
+       *  Registration itself waits for `load` either way. */
+      injectRegister: 'script-defer',
       registerType: 'autoUpdate', // 'prompt' | 'autoUpdate'
       devOptions: {
         enabled: false, // disable service worker registration in development mode
@@ -264,6 +270,41 @@ export default defineConfig(({ command }) => ({
             {
               name: 'validation',
               test: /node_modules[\\/]zod[\\/]/,
+              priority: 1,
+            },
+            /**
+             * The lazy devtools import the query core and the external-store shim, which every
+             * page uses. Unclaimed, the `query-devtools` group captured them, so the boot chunks
+             * imported it and loaded the devtools and superjson on every visit.
+             */
+            /**
+             * Math and highlighting load on first need (`components/Chat/Messages/Content/rehype`).
+             * The catch-all puts every `rehype-` package in `markdown-processing`, which boot loads,
+             * so without these claims the lazy import resolved to code already downloaded.
+             */
+            /**
+             * The syntax-tree utilities are shared with react-markdown at boot. Left unclaimed,
+             * the groups below captured them as dependencies, and boot then imported (and
+             * downloaded) those chunks for the utilities, KaTeX and highlight.js included.
+             */
+            {
+              name: 'markdown-processing',
+              test: /node_modules[\\/](unist-util-[^\\/]+|hast-util-[^\\/]+|hastscript|property-information|comma-separated-tokens|space-separated-tokens|web-namespaces)[\\/]/,
+              priority: 2,
+            },
+            {
+              name: 'math-katex',
+              test: /node_modules[\\/](katex|rehype-katex)[\\/]/,
+              priority: 1,
+            },
+            {
+              name: 'markdown_highlight',
+              test: /node_modules[\\/](highlight\.js|lowlight|rehype-highlight)[\\/]/,
+              priority: 1,
+            },
+            {
+              name: 'tanstack-vendor',
+              test: /node_modules[\\/](@tanstack[\\/](query-core|react-query)|use-sync-external-store)[\\/]/,
               priority: 1,
             },
             {
@@ -525,6 +566,44 @@ export function themeCacheVersion(): Plugin {
       });
     },
   };
+}
+
+/**
+ * The shell's loading indicator announces itself before i18n loads, so the build inlines each
+ * locale's `com_ui_loading` and the boot script picks the one for the language it detected.
+ */
+export function bootLoadingLabels(): Plugin {
+  return {
+    name: 'boot-loading-labels',
+    transformIndexHtml: (html) =>
+      html.replace(
+        "'__BOOT_LOADING_LABELS__'",
+        JSON.stringify(readLoadingLabels()).replace(/</g, '\\u003c'),
+      ),
+  };
+}
+
+function readLoadingLabels(): Record<string, string> {
+  const localesDir = path.join(import.meta.dirname, 'src/locales');
+  const labelOf = (locale: string): string | undefined => {
+    const file = path.join(localesDir, locale, 'translation.json');
+    const label = fs.existsSync(file)
+      ? JSON.parse(fs.readFileSync(file, 'utf8')).com_ui_loading
+      : undefined;
+    return typeof label === 'string' ? label : undefined;
+  };
+  const english = labelOf('en') ?? 'Loading...';
+  /* Every key the app's `resolveLocale` accepts, exact or alias, mapped through it, so the
+     shell announces the locale the app is about to load (`zh-tw` is Traditional, `pt` is
+     European Portuguese). The shell falls back to the base language, then to English. */
+  const labels: Record<string, string> = {};
+  for (const key of [
+    ...supportedLocales.map((locale) => locale.toLowerCase()),
+    ...Object.keys(localeAliases),
+  ]) {
+    labels[key] = labelOf(resolveLocale(key)) ?? english;
+  }
+  return labels;
 }
 
 interface SourcemapExclude {

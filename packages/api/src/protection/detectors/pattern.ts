@@ -7,7 +7,6 @@ import {
   MAX_PII_PATTERN_LABEL_LENGTH,
   MAX_PII_PATTERN_LENGTH,
   MAX_PII_PATTERNS_PER_SOURCE,
-  getPiiRegexProgramSize,
 } from 'librechat-data-provider';
 import type {
   FilterPiiCategory,
@@ -15,6 +14,7 @@ import type {
   FilterPiiCustomPatternConfig,
 } from 'librechat-data-provider';
 import type { ProtectionFinding, TextContentFragment } from '../types';
+import { getPiiRegexProgramSize } from '../programSize';
 
 interface CompiledPattern {
   readonly id: string;

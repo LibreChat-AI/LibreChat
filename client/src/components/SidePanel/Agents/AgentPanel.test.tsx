@@ -206,9 +206,17 @@ jest.mock('./Channels', () => ({
 }));
 jest.mock('./AgentConfig', () => ({
   __esModule: true,
-  default: (props: { instructionsPromptStatus?: InstructionsPromptStatus }) => {
+  default: (props: {
+    instructionsPromptStatus?: InstructionsPromptStatus;
+    channels?: React.ReactNode;
+  }) => {
     mockAgentConfigStatus = props.instructionsPromptStatus;
-    return <div>{`Agent Config - ${props.instructionsPromptStatus ?? 'ready'}`}</div>;
+    return (
+      <div>
+        {`Agent Config - ${props.instructionsPromptStatus ?? 'ready'}`}
+        {props.channels}
+      </div>
+    );
   },
 }));
 
@@ -465,9 +473,29 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
             agentId: 'agent-123',
             userId: 'user-123',
             tenantId: undefined,
+            isAdmin: mockUserRole === 'ADMIN',
           });
       },
     );
+
+    it('places Channels inside the builder, with the other sections, for an editor', async () => {
+      const { mockUseGetAgentByIdQuery } = setupMocks();
+      mockAgentQuery(mockUseGetAgentByIdQuery, {});
+      mockUserRole = 'ADMIN';
+      mockPermissionBits = 0;
+      mockRolePermissions = {
+        [PermissionTypes.REMOTE_AGENTS]: true,
+        [PermissionTypes.AGENTS]: true,
+      };
+      mockAgentPanelContext = {
+        ...mockAgentPanelContext,
+        agentsConfig: { allowedProviders: [], channels: { enabled: true } },
+      };
+      const mounted = render(<AgentPanel />, { wrapper: createWrapper() });
+
+      const channels = await mounted.findByTestId('channel-controls');
+      expect(channels.parentElement).toHaveTextContent('Agent Config');
+    });
 
     it('restores saved defaults from the current model catalogue', async () => {
       const { mockUseGetAgentByIdQuery } = setupMocks();

@@ -4,7 +4,6 @@ import {
   MAX_PII_CUSTOM_REGEX_INSTRUCTIONS,
   MAX_PII_PATTERN_ID_LENGTH,
   MAX_PII_PATTERNS_PER_SOURCE,
-  getPiiRegexProgramSize,
 } from 'librechat-data-provider';
 import type {
   FilterPiiAction,
@@ -29,6 +28,7 @@ import {
   isContentTraversalLimitError,
   isContentTraversalProtected,
 } from './adapters/nested';
+import { getPiiRegexProgramSize } from './programSize';
 import { isLegacyPiiFragment } from './legacy';
 import { recordAuditFinding } from './audit';
 

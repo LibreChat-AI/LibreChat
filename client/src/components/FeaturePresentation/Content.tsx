@@ -4,15 +4,23 @@ import { ChatProvider } from '@librechat/chat/react';
 import type { NavigationPage } from 'librechat-data-provider';
 import type { ComponentType, ReactNode } from 'react';
 import type { ChatFormValues } from '~/common';
-import MCPBuilderPanel from '~/components/SidePanel/MCPBuilder/MCPBuilderPanel';
 import PromptsAccordion from '~/components/Prompts/sidebar/PromptsAccordion';
-import BookmarkPanel from '~/components/SidePanel/Bookmarks/BookmarkPanel';
 import SkillsAccordion from '~/components/Skills/sidebar/SkillsAccordion';
-import Parameters from '~/components/SidePanel/Parameters/Panel';
-import { SchedulePanel } from '~/components/SidePanel/Schedules';
 import { ChatFormProvider } from '~/Providers/ChatFormContext';
-import { MemoryPanel } from '~/components/SidePanel/Memories';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
 import PresentationActions from './Actions';
+
+const MCPBuilderPanel = lazyWithRecovery(
+  () => import('~/components/SidePanel/MCPBuilder/MCPBuilderPanel'),
+);
+const BookmarkPanel = lazyWithRecovery(
+  () => import('~/components/SidePanel/Bookmarks/BookmarkPanel'),
+);
+const Parameters = lazyWithRecovery(() => import('~/components/SidePanel/Parameters/Panel'));
+const SchedulePanel = lazyWithRecovery(
+  () => import('~/components/SidePanel/Schedules/SchedulePanel'),
+);
+const MemoryPanel = lazyWithRecovery(() => import('~/components/SidePanel/Memories/MemoryPanel'));
 
 function Session({ children, page }: { children: ReactNode; page: NavigationPage }) {
   const methods = useForm<ChatFormValues>({ defaultValues: { text: '' } });

@@ -1,12 +1,10 @@
-import 'katex/contrib/mhchem';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import supersub from 'remark-supersub';
-import rehypeKatex from 'rehype-katex';
-import rehypeHighlight from 'rehype-highlight';
 import remarkDirective from 'remark-directive';
 import type { PluggableList } from 'unified';
 import type { ElementType } from 'react';
+import type { RehypeModules } from './rehype';
 import {
   code,
   a,
@@ -29,9 +27,10 @@ import {
   MCPUIResourceCarousel,
 } from '~/components/MCPUIResource';
 import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/Citation';
-import { langSubset, remarkApproxTilde, remarkSingleDollarMath } from '~/utils';
 import { Artifact, artifactPlugin } from '~/components/Artifacts/Artifact';
+import { remarkApproxTilde, remarkSingleDollarMath } from '~/utils';
 import { unicodeCitation } from '~/components/Web';
+import { toRehypePlugins } from './rehype';
 
 /**
  * Single source of truth for the markdown rendering pipeline, shared by the
@@ -63,10 +62,9 @@ export const getRemarkPlugins = (latexParsing = true): PluggableList => [
   mcpUIResourcePlugin,
 ];
 
-export const getRehypePlugins = (): PluggableList => [
-  [rehypeKatex],
-  [rehypeHighlight, { detect: false, ignoreMissing: true, subset: langSubset }],
-];
+/** Empty until `useRehypeModules` has loaded KaTeX and highlight.js; see `./rehype`. */
+export const getRehypePlugins = (modules: RehypeModules | null): PluggableList =>
+  toRehypePlugins(modules);
 
 export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => ({
   code,

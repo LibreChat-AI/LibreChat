@@ -2,7 +2,6 @@ import React from 'react';
 import remarkGfm from 'remark-gfm';
 import supersub from 'remark-supersub';
 import ReactMarkdown from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
 import type { PluggableList } from 'unified';
 import {
   code,
@@ -21,9 +20,10 @@ import {
   h6,
   blockquote,
 } from './MarkdownComponents';
-import { langSubset, remarkApproxTilde } from '~/utils';
+import { MESSAGE_HIGHLIGHT, getLoadedRehypeModules } from './rehype';
 import { reportBoundaryError } from '~/lib/rum/logs';
 import { CodeBlockProvider } from '~/Providers';
+import { remarkApproxTilde } from '~/utils';
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -64,16 +64,11 @@ class MarkdownErrorBoundary extends React.Component<
     if (this.state.hasError) {
       const { content, codeExecution = true } = this.props;
 
-      const rehypePlugins: PluggableList = [
-        [
-          rehypeHighlight,
-          {
-            detect: false,
-            ignoreMissing: true,
-            subset: langSubset,
-          },
-        ],
-      ];
+      /* A class component cannot wait on the loader; highlight only if it already arrived. */
+      const loaded = getLoadedRehypeModules();
+      const rehypePlugins: PluggableList = loaded
+        ? [[loaded.rehypeHighlight, MESSAGE_HIGHLIGHT]]
+        : [];
 
       return (
         <CodeBlockProvider>

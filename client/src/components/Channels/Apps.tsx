@@ -1,6 +1,6 @@
 import { useId, useRef, useState } from 'react';
-import { ChevronRight, Pencil, Plus, Trash2 } from 'lucide-react';
 import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
+import { ChevronRight, ExternalLink, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -27,6 +27,7 @@ import type { ReactNode, ChangeEvent } from 'react';
 import { channelErrorLabel } from '~/utils/channelErrors';
 import { useAuthContext, useLocalize } from '~/hooks';
 import Configuration from './Configuration';
+import Loading from './Loading';
 
 /** Organization administrators own the Slack app; operators only provide its callback service. */
 export default function Apps({
@@ -180,10 +181,12 @@ export default function Apps({
           </Button>
         )}
       </div>
-      {apps.isInitialLoading && <Spinner />}
+      {apps.isInitialLoading && <Loading />}
       {apps.isError && (
-        <div role="alert" className="space-y-2">
-          <p>{localize(channelErrorLabel(apps.error, 'com_ui_slack_apps_error'))}</p>
+        <div className="flex flex-col items-start gap-2">
+          <Alert variant="error">
+            {localize(channelErrorLabel(apps.error, 'com_ui_slack_apps_error'))}
+          </Alert>
           <Button
             variant="outline"
             disabled={disabled}
@@ -197,7 +200,11 @@ export default function Apps({
           </Button>
         </div>
       )}
-      {saved && <p role="status">{localize('com_ui_slack_apps_saved')}</p>}
+      {saved && (
+        <Alert variant="success" role="status">
+          {localize('com_ui_slack_apps_saved')}
+        </Alert>
+      )}
       <OGDialog
         open={form !== null && canManage && configured}
         triggerRef={actionRef}
@@ -302,18 +309,21 @@ export default function Apps({
                           ) : (
                             <Input {...inputProps} />
                           )}
+                          {secret && hasValue && (
+                            <p className="text-text-secondary text-xs">
+                              {localize('com_ui_slack_apps_secret_keep')}
+                            </p>
+                          )}
                         </div>
                       );
                     },
                   )}
-                  <a
-                    className="text-text-primary inline-flex text-sm underline"
-                    href="https://api.slack.com/apps"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {localize('com_ui_slack_apps_dashboard')}
-                  </a>
+                  <Button asChild variant="inline-link" className="w-fit">
+                    <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">
+                      {localize('com_ui_slack_apps_dashboard')}
+                      <ExternalLink className="size-3.5" aria-hidden="true" />
+                    </a>
+                  </Button>
                 </form>
               )}
               {save.isError && (

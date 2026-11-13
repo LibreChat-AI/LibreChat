@@ -1,6 +1,15 @@
-import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef } from 'react';
+import {
+  Suspense,
+  createContext,
+  useCallback,
+  useContext,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from 'react';
 import { atom, useAtom } from 'jotai';
 import { createPortal } from 'react-dom';
+import { Spinner } from '@librechat/client';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { NavigationPage, NavigationView, NavigationConfig } from 'librechat-data-provider';
 import type { ComponentType, ReactNode, MutableRefObject } from 'react';
@@ -13,6 +22,7 @@ import {
   getRelatedPage,
   pageRegistry,
 } from './registry';
+import { useLocalize } from '~/hooks';
 
 type Feature = ComponentType<{ visible: boolean }>;
 type Slot = { node: HTMLDivElement; page: NavigationPage; view: NavigationView; visible: boolean };
@@ -65,7 +75,26 @@ function Session({
     }
     return () => container.remove();
   }, [container, slot?.node, slot?.visible, focusTarget]);
-  return createPortal(<Feature visible={slot?.visible ?? false} />, container);
+  return createPortal(
+    <Suspense fallback={<SessionLoading />}>
+      <Feature visible={slot?.visible ?? false} />
+    </Suspense>,
+    container,
+  );
+}
+
+function SessionLoading() {
+  const localize = useLocalize();
+  return (
+    <div
+      role="status"
+      aria-label={localize('com_ui_loading')}
+      className="flex flex-1 items-center justify-center"
+    >
+      <Spinner />
+      <span className="sr-only">{localize('com_ui_loading')}</span>
+    </div>
+  );
 }
 
 /** The host supplies authorized links. Presentation never grants feature permissions. */

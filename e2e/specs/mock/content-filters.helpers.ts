@@ -3,13 +3,14 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import yaml from 'js-yaml';
 import { expect } from '@playwright/test';
-import { configSchema } from 'librechat-data-provider';
+import { configSchema, setPiiRegexProgramSizer } from 'librechat-data-provider';
 import type { APIRequestContext } from '@playwright/test';
 import type {
   FiltersConfig,
   MessageFilterConfig,
   MessageFilterPiiConfig,
 } from 'librechat-data-provider';
+import { getPiiRegexProgramSize } from '../../../packages/api/src/protection/programSize';
 import { getPrimaryE2EUser } from '../../setup/users.mock';
 
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
@@ -126,6 +127,9 @@ function captureBaseline(): BaselineState {
 }
 
 function validateRuntimeConfig(config: RuntimeConfig): void {
+  /* Custom PII patterns are sized by RE2, which the server registers at startup; this process
+     validates the same config, so it registers the same engine. */
+  setPiiRegexProgramSizer(getPiiRegexProgramSize);
   const result = configSchema.strict().safeParse(config);
   if (result.success) {
     return;
