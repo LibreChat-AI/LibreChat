@@ -38,6 +38,7 @@ export * from './InputOTP';
 export * from './IconButton';
 export * from './Resizable';
 export { default as Radio } from './Radio';
+export * from './ChoiceCards';
 export { default as Badge } from './Badge';
 export { default as Avatar } from './Avatar';
 export { default as Composer } from './Composer';

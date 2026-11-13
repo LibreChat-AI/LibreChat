@@ -36,7 +36,9 @@ const HoverCardContent: React.ForwardRefExoticComponent<
         sideOffset={sideOffset}
         style={{ ...nestedStyle, ...style }}
         className={cn(
-          'border-border-light bg-surface-secondary text-text-primary data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 rounded-theme-menu-panel z-50 w-64 max-w-[min(calc(100vw-1rem),var(--radix-hover-card-content-available-width))] origin-(--radix-hover-card-content-transform-origin) border p-4 shadow-md outline-hidden motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none',
+          'bg-surface-secondary text-text-primary data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 rounded-theme-menu-panel z-50 w-64 max-w-[min(calc(100vw-1rem),var(--radix-hover-card-content-available-width))] origin-(--radix-hover-card-content-transform-origin) border p-4 shadow-md outline-hidden motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none',
+          // Over a dialog the card sits on a surface of its own tone, so its edge needs more weight.
+          nestedStyle ? 'border-border-medium' : 'border-border-light',
           className,
         )}
         {...props}

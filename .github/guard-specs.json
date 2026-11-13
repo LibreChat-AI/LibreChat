@@ -64,6 +64,11 @@
     "packages/client/src/components/SegmentedMeter.spec.tsx": [
       "packages/client/src/theme/tokens.css"
     ],
+    "packages/client/src/components/SharedControlsTheme.spec.tsx": [
+      "packages/client/src/theme/",
+      "packages/client/tailwind.preset.cjs",
+      "package-lock.json"
+    ],
     "packages/client/src/components/__tests__/radixLayers.spec.ts": ["package-lock.json"],
     "packages/client/src/theme/defaults.spec.ts": ["packages/client/src/theme/defaults.css"],
     "packages/client/src/theme/primitives.spec.ts": [

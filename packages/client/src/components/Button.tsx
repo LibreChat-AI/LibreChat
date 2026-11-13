@@ -37,6 +37,7 @@ type ButtonVariantOptions =
         | 'row-action-reveal'
         | 'section-header'
         | 'section-action'
+        | 'section-add'
         | 'header-action'
         | 'panel-back'
         | 'inline-edit'
@@ -91,7 +92,7 @@ type ButtonVariantOptions =
  * `hover-button` is the marker the app's narrow-screen stylesheet keeps visible.
  */
 const messageHoverClasses =
-  'hover-button size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-text-primary group-has-[[data-hover-active]]:opacity-100 data-[hover-active]:bg-surface-hover data-[hover-active]:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent';
+  'hover-button size-auto rounded-lg p-1.5 transition-none text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-text-primary group-has-[[data-hover-active]]:opacity-100 data-[hover-active]:bg-surface-hover data-[hover-active]:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent';
 
 const buttonVariantRecipe = cva(
   [
@@ -156,7 +157,7 @@ const buttonVariantRecipe = cva(
          *  secondary ink, and the chosen entry, marked with `aria-pressed`, keeps the hover fill
          *  in the primary ink at semibold weight. */
         'popover-option':
-          'w-full justify-start gap-3 rounded-theme-control text-text-secondary duration-theme-normal hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:bg-surface-hover aria-pressed:font-semibold aria-pressed:text-text-primary',
+          'w-full justify-start gap-3 rounded-theme-control text-text-secondary transition-none hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:bg-surface-hover aria-pressed:font-semibold aria-pressed:text-text-primary',
         /** A text action that reads as a link in a list or footer: no fill at rest or under the pointer,
          *  and a ring flush against the control. */
         'inline-link':
@@ -216,6 +217,10 @@ const buttonVariantRecipe = cva(
          * One radius step inside the heading row, like every other control that
          * sits on one.
          */
+        /** The "Add" action in a panel section's header, beside its label: quiet ink that rises to
+         *  primary on a hover fill. */
+        'section-add':
+          'gap-1.5 rounded-lg text-xs font-medium text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary disabled:hover:bg-transparent disabled:hover:text-text-secondary',
         'section-action':
           'rounded-md text-text-secondary hover:bg-surface-active-alt hover:text-text-primary focus-visible:ring-inset focus-visible:ring-offset-0',
         /**
@@ -400,6 +405,7 @@ const buttonVariantRecipe = cva(
         size: 'default',
         class: 'size-auto p-1.5',
       },
+      { variant: 'section-add', size: 'default', class: 'h-theme-button-xs px-2' },
       { variant: 'popover-option', size: 'default', class: 'h-auto p-2' },
       { variant: 'inline-link', size: 'default', class: 'h-auto p-0' },
       { variant: 'carousel-nav', size: 'default', class: 'h-auto p-2' },

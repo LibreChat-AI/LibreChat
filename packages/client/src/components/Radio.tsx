@@ -27,8 +27,17 @@ interface RadioProps {
   wrap?: boolean;
   /** `sm` fits a section header row beside its label. */
   size?: 'default' | 'sm';
+  /** `raised` lightens the track one step and the selected pill with it, for a group on a raised
+   *  surface such as a popover, where the default track would blend into the surface behind it. */
+  tone?: 'default' | 'raised';
   'aria-labelledby'?: string;
 }
+
+/** The track and the selected segment's pill, as a pair that always contrast with each other. */
+const toneClasses = {
+  default: { track: 'bg-surface-secondary', pill: 'bg-surface-primary' },
+  raised: { track: 'bg-surface-tertiary', pill: 'bg-surface-primary-alt' },
+} as const;
 
 const segmentSizeClasses = {
   default: 'h-[2.125rem] px-4 text-sm',
@@ -45,6 +54,7 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
   fullWidth = false,
   wrap = false,
   size = 'default',
+  tone = 'default',
   'aria-labelledby': ariaLabelledBy,
 }: RadioProps) {
   const localize = useLocalize();
@@ -154,7 +164,7 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
   if (options.length === 0) {
     return (
       <div
-        className="bg-surface-tertiary relative inline-flex items-center rounded-lg p-1 opacity-50"
+        className={`${toneClasses[tone].track} relative inline-flex items-center rounded-lg p-1 opacity-50`}
         role="radiogroup"
         aria-labelledby={ariaLabelledBy}
       >
@@ -172,13 +182,13 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       ref={containerRef}
       className={`relative ${fullWidth ? 'flex' : 'inline-flex'} ${
         wrap ? 'flex-wrap' : ''
-      } bg-surface-tertiary items-center rounded-lg px-0.75 ${className}`}
+      } ${toneClasses[tone].track} items-center rounded-lg px-0.75 ${className}`}
       role="radiogroup"
       aria-labelledby={ariaLabelledBy}
     >
       {selectedIndex >= 0 && isMounted && (
         <div
-          className={`bg-surface-primary pointer-events-none absolute left-0 rounded-md shadow-xs transition-all duration-300 ease-out ${
+          className={`${toneClasses[tone].pill} pointer-events-none absolute left-0 rounded-md shadow-xs transition-all duration-300 ease-out ${
             wrap ? 'top-0' : 'inset-y-0.75'
           }`}
           style={backgroundStyle}
