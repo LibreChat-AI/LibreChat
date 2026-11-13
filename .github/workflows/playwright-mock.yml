@@ -299,9 +299,6 @@ jobs:
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: Test Playwright matrix selection, the vote gate, the merge gate and the retried-pass reporter
-        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs .github/scripts/merge-gate.test.mjs e2e/reporters/retried.test.mjs
-
       - name: Restore data-provider build cache
         id: cache-data-provider
         uses: actions/cache@v5
@@ -751,6 +748,11 @@ jobs:
 
       - name: Verify Chrome is present
         run: google-chrome --version
+
+      # These check this workflow's own wiring and scripts, so once per run is enough. They ran in
+      # every shard for about 8 seconds each; this lane finishes minutes before the shards do.
+      - name: Test Playwright matrix selection, the vote gate, the merge gate and the retried-pass reporter
+        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs .github/scripts/merge-gate.test.mjs e2e/reporters/retried.test.mjs
 
       - name: Check MCP Apps result gating and same-repository PR eligibility
         run: node --test e2e/mcp-apps/results.test.mjs e2e/mcp-apps/workflow.test.mjs
