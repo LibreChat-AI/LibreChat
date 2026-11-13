@@ -110,26 +110,24 @@ export default function VariableForm({
     name: 'fields',
   });
 
-  const rehypeModules = useRehypeModules(mainText);
+  /* The preview renders the template with the entered values, so the plugins load for what it
+     shows: math typed into a variable needs KaTeX even when the template has none. */
+  let previewText = mainText;
+  allVariables.forEach((variable) => {
+    const placeholder = `{{${variable}}}`;
+    const fieldIndex = variableIndexMap.get(variable) as string | number;
+    const fieldValue = fieldValues[fieldIndex]?.value as string | undefined;
+    if (fieldValue === placeholder || fieldValue === '' || !fieldValue) {
+      return;
+    }
+    /* A replacer function, so `$$`, `$&` and the like in the value stay literal. */
+    previewText = previewText.replaceAll(placeholder, () => `**${fieldValue}**`);
+  });
+  const rehypeModules = useRehypeModules(previewText);
 
   if (!uniqueVariables.length) {
     return null;
   }
-
-  const generateHighlightedMarkdown = () => {
-    let tempText = mainText;
-    allVariables.forEach((variable) => {
-      const placeholder = `{{${variable}}}`;
-      const fieldIndex = variableIndexMap.get(variable) as string | number;
-      const fieldValue = fieldValues[fieldIndex].value as string | undefined;
-      if (fieldValue === placeholder || fieldValue === '' || !fieldValue) {
-        return;
-      }
-      const highlightText = fieldValue !== '' ? `**${fieldValue}**` : placeholder;
-      tempText = tempText.replaceAll(placeholder, highlightText);
-    });
-    return tempText;
-  };
 
   const onSubmit = (data: FormValues) => {
     let text = mainText;
@@ -140,7 +138,7 @@ export default function VariableForm({
 
       const escapedVariable = variable.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
       const regex = new RegExp(escapedVariable, 'g');
-      text = text.replace(regex, value);
+      text = text.replace(regex, () => value);
     });
 
     submitPrompt(text);
@@ -163,7 +161,7 @@ export default function VariableForm({
             components={{ code: codeNoExecution, p: PromptVariableGfm }}
             className="markdown prose light my-1 max-h-[50vh] max-w-full break-words"
           >
-            {generateHighlightedMarkdown()}
+            {previewText}
           </ReactMarkdown>
         </div>
         <div className="space-y-4">
