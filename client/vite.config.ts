@@ -325,6 +325,8 @@ export default defineConfig(({ command }) => ({
                   if (
                     normalizedId.includes('@hyperdx/') ||
                     normalizedId.includes('@opentelemetry/') ||
+                    /* HyperDX's exception instrumentation; nothing else imports it. */
+                    normalizedId.includes('/@sentry/') ||
                     /\/node_modules\/(?:rrweb(?:-snapshot)?|@rrweb\/[^/]+|fflate|protobufjs|long)\//.test(
                       normalizedId,
                     )
@@ -427,11 +429,9 @@ export default defineConfig(({ command }) => ({
                   ) {
                     return 'validation';
                   }
-                  if (
-                    normalizedId.includes('axios') ||
-                    normalizedId.includes('ky') ||
-                    normalizedId.includes('fetch')
-                  ) {
+                  /* Package names, not substrings: `fetch` matched Sentry's fetch instrumentation
+                     and put it in this boot chunk. */
+                  if (/\/node_modules\/(?:axios|ky)\//.test(normalizedId)) {
                     return 'http-client';
                   }
                   if (
