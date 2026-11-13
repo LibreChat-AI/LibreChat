@@ -98,5 +98,32 @@ test.describe('surfaces that load on demand', () => {
       await expect(page.getByTestId('trace-viewer')).toBeVisible();
       await expect(loading).toBeHidden();
     });
+
+    test('a trace still loading can be closed, so a stalled download never traps the chat @scenario:trace-loading-can-be-dismissed', async ({
+      page,
+    }) => {
+      await enableTraceViewer(page);
+      /* Never answered: the download stalls. */
+      await page.route(/\/assets\/Viewer\.[^/]+\.js$/, () => undefined);
+      await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
+      await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+      await sendMessageAndWaitForCompletion(page, replyPrompt('trace-stall'));
+
+      const traceButton = page.getByRole('button', { name: 'View trace' });
+      const close = page.getByRole('button', { name: 'Close trace' });
+      const input = page.getByRole('textbox', { name: 'Message input' });
+
+      await traceButton.click();
+      await expect(close).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(close).toBeHidden();
+      await expect(input).toBeEditable();
+
+      await traceButton.click();
+      await close.click();
+      await expect(close).toBeHidden();
+      await input.fill('still composing');
+      await expect(input).toHaveValue('still composing');
+    });
   });
 });
