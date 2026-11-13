@@ -59,6 +59,46 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/quality/comment.mts publish
 
+  inline:
+    name: Publish inline mutant comments
+    needs: [resolve]
+    if: >-
+      needs.resolve.outputs.pr != '' && github.event_name == 'workflow_run' &&
+      github.event.workflow_run.status == 'completed'
+    concurrency:
+      group: quality-inline-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    steps:
+      # Never check out or run PR code in this privileged job; it only reads job metadata,
+      # the quality-findings artifact and PR diff metadata through the GitHub API.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/quality
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+      - name: Download mutation findings
+        continue-on-error: true
+        uses: actions/download-artifact@v6
+        with:
+          name: quality-findings
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: findings
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          QUALITY_INLINE_LIMIT: ${{ vars.QUALITY_INLINE_LIMIT }}
+        run: node scripts/quality/inline.mts publish
+
   queue:
     name: Publish queue quality decision
     needs: [resolve]

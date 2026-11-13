@@ -20,6 +20,7 @@ import {
 import type { MutationReport } from './merge.mts';
 
 import { git, reportJobs } from './changes.mts';
+import { FINDINGS_UPLOAD_STEP } from './inline.mts';
 import { assertMutants, mutantKey } from './shards.mts';
 import { mutationSummary } from './merge.mts';
 
@@ -135,7 +136,8 @@ test('workflow separates tooling, source, installs and artifacts without changin
   );
   assert.equal(
     workflow.jobs['mutation-summary'].if,
-    "always() && needs.select.outputs.hasMutations == 'true'",
+    "always() && needs.select.outputs.hasMutations == 'true' && " +
+      "(needs.reports.result == 'success' || needs.reports.result == 'failure')",
   );
   assert.deepEqual(workflow.jobs['mutation-summary'].strategy?.matrix, {
     workspace: '${{ fromJSON(needs.select.outputs.mutationWorkspaces) }}',
@@ -198,6 +200,14 @@ test('comment publication is trusted and serialized while PR execution stays rea
     );
     assert.equal(upload?.with?.overwrite, true, 'reruns replace failed artifacts');
   }
+  const findingsUpload = workflow.jobs['mutation-summary'].steps.find(
+    ({ with: options }) => options?.name === 'quality-findings',
+  );
+  assert.equal(
+    findingsUpload?.name,
+    FINDINGS_UPLOAD_STEP,
+    "inline.mts's mutationReportRan trusts this exact step name",
+  );
   for (const name of ['request', 'progress']) {
     const job = workflow.jobs[name];
     assert.equal(checkouts(job)[0].with?.ref, '${{ github.sha }}');
@@ -401,12 +411,40 @@ for (const olderHead of [true, false]) {
         'junction',
       );
     }
+    // The source-alias pass compiles packages/api/src with the measured checkout's own Babel,
+    // which the real repository installs for api/'s Jest transform.
+    mkdirSync(join(source, 'node_modules/@babel'), { recursive: true });
+    for (const dependency of [
+      'babel-jest',
+      '@babel/core',
+      '@babel/preset-env',
+      '@babel/preset-typescript',
+      '@babel/plugin-transform-dynamic-import',
+      '@babel/plugin-transform-modules-commonjs',
+    ]) {
+      symlinkSync(
+        dirname(require.resolve(`${dependency}/package.json`)),
+        join(source, 'node_modules', dependency),
+        'junction',
+      );
+    }
     git(['update-ref', 'refs/remotes/origin/dev', base], source);
+    // The real job inherits a workflow-level QUALITY_BASE/QUALITY_HEAD (and, on other triggers,
+    // QUALITY_SCOPE/QUALITY_CHECK/QUALITY_WORKSPACE/QUALITY_STATIC/QUALITY_SHARD/QUALITY_PR/
+    // QUALITY_REPOSITORY) from its own CI run. Drop every inherited QUALITY_* value so this
+    // fixture's explicit values below are the only ones each step call ever sees.
+    const inherited = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !key.startsWith('QUALITY_')),
+    );
     const env = {
-      ...process.env,
+      ...inherited,
       QUALITY_HEAD: head,
       QUALITY_WORKSPACE: 'data-schemas',
       QUALITY_STATIC: mode,
+      // The merge step's --repository/--pr: a fixed fixture value, standing in for the real
+      // workflow's github.repository / pull_request.number context.
+      QUALITY_REPOSITORY: 'quality-fixture/quality-fixture',
+      QUALITY_PR: '1',
       GITHUB_OUTPUT: '',
       GITHUB_STEP_SUMMARY: '',
     };
@@ -497,7 +535,9 @@ for (const olderHead of [true, false]) {
     const combine = workflow.jobs['mutation-summary'].steps.find(
       ({ name }) => name === 'Verify and combine mutation results',
     )!;
-    run(combine.run!, tooling, {});
+    // The real job sets QUALITY_BASE at job level; the base env above no longer carries one in,
+    // so give the combine step the same base SHA each shard's report was generated against.
+    run(combine.run!, tooling, { QUALITY_BASE: base });
     const combined = JSON.parse(
       readFileSync(join(tooling, 'coverage/changes/data-schemas/mutation/mutation.json'), 'utf8'),
     );

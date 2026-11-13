@@ -129,7 +129,8 @@ export function readRequest(comment: Comment): Request | undefined {
   }
 }
 
-async function pages<T>(api: API, path: string, key?: string): Promise<T[]> {
+/** Shared with the inline mutant-comment publisher, which paginates the same list endpoints. */
+export async function pages<T>(api: API, path: string, key?: string): Promise<T[]> {
   const all: T[] = [];
   for (let page = 1; ; page++) {
     const result = await api.request<T[] | Record<string, T[]>>(
@@ -209,6 +210,16 @@ async function cancelRequest(api: API, context: Context, request: Request, run: 
   throw new Error('Previous quality run has not stopped; retry the request');
 }
 
+/** States exactly what `publishRun` and `gateDecision` treat as closing the gate. */
+export const GATE_FOOTER = [
+  'The gate opens only when the workflow, source selection, tooling verification, and every report',
+  "job succeed. A report job fails on a failed test in its workspace's own Jest run, a tool error,",
+  'a job timeout, or an incomplete mutation report, including a mutation shard that reaches its',
+  'execution budget. A cancelled workflow keeps the gate closed. Scores are advisory. A change-risk',
+  'file marked incomplete or unavailable, for example by a failed `api/` source-alias suite, does',
+  'not close the gate.',
+].join(' ');
+
 export function renderRequest(
   request: Request,
   context: Context,
@@ -229,21 +240,24 @@ export function renderRequest(
     ...(currentHead !== request.head
       ? ['**Outdated: this request is for an earlier PR commit.**', '']
       : []),
-    `Commit: \`${request.head}\`. Requested by @${request.actor}.`,
-    `Checks: **${request.check === 'both' ? 'check-all' : request.check}**. Scopes: **${scopes}**. Static: **${request.staticMutants ? 'on' : 'off'}**${request.check === 'risk' || request.check === 'ignore' ? ' (not used)' : ''}.`,
-    `Risk: ${risk}. Mutation: ${mutation}.`,
-    ...(request.check === 'mutation' || request.check === 'both'
-      ? [
-          'Mutation testing is experimental. Only `data-schemas` is supported today. Support for more scopes is planned.',
-        ]
-      : []),
-    '',
     request.check === 'ignore'
       ? 'Quality checks explicitly ignored for this commit.'
-      : `Status: **${request.phase}${request.conclusion ? ` (${request.conclusion})` : ''}**. [Actions run](${url}) (attempt ${request.attempt}).`,
+      : `Status: **${request.phase}${request.conclusion ? ` (${request.conclusion})` : ''}**. [Actions run](${url}), attempt ${request.attempt}.`,
+    '',
+    `- Commit: \`${request.head}\``,
+    `- Requested by: @${request.actor}`,
+    `- Check: **${request.check === 'both' ? 'check-all' : request.check}**`,
+    ...(request.check === 'ignore'
+      ? []
+      : [
+          `- Scopes: **${scopes}**`,
+          `- Static mutants: **${request.staticMutants ? 'on' : 'off'}**${request.check === 'risk' ? ' (not used by change risk)' : ''}`,
+          `- Change risk: ${risk}`,
+          `- Mutation testing (experimental, \`data-schemas\` only): ${mutation}`,
+        ]),
     ...(details ? ['', details] : []),
     '',
-    'Scores are advisory. Failed tests, tool errors and incomplete reports do not clear the gate.',
+    GATE_FOOTER,
   ].join('\n');
 }
 
@@ -393,6 +407,22 @@ export async function acceptRequest(api: API, context: Context, pr: number, comm
   return { request, comment: response.id };
 }
 
+const WORKSPACES = ['data-schemas', 'api', 'server'];
+const REPORT_JOB =
+  /^(Change risk|Mutation testing ([1-4])\/4|Mutation report) \((data-schemas|api|server)\)$/u;
+const compareOrder = (a: number[], b: number[]) =>
+  a.reduce((result, value, index) => result || value - b[index], 0);
+
+/** Sort key for a report job, or `undefined` for any other job. Change risk comes first, then
+ * mutation shards in order, then the mutation report; one kind follows the scope order. */
+function jobOrder(name: string): number[] | undefined {
+  const match = REPORT_JOB.exec(name);
+  if (!match) return;
+  const [, check, shard, workspace] = match;
+  const kind = check === 'Change risk' ? 0 : check === 'Mutation report' ? 2 : 1;
+  return [kind, WORKSPACES.indexOf(workspace), Number(shard ?? 0)];
+}
+
 /** Refresh from GitHub's job metadata, never by executing or rendering artifact contents. */
 export async function publishRun(api: API, context: Context, run: Run) {
   const match = /^Quality PR #(\d+) request (\d+)$/u.exec(run.display_title);
@@ -435,20 +465,33 @@ export async function publishRun(api: API, context: Context, run: Run) {
   for (const job of jobs) {
     if ((latestJobs.get(job.name)?.id ?? 0) < job.id) latestJobs.set(job.name, job);
   }
-  const reports = [...latestJobs.values()].filter(({ name }) =>
-    /^(?:Change risk|Mutation testing [1-4]\/4|Mutation report) \((?:data-schemas|api|server)\)$/u.test(
-      name,
-    ),
-  );
+  const reports = [...latestJobs.values()]
+    .flatMap((job) => {
+      const order = jobOrder(job.name);
+      return order ? [{ job, order }] : [];
+    })
+    .sort((a, b) => compareOrder(a.order, b.order))
+    .map(({ job }) => job);
   const artifacts = await pages<Artifact>(api, `actions/runs/${run.id}/artifacts`, 'artifacts');
-  const links = artifacts.filter(
-    ({ name, expired }) =>
-      !expired &&
-      new RegExp(
-        `^change-(?:risk|mutation)-(?:data-schemas|api|server)-${request.head}(?:-shard-[1-4])?$`,
-        'u',
-      ).test(name),
+  const artifactName = new RegExp(
+    `^change-(risk|mutation)-(data-schemas|api|server)-${request.head}(?:-shard-([1-4]))?$`,
+    'u',
   );
+  // Change-risk reports first, then each scope's combined mutation report before its shards.
+  const links = artifacts
+    .flatMap((artifact) => {
+      const match = artifact.expired ? null : artifactName.exec(artifact.name);
+      if (!match) return [];
+      const [, check, workspace, shard] = match;
+      return [
+        {
+          artifact,
+          order: [check === 'risk' ? 0 : 1, WORKSPACES.indexOf(workspace), Number(shard ?? 0)],
+        },
+      ];
+    })
+    .sort((a, b) => compareOrder(a.order, b.order))
+    .map(({ artifact }) => artifact);
   // A delayed progress event must not replace a terminal report.
   if (
     request.attempt === run.run_attempt &&

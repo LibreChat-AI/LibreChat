@@ -249,6 +249,10 @@ jobs:
       QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
       QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
       QUALITY_STATIC: ${{ needs.request.outputs.static || inputs.static || 'off' }}
+      # Wall-clock budget for one mutation shard's Stryker run; run.mts validates and defaults it.
+      QUALITY_MUTATION_BUDGET_MINUTES: ${{ vars.QUALITY_MUTATION_BUDGET_MINUTES }}
+      # Wall-clock budget for the api/+risk source-alias pass; run.mts validates and defaults it.
+      QUALITY_ALIAS_BUDGET_MINUTES: ${{ vars.QUALITY_ALIAS_BUDGET_MINUTES }}
       PG_TEST_URL: postgresql://postgres@127.0.0.1:5432/postgres
       REDIS_URI: redis://127.0.0.1:6379
       NODE_OPTIONS: --max-old-space-size=6144
@@ -271,7 +275,9 @@ jobs:
         timeout-minutes: 5
         run: |
           docker run --detach --network host --name quality-redis-cluster \
-            --volume "$PWD:/cluster" --workdir /cluster redis:7 \
+            --volume "$PWD:/cluster:ro" --tmpfs /var/lib/quality-redis \
+            --env REDIS_CLUSTER_RUNTIME_DIR=/var/lib/quality-redis \
+            --workdir /cluster redis:7 \
             bash -c 'bash start-cluster.sh && tail -f /dev/null'
           for attempt in $(seq 1 30); do
             if docker exec quality-redis-cluster redis-cli -p 7001 cluster info | grep -q 'cluster_state:ok'; then
@@ -280,6 +286,7 @@ jobs:
             sleep 1
           done
           docker logs quality-redis-cluster
+          docker exec quality-redis-cluster sh -c 'cat /var/lib/quality-redis/logs/redis-*.log'
           exit 1
       - uses: actions/setup-node@v5
         with:
@@ -310,6 +317,10 @@ jobs:
           QUALITY_WORKSPACE: ${{ matrix.workspace }}
           QUALITY_CHECK: ${{ matrix.task.check }}
           QUALITY_SHARD: ${{ matrix.task.shard }}
+          # The api/+risk run also executes api/'s specs against packages/api/src (coverage.mts's
+          # cross-workspace evidence) through the @librechat/api barrel, which related-test
+          # selection reaches broadly; instrument and run more suites than the job default budgets.
+          NODE_OPTIONS: ${{ matrix.workspace == 'api' && matrix.task.check == 'risk' && '--max-old-space-size=8192' || '--max-old-space-size=6144' }}
         run: |
           args=()
           if [ "$QUALITY_CHECK" = mutation ]; then
@@ -338,7 +349,15 @@ jobs:
     needs: [request, select, reports]
     env:
       QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
-    if: always() && needs.select.outputs.hasMutations == 'true'
+      QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || '' }}
+      QUALITY_REPOSITORY: ${{ github.repository }}
+      # 0 for a workflow_dispatch run with no pull request to report against.
+      QUALITY_PR: ${{ github.event.pull_request.number || github.event.issue.number || 0 }}
+    # Combine only shards that ran. When verification fails or the run is cancelled, the shard
+    # jobs are skipped or cancelled, so there is nothing to combine and the summary is skipped.
+    if: >-
+      always() && needs.select.outputs.hasMutations == 'true' &&
+      (needs.reports.result == 'success' || needs.reports.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -367,12 +386,40 @@ jobs:
           --workspace "$QUALITY_WORKSPACE"
           --head "$QUALITY_HEAD"
           --prefix "change-mutation-$QUALITY_WORKSPACE-$QUALITY_HEAD-"
+          --repository "$QUALITY_REPOSITORY"
+          --pr "$QUALITY_PR"
+          --base "$QUALITY_BASE"
+      # A same-named artifact uploaded by an unprivileged job in this run must not stand in for the trusted result.
+      - name: Ensure a trusted findings artifact exists
+        if: always()
+        env:
+          QUALITY_WORKSPACE: ${{ matrix.workspace }}
+        run: >-
+          node scripts/quality/findings.mts
+          --output "coverage/changes/$QUALITY_WORKSPACE/mutation/findings.json"
+          --repository "$QUALITY_REPOSITORY"
+          --pr "$QUALITY_PR"
+          --base "$QUALITY_BASE"
+          --head "$QUALITY_HEAD"
+      # Quality decisions require a downloadable report, so upload failures remain blocking;
+      # a budget-incomplete run (a distinct, non-zero exit) still reaches this step via always().
       - uses: actions/upload-artifact@v6
         if: always()
         timeout-minutes: 3
         with:
           name: change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}
           path: coverage/changes/${{ matrix.workspace }}/mutation/
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+      # Separate artifact: `inline.mts` downloads only this one, never the full report/HTML.
+      - name: Upload quality findings
+        uses: actions/upload-artifact@v6
+        if: always()
+        timeout-minutes: 3
+        with:
+          name: quality-findings
+          path: coverage/changes/${{ matrix.workspace }}/mutation/findings.json
           if-no-files-found: warn
           retention-days: 14
           overwrite: true
