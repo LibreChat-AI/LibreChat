@@ -12,6 +12,8 @@ on:
         required: true
         type: string
 
+permissions: {}
+
 jobs:
   release:
     permissions:
