@@ -1,6 +1,6 @@
 import { Types } from 'mongoose';
+import { logger } from '@librechat/data-schemas';
 import { OPENID_SESSION_ENDED } from 'librechat-data-provider';
-import { logger, DEFAULT_REFRESH_TOKEN_EXPIRY } from '@librechat/data-schemas';
 import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
@@ -25,7 +25,6 @@ import {
 import { ProviderSessionUnavailableError } from '~/auth/openid/providerSession/errors';
 import { serializeUserForExchange } from '~/auth/exchange';
 import { storeOpenIdSession } from '~/images/session';
-import { math } from '~/utils/math';
 
 const SAFE_USER_PROJECTION = '-password -__v -totpSecret -backupCodes';
 
@@ -148,9 +147,8 @@ export interface AdminRefreshDeps {
   upsertSession?: OpenIdSessionDeps['upsertSession'];
   deleteSession?: OpenIdSessionDeps['deleteSession'];
   /** The refresh-token lifetime backing a provider-session grant, evaluated per call; mirrors
-   *  `packages/api/src/auth/openid/recovery.ts`'s dep of the same name. Omitted callers fall
-   *  back to this module's own `REFRESH_TOKEN_EXPIRY` env read. */
-  getRefreshTokenExpiryMs?: () => number;
+   *  `packages/api/src/auth/openid/recovery.ts`'s dep of the same name. */
+  getRefreshTokenExpiryMs: () => number;
 }
 
 export interface AdminRefreshOptions {
@@ -288,11 +286,7 @@ export async function precheckAdminRefreshBinding(
   }
 
   const ref = binding?.providerSession ?? null;
-  const expiresAt = providerSessionCredentialExpiry(
-    new Date(),
-    deps.getRefreshTokenExpiryMs?.() ??
-      math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
-  );
+  const expiresAt = providerSessionCredentialExpiry(new Date(), deps.getRefreshTokenExpiryMs());
   const outcome = await deps.preCheckProviderSession({ ref, subject: binding?.subject, expiresAt });
   if (!outcome.ok) {
     throw new AdminRefreshError(OPENID_SESSION_ENDED, 401, 'Provider session has ended');
@@ -611,8 +605,7 @@ export async function applyAdminRefresh(
   if (deps.authorizeProviderSession) {
     const providerSessionExpiresAt = providerSessionCredentialExpiry(
       new Date(),
-      deps.getRefreshTokenExpiryMs?.() ??
-        math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
+      deps.getRefreshTokenExpiryMs(),
     );
     const outcome = await deps.authorizeProviderSession({
       ref: mergedRef,
