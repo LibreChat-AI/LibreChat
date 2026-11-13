@@ -118,7 +118,10 @@ function restoreRememberedTarget(
   return { ...conversation, endpoint, assistant_id: assistantId, model };
 }
 
-const useNewConvo = (index = 0) => {
+const useNewConvo = (
+  index = 0,
+  { navigateOnChange = true }: { navigateOnChange?: boolean } = {},
+) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { data: startupConfig } = useGetStartupConfig();
@@ -294,7 +297,7 @@ const useNewConvo = (index = 0) => {
           setConversation(conversation);
         }
         setSubmission({} as TSubmission);
-        if (isCancelled) {
+        if (isCancelled || !navigateOnChange) {
           return;
         }
 
@@ -338,7 +341,15 @@ const useNewConvo = (index = 0) => {
         }
         navigate(path, { replace: true });
       },
-    [index, endpointsConfig, defaultPreset, queryClient, hasAgentAccess, searchParams],
+    [
+      index,
+      endpointsConfig,
+      defaultPreset,
+      queryClient,
+      hasAgentAccess,
+      searchParams,
+      navigateOnChange,
+    ],
   );
 
   const newConversation = useCallback(

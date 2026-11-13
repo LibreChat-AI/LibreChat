@@ -191,12 +191,23 @@ export function FeaturePresentationProvider({
       }
       focusTarget.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      revealPage(() => navigate(pageRegistry[target].path));
+      const chatUrl = chatLocationRef.current;
+      const currentUrl = location.pathname + location.search + location.hash;
+      const originUrl = relatedPage ? returnUrl : currentUrl;
+      const contextUrl = getChatReturnUrl(
+        chatUrl ? chatUrl.pathname + chatUrl.search + chatUrl.hash : originUrl,
+      );
+      const path =
+        target === 'parameters'
+          ? pageRegistry[target].path + '?' + new URLSearchParams({ chat: contextUrl })
+          : pageRegistry[target].path;
+      revealPage(() => navigate(path));
     },
     [
       canOpenPage,
       relatedPage,
       page,
+      returnUrl,
       location.pathname,
       location.search,
       location.hash,
