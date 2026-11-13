@@ -2,6 +2,7 @@ import type { TModelReasoning, TReasoningCapabilityMap } from './types';
 import type { SettingDefinition } from './generate';
 import {
   paramSettings,
+  agentParamSettings,
   resolveReasoningSetting,
   resolveReasoningSettingForTarget,
   getReasoningParamDefinitions,
@@ -14,8 +15,8 @@ import {
   isOpenRouterEffortSupported,
   resolveDropParamsUIKeys,
 } from './parameterSettings';
+import { ReasoningEffort, ReasoningParameterFormat, getSettingsKeys } from './schemas';
 import { BedrockProviders, EModelEndpoint, Providers } from './types';
-import { ReasoningEffort, ReasoningParameterFormat } from './schemas';
 
 const googleParams = paramSettings[EModelEndpoint.google] as SettingDefinition[];
 const anthropicParams = paramSettings[EModelEndpoint.anthropic] as SettingDefinition[];
@@ -316,7 +317,31 @@ describe('resolveReasoningSetting', () => {
   });
 });
 
+describe('Bedrock settings for a bare Claude model ID', () => {
+  const [combinedKey] = getSettingsKeys(EModelEndpoint.bedrock, 'claude-sonnet-4-6');
+  const anthropicKey = `${EModelEndpoint.bedrock}-${BedrockProviders.Anthropic}`;
+
+  it('gives the chat panel the Bedrock Anthropic parameters', () => {
+    expect(paramSettings[combinedKey]).toBeDefined();
+    expect(paramSettings[combinedKey]).toBe(paramSettings[anthropicKey]);
+  });
+
+  it('gives the agent builder the Bedrock Anthropic parameters', () => {
+    expect(agentParamSettings[combinedKey]).toBeDefined();
+    expect(agentParamSettings[combinedKey]).toBe(agentParamSettings[anthropicKey]);
+  });
+});
+
 describe('resolveReasoningSettingForTarget', () => {
+  it('resolves Claude reasoning for a bare Bedrock model ID', () => {
+    expect(
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.bedrock,
+        model: 'claude-sonnet-4-6',
+      })?.key,
+    ).toBe('effort');
+  });
+
   it('uses a custom-backed agent default parameter surface', () => {
     expect(
       resolveReasoningSettingForTarget({
