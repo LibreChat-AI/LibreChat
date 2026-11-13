@@ -1,6 +1,8 @@
 import { EToolResources } from 'librechat-data-provider';
 import type { AgentToolResources } from 'librechat-data-provider';
 
+import { convertOcrToContextInPlace } from './legacy';
+
 /**
  * Every `EToolResources` member that can carry `file_ids` on an agent document.
  * `code_interpreter` is intentionally omitted — it's part of `EToolResources`
@@ -99,4 +101,39 @@ export function stripFileIdsFromToolResources(
     removedCount += before - resource.file_ids.length;
   }
   return { tool_resources, removedCount };
+}
+
+/**
+ * Builds the `tool_resources` an Agent copy starts from. Every agent-scoped
+ * file partition the source holds is carried onto the duplicate, so Code
+ * Interpreter, File Search and image-edit uploads survive the copy instead of
+ * being dropped. Returns `undefined` when the source holds none, which leaves
+ * the Agent schema default in place.
+ *
+ * Each partition is copied rather than aliased, so the ownership pruning the
+ * duplicate path runs afterwards cannot reach back into the source document.
+ * Ownership itself is decided there, not here.
+ *
+ * Legacy `ocr` uploads fold into `context` through the same converter the rest
+ * of the Agent pipeline uses.
+ */
+export function resolveDuplicateToolResources(
+  tool_resources: AgentToolResources | undefined | null,
+): AgentToolResources | undefined {
+  if (!tool_resources) {
+    return undefined;
+  }
+  const duplicate: AgentToolResources = {};
+  for (const key of TOOL_RESOURCE_KEYS) {
+    const resource = tool_resources[key];
+    if (!resource) {
+      continue;
+    }
+    duplicate[key] = { ...resource };
+  }
+  if (Object.keys(duplicate).length === 0) {
+    return undefined;
+  }
+  convertOcrToContextInPlace({ tool_resources: duplicate });
+  return duplicate;
 }

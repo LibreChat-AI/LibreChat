@@ -3,6 +3,7 @@ import type { AgentToolResources } from 'librechat-data-provider';
 import {
   collectToolResourceFileIds,
   normalizeToolResourceFiles,
+  resolveDuplicateToolResources,
   stripFileIdsFromToolResources,
 } from './orphans';
 
@@ -78,5 +79,60 @@ describe('normalizeToolResourceFiles', () => {
     });
     expect(JSON.stringify(resources)).not.toContain('PRIVATE-SENTINEL');
     expect(JSON.stringify(resources)).not.toContain('untrusted');
+  });
+});
+
+describe('resolveDuplicateToolResources', () => {
+  it('carries every agent-scoped partition the source holds', () => {
+    const resources: AgentToolResources = {
+      [EToolResources.context]: { file_ids: ['ctx'] },
+      [EToolResources.execute_code]: { file_ids: ['code'] },
+      [EToolResources.file_search]: { file_ids: ['search'] },
+      [EToolResources.image_edit]: { file_ids: ['image'] },
+    };
+
+    expect(resolveDuplicateToolResources(resources)).toEqual(resources);
+  });
+
+  it('folds legacy ocr uploads into context', () => {
+    const resources = {
+      [EToolResources.ocr]: { file_ids: ['scanned'] },
+    } as AgentToolResources;
+
+    expect(resolveDuplicateToolResources(resources)).toEqual({
+      [EToolResources.context]: { file_ids: ['scanned'] },
+    });
+  });
+
+  it('keeps context file_ids when the source holds both context and ocr', () => {
+    const resources = {
+      [EToolResources.context]: { file_ids: ['ctx'] },
+      [EToolResources.ocr]: { file_ids: ['scanned'] },
+    } as AgentToolResources;
+
+    const duplicate = resolveDuplicateToolResources(resources);
+
+    expect(duplicate?.[EToolResources.context]?.file_ids).toEqual(['ctx', 'scanned']);
+    expect(duplicate?.[EToolResources.ocr]).toBeUndefined();
+  });
+
+  it('returns undefined when the source holds no resources', () => {
+    expect(resolveDuplicateToolResources(undefined)).toBeUndefined();
+    expect(resolveDuplicateToolResources(null)).toBeUndefined();
+    expect(resolveDuplicateToolResources({})).toBeUndefined();
+  });
+
+  it('copies each partition so later pruning cannot reach the source', () => {
+    const resources: AgentToolResources = {
+      [EToolResources.execute_code]: { file_ids: ['code'] },
+    };
+
+    const duplicate = resolveDuplicateToolResources(resources);
+    expect(duplicate?.[EToolResources.execute_code]).not.toBe(
+      resources[EToolResources.execute_code],
+    );
+
+    stripFileIdsFromToolResources(duplicate, ['code']);
+    expect(resources[EToolResources.execute_code]?.file_ids).toEqual(['code']);
   });
 });
