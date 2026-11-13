@@ -1,0 +1,19 @@
+# Add after docker-compose.channels.yml for UI-managed workspace installations.
+# Requires public HTTPS DOMAIN_SERVER/DOMAIN_CLIENT, not the localhost defaults,
+# and transaction-capable MongoDB. For bundled
+# MongoDB, also add docker-compose.mongo-replica.yml; read the existing-data
+# conversion instructions before applying it to an existing database.
+# Slack app credentials are registered by organization admins in LibreChat, not in .env.
+# Setup: https://www.librechat.ai/docs/features/agent_channels
+services:
+  api:
+    environment:
+      SLACK_WORKSPACES_ENABLED: 'true'
+      SLACK_GATEWAY_URL: ${SLACK_GATEWAY_URL:-}
+  channel-gateway:
+    ports:
+      - '127.0.0.1:${CHANNEL_GATEWAY_PORT:-3081}:8080'
+    environment:
+      CHANNEL_ID: ''
+      CHANNEL_TENANT_ID: '_'
+      SLACK_APP_TOKEN: ''

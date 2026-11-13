@@ -539,7 +539,11 @@ export interface ValidateAgentModelParams {
   req: LooseRequest;
   res: Response;
   agent: Agent;
-  modelsConfig: TModelsConfig;
+  /**
+   * Loads the model catalog entry for an endpoint. Only the agent's own provider is requested,
+   * so a request never loads the model lists of endpoints none of its agents use.
+   */
+  getEndpointModels: (endpoint: string) => Promise<TModelsConfig>;
   logViolation: (
     req: LooseRequest,
     res: Response,
@@ -567,7 +571,7 @@ interface ValidateAgentModelResult {
 export async function validateAgentModel(
   params: ValidateAgentModelParams,
 ): Promise<ValidateAgentModelResult> {
-  const { req, res, agent, modelsConfig, logViolation } = params;
+  const { req, res, agent, getEndpointModels, logViolation } = params;
   const { model, provider: endpoint } = agent;
 
   if (!model) {
@@ -579,6 +583,7 @@ export async function validateAgentModel(
     };
   }
 
+  const modelsConfig = await getEndpointModels(endpoint);
   if (!modelsConfig) {
     return {
       isValid: false,

@@ -33,6 +33,7 @@ const {
   withRequestCodeInputs,
   resolveAgentCodeExecution,
   resolveMCPClientCapabilityProfile,
+  setMissingCodeFilesContext,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -335,7 +336,7 @@ const loadTools = async ({
               conversationId: options.req?.body?.conversationId,
             }),
           ).context;
-        const { files, toolContext } = await primeCodeFiles({
+        const { files, toolContext, missingFilesContext } = await primeCodeFiles({
           ...options,
           signal,
           agentId: agent?.id,
@@ -348,6 +349,7 @@ const loadTools = async ({
         if (toolContext) {
           dynamicToolContextMap[tool] = toolContext;
         }
+        setMissingCodeFilesContext(dynamicToolContextMap, missingFilesContext);
         if (files?.length) {
           primedCodeFiles = files;
         }
@@ -647,6 +649,7 @@ const loadTools = async ({
         oboIdentityContext,
         streamId: options.req?._resumableStreamId || null,
         jobCreatedAt: options.jobCreatedAt,
+        unattended: options.unattended,
         model: agent?.model ?? model,
         provider: agent?.provider ?? endpoint,
       },

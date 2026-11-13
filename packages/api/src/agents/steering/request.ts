@@ -1,8 +1,14 @@
 import { createHash, randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
-import { SteerEvents } from 'librechat-data-provider';
+import {
+  SteerEvents,
+  CODE_APPROVAL_MODES,
+  DEFAULT_STEER_MAX_LENGTH,
+  getPromotedSteerRequestId,
+  MAX_QUEUED_TURN_REQUEST_ID_LENGTH,
+} from 'librechat-data-provider';
+import type { TFile, CodeApprovalMode } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
-import type { TFile } from 'librechat-data-provider';
 import type {
   GenerationProtocolVersion,
   SteerQueueItem,
@@ -16,13 +22,12 @@ import {
 } from '~/stream/interfaces/IJobStore';
 import { toSteerFileRef, collectFileIds, buildOwnerFilter } from './refs';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { sanitizeFileForTransmit } from '../../utils/message';
 import { isSteeringSupported } from './runtime';
 import { getReferencedQuotes } from '~/utils';
 
 /** Attachment cap per steer, mirroring the composer's practical limits. */
 export const STEER_MAX_FILES = 10;
-
-const DEFAULT_STEER_MAX_LENGTH = 16000;
 
 /**
  * How long a cancel waits for its disarm to publish before answering anyway.
@@ -58,6 +63,22 @@ export interface SteerRequestBody {
    *  rejection reason: on an SDK without the capability the steer still
    *  enqueues and the 202 echoes `preempt: false`. */
   preempt?: unknown;
+  /** The sender adopts a server-promoted queued turn for this steer when the
+   *  run ends without applying it (see `promotedSteers` on FINAL). */
+  promoteLeftover?: unknown;
+  /** The sender's code approval mode, carried onto a promoted turn. */
+  codeApprovalMode?: unknown;
+}
+
+/** `undefined` when the sender named no mode, `null` when it named one this
+ *  server cannot read. A promoted turn must start under the mode the sender's
+ *  own queue row would have carried, so an unreadable one keeps the steer on
+ *  the client path instead of promoting it under the deployment default. */
+function readCodeApprovalMode(value: unknown): CodeApprovalMode | null | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  return CODE_APPROVAL_MODES.find((mode) => mode === value) ?? null;
 }
 
 export interface SteerCancelBody {
@@ -218,7 +239,7 @@ async function resolveSteerFiles(
   const resolved: Partial<TFile>[] = [];
   for (const id of ids) {
     const doc = docsById.get(id);
-    const ref = doc == null ? null : toSteerFileRef(doc);
+    const ref = doc == null ? null : toSteerFileRef(sanitizeFileForTransmit(doc));
     if (ref == null) {
       return { error: 'INVALID_FILES' };
     }
@@ -236,8 +257,8 @@ function hasTenantMismatch(
 }
 
 /** DELIBERATELY quote-independent and display-metadata-independent: the
- *  legacy 3-field hash saw these same file refs before `llmDeliveryPath` was
- *  added, so a lost-ACK retry can replay its receipt across rollout versions.
+ *  legacy 3-field hash saw these same file refs before `llmDeliveryPath` and
+ *  `textPreview`, so a lost-ACK retry can replay across rollout versions.
  *  Quote identity is enforced separately via
  *  `SteerReceipt.requestedQuotesFingerprint`, which only quote-aware readers
  *  consult. */
@@ -247,7 +268,9 @@ function steerFingerprint(
   preempt: boolean,
 ): string {
   const stableFiles = (files ?? []).map((file) =>
-    Object.fromEntries(Object.entries(file).filter(([key]) => key !== 'llmDeliveryPath')),
+    Object.fromEntries(
+      Object.entries(file).filter(([key]) => key !== 'llmDeliveryPath' && key !== 'textPreview'),
+    ),
   );
   return createHash('sha256')
     .update(JSON.stringify({ text, files: stableFiles, preempt }))
@@ -623,6 +646,7 @@ async function handleSteerRequestInternal(
   const ownerAcceptsQuotes =
     owner.metadata?.steerQuotesExecutionId != null &&
     owner.metadata.steerQuotesExecutionId === owner.metadata.providerExecutionId;
+  const promotionApprovalMode = readCodeApprovalMode(body.codeApprovalMode);
   const item: SteerQueueItem = {
     steerId: randomUUID(),
     ...(protocol.value === 2 && typeof clientSteerId === 'string' && { clientSteerId }),
@@ -631,6 +655,15 @@ async function handleSteerRequestInternal(
     createdAt: Date.now(),
     ...(queuedFiles && { files: queuedFiles }),
     ...(quotes != null && ownerAcceptsQuotes && { quotes }),
+    ...(body.promoteLeftover === true &&
+      protocol.value === 2 &&
+      typeof clientSteerId === 'string' &&
+      /** The promoted turn is keyed by this id, so it must fit a request id. */
+      getPromotedSteerRequestId(clientSteerId).length <= MAX_QUEUED_TURN_REQUEST_ID_LENGTH &&
+      promotionApprovalMode !== null && {
+        promoteLeftover: true,
+        ...(promotionApprovalMode != null && { codeApprovalMode: promotionApprovalMode }),
+      }),
   };
   /**
    * Fenced to the generation the capability decision was made against. The

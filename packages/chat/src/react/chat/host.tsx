@@ -1,20 +1,18 @@
 import { createContext, useContext } from 'react';
 import type {
   TUser,
+  Agent,
   TMessage,
   TModelSpec,
   TSubmission,
-  TAttachment,
   TConversation,
   TPendingSteer,
-  TEndpointOption,
   TEphemeralAgent,
   TEndpointsConfig,
   TAgentQueuedTurnReceipt,
-  UIMappingOptions,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import type { BuildTurnInput, ExtendedFile } from '../../core';
+import type { ExtendedFile, TurnCodeInputs } from '../../core';
 import type { ChatContract } from './contract';
 
 export interface AbortStreamParams {
@@ -59,12 +57,7 @@ export type ChatTurnsParams = {
   setConversation: Dispatch<SetStateAction<TConversation | null>>;
 };
 
-/** The code workspace and approval a send carries, decided by the app's agent settings. */
-export type TurnCodeDecision = {
-  code: BuildTurnInput['code'];
-  /** Records the decision on the pane's conversation once the send is published. */
-  apply: (conversation: TConversation) => TConversation | null;
-};
+export type { TurnCodeDecision } from '../../core';
 
 /** The app's logger; `warn` and `error` may reach the app's telemetry. */
 export type TurnLogger = {
@@ -83,40 +76,35 @@ export type TurnServices = {
   user?: TUser;
   modelSpecs?: TModelSpec[];
   getEndpointsConfig: () => TEndpointsConfig | undefined;
+  /** The agents a send resolves a saved agent's provider and model from, when the agent query
+   *  has not cached it. */
+  agentsMap?: Record<string, Agent | undefined> | null;
+  /**
+   * Storage read: the ephemeral agent settings the app stored for a conversation key, returned
+   * as stored (no defaults or derivation), or `null` when none are stored.
+   */
   getEphemeralAgent: (conversationId: string) => TEphemeralAgent | null;
-  /** The response sender label for an endpoint option. */
-  getSender: (endpointOption: TEndpointOption) => string;
   /** The stored user key expiry of the pane's endpoint, sent with non-agent endpoints. */
   getUserKey: () => string | undefined;
   /** The project the route scopes a new chat to. */
   getRouteProjectId: () => string | null;
-  /** Whether cached history is mid-refetch and old enough that a send could fork from it. */
-  isHistoryRevalidating: (conversationId: string | null) => boolean;
-  /** The send's code decision; `null` refuses the send. */
-  resolveCode: (conversation: TConversation | null) => TurnCodeDecision | null;
   /**
-   * Checks a request-scoped reasoning override against the endpoint's loaded capabilities. An
-   * unsupported one is dropped; `retryable` says it was refused only because the capabilities
-   * are not known yet.
+   * Storage read, called once per send: the raw values a send's code decision is computed from,
+   * as the app holds them. The package derives the decision; see `resolveTurnCode`.
    */
-  resolveReasoning: (args: {
-    endpoint?: string | null;
-    conversation: TConversation | null;
-    endpointsConfig?: TEndpointsConfig;
-    reasoningOverride: NonNullable<TMessage['reasoningOverride']>;
-  }) => { reasoningOverride: TMessage['reasoningOverride']; retryable: boolean };
+  readCodeInputs: () => TurnCodeInputs;
+  /** Refuses a send until the host's configuration and selected targets are ready. */
+  canSubmit?: (conversation: TConversation | null) => boolean;
   /** Moves the pane to the route a new chat starts from. */
   openNewChat: (path: string) => void;
   /** Marks composer files as submitted, so draft cleanup keeps them. */
   releaseFiles: (fileIds: (string | undefined)[]) => void;
+  /** Cancels uploads whose exact local paste was accepted inline, without marking them submitted. */
+  cancelUploads?: (fileIds: string[]) => void;
+  /** Discards uploaded sources superseded by an accepted inline replacement. */
+  discardFiles?: (fileIds: string[]) => void;
   /** Forgets the files queued for deletion once the composer is cleared. */
   clearFilesToDelete: () => void;
-  /** Binds the conversation's usage display to the response it is waiting on. */
-  bindResponse: (conversationKey: string, responseMessageId: string) => void;
-  /** Brings a regenerated response into view. */
-  focusResponse: (parentMessageId?: string | null) => void;
-  /** Ties the composer launch to the conversation the submission starts. */
-  bindLaunch: (conversation: TSubmission['conversation'], index: number) => void;
 };
 
 /** The conversation a pane shows, and the setter that replaces or updates it. */
@@ -170,24 +158,16 @@ export interface ChatHost {
   useNewConversation(index: number): ChatContract['newConversation'];
   /** What the pane's turns need from the app; see {@link TurnServices}. */
   useTurnServices(params: ChatTurnsParams): TurnServices;
-  /** The tail of the branch on screen for the pane, read from the messages cached under `key`. */
-  useLatestMessage(index: number, key: string): TMessage | null;
-  /** The id of {@link ChatHost.useLatestMessage}, subscribed on its own. */
-  useLatestMessageId(index: number, key: string): string | null;
-  /** Selects the visible sibling under a parent message. */
-  useSetSiblingIdx(parentMessageId: string | null): (update: SetStateAction<number>) => void;
   /** Stops a resumable generation. */
   useAbortStream(): (params: AbortStreamParams) => Promise<AbortStreamResponse>;
   useMessageCache(): ChatMessageCache;
   /** Whether message feedback controls are on. */
   useFeedbackEnabled(): boolean;
-  /** The app's tool outcome rules for viewing one message; see {@link ChatContract}. */
-  getMappingOptions(live: TAttachment[] | undefined): UIMappingOptions;
   /** Loads a conversation's messages; `isStreaming` lets the query hold off refetching under a
    *  live stream. An absent id loads nothing. */
   useMessages(
     conversationId: string | undefined,
-    options: { isStreaming: boolean },
+    options: { isStreaming: boolean; enabled?: boolean },
   ): ChatMessagesQuery;
 }
 

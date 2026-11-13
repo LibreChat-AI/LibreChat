@@ -21,6 +21,8 @@ import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execu
 import type { CodeCapabilityConfigLoader } from '~/code/capabilities';
 import type { MCPToolAlias, ToolDefinition } from './classification';
 import { resolveJsonSchemaRefs, normalizeJsonSchema, sanitizeGeminiSchema } from '~/mcp/zod';
+import { DEFAULT_LOOKUP_CONCURRENCY } from '~/utils/concurrency';
+import { mapWithConcurrency } from '~/utils/promise';
 import { buildToolClassification } from './classification';
 import { getToolDefinition } from './registry/definitions';
 import { toolkitExpansion } from './toolkits/mapping';
@@ -77,6 +79,12 @@ export interface LoadToolDefinitionsParams {
    * unavailable server's names.
    */
   accessibleServerNames?: readonly string[];
+  /**
+   * Upper bound on MCP server catalog lookups in flight at once: the deployment's
+   * `concurrency.mcpCatalogLookups`. A cold lookup can reconnect a server or spawn its process,
+   * so one request does not start them all together. `1` looks servers up one after another.
+   */
+  mcpCatalogLookups?: number;
 }
 
 export interface ActionToolDefinition {
@@ -89,13 +97,15 @@ export interface ActionToolDefinition {
 }
 
 export interface LoadToolDefinitionsDeps {
-  /** Gets MCP server tools - first checks cache, then initializes server if needed */
+  /** Gets MCP server tools - first checks cache, then initializes server if needed. Called
+   *  concurrently for different servers; a server is looked up again only after its refresh. */
   getOrFetchMCPServerTools: (userId: string, serverName: string) => Promise<MCPServerTools | null>;
   /** Bypasses a non-empty stale catalog when it does not contain a selected tool. */
   refreshMCPServerTools?: (userId: string, serverName: string) => Promise<MCPServerTools | null>;
   /** Checks if a tool name is a known built-in tool */
   isBuiltInTool: (toolName: string) => boolean;
-  /** Loads action tool definitions (schemas) from OpenAPI specs */
+  /** Loads action tool definitions (schemas) from OpenAPI specs. Started together with the
+   *  MCP server lookups. */
   getActionToolDefinitions?: (
     agentId: string,
     actionToolNames: string[],
@@ -112,16 +122,105 @@ export interface LoadToolDefinitionsResult {
     expectedToolCount: number;
     resolvedToolCount: number;
   };
-  /** Action tool names backed by OAuth — excluded from background dispatch. */
+  /** Action tool names backed by OAuth; excluded from background dispatch. */
   oauthActionToolNames: string[];
+  /**
+   * Every server name that was looked up, in tool order: each parsed key, then its raw alias
+   * when that was tried. Lookups settle in any order, so work that follows them and must stay in
+   * tool order (the OAuth sign-in prompts) takes its order from this list.
+   */
+  mcpServerLookupOrder: string[];
+}
+
+/**
+ * `names` in the order of `lookupOrder`; names it does not list keep their relative order after
+ * the listed ones, so without a lookup order the names come back as given.
+ */
+export function orderMCPServerNames(
+  names: Iterable<string>,
+  lookupOrder: readonly string[] = [],
+): string[] {
+  const rank = new Map(lookupOrder.map((name, index) => [name, index]));
+  const listed: string[] = [];
+  const unlisted: string[] = [];
+  for (const name of names) {
+    (rank.has(name) ? listed : unlisted).push(name);
+  }
+  listed.sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0));
+  return [...listed, ...unlisted];
 }
 
 const mcpToolPattern = /_mcp_/;
 const mcpServerPinPrefix = `${Constants.mcp_server}${Constants.mcp_delimiter}`;
 
+interface ServerCatalog {
+  serverKey: string;
+  /** Server names the lookup asked for: the key, then its alias when that was tried. */
+  lookups: string[];
+  tools: MCPServerTools;
+  /** The RAW server name the key resolved to (direct-first). */
+  resolvedName: string;
+}
+
+/**
+ * Fetches the catalog of every distinct parsed server key, at most `concurrency` keys at a time.
+ * Each key resolves DIRECT-FIRST: the parsed name as-is, then, only when it is not a known
+ * accessible server, its raw alias. Within one resolution a fetch is shared by server name, so a
+ * direct lookup and an alias fallback that land on the same server make one call instead of
+ * racing two reconnects.
+ *
+ * A rejected fetch rejects the whole resolution. The others keep running but stay observed, so
+ * a later failure cannot surface as an unhandled rejection.
+ */
+async function resolveServerCatalogs({
+  userId,
+  serverKeys,
+  concurrency,
+  accessibleServerNames,
+  serverNameAliases,
+  getOrFetchMCPServerTools,
+}: {
+  userId: string;
+  serverKeys: readonly string[];
+  concurrency: number;
+  accessibleServerNames?: readonly string[];
+  serverNameAliases: ReadonlyMap<string, string>;
+  getOrFetchMCPServerTools: LoadToolDefinitionsDeps['getOrFetchMCPServerTools'];
+}): Promise<ServerCatalog[]> {
+  const inFlight = new Map<string, Promise<MCPServerTools | null>>();
+  const fetchOnce = (serverName: string): Promise<MCPServerTools | null> => {
+    const pending = inFlight.get(serverName) ?? getOrFetchMCPServerTools(userId, serverName);
+    inFlight.set(serverName, pending);
+    return pending;
+  };
+
+  return mapWithConcurrency(serverKeys, concurrency, async (serverKey): Promise<ServerCatalog> => {
+    let resolvedName = serverKey;
+    const lookups = [serverKey];
+    let fetched = await fetchOnce(serverKey);
+    if (!fetched) {
+      /** Alias fallback is for "server not found" ONLY: when the parsed name is a known
+       *  accessible server, a null fetch means it is temporarily unavailable (OAuth pending,
+       *  missing user variables, disconnected) and rerouting to the alias would emit the OTHER
+       *  server's definitions under this server's names. */
+      const parsedIsKnownServer = accessibleServerNames?.includes(serverKey) === true;
+      const aliased = serverNameAliases.get(serverKey);
+      if (!parsedIsKnownServer && aliased != null && aliased !== serverKey) {
+        lookups.push(aliased);
+        fetched = await fetchOnce(aliased);
+        if (fetched) {
+          resolvedName = aliased;
+        }
+      }
+    }
+    return { serverKey, lookups, tools: fetched || {}, resolvedName };
+  });
+}
+
 /**
  * Loads tool definitions without creating tool instances.
  * This is the efficient path for event-driven mode where tools are loaded on-demand.
+ * MCP servers and action definitions are resolved concurrently.
  */
 export async function loadToolDefinitions(
   params: LoadToolDefinitionsParams,
@@ -142,6 +241,7 @@ export async function loadToolDefinitions(
     mcpServerNames,
     rawServerNames,
     accessibleServerNames,
+    mcpCatalogLookups = DEFAULT_LOOKUP_CONCURRENCY.mcpCatalogLookups,
   } = params;
   const {
     getOrFetchMCPServerTools,
@@ -169,6 +269,7 @@ export async function loadToolDefinitions(
     mcpToolAliases: [],
     mcpResolution: { expectedToolCount: 0, resolvedToolCount: 0 },
     oauthActionToolNames: [],
+    mcpServerLookupOrder: [],
   };
 
   if (!tools || tools.length === 0) {
@@ -181,8 +282,11 @@ export async function loadToolDefinitions(
   const resolvedServerNames = new Map<string, string>();
   const mcpToolDefs: ToolDefinition[] = [];
   const builtInToolDefs: ToolDefinition[] = [];
-  let actionToolDefs: ToolDefinition[] = [];
   const actionToolNames: string[] = [];
+  /** Tools that get a definition built, in selection order; `serverKey` is set for MCP tools. */
+  const selectedTools: { toolName: string; serverKey?: string }[] = [];
+  /** Distinct parsed server keys, in first-seen order. */
+  const serverKeys = new Set<string>();
   let expectedMCPToolCount = 0;
   let resolvedMCPToolCount = 0;
 
@@ -196,6 +300,66 @@ export async function loadToolDefinitions(
     }
 
     if (!mcpToolPattern.test(toolName)) {
+      selectedTools.push({ toolName });
+      continue;
+    }
+
+    if (toolName.startsWith(mcpServerPinPrefix)) {
+      continue;
+    }
+
+    /** Keys carry the normalized server name (raw in pre-normalization data),
+     *  so both spellings resolve the boundary. Resolution is DIRECT-FIRST: a
+     *  server that resolves under the parsed name as-is wins (a user-DB
+     *  server may be named exactly like an operator server's normalized
+     *  form), and only when that yields nothing is the parsed name treated
+     *  as a normalized spelling of a raw config name. The resolved RAW name
+     *  feeds config lookups and definition metadata (`serverName`, then
+     *  `mcpRawServerName`); server instructions are keyed by it. */
+    const [, parsedServerName] = splitMCPToolKey(toolName, [
+      ...(mcpServerNames ?? []),
+      ...(rawServerNames ?? []),
+    ]);
+    const serverKey = parsedServerName ?? toolName;
+    serverKeys.add(serverKey);
+    selectedTools.push({ toolName, serverKey });
+  }
+
+  const loadActionDefinitions = async (): Promise<ActionToolDefinition[]> =>
+    actionToolNames.length > 0 && getActionToolDefinitions
+      ? getActionToolDefinitions(agentId, actionToolNames)
+      : [];
+
+  const resolveKeys = (keys: readonly string[]): Promise<ServerCatalog[]> =>
+    resolveServerCatalogs({
+      userId,
+      serverKeys: keys,
+      concurrency: mcpCatalogLookups,
+      accessibleServerNames,
+      serverNameAliases,
+      getOrFetchMCPServerTools,
+    });
+  /** Server names each key asked for, to find the keys a refreshed server concerns. */
+  const lookedUp = new Map<string, readonly string[]>();
+  const adopt = (catalogs: ServerCatalog[]): void => {
+    for (const catalog of catalogs) {
+      mcpServerToolsCache.set(catalog.serverKey, catalog.tools);
+      resolvedServerNames.set(catalog.serverKey, catalog.resolvedName);
+      lookedUp.set(catalog.serverKey, catalog.lookups);
+    }
+  };
+
+  const [catalogs, fetchedActionDefs] = await Promise.all([
+    resolveKeys(Array.from(serverKeys)),
+    loadActionDefinitions(),
+  ]);
+  adopt(catalogs);
+  const mcpServerLookupOrder = Array.from(new Set(catalogs.flatMap((catalog) => catalog.lookups)));
+  /** Keys whose first tool has been handled: their catalog is settled for the rest of the load. */
+  const builtKeys = new Set<string>();
+
+  for (const { toolName, serverKey: parsed } of selectedTools) {
+    if (parsed == null) {
       if (!isBuiltInTool(toolName)) {
         continue;
       }
@@ -225,47 +389,8 @@ export async function loadToolDefinitions(
       continue;
     }
 
-    if (toolName.startsWith(mcpServerPinPrefix)) {
-      continue;
-    }
-
     expectedMCPToolCount++;
-
-    /** Keys carry the normalized server name (raw in pre-normalization data),
-     *  so both spellings resolve the boundary. Resolution is DIRECT-FIRST: a
-     *  server that resolves under the parsed name as-is wins (a user-DB
-     *  server may be named exactly like an operator server's normalized
-     *  form), and only when that yields nothing is the parsed name treated
-     *  as a normalized spelling of a raw config name. The resolved RAW name
-     *  feeds config lookups and definition metadata (`serverName`, then
-     *  `mcpRawServerName`) — server instructions are keyed by it. */
-    const [, parsedServerName] = splitMCPToolKey(toolName, [
-      ...(mcpServerNames ?? []),
-      ...(rawServerNames ?? []),
-    ]);
-    const parsed = parsedServerName ?? toolName;
-
-    if (!mcpServerToolsCache.has(parsed)) {
-      let resolvedName = parsed;
-      let fetched = await getOrFetchMCPServerTools(userId, parsed);
-      if (!fetched) {
-        /** Alias fallback is for "server not found" ONLY: when the parsed
-         *  name is a known accessible server, a null fetch means it is
-         *  temporarily unavailable (OAuth pending, missing user variables,
-         *  disconnected) and rerouting to the alias would emit the OTHER
-         *  server's definitions under this server's names. */
-        const parsedIsKnownServer = accessibleServerNames?.includes(parsed) === true;
-        const aliased = serverNameAliases.get(parsed);
-        if (!parsedIsKnownServer && aliased != null && aliased !== parsed) {
-          fetched = await getOrFetchMCPServerTools(userId, aliased);
-          if (fetched) {
-            resolvedName = aliased;
-          }
-        }
-      }
-      mcpServerToolsCache.set(parsed, fetched || {});
-      resolvedServerNames.set(parsed, resolvedName);
-    }
+    builtKeys.add(parsed);
 
     const serverName = resolvedServerNames.get(parsed) ?? parsed;
     let serverTools = mcpServerToolsCache.get(parsed);
@@ -311,6 +436,14 @@ export async function loadToolDefinitions(
       if (refreshedTools != null) {
         mcpServerToolsCache.set(parsed, refreshedTools);
         serverTools = refreshedTools;
+        /** The normalized and raw spellings of one server are separate keys. A key not handled
+         *  yet that looked this server up resolves again, now that it is refreshed. */
+        const unbuiltKeys = Array.from(serverKeys).filter(
+          (key) => !builtKeys.has(key) && lookedUp.get(key)?.includes(serverName),
+        );
+        if (unbuiltKeys.length > 0) {
+          adopt(await resolveKeys(unbuiltKeys));
+        }
       }
     }
 
@@ -375,19 +508,16 @@ export async function loadToolDefinitions(
   }
 
   const oauthActionToolNames: string[] = [];
-  if (actionToolNames.length > 0 && getActionToolDefinitions) {
-    const fetchedActionDefs = await getActionToolDefinitions(agentId, actionToolNames);
-    actionToolDefs = fetchedActionDefs.map((def) => {
-      if (def.oauth === true) {
-        oauthActionToolNames.push(def.name);
-      }
-      return {
-        name: def.name,
-        description: def.description,
-        parameters: def.parameters,
-      };
-    });
-  }
+  const actionToolDefs: ToolDefinition[] = fetchedActionDefs.map((def) => {
+    if (def.oauth === true) {
+      oauthActionToolNames.push(def.name);
+    }
+    return {
+      name: def.name,
+      description: def.description,
+      parameters: def.parameters,
+    };
+  });
 
   const loadedTools = mcpToolDefs.map((def) =>
     bindToolApproval(
@@ -462,5 +592,6 @@ export async function loadToolDefinitions(
       resolvedToolCount: resolvedMCPToolCount,
     },
     oauthActionToolNames,
+    mcpServerLookupOrder,
   };
 }

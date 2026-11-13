@@ -100,6 +100,7 @@ function DeleteButton({
         <Button
           size="sm"
           variant="outline"
+          className="h-9"
           aria-label={localize('com_ui_delete_agent')}
           title={localize('com_ui_delete_agent')}
           type="button"

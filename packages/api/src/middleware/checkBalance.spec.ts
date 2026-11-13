@@ -298,7 +298,13 @@ describe('checkBalance', () => {
 
       await checkBalance({ req, res, txData: baseTxData }, deps);
 
-      expect(reserveRequest(deps).initialBalance).toEqual({ user: 'user-1', tokenCredits: 5000 });
+      expect(reserveRequest(deps).initialBalance).toEqual({
+        user: 'user-1',
+        tokenCredits: 5000,
+        allotment: 5000,
+        allottedAt: expect.any(Date),
+        lastRefill: expect.any(Date),
+      });
     });
 
     it('includes auto-refill fields when configured', async () => {
@@ -317,6 +323,8 @@ describe('checkBalance', () => {
       expect(reserveRequest(deps).initialBalance).toEqual({
         user: 'user-1',
         tokenCredits: 5000,
+        allotment: 5000,
+        allottedAt: expect.any(Date),
         autoRefillEnabled: true,
         refillIntervalValue: 1,
         refillIntervalUnit: 'days',
@@ -332,7 +340,13 @@ describe('checkBalance', () => {
 
       await checkBalance({ req, res, txData: baseTxData }, deps);
 
-      expect(reserveRequest(deps).initialBalance).toEqual({ user: 'user-1', tokenCredits: 5000 });
+      expect(reserveRequest(deps).initialBalance).toEqual({
+        user: 'user-1',
+        tokenCredits: 5000,
+        allotment: 5000,
+        allottedAt: expect.any(Date),
+        lastRefill: expect.any(Date),
+      });
     });
 
     it('creates a record with a startBalance of 0', async () => {
@@ -340,7 +354,13 @@ describe('checkBalance', () => {
 
       await checkBalance({ req, res, txData: baseTxData }, deps);
 
-      expect(reserveRequest(deps).initialBalance).toEqual({ user: 'user-1', tokenCredits: 0 });
+      expect(reserveRequest(deps).initialBalance).toEqual({
+        user: 'user-1',
+        tokenCredits: 0,
+        allotment: 0,
+        allottedAt: expect.any(Date),
+        lastRefill: expect.any(Date),
+      });
     });
 
     it.each([
@@ -580,6 +600,7 @@ describe('checkBalance', () => {
         autoRefillEnabled: true,
         refillMode: 'reset',
         refillAmount: 1000,
+        allotment: 1000,
         refillIntervalValue: 1,
         refillIntervalUnit: 'weeks',
         lastRefill,
@@ -602,6 +623,7 @@ describe('checkBalance', () => {
         tokenCredits: 500,
         reservedCredits: 400,
         refillAmount: 2000,
+        allotment: 1000,
         lastRefill,
       });
       expect(await methods.getTransactions({ user, context: 'balanceReset' })).toHaveLength(0);

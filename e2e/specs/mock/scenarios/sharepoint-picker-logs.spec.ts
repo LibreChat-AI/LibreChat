@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { NEW_CHAT_PATH } from '../helpers';
+import { expect, test } from '../fixtures';
 
 const SHAREPOINT_ORIGIN = 'https://contoso.sharepoint.example';
 const DOWNLOAD_URL = 'https://download.example.test/secret-contract.pdf';

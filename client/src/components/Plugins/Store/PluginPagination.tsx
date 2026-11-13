@@ -27,11 +27,11 @@ const PluginPagination: React.FC<TPluginPaginationProps> = ({
       <div
         role="button"
         tabIndex={0}
-        aria-label="Previous page"
         onClick={() => handlePageChange(currentPage - 1)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
-            onChangePage(currentPage - 1);
+            e.preventDefault();
+            handlePageChange(currentPage - 1);
           }
         }}
         className={`flex cursor-default items-center text-sm select-none ${
@@ -69,6 +69,7 @@ const PluginPagination: React.FC<TPluginPaginationProps> = ({
           onClick={() => onChangePage(page)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
               onChangePage(page);
             }
           }}
@@ -78,12 +79,12 @@ const PluginPagination: React.FC<TPluginPaginationProps> = ({
       ))}
       <div
         role="button"
-        aria-label="Next page"
         tabIndex={0}
         onClick={() => handlePageChange(currentPage + 1)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
-            onChangePage(currentPage + 1);
+            e.preventDefault();
+            handlePageChange(currentPage + 1);
           }
         }}
         className={`flex cursor-default items-center text-sm select-none ${

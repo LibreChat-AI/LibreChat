@@ -1,0 +1,247 @@
+import React, { useCallback, useMemo, memo } from 'react';
+import { useLocalize } from '@librechat/client';
+import type { TMessage } from 'librechat-data-provider';
+import type { NamedExoticComponent } from 'react';
+import type { TMessageProps, TMessageChatContext } from '../../react/messages/types';
+import type { MessageIconData } from '../../react/messages/host';
+import { areMessageFieldsEqual, isSameTailRelation } from '../../react/messages/equal';
+import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
+import { MessageIconSlot, useMessagesHost } from '../../react/messages/host';
+import useContentMetadata from '../../react/messages/useContentMetadata';
+import { parseWakeupMessage } from '../../core/parts/wakeup';
+import { MessageContext } from '../../react/message';
+import { getHeaderHoverLabel } from './HeaderLabel';
+import useMessageActions from './useMessageActions';
+import MessageFooter from './MessageFooter';
+import HoverButtons from './HoverButtons';
+import MessageRow from './MessageRow';
+import WakeupRow from './WakeupRow';
+
+type MessageRenderProps = {
+  message?: TMessage;
+  /**
+   * Effective isSubmitting: false for non-latest messages, real value for latest.
+   * Computed by the wrapper (Message.tsx) so this memo'd component only re-renders
+   * when the value actually matters.
+   */
+  isSubmitting?: boolean;
+  /** Stable context object from wrapper, avoids ChatContext subscription inside memo */
+  chatContext: TMessageChatContext;
+  /** The thread's tail; the comparator re-renders only when this row's relation to it changes */
+  latestMessageId?: string;
+  latestMessageDepth?: number;
+} & Pick<
+  TMessageProps,
+  'currentEditId' | 'setCurrentEditId' | 'siblingIdx' | 'setSiblingIdx' | 'siblingCount'
+>;
+
+/**
+ * Custom comparator for React.memo: compares `message` by key fields instead of reference
+ * because `buildTree` creates new message objects on every streaming update for ALL messages,
+ * even when only the latest message's text changed.
+ */
+function areMessageRenderPropsEqual(prev: MessageRenderProps, next: MessageRenderProps): boolean {
+  if (prev.isSubmitting !== next.isSubmitting) {
+    return false;
+  }
+  if (prev.chatContext !== next.chatContext) {
+    return false;
+  }
+  if (prev.siblingIdx !== next.siblingIdx) {
+    return false;
+  }
+  if (prev.siblingCount !== next.siblingCount) {
+    return false;
+  }
+  if (prev.currentEditId !== next.currentEditId) {
+    return false;
+  }
+  if (prev.setSiblingIdx !== next.setSiblingIdx) {
+    return false;
+  }
+  if (prev.setCurrentEditId !== next.setCurrentEditId) {
+    return false;
+  }
+
+  return areMessageFieldsEqual(prev.message, next.message) && isSameTailRelation(prev, next);
+}
+
+const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function MessageRender({
+  message: msg,
+  siblingIdx,
+  siblingCount,
+  setSiblingIdx,
+  currentEditId,
+  setCurrentEditId,
+  isSubmitting = false,
+  chatContext,
+  latestMessageId,
+  latestMessageDepth,
+}: MessageRenderProps) {
+  const localize = useLocalize();
+  const host = useMessagesHost();
+  const agentsMap = host.useAgentsMap();
+  const {
+    ask,
+    edit,
+    index,
+    agent,
+    assistant,
+    enterEdit,
+    conversation,
+    messageLabel,
+    handleFeedback,
+    handleContinue,
+    copyToClipboard,
+    getCanCopy,
+    regenerateMessage,
+    hasConfiguredSender,
+  } = useMessageActions({
+    message: msg,
+    currentEditId,
+    setCurrentEditId,
+    chatContext,
+  });
+  const maximizeChatSpace = host.useMaximizeChatSpace();
+
+  const handleRegenerateMessage = useCallback(() => regenerateMessage(), [regenerateMessage]);
+  const getLatestMessageId = useCallback(() => chatContext.latestMessageId, [chatContext]);
+  const hasNoChildren = !(msg?.children?.length ?? 0);
+  const isLast = useMemo(
+    () => hasNoChildren && (msg?.depth === latestMessageDepth || msg?.depth === -1),
+    [hasNoChildren, msg?.depth, latestMessageDepth],
+  );
+  const isLatestMessage = msg?.messageId === latestMessageId;
+
+  const iconData: MessageIconData = useMemo(
+    () => ({
+      endpoint: msg?.endpoint ?? conversation?.endpoint,
+      model: msg?.model ?? conversation?.model,
+      iconURL: msg?.iconURL,
+      modelLabel: messageLabel,
+      isCreatedByUser: msg?.isCreatedByUser,
+    }),
+    [
+      messageLabel,
+      conversation?.endpoint,
+      conversation?.model,
+      msg?.model,
+      msg?.iconURL,
+      msg?.endpoint,
+      msg?.isCreatedByUser,
+    ],
+  );
+
+  const { hasParallelContent } = useContentMetadata(msg);
+  const wakeupDisplay = useMemo(() => parseWakeupMessage(msg), [msg]);
+  const messageId = msg?.messageId ?? '';
+  const messageContextValue = useMemo(
+    () => ({
+      messageId,
+      isLatestMessage,
+      isExpanded: false as const,
+      isSubmitting,
+      conversationId: conversation?.conversationId,
+    }),
+    [messageId, conversation?.conversationId, isSubmitting, isLatestMessage],
+  );
+
+  if (!msg) {
+    return null;
+  }
+
+  const showOwnerText = !edit && msg.isCreatedByUser && Boolean(msg.privacyRevision);
+  const subagentWakeup =
+    !edit && wakeupDisplay?.kind === 'subagent' ? wakeupDisplay.tasks[0] : undefined;
+  const Row = subagentWakeup == null ? MessageRow : WakeupRow;
+  const isUserSide =
+    msg.isCreatedByUser === true && (edit || wakeupDisplay == null || subagentWakeup != null);
+
+  return (
+    <Row
+      task={subagentWakeup}
+      agentsMap={agentsMap}
+      conversationId={msg.conversationId ?? conversation?.conversationId ?? ''}
+      message={wakeupDisplay != null ? undefined : msg}
+      id={msg.messageId}
+      icon={<MessageIconSlot iconData={iconData} assistant={assistant} agent={agent} />}
+      label={messageLabel ?? ''}
+      hoverLabel={getHeaderHoverLabel(
+        hasConfiguredSender,
+        agent?.model,
+        assistant?.model,
+        msg.model,
+        conversation?.model,
+      )}
+      timestamp={msg.createdAt ?? msg.clientTimestamp}
+      ariaLabel={getMessageAriaLabel(msg, localize)}
+      headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
+      isCreatedByUser={msg.isCreatedByUser === true}
+      hasParallelContent={hasParallelContent}
+      fullWidth={maximizeChatSpace}
+      isEditing={edit}
+      systemLabel={
+        wakeupDisplay != null && subagentWakeup == null && !edit
+          ? localize('com_ui_system_event')
+          : undefined
+      }
+      footer={
+        <MessageFooter
+          index={index}
+          isSubmitting={isSubmitting}
+          isLatestMessage={isLatestMessage}
+          isCreatedByUser={msg.isCreatedByUser}
+          isUserSide={isUserSide}
+          siblingsLast={isUserSide}
+          siblingIdx={siblingIdx}
+          siblingCount={siblingCount}
+          setSiblingIdx={setSiblingIdx}
+          toolbar={
+            <HoverButtons
+              index={index}
+              isEditing={edit}
+              message={msg}
+              enterEdit={enterEdit}
+              conversation={conversation ?? null}
+              regenerate={handleRegenerateMessage}
+              copyToClipboard={copyToClipboard}
+              getCanCopy={getCanCopy}
+              handleContinue={handleContinue}
+              latestMessageId={latestMessageId}
+              getLatestMessageId={getLatestMessageId}
+              handleFeedback={handleFeedback}
+              isLast={isLast}
+            />
+          }
+        />
+      }
+    >
+      <MessageContext.Provider value={messageContextValue}>
+        {showOwnerText && host.renderPrivateText({ message: msg })}
+        {!showOwnerText &&
+          (wakeupDisplay != null && !edit
+            ? host.renderWakeup({
+                display: wakeupDisplay,
+                conversationId: conversation?.conversationId,
+              })
+            : host.renderMessageBody({
+                ask,
+                edit,
+                isLast,
+                text: msg.text || '',
+                message: msg,
+                enterEdit,
+                error: !!(msg.error ?? false),
+                isSubmitting,
+                unfinished: msg.unfinished ?? false,
+                isCreatedByUser: msg.isCreatedByUser ?? true,
+                siblingIdx: siblingIdx ?? 0,
+                setSiblingIdx: setSiblingIdx ?? (() => ({})),
+              }))}
+      </MessageContext.Provider>
+    </Row>
+  );
+}, areMessageRenderPropsEqual);
+MessageRender.displayName = 'MessageRender';
+
+export default MessageRender;

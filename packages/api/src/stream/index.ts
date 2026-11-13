@@ -108,3 +108,5 @@ export { waitForGenerationSettled } from './settled';
 export type { GenerationSettledSource, GenerationSettledWaitOptions } from './settled';
 
 export type { GenerationSettlementState } from './interfaces/IJobStore';
+
+export { buildGenerationStartedResponse } from './metadata';

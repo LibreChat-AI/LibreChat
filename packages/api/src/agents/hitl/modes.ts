@@ -1,4 +1,5 @@
 import { createToolPolicyHook } from '@librechat/agents';
+import { isSensitiveEnvVar } from 'librechat-data-provider';
 import { digestMCPAuthorityValue, logger } from '@librechat/data-schemas';
 import type {
   AgentToolOptions,
@@ -21,6 +22,7 @@ import { requiresEphemeralUserConnection } from '~/mcp/utils';
 import { projectMCPApprovalAuthority } from '~/mcp/approval';
 import { getToolApprovalAuthKind } from '~/tools/approval';
 import { mapToolApprovalPolicy } from './policy';
+import { isPluginSourced } from '~/utils/env';
 
 export interface AgentApprovalDefinition {
   name: string;
@@ -35,19 +37,64 @@ export interface AgentApprovalSource {
   toolDefinitions?: AgentApprovalDefinition[];
 }
 
-/** A changed connection, raw schema, mode or revision requires fresh consent. */
+const USER_PLACEHOLDER = /\{\{[^{}]+\}\}/;
+const ENV_REFERENCE = /\$\{([^{}]+)\}/g;
+const hasOwn = Object.prototype.hasOwnProperty;
+
+/**
+ * A changed connection, raw schema, mode or revision requires fresh consent. `env` is the
+ * source `${NAME}` references resolve against; it defaults to `process.env` because that is
+ * what processMCPEnv expands when the connection is made, and the two must agree.
+ */
 export function buildMCPToolApprovalBinding(
   serverName: string,
   config: ParsedServerConfig | undefined,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): string | undefined {
   if (config) config = projectMCPApprovalAuthority(config);
-  if (
-    !config ||
-    requiresEphemeralUserConnection(config) ||
-    /\{\{[^{}]+\}\}|\$\{[^{}]+\}/.test(JSON.stringify(config))
-  )
-    return undefined;
-  return digestMCPAuthorityValue({ serverName, config });
+  if (!config || requiresEphemeralUserConnection(config)) return undefined;
+  const serialized = JSON.stringify(config);
+  if (USER_PLACEHOLDER.test(serialized)) return undefined;
+  const names = [...new Set(Array.from(serialized.matchAll(ENV_REFERENCE), (m) => m[1]))];
+  if (names.length === 0) return digestMCPAuthorityValue({ serverName, config });
+  /** processMCPEnv leaves `${NAME}` literal for these tiers, so the environment is not the authority. */
+  if (isPluginSourced(config) || config.dbId) return undefined;
+  const resolved = resolveApprovalEnv(names, env);
+  if (!resolved || expandsToUserPlaceholder(config, resolved)) return undefined;
+  return digestMCPAuthorityValue({ serverName, config, env: resolved });
+}
+
+/**
+ * Deployment `${NAME}` references are static, so their resolved values pin the connection:
+ * a rotated secret or changed URL yields a new binding. Unset, empty or sensitive names cannot
+ * be pinned.
+ */
+function resolveApprovalEnv(
+  names: string[],
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> | undefined {
+  /** Prototype-free, so names such as `__proto__` stay own entries the digest can see. */
+  const resolved: Record<string, string> = Object.create(null);
+  for (const name of names.sort()) {
+    const value = hasOwn.call(env, name) ? env[name] : undefined;
+    if (typeof value !== 'string' || !value || isSensitiveEnvVar(name)) return undefined;
+    resolved[name] = value;
+  }
+  return resolved;
+}
+
+/**
+ * processMCPEnv expands each string value's env references before substituting `{{...}}` user
+ * values, so a placeholder can appear only once a value is expanded, whether it came whole from
+ * the environment or was split between the template and an env value.
+ */
+function expandsToUserPlaceholder(value: unknown, env: Readonly<Record<string, string>>): boolean {
+  if (typeof value === 'string')
+    return USER_PLACEHOLDER.test(
+      value.replace(ENV_REFERENCE, (ref, name) => (hasOwn.call(env, name) ? env[name] : ref)),
+    );
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value).some((child) => expandsToUserPlaceholder(child, env));
 }
 
 export function attachMCPToolApprovalBindings(
@@ -467,7 +514,7 @@ export function createAgentToolApprovalSession({
         throw new Error('The advertised MCP tool or connection changed. Retry the run.');
       }
       const baseline = policy
-        ? await createToolPolicyHook(mapToolApprovalPolicy(policy()) ?? {})(
+        ? await createToolPolicyHook(mapToolApprovalPolicy(policy(), tool.name) ?? {})(
             {
               hook_event_name: 'PreToolUse',
               runId: '',

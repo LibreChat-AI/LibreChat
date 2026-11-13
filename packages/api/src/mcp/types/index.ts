@@ -149,6 +149,8 @@ export type FileSearchSource = {
 export type Artifacts =
   | {
       content?: FormattedContent[];
+      /** Original generated images for storage, separate from model-bound content. */
+      imageAttachments?: FormattedContent[];
       [Tools.ui_resources]?: {
         data: UIResource[];
       };
@@ -280,6 +282,11 @@ export interface UserConnectionContext {
   /** Cancels the connection's SDK requests when the caller itself is cancelled; previously only
    *  OAuth connections could carry a signal, leaving non-OAuth discovery uncancellable. */
   signal?: AbortSignal;
+  /**
+   * Nobody can sign in for this caller, as on the remote agent API. A sign-in prompt ends the
+   * caller's wait with `OAuthPromptUnattendedError`; see `guardUnattendedOAuth`.
+   */
+  unattended?: boolean;
   /** Immutable client capabilities requested by this caller. */
   capabilityProfile?: import('../capabilities').MCPClientCapabilityProfile;
   /** Absolute epoch-ms bound on the whole connect-and-list operation. `connectionTimeout` bounds
@@ -330,6 +337,8 @@ export interface RequestScopedMCPConnectionStore {
 
 export interface OAuthStartOptions {
   expiresAt?: number;
+  /** Call after the prompt URL is durable, before awaiting authorization completion. */
+  onPublished?: () => void;
 }
 
 export type OAuthStartHandler = (authURL: string, options?: OAuthStartOptions) => Promise<void>;

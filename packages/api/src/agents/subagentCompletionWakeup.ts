@@ -10,11 +10,13 @@ import type { SubagentTaskWakeupRegistration } from './subagentThreads';
 import type { AgentContinueTriggerEnvelope } from './triggers/envelope';
 import type { AgentTriggerDispatchContext } from './triggers/dispatch';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
+import type { QueuedTurnPrecedenceMethods } from './precedence';
 import { resolveScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 import { WAITING_RETRY_CAP_MS, waitingRetryAfter } from './triggers/backoff';
 import { boundedSubagentTaskResult } from './subagentTaskRouting';
 import { createAgentTriggerEnvelope } from './triggers/envelope';
 import { AgentTriggerExecutionError } from './triggers/host';
+import { getQueuedTurnDeferral } from './precedence';
 
 const WAKEUP_ADMISSION_DELAY_MS = 250;
 /** SDK tasks time out after 30 minutes; this grace covers terminal persistence. */
@@ -39,6 +41,7 @@ export type EnqueueAgentTrigger = (
 
 type WakeupMethods = Pick<ConversationMethods, 'getConvo'> &
   Pick<ConversationMethods, 'listActiveSubagentThreadLeases'> &
+  QueuedTurnPrecedenceMethods &
   Pick<
     MessageMethods,
     'claimSubagentTaskResult' | 'getMessages' | 'releaseSubagentTaskResultClaim'
@@ -624,10 +627,8 @@ export function createSubagentCompletionWakeupResolver({
         { code: 'PARENT_STATE_UNAVAILABLE', retryable: true },
       );
     }
-    if (
-      isParentActive(parentJob) &&
-      parentJob?.metadata?.idempotencyClientRequestId !== context.idempotencyKey
-    ) {
+    const ownsParent = parentJob?.metadata?.idempotencyClientRequestId === context.idempotencyKey;
+    if (isParentActive(parentJob) && !ownsParent) {
       throw executionError('The parent generation has not settled yet.', {
         code: 'PARENT_NOT_READY',
         retryable: true,
@@ -639,7 +640,7 @@ export function createSubagentCompletionWakeupResolver({
 
     const userId = envelope.principal.userId;
     const tenantId = envelope.principal.tenantId;
-    const [parent, child, taskMessages] = await Promise.all([
+    const [parent, child, taskMessages, queuedTurnDeferral] = await Promise.all([
       methods.getConvo(userId, envelope.target.conversationId),
       methods.getConvo(userId, registration.threadId),
       methods.getMessages(
@@ -651,6 +652,7 @@ export function createSubagentCompletionWakeupResolver({
         TASK_SELECT,
         { sort: { createdAt: 1, _id: 1 } },
       ),
+      ownsParent ? null : getQueuedTurnDeferral(methods, envelope, now()),
     ]);
     if (parent == null || !sameTenant(parent.tenantId, tenantId)) {
       throw executionError('The parent conversation is no longer available.', {
@@ -672,6 +674,9 @@ export function createSubagentCompletionWakeupResolver({
         retryable: false,
         status: 404,
       });
+    }
+    if (queuedTurnDeferral != null) {
+      throw queuedTurnDeferral;
     }
     let resultTaskId = registration.taskId;
     let terminal = taskMessages.find(

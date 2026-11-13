@@ -3,8 +3,8 @@ import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
 import type { PluginHookSource } from '~/agents/hooks/source';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ToolApprovalHookContext } from './hooks';
+import { healToolApprovalPolicy, isHITLEnabled, matchesToolApprovalPatterns } from './policy';
 import { buildToolApprovalHooks, resolvedToolApprovalHooksCanMatch } from './hooks';
-import { healToolApprovalPolicy, isHITLEnabled } from './policy';
 import { isStatefulCodeEnvironmentToolName } from './byom';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
@@ -31,17 +31,6 @@ function collectAgentAliases(
     aliases.push(...(agent?.mcpToolAliases ?? []));
   }
   return aliases;
-}
-
-/** Anchored glob match, identical to the SDK's `createToolPolicyHook` semantics. */
-function matchesAny(patterns: readonly string[] | undefined, name: string): boolean {
-  if (patterns == null || patterns.length === 0) {
-    return false;
-  }
-  return patterns.some((pattern) => {
-    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp('^' + escaped.replace(/\*/g, '.*') + '$').test(name);
-  });
 }
 
 /** Whether the admin enabled remembered allows and the current mode can honor them. */
@@ -77,7 +66,10 @@ export function isToolAllowAlwaysEligible(
   if (isStatefulCodeEnvironmentToolName(toolName)) {
     return false;
   }
-  return !matchesAny(policy.deny, toolName) && !matchesAny(policy.ask, toolName);
+  return (
+    !matchesToolApprovalPatterns(policy.deny, toolName) &&
+    !matchesToolApprovalPatterns(policy.ask, toolName)
+  );
 }
 
 /**

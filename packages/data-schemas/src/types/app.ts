@@ -95,6 +95,8 @@ export interface AppConfig {
   fileStrategy: FileStorage;
   /** File strategies configuration */
   fileStrategies?: TCustomConfig['fileStrategies'];
+  /** Maximum rows an explicitly limited GET /files request may return */
+  fileListLimit?: TCustomConfig['fileListLimit'];
   /** CloudFront CDN configuration */
   cloudfront?: CloudFrontConfig;
   /** Chat Projects limits resolved from the deployment configuration */
@@ -131,6 +133,7 @@ export interface AppConfig {
   mcpAppSandbox?: TCustomConfig['mcpAppSandbox'];
   /** File configuration */
   fileConfig?: TFileConfig;
+  spreadsheetParsing?: TCustomConfig['spreadsheetParsing'];
   /** Secure image links configuration, enabled unless explicitly disabled */
   secureImageLinks?: TCustomConfig['secureImageLinks'];
   /** Stored user credential write format, `v3` unless configured */

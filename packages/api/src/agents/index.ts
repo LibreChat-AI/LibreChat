@@ -43,6 +43,7 @@ export * from './marketplace';
 export * from './reads';
 export * from './updates';
 export * from './mcpIdentity';
+export * from './restore';
 export * from './orphans';
 export * from './ownerContact';
 export * from './migration';
@@ -59,6 +60,7 @@ export * from './usage';
 export * from './resources';
 export * from './responses';
 export * from './skills';
+export * from './toggles';
 export {
   ContextPartKeys,
   listContextParts,

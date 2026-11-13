@@ -310,8 +310,10 @@ describe('Server Configuration', () => {
   });
 
   afterAll(async () => {
-    await promisify(server.close).call(server);
-    await mongoServer.stop();
+    if (server) {
+      await promisify(server.close).call(server);
+    }
+    await mongoServer?.stop();
     await mongoose.disconnect();
     delete process.env.CUSTOM_FOOTER;
   });
@@ -383,6 +385,22 @@ describe('Server Configuration', () => {
     const response = await request(app).get('/this/does/not/exist');
     expect(response.status).toBe(200);
     expect(response.headers['content-type']).toMatch(/html/);
+  });
+
+  it('serves the app shell at /oauth/error when a connect callback names an error', async () => {
+    const response = await request(app).get('/oauth/error?error=invalid_state&flow=flow-a');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/html/);
+    expect(response.headers.location).toBeUndefined();
+    expect(response.text).toContain('<div id="root"></div>');
+  });
+
+  it('still sends a social login failure at /oauth/error to the login screen', async () => {
+    const response = await request(app).get('/oauth/error');
+
+    expect(response.status).toBe(302);
+    expect(response.headers.location).toMatch(/\/login\?redirect=false&error=auth_failed$/);
   });
 
   it('should gate React Query Devtools config in SPA HTML by debug header', async () => {

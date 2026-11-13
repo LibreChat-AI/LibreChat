@@ -1,18 +1,21 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createReaper } from './reaper';
 
 let base: string;
+let children: ChildProcess[];
 
 function run(command: string): ChildProcess {
-  return spawn('bash', ['-c', command], {
+  const child = spawn('bash', ['-c', command], {
     detached: true,
     stdio: 'ignore',
     env: { PATH: process.env.PATH },
   });
+  children.push(child);
+  return child;
 }
 
 function isGone(pid: number): boolean {
@@ -20,6 +23,15 @@ function isGone(pid: number): boolean {
     process.kill(pid, 0);
   } catch {
     return true;
+  }
+  if (process.platform !== 'linux') {
+    try {
+      return execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' })
+        .trim()
+        .startsWith('Z');
+    } catch {
+      return true;
+    }
   }
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
@@ -37,10 +49,19 @@ async function waitFor(condition: () => boolean): Promise<void> {
 }
 
 beforeEach(async () => {
+  children = [];
   base = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lc-reaper-'));
 });
 
 afterEach(async () => {
+  for (const child of children) {
+    if (typeof child.pid !== 'number') continue;
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      // A successful test has already terminated this group.
+    }
+  }
   await fs.promises.rm(base, { recursive: true, force: true });
 });
 
@@ -56,7 +77,11 @@ describe('createReaper', () => {
 
   test('escalates to SIGKILL when the tree ignores SIGTERM', async () => {
     const pidFile = path.join(base, 'stubborn.pid');
-    const child = run(`trap '' TERM; echo $$ > "${pidFile}"; sleep 30`);
+    // Publish only after the PID is written: file existence alone can expose an
+    // empty file between shell redirection and echo, which Number('') turns into 0.
+    const child = run(
+      `trap '' TERM; echo $$ > "${pidFile}.tmp"; mv "${pidFile}.tmp" "${pidFile}"; sleep 30`,
+    );
     await waitFor(() => fs.existsSync(pidFile));
     const rootPid = Number((await fs.promises.readFile(pidFile, 'utf8')).trim());
     createReaper(child, 200).reap();
@@ -69,7 +94,7 @@ describe('createReaper', () => {
   test('sweep reaps a group that outlived a clean root exit', async () => {
     const pidFile = path.join(base, 'worker.pid');
     const child = run(
-      `bash -c 'trap "" TERM; echo $$ > "${pidFile}"; sleep 30' >/dev/null 2>&1 & exit 0`,
+      `bash -c 'trap "" TERM; echo $$ > "${pidFile}.tmp"; mv "${pidFile}.tmp" "${pidFile}"; sleep 30' >/dev/null 2>&1 & exit 0`,
     );
     const reaper = createReaper(child, 200);
     const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));

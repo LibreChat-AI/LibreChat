@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
+import { expect, test } from '../fixtures';
 
 /**
  * Changing the registered address is offered only where it can actually
@@ -126,6 +126,8 @@ test.describe('account settings · registered email gating', () => {
     });
 
     await page.goto(`/verify?${query.toString()}`, { timeout: 15000 });
+    /** Opening the link alone must not submit it, or mail scanners would consume the token. */
+    await page.getByRole('button', { name: 'Confirm email change' }).click();
 
     await expect(page.getByText('Email change verification failed')).toBeVisible({
       timeout: 20000,

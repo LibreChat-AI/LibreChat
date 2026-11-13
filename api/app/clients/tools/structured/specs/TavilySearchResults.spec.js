@@ -5,6 +5,7 @@ const { getEnvProxyDispatcher } = require('@librechat/api');
 jest.mock('undici');
 jest.mock('@librechat/api', () => ({
   getEnvProxyDispatcher: jest.fn(),
+  runToolRequest: jest.requireActual('@librechat/api').runToolRequest,
   toolRequestBudget: jest.requireActual('@librechat/api').toolRequestBudget,
 }));
 

@@ -1,5 +1,4 @@
 import { resolve } from 'node:path';
-import { expect, test } from '@playwright/test';
 import { parseSessionHint, formatSessionHint, SESSION_HINT_COOKIE } from 'librechat-data-provider';
 import type { SessionHint, ThemeDefinition } from 'librechat-data-provider';
 import type { Page } from '@playwright/test';
@@ -9,6 +8,7 @@ import {
 } from '../../../../packages/api/src/html/theme';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { resolveTheme } from '../../../../packages/data-provider/src/themes/registry';
+import { expect, test } from '../fixtures';
 
 /**
  * `interface.theme` exists only in the `/api/config` answer, so before this
@@ -25,6 +25,10 @@ import { resolveTheme } from '../../../../packages/data-provider/src/themes/regi
  * Every frame is sampled in a `requestAnimationFrame` callback, which runs
  * before the frame paints.
  */
+
+// Use full Chromium locally, matching CI's Chrome, without trace or video capture
+// competing with protocol calls under CPU throttling. Failure screenshots remain enabled.
+test.use({ channel: process.env.E2E_CHROMIUM_CHANNEL ?? 'chromium', trace: 'off', video: 'off' });
 
 type Mode = 'light' | 'dark';
 
@@ -155,6 +159,10 @@ async function framesBeforeAnswer(page: Page, answeredAt: number[], reloadedAt: 
   const frames = (await page.evaluate(() => window.__themeFrames ?? [])).filter(
     (frame) => frame.at < answered,
   );
+  await test.info().attach('cached-theme-frames', {
+    body: Buffer.from(JSON.stringify(frames, null, 2)),
+    contentType: 'application/json',
+  });
   expect(frames.find((frame) => frame.shell !== null || frame.app)?.shell).toBeTruthy();
   expect(frames.some((frame) => frame.app)).toBe(true);
   return frames;
@@ -256,7 +264,7 @@ test('a deployment theme removed since the last visit wins once the config answe
   page,
 }) => {
   test.setTimeout(90000);
-  let theme: string | null = 'clickhouse';
+  let theme: ThemeSource | null = 'clickhouse';
   await serveTheme(
     page,
     () => theme,
@@ -474,7 +482,11 @@ async function serveThemedShell(page: Page, source: ThemeSource) {
   await page.route(
     () => true,
     async (route) => {
-      if (route.request().resourceType() !== 'document') {
+      // The hidden audio iframe is a binary document, not an app shell.
+      if (
+        route.request().resourceType() !== 'document' ||
+        route.request().frame() !== page.mainFrame()
+      ) {
         return route.fallback();
       }
       const response = await route.fetch();
@@ -514,9 +526,14 @@ async function firstVisitFrames(
   await expect.poll(() => answeredAt.length).toBeGreaterThan(0);
 
   const answered = Math.min(...answeredAt);
-  return (await page.evaluate(() => window.__themeFrames ?? [])).filter(
+  const frames = (await page.evaluate(() => window.__themeFrames ?? [])).filter(
     (frame) => frame.at < answered,
   );
+  await test.info().attach('first-visit-theme-frames', {
+    body: Buffer.from(JSON.stringify(frames, null, 2)),
+    contentType: 'application/json',
+  });
+  return frames;
 }
 
 /** A signed-in first visit: every frame before the answer, shell and app alike, wears the theme. */

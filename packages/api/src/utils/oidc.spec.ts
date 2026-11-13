@@ -1,5 +1,9 @@
+import jwt from 'jsonwebtoken';
 import type { IUser } from '@librechat/data-schemas';
 import {
+  getOpenIDBearerAudiences,
+  getOpenIDAppAccessToken,
+  selectReusableOpenIDBearer,
   OpenIDReauthRequiredError,
   extractOpenIDTokenInfo,
   isOpenIDTokenValid,
@@ -848,6 +852,63 @@ describe('OpenID Token Utilities', () => {
       expect(isAccessTokenJwt(undefined, { aud: 'api://resource-app' }, audiences)).toBe(false);
       expect(isAccessTokenJwt('a.b.c', undefined, audiences)).toBe(false);
       expect(isAccessTokenJwt('not-a-jwt', { aud: 'client-id' }, audiences)).toBe(false);
+    });
+  });
+
+  describe('OpenID app bearer selection', () => {
+    const now = 1_000_000;
+    const audiences = getOpenIDBearerAudiences('client-id', 'api://resource, client-id');
+    const sign = (claims: Record<string, unknown>) => jwt.sign(claims, 'test-secret');
+    const options = { audiences, expiryBufferSeconds: 30, nowSeconds: now };
+    const graphAccess = sign({ exp: now + 600, aud: '00000003-0000-0000-c000-000000000000' });
+    const appAccess = sign({ exp: now + 600, aud: 'api://resource' });
+
+    it('collects the client id and configured audiences once each', () => {
+      expect(audiences).toEqual(['client-id', 'api://resource']);
+      expect(getOpenIDBearerAudiences(undefined, undefined)).toEqual([]);
+    });
+
+    it('prefers a valid ID token over the access token', () => {
+      const idToken = sign({ exp: now + 600, aud: 'client-id' });
+      expect(selectReusableOpenIDBearer({ idToken, accessToken: appAccess }, options)).toEqual({
+        token: idToken,
+        type: 'id_token',
+      });
+    });
+
+    it.each([
+      ['expired', now - 60],
+      ['within the buffer', now + 10],
+    ])('skips a %s ID token and an access token for another resource', (_label, exp) => {
+      const idToken = sign({ exp, aud: 'client-id' });
+      expect(selectReusableOpenIDBearer({ idToken, accessToken: graphAccess }, options)).toBeNull();
+    });
+
+    it('falls back to an access token minted for a configured audience', () => {
+      const idToken = sign({ exp: now - 60, aud: 'client-id' });
+      expect(selectReusableOpenIDBearer({ idToken, accessToken: appAccess }, options)).toEqual({
+        token: appAccess,
+        type: 'access_token',
+      });
+    });
+
+    it('skips malformed and opaque candidates', () => {
+      expect(
+        selectReusableOpenIDBearer({ idToken: 'not-a-jwt', accessToken: 'opaque' }, options),
+      ).toBeNull();
+    });
+
+    it('checks no audience when none is configured, as the verifier does', () => {
+      expect(
+        selectReusableOpenIDBearer({ accessToken: graphAccess }, { ...options, audiences: [] }),
+      ).toEqual({ token: graphAccess, type: 'access_token' });
+    });
+
+    it('keeps the post-refresh access token only when it can pass the bearer audience check', () => {
+      expect(getOpenIDAppAccessToken(appAccess, audiences)).toBe(appAccess);
+      expect(getOpenIDAppAccessToken('opaque-token', audiences)).toBe('opaque-token');
+      expect(getOpenIDAppAccessToken(graphAccess, audiences)).toBeUndefined();
+      expect(getOpenIDAppAccessToken(undefined, audiences)).toBeUndefined();
     });
   });
 });

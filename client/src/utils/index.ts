@@ -33,6 +33,7 @@ export * from './voices';
 export * from './textarea';
 export * from './messages';
 export * from './focus';
+export * from './viewport';
 export * from './tokens';
 export * from './balance';
 export * from './redirect';
@@ -70,7 +71,6 @@ export {
 } from '@librechat/chat';
 export type { SteerCarriedContext } from '@librechat/chat';
 export { getChatPane, getFocusedChatPane, isFocusedChatPane } from '@librechat/chat';
-export * from './activityLabels';
 export * from './agentModelSelection';
 export * from './runStepDuration';
 export * from './documentTitle';

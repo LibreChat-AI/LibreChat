@@ -1,6 +1,5 @@
 const express = require('express');
 const request = require('supertest');
-const mongoose = require('mongoose');
 
 const mockGetSharedLinkExpiration = jest.fn();
 const mockGrantCreationPermissions = jest.fn();
@@ -154,17 +153,6 @@ jest.mock('librechat-data-provider', () => {
   };
 });
 
-jest.mock('mongoose', () => ({
-  models: {
-    Conversation: {
-      findOne: jest.fn(),
-    },
-    SharedLink: {
-      findOne: jest.fn(),
-    },
-  },
-}));
-
 jest.mock('~/models', () => ({
   getFiles: jest.fn(),
   updateFile: jest.fn(),
@@ -174,6 +162,8 @@ jest.mock('~/models', () => ({
   deleteSharedLink: jest.fn(),
   getSharedLinks: jest.fn(),
   getSharedLink: jest.fn(),
+  findOwnedSharedLink: jest.fn(),
+  findShareConversationRetention: jest.fn(),
   getSharedLinkFile: jest.fn(),
   backfillSharedLinkFiles: jest.fn(),
   getMessages: jest.fn(),
@@ -240,6 +230,8 @@ const {
   getSharedMessages,
   createSharedLink,
   updateSharedLink,
+  findOwnedSharedLink,
+  findShareConversationRetention,
   getSharedLinks,
   getSharedLinkFile,
   backfillSharedLinkFiles,
@@ -258,10 +250,6 @@ const contentFilters = {
     },
   },
 };
-
-const lean = (value) => ({
-  lean: jest.fn().mockResolvedValue(value),
-});
 
 const buildApp = ({
   retentionMode = RetentionMode.TEMPORARY,
@@ -799,12 +787,9 @@ describe('share routes', () => {
       }),
     );
     const [, dependencies] = mockGetSharedLinkExpiration.mock.calls[0];
-    mongoose.models.Conversation.findOne.mockReturnValue(lean({ expiredAt: activeExpiration }));
+    findShareConversationRetention.mockResolvedValue({ expiredAt: activeExpiration });
     await dependencies.getConvo('user-123', 'convo-123');
-    expect(mongoose.models.Conversation.findOne).toHaveBeenCalledWith(
-      { conversationId: 'convo-123', user: 'user-123' },
-      'isTemporary expiredAt',
-    );
+    expect(findShareConversationRetention).toHaveBeenCalledWith('user-123', 'convo-123');
     expect(createSharedLink).toHaveBeenCalledWith(
       'user-123',
       'convo-123',
@@ -1068,9 +1053,7 @@ describe('share routes', () => {
   });
 
   it('passes the snapshotFiles opt-out through on update', async () => {
-    mongoose.models.SharedLink.findOne.mockReturnValue(
-      lean({ _id: 'link-456', conversationId: 'convo-123' }),
-    );
+    findOwnedSharedLink.mockResolvedValue({ _id: 'link-456', conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockResolvedValue(activeExpiration);
     mockUpdatedShare({ _id: 'link-456', shareId: 'share-456' });
 
@@ -1099,9 +1082,7 @@ describe('share routes', () => {
       },
     });
     const messages = [{ files: [{ file_id: 'file_PRIVATE-SENTINEL' }] }];
-    mongoose.models.SharedLink.findOne.mockReturnValue(
-      lean({ _id: 'link-456', conversationId: 'convo-123' }),
-    );
+    findOwnedSharedLink.mockResolvedValue({ _id: 'link-456', conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockResolvedValue(activeExpiration);
     mockAssertConversationContentAllowed.mockImplementationOnce(() => {
       throw error;
@@ -1159,19 +1140,14 @@ describe('share routes', () => {
   });
 
   it('expires updated shares for retained non-temporary conversations', async () => {
-    mongoose.models.SharedLink.findOne.mockReturnValue(
-      lean({ _id: 'link-456', conversationId: 'convo-123' }),
-    );
+    findOwnedSharedLink.mockResolvedValue({ _id: 'link-456', conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockResolvedValue(activeExpiration);
     mockUpdatedShare({ _id: 'link-456', shareId: 'share-456' });
 
     const response = await request(buildApp()).patch('/api/share/share-123');
 
     expect(response.status).toBe(200);
-    expect(mongoose.models.SharedLink.findOne).toHaveBeenCalledWith(
-      { shareId: 'share-123', user: 'user-123' },
-      'conversationId',
-    );
+    expect(findOwnedSharedLink).toHaveBeenCalledWith('user-123', 'share-123');
     expect(mockGetSharedLinkExpiration).toHaveBeenCalledTimes(1);
     expect(mockGetSharedLinkExpiration).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1200,9 +1176,7 @@ describe('share routes', () => {
   });
 
   it('does not re-publish content when re-scoping the grants fails', async () => {
-    mongoose.models.SharedLink.findOne.mockReturnValue(
-      lean({ _id: 'link-456', conversationId: 'convo-123' }),
-    );
+    findOwnedSharedLink.mockResolvedValue({ _id: 'link-456', conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockResolvedValue(activeExpiration);
     mockUpdateSharedLinkPermissionsExpiration.mockRejectedValueOnce(new Error('acl down'));
     mockUpdatedShare({ _id: 'link-456', shareId: 'share-456' });
@@ -1216,9 +1190,7 @@ describe('share routes', () => {
   });
 
   it('rejects updated shares when the retained conversation expired', async () => {
-    mongoose.models.SharedLink.findOne.mockReturnValue(
-      lean({ _id: 'link-456', conversationId: 'convo-123' }),
-    );
+    findOwnedSharedLink.mockResolvedValue({ _id: 'link-456', conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockResolvedValue(expiredExpiration);
     updateSharedLink.mockResolvedValue({ shareId: 'share-456' });
 
@@ -1229,9 +1201,7 @@ describe('share routes', () => {
   });
 
   it('rejects updated shares for expired conversations in all retention mode', async () => {
-    mongoose.models.SharedLink.findOne.mockReturnValue(
-      lean({ _id: 'link-456', conversationId: 'convo-123' }),
-    );
+    findOwnedSharedLink.mockResolvedValue({ _id: 'link-456', conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockResolvedValue(expiredExpiration);
     updateSharedLink.mockResolvedValue({ shareId: 'share-456' });
 
@@ -1240,17 +1210,12 @@ describe('share routes', () => {
     );
 
     expect(response.status).toBe(404);
-    expect(mongoose.models.SharedLink.findOne).toHaveBeenCalledWith(
-      { shareId: 'share-123', user: 'user-123' },
-      'conversationId',
-    );
+    expect(findOwnedSharedLink).toHaveBeenCalledWith('user-123', 'share-123');
     expect(updateSharedLink).not.toHaveBeenCalled();
   });
 
   it('clears updated share expiration when the conversation is no longer retained', async () => {
-    mongoose.models.SharedLink.findOne.mockReturnValue(
-      lean({ _id: 'link-456', conversationId: 'convo-123' }),
-    );
+    findOwnedSharedLink.mockResolvedValue({ _id: 'link-456', conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockResolvedValue(null);
     mockUpdatedShare({ _id: 'link-456', shareId: 'share-456' });
 
@@ -1282,9 +1247,7 @@ describe('share routes', () => {
   });
 
   it('preserves updated share expiration when the conversation cannot be found', async () => {
-    mongoose.models.SharedLink.findOne.mockReturnValue(
-      lean({ _id: 'link-456', conversationId: 'convo-123' }),
-    );
+    findOwnedSharedLink.mockResolvedValue({ _id: 'link-456', conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockResolvedValue(undefined);
     mockUpdatedShare({ shareId: 'share-456' });
 
@@ -1305,9 +1268,7 @@ describe('share routes', () => {
 
   it('clears updated share expiration when creating a new expiration throws', async () => {
     const error = new Error('bad config');
-    mongoose.models.SharedLink.findOne.mockReturnValue(
-      lean({ _id: 'link-456', conversationId: 'convo-123' }),
-    );
+    findOwnedSharedLink.mockResolvedValue({ _id: 'link-456', conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockImplementationOnce(async (_input, dependencies) => {
       dependencies.logger.error('[getSharedLinkExpiration] Error creating expiration date:', error);
       return null;
@@ -1334,9 +1295,7 @@ describe('share routes', () => {
   });
 
   it('updates share target message while applying retention expiration', async () => {
-    mongoose.models.SharedLink.findOne.mockReturnValue(
-      lean({ _id: 'link-456', conversationId: 'convo-123' }),
-    );
+    findOwnedSharedLink.mockResolvedValue({ _id: 'link-456', conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockResolvedValue(activeExpiration);
     mockUpdatedShare({ shareId: 'share-456', targetMessageId: 'msg-456' });
 
@@ -1375,7 +1334,7 @@ describe('share routes', () => {
   });
 
   it('maps a missing-share update domain error to not found', async () => {
-    mongoose.models.SharedLink.findOne.mockReturnValue(lean(null));
+    findOwnedSharedLink.mockResolvedValue(null);
     updateSharedLink.mockRejectedValue(
       Object.assign(new Error('Share not found'), { code: 'SHARE_NOT_FOUND' }),
     );
@@ -1387,7 +1346,7 @@ describe('share routes', () => {
   });
 
   it('returns and records a missing-tail update rejection', async () => {
-    mongoose.models.SharedLink.findOne.mockReturnValue(lean({ conversationId: 'convo-123' }));
+    findOwnedSharedLink.mockResolvedValue({ conversationId: 'convo-123' });
     mockGetSharedLinkExpiration.mockResolvedValue(activeExpiration);
     updateSharedLink.mockRejectedValue(
       Object.assign(new Error('Target message not found'), {

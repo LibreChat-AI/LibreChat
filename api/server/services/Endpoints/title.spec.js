@@ -27,7 +27,7 @@ describe('generated title reply provenance', () => {
   });
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   });
   beforeEach(async () => {
     await Conversation.deleteMany({});

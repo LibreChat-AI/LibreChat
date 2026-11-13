@@ -28,12 +28,14 @@ import type { ScheduleMCPCompletionLookup } from '~/schedules/authorization/cont
 import type { AgentContinueTriggerEnvelope } from './triggers/envelope';
 import type { AgentTriggerDispatchContext } from './triggers/dispatch';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
+import type { QueuedTurnPrecedenceMethods } from './precedence';
 import { resolveScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 import { WAITING_RETRY_CAP_MS, waitingRetryAfter } from './triggers/backoff';
 import { BACKGROUND_TOOL_PRODUCER_LEASE_MS } from './backgroundCompletion';
 import { SUBAGENT_COMPLETION_SOURCE } from './subagentCompletionWakeup';
 import { createAgentTriggerEnvelope } from './triggers/envelope';
 import { AgentTriggerExecutionError } from './triggers/host';
+import { getQueuedTurnDeferral } from './precedence';
 import { truncateMiddle } from '~/utils';
 
 const WAKEUP_ADMISSION_DELAY_MS = 250;
@@ -72,6 +74,7 @@ export type PersistBackgroundToolCompletionResult = (
 ) => Promise<boolean>;
 
 type WakeupMethods = Pick<ConversationMethods, 'getConvo'> &
+  QueuedTurnPrecedenceMethods &
   Pick<
     MessageMethods,
     'getMessages' | 'claimBackgroundToolResults' | 'releaseBackgroundToolResultClaims'
@@ -316,10 +319,8 @@ export function createBackgroundToolCompletionWakeupResolver({
         { code: 'PARENT_STATE_UNAVAILABLE', retryable: true },
       );
     }
-    if (
-      isParentActive(parentJob) &&
-      parentJob?.metadata?.idempotencyClientRequestId !== context.idempotencyKey
-    ) {
+    const ownsParent = parentJob?.metadata?.idempotencyClientRequestId === context.idempotencyKey;
+    if (isParentActive(parentJob) && !ownsParent) {
       throw executionError('The parent generation has not settled yet.', {
         code: 'PARENT_NOT_READY',
         retryable: true,
@@ -329,13 +330,19 @@ export function createBackgroundToolCompletionWakeupResolver({
       });
     }
     const userId = envelope.principal.userId;
-    const parent = await methods.getConvo(userId, envelope.target.conversationId);
+    const [parent, queuedTurnDeferral] = await Promise.all([
+      methods.getConvo(userId, envelope.target.conversationId),
+      ownsParent ? null : getQueuedTurnDeferral(methods, envelope, Date.now()),
+    ]);
     if (parent == null || parent.tenantId !== envelope.principal.tenantId) {
       throw executionError('The parent conversation is no longer available.', {
         code: 'PARENT_NOT_FOUND',
         retryable: false,
         status: 404,
       });
+    }
+    if (queuedTurnDeferral != null) {
+      throw queuedTurnDeferral;
     }
     const payload = envelope.event.payload;
     const scheduleMCPIdentity = await resolveScheduleMCPCompletion(

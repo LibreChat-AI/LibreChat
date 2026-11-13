@@ -440,6 +440,7 @@ describe('Langfuse feedback scores', () => {
     const rowId = ids.find((id) => !sampled(id)) as string;
 
     await expect(getLangfuseTraceMessageFields(undefined, rowId, { runId })).resolves.toEqual({
+      langfuseCentralTraceExportEnabled: true,
       langfuseSampled: true,
       langfuseDestinationIds: [expect.any(String)],
       langfuseRunId: runId,
@@ -484,7 +485,11 @@ describe('Langfuse feedback scores', () => {
 
     await expect(
       getLangfuseTraceMessageFields(undefined, 'message-1', { isTemporary: true }),
-    ).resolves.toEqual({ langfuseSampled: false, langfuseDestinationIds: [] });
+    ).resolves.toEqual({
+      langfuseCentralTraceExportEnabled: true,
+      langfuseSampled: false,
+      langfuseDestinationIds: [],
+    });
     await expect(
       getFailedTurnTraceFields(undefined, {
         messageId: 'user-1_',

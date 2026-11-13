@@ -37,6 +37,8 @@ const {
   getCodeFileInfo,
   getCodeFileContextLine,
   appendCodeFileContextLine,
+  createCodeReuploadFailures,
+  openCodeFileSource,
   getUploadedCodeEnvFilename,
   checkCodeFileActive: checkIfActive,
   CODE_OUTPUT_PREFLIGHT_MAX_BYTES,
@@ -689,6 +691,7 @@ const getReuploadFailureCategory = (error) => {
  * @returns {Promise<{
  * files: Array<{ id: string; session_id: string; name: string }>,
  * toolContext: string,
+ * missingFilesContext?: string,
  * contextFiles?: import('@librechat/api').CodeContextEntry[],
  * }>}
  */
@@ -760,9 +763,8 @@ const primeFiles = async (options) => {
     concurrency: uploadOptions.concurrency,
     signal,
   });
-  let reuploadFailures = 0;
   let requiredCodeFiles = 0;
-  const reuploadFailureCategories = new Set();
+  const reuploadFailures = createCodeReuploadFailures();
 
   for (const { file, ref, sourceRef, sandboxName, isActive, getUploadTime } of selected) {
     requiredCodeFiles += 1;
@@ -860,7 +862,10 @@ const primeFiles = async (options) => {
                 ),
               openSource: async () => {
                 signal?.throwIfAborted();
-                return getDownloadStream(options.req, resolveDownloadPath(file), { signal });
+                return openCodeFileSource(
+                  () => getDownloadStream(options.req, resolveDownloadPath(file), { signal }),
+                  signal,
+                );
               },
               upload: (stream) =>
                 uploadCodeEnvFile({
@@ -924,9 +929,8 @@ const primeFiles = async (options) => {
          * miss. Swallowing it here would keep walking and could dispatch more
          * uploads after the foreground run has ended. */
         signal?.throwIfAborted();
-        reuploadFailures += 1;
         const failureCategory = getReuploadFailureCategory(error);
-        reuploadFailureCategories.add(failureCategory);
+        reuploadFailures.add(error, failureCategory, file);
         const { requestId, runId } = getPrimingCorrelation(req);
         logger.error(
           `[primeCodeFiles] reupload-failed requestId=${requestId} runId=${runId} ` +
@@ -970,33 +974,39 @@ const primeFiles = async (options) => {
    * `[primeCodeFiles] out` always shows the final state, not only
    * the per-path trail leading up to it. */
   const primedCodeFiles = files.length;
-  const allRequiredResourcesFailed =
-    requiredCodeFiles > 0 && primedCodeFiles === 0 && reuploadFailures === requiredCodeFiles;
+  const allRequiredResourcesFailed = reuploadFailures.requiresRecovery(
+    requiredCodeFiles,
+    primedCodeFiles,
+  );
   const { requestId, runId } = getPrimingCorrelation(req);
   logger.debug(
     `[primeCodeFiles] out: returned=${files.length} ` +
       `required=${requiredCodeFiles} skippedNoRef=${skippedNoRef} ` +
-      `skippedSuperseded=${skippedSuperseded} reuploadFailures=${reuploadFailures}`,
+      `skippedSuperseded=${skippedSuperseded} reuploadFailures=${reuploadFailures.count} ` +
+      `missing=${reuploadFailures.missingCount}`,
   );
 
   if (allRequiredResourcesFailed) {
-    const failureCategory =
-      reuploadFailureCategories.size === 1
-        ? Array.from(reuploadFailureCategories)[0]
-        : 'mixed_reupload_failure';
+    const failureCategory = reuploadFailures.recoveryCategory();
     logger.warn(
       `[primeCodeFiles] resource-recovery-required requestId=${requestId} runId=${runId} ` +
-        `required=${requiredCodeFiles} primed=${primedCodeFiles} failed=${reuploadFailures} ` +
+        `required=${requiredCodeFiles} primed=${primedCodeFiles} failed=${reuploadFailures.count} ` +
         `category=${failureCategory}`,
     );
     throw new CodeResourceRecoveryError({
       required: requiredCodeFiles,
       primed: primedCodeFiles,
-      failed: reuploadFailures,
+      failed: reuploadFailures.count,
     });
   }
 
-  return { files, toolContext, ...(contextFiles?.length ? { contextFiles } : {}) };
+  const missingFilesContext = reuploadFailures.missingFilesContext();
+  return {
+    files,
+    toolContext,
+    ...(missingFilesContext ? { missingFilesContext } : {}),
+    ...(contextFiles?.length ? { contextFiles } : {}),
+  };
 };
 
 /**

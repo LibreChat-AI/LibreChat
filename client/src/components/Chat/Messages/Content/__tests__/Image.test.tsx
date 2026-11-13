@@ -23,12 +23,11 @@ jest.mock('@librechat/client', () => ({
   ),
 }));
 
-jest.mock('../DialogImage', () => ({
-  __esModule: true,
-  default: ({ isOpen, src }: { isOpen: boolean; src: string }) =>
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  DialogImage: ({ isOpen, src }: { isOpen: boolean; src: string }) =>
     isOpen ? <div data-testid="dialog-image" data-src={src} /> : null,
 }));
-
 describe('Image', () => {
   const defaultProps = {
     imagePath: '/images/test.png',

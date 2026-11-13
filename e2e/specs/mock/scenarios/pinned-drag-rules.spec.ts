@@ -127,6 +127,38 @@ test.describe('pinned drag rules', () => {
     await expect.poll(() => isConversationPinned(plain)).toBe(true);
   });
 
+  test('a chat below the sidebar fold can be dragged onto a pinned row @scenario:a-chat-below-the-fold-can-be-pinned-by-drag', async ({
+    page,
+  }) => {
+    await skipWithoutHover(page);
+    const [pinnedTitle] = uniqueTitles('pin-below-fold', 1);
+    const plainTitle = `pin-below-fold plain ${randomUUID()}`;
+    seededPins = await seedPinnedConversations([pinnedTitle]);
+    const plain = randomUUID();
+    await seedConversations(getE2EUser().email, [
+      { conversationId: plain, title: plainTitle, updatedAt: new Date() },
+    ]);
+    unpinnedConversationIds.push(plain);
+
+    await openWithPinnedSection(page);
+    await expect(pinnedConvoRow(page, pinnedTitle)).toBeVisible();
+    const plainRow = chatsListRow(page, plainTitle);
+    await expect(plainRow).toBeVisible();
+
+    /** Whatever else the sidebar holds, this puts the fold right above the row. */
+    const box = await plainRow.boundingBox();
+    const viewport = page.viewportSize();
+    if (!box || !viewport) {
+      throw new Error('the row and the page must both be laid out');
+    }
+    await page.setViewportSize({ width: viewport.width, height: Math.floor(box.y) - 1 });
+
+    await dragRowOnto(page, plainRow, pinnedConvoRow(page, pinnedTitle), 0.5);
+
+    await expect(pinnedConvoRow(page, plainTitle)).toBeVisible();
+    await expect.poll(() => isConversationPinned(plain)).toBe(true);
+  });
+
   test('a pinned chat cannot be dragged through a pinned model @scenario:a-pinned-chat-cannot-be-dragged-through-a-pinned-model', async ({
     page,
   }) => {

@@ -274,6 +274,7 @@ describe('useAppBridge', () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     document.body.innerHTML = '';
     document.documentElement.className = '';
+    document.documentElement.removeAttribute('style');
   });
 
   describe('ordering', () => {
@@ -1462,6 +1463,50 @@ describe('useAppBridge', () => {
       act(() => callback([], observer));
       expect(latest().hostContextChanges).toHaveLength(1);
       measure.mockRestore();
+    });
+
+    it('supplies CSS colors on initialization and theme changes', async () => {
+      document.documentElement.style.setProperty('--surface-primary', '255 255 255');
+      document.documentElement.style.setProperty('--text-primary', '33 33 33');
+      document.documentElement.style.setProperty('--border-medium', '205 205 205 / 50%');
+      document.documentElement.style.setProperty('--text-warning', '#f90');
+      document.documentElement.style.setProperty('--surface-secondary', 'var(--missing)');
+      mountBridge(makeResource(), client);
+      await flush();
+
+      expect(AppBridge.mock.calls.at(-1)?.[3]).toEqual({
+        hostContext: expect.objectContaining({
+          theme: 'light',
+          styles: {
+            variables: {
+              '--color-background-primary': 'rgb(255 255 255)',
+              '--color-text-primary': 'rgb(33 33 33)',
+              '--color-border-primary': 'rgb(205 205 205 / 50%)',
+              '--color-text-warning': '#f90',
+            },
+          },
+        }),
+      });
+
+      await act(async () => {
+        document.documentElement.style.setProperty('--surface-primary', '33 33 33');
+        document.documentElement.style.setProperty('--text-primary', '255 255 255');
+        document.documentElement.style.removeProperty('--border-medium');
+        document.documentElement.classList.add('dark');
+        await Promise.resolve();
+      });
+      expect(latest().hostContextChanges).toEqual([
+        expect.objectContaining({
+          theme: 'dark',
+          styles: {
+            variables: {
+              '--color-background-primary': 'rgb(33 33 33)',
+              '--color-text-primary': 'rgb(255 255 255)',
+              '--color-text-warning': '#f90',
+            },
+          },
+        }),
+      ]);
     });
 
     it('pushes theme changes to a live bridge', async () => {

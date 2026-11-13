@@ -8,9 +8,11 @@ import BackgroundTaskCall from '../BackgroundTaskCall';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useProgress: (progress: number) => progress,
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
 }));
 
 jest.mock('~/hooks/MCP', () => ({

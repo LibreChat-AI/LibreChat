@@ -1493,7 +1493,13 @@ describe('createToolExecuteHandler', () => {
         { name: 'custom_tool', allowed_callers: ['code_execution'] },
       ]);
       expect(capturedConfigs[0].disallowedToolDefs).toEqual([{ name: 'direct_tool' }]);
-      expect(capturedConfigs[0].toolMap).toEqual(new Map([['custom_tool', customTool]]));
+      const innerTools = capturedConfigs[0].toolMap as Map<string, typeof customTool>;
+      expect([...innerTools.keys()]).toEqual(['custom_tool']);
+      expect(innerTools.get('custom_tool')?.name).toBe(customTool.name);
+      const input = { query: 'inner query' };
+      const config = { toolCall: { id: 'inner-call' } };
+      await innerTools.get('custom_tool')?.invoke(input, config);
+      expect(customTool.invoke).toHaveBeenCalledWith(input, config);
     });
 
     it('uses the SDK live projection as the authoritative active PTC policy', async () => {
@@ -1559,9 +1565,12 @@ describe('createToolExecuteHandler', () => {
         { name: 'active_programmatic_tool', allowed_callers: ['code_execution'] },
       ]);
       expect(capturedConfigs[0].disallowedToolDefs).toEqual([{ name: 'active_direct_tool' }]);
-      expect(capturedConfigs[0].toolMap).toEqual(
-        new Map([['active_programmatic_tool', activeProgrammaticTool]]),
-      );
+      const innerTools = capturedConfigs[0].toolMap as Map<string, typeof activeProgrammaticTool>;
+      expect([...innerTools.keys()]).toEqual(['active_programmatic_tool']);
+      const input = { query: 'inner query' };
+      const config = { toolCall: { id: 'inner-call' } };
+      await innerTools.get('active_programmatic_tool')?.invoke(input, config);
+      expect(activeProgrammaticTool.invoke).toHaveBeenCalledWith(input, config);
     });
 
     it('treats an empty versioned projection as authoritative', async () => {
@@ -6350,6 +6359,30 @@ describe('createToolExecuteHandler', () => {
         ...params,
       });
     }
+
+    it('hands refs provisioned by a read_file batch to that sandbox read', async () => {
+      const fresh = {
+        id: 'fresh-1',
+        resource_id: 'user-1',
+        storage_session_id: 'sess-fresh',
+        name: 'input.csv',
+        kind: 'user' as const,
+      };
+      const readSandboxFile = jest.fn(async () => ({ content: 'a,b' }));
+      const handler = makeSandboxAuthoringHandler({
+        provisionFiles: jest.fn(async () => [fresh]),
+        readSandboxFile,
+      });
+
+      const [result] = await invokeHandler(handler, [
+        { id: 'first_read', name: Constants.READ_FILE, args: { path: '/mnt/data/input.csv' } },
+      ]);
+
+      expect(result.status).toBe('success');
+      expect(readSandboxFile).toHaveBeenCalledWith(
+        expect.objectContaining({ file_path: '/mnt/data/input.csv', files: [fresh] }),
+      );
+    });
 
     it('rejects exact replacement amplification before writing a non-attached sandbox file', async () => {
       const writeSandboxFile = jest.fn();
