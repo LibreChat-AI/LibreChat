@@ -5,6 +5,7 @@ import {
   UNSAFE_LocationContext,
   UNSAFE_RouteContext,
 } from 'react-router-dom';
+import { ChatInteractionContext } from '~/Providers/ChatInteractionContext';
 import { useFeaturePresentation } from './Context';
 import { getRelatedPage } from './registry';
 
@@ -43,7 +44,9 @@ export default function PresentationWorkspace() {
             }}
           >
             <UNSAFE_RouteContext.Provider value={retained.current.route}>
-              {retained.current.outlet}
+              <ChatInteractionContext.Provider value={chat}>
+                {retained.current.outlet}
+              </ChatInteractionContext.Provider>
             </UNSAFE_RouteContext.Provider>
           </UNSAFE_LocationContext.Provider>
         )}
