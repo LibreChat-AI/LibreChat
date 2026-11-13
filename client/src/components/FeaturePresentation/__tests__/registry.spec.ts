@@ -4,9 +4,20 @@ import {
   getPageForPath,
   getPageSettings,
   getRelatedPage,
+  pageRegistry,
 } from '../registry';
 
 describe('feature page registry', () => {
+  it.each(Object.entries(pageRegistry))(
+    'matches %s with router case and trailing slash rules',
+    (page, { path }) => {
+      for (const url of [path, path + '/', path.toUpperCase(), path.toUpperCase() + '/']) {
+        expect(getPageForPath(url)).toBe(page);
+        expect(getRelatedPage(url)).toBe(page);
+      }
+    },
+  );
+
   it.each([
     ['agents', 'agentBuilder'],
     ['skills', 'skills'],

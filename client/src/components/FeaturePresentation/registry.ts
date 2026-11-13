@@ -1,3 +1,4 @@
+import { matchPath } from 'react-router-dom';
 import type { NavigationPage, NavigationConfig } from 'librechat-data-provider';
 
 export const pageRegistry = {
@@ -19,7 +20,7 @@ export function getPageForNavId(id: string): NavigationPage | undefined {
 
 export function getPageForPath(pathname: string): NavigationPage | undefined {
   return (Object.keys(pageRegistry) as NavigationPage[]).find(
-    (page) => pathname === pageRegistry[page].path,
+    (page) => matchPath(pageRegistry[page].path, pathname) != null,
   );
 }
 
@@ -29,10 +30,10 @@ export function getRelatedPage(pathname: string): NavigationPage | undefined {
   if (page) {
     return page;
   }
-  if (/^\/skills\/[^/]+(?:\/edit)?\/?$/.test(pathname)) {
+  if (matchPath('/skills/:skillId', pathname) || matchPath('/skills/:skillId/edit', pathname)) {
     return 'skills';
   }
-  if (/^\/prompts\/[^/]+\/?$/.test(pathname)) {
+  if (matchPath('/prompts/:promptId', pathname)) {
     return 'prompts';
   }
 }
