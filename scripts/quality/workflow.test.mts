@@ -180,6 +180,19 @@ test('PR updates retain PostgreSQL contracts without starting source quality rep
   assert.equal(report.steps[prewarm].with?.['working-directory'], 'source');
 });
 
+test('comment commands from humans and bots reach trusted admission before report jobs', () => {
+  const request = workflow.jobs.request;
+  assert.equal(
+    request.if,
+    "github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/quality')",
+  );
+  assert.equal(checkouts(request)[0].with?.ref, '${{ github.sha }}');
+  assert.ok(request.steps.some(({ run }) => run === 'node scripts/quality/comment.mts request'));
+  for (const name of ['verify', 'select']) {
+    assert.match(workflow.jobs[name].if!, /needs\.request\.outputs\.accepted == 'true'/);
+  }
+});
+
 test('comment publication is trusted and serialized while PR execution stays read-only', (t) => {
   assert.ok(workflow.on.pull_request?.paths.includes('scripts/quality/**'));
   assert.equal(
