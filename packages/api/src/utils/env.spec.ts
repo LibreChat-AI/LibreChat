@@ -2395,6 +2395,26 @@ describe('resolveHeaders agent placeholders', () => {
   const agentHeaders = { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' };
   const persistedAgent = { id: 'agent_HTbJ5rDW0kOOK1a5MPBSt' };
 
+  it('preserves the template until the provider agent context is available', () => {
+    const pending = resolveHeaders({ headers: agentHeaders });
+    expect(pending).toEqual(agentHeaders);
+    expect(
+      resolveHeaders({ headers: pending, agent: persistedAgent, stripUnresolved: true }),
+    ).toEqual({ 'X-Agent-Id': persistedAgent.id });
+  });
+
+  it('uses the provider agent ahead of body fields and custom variables', () => {
+    expect(
+      resolveHeaders({
+        headers: agentHeaders,
+        agent: persistedAgent,
+        body: { agentId: 'agent_spoofed' },
+        customUserVars: { LIBRECHAT_AGENT_ID: 'agent_spoofed' },
+        stripUnresolved: true,
+      }),
+    ).toEqual({ 'X-Agent-Id': persistedAgent.id });
+  });
+
   it('resolves the agent id for a persisted agent', () => {
     const result = resolveHeaders({
       headers: { ...agentHeaders },
