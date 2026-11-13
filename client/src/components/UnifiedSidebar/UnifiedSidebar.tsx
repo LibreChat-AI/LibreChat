@@ -22,6 +22,7 @@ import { useFeaturePresentation } from '~/components/FeaturePresentation/Context
 import { MobileHeader, MobileBottomBar, MobileShortcutTargets } from './mobile';
 import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
 import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
+import { pageRegistry } from '~/components/FeaturePresentation/registry';
 import useUnifiedSidebarLinks from '~/hooks/Nav/useUnifiedSidebarLinks';
 import { ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
@@ -30,7 +31,6 @@ import SidePanelNav from '~/components/SidePanel/Nav';
 import { cn, DEFAULT_APP_TITLE } from '~/utils';
 import { createResizeMeasure } from './resize';
 import { CONSOLE_PANEL_ID } from './Console';
-import { pageRegistry } from '~/components/FeaturePresentation/registry';
 import { useLocalize } from '~/hooks';
 import Navigation from './Navigation';
 import Sidebar from './Sidebar';
@@ -96,9 +96,13 @@ function UnifiedSidebar({
   const links = useUnifiedSidebarLinks();
   const presentation = useFeaturePresentation();
   const isInsightsRoute = location.pathname.startsWith('/insights');
-  const pageActiveId = routeActiveId ?? (presentation?.page
-    ? pageRegistry[presentation.page].navId
-    : isInsightsRoute ? 'insights' : undefined);
+  const pageActiveId =
+    routeActiveId ??
+    (presentation?.page
+      ? pageRegistry[presentation.page].navId
+      : isInsightsRoute
+        ? 'insights'
+        : undefined);
   const panelExpanded = expanded && pageActiveId == null;
   const collapsedWidth = consoleLayout ? 0 : COLLAPSED_WIDTH;
 

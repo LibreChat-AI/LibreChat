@@ -205,6 +205,8 @@ function RootLayout() {
                         settled, so it needs the same travel window the scrim and
                         the pane's `inert` read. */}
                       <UnifiedSidebar
+                        layout={config?.interface?.navigation?.layout}
+                        appTitle={config?.appTitle}
                         isSliding={isSliding}
                         switchToHistory={newChatSwitchToHistory}
                       />
