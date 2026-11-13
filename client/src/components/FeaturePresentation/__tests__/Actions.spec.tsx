@@ -53,7 +53,7 @@ it.each(['panel', 'page'] as const)(
     );
     const name = screen.getByLabelText('Skill name');
     fireEvent.change(name, { target: { value: 'Unsaved skill name' } });
-    expect(screen.queryByRole('button', { name: 'Expand', exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Expand' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Request expanded view'));
     fireEvent.click(screen.getByText('Select Skills'));
     expect(router.state.location.pathname).toBe('/skills/skill-a/edit');
