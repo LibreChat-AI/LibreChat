@@ -8,6 +8,7 @@ import {
   TwoFactorSetupScreen,
   RequestPasswordReset,
 } from '~/components/Auth';
+import ParametersPage from '~/components/FeaturePresentation/ParametersPage';
 import ChatRouteOwner from '~/components/FeaturePresentation/Route';
 import FeaturePage from '~/components/FeaturePresentation/Page';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
@@ -179,7 +180,7 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'parameters',
-                  element: <FeaturePage page="parameters" />,
+                  element: <ParametersPage />,
                 },
                 {
                   path: 'mcp-settings',

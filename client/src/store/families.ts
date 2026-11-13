@@ -76,6 +76,8 @@ const conversationByIndex = atomFamily<TConversation | null, string | number>({
           if (newValue.chatProjectId) {
             newParams.set('projectId', newValue.chatProjectId);
           }
+          const chatContext = new URLSearchParams(window.location.search).get('chat');
+          if (chatContext != null) newParams.set('chat', chatContext);
           const searchParams = createSearchParams(newParams);
           const url = `${window.location.pathname}?${searchParams.toString()}`;
           /** Mirror, not navigation: Back-worthy entries are minted by real

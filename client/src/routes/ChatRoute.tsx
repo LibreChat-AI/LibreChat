@@ -4,7 +4,7 @@ import { useRecoilCallback, useRecoilValue } from 'recoil';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Button, Spinner, useToastContext } from '@librechat/client';
 import { Constants, isForcedTemporaryRetention } from 'librechat-data-provider';
-import type { TPreset, TAgentsMap } from 'librechat-data-provider';
+import type { TPreset, TAgentsMap, TModelsConfig } from 'librechat-data-provider';
 import {
   defaultSpecAwaitsAgents,
   mergeQuerySettingsWithSpec,
@@ -38,7 +38,18 @@ import store from '~/store';
 const isValidChatProjectId = (projectId: string | null): projectId is string =>
   projectId != null && /^[a-f\d]{24}$/i.test(projectId);
 
-export default function ChatRoute() {
+export default function ChatRoute({
+  initializeFrom,
+  initialModels,
+}: {
+  initializeFrom?: string;
+  initialModels?: TModelsConfig;
+} = {}) {
+  const initializeOnly = initializeFrom != null;
+  const initialLocation = useMemo(
+    () => new URL(initializeFrom ?? '/c/new', window.location.origin),
+    [initializeFrom],
+  );
   const startupQuery = useGetStartupConfig();
   const startupConfig = startupQuery.data;
   const { isAuthenticated, user, roles } = useAuthRedirect();
@@ -53,12 +64,16 @@ export default function ChatRoute() {
     [],
   );
   const index = 0;
-  const [searchParams, setSearchParams] = useSearchParams();
-  const { conversationId = '' } = useParams();
+  const [routeSearchParams, setSearchParams] = useSearchParams();
+  const searchParams = initializeOnly ? initialLocation.searchParams : routeSearchParams;
+  const { conversationId: routeConversationId = '' } = useParams();
+  const conversationId = initializeOnly
+    ? decodeURIComponent(initialLocation.pathname.slice('/c/'.length))
+    : routeConversationId;
   const projectIdParam = searchParams.get('projectId');
   const chatProjectId = isValidChatProjectId(projectIdParam) ? projectIdParam : null;
   useIdChangeEffect(conversationId);
-  usePrefetchConversationMessages(conversationId, isAuthenticated);
+  usePrefetchConversationMessages(conversationId, isAuthenticated && !initializeOnly);
   const { hasSetConversation, conversation } = store.useCreateConversationAtom(index);
   const [routeState, setRouteState] = useState({
     conversationId,
@@ -74,7 +89,7 @@ export default function ChatRoute() {
     setRouteState({ conversationId, pending: false });
   }
   useAppStartup({ startupConfig, user });
-  const { newConversation } = useNewConvo();
+  const { newConversation } = useNewConvo(0, { navigateOnChange: !initializeOnly });
   const { showToast } = useToastContext();
   const localize = useLocalize();
   const projectQuery = useProjectQuery(chatProjectId, {
@@ -114,7 +129,7 @@ export default function ChatRoute() {
     (projectNotFound || (projectQuery.isSuccess && projectQuery.data?._id !== chatProjectId));
 
   useEffect(() => {
-    if (!projectScopeMissing) {
+    if (!projectScopeMissing || initializeOnly) {
       return;
     }
     setSearchParams(
@@ -125,7 +140,7 @@ export default function ChatRoute() {
       },
       { replace: true },
     );
-  }, [projectScopeMissing, setSearchParams]);
+  }, [projectScopeMissing, initializeOnly, setSearchParams]);
 
   const initialConvoQuery = useGetConvoIdQuery(conversationId, {
     enabled:
@@ -251,6 +266,7 @@ export default function ChatRoute() {
       clearMessagesCache(queryClient, conversation?.conversationId);
       newConversation({
         keepComposerState: true,
+        ...(initializeOnly ? { modelsData: initialModels } : {}),
         template: projectTemplate,
         ...(preset ? { preset } : {}),
       });
@@ -303,6 +319,8 @@ export default function ChatRoute() {
     presetsQuery.data,
     presetsQuery.isFetched,
     startupConfig,
+    initializeOnly,
+    initialModels,
     initialConvoQuery.data,
     initialConvoQuery.isError,
     endpointsQuery.data,
@@ -337,6 +355,25 @@ export default function ChatRoute() {
     if (startupQuery.isError) void startupQuery.refetch();
     if (endpointsQuery.isError) void endpointsQuery.refetch();
   };
+
+  if (initializeOnly) {
+    return (
+      <div
+        role="status"
+        aria-label={localize('com_ui_loading')}
+        className="flex h-full items-center justify-center"
+      >
+        {routeFailure ? (
+          <div className="flex flex-col items-center gap-3" role="alert">
+            <p>{localize('com_ui_conversation_load_error')}</p>
+            <Button onClick={retryRoute}>{localize('com_ui_retry')}</Button>
+          </div>
+        ) : (
+          <Spinner tone="primary" />
+        )}
+      </div>
+    );
+  }
 
   return (
     <ToolCallsMapProvider conversationId={conversation?.conversationId ?? ''}>
