@@ -20,6 +20,9 @@
  * @see https://openresponses.org/specification
  */
 const express = require('express');
+const { logger } = require('@librechat/data-schemas');
+const { createStoredToolContinuation } = require('@librechat/api');
+const db = require('~/models');
 const {
   createResponse,
   getResponse,
@@ -41,6 +44,11 @@ const router = express.Router();
 const background = createBackgroundResponseHandlers({
   create: createResponse,
   retrieve: getResponse,
+});
+const continueTools = createStoredToolContinuation({
+  getMessage: db.getMessage,
+  getConvo: db.getConvo,
+  logger,
 });
 
 router.use(preAuthTenantMiddleware);
@@ -90,7 +98,7 @@ router.use(checkRemoteAgentsFeature);
  *   "usage": { ... }
  * }
  */
-router.post('/', checkAgentPermission, background.create);
+router.post('/', checkAgentPermission, continueTools, background.create);
 router.post('/:id/cancel', background.cancel);
 
 /**

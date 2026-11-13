@@ -215,6 +215,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').buildResponseInputChain(...args),
   loadForegroundResponseHistory: (...args) =>
     jest.requireActual('@librechat/api').loadForegroundResponseHistory(...args),
+  responseClientToolNames: (...args) =>
+    jest.requireActual('@librechat/api').responseClientToolNames(...args),
   projectStoredResponseMessage: (...args) =>
     jest.requireActual('@librechat/api').projectStoredResponseMessage(...args),
   requireResponseStorageWrite: (...args) =>
