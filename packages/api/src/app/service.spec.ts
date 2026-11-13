@@ -1,3 +1,5 @@
+import Keyv from 'keyv';
+import { createHash } from 'node:crypto';
 import {
   FileSources,
   PrincipalType,
@@ -1124,6 +1126,51 @@ describe('createAppConfigService', () => {
       expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
     });
 
+    describe.each([undefined, 'tenant-a'])('shared cache with tenantId=%s', (tenantId) => {
+      it.each(['missing', 'config', 'sentinel'] as const)(
+        'isolates sentinel writes from a base-v2 cache containing %s',
+        async (legacyEntry) => {
+          const store = new Map<string, string>();
+          const legacyCache = new Keyv({ store, namespace: 'app_config' });
+          const cache = new Keyv({ store, namespace: 'app_config' });
+          const deps = createDeps({ getCache: () => cache });
+          const service = createAppConfigService(deps);
+          const base = await service.getAppConfig({ baseOnly: true });
+          const scopeVersion = createHash('sha256')
+            .update(JSON.stringify([base, false, undefined]))
+            .digest('hex');
+          const tenant = tenantId ? `${tenantId}:tenant` : '__default__:global';
+          const legacyKey = `_OVERRIDE_:${tenant}:USER:uid1:base-v2:${scopeVersion}`;
+          const options = { role: 'USER', userId: 'uid1', tenantId };
+          const legacyValue = legacyEntry === 'sentinel' ? BASE_OVERRIDE_SENTINEL : base;
+          if (legacyEntry !== 'missing') {
+            await legacyCache.set(legacyKey, legacyValue);
+          }
+
+          expect(await service.getAppConfig(options)).toEqual(base);
+          expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+          expect(await legacyCache.get(legacyKey)).toEqual(
+            legacyEntry === 'missing' ? undefined : legacyValue,
+          );
+          expect(
+            await legacyCache.get(`_OVERRIDE_:${tenant}:USER:uid1:base-v3:${scopeVersion}`),
+          ).toBe(BASE_OVERRIDE_SENTINEL);
+
+          // A legacy replica can populate its own key after the new replica writes.
+          await legacyCache.set(legacyKey, base);
+          const replicaDeps = createDeps({
+            getCache: () => new Keyv({ store, namespace: 'app_config' }),
+          });
+          const replica = createAppConfigService(replicaDeps);
+          expect(await replica.getAppConfig(options)).toEqual(base);
+          expect(await service.getAppConfig(options)).toEqual(base);
+          expect(replicaDeps.getApplicableConfigs).not.toHaveBeenCalled();
+          expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+          expect(await legacyCache.get(legacyKey)).toEqual(base);
+        },
+      );
+    });
+
     it('caches merged config object when overrides exist', async () => {
       const deps = createDeps({
         getApplicableConfigs: jest
@@ -1312,7 +1359,7 @@ describe('createAppConfigService', () => {
       const cachedKeys = [...deps._cache._store.keys()];
       const overrideKey = cachedKeys.find((k) => k.includes('_OVERRIDE_:'));
       expect(overrideKey).toMatch(
-        /^app_config:_OVERRIDE_:__default__:global:uid1:base-v2:[a-f0-9]{64}$/,
+        /^app_config:_OVERRIDE_:__default__:global:uid1:base-v3:[a-f0-9]{64}$/,
       );
     });
 
@@ -1481,7 +1528,7 @@ describe('createAppConfigService', () => {
           k.includes('_OVERRIDE_:'),
         );
         expect(overrideKey).toMatch(
-          /^app_config:_OVERRIDE_:tenant-a:tenant:USER:base-v2:[a-f0-9]{64}$/,
+          /^app_config:_OVERRIDE_:tenant-a:tenant:USER:base-v3:[a-f0-9]{64}$/,
         );
         expect(overrideKey).not.toContain('__default__');
       });
@@ -1686,7 +1733,7 @@ describe('createAppConfigService', () => {
       expect([...deps._cache._store.keys()]).toEqual(
         expect.arrayContaining([
           expect.stringMatching(
-            /^app_config:_OVERRIDE_:__default__:global:USER:uid1:base-v2:[a-f0-9]{64}$/,
+            /^app_config:_OVERRIDE_:__default__:global:USER:uid1:base-v3:[a-f0-9]{64}$/,
           ),
         ]),
       );
