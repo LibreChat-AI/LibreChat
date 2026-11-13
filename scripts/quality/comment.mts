@@ -2,10 +2,22 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { appendFileSync, readFileSync } from 'node:fs';
 
+import type { QualityFindings } from './findings.mts';
+
+import {
+  COMMENT_LIMIT,
+  DEFAULT_CRAP_THRESHOLD,
+  DEFAULT_REFACTOR_HINTS,
+  renderSections,
+  resolveHints,
+  resolveThreshold,
+} from './render.mts';
+import { loadFindingsFile, validateFindings } from './findings.mts';
 import { reportSelection } from './changes.mts';
 
 export const GATE = 'Quality decision';
 const PREFIX = '<!-- quality-request ';
+const HEADING = '### Quality report';
 const SHA = /^[a-f0-9]{40}$/u;
 // GitHub App bots do not have collaborator permissions; trust exact account identities instead.
 const TRUSTED_BOTS = [{ login: 'lia-by-librechat[bot]', id: 328778573 }] as const;
@@ -72,6 +84,7 @@ interface Job {
   conclusion: string | null;
   status: string;
   id: number;
+  steps?: { name: string; conclusion: string | null }[];
 }
 interface Artifact {
   id: number;
@@ -131,7 +144,7 @@ export function readRequest(comment: Comment): Request | undefined {
   }
 }
 
-async function pages<T>(api: API, path: string, key?: string): Promise<T[]> {
+export async function pages<T>(api: API, path: string, key?: string): Promise<T[]> {
   const all: T[] = [];
   for (let page = 1; ; page++) {
     const result = await api.request<T[] | Record<string, T[]>>(
@@ -211,11 +224,44 @@ async function cancelRequest(api: API, context: Context, request: Request, run: 
   throw new Error('Previous quality run has not stopped; retry the request');
 }
 
+/** States exactly what `publishRun` and `gateDecision` treat as closing the gate. */
+export const GATE_FOOTER = [
+  'The gate opens only when the workflow, source selection, tooling verification, and every report',
+  "job succeed. A report job fails on a failed test in its workspace's own Jest run, a tool error,",
+  'a job timeout, or an incomplete mutation report, including a mutation shard that reaches its',
+  'execution budget. A cancelled workflow keeps the gate closed. Scores are advisory. A change-risk',
+  'file marked incomplete or unavailable, for example by a failed `api/` source-alias suite, does',
+  'not close the gate.',
+].join(' ');
+
+/** change-quality.yml's trusted job that bundles every report, and its upload steps.
+ * `workflow.test.mts` asserts the workflow uses these exact names. */
+export const REPORT_JOB = 'Quality report';
+export const REPORT_ARTIFACT = 'quality-report';
+export const REPORT_UPLOAD_STEP = 'Upload quality report';
+export const FINDINGS_ARTIFACT = 'quality-internal-findings';
+export const FINDINGS_UPLOAD_STEP = 'Upload report findings';
+
+/** One line stating whether the gate is open, and exactly what keeps it closed. */
+export function renderVerdict(request: Request, blockers: string[] = []): string {
+  if (request.check === 'ignore')
+    return '**Gate: open.** Quality checks explicitly ignored for this commit.';
+  if (request.phase !== 'completed')
+    return `**Gate: pending.** Checks are ${request.phase === 'queued' ? 'queued' : 'running'}.`;
+  if (request.conclusion === 'success')
+    return '**Gate: open.** The selected checks completed. Scores and risk levels are advisory.';
+  const reasons = blockers.length
+    ? blockers
+    : [`the workflow (${request.conclusion ?? 'failure'})`];
+  return `**Gate: closed.** Blocked by: ${reasons.join(', ')}.`;
+}
+
 export function renderRequest(
   request: Request,
   context: Context,
   currentHead: string,
   details = '',
+  blockers: string[] = [],
 ) {
   const scopes = request.scopes.join(', ') || 'none';
   const url = runURL(context, request.run);
@@ -226,26 +272,33 @@ export function renderRequest(
       : 'none';
   return [
     `${PREFIX}${JSON.stringify(request)} -->`,
-    '### Quality request',
+    HEADING,
     '',
     ...(currentHead !== request.head
       ? ['**Outdated: this request is for an earlier PR commit.**', '']
       : []),
-    `Commit: \`${request.head}\`. Requested by @${request.actor}.`,
-    `Checks: **${request.check === 'both' ? 'check-all' : request.check}**. Scopes: **${scopes}**. Static: **${request.staticMutants ? 'on' : 'off'}**${request.check === 'risk' || request.check === 'ignore' ? ' (not used)' : ''}.`,
-    `Risk: ${risk}. Mutation: ${mutation}.`,
-    ...(request.check === 'mutation' || request.check === 'both'
-      ? [
-          'Mutation testing is experimental. Only `data-schemas` is supported today. Support for more scopes is planned.',
-        ]
-      : []),
+    renderVerdict(request, blockers),
     '',
-    request.check === 'ignore'
-      ? 'Quality checks explicitly ignored for this commit.'
-      : `Status: **${request.phase}${request.conclusion ? ` (${request.conclusion})` : ''}**. [Actions run](${url}) (attempt ${request.attempt}).`,
+    ...(request.check === 'ignore'
+      ? []
+      : [
+          `Status: **${request.phase}${request.conclusion ? ` (${request.conclusion})` : ''}**. [Actions run](${url}), attempt ${request.attempt}.`,
+          '',
+        ]),
+    `- Commit: \`${request.head}\``,
+    `- Requested by: @${request.actor}`,
+    `- Check: **${request.check === 'both' ? 'check-all' : request.check}**`,
+    ...(request.check === 'ignore'
+      ? []
+      : [
+          `- Scopes: **${scopes}**`,
+          `- Static mutants: **${request.staticMutants ? 'on' : 'off'}**${request.check === 'risk' ? ' (not used by change risk)' : ''}`,
+          `- Change risk: ${risk}`,
+          `- Mutation testing (experimental, \`data-schemas\` only): ${mutation}`,
+        ]),
     ...(details ? ['', details] : []),
     '',
-    'Scores are advisory. Failed tests, tool errors and incomplete reports do not clear the gate.',
+    GATE_FOOTER,
   ].join('\n');
 }
 
@@ -401,8 +454,94 @@ export async function acceptRequest(api: API, context: Context, pr: number, comm
   return { request, comment: response.id };
 }
 
-/** Refresh from GitHub's job metadata, never by executing or rendering artifact contents. */
-export async function publishRun(api: API, context: Context, run: Run) {
+const WORKSPACES = ['data-schemas', 'api', 'server'];
+const REPORT_JOBS =
+  /^(Change risk|Mutation testing ([1-4])\/4|Mutation report) \((data-schemas|api|server)\)$/u;
+const REQUIRED_JOBS = ['Select changed source', 'Verify quality tooling'];
+/** Room left for the request header, verdict, job table, links, and footer. */
+const SHELL_MARGIN = 2_000;
+const compareOrder = (a: number[], b: number[]) =>
+  a.reduce((result, value, index) => result || value - b[index], 0);
+
+/** Sort key for a report job, or `undefined` for any other job. Change risk comes first, then
+ * mutation shards in order, then the mutation report; one kind follows the scope order. */
+function jobOrder(name: string): number[] | undefined {
+  const match = REPORT_JOBS.exec(name);
+  if (!match) return;
+  const [, check, shard, workspace] = match;
+  const kind = check === 'Change risk' ? 0 : check === 'Mutation report' ? 2 : 1;
+  return [kind, WORKSPACES.indexOf(workspace), Number(shard ?? 0)];
+}
+
+export interface PublishOptions {
+  /** Directory the workflow downloaded the `quality-internal-findings` artifact into. Without it,
+   * the comment carries the job table and links only. */
+  findingsDir?: string;
+  hints?: number;
+  threshold?: number;
+}
+
+const stepSucceeded = (job: Job | undefined, step: string) =>
+  job?.steps?.some((item) => item.name === step && item.conclusion === 'success') ?? false;
+
+/** Jobs and run state that keep the gate closed, in `GATE_FOOTER`'s terms. */
+function gateBlockers(run: Run, latestJobs: Map<string, Job>, reports: Job[]): string[] {
+  const blockers = REQUIRED_JOBS.flatMap((name) => {
+    const job = latestJobs.get(name);
+    return job?.conclusion === 'success'
+      ? []
+      : [`${name} (${job?.conclusion ?? job?.status ?? 'did not run'})`];
+  });
+  for (const job of reports)
+    if (job.conclusion !== 'success')
+      blockers.push(`${job.name} (${job.conclusion ?? job.status})`);
+  for (const job of latestJobs.values()) {
+    if (REQUIRED_JOBS.includes(job.name) || jobOrder(job.name)) continue;
+    if (['failure', 'cancelled', 'timed_out'].includes(job.conclusion ?? ''))
+      blockers.push(`${job.name} (${job.conclusion})`);
+  }
+  if (run.conclusion !== 'success') blockers.push(`the workflow (${run.conclusion ?? run.status})`);
+  return blockers;
+}
+
+/** The validated findings for this exact request, or a note saying why none are shown. The file
+ * is trusted only when the trusted `Quality report` job's own upload step succeeded, so a
+ * same-named artifact from a PR-code job cannot stand in for it. */
+function loadReport(
+  request: Request,
+  context: Context,
+  latestJobs: Map<string, Job>,
+  findingsDir: string,
+): { data: QualityFindings } | { note: string } {
+  if (!stepSucceeded(latestJobs.get(REPORT_JOB), FINDINGS_UPLOAD_STEP))
+    return { note: 'No report data: the quality report job did not upload its findings.' };
+  const loaded = loadFindingsFile(findingsDir);
+  if (!loaded.ok) {
+    console.warn(`Findings artifact rejected: ${loaded.error}`);
+    return { note: `Report data was rejected: ${loaded.error}.` };
+  }
+  if (loaded.value === undefined) return { note: 'No report data was downloaded for this run.' };
+  const checked = validateFindings(loaded.value, {
+    repository: context.repository,
+    pr: request.pr,
+    base: request.base,
+    head: request.head,
+  });
+  if (!checked.ok) {
+    console.warn(`Findings artifact failed validation: ${checked.error}`);
+    return { note: `Report data was rejected: ${checked.error}.` };
+  }
+  return { data: checked.value };
+}
+
+/** Refresh from GitHub's job metadata and the validated findings file. Artifact text is only ever
+ * escaped into the comment, never executed. */
+export async function publishRun(
+  api: API,
+  context: Context,
+  run: Run,
+  options: PublishOptions = {},
+) {
   const match = /^Quality PR #(\d+) request (\d+)$/u.exec(run.display_title);
   if (
     run.event !== 'issue_comment' ||
@@ -424,6 +563,14 @@ export async function publishRun(api: API, context: Context, run: Run) {
   if (!comment) return;
   const request = readRequest(comment)!;
   if (!matchesRequest(run, request, context)) return;
+  // The record says this attempt already completed, so a delayed progress event for it must not
+  // cancel, re-read or replace the full report. A new attempt or a new request still updates.
+  if (
+    request.attempt === run.run_attempt &&
+    request.phase === 'completed' &&
+    run.status !== 'completed'
+  )
+    return;
   const pull = await api.request<Pull>('GET', `pulls/${pr}`);
   const latest = requests(await comments(api, pr), pr).toSorted((a, b) => b.request - a.request)[0];
   if (
@@ -443,66 +590,82 @@ export async function publishRun(api: API, context: Context, run: Run) {
   for (const job of jobs) {
     if ((latestJobs.get(job.name)?.id ?? 0) < job.id) latestJobs.set(job.name, job);
   }
-  const reports = [...latestJobs.values()].filter(({ name }) =>
-    /^(?:Change risk|Mutation testing [1-4]\/4|Mutation report) \((?:data-schemas|api|server)\)$/u.test(
-      name,
-    ),
-  );
+  const reports = [...latestJobs.values()]
+    .flatMap((job) => {
+      const order = jobOrder(job.name);
+      return order ? [{ job, order }] : [];
+    })
+    .sort((a, b) => compareOrder(a.order, b.order))
+    .map(({ job }) => job);
   const artifacts = await pages<Artifact>(api, `actions/runs/${run.id}/artifacts`, 'artifacts');
-  const links = artifacts.filter(
-    ({ name, expired }) =>
-      !expired &&
-      new RegExp(
-        `^change-(?:risk|mutation)-(?:data-schemas|api|server)-${request.head}(?:-shard-[1-4])?$`,
-        'u',
-      ).test(name),
-  );
-  // A delayed progress event must not replace a terminal report.
-  if (
-    request.attempt === run.run_attempt &&
-    request.phase === 'completed' &&
-    run.status !== 'completed'
-  )
-    return;
+  const reportArtifact = stepSucceeded(latestJobs.get(REPORT_JOB), REPORT_UPLOAD_STEP)
+    ? artifacts.find((artifact) => artifact.name === REPORT_ARTIFACT && !artifact.expired)
+    : undefined;
   request.attempt = run.run_attempt;
   request.phase = run.status === 'completed' ? 'completed' : 'running';
   const checksSucceeded =
-    ['Select changed source', 'Verify quality tooling'].every(
-      (name) => latestJobs.get(name)?.conclusion === 'success',
-    ) && reports.every((job) => job.conclusion === 'success');
+    REQUIRED_JOBS.every((name) => latestJobs.get(name)?.conclusion === 'success') &&
+    reports.every((job) => job.conclusion === 'success');
   request.conclusion =
     run.status !== 'completed'
       ? null
       : run.conclusion === 'success' && !checksSucceeded
         ? 'failure'
         : run.conclusion;
-  const details = [
-    ...(reports.length
-      ? [
-          '| Check | Result |',
-          '| --- | --- |',
-          ...reports.map(
-            (job) =>
-              `| [${job.name}](${runURL(context, run.id)}/job/${job.id}) | ${job.conclusion ?? job.status} |`,
-          ),
-        ]
-      : [
-          'No report jobs have started. A successful empty selection means no supported source changed.',
-        ]),
-    '',
-    ...(links.length
-      ? [
-          'Reports and scores:',
-          ...links.map(
-            (artifact, index) =>
-              `${index + 1}. [${artifact.name}](${runURL(context, run.id)}/artifacts/${artifact.id})`,
-          ),
-        ]
-      : ['No report artifacts are available.']),
-  ].join('\n');
-  await api.request('PATCH', `issues/comments/${comment.id}`, {
-    body: renderRequest(request, context, pull.head.sha, details),
-  });
+  const blockers =
+    request.conclusion === null || request.conclusion === 'success'
+      ? []
+      : gateBlockers(run, latestJobs, reports);
+  const runPage = runURL(context, run.id);
+  const table = reports.length
+    ? [
+        '| Check | Result |',
+        '| --- | --- |',
+        ...reports.map(
+          (job) => `| [${job.name}](${runPage}/job/${job.id}) | ${job.conclusion ?? job.status} |`,
+        ),
+      ].join('\n')
+    : 'No report jobs have started. A successful empty selection means no supported source changed.';
+  const jobsBlock =
+    run.status === 'completed' && reports.length
+      ? `<details><summary>Jobs (${reports.length})</summary>\n\n${table}\n\n</details>`
+      : table;
+  const links = [
+    ...(reportArtifact
+      ? [`[All data](${runPage}/artifacts/${reportArtifact.id}) (\`${REPORT_ARTIFACT}\` artifact)`]
+      : []),
+    `[Run page](${runPage})`,
+  ].join(' · ');
+  let report: { data: QualityFindings } | { note: string } | undefined;
+  if (run.status === 'completed' && options.findingsDir !== undefined) {
+    report =
+      pull.head.sha !== request.head
+        ? { note: 'The PR head moved after this run, so report details are omitted.' }
+        : loadReport(request, context, latestJobs, options.findingsDir);
+  }
+  const compose = (sections: string) =>
+    renderRequest(
+      request,
+      context,
+      pull.head.sha,
+      [sections, jobsBlock, links].filter(Boolean).join('\n\n'),
+      blockers,
+    );
+  const shell = compose(report && 'note' in report ? report.note : '');
+  let body = shell;
+  if (report && 'data' in report) {
+    const sections = renderSections(report.data, {
+      repositoryUrl: `${context.server}/${context.repository}`,
+      head: request.head,
+      budget: COMMENT_LIMIT - shell.length - SHELL_MARGIN,
+      hints: options.hints ?? DEFAULT_REFACTOR_HINTS,
+      threshold: options.threshold ?? DEFAULT_CRAP_THRESHOLD,
+    });
+    body = compose(sections);
+    if (body.length > COMMENT_LIMIT)
+      body = compose('The report is too large for this comment; see All data.');
+  }
+  await api.request('PATCH', `issues/comments/${comment.id}`, { body });
   await updateGate(api, context, pr);
 }
 
@@ -519,10 +682,11 @@ export async function refreshPull(api: API, context: Context, pr: number) {
     // Keep results and artifact links, including when a force push restores the same commit.
     const stale = '\n**Outdated: this request is for an earlier PR commit.**\n';
     const clean = comment.body.replace(stale, '');
+    // Older request comments carry the `### Quality request` heading.
     const body =
       request.head === pull.head.sha
         ? clean
-        : clean.replace('### Quality request\n', `### Quality request\n${stale}`);
+        : clean.replace(/^(### Quality (?:request|report)\n)/mu, `$1${stale}`);
     if (body === comment.body) continue;
     await api.request('PATCH', `issues/comments/${comment.id}`, { body });
   }
@@ -593,6 +757,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       api,
       context,
       await api.request<Run>('GET', `actions/runs/${event.workflow_run.id}`),
+      {
+        // The workflow downloads the findings only for a completed run's event.
+        findingsDir: event.workflow_run.status === 'completed' ? 'findings' : undefined,
+        hints: resolveHints(env.QUALITY_REFACTOR_HINTS),
+        threshold: resolveThreshold(env.QUALITY_CRAP_THRESHOLD),
+      },
     );
   } else if (env.GITHUB_EVENT_NAME === 'pull_request_target') {
     await refreshPull(api, context, event.pull_request.number);
