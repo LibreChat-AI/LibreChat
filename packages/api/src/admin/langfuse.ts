@@ -54,6 +54,7 @@ import {
 import { redirectPolicyFor, resolveLangfuseHeaders } from '~/langfuse/utils';
 import { decryptConfigSecret, encryptConfigSecretFields } from './secrets';
 import { scopeHeadersToDestination } from '~/langfuse/destinations';
+import { trackRequestProductFact } from '~/tracking/request';
 import { resolveLangfuseSession } from '~/langfuse/session';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { createAdminAuditEmitter } from './audit';
@@ -652,6 +653,13 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
       if (activationError) {
         throw activationError;
       }
+      if (updated) {
+        trackRequestProductFact(req, {
+          name: 'librechat.langfuse.connection.changed',
+          enabled: status.enabled,
+          configured: status.configured,
+        });
+      }
       return res.status(200).json(status);
     } catch (error) {
       if (isConfigRevisionConflict(error)) {
@@ -769,9 +777,15 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
       });
 
       // An inactive config is invisible to `getConnection` (which reads
-      // without `includeInactive`), so report the same empty status here
-      // rather than echoing back fields nobody else can see.
-      return res.status(200).json(buildStatus(updated?.isActive === false ? null : updated));
+      // without `includeInactive`), so report the same empty status here.
+      const status = buildStatus(updated?.isActive === false ? null : updated);
+      if (updated) {
+        trackRequestProductFact(req, {
+          name: 'librechat.langfuse.promptSync.changed',
+          enabled: status.promptSync.enabled,
+        });
+      }
+      return res.status(200).json(status);
     } catch (error) {
       logger.error('[adminLangfuse] updatePromptSync error:', error);
       return res.status(500).json({ error: 'Failed to update Langfuse prompt sync setting' });

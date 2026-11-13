@@ -12,6 +12,7 @@ const mockGetSkillByIdQuery = jest.fn(() => ({
 }));
 
 jest.mock('librechat-data-provider', () => ({
+  ...jest.requireActual('librechat-data-provider'),
   PermissionTypes: { SKILLS: 'skills' },
   Permissions: { USE: 'use', CREATE: 'create' },
 }));

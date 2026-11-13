@@ -3483,3 +3483,29 @@ describe('complete channel operator configuration', () => {
     },
   );
 });
+
+describe('telemetry.productTracking', () => {
+  it('defaults an explicit empty policy to off and leaves absent telemetry unchanged', () => {
+    expect(configSchema.parse({ version: '1.3.18' }).telemetry).toBeUndefined();
+    expect(telemetrySchema.parse({ productTracking: {} }).productTracking).toEqual({
+      enabled: false,
+    });
+  });
+
+  it.each([false, true])('accepts explicit enabled: %p', (enabled) => {
+    expect(telemetrySchema.parse({ productTracking: { enabled } }).productTracking).toEqual({
+      enabled,
+    });
+  });
+
+  it.each([{ enabled: 'true' }, { enable: true }])(
+    'rejects invalid policy %p',
+    (productTracking) => {
+      expect(telemetrySchema.safeParse({ productTracking }).success).toBe(false);
+    },
+  );
+
+  it('holds the whole policy at the deployment boundary', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS['telemetry.productTracking']).toBe('operator');
+  });
+});

@@ -7,13 +7,17 @@ version: 1.3.18
 # Cache settings: Set to true to enable caching
 cache: true
 
-# Browser telemetry and session recording are independent opt-ins. Collector URL,
-# authentication and service settings remain in .env. YAML flags override .env;
-# omitting them preserves the corresponding environment settings.
+# RUM and session recording are independent opt-ins. Their collector URL,
+# authentication and service settings remain in .env. RUM YAML flags override .env;
+# omitting those flags preserves the corresponding environment settings.
+# Product event tracking uses YAML only and is off when omitted.
 # stackTraceLimit (1 to 1000) sets how many frames each error stack records; unset keeps
 # Node's default of 10, or --stack-trace-limit from NODE_OPTIONS.
 # telemetry:
 #   stackTraceLimit: 50
+#   productTracking:
+#     enabled: false # Requires a host-provided event callback. Off when omitted.
+#                    # Apply with a server restart and browser refresh.
 #   rum:
 #     enabled: true
 #     sessionReplay:
