@@ -1,11 +1,17 @@
 import mongoose from 'mongoose';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { PostgresDatabase } from '../pool';
+import { authenticationSnapshotKey, readPostgresAuthentication } from './import';
 import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createPostgresTestDatabase } from '../postgres.helper';
 import { createMCPServerMethods } from '~/methods/mcpServer';
 import { createPostgresTokenQueries } from './tokenQueries';
+import { createMongoAuthenticationSource } from './mongo';
+import { createMongoTokenQueries } from './tokenQueries';
 import { migratePostgresAuthentication } from './schema';
+import { createTokenMethods } from '~/methods/token';
 import { createPostgresTokenMethods } from './token';
+import { createTokenModel } from '~/models/token';
 
 const postgres = process.env.PG_TEST_URL ? describe : describe.skip;
 const userId = '0123456789abcdef01234567';
@@ -128,5 +134,97 @@ postgres('selected PostgreSQL MCP token queries', () => {
       (await queries.getMCPTokenGenerations({ userId, serverNames: ['server'] }))[0].metadata
         ?.credential_set_id,
     ).toBeUndefined();
+  });
+  it('detects A to B to A token updates even when every credential field is restored', async () => {
+    await insert({ userId, token: 'A', expiresIn: 60 });
+    const input = { userId, serverNames: ['server'], limit: 96 };
+    const before = await queries.getMCPAuthorityTokens(input);
+    await tokens.updateToken({ userId, token: 'A' }, { token: 'B' });
+    await tokens.updateToken({ userId, token: 'B' }, { token: 'A' });
+    const after = await queries.getMCPAuthorityTokens(input);
+    expect(before.tokens[0].storageRevision).toBe('0');
+    expect(after.tokens[0].storageRevision).toBe('2');
+    expect(after).not.toEqual(before);
+    expect({ ...after.tokens[0], storageRevision: '0' }).toEqual(before.tokens[0]);
+    const source = readPostgresAuthentication(db);
+    for await (const row of source()) {
+      expect(row.kind).toBe('tokens');
+      expect(row.values.revision).toBe(2);
+      expect(authenticationSnapshotKey(row)).toEqual(expect.any(String));
+    }
+  });
+});
+
+describe('Mongo authoritative Token reads with secondaryPreferred configured', () => {
+  let mongo: MongoMemoryReplSet;
+  beforeAll(async () => {
+    mongo = await MongoMemoryReplSet.create({
+      replSet: { count: 2 },
+      instanceOpts: [{ args: ['--nounixsocket'] }, { args: ['--nounixsocket'] }],
+    });
+    await mongoose.connect(mongo.getUri(), { readPreference: 'secondaryPreferred' });
+    createTokenModel(mongoose);
+  }, 60000);
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mongo?.stop();
+  });
+  it('pins outside-transaction counts, rows, distinct users and generation aggregation to primary', async () => {
+    const methods = createTokenMethods(mongoose);
+    await methods.createToken({
+      userId,
+      token: 'A',
+      type: 'mcp_oauth',
+      identifier: 'mcp:server',
+      expiresIn: 60,
+      metadata: { credential_set_id: 'generation' },
+    });
+    expect(mongoose.connection.getClient().readPreference.mode).toBe('secondaryPreferred');
+    const read = jest.spyOn(mongoose.Query.prototype, 'read');
+    const aggregateRead = jest.spyOn(mongoose.Aggregate.prototype, 'read');
+    const observed: mongoose.QueryOptions[] = [];
+    const execute = mongoose.Query.prototype.exec;
+    const queryExecution = jest
+      .spyOn(mongoose.Query.prototype, 'exec')
+      .mockImplementation(function (this: mongoose.Query<unknown, unknown>) {
+        if (
+          this.model.modelName === 'Token' &&
+          'op' in this &&
+          (this.op === 'countDocuments' || this.op === 'find')
+        )
+          observed.push(this.getOptions());
+        return execute.call(this);
+      });
+    const queries = createMongoTokenQueries(mongoose);
+    const input = { userId, serverNames: ['server'], limit: 96 };
+    try {
+      const before = await queries.getMCPAuthorityTokens(input);
+      expect(before.tokens[0].storageRevision).toBe('0');
+      await queries.findMCPTokenUserIds({ serverName: 'server', scope: 'exact' });
+      await queries.getMCPTokenGenerations(input);
+      expect(read.mock.calls).toEqual([['primary'], ['primary'], ['primary']]);
+      expect(aggregateRead.mock.calls).toEqual([['primary']]);
+      expect(observed.map((options) => options.readConcern)).toEqual([
+        { level: 'majority' },
+        { level: 'majority' },
+      ]);
+      await methods.updateToken({ userId, token: 'A' }, { token: 'B' });
+      await methods.updateToken({ userId, token: 'B' }, { token: 'A' });
+      const after = await queries.getMCPAuthorityTokens(input);
+      expect(after.tokens[0].storageRevision).toBe('2');
+      expect({ ...after.tokens[0], storageRevision: '0' }).toEqual(before.tokens[0]);
+      await mongoose.models.Token.updateOne({ userId }, { $unset: { __v: 1 } });
+      expect((await queries.getMCPAuthorityTokens(input)).tokens[0].storageRevision).toBe('0');
+      const source = createMongoAuthenticationSource(mongoose);
+      for await (const row of source()) {
+        expect(row.kind).toBe('tokens');
+        expect(row.values.revision).toBe(0);
+        expect(authenticationSnapshotKey(row)).toEqual(expect.any(String));
+      }
+    } finally {
+      read.mockRestore();
+      aggregateRead.mockRestore();
+      queryExecution.mockRestore();
+    }
   });
 });

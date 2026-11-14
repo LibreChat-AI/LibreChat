@@ -40,6 +40,7 @@ const fields: Record<AuthenticationCollection, Record<string, string>> = {
     identifier: 'identifier',
     token: 'token',
     metadata: 'metadata',
+    revision: '__v',
     created_at: 'createdAt',
     expires_at: 'expiresAt',
   },
@@ -122,6 +123,7 @@ export function createMongoAuthenticationSource(
                 value = Buffer.from(value.buffer);
               else throw new Error('Invalid imported passkey bytes');
             }
+            if (column === 'revision' && value === null) value = 0;
             if (column === 'metadata' && value instanceof Map) value = Object.fromEntries(value);
             values[column] = value;
           }

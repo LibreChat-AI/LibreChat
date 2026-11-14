@@ -48,6 +48,7 @@ describe.each([false, true])('pre-auth tenant routes (strict=%s)', (strictMode) 
     await mongoose.connect(mongo.getUri());
     schemas.createModels(mongoose);
     models = require('~/models');
+    await models.initializeAuthentication({});
     originalFindUser = models.findUser;
     findUser = jest.spyOn(models, 'findUser');
     passport.use('local', require('~/strategies/localStrategy')());
@@ -92,6 +93,7 @@ describe.each([false, true])('pre-auth tenant routes (strict=%s)', (strictMode) 
 
   afterAll(async () => {
     jest.restoreAllMocks();
+    await models.closeAuthentication();
     await mongoose.disconnect();
     await mongo?.stop();
     process.env = savedEnv;

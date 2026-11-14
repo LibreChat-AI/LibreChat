@@ -83,7 +83,7 @@ const OPENID_SESSION_ID_TOKEN_EXPIRY_BUFFER_SECONDS = 30;
 const findPasswordResetToken = async (userId) => {
   const typedToken = await findToken(
     {
-      userId,
+      userId: String(userId),
       type: AuthTokenTypes.PASSWORD_RESET,
     },
     latestAuthTokenOptions,
@@ -95,7 +95,7 @@ const findPasswordResetToken = async (userId) => {
 
   return await findToken(
     {
-      userId,
+      userId: String(userId),
       email: null,
       identifier: null,
       type: null,
@@ -107,7 +107,7 @@ const findPasswordResetToken = async (userId) => {
 const findEmailVerificationToken = async (user) => {
   const typedToken = await findToken(
     {
-      userId: user._id,
+      userId: String(user._id),
       email: user.email,
       type: AuthTokenTypes.EMAIL_VERIFICATION,
     },
@@ -120,7 +120,7 @@ const findEmailVerificationToken = async (user) => {
 
   return await findToken(
     {
-      userId: user._id,
+      userId: String(user._id),
       email: user.email,
       identifier: null,
       type: null,
@@ -132,12 +132,12 @@ const findEmailVerificationToken = async (user) => {
 const deleteEmailVerificationTokens = (user) =>
   Promise.all([
     deleteTokens({
-      userId: user._id,
+      userId: String(user._id),
       email: user.email,
       type: AuthTokenTypes.EMAIL_VERIFICATION,
     }),
     deleteTokens({
-      userId: user._id,
+      userId: String(user._id),
       email: user.email,
       identifier: null,
       type: null,
@@ -148,7 +148,7 @@ const getEmailVerificationTokenDeleteQuery = (emailVerificationToken) => {
   if (!emailVerificationToken.identifier && !emailVerificationToken.type) {
     return {
       token: emailVerificationToken.token,
-      userId: emailVerificationToken.userId,
+      userId: String(emailVerificationToken.userId),
       email: emailVerificationToken.email,
       identifier: null,
       type: null,
@@ -242,14 +242,14 @@ const clearOpenIDAuthTokens = (req, res, userId, tenantId) => {
  */
 const logoutUser = async (req, refreshToken) => {
   try {
-    const userId = req.user._id;
-    const session = await findSession({ userId: userId, refreshToken });
+    const userId = String(req.user._id);
+    const session = await findSession({ userId, refreshToken });
 
     if (session) {
       try {
-        await deleteSession({ sessionId: session._id });
+        await deleteSession({ sessionId: String(session._id) });
       } catch (deleteErr) {
-        logger.error('[logoutUser] Failed to delete session.', deleteErr);
+        logger.error('[logoutUser] Failed to delete session.', getSafeErrorMetadata(deleteErr));
         return { status: 500, message: 'Failed to delete session.' };
       }
     }
@@ -257,12 +257,12 @@ const logoutUser = async (req, refreshToken) => {
     try {
       req.session.destroy();
     } catch (destroyErr) {
-      logger.debug('[logoutUser] Failed to destroy session.', destroyErr);
+      logger.debug('[logoutUser] Failed to destroy session.', getSafeErrorMetadata(destroyErr));
     }
 
     return { status: 200, message: 'Logout successful' };
-  } catch (err) {
-    return { status: 500, message: err.message };
+  } catch (_err) {
+    return { status: 500, message: 'Failed to logout.' };
   }
 };
 
@@ -301,7 +301,7 @@ const sendVerificationEmail = async (user) => {
   });
 
   await createToken({
-    userId: user._id,
+    userId: String(user._id),
     email,
     type: AuthTokenTypes.EMAIL_VERIFICATION,
     token: hash,
@@ -373,7 +373,9 @@ const verifyEmail = async (req) => {
     return { message: 'Email verification was successful', status: 'success' };
   }
 
-  const updatedUser = await updateUser(emailVerificationData.userId, { emailVerified: true });
+  const updatedUser = await updateUser(String(emailVerificationData.userId), {
+    emailVerified: true,
+  });
 
   if (!updatedUser) {
     logger.warn(`[verifyEmail] [User update failed] [User ID: ${user._id}]`);
@@ -578,7 +580,7 @@ const resetPassword = (userId, token, password) =>
           appTitle: process.env.APP_TITLE,
         }),
     },
-    { userId, token, password },
+    { userId: String(userId), token, password },
   );
 
 /**
@@ -692,18 +694,18 @@ const setAuthTokens = async (userId, res, _session = null, req = null) => {
       refreshTokenExpires = session.expiration.getTime();
     }
 
-    const user = await getUserById(userId);
+    const user = await getUserById(String(userId));
     const sessionExpiry = math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY);
     const token = await generateToken(user, sessionExpiry);
 
     setLocalSessionCookies(res, {
       refreshToken,
       expires: new Date(refreshTokenExpires),
-      userId: user?._id ?? userId,
+      userId: String(user?._id ?? userId),
       tenantId: user?.tenantId,
     });
 
-    setCloudFrontAuthCookies(req, res, user, { userId: user?._id ?? userId });
+    setCloudFrontAuthCookies(req, res, user, { userId: String(user?._id ?? userId) });
 
     return token;
   } catch (error) {
@@ -921,7 +923,7 @@ const setOpenIDAuthTokens = (
 /** Stores OpenID refresh-token state independently of the shorter Express session. */
 const storeOpenIDSession = async (userId, refreshToken, tenantId, previousRefreshToken) => {
   return storeOpenIdSession(
-    { userId, refreshToken, tenantId, previousRefreshToken },
+    { userId: String(userId), refreshToken, tenantId, previousRefreshToken },
     { upsertSession, deleteSession },
   );
 };
@@ -964,7 +966,7 @@ const resendVerificationEmail = async (req) => {
     });
 
     await createToken({
-      userId: user._id,
+      userId: String(user._id),
       email: user.email,
       type: AuthTokenTypes.EMAIL_VERIFICATION,
       token: hash,

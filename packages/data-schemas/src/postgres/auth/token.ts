@@ -115,6 +115,7 @@ export function createPostgresTokenMethods(db: PostgresDatabase): TokenMethods &
       );
       return found.rows[0] ? record(found.rows[0]) : null;
     }
+    assignments.push('revision=revision+1');
     const result = await db.query<TokenRow>(
       `UPDATE auth_tokens SET ${assignments.join(',')} WHERE id=(SELECT id FROM auth_tokens
        WHERE ${filter.text} LIMIT 1 FOR UPDATE) RETURNING ${columns}`,
@@ -216,6 +217,7 @@ export function createPostgresTokenMethods(db: PostgresDatabase): TokenMethods &
       if (data.type !== undefined) set('type', data.type);
       if (data.identifier !== undefined) set('identifier', data.identifier);
       if (data.metadata !== undefined) set('metadata', metadata(data.metadata));
+      assignments.push('revision=revision+1');
       const result = await db.query(
         `UPDATE auth_tokens SET ${assignments.join(',')} WHERE ${filter.text} RETURNING id`,
         values,

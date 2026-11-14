@@ -131,10 +131,10 @@ describe('required-enrollment nonce cleanup', () => {
     const [, promotion, guard] = mockUpdateUser.mock.calls[0];
     expect(promotion.twoFactorEnrolledAt).toBeInstanceOf(Date);
     expect(guard).toEqual({ pendingTotpSecret: 'encrypted-secret' });
-    expect(mockFindSession).toHaveBeenCalledWith(
-      { userId: 'user1', refreshToken: 'caller-refresh' },
-      { lean: false },
-    );
+    expect(mockFindSession).toHaveBeenCalledWith({
+      userId: 'user1',
+      refreshToken: 'caller-refresh',
+    });
     expect(mockDeleteAllUserSessions).toHaveBeenCalledWith(
       { userId: 'user1' },
       { excludeCurrentSession: true, currentSessionId: 'session-1' },

@@ -32,6 +32,7 @@ CREATE TABLE auth_tokens (
   id text PRIMARY KEY CHECK (id ~ '^[0-9a-f]{24}$'),
   user_id text NOT NULL CHECK (user_id ~ '^[0-9a-f]{24}$'), tenant_id text,
   email text, type text, scope text UNIQUE, identifier text, token text NOT NULL,
+  revision bigint NOT NULL DEFAULT 0 CHECK (revision BETWEEN 0 AND 9007199254740991),
   metadata jsonb, created_at timestamptz NOT NULL, expires_at timestamptz NOT NULL
 );
 CREATE INDEX auth_tokens_user ON auth_tokens (user_id,type,identifier,tenant_id);

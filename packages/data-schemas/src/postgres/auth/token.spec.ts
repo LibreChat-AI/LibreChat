@@ -150,4 +150,22 @@ postgres('native PostgreSQL tokens', () => {
       token: 'a',
     });
   });
+  it('increments storage revisions only for successful writes, not empty updates or insert replays', async () => {
+    const data = { userId, token: 'A', expiresIn: 60 };
+    await methods.replaceTokenIfCurrent('revision', null, data);
+    const revision = async () =>
+      (await db.query('SELECT revision::text FROM auth_tokens WHERE scope=$1', ['revision']))
+        .rows[0].revision;
+    expect(await revision()).toBe('0');
+    await methods.updateToken({ scope: 'revision' }, {});
+    await methods.replaceTokenIfCurrent('revision', null, data);
+    expect(await revision()).toBe('0');
+    await methods.updateToken({ scope: 'revision' }, { token: 'B' });
+    expect(await revision()).toBe('1');
+    await methods.replaceTokenIfCurrent('revision', 'B', data);
+    expect(await revision()).toBe('2');
+    expect(await methods.updateToken({ token: 'stale' }, { token: 'lost' })).toBeNull();
+    expect(await revision()).toBe('2');
+    expect(await methods.findToken({ scope: 'revision' })).not.toHaveProperty('revision');
+  });
 });
