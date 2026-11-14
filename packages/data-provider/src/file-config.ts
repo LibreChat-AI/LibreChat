@@ -376,6 +376,8 @@ export const codeInterpreterMimeTypes = [
   excelMimeTypes,
   applicationMimeTypes,
   imageMimeTypes,
+  /** Listed in `codeInterpreterMimeTypesList`; without it an SVG is refused at upload */
+  /^image\/(svg|svg\+xml)$/,
 ];
 
 export const codeTypeMapping: { [key: string]: string } = {
