@@ -13,31 +13,49 @@ import { withMongo } from '../db';
 
 const model = 'gemini-2.5-flash';
 
+interface BillingTransaction {
+  tokenType: string;
+  rate: number;
+  rawAmount: number;
+  tokenValue: number;
+  inputTokens: number;
+  writeTokens: number;
+  readTokens: number;
+}
+
 async function expectConfiguredBilling(page: Page) {
   await sendMessageAndWaitForCompletion(page, 'E2E_CACHE_USAGE: 5m');
   const conversationId = new URL(page.url()).pathname.split('/').pop();
   expect(conversationId).toBeTruthy();
+  let transactions: BillingTransaction[] = [];
   await expect
     .poll(
-      () =>
-        withMongo(async (db) => {
-          const rows = await db
-            .collection('transactions')
+      async () => {
+        transactions = await withMongo((db) =>
+          db
+            .collection<BillingTransaction>('transactions')
             .find({ conversationId, model })
-            .toArray();
-          return rows.map(({ tokenType, rate, rateDetail }) => ({ tokenType, rate, rateDetail }));
-        }),
+            .toArray(),
+        );
+        return transactions.map(({ tokenType }) => tokenType).sort();
+      },
       { timeout: 30000 },
     )
-    .toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          tokenType: 'prompt',
-          rateDetail: expect.objectContaining({ input: 1.23, read: 0.09 }),
-        }),
-        expect.objectContaining({ tokenType: 'completion', rate: 4.56 }),
-      ]),
-    );
+    .toEqual(['completion', 'prompt']);
+
+  const prompt = transactions.find(({ tokenType }) => tokenType === 'prompt');
+  const completion = transactions.find(({ tokenType }) => tokenType === 'completion');
+  if (!prompt || !completion) {
+    throw new Error('Billing transactions missing');
+  }
+  expect(prompt).toMatchObject({ writeTokens: -3000, readTokens: -500 });
+  expect(prompt.inputTokens).toBeLessThan(0);
+  const expectedPromptValue =
+    (prompt.inputTokens + prompt.writeTokens) * 1.23 + prompt.readTokens * 0.09;
+  expect(prompt.tokenValue).toBeCloseTo(expectedPromptValue);
+  expect(prompt.rate).toBeCloseTo(expectedPromptValue / prompt.rawAmount);
+  expect(completion.rate).toBe(4.56);
+  expect(completion.tokenValue).toBeCloseTo(completion.rawAmount * 4.56);
 }
 
 test('Native Google chat uses configured billing rates @scenario:google-chat-configured-billing', async ({
