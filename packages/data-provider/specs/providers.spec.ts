@@ -46,6 +46,7 @@ describe('resolveProviderId', () => {
     expect(resolveProviderId('kimi')).toBe(ProviderId.moonshot);
     expect(resolveProviderId('AMD Lemonade')).toBe(ProviderId.lemonade);
     expect(resolveProviderId('Lemonade Server')).toBe(ProviderId.lemonade);
+    expect(resolveProviderId('GMI Cloud')).toBe(ProviderId.gmi);
   });
 
   it('returns null for empty and unknown input', () => {

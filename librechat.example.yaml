@@ -1342,6 +1342,23 @@ endpoints:
       titleModel: 'mixtral-8x7b-32768'
       modelDisplayLabel: 'groq'
 
+    # GMI Cloud Example
+    - name: 'GMI Cloud'
+      apiKey: '${GMI_API_KEY}'
+      baseURL: 'https://api.gmi-serving.com/v1'
+      models:
+        default:
+          - 'deepseek-ai/DeepSeek-V4-Pro'
+          - 'deepseek-ai/DeepSeek-V4-Flash'
+          - 'zai-org/GLM-5.2-FP8'
+          - 'moonshotai/kimi-k2.7-code-highspeed'
+          - 'Qwen/Qwen3.8-Max'
+          - 'MiniMaxAI/MiniMax-M3'
+        fetch: true
+      titleConvo: true
+      titleModel: 'deepseek-ai/DeepSeek-V4-Flash'
+      modelDisplayLabel: 'GMI Cloud'
+
     # Mistral AI Example
     - name: 'Mistral' # Unique name for the endpoint
       # For `apiKey` and `baseURL`, you can use environment variables that you define.

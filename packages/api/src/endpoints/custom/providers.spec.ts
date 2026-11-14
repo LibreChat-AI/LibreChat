@@ -58,6 +58,15 @@ describe('resolveEndpointProviderId', () => {
     ).toBe(ProviderId.cohere);
   });
 
+  it('resolves the GMI Cloud host documented in librechat.example.yaml', () => {
+    expect(
+      resolveEndpointProviderId({
+        name: 'Inference',
+        baseURL: 'https://api.gmi-serving.com/v1',
+      }),
+    ).toBe(ProviderId.gmi);
+  });
+
   it('honors an explicit native provider when the host is unknown', () => {
     expect(
       resolveEndpointProviderId({

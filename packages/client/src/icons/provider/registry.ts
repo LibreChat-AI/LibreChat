@@ -97,6 +97,7 @@ export const providerIcons: Record<ProviderId, ProviderIconDef> = {
   [ProviderId.cohere]: { art: mark('cohere'), label: 'Cohere', mono: true },
   [ProviderId.deepseek]: { art: mark('deepseek'), label: 'DeepSeek', mono: true },
   [ProviderId.fireworks]: { art: mark('fireworks'), label: 'Fireworks', mono: true },
+  [ProviderId.gmi]: { art: mark('gmicloud'), label: 'GMI Cloud', mono: true },
   [ProviderId.groq]: { art: mark('groq'), label: 'Groq', mono: true },
   [ProviderId.helicone]: { art: mark('helicone'), label: 'Helicone', mono: true },
   [ProviderId.huggingface]: { art: mark('huggingface'), label: 'Hugging Face', mono: true },
