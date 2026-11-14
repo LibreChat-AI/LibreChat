@@ -14,6 +14,7 @@ const {
 } = require('librechat-data-provider');
 const {
   math,
+  createAuthenticationStorage,
   isEnabled,
   storeOpenIdSession,
   checkEmailConfig,
@@ -81,9 +82,9 @@ const invalidEmailVerificationMessage = 'Invalid or expired email verification t
 const OPENID_SESSION_ID_TOKEN_EXPIRY_BUFFER_SECONDS = 30;
 
 const findPasswordResetToken = async (userId) => {
-  const typedToken = await findToken(
+  const typedToken = await authenticationStorage.findToken(
     {
-      userId: String(userId),
+      userId,
       type: AuthTokenTypes.PASSWORD_RESET,
     },
     latestAuthTokenOptions,
@@ -93,9 +94,9 @@ const findPasswordResetToken = async (userId) => {
     return typedToken;
   }
 
-  return await findToken(
+  return await authenticationStorage.findToken(
     {
-      userId: String(userId),
+      userId,
       email: null,
       identifier: null,
       type: null,
@@ -105,9 +106,9 @@ const findPasswordResetToken = async (userId) => {
 };
 
 const findEmailVerificationToken = async (user) => {
-  const typedToken = await findToken(
+  const typedToken = await authenticationStorage.findToken(
     {
-      userId: String(user._id),
+      userId: user._id,
       email: user.email,
       type: AuthTokenTypes.EMAIL_VERIFICATION,
     },
@@ -118,9 +119,9 @@ const findEmailVerificationToken = async (user) => {
     return typedToken;
   }
 
-  return await findToken(
+  return await authenticationStorage.findToken(
     {
-      userId: String(user._id),
+      userId: user._id,
       email: user.email,
       identifier: null,
       type: null,
@@ -131,13 +132,13 @@ const findEmailVerificationToken = async (user) => {
 
 const deleteEmailVerificationTokens = (user) =>
   Promise.all([
-    deleteTokens({
-      userId: String(user._id),
+    authenticationStorage.deleteTokens({
+      userId: user._id,
       email: user.email,
       type: AuthTokenTypes.EMAIL_VERIFICATION,
     }),
-    deleteTokens({
-      userId: String(user._id),
+    authenticationStorage.deleteTokens({
+      userId: user._id,
       email: user.email,
       identifier: null,
       type: null,
@@ -148,7 +149,7 @@ const getEmailVerificationTokenDeleteQuery = (emailVerificationToken) => {
   if (!emailVerificationToken.identifier && !emailVerificationToken.type) {
     return {
       token: emailVerificationToken.token,
-      userId: String(emailVerificationToken.userId),
+      userId: emailVerificationToken.userId,
       email: emailVerificationToken.email,
       identifier: null,
       type: null,
@@ -240,31 +241,7 @@ const clearOpenIDAuthTokens = (req, res, userId, tenantId) => {
  * @param {string} refreshToken
  * @returns
  */
-const logoutUser = async (req, refreshToken) => {
-  try {
-    const userId = String(req.user._id);
-    const session = await findSession({ userId, refreshToken });
-
-    if (session) {
-      try {
-        await deleteSession({ sessionId: String(session._id) });
-      } catch (deleteErr) {
-        logger.error('[logoutUser] Failed to delete session.', getSafeErrorMetadata(deleteErr));
-        return { status: 500, message: 'Failed to delete session.' };
-      }
-    }
-
-    try {
-      req.session.destroy();
-    } catch (destroyErr) {
-      logger.debug('[logoutUser] Failed to destroy session.', getSafeErrorMetadata(destroyErr));
-    }
-
-    return { status: 200, message: 'Logout successful' };
-  } catch (_err) {
-    return { status: 500, message: 'Failed to logout.' };
-  }
-};
+const logoutUser = (...args) => authenticationStorage.logoutUser(...args);
 
 /**
  * Creates Token and corresponding Hash for verification
@@ -300,8 +277,8 @@ const sendVerificationEmail = async (user) => {
     template: 'verifyEmail.handlebars',
   });
 
-  await createToken({
-    userId: String(user._id),
+  await authenticationStorage.createToken({
+    userId: user._id,
     email,
     type: AuthTokenTypes.EMAIL_VERIFICATION,
     token: hash,
@@ -368,21 +345,23 @@ const verifyEmail = async (req) => {
   }
 
   if (user.emailVerified) {
-    await deleteTokens(getEmailVerificationTokenDeleteQuery(emailVerificationData));
+    await authenticationStorage.deleteTokens(
+      getEmailVerificationTokenDeleteQuery(emailVerificationData),
+    );
     logger.info(`[verifyEmail] Email already verified [User ID: ${user._id}]`);
     return { message: 'Email verification was successful', status: 'success' };
   }
 
-  const updatedUser = await updateUser(String(emailVerificationData.userId), {
-    emailVerified: true,
-  });
+  const updatedUser = await authenticationStorage.verifyEmail(emailVerificationData.userId);
 
   if (!updatedUser) {
     logger.warn(`[verifyEmail] [User update failed] [User ID: ${user._id}]`);
     return new Error(invalidEmailVerificationMessage);
   }
 
-  await deleteTokens(getEmailVerificationTokenDeleteQuery(emailVerificationData));
+  await authenticationStorage.deleteTokens(
+    getEmailVerificationTokenDeleteQuery(emailVerificationData),
+  );
   logger.info(`[verifyEmail] Email verification successful [User ID: ${user._id}]`);
   return { message: 'Email verification was successful', status: 'success' };
 };
@@ -563,16 +542,17 @@ const requestPasswordReset = async (req) => {
  * @param {string} password
  * @returns {Promise<import('@librechat/api').PasswordResetResult>}
  */
-const resetPassword = (userId, token, password) =>
+const completePasswordReset = (input) =>
   resetPasswordWithToken(
     {
       findResetToken: findPasswordResetToken,
       getUserById,
       updateUser,
-      deleteTokens,
+      deleteTokens: authenticationStorage.deleteTokens,
       compareToken: compareSecret,
       hashPassword: hashSecret,
-      consumeResetToken: (resetToken) => deleteTokens(getPasswordResetTokenDeleteQuery(resetToken)),
+      consumeResetToken: (resetToken) =>
+        authenticationStorage.deleteTokens(getPasswordResetTokenDeleteQuery(resetToken)),
       sendResetNotice: (user) =>
         sendPasswordResetNotice(user, {
           isEmailConfigured: checkEmailConfig,
@@ -580,8 +560,10 @@ const resetPassword = (userId, token, password) =>
           appTitle: process.env.APP_TITLE,
         }),
     },
-    { userId: String(userId), token, password },
+    input,
   );
+
+const resetPassword = (...args) => authenticationStorage.resetPassword(...args);
 
 /**
  * Reads the previously issued CloudFront cookie scope used for stale cookie cleanup.
@@ -677,45 +659,7 @@ const setCloudFrontAuthCookies = (req, res, user, options = {}) => {
  * @param {ServerRequest | null} [req=null]
  * @returns
  */
-const setAuthTokens = async (userId, res, _session = null, req = null) => {
-  try {
-    let session = _session;
-    let refreshToken;
-    let refreshTokenExpires;
-    const expiresIn = math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY);
-
-    if (session && session._id && session.expiration != null) {
-      refreshTokenExpires = session.expiration.getTime();
-      refreshToken = await generateRefreshToken(session);
-    } else {
-      const result = await createSession(String(userId), { expiresIn });
-      session = result.session;
-      refreshToken = result.refreshToken;
-      refreshTokenExpires = session.expiration.getTime();
-    }
-
-    const user = await getUserById(String(userId));
-    const sessionExpiry = math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY);
-    const token = await generateToken(user, sessionExpiry);
-
-    setLocalSessionCookies(res, {
-      refreshToken,
-      expires: new Date(refreshTokenExpires),
-      userId: String(user?._id ?? userId),
-      tenantId: user?.tenantId,
-    });
-
-    setCloudFrontAuthCookies(req, res, user, { userId: String(user?._id ?? userId) });
-
-    return token;
-  } catch (error) {
-    logger.error(
-      '[setAuthTokens] Error in setting authentication tokens:',
-      getSafeErrorMetadata(error),
-    );
-    throw error;
-  }
-};
+const setAuthTokens = (...args) => authenticationStorage.setAuthTokens(...args);
 
 const resolveOpenIDAuthTokenOptions = (optionsOrUserId, existingRefreshToken, tenantId) => {
   if (optionsOrUserId != null && typeof optionsOrUserId === 'object') {
@@ -921,12 +865,7 @@ const setOpenIDAuthTokens = (
 };
 
 /** Stores OpenID refresh-token state independently of the shorter Express session. */
-const storeOpenIDSession = async (userId, refreshToken, tenantId, previousRefreshToken) => {
-  return storeOpenIdSession(
-    { userId: String(userId), refreshToken, tenantId, previousRefreshToken },
-    { upsertSession, deleteSession },
-  );
-};
+const storeOpenIDSession = (...args) => authenticationStorage.storeOpenIDSession(...args);
 
 /**
  * Resend Verification Email
@@ -965,8 +904,8 @@ const resendVerificationEmail = async (req) => {
       template: 'verifyEmail.handlebars',
     });
 
-    await createToken({
-      userId: String(user._id),
+    await authenticationStorage.createToken({
+      userId: user._id,
       email: user.email,
       type: AuthTokenTypes.EMAIL_VERIFICATION,
       token: hash,
@@ -991,6 +930,23 @@ const resendVerificationEmail = async (req) => {
     };
   }
 };
+
+const authenticationStorage = createAuthenticationStorage({
+  sessions: { findSession, createSession, deleteSession, generateRefreshToken, upsertSession },
+  tokens: { findToken, createToken, deleteTokens },
+  getUserById,
+  updateUser,
+  generateToken,
+  resetPassword: completePasswordReset,
+  storeOpenIdSession,
+  setLocalSessionCookies,
+  setCloudFrontAuthCookies,
+  math,
+  env: process.env,
+  defaultRefreshTokenExpiry: DEFAULT_REFRESH_TOKEN_EXPIRY,
+  defaultSessionExpiry: DEFAULT_SESSION_EXPIRY,
+  logger,
+});
 
 module.exports = {
   logoutUser,
