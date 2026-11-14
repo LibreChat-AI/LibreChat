@@ -141,6 +141,11 @@ const useSpeechToTextBrowser = (
         return;
       }
 
+      /* The library clears its transcript on start only when not continuous, so
+         with Auto-transcribe on every take would open with the previous one. */
+      lastTranscript.current = null;
+      lastInterim.current = null;
+      resetTranscript();
       SpeechRecognition.startListening({
         language: languageSTT,
         continuous: autoTranscribeAudio,
@@ -152,6 +157,7 @@ const useSpeechToTextBrowser = (
       isMicrophoneAvailable,
       languageSTT,
       localize,
+      resetTranscript,
       showToast,
       sttExternal,
     ],
