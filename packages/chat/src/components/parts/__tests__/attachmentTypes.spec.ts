@@ -118,7 +118,7 @@ describe('isInternalSandboxArtifact', () => {
   });
 
   it('does NOT match a bare `.dirkeep` (likely user-uploaded scaffolding)', () => {
-    /** A bare `.dirkeep` never originates from the sandbox — the dotfile
+    /** A bare `.dirkeep` never originates from the sandbox: the dotfile
      * rewrite + disambiguator step in `sanitizeArtifactPath` always
      * produces `_.dirkeep-<6 hex>`. Treat the bare form as user content
      * (e.g. a checked-in directory marker) and let it render. */
@@ -213,7 +213,7 @@ describe('displayFilename', () => {
      * user-named files like `report-deadbe.csv` and `report-beef01.csv`
      * onto the same chip label `report.csv`. Without a structural
      * discriminator (the leading `_.` we use for the dotfile case),
-     * we deliberately leave non-dotfile names alone — uglier when the
+     * we deliberately leave non-dotfile names alone; uglier when the
      * file *was* sanitized, but never collapses distinct files. */
     expect(displayFilename('report-deadbe.csv')).toBe('report-deadbe.csv');
     expect(displayFilename('report-beef01.csv')).toBe('report-beef01.csv');
@@ -251,7 +251,7 @@ describe('attachmentSalience', () => {
 
   it('treats undefined `bytes` as neutral so non-code-exec sources do not silently sink', () => {
     /** Web-search results, uploaded files where the schema omits `bytes`,
-     * etc. should keep their input order — only an explicit `bytes === 0`
+     * etc. should keep their input order; only an explicit `bytes === 0`
      * counts as the empty-placeholder shape we want to demote. */
     expect(attachmentSalience(baseAttachment({}))).toBe(0);
   });

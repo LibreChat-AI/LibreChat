@@ -227,7 +227,7 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
         <span className="shrink-0 font-medium">{fileCount}</span>
         {summary.length > 0 && (
           <span className="min-w-0 truncate text-start text-xs font-normal" title={summary}>
-            {'— '}
+            {'· '}
             {summary}
           </span>
         )}
