@@ -181,6 +181,11 @@ endpoints:
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
     sdkRuntimes:
+      remote-example:
+        remote:
+          url: ws://127.0.0.1:8804/sdk
+          secret: e2e-remote-sdk-fixture-secret-not-a-production-key
+        roles: [ADMIN, USER]
       e2e-sdk:
         module: ./e2e/setup/sdk-runtime.cjs
         roles: [ADMIN]
@@ -229,6 +234,7 @@ endpoints:
       # pauses the probe.
       allowAlways: true
       ask:
+        - 'inspect_example'
         - 'mcp:e2e-memory:approval_*'
       reason: E2E approval required before running {tool}.
       hooks:

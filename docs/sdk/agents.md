@@ -70,8 +70,9 @@ are unchanged. The binding grants no authority by itself.
 
 ## Compatibility and validation
 
-Protocol 1 runs inside the LibreChat process. It establishes saved identity and execution binding;
-it does not claim remote process isolation or an HTTP registration/event-ingestion protocol.
+Protocol 1 supports operator-installed modules and separately hosted SDK workers. Remote workers
+use the same saved identity and execution binding; see the runnable
+[remote SDK example](../../examples/sdk-runtime/README.md) and its configuration fragment.
 Native agent chains and configured native subagent compositions containing a runtime binding
 are rejected rather than silently ignoring execution bindings. A runtime can construct its own SDK graph while retaining the host configuration.
 
@@ -91,3 +92,46 @@ Before downgrading any replica, remove the runtime configuration to stop new bin
 clear existing bindings with `sdk_runtime: null`. Verify that no active runs or current agent
 bindings depend on a runtime before the downgrade. Removing configuration alone disables
 execution on supported servers; it does not rewrite stored agents.
+
+## Remote execution contract
+
+Choose `remote: { url, secret }` instead of `module` in a runtime registration.
+Only operator YAML can set runtime registrations; stored tenant/role/user config overrides cannot
+replace modules, destinations, credentials, roles, or remove those protections. The secret supports
+the `${ENV_VAR}` syntax and must contain at least 32 random characters. URLs require `wss://` except
+for loopback development. Connections carry a short-lived, runtime-audience signed invocation with
+the saved agent, run, user, tenant, and conversation identities. The worker must authorize that
+identity against its deployment policy. The worker never receives a browser session or database
+credentials. Keep secrets separate per trusted runtime deployment and restrict network access.
+
+The `@librechat/api/sdk` entry exports `createRemoteSdkServer` and `createRemoteSdkRun`. The server
+factory must return an actual `@librechat/agents` Run with the supplied run and saved-agent IDs,
+and preserve supplied handlers, hooks, checkpointer, and cancellation signal. Workers own their
+installed tools, model configuration, provider credentials, and custom graph. Host model callbacks,
+provider clients, native tool registries, and arbitrary RunConfig closures do not cross the wire.
+Remote execution therefore fails closed on deployments with active model-bound content/PII
+protection, or a provider-text protection adapter, until a supported remote adapter exists.
+Stream circuit-breaker limits are forwarded to the worker.
+Host policy hooks still apply, and policy transport failures stop execution. A trusted runtime is
+executable operator code, not a sandbox for untrusted agent authors.
+
+Native SDK events pass through the existing host handlers, job stream, persistence, and UI.
+Browser reconnects use that job stream. Stop aborts the worker cooperatively; completed tool side
+effects cannot be undone. A lost host-worker socket fails the turn and aborts the worker, with no
+automatic retry/replay. Host Mongo checkpoints let a new worker Run continue approvals after a
+page reload or worker restart. Remote HITL requires an explicit host checkpointer; implicit worker
+memory is insufficient. Checkpoint access is scoped to the signed thread and host-owned execution
+generation; detached child threads and live steering/preemption are not supported by this first bridge.
+Worker deployments must use a compatible SDK and host bridge release.
+
+Graph state must be plain data or supported tagged values: LangChain messages, LangGraph Send,
+bytes, dates, maps, sets, big integers, and nonfinite numbers. Functions and unknown classes fail
+instead of silently losing state.
+
+Transport limits on each `remote` registration are `connectTimeoutMs` (10000), `rpcTimeoutMs`
+(60000), `maxRunMs` (600000), `maxFrameBytes` (1048576), and `maxBufferedBytes` (4194304).
+Oversized events/checkpoints/results fail closed; raise limits explicitly for larger workloads.
+Worker admission limits are configurable through `createRemoteSdkServer` options. Invocation replay
+tracking is process-local; deployments requiring replay exclusion across worker replicas must supply
+that admission guarantee at their deployment boundary. This is not remote worker enrollment or a
+replacement for domain-specific authorization inside tools.
