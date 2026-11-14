@@ -7,6 +7,18 @@ version: 1.3.18
 # Cache settings: Set to true to enable caching
 cache: true
 
+# Regional role caches: opt in after every replica runs a supporting release.
+# Enable change streams on the roles collection before starting watchers; cold role
+# reads and watchers use the primary database. Cached entries expire even if events
+# are missed. Set changeStreamsEnabled: false to retain TTL-only caching during a
+# source outage. These settings take effect on restart.
+# roleCache:
+#   enabled: true
+#   changeStreamsEnabled: true
+#   ttlMs: 60000
+#   retryDelayMs: 1000
+#   maxAwaitTimeMs: 1000
+
 # Browser telemetry and session recording are independent opt-ins. Collector URL,
 # authentication and service settings remain in .env. YAML flags override .env;
 # omitting them preserves the corresponding environment settings.

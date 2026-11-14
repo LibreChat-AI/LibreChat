@@ -41,6 +41,7 @@
     "test:cache-integration:stream": "jest --testPathPatterns=\"\\.stream_integration\\.(spec|test)\\.ts$\" --coverage=false --runInBand --forceExit",
     "test:cache-integration": "npm run test:cache-integration:core && npm run test:cache-integration:cluster && npm run test:cache-integration:mcp && npm run test:cache-integration:stream",
     "test:integration": "jest --testPathPatterns=\"\\.integration\\.(spec|test)\\.ts$\" --coverage=false --runInBand --forceExit",
+    "test:roles-integration": "jest src/cache/roles.redis.spec.ts --coverage=false --runInBand",
     "test:s3-integration": "jest --testPathPatterns=\"src/storage/s3/.*\\.integration\\.spec\\.ts$\" --coverage=false --runInBand",
     "test:agents-integration": "jest --testPathPatterns=\"src/agents/.*\\.integration\\.spec\\.ts$\" --coverage=false --runInBand --forceExit",
     "verify": "npm run test:ci",

@@ -257,7 +257,8 @@ export function createRoleMethods(
     roleName: string,
     fieldsToSelect: string | string[] | null = null,
   ): Promise<IRole> {
-    const cache = deps.getCache?.(CacheKeys.ROLES);
+    const store = deps.getCache?.(CacheKeys.ROLES);
+    const cache = store?.snapshot ? await store.snapshot() : store;
     try {
       if (cache) {
         const cachedRole = await cache.get(scopedCacheKey(roleName));
@@ -267,6 +268,9 @@ export function createRoleMethods(
       }
       const Role = mongoose.models.Role;
       let query = Role.findOne(roleDocumentFilter(roleName, 'getRoleByName'));
+      if (cache?.primaryReads) {
+        query = query.read('primary');
+      }
       if (fieldsToSelect) {
         query = query.select(fieldsToSelect);
       }
