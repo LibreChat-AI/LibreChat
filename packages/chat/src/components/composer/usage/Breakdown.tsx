@@ -122,6 +122,13 @@ export default function Breakdown({
   const localize = useLocalize();
   const [hoveredSegment, setHoveredSegment] = useState<string | null>(null);
   const [toolsExpanded, setToolsExpanded] = useState(false);
+  /** A card that opens already expanded has no resize for its details to wait
+   *  out. Render-phase update, so the first roll already holds. */
+  const [initialExpanded] = useState(expanded);
+  const [resized, setResized] = useState(false);
+  if (!resized && expanded !== initialExpanded) {
+    setResized(true);
+  }
   const [insightsOpen, setInsightsOpen] = useState(false);
   const insightsId = useId();
   const toolBreakdownId = useId();
@@ -397,17 +404,19 @@ export default function Breakdown({
           {/* The card changes width as this rolls. The details keep the wide
               card's width through both rolls, centered and clipped, so the card
               uncovers one settled layout instead of reflowing it every frame.
-              The columns size from this element's own width for the same
-              reason: two once it reaches 38rem (two 18.625rem tracks and the
-              gap). `relative` above extends the clip to the `sr-only` text
-              inside, which would otherwise overflow the popover and raise its
-              scrollbar. */}
+              The hold is keyed to the open state, so it restarts when a
+              collapse is reversed midway. The columns size from this element's
+              own width for the same reason: two once it reaches 38rem (two
+              18.625rem tracks and the gap). `relative` above extends the clip
+              to the `sr-only` text inside, which would otherwise overflow the
+              popover and raise its scrollbar. */}
           <div
             className={cn(
               'mt-3 grid w-full shrink-0 items-start gap-3',
               'grid-cols-[repeat(auto-fit,minmax(min(18.625rem,100%),1fr))]',
               '[--hold-width:var(--usage-card-wide,100%)]',
-              'animate-hold-width motion-reduce:animate-none',
+              resized &&
+                'group-data-[state=open]/details:animate-hold-width motion-reduce:group-data-[state=open]/details:animate-none',
               'group-data-[state=closed]/details:w-(--hold-width)',
             )}
             data-testid="context-details"
