@@ -16,8 +16,7 @@ import { useToolPreparation } from '../preparation';
  * field or the first item in the batched `questions` array.
  *
  * Mounted only for a live, unanswered call (the settled record gates on
- * `isSubmitting`), so the host's live-pause read runs only then and settled
- * cards in history do not subscribe.
+ * `isSubmitting`). The host supplies the conversation's live pauses.
  */
 export default function AskUserQuestionProgress({
   args,

@@ -25,6 +25,22 @@ describe('AskHost live pauses', () => {
     mockPauses = { ids: [], hasUnattributed: false };
   });
 
+  test('updates mounted progress cards when the conversation pause changes', () => {
+    const view = () => (
+      <AskHost saveDrafts={false}>
+        <AskUserQuestionProgress args='{"question":"Ready?"}' toolCallId="call-1" />
+      </AskHost>
+    );
+    const { rerender } = render(view());
+    expect(screen.getByText('Ready?')).toBeInTheDocument();
+    mockPauses = { ids: ['call-1'], hasUnattributed: false };
+    rerender(view());
+    expect(screen.queryByText('Ready?')).not.toBeInTheDocument();
+    mockPauses = { ids: [], hasUnattributed: false };
+    rerender(view());
+    expect(screen.getByText('Ready?')).toBeInTheDocument();
+  });
+
   test('shows the in-progress question the conversation has not opened yet', () => {
     renderProgress('call-1');
     expect(screen.getByText('Which environment?')).toBeInTheDocument();

@@ -7,8 +7,7 @@ import { ChatContext } from '~/Providers/ChatContext';
 import { useCachedMessages } from '~/data-provider';
 
 /**
- * Live ask pauses in the open conversation. Called by the in-progress card, so the messages
- * subscription starts only while that card is mounted.
+ * Live ask pauses in the open conversation, subscribed by the host.
  */
 export function useChatLiveAskPauses(): LiveAskPauses | null {
   const conversationId = useContext(ChatContext)?.conversation?.conversationId;
@@ -25,8 +24,9 @@ export default function AskHost({
   saveDrafts: boolean;
   children?: ReactNode;
 }) {
+  const liveAskPauses = useChatLiveAskPauses();
   return (
-    <AskAnswerHostProvider saveDrafts={saveDrafts} useLiveAskPauses={useChatLiveAskPauses}>
+    <AskAnswerHostProvider saveDrafts={saveDrafts} liveAskPauses={liveAskPauses}>
       {children}
     </AskAnswerHostProvider>
   );

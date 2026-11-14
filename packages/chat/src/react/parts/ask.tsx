@@ -54,30 +54,24 @@ export type AskAnswerSubmit = (
 const AskAnswerHostContext = createContext(false);
 
 /** No live pause. A card outside the host stays visible rather than hiding itself. */
-const readNoLiveAskPauses = (): LiveAskPauses | null => null;
-
-/**
- * The reader's live-pause lookup. It is a hook: the progress card calls it on every render, and
- * only while that card is mounted, so settled history does not subscribe.
- */
-const LiveAskPausesContext = createContext<() => LiveAskPauses | null>(readNoLiveAskPauses);
+const LiveAskPausesContext = createContext<LiveAskPauses | null>(null);
 
 export function AskAnswerHostProvider({
   saveDrafts,
-  useLiveAskPauses = readNoLiveAskPauses,
+  liveAskPauses = null,
   children,
 }: {
   saveDrafts: boolean;
   /**
-   * Which ask calls already have an interactive pause. Called by the in-progress card. Absent,
-   * no pause is treated as live.
+   * Which ask calls already have an interactive pause. The host owns the subscription;
+   * absent data leaves the in-progress card visible.
    */
-  useLiveAskPauses?: () => LiveAskPauses | null;
+  liveAskPauses?: LiveAskPauses | null;
   children?: ReactNode;
 }): ReactNode {
   return (
     <AskAnswerHostContext.Provider value={saveDrafts}>
-      <LiveAskPausesContext.Provider value={useLiveAskPauses}>
+      <LiveAskPausesContext.Provider value={liveAskPauses}>
         {children}
       </LiveAskPausesContext.Provider>
     </AskAnswerHostContext.Provider>
@@ -88,7 +82,7 @@ export function useAskAnswerHost(): boolean {
   return useContext(AskAnswerHostContext);
 }
 
-/** The host's live pauses, or none where the host did not supply a reader. */
+/** The host's live pauses, or none outside a provider. */
 export function useLiveAskPauses(): LiveAskPauses | null {
-  return useContext(LiveAskPausesContext)();
+  return useContext(LiveAskPausesContext);
 }

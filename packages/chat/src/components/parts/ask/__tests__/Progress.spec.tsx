@@ -24,13 +24,9 @@ let mockLivePauses: LiveAskPauses = {
   hasUnattributed: false,
 };
 
-function useTestPauses(): LiveAskPauses | null {
-  return mockLivePauses;
-}
-
 const renderProgress = (ui: React.ReactElement) =>
   render(
-    <AskAnswerHostProvider saveDrafts={false} useLiveAskPauses={useTestPauses}>
+    <AskAnswerHostProvider saveDrafts={false} liveAskPauses={mockLivePauses}>
       {ui}
     </AskAnswerHostProvider>,
   );
@@ -38,6 +34,24 @@ const renderProgress = (ui: React.ReactElement) =>
 describe('AskUserQuestionProgress', () => {
   beforeEach(() => {
     mockLivePauses = { ids: [], hasUnattributed: false };
+  });
+
+  test('updates live pause data without changing consumer hooks and defaults to visible', () => {
+    const card = <AskUserQuestionProgress args='{"question":"Ready?"}' toolCallId="call_1" />;
+    const hosted = (liveAskPauses?: LiveAskPauses | null) => (
+      <AskAnswerHostProvider saveDrafts={false} liveAskPauses={liveAskPauses}>
+        {card}
+      </AskAnswerHostProvider>
+    );
+    const { rerender, unmount } = render(hosted());
+    expect(screen.getByText('Ready?')).toBeInTheDocument();
+    expect(() => rerender(hosted({ ids: ['call_1'], hasUnattributed: false }))).not.toThrow();
+    expect(screen.queryByText('Ready?')).not.toBeInTheDocument();
+    expect(() => rerender(hosted(null))).not.toThrow();
+    expect(screen.getByText('Ready?')).toBeInTheDocument();
+    unmount();
+    render(card);
+    expect(screen.getByText('Ready?')).toBeInTheDocument();
   });
 
   test('streams the question text from partial args', () => {
@@ -142,7 +156,7 @@ describe('question preparation transitions', () => {
       </ToolPreparation>
     );
     const hosted = (node: React.ReactElement) => (
-      <AskAnswerHostProvider saveDrafts={false} useLiveAskPauses={useTestPauses}>
+      <AskAnswerHostProvider saveDrafts={false} liveAskPauses={mockLivePauses}>
         {node}
       </AskAnswerHostProvider>
     );
