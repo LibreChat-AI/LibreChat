@@ -540,6 +540,30 @@ describe('createEndpointsConfigService', () => {
       );
     });
 
+    it.each([
+      [{ enabled: true }, 'expanded'],
+      [{ enabled: true, panel: 'expanded' }, 'expanded'],
+      [{ enabled: true, panel: 'collapsed' }, 'collapsed'],
+    ])('exposes the review panel mode in %p', async (toolApproval, expected) => {
+      const deps = createMockDeps({
+        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+          [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+        }),
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.agents]: { toolApproval },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.agents]?.toolApproval?.panel).toBe(expected);
+    });
+
     it('merges bedrock availableRegions', async () => {
       const deps = createMockDeps({
         loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({

@@ -109,6 +109,23 @@ describe('host-side file edit limits', () => {
   });
 });
 
+describe('tool approval review panel', () => {
+  it('keeps the panel absent unless configured, so the panel still expands as before', () => {
+    expect(agentsEndpointSchema.parse({}).toolApproval).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ toolApproval: { enabled: true } }).toolApproval).toEqual({
+      enabled: true,
+    });
+  });
+
+  it.each(['expanded', 'collapsed'] as const)('accepts panel: %s', (panel) => {
+    expect(agentsEndpointSchema.parse({ toolApproval: { panel } }).toolApproval?.panel).toBe(panel);
+  });
+
+  it.each(['open', 'Expanded', true, 0, {}])('rejects panel: %p', (panel) => {
+    expect(agentsEndpointSchema.safeParse({ toolApproval: { panel } }).success).toBe(false);
+  });
+});
+
 describe('skill deletion worker config', () => {
   it('defaults and accepts deployment-specific sweep timing', () => {
     expect(configSchema.parse({ version: '1.0' }).skillDeletion).toEqual({

@@ -174,6 +174,8 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
           enabled: toolApproval?.enabled === true,
           agentModes: toolApproval?.enabled === true && toolApproval.agentModes === true,
           mode: toolApproval?.mode,
+          /** Presentation only; defaults to the historic auto-expanding panel. */
+          panel: toolApproval?.panel ?? 'expanded',
           allow: toolApproval?.allow,
           deny: toolApproval?.deny,
           ask: toolApproval?.ask,

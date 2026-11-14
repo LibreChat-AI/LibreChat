@@ -1420,6 +1420,20 @@ const managementApiSchema = z.object({ auth: managementApiAuthSchema.optional() 
 export const toolApprovalModeSchema = z.enum(['default', 'dontAsk', 'bypass']);
 
 /**
+ * How the composer's tool-approval review panel behaves when a run pauses for review.
+ *
+ * - `expanded` (default): the panel opens by itself as soon as a pending approval arrives.
+ * - `collapsed`: the panel stays closed until the user opens it, from the thread's approval
+ *   card or from the composer's "Review N actions" toggle.
+ *
+ * This only changes presentation. Approval policy, the decisions offered and tool execution
+ * are unchanged, and the per-conversation open/closed state the user sets by hand is kept.
+ */
+export const toolApprovalPanelSchema = z.enum(['expanded', 'collapsed']);
+
+export type TToolApprovalPanel = z.infer<typeof toolApprovalPanelSchema>;
+
+/**
  * Per-endpoint tool-approval policy.
  *
  * Shape mirrors `@librechat/agents`'s `ToolPolicyConfig` so the host can map it
@@ -1462,6 +1476,9 @@ export const toolApprovalPolicySchema = z
   .object({
     enabled: z.boolean().optional(),
     mode: toolApprovalModeSchema.optional(),
+    /** Whether the composer's review panel opens automatically when a run pauses. See
+     *  {@link toolApprovalPanelSchema}. Defaults to `expanded`. */
+    panel: toolApprovalPanelSchema.optional(),
     /** Enable after all replicas support agent-scoped approval modes and grants. */
     agentModes: z.boolean().optional(),
     /** Bounded grant lookups fail back to manual review, never automatic approval. */
