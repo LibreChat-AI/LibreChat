@@ -41,7 +41,7 @@ services:
       - langfuse-fanout
 
   langfuse-fanout-redis:
-    image: redis:7.4-alpine
+    image: docker.io/library/redis:7.4-alpine
     restart: always
     expose:
       - '6379'
@@ -49,7 +49,7 @@ services:
       - langfuse-fanout
 
   langfuse-fanout-otel:
-    image: otel/opentelemetry-collector-contrib:0.143.0
+    image: docker.io/otel/opentelemetry-collector-contrib:0.143.0
     restart: always
     command: ['--config=/etc/otelcol/otelcol.yaml']
     env_file:
