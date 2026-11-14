@@ -1479,16 +1479,17 @@ describe('getOpenAIConfig', () => {
         model: 'gpt-4-turbo',
         temperature: 0.8, // From addParams
         streaming: false,
-        useResponsesApi: true, // From web_search
       });
+      /** web_search is skipped for non-canonical base URLs (custom gateway) */
+      expect(result.llmConfig.useResponsesApi).toBeUndefined();
       expect(result.llmConfig.reasoning).toBeUndefined();
       expect(result.llmConfig.maxTokens).toBe(2000);
       expect(result.llmConfig.modelKwargs).toEqual({
-        text: { verbosity: Verbosity.medium },
-        reasoning: { effort: ReasoningEffort.high },
+        reasoning_effort: ReasoningEffort.high,
+        verbosity: Verbosity.medium,
         customParam: 'custom-value',
       });
-      expect(result.tools).toEqual([{ type: 'web_search' }]);
+      expect(result.tools).toEqual([]);
       expect(result.configOptions).toMatchObject({
         baseURL: 'https://api.custom.com',
         defaultHeaders: { 'X-Custom': 'value' },
