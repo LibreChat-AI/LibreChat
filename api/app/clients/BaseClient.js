@@ -1921,8 +1921,14 @@ class BaseClient {
     const attachmentsProcessed =
       this.options.attachments && !(this.options.attachments instanceof Promise);
     if (attachmentsProcessed) {
+      /* Only files this request submits move to the current message. A tool file the
+       * turn refreshes (code environment) keeps its context in the message that carries
+       * it; moving it would rewrite the history in front of the new turn. */
+      const submittedFileIds = new Set(
+        (this.options.req?.body?.files ?? []).map((file) => file?.file_id),
+      );
       for (const attachment of this.options.attachments) {
-        if (attachment?.file_id) {
+        if (attachment?.file_id && submittedFileIds.has(attachment.file_id)) {
           contextSeen.add(attachment.file_id);
         }
       }

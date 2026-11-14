@@ -543,8 +543,11 @@ class AgentClient extends BaseClient {
     const currentAttachments = this.options.attachments ? await this.options.attachments : [];
     const compatibleHistoricalAttachments =
       this.getModelBoundAttachmentsForEndpoint(historicalAttachments);
-    const compatibleCurrentAttachments =
-      this.getModelBoundAttachmentsForEndpoint(currentAttachments);
+    /* A tool file refreshed this turn is replayed with its message; count it once. */
+    const replayedFileIds = collectFileIds(compatibleHistoricalAttachments);
+    const compatibleCurrentAttachments = this.getModelBoundAttachmentsForEndpoint(
+      currentAttachments,
+    ).filter((file) => !replayedFileIds.has(file?.file_id));
     this.turnSteerAttachmentHistory = undefined;
     this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
       historicalAttachments,
@@ -2489,6 +2492,17 @@ class AgentClient extends BaseClient {
     const requestAttachments = requestAttachmentsSource ? await requestAttachmentsSource : [];
     const modelBoundRequestAttachments =
       this.getModelBoundAttachmentsForEndpoint(requestAttachments);
+    /* A tool file the turn refreshes keeps its text and media in the message it was
+     * attached to; the latest message only takes files no earlier message carries. */
+    const latestMessageId = orderedMessages[orderedMessages.length - 1]?.messageId;
+    const replayedFileIds = collectFileIds(
+      Object.entries(this.message_file_map ?? {})
+        .filter(([messageId]) => messageId !== latestMessageId)
+        .flatMap(([, files]) => files),
+    );
+    const isNotReplayed = (file) => !replayedFileIds.has(file?.file_id);
+    const turnAttachments = requestAttachments.filter(isNotReplayed);
+    const turnModelBoundAttachments = modelBoundRequestAttachments.filter(isNotReplayed);
     const retainedHistoricalFileContexts =
       this.options.resendFiles === false
         ? orderedMessages
@@ -2504,7 +2518,7 @@ class AgentClient extends BaseClient {
     const sharedAttachmentFiles = [
       ...Object.values(this.message_file_map ?? {}).flat(),
       ...(this.modelBoundHistoricalSteerFiles ?? []),
-      ...modelBoundRequestAttachments,
+      ...turnModelBoundAttachments,
     ];
     const sharedRunAttachmentIds = collectFileIds(sharedAttachmentFiles);
     this.options.agentContextAttachmentsByAgentId = resolveScopedTurnAttachments({
@@ -2570,8 +2584,8 @@ class AgentClient extends BaseClient {
 
     if (requestAttachmentsSource) {
       const attachments = this.getProcessableAttachmentsForEndpoint(
-        requestAttachments,
-        modelBoundRequestAttachments,
+        turnAttachments,
+        turnModelBoundAttachments,
       );
       const latestMessage = orderedMessages[orderedMessages.length - 1];
       this.modelBoundCurrentFiles = [...modelBoundRequestAttachments];
@@ -2598,11 +2612,13 @@ class AgentClient extends BaseClient {
       }
 
       const [, files] = await Promise.all([
-        this.addFileContextToMessage(latestMessage, modelBoundRequestAttachments),
+        this.addFileContextToMessage(latestMessage, turnModelBoundAttachments),
         this.processAttachments(latestMessage, attachments),
       ]);
 
-      this.options.attachments = files;
+      this.options.attachments = files.concat(
+        requestAttachments.filter((file) => !isNotReplayed(file)),
+      );
     } else {
       agentScopedContextPromise = startAgentScopedContext();
     }
