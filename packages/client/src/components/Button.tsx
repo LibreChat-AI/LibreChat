@@ -45,6 +45,7 @@ type ButtonVariantOptions =
         | 'disclosure'
         | 'disclosure-line'
         | 'disclosure-panel'
+        | 'disclosure-search'
         | 'option'
         | 'text-action'
         | 'hint'
@@ -62,6 +63,7 @@ type ButtonVariantOptions =
         | 'dense'
         | 'compact'
         | 'icon'
+        | 'icon-inline'
         | 'icon-sm'
         | 'icon-xs'
         | 'icon-theme'
@@ -275,6 +277,12 @@ const buttonVariantRecipe = cva(
         'disclosure-line':
           'w-full justify-start gap-0 font-normal leading-4.5 focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
         /**
+         * A finished web search row: the same quiet disclosure as a tool header, at the status
+         * line's type size, with no color fade so the chevron beside it appears at once.
+         */
+        'disclosure-search':
+          'tool-status-text w-full justify-start font-normal text-text-secondary transition-none focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100 theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:text-text-secondary theme-disabled:hover:bg-transparent theme-disabled:hover:text-text-secondary theme-disabled:[&_*]:text-text-secondary',
+        /**
          * A full-width answer row in an option list, such as the choices of an
          * `ask_user_question`. The fill follows the pointer instantly rather than
          * easing, so moving down a list reads as a cursor, while locking and
@@ -352,6 +360,8 @@ const buttonVariantRecipe = cva(
          *  such as a clipped text's Show more. */
         'bare-xs': 'h-auto gap-1 p-0 text-xs',
         icon: 'size-theme-button',
+        /** A small icon that sits in a text row, such as a search row's details button. */
+        'icon-inline': 'size-auto rounded-md p-1',
         'icon-sm': 'size-theme-icon-button-sm p-0',
         'icon-xs': 'size-theme-button-xs',
         /**
@@ -422,6 +432,12 @@ const buttonVariantRecipe = cva(
         variant: 'disclosure',
         size: 'default',
         class: 'h-auto rounded-none p-0',
+      },
+      /* Sized by its glyph slot and status line, and pill-shaped so its focus ring hugs the row. */
+      {
+        variant: 'disclosure-search',
+        size: 'default',
+        class: 'h-auto rounded-full p-0',
       },
       /* Sized by the text it stands for, like `section-header`, so the default
        * size recipe must not pad it away from the content it lines up with. */

@@ -1,22 +1,14 @@
-import {
-  useState,
-  useMemo,
-  memo,
-  useEffect,
-  useCallback,
-  useRef,
-  useId,
-  type MouseEvent,
-} from 'react';
-import { Lightbulb, ChevronDown } from 'lucide-react';
-import { Button, Shimmer, MorphIcon, TooltipAnchor } from '@librechat/client';
-import { ChevronUp as ChevronUpNode, ChevronDown as ChevronDownNode } from 'lucide';
-import { ROW_GLYPH_SLOT, CopyButton, useExpandCollapse } from '@librechat/chat/components';
-import type { FocusEvent, FC } from 'react';
-import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { cn, isRectVisible } from '~/utils';
-import { AnimatedText } from '../animate';
-import { useLocalize } from '~/hooks';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ChevronDown, Lightbulb } from 'lucide-react';
+import { ChevronDown as ChevronDownNode, ChevronUp as ChevronUpNode } from 'lucide';
+import { Button, MorphIcon, Shimmer, TooltipAnchor, useLocalize } from '@librechat/client';
+import type { FC, FocusEvent, MouseEvent, NamedExoticComponent } from 'react';
+import { useMessagePartsHost } from '../../react/host';
+import useExpandCollapse from './useExpandCollapse';
+import { isRectVisible } from '../../core/viewport';
+import { ROW_GLYPH_SLOT } from './rows';
+import CopyButton from './CopyButton';
+import { classes } from './classes';
 
 /**
  * Tracks whether the referenced element is within the viewport. Mirrors the
@@ -68,14 +60,16 @@ export const ThinkingContent: FC<{
   children: React.ReactNode;
   animate?: boolean;
 }> = memo(({ children, animate = false }) => {
-  const { useFontSize } = useMessagePartsHost();
+  const { useFontSize, renderStreamingText } = useMessagePartsHost();
   const fontSize = useFontSize();
   const content =
-    animate && typeof children === 'string' ? <AnimatedText text={children} /> : children;
+    animate && typeof children === 'string'
+      ? (renderStreamingText?.(children) ?? children)
+      : children;
 
   return (
     <div className="border-border-light bg-surface-secondary text-text-secondary relative rounded-lg border p-3">
-      <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{content}</p>
+      <p className={classes('leading-6.5 whitespace-pre-wrap', fontSize)}>{content}</p>
     </div>
   );
 });
@@ -85,7 +79,21 @@ export const ThinkingContent: FC<{
  * Shows lightbulb icon by default, chevron on hover
  * Shared between legacy Thinking component and modern ContentParts
  */
-export const ThinkingButton = memo(
+type ThinkingButtonProps = {
+  isExpanded: boolean;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
+  label: string;
+  content?: string;
+  contentId: string;
+  showCopyButton?: boolean;
+  animateLabel?: boolean;
+  /** Reasoning is still being generated: carry the same shimmer a running
+   *  tool call's label carries, so "thinking" reads as in-flight rather
+   *  than as a settled disclosure. Off for finished thoughts. */
+  shimmerLabel?: boolean;
+};
+
+export const ThinkingButton: NamedExoticComponent<ThinkingButtonProps> = memo(
   ({
     isExpanded,
     onClick,
@@ -95,19 +103,7 @@ export const ThinkingButton = memo(
     showCopyButton = true,
     animateLabel = false,
     shimmerLabel = false,
-  }: {
-    isExpanded: boolean;
-    onClick: (e: MouseEvent<HTMLButtonElement>) => void;
-    label: string;
-    content?: string;
-    contentId: string;
-    showCopyButton?: boolean;
-    animateLabel?: boolean;
-    /** Reasoning is still being generated: carry the same shimmer a running
-     *  tool call's label carries, so "thinking" reads as in-flight rather
-     *  than as a settled disclosure. Off for finished thoughts. */
-    shimmerLabel?: boolean;
-  }) => {
+  }: ThinkingButtonProps) => {
     const localize = useLocalize();
 
     const [isCopied, setIsCopied] = useState(false);
@@ -133,13 +129,13 @@ export const ThinkingButton = memo(
            *  second, larger kind of row beside them. */
           className="group/button tool-status-text flex flex-1 items-center justify-start rounded-lg pe-10"
         >
-          <span className={cn(ROW_GLYPH_SLOT, 'relative me-2')}>
+          <span className={classes(ROW_GLYPH_SLOT, 'relative me-2')}>
             <Lightbulb
               className="icon-sm text-text-secondary absolute opacity-100 transition-opacity group-hover/button:opacity-0"
               aria-hidden="true"
             />
             <ChevronDown
-              className={cn(
+              className={classes(
                 'icon-sm text-text-primary absolute transform-gpu opacity-0 transition-all duration-300 group-hover/button:opacity-100',
                 isExpanded && 'rotate-180',
               )}
@@ -148,7 +144,7 @@ export const ThinkingButton = memo(
           </span>
           {/* The sweep rides the label row itself. That row is a flex item, so
               `.shimmer`'s `inline-block` is blockified away and the text sits
-              exactly where the un-shimmered label sits — which matters, because
+              exactly where the un-shimmered label sits, which matters, because
               an `inline-block` carrying `truncate` takes its baseline from its
               bottom margin edge, growing the line box and lifting the label off
               the icon's axis.
@@ -185,7 +181,7 @@ export const ThinkingButton = memo(
             onClick={handleCopy}
             label={localize('com_ui_copy_thoughts_to_clipboard')}
             copiedLabel={localize('com_ui_copied_to_clipboard')}
-            className={cn(
+            className={classes(
               'absolute inset-e-0 top-1/2 -translate-y-1/2 opacity-0 transition-opacity',
               'group-focus-within/thinking-container:opacity-100 group-hover/thinking-container:opacity-100',
               'focus-visible:opacity-100',
@@ -203,38 +199,38 @@ export const ThinkingButton = memo(
  * (detached subagent projections retain only a marker). Keeps the reasoning
  * presentation identical across surfaces without offering an empty disclosure.
  */
-export const ThinkingLabel = memo(({ label, title }: { label: string; title?: string }) => {
-  return (
-    <div className="mb-2 pt-2 pb-2">
-      <div className="tool-status-text flex w-full items-center justify-start" title={title}>
-        <span className={cn(ROW_GLYPH_SLOT, 'relative me-2')}>
-          <Lightbulb className="icon-sm text-text-secondary" aria-hidden="true" />
-        </span>
-        <span className="text-text-secondary min-w-0 truncate text-start font-medium">{label}</span>
+export const ThinkingLabel: NamedExoticComponent<{ label: string; title?: string }> = memo(
+  ({ label, title }: { label: string; title?: string }) => {
+    return (
+      <div className="mb-2 pt-2 pb-2">
+        <div className="tool-status-text flex w-full items-center justify-start" title={title}>
+          <span className={classes(ROW_GLYPH_SLOT, 'relative me-2')}>
+            <Lightbulb className="icon-sm text-text-secondary" aria-hidden="true" />
+          </span>
+          <span className="text-text-secondary min-w-0 truncate text-start font-medium">
+            {label}
+          </span>
+        </div>
       </div>
-    </div>
-  );
-});
+    );
+  },
+);
 
 /**
  * FloatingThinkingBar - Floating bar with expand/collapse and copy buttons
  * Shows on hover/focus, positioned at bottom right of thinking content
  * Inspired by CodeBlock's FloatingCodeBar pattern
  */
-export const FloatingThinkingBar = memo(
-  ({
-    isVisible,
-    isExpanded,
-    onClick,
-    content,
-    contentId,
-  }: {
-    isVisible: boolean;
-    isExpanded: boolean;
-    onClick: (e: MouseEvent<HTMLButtonElement>) => void;
-    content?: string;
-    contentId: string;
-  }) => {
+type FloatingThinkingBarProps = {
+  isVisible: boolean;
+  isExpanded: boolean;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
+  content?: string;
+  contentId: string;
+};
+
+export const FloatingThinkingBar: NamedExoticComponent<FloatingThinkingBarProps> = memo(
+  ({ isVisible, isExpanded, onClick, content, contentId }: FloatingThinkingBarProps) => {
     const localize = useLocalize();
     const [isCopied, setIsCopied] = useState(false);
 
@@ -252,7 +248,7 @@ export const FloatingThinkingBar = memo(
 
     return (
       <div
-        className={cn(
+        className={classes(
           /* Laid over the text rather than reserved below it, so the box keeps
              even padding; the fill keeps the controls legible over a line. */
           'bg-surface-secondary absolute inset-e-3 bottom-3 flex items-center gap-2 rounded-lg transition-opacity duration-150',
@@ -318,7 +314,7 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
   const containerRef = useRef<HTMLDivElement>(null);
   const { ref: headerRef, inViewport: headerInViewport, recheck: recheckHeader } = useInViewport();
   const contentId = useId();
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
+  const { ref: expandRef } = useExpandCollapse(isExpanded);
 
   const handleClick = useCallback((e: MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
@@ -384,7 +380,8 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
         role="group"
         aria-label={label}
         aria-hidden={!isExpanded || undefined}
-        style={expandStyle}
+        className="part-expand"
+        data-expanded={isExpanded ? 'true' : 'false'}
       >
         {/** Trailing gap lives inside the animated grid track (padding), not as
          *   an expand-only margin on the grid container, so it grows with the

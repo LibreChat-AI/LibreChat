@@ -94,6 +94,13 @@
       "packages/client/src/theme/parts.css",
       "packages/chat/src/components/composer/Palette.tsx"
     ],
+    "packages/client/src/theme/disclosure.spec.ts": [
+      "client/src/style.css",
+      "packages/client/src/",
+      "packages/chat/src/components/parts/Reasoning.tsx",
+      "packages/chat/src/components/parts/Thinking.tsx",
+      "packages/chat/src/components/parts/WebSearch.tsx"
+    ],
     "packages/client/src/theme/primitives.spec.ts": [
       "eslint-suppressions.json",
       "packages/client/src/components/"

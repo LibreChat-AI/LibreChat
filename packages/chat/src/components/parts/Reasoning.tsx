@@ -1,26 +1,24 @@
-import { memo, useMemo, useState, useEffect, useCallback, useRef, useId } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
-import { Lightbulb, ChevronDown } from 'lucide-react';
-import { Button, disclosureChevronVariants } from '@librechat/client';
+import { ChevronDown, Lightbulb } from 'lucide-react';
 import { ContentTypes, readableReasoning } from 'librechat-data-provider';
-import { ROW_GLYPH_SLOT, useExpandCollapse, CopyButton } from '@librechat/chat/components';
+import { Button, disclosureChevronVariants, useLocalize } from '@librechat/client';
+import type { FocusEvent, MouseEvent, NamedExoticComponent } from 'react';
 import {
-  toolPanelSpacingClassName,
-  useReasoningDisclosure,
-  useLazyCollapseBody,
-} from '@librechat/chat/react';
-import type { MouseEvent, FocusEvent } from 'react';
-import {
-  ThinkingContent,
-  ThinkingButton,
-  ThinkingLabel,
   FloatingThinkingBar,
+  ThinkingButton,
+  ThinkingContent,
+  ThinkingLabel,
   useInViewport,
 } from './Thinking';
-import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import { toolPanelSpacingClassName, useReasoningDisclosure } from '../../react/parts/disclosure';
+import useLazyCollapseBody from '../../react/parts/useLazyCollapseBody';
+import { useMessagePartsHost } from '../../react/host';
+import useExpandCollapse from './useExpandCollapse';
+import { ROW_GLYPH_SLOT } from './rows';
+import CopyButton from './CopyButton';
+import { classes } from './classes';
 
 const stripThinkTags = (reasoning: string): string =>
   reasoning
@@ -50,20 +48,6 @@ const lastSentences = (text: string): string => {
   return sentences.slice(-PEEK_SENTENCES).join(' ').trim();
 };
 
-/** Symmetric top + bottom edge fade so streaming text dissolves in at the
- *  bottom and out at the top, framed by the same rounded outline the expanded
- *  panel uses.
- *
- *  Custom-CSS exception, narrowly scoped: this is a `mask-image` stencil, not
- *  paint. Only the alpha channel is read, so `black` means "keep this pixel"
- *  and `transparent` means "hide it". The hue never reaches the screen and no
- *  theme could meaningfully restyle it. Routing it through a theme role would
- *  invite a token with alpha, which would silently wash out the text the mask
- *  is supposed to keep. Tailwind has no mask-image utility that expresses a
- *  four-stop gradient with `calc()` offsets, hence the inline style. */
-const PEEK_FADE =
-  'linear-gradient(to bottom, transparent, black 1.25rem, black calc(100% - 1.25rem), transparent)';
-
 /**
  * Collapsed live preview of streaming reasoning. Mirrors the expanded thought
  * panel. It uses the same rounded outline and text treatment, but with a border instead
@@ -73,48 +57,51 @@ const PEEK_FADE =
  * out loud" treatment popularized by Grok). Decorative only (aria-hidden); the
  * toggle button above it provides the accessible control.
  */
-export const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
-  const ref = useRef<HTMLDivElement>(null);
-  const { useFontSize } = useMessagePartsHost();
-  const fontSize = useFontSize();
-  const peek = useMemo(() => lastSentences(text), [text]);
+export const StreamingThoughtPeek: NamedExoticComponent<{ text: string }> = memo(
+  ({ text }: { text: string }) => {
+    const ref = useRef<HTMLDivElement>(null);
+    const { useFontSize } = useMessagePartsHost();
+    const fontSize = useFontSize();
+    const peek = useMemo(() => lastSentences(text), [text]);
 
-  /** Pin to the newest content as tokens arrive. `overflow-hidden` elements
-   *  are still scrollable programmatically, so the tail stays in view without
-   *  exposing a scrollbar. */
-  useEffect(() => {
-    const el = ref.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
+    /** Pin to the newest content as tokens arrive. `overflow-hidden` elements
+     *  are still scrollable programmatically, so the tail stays in view without
+     *  exposing a scrollbar. */
+    useEffect(() => {
+      const el = ref.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
+    }, [peek]);
+
+    if (!peek) {
+      return null;
     }
-  }, [peek]);
 
-  if (!peek) {
-    return null;
-  }
-
-  return (
-    <div
-      aria-hidden="true"
-      className="border-border-light mt-1 overflow-hidden rounded-lg border px-4 py-3"
-      data-testid="streaming-thought-peek"
-    >
+    return (
       <div
-        ref={ref}
-        className={cn(
-          /** Fixed-height window the text scrolls through. The one-line top pad
-           *  keeps the first streaming line below the top fade (a blank line
-           *  above it) instead of jammed against the faded edge. */
-          'text-text-primary h-[5.5rem] overflow-hidden pt-6.5 leading-6.5 break-words whitespace-pre-wrap',
-          fontSize,
-        )}
-        style={{ maskImage: PEEK_FADE, WebkitMaskImage: PEEK_FADE }}
+        aria-hidden="true"
+        className="border-border-light mt-1 overflow-hidden rounded-lg border px-4 py-3"
+        data-testid="streaming-thought-peek"
       >
-        {peek}
+        <div
+          ref={ref}
+          className={classes(
+            /** Fixed-height window the text scrolls through. The one-line top pad
+             *  keeps the first streaming line below the top fade (a blank line
+             *  above it) instead of jammed against the faded edge. The fade itself
+             *  is `.thought-peek` in the shared parts stylesheet: a mask stencil,
+             *  not paint, so it is not a theme color. */
+            'thought-peek text-text-primary h-[5.5rem] overflow-hidden pt-6.5 leading-6.5 break-words whitespace-pre-wrap',
+            fontSize,
+          )}
+        >
+          {peek}
+        </div>
       </div>
-    </div>
-  );
-});
+    );
+  },
+);
 
 StreamingThoughtPeek.displayName = 'StreamingThoughtPeek';
 
@@ -147,10 +134,10 @@ type ReasoningProps = {
  *
  * For legacy text-based messages, see Thinking.tsx component.
  */
-/** Reasoning that happened but whose text this view cannot show — detached
+/** Reasoning that happened but whose text this view cannot show: detached
  *  subagent projections keep only a marker, and providers can return reasoning
  *  encrypted. Renders the shared reasoning header row without a disclosure. */
-export const ReasoningMarker = memo(
+export const ReasoningMarker: NamedExoticComponent<{ label?: string; encrypted?: boolean }> = memo(
   ({ label, encrypted = false }: { label?: string; encrypted?: boolean }) => {
     const localize = useLocalize();
     if (encrypted) {
@@ -168,7 +155,7 @@ export const ReasoningMarker = memo(
 
 ReasoningMarker.displayName = 'ReasoningMarker';
 
-const Reasoning = memo((props: ReasoningProps) => {
+const Reasoning: NamedExoticComponent<ReasoningProps> = memo((props: ReasoningProps) => {
   const { reasoning, isLast, reasoningLabel, partKeyIndex = 0 } = props;
   const contentId = useId();
   const localize = useLocalize();
@@ -181,7 +168,7 @@ const Reasoning = memo((props: ReasoningProps) => {
   const [isBarVisible, setIsBarVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const { ref: headerRef, inViewport: headerInViewport, recheck: recheckHeader } = useInViewport();
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
+  const { ref: expandRef } = useExpandCollapse(isExpanded);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(isExpanded);
   const { isSubmitting, isLatestMessage, nextType } = useMessage();
   const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
@@ -268,11 +255,12 @@ const Reasoning = memo((props: ReasoningProps) => {
           role="group"
           aria-label={label}
           aria-hidden={!isExpanded || undefined}
-          style={expandStyle}
+          className="part-expand"
+          data-expanded={isExpanded ? 'true' : 'false'}
           onTransitionEnd={handleTransitionEnd}
         >
           <div
-            className={cn('overflow-hidden', nextType !== ContentTypes.THINK && 'pb-4')}
+            className={classes('overflow-hidden', nextType !== ContentTypes.THINK && 'pb-4')}
             ref={expandRef}
           >
             {shouldRenderBody && (
@@ -320,7 +308,7 @@ type ReasoningCompactProps = {
  * {@link Reasoning} affordances: a hover-revealed copy button on the header and
  * a floating collapse + copy bar inside the rounded content panel.
  */
-export const ReasoningCompact = memo(
+export const ReasoningCompact: NamedExoticComponent<ReasoningCompactProps> = memo(
   ({
     reasoning,
     label,
@@ -343,7 +331,7 @@ export const ReasoningCompact = memo(
       inViewport: headerInViewport,
       recheck: recheckHeader,
     } = useInViewport();
-    const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
+    const { ref: expandRef } = useExpandCollapse(isExpanded);
     /** Collapsed is the default whenever thoughts are hidden, and a streaming
      *  THINK part re-renders on every delta. Keeping the full text mounted
      *  behind the invisible panel made long reasoning streams progressively
@@ -406,14 +394,14 @@ export const ReasoningCompact = memo(
             onClick={handleToggle}
             aria-expanded={isExpanded}
             aria-controls={contentId}
-            className="group/disclosure text-text-secondary min-w-0 flex-1 font-normal"
+            className="group/disclosure min-w-0 flex-1"
           >
             <span className={ROW_GLYPH_SLOT} aria-hidden="true">
               <Lightbulb className="text-text-secondary size-4 shrink-0" />
             </span>
-            <span className="tool-status-text font-medium">{label}</span>
+            <span className="tool-status-text text-text-secondary font-medium">{label}</span>
             <ChevronDown
-              className={cn(
+              className={classes(
                 disclosureChevronVariants({ expanded: isExpanded }),
                 'ms-auto size-4 translate-y-[1px]',
               )}
@@ -430,7 +418,7 @@ export const ReasoningCompact = memo(
               copiedLabel={localize('com_ui_copied_to_clipboard')}
               /** Laid over the row's end, inside the chevron, so the chevron
                *  lines up with every tool row's instead of moving left of it. */
-              className={cn(
+              className={classes(
                 'absolute end-6 shrink-0 opacity-0 transition-opacity',
                 'group-focus-within/reasoning-compact:opacity-100 group-hover/reasoning-compact:opacity-100',
                 'focus-visible:opacity-100',
@@ -444,18 +432,21 @@ export const ReasoningCompact = memo(
           role="group"
           aria-label={label}
           aria-hidden={!isExpanded || undefined}
-          style={expandStyle}
+          className="part-expand"
+          data-expanded={isExpanded ? 'true' : 'false'}
           onTransitionEnd={handleTransitionEnd}
         >
           <div className="overflow-hidden" ref={expandRef}>
             {shouldRenderBody && (
               <div
-                className={cn(
+                className={classes(
                   toolPanelSpacingClassName,
                   'border-border-light bg-surface-secondary text-text-secondary relative rounded-lg border p-3',
                 )}
               >
-                <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{reasoningText}</p>
+                <p className={classes('leading-6.5 whitespace-pre-wrap', fontSize)}>
+                  {reasoningText}
+                </p>
                 <FloatingThinkingBar
                   isVisible={isBarVisible && isExpanded && !headerInViewport}
                   isExpanded={isExpanded}

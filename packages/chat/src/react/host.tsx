@@ -204,6 +204,11 @@ export interface MessagePartsHost {
   useMessage: () => MessagePartMessage;
   /** Renders markdown with the app's renderer. */
   renderMarkdown: (props: MessagePartsMarkdownProps) => ReactNode;
+  /**
+   * Renders plain text while it is still streaming, so a reasoning stream can fade its words in.
+   * Absent, the part shows the text as it is.
+   */
+  renderStreamingText?: (text: string) => ReactNode;
   /** Renders an attached image with the app's image viewer. */
   renderImage: (props: MessagePartsImageProps) => ReactNode;
   /** Renders the app's preview dialog for an attached file. */

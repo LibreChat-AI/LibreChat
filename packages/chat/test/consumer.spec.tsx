@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Part,
   Text,
+  Reasoning,
   MessageRow,
   MentionPopover,
   ChatScreen,
@@ -760,5 +761,32 @@ describe('a consumer styled by the published stylesheet alone', () => {
     const iconRule = declaredFor(icon as SVGElement);
     expect(iconRule).toContain('width: 1rem');
     expect(iconRule).toContain('height: 1rem');
+  });
+
+  it('opens and fades a streaming thought from the shipped rules, as plain text', () => {
+    const streaming: MessagePartsHost = {
+      ...host,
+      useMessage: () => ({ messageId: 'reply-1', isSubmitting: true, isLatestMessage: true }),
+      useSmoothStreaming: () => true,
+    };
+    render(
+      <I18nextProvider i18n={i18n}>
+        <MessagePartsHostProvider host={streaming}>
+          <Reasoning reasoning="Checking the manifest. Reading the lockfile." isLast />
+        </MessagePartsHostProvider>
+      </I18nextProvider>,
+    );
+
+    /** The peek's edge fade and the panel's grid-rows motion are the package's, not the app's. */
+    const peek = screen.getByTestId('streaming-thought-peek');
+    expect(declaredFor(peek.firstElementChild as Element)).toMatch(/mask-image/);
+    const panel = document.querySelector('.part-expand') as Element;
+    expect(declaredFor(panel)).toMatch(/grid-template-rows:\s*0fr/);
+    expect(declaredFor(panel)).toMatch(/transition:[^;]*\.01ms/);
+
+    /** This host supplies no streaming renderer, so the opened thought is the text as it is. */
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_thinking' }));
+    expect(screen.getByText('Checking the manifest. Reading the lockfile.')).toBeInTheDocument();
+    expect(document.querySelector('[data-lc-fade]')).toBeNull();
   });
 });

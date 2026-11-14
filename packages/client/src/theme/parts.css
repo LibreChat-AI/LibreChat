@@ -360,3 +360,52 @@
   opacity: var(--expand-opacity, 1);
   transition: var(--expand-transition);
 }
+
+/**
+ * Disclosure body that opens and closes on grid rows. `data-expanded="true"`
+ * opens it. Reduced motion keeps a 0.01ms transition so `transitionend` still
+ * fires and a collapsed body can unmount.
+ */
+.part-expand {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.part-expand[data-expanded='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .part-expand {
+    transition:
+      grid-template-rows 0.01ms linear,
+      opacity 0.01ms linear;
+  }
+}
+
+/**
+ * Edge fade for a live reasoning peek. A mask stencil, not paint: only the
+ * alpha channel is read. Opaque black means "keep this pixel" and
+ * `transparent` means "hide it". The hue never reaches the screen.
+ */
+.thought-peek {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    rgb(var(--black) / 1) 1.25rem,
+    rgb(var(--black) / 1) calc(100% - 1.25rem),
+    transparent
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    rgb(var(--black) / 1) 1.25rem,
+    rgb(var(--black) / 1) calc(100% - 1.25rem),
+    transparent
+  );
+}

@@ -1,4 +1,5 @@
 import { memo, Suspense, useMemo } from 'react';
+import { Thinking } from '@librechat/chat/components';
 import { Alert, DelayedRender } from '@librechat/client';
 import { Constants, parseThinkingContent } from 'librechat-data-provider';
 import {
@@ -16,7 +17,6 @@ import Error from '~/components/Messages/Content/Error';
 import { useLocalize, useOnline } from '~/hooks';
 import MarkdownLite from './MarkdownLite';
 import EditMessage from './EditMessage';
-import Thinking from './Parts/Thinking';
 import Markdown from './Markdown';
 import { cn } from '~/utils';
 

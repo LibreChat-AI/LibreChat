@@ -376,6 +376,8 @@ export default [
             'part-fold',
             'tool-status-text',
             'tool-call-expand',
+            'part-expand',
+            'thought-peek',
             'message-render',
             'message-timestamp',
             'popover-animate',
