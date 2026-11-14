@@ -265,7 +265,6 @@ test.describe('context usage gauge', () => {
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     await sendAndAwaitReply(page, 'hello');
     const popover = await openBreakdown(page);
-    await expect(popover).toHaveCSS('container-type', 'inline-size');
     const dialog = page.getByRole('dialog', { name: 'Context usage' });
     const details = popover.getByTestId('context-details');
     const lastTurn = popover.getByTestId('token-usage-last-turn');
@@ -309,9 +308,12 @@ test.describe('context usage gauge', () => {
     await disclosure.focus();
     await page.keyboard.press('Enter');
     await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    /** The two readings trade places in one roll; one remains once it settles. */
+    await expect(lastTurn.locator('dl')).toHaveCount(1);
     await expect(lastTurn.getByText('Cache write', { exact: true })).toBeVisible();
     await page.keyboard.press('Space');
     await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    await expect(lastTurn.locator('dl')).toHaveCount(1);
     await expect(lastTurn.getByText('Input (uncached)', { exact: true })).toBeVisible();
 
     const accessibility = await new AxeBuilder({ page })

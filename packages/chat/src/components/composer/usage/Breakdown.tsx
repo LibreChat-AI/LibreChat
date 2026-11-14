@@ -352,7 +352,7 @@ export default function Breakdown({
     hoveredSegment != null && hoverIsValid(hoveredSegment) ? hoveredSegment : null;
 
   return (
-    <div className="@container w-full" role="region" aria-label={localize('com_ui_context_usage')}>
+    <div className="w-full" role="region" aria-label={localize('com_ui_context_usage')}>
       <Collapsible open={expanded} onOpenChange={onExpandedChange}>
         <CollapsibleTrigger
           focusOutline="hidden"
@@ -390,9 +390,26 @@ export default function Breakdown({
             so it collapses with the height. On the parent it would be a margin
             outside the animation, and unmounting the content would drop it in a
             single 12px jump after the height reached zero. */}
-        <CollapsibleContent motion="height" className="overflow-hidden">
+        <CollapsibleContent
+          motion="height"
+          className="group/details relative flex justify-center overflow-hidden"
+        >
+          {/* The card changes width as this rolls. The details keep the wide
+              card's width through both rolls, centered and clipped, so the card
+              uncovers one settled layout instead of reflowing it every frame.
+              The columns size from this element's own width for the same
+              reason: two once it reaches 38rem (two 18.625rem tracks and the
+              gap). `relative` above extends the clip to the `sr-only` text
+              inside, which would otherwise overflow the popover and raise its
+              scrollbar. */}
           <div
-            className="mt-3 grid min-w-0 grid-cols-1 items-start gap-3 @min-[38rem]:grid-cols-2"
+            className={cn(
+              'mt-3 grid w-full shrink-0 items-start gap-3',
+              'grid-cols-[repeat(auto-fit,minmax(min(18.625rem,100%),1fr))]',
+              '[--hold-width:var(--usage-card-wide,100%)]',
+              'animate-hold-width motion-reduce:animate-none',
+              'group-data-[state=closed]/details:w-(--hold-width)',
+            )}
             data-testid="context-details"
           >
             <div className="min-w-0 space-y-3">
@@ -490,15 +507,27 @@ export default function Breakdown({
                               onHoverChange={setHoveredSegment}
                             />
                           )}
-                          {id === 'tool-calls' && toolsExpanded && hasToolCounts && (
-                            <div id={toolBreakdownId} className="space-y-1 ps-6">
-                              <p className="text-text-tertiary text-xs font-medium">
-                                {localize('com_ui_context_tool_breakdown')}
-                              </p>
-                              {toolBreakdown.map((tool) => (
-                                <Row key={tool.name} label={tool.name} value={tool.tokens} />
-                              ))}
-                            </div>
+                          {/* A row of the list even while closed and empty. The
+                              list's gap above it moves inside the roll (-mt-1.5
+                              out, pt-1.5 in) to collapse with the height;
+                              `flow-root` keeps the empty row's margins from
+                              folding into each other and swallowing the gap
+                              below. */}
+                          {id === 'tool-calls' && hasToolCounts && (
+                            <Collapsible asChild open={toolsExpanded}>
+                              <div className="-mt-1.5 flow-root ps-6">
+                                <CollapsibleContent motion="height" className="overflow-hidden">
+                                  <div id={toolBreakdownId} className="space-y-1 pt-1.5">
+                                    <p className="text-text-tertiary text-xs font-medium">
+                                      {localize('com_ui_context_tool_breakdown')}
+                                    </p>
+                                    {toolBreakdown.map((tool) => (
+                                      <Row key={tool.name} label={tool.name} value={tool.tokens} />
+                                    ))}
+                                  </div>
+                                </CollapsibleContent>
+                              </div>
+                            </Collapsible>
                           )}
                           {id === 'system' && dynamicInstructionTokens > 0 && (
                             <div className="ps-6">
@@ -661,15 +690,12 @@ export default function Breakdown({
 
             {langfuseSessionUrl && (
               <>
-                <div
-                  className="border-border-light border-t @min-[38rem]:col-span-2"
-                  role="separator"
-                />
+                <div className="border-border-light col-span-full border-t" role="separator" />
                 <Button
                   asChild
                   variant="link"
                   size="bare"
-                  className="w-full justify-between @min-[38rem]:col-span-2"
+                  className="col-span-full w-full justify-between"
                 >
                   <a href={langfuseSessionUrl} target="_blank" rel="noopener noreferrer">
                     <span>{localize('com_ui_langfuse_view_session')}</span>

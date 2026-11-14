@@ -8,6 +8,15 @@ import type { ReactNode } from 'react';
 const SHOW_DELAY_MS = 100;
 const HIDE_DELAY_MS = 150;
 
+/** `--usage-card-wide` is the wide card's width, less the popover's padding and
+ *  border when the viewport caps it. A panel inside reads it to keep its
+ *  settled layout while the card resizes around it. Each direction borrows the
+ *  pacing of the collapsible roll it travels with. */
+const CARD =
+  '[--usage-card-wide:min(44rem,calc(100vw_-_2.5rem_-_2px))] max-w-full transition-width motion-reduce:transition-none';
+const CARD_WIDE = 'w-(--usage-card-wide) duration-300 ease-out';
+const CARD_NARROW = 'w-72 duration-200 ease-in';
+
 export interface UsagePopoverProps {
   /** Pending hover work is dropped when this changes (the viewed conversation) */
   resetKey: string;
@@ -16,6 +25,8 @@ export interface UsagePopoverProps {
   /** Accessible name of the opened card */
   cardLabel: string;
   busy?: boolean;
+  /** Widens the card for content laid out in columns */
+  wide?: boolean;
   /** The gauge face; receives whether the card is open */
   trigger: (open: boolean) => ReactNode;
   /** Card content, mounted only while the card is open */
@@ -31,6 +42,7 @@ export default function UsagePopover({
   label,
   cardLabel,
   busy = false,
+  wide = false,
   trigger,
   children,
 }: UsagePopoverProps): React.JSX.Element {
@@ -46,9 +58,10 @@ export default function UsagePopover({
    * composer mid-typing.
    */
   const [focusOnShow, setFocusOnShow] = useState(true);
-  /** A click pins an open popover: hover no longer holds it, so the pointer can
-   *  leave without it closing. Cleared when the popover closes by any path
-   *  (Escape, outside click, a second click). */
+  /** A click on the gauge or a press inside the card pins an open popover:
+   *  hover no longer holds it, so the pointer can leave without it closing.
+   *  Cleared when the popover closes by any path (Escape, outside click, a
+   *  second click on the gauge). */
   const pinnedRef = useRef(false);
   /** The pin state as of the pointerdown that precedes a mouse click. The
    *  pointerdown may hide the popover (hideOnInteractOutside does not exempt
@@ -176,6 +189,11 @@ export default function UsagePopover({
           !(event.target instanceof Node && disclosureRef.current?.contains(event.target) === true)
         }
         aria-label={cardLabel}
+        /* Pressing a control can resize the card out from under the pointer,
+           which would otherwise read as the pointer leaving and close it. */
+        onPointerDown={() => {
+          pinnedRef.current = true;
+        }}
         onPointerEnter={cancelTimers}
         onPointerLeave={(e) => {
           if (e.pointerType !== 'touch') {
@@ -189,7 +207,7 @@ export default function UsagePopover({
           'data-[leave]:translate-y-1 data-[leave]:scale-95 data-[leave]:opacity-0',
         )}
       >
-        {children}
+        <div className={cn(CARD, wide ? CARD_WIDE : CARD_NARROW)}>{children}</div>
       </Ariakit.Popover>
     </>
   );
