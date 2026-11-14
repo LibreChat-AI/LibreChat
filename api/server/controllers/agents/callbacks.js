@@ -31,6 +31,7 @@ const {
   HOST_FILE_AUTHORING_ARTIFACT_KEY,
   isCodeSessionToolName,
   isCodeArtifactToolOutput,
+  isModelOnlyArtifact,
   getModelRefusalInfo,
   shouldSignalSandboxStart,
   getToolInputValidationDetails,
@@ -1027,6 +1028,9 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
     }
 
     if (output.artifact.content) {
+      if (isModelOnlyArtifact(output.artifact)) {
+        return;
+      }
       /** @type {FormattedContent[]} */
       const content = getImageAttachmentContent(output.artifact);
       for (let i = 0; i < content.length; i++) {
@@ -1393,6 +1397,9 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
     }
 
     if (output.artifact.content) {
+      if (isModelOnlyArtifact(output.artifact)) {
+        return;
+      }
       /** @type {FormattedContent[]} */
       const content = getImageAttachmentContent(output.artifact);
       for (let i = 0; i < content.length; i++) {
