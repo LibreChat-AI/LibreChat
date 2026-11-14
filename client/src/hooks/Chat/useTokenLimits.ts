@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { isAgentsEndpoint, resolveModelCatalogKey } from 'librechat-data-provider';
+import { Providers, isAgentsEndpoint, resolveModelCatalogKey } from 'librechat-data-provider';
 import type { TConversation, TModelTokenomics } from 'librechat-data-provider';
 import { useTokenConfigQuery, useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
@@ -42,7 +42,10 @@ export default function useTokenLimits(conversation: TConversation | null): Toke
       model = model || (specPreset.model ?? '');
     }
     return {
-      endpoint: resolveModelCatalogKey(provider, endpointsConfig),
+      endpoint:
+        provider === Providers.VERTEXAI
+          ? provider
+          : resolveModelCatalogKey(provider, endpointsConfig),
       model,
       maxContextTokens:
         toNumber(conversation?.maxContextTokens) ??

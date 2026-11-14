@@ -448,8 +448,8 @@ export function isDeepSeekReasoningProvider(
 /**
  * Whether prior assistant tool-call messages should have `reasoning_content`
  * reconstructed when reformatting persisted history (cross-turn replay): either
- * DeepSeek thinking-mode (#13366) or a custom OpenAI-compatible endpoint that
- * opted in via `customParams.includeReasoningHistory` (e.g. Xiaomi MiMo, Kimi).
+ * Google signed history, DeepSeek thinking-mode (#13366), or a custom
+ * OpenAI-compatible endpoint that opted in via `customParams.includeReasoningHistory` (e.g. Xiaomi MiMo, Kimi).
  */
 export function shouldReplayReasoningContent(
   agent?: {
@@ -461,6 +461,9 @@ export function shouldReplayReasoningContent(
 ): boolean {
   if (agent == null) {
     return false;
+  }
+  if (agent.provider === Providers.GOOGLE || agent.provider === Providers.VERTEXAI) {
+    return true;
   }
   if (agent.includeReasoningHistory === true) {
     return true;

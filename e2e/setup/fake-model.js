@@ -557,6 +557,8 @@ function llmConfigReportResponses(graph) {
     model: clientOptions.model ?? clientOptions.modelName ?? null,
     sampling,
     reasoningEffort: modelKwargs.reasoning_effort ?? null,
+    thinkingLevel: clientOptions.thinkingConfig?.thinkingLevel ?? null,
+    maxOutputTokens: clientOptions.maxOutputTokens ?? null,
     maxContextTokens: agent?.maxContextTokens ?? null,
   };
   return { responses: [`E2E llm config: ${JSON.stringify(report)}`] };

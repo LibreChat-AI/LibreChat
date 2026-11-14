@@ -155,6 +155,14 @@ describe('sanitizeFileForTransmit', () => {
 });
 
 describe('sanitizeMessageForTransmit', () => {
+  it('keeps provider signatures private without modifying persisted metadata', () => {
+    const metadata = Object.freeze({ thoughtSignatures: { turns: [] }, remaining: 'visible' });
+    const message = Object.freeze({ messageId: 'signed', metadata });
+    expect(sanitizeMessageForTransmit(message).metadata).toEqual({ remaining: 'visible' });
+    expect(message.metadata).toBe(metadata);
+    expect(message.metadata).toHaveProperty('thoughtSignatures');
+  });
+
   it('should remove fileContext from message', () => {
     const message = {
       messageId: 'msg-123',
