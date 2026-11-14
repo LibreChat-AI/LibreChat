@@ -125,8 +125,9 @@ export function buildBalanceUpdateFields(
     updateFields.refillAmount = config.refillAmount;
   }
 
+  // A policy built without a record carries the anchor even when cleared, so it can clear one.
   const refillAnchor = config.refillAnchor ?? null;
-  if ((userRecord?.refillAnchor ?? null) !== refillAnchor) {
+  if (userRecord == null || (userRecord.refillAnchor ?? null) !== refillAnchor) {
     updateFields.refillAnchor = refillAnchor;
   }
 
@@ -136,6 +137,26 @@ export function buildBalanceUpdateFields(
   }
 
   return updateFields;
+}
+
+const AUTO_REFILL_FIELDS = [
+  'refillIntervalValue',
+  'refillIntervalUnit',
+  'refillAmount',
+  'refillAnchor',
+] as const;
+
+/** A balance record as the client reads it: no document id, and no refill schedule without
+ *  auto-refill. `lastRefill` stays, since it places a stored allotment in its period. */
+export function toBalanceResponse(record: Record<string, unknown>): Record<string, unknown> {
+  const { _id: _, ...result } = record;
+  if (result.autoRefillEnabled === true) {
+    return result;
+  }
+  for (const field of AUTO_REFILL_FIELDS) {
+    delete result[field];
+  }
+  return result;
 }
 
 /**

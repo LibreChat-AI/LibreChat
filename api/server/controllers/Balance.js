@@ -1,3 +1,4 @@
+const { toBalanceResponse } = require('@librechat/api');
 const { findBalanceByUser } = require('~/models');
 
 async function balanceController(req, res) {
@@ -13,16 +14,7 @@ async function balanceController(req, res) {
     return res.status(404).json({ error: 'Balance not found' });
   }
 
-  const { _id: _, ...result } = balanceData;
-
-  if (!result.autoRefillEnabled) {
-    delete result.refillIntervalValue;
-    delete result.refillIntervalUnit;
-    delete result.refillAmount;
-    delete result.refillAnchor;
-  }
-
-  res.status(200).json(result);
+  res.status(200).json(toBalanceResponse(balanceData));
 }
 
 module.exports = balanceController;

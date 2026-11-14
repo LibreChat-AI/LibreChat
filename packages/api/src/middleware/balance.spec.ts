@@ -3,7 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { logger, balanceSchema } from '@librechat/data-schemas';
 import type { NextFunction, Request as ServerRequest, Response as ServerResponse } from 'express';
 import type { IBalance, IBalanceUpdate } from '@librechat/data-schemas';
-import { buildBalanceUpdateFields, createSetBalanceConfig } from './balance';
+import { toBalanceResponse, buildBalanceUpdateFields, createSetBalanceConfig } from './balance';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -827,6 +827,32 @@ describe('createSetBalanceConfig', () => {
         expect(balanceRecord?.lastRefill).toBeInstanceOf(Date);
       },
     );
+  });
+});
+
+describe('toBalanceResponse', () => {
+  const record = {
+    _id: 'balance-1',
+    tokenCredits: 100,
+    refillAmount: 500,
+    refillIntervalValue: 1,
+    refillIntervalUnit: 'weeks',
+    refillAnchor: '2026-01-05T00:00:00Z',
+    lastRefill: new Date('2026-07-01T00:00:00.000Z'),
+  };
+  test('returns the refill schedule, anchor included, under auto-refill', () => {
+    const { _id: _, ...rest } = record;
+    expect(toBalanceResponse({ ...record, autoRefillEnabled: true })).toEqual({
+      ...rest,
+      autoRefillEnabled: true,
+    });
+  });
+  test('hides the schedule but keeps the period start without auto-refill', () => {
+    expect(toBalanceResponse({ ...record, autoRefillEnabled: false })).toEqual({
+      tokenCredits: 100,
+      autoRefillEnabled: false,
+      lastRefill: record.lastRefill,
+    });
   });
 });
 
