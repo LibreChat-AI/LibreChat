@@ -191,14 +191,6 @@
       "count": 7
     }
   },
-  "client/src/components/Chat/Messages/Content/Parts/Attachment.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 5
-    },
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Messages/Content/Parts/BashCall.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
@@ -253,11 +245,6 @@
     },
     "shadcn/no-restyle": {
       "count": 5
-    }
-  },
-  "client/src/components/Chat/Messages/Content/RetrievalCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Messages/Content/SiblingHeader.tsx": {
