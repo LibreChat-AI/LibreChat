@@ -17,6 +17,7 @@ export default defineConfig({
   retries: process.env.CI ? 3 : 0,
   expect: { ...mockConfig.expect, timeout: 20_000 },
   testMatch: [
+    /remote-sdk-recovery\.spec\.ts/,
     /completion\.spec\.ts/,
     /deferred-tools-hitl\.spec\.ts/,
     /model-spec-icons\.spec\.ts/,

@@ -3538,6 +3538,29 @@ describe('remote SDK runtime configuration', () => {
       },
     });
   });
+  it('enables recovery explicitly with bounded defaults', () => {
+    const remote = (recovery: unknown) => ({
+      sdkRuntimes: {
+        test: { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', recovery } },
+      },
+    });
+    const registration = agentsEndpointSchema.parse(remote({}))?.sdkRuntimes?.test;
+    expect(
+      registration && 'remote' in registration ? registration.remote.recovery : undefined,
+    ).toEqual({
+      maxDisconnectMs: 15000,
+      retryDelayMs: 250,
+      maxJournalBytes: 67108864,
+    });
+    for (const recovery of [
+      { maxDisconnectMs: 0 },
+      { maxDisconnectMs: 60000 },
+      { retryDelayMs: -1 },
+      { maxJournalBytes: 0 },
+      { unknown: true },
+    ])
+      expect(agentsEndpointSchema.safeParse(remote(recovery)).success).toBe(false);
+  });
   it.each([
     { module: './local.cjs', remote: { url: 'wss://runtime.example/sdk', secret: 'secret' } },
     { remote: { url: 'https://runtime.example/sdk', secret: 'secret' } },

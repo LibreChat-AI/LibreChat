@@ -112,6 +112,27 @@ async function connect(url: string, token: string): Promise<WebSocket> {
   });
 }
 describe('remote SDK runtime bridge', () => {
+  it('requires explicit worker recovery support without starting execution', async () => {
+    const createRun = jest.fn(factory);
+    const runtime = await fixture(createRun);
+    try {
+      const run = await createRemoteSdkRun({
+        config: hostConfig(),
+        identity,
+        remote: {
+          ...runtime.remote,
+          recovery: { maxDisconnectMs: 100, retryDelayMs: 20, maxJournalBytes: 10000 },
+        },
+      });
+      await expect(
+        run.processStream({ messages: [new HumanMessage('hello')] }, invocation()),
+      ).rejects.toThrow('recovery');
+      expect(createRun).not.toHaveBeenCalled();
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it('bounds pending authorization and releases a disconnected admission without executing it', async () => {
     let release!: (allowed: boolean) => void;
     let entered!: () => void;

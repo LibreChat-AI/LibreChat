@@ -7,8 +7,11 @@ import type { EventHandler, AggregatedHookResult, HookOutput } from '@librechat/
 import type { Duplex } from 'node:stream';
 import type { Server } from 'node:http';
 import type { RemoteSdkFactoryInput, RemoteSdkLimits, RemoteSdkStart, SdkRun } from './types';
+import type { RuntimeRecoveryOptions } from './recovery/server';
 import type { SdkAgentIdentity } from './identity';
+import { createRuntimeRecovery, recoveryClaimSchema } from './recovery/server';
 import { remoteSdkLimits, isRemoteSdkSecret } from './types';
+import { RECOVERY_HEADER_BYTES } from './recovery/socket';
 import { RemoteSdkCheckpointer } from './checkpoint';
 import { createSdkPeer } from './peer';
 
@@ -24,6 +27,7 @@ const identitySchema = z
   .strict();
 const claimSchema = z.object({
   protocolVersion: z.literal(1),
+  recovery: recoveryClaimSchema.optional(),
   identity: identitySchema,
   threadId: z.string().min(1),
   invocationId: z.string().uuid(),
@@ -61,6 +65,7 @@ const startSchema = z.object({
 });
 
 export interface RemoteSdkServerOptions extends Partial<RemoteSdkLimits> {
+  recovery?: RuntimeRecoveryOptions;
   runtimeId: string;
   secret: string;
   /** Authorize the signed saved-agent identity against this worker's deployment policy. */
@@ -98,9 +103,12 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
     }
     res.writeHead(404).end();
   });
+  const recovery = options.recovery
+    ? createRuntimeRecovery({ ...options.recovery, ...limits, onError: options.onError })
+    : undefined;
   const sockets = new WebSocketServer({
     noServer: true,
-    maxPayload: limits.maxFrameBytes,
+    maxPayload: limits.maxFrameBytes + (recovery ? RECOVERY_HEADER_BYTES : 0),
     perMessageDeflate: false,
   });
   const seen = new Map<string, number>();
@@ -108,7 +116,11 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
   const admitting = new Map<Duplex, AbortController>();
   let closing = false;
   server.on('upgrade', (req, socket, head) => {
-    if (closing || active.size + admitting.size >= (options.maxConcurrentRuns ?? 32)) {
+    if (
+      closing ||
+      admitting.size >= (options.maxConcurrentRuns ?? 32) ||
+      sockets.clients.size + admitting.size >= 2 * (options.maxConcurrentRuns ?? 32)
+    ) {
       socket.destroy();
       return;
     }
@@ -127,7 +139,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
           socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
       };
-      if (req.url !== '/sdk' || active.size >= (options.maxConcurrentRuns ?? 32)) {
+      if (req.url !== '/sdk') {
         deny();
         return;
       }
@@ -166,14 +178,32 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         socket.destroyed ||
         seen.has(claim.invocationId) ||
         seen.size >= (options.maxReplayEntries ?? 10_000) ||
-        active.size >= (options.maxConcurrentRuns ?? 32)
+        (!claim.recovery && active.size >= (options.maxConcurrentRuns ?? 32))
       ) {
         deny();
         return;
       }
       seen.set(claim.invocationId, now + 61_000);
-      const controller = new AbortController();
-      active.add(controller);
+      if (claim.recovery && !recovery) {
+        deny();
+        return;
+      }
+      const recovered = claim.recovery
+        ? await recovery!.prepare(Object.freeze(claim.identity), claim.threadId, claim.recovery)
+        : undefined;
+      const needsEngine = recovered?.needsEngine ?? true;
+      if (
+        closing ||
+        admission.signal.aborted ||
+        socket.destroyed ||
+        (needsEngine && active.size >= (options.maxConcurrentRuns ?? 32))
+      ) {
+        if (needsEngine) recovered?.dispose();
+        deny();
+        return;
+      }
+      const controller = recovered?.controller ?? new AbortController();
+      if (needsEngine) active.add(controller);
       let upgraded = false;
       socket.once('close', () => {
         if (!upgraded) {
@@ -183,11 +213,18 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
       });
       sockets.handleUpgrade(req, socket, head, (ws) => {
         upgraded = true;
+        if (recovered && !needsEngine) {
+          recovered.attach(ws, claim.recovery!.after);
+          return;
+        }
+        if (recovered) recovered.needsEngine = false;
+        const transport = recovered?.socket ?? ws;
+        let outcome: 'completed' | 'paused' | 'failed' | 'cancelled' = 'failed';
         let started = false;
         let running = false;
         const timer = setTimeout(() => {
           controller.abort();
-          ws.close(1000);
+          transport.close(1000);
         }, limits.maxRunMs);
         timer.unref();
         const cleanup = () => {
@@ -195,8 +232,8 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
           clearTimeout(timer);
           if (!running) active.delete(controller);
         };
-        ws.once('close', cleanup);
-        const peer = createSdkPeer(ws, {
+        transport.once('close', cleanup);
+        const peer = createSdkPeer(transport, {
           ...limits,
           timeoutMs: limits.rpcTimeoutMs,
           onClose: cleanup,
@@ -213,7 +250,10 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
               request.agent.id !== identity.agentId ||
               request.options.configurable?.thread_id !== claim.threadId ||
               request.options.configurable?.run_id !== identity.runId ||
-              request.options.configurable?.user_id !== identity.userId
+              request.options.configurable?.user_id !== identity.userId ||
+              (claim.recovery != null &&
+                request.options.configurable?.__librechat_checkpoint_ns !==
+                  claim.recovery.generation)
             ) {
               throw new Error('SDK runtime identity mismatch');
             }
@@ -233,6 +273,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
               for (const event of request.hooks)
                 hooks.register(event, {
                   internal: true,
+                  ...(recovered ? { timeout: limits.rpcTimeoutMs } : {}),
                   hooks: [
                     async (input, hookSignal): Promise<HookOutput> => {
                       const abort = () => controller.abort();
@@ -265,6 +306,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                 });
             }
             const execute = async () => {
+              await recovered?.begin();
               const run = await options.createRun({
                 identity,
                 config: {
@@ -301,6 +343,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                       request.commandOptions,
                     )
                   : await run.processStream(request.input, callerOptions);
+              outcome = run.getInterrupt() ? 'paused' : 'completed';
               peer.send({
                 type: 'done',
                 data: {
@@ -332,20 +375,28 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                   /* Diagnostics must not prevent cleanup. */
                 }
                 try {
-                  if (ws.readyState === WebSocket.OPEN) peer.send({ type: 'error' });
+                  if (transport.readyState === WebSocket.OPEN) peer.send({ type: 'error' });
                 } catch {
                   controller.abort();
                 } finally {
-                  ws.close(1011);
+                  transport.close(1011);
                 }
               })
-              .finally(() => {
+              .finally(async () => {
                 running = false;
-                if (ws.readyState === WebSocket.CLOSED) active.delete(controller);
+                if (recovered) {
+                  try {
+                    await recovered.complete(controller.signal.aborted ? 'cancelled' : outcome);
+                  } catch {
+                    recovered.dispose();
+                  }
+                }
+                if (transport.readyState === WebSocket.CLOSED) active.delete(controller);
               });
             return { accepted: true };
           },
         });
+        recovered?.attach(ws, claim.recovery!.after);
       });
     })()
       .catch(() => socket.destroy())
@@ -359,6 +410,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
     server,
     close: async () => {
       closing = true;
+      recovery?.close();
       for (const [socket, admission] of admitting) {
         admission.abort();
         socket.destroy();
