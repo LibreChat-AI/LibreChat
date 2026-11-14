@@ -86,8 +86,17 @@ export function restoreGoogleThoughtSignatures(
     if (Array.isArray(saved.turns)) {
       const matches = saved.turns.filter((turn) => restoreGeminiReplayParts(message, turn) != null);
       if (matches.length === 1) message.additional_kwargs[GEMINI_PARTS] = matches[0];
-      // Never fall back to call-only signatures for edited or partially pruned native turns.
-      continue;
+      if (matches.length > 0 || !saved.calls || !message.tool_calls?.length) continue;
+      // A different invocation may have supplied only legacy call signatures. Never use
+      // that fallback for calls owned by a native turn, even if its text was edited.
+      const nativeCallIds = new Set(
+        saved.turns.flatMap((turn) =>
+          isGeminiReplayParts(turn)
+            ? turn.flatMap((part) => (part.type === 'function_call' ? [part.id] : []))
+            : [],
+        ),
+      );
+      if (message.tool_calls.some(({ id }) => id != null && nativeCallIds.has(id))) continue;
     }
     // Older history stored a flat call-id map. The source row still owns every lookup.
     const calls =
