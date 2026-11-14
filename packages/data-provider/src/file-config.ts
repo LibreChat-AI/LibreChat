@@ -400,6 +400,8 @@ export const codeTypeMapping: { [key: string]: string } = {
   tsv: 'text/tab-separated-values', // .tsv - Tab-separated values
   parquet: 'application/x-parquet', // .parquet - Apache Parquet columnar storage
   json: 'application/json', // .json - JSON file
+  jsonl: 'text/plain', // .jsonl - JSON Lines
+  ndjson: 'text/plain', // .ndjson - Newline-delimited JSON
   xml: 'application/xml', // .xml - XML file
   html: 'text/html', // .html - HTML file
   htm: 'text/html', // .htm - HTML file

@@ -138,6 +138,14 @@ describe('inferMimeType', () => {
     expect(baseFileConfig.checkType(inferMimeType('legacy.doc', ''))).toBe(true);
     expect(baseFileConfig.checkType(inferMimeType('template.potx', ''))).toBe(true);
   });
+
+  it.each(['records.jsonl', 'records.ndjson'])(
+    'accepts JSON Lines, which browsers report with an empty type: %s',
+    (fileName) => {
+      expect(inferMimeType(fileName, '')).toBe('text/plain');
+      expect(baseFileConfig.checkType(inferMimeType(fileName, ''))).toBe(true);
+    },
+  );
 });
 
 describe('applicationMimeTypes', () => {
