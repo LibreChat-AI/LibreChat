@@ -18,6 +18,12 @@ transcript, from a Chromium trace of the built client:
   no event arriving, whatever the main thread does there it does for the run's
   animations.
 
+- **`speech.perf.spec.ts`**: the cost of the read-aloud control. Every assistant row carries a
+  hidden `<audio>` element for it, which should load nothing until its button is pressed. The
+  spec counts the media errors and media requests those elements make while the thread mounts
+  and across two short runs, and traces the main thread for each. Anything above zero errors
+  and one request (the composer's silent clip) is a row loading something it was not asked to.
+
 - **`restyle.perf.spec.ts`**: the cost of one small change in every row at once, which is
   what a run starting or ending is. It flips a class, flips `disabled` and mounts a button on
   each row by hand and times the style and layout pass that follows. With a stylesheet whose
@@ -46,6 +52,7 @@ by side.
 | ------------------------ | -------------------------------------------------------------------- |
 | `FADE_PERF_CPU`          | Slows the renderer by this factor, as DevTools CPU throttling does.  |
 | `FADE_PERF_THEME`        | The color theme to open the chat in, such as `dark`.                 |
+| `FADE_PERF_TTS`          | `0` turns read-aloud off, removing the per-row `<audio>` elements.   |
 | `FADE_PERF_PROMPT`       | The fake model's scripted reply for the live run.                    |
 | `FADE_PERF_CSS`          | A stylesheet laid over the shipped one, to try a remedy.             |
 | `FADE_PERF_SKIP_LIVE`    | `1` stops the frame spec after the idle and label traces.            |
