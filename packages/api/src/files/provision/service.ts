@@ -27,8 +27,8 @@ import {
   getCodeApiUploadOptions,
   withCodeApiUploadRecovery,
 } from '~/utils';
+import { buildCodeEnvIdentityParams, getCodeEnvSessionFileIds } from '~/files/code/identity';
 import { getCodeEnvUploadFilename, getUploadedCodeEnvFilename } from '../code/form';
-import { buildCodeEnvIdentityParams } from '~/files/code/identity';
 import { codeExecutionHeaders } from '~/agents/execution';
 import { getCodeApiAuthHeaders } from '~/auth/codeapi';
 import { resolveDownloadPath } from '~/storage/path';
@@ -608,11 +608,13 @@ export function createProvisionService({
             timeout: 5000,
           });
 
-          const remoteFiles = response.data ?? [];
+          const remoteFiles: unknown = response.data;
+          if (!Array.isArray(remoteFiles)) {
+            throw new Error('Invalid Code API session summary');
+          }
+          const remoteFileIds = getCodeEnvSessionFileIds(remoteFiles, session_id);
           for (const { file_id, remoteFileId } of fileEntries) {
-            if (
-              (remoteFiles as Array<{ fileId?: string }>).some((f) => f.fileId === remoteFileId)
-            ) {
+            if (remoteFileIds.has(remoteFileId)) {
               aliveFileIds.add(file_id);
             }
           }

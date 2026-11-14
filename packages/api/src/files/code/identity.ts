@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { CODE_ENV_KINDS } from 'librechat-data-provider';
 import type { CodeEnvKind } from 'librechat-data-provider';
 import type FormData from 'form-data';
@@ -89,4 +90,48 @@ export function buildCodeEnvDownloadQuery(identity: CodeEnvIdentity): string {
     params.set('version', String(identity.version));
   }
   return `?${params.toString()}`;
+}
+
+/** Summary keys follow Code API's canonicalObjectKey/legacyObjectId storage contract. */
+export function getCodeEnvSessionFileIds(
+  files: readonly unknown[],
+  sessionId: string,
+): Set<string> {
+  const ids = new Set<string>();
+  const prefix = `${sessionId}/`;
+  const canonicalDirectory = '.codeapi-objects/';
+  for (const file of files) {
+    if (file == null || typeof file !== 'object') {
+      continue;
+    }
+    if ('fileId' in file && typeof file.fileId === 'string' && file.fileId !== '') {
+      ids.add(file.fileId);
+      continue;
+    }
+    if (!('name' in file) || typeof file.name !== 'string' || !file.name.startsWith(prefix)) {
+      continue;
+    }
+    const name = file.name.slice(prefix.length);
+    if (name.startsWith(canonicalDirectory)) {
+      const encoded = name.slice(canonicalDirectory.length);
+      if (!/^[A-Za-z0-9_-]+$/.test(encoded)) {
+        continue;
+      }
+      const id = Buffer.from(encoded, 'base64url').toString('utf8');
+      if (id && Buffer.from(id, 'utf8').toString('base64url') === encoded) {
+        ids.add(id);
+      }
+      continue;
+    }
+    if (!name || name === '.' || name === '..' || /[/\\\p{Cc}]/u.test(name)) {
+      continue;
+    }
+    // Legacy storage appends the filename's final extension, including for dotted IDs.
+    const extension = path.posix.extname(name);
+    const id = extension === '' ? name : name.slice(0, -extension.length);
+    if (id) {
+      ids.add(id);
+    }
+  }
+  return ids;
 }

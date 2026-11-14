@@ -196,7 +196,7 @@ jest.mock('@librechat/api', () => {
     codeServerHttpsAgent: jest.requireActual('@librechat/api').codeServerHttpsAgent,
     selectCodeFiles: jest.requireActual('@librechat/api').selectCodeFiles,
     getCodeFileInfo: jest.requireActual('@librechat/api').getCodeFileInfo,
-    getUploadedCodeEnvFilename: jest.requireActual('@librechat/api').getUploadedCodeEnvFilename,
+    createCodeFileUploadRef: jest.requireActual('@librechat/api').createCodeFileUploadRef,
     checkCodeFileActive: jest.requireActual('@librechat/api').checkCodeFileActive,
   };
 });
@@ -3556,6 +3556,7 @@ describe('Code Process', () => {
             file_id: 'NEW_ID',
             executionProfile: 'default',
             sandboxFilename: 'sentinel.txt',
+            provisionedAt: expect.any(Number),
           },
           'metadata.codeEnvRefs.default': {
             kind: 'user',
@@ -3564,6 +3565,7 @@ describe('Code Process', () => {
             file_id: 'NEW_ID',
             executionProfile: 'default',
             sandboxFilename: 'sentinel.txt',
+            provisionedAt: expect.any(Number),
           },
         }),
       );

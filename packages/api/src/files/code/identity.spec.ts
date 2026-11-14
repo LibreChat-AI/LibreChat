@@ -1,5 +1,9 @@
 import FormData from 'form-data';
-import { appendCodeEnvFileIdentity, buildCodeEnvDownloadQuery } from './identity';
+import {
+  appendCodeEnvFileIdentity,
+  buildCodeEnvDownloadQuery,
+  getCodeEnvSessionFileIds,
+} from './identity';
 
 describe('appendCodeEnvFileIdentity', () => {
   /* Validation rules mirror codeapi's `parseUploadSessionKeyInput`
@@ -112,5 +116,84 @@ describe('buildCodeEnvDownloadQuery', () => {
     expect(() => buildCodeEnvDownloadQuery({ kind: 'agent', id: 'agent-9', version: 3 })).toThrow(
       /version.*skill/,
     );
+  });
+});
+
+describe('getCodeEnvSessionFileIds', () => {
+  const canonical = (id: string) =>
+    `session/.codeapi-objects/${Buffer.from(id).toString('base64url')}`;
+
+  it('indexes hosted, canonical and legacy identities without guessing dotted IDs', () => {
+    expect(
+      getCodeEnvSessionFileIds(
+        [
+          { fileId: 'hosted', name: canonical('not-hosted') },
+          { name: canonical('dotted.id') },
+          { name: 'session/report.csv' },
+          { name: 'session/report.csv.txt' },
+          { name: 'session/extensionless' },
+        ],
+        'session',
+      ),
+    ).toEqual(new Set(['hosted', 'dotted.id', 'report', 'report.csv', 'extensionless']));
+    expect(
+      getCodeEnvSessionFileIds([{ name: 'session/report.csv' }], 'session').has('report.csv'),
+    ).toBe(false);
+    expect(
+      getCodeEnvSessionFileIds([{ name: canonical('report.csv') }], 'session').has('report'),
+    ).toBe(false);
+  });
+
+  it.each([
+    null,
+    false,
+    'report',
+    42,
+    {},
+    { fileId: 42 },
+    { name: 42 },
+    { name: 'session-other/report.csv' },
+    { name: 'other/.codeapi-objects/cmVwb3J0' },
+    { name: 'prefix/session/report.csv' },
+    { name: 'session/nested/report.csv' },
+    { name: 'session//report.csv' },
+    { name: 'session/./report.csv' },
+    { name: 'session/../report.csv' },
+    { name: 'session/..\\report.csv' },
+    { name: 'session/report\u0000.csv' },
+    { name: 'session/.codeapi-objects/' },
+    { name: 'session/.codeapi-objects/cmVwb3J0=' },
+    { name: 'session/.codeapi-objects/cmVwb3J0/extra' },
+    { name: 'session/.codeapi-objects/%63mVwb3J0' },
+    { name: 'session/.codeapi-objects/_w' },
+    { name: 'session/.codeapi-objects/Zh' },
+  ])('does not derive an identity from malformed or cross-session entry %p', (entry) => {
+    expect(getCodeEnvSessionFileIds([entry], 'session').size).toBe(0);
+  });
+
+  it('does not decode URL paths or match file ID prefixes', () => {
+    const ids = getCodeEnvSessionFileIds(
+      [
+        { name: 'session/report%2Ecsv.txt' },
+        { name: 'session/report-extra.csv' },
+        { name: canonical('report-extra') },
+      ],
+      'session',
+    );
+    expect(ids).toEqual(new Set(['report%2Ecsv', 'report-extra']));
+    expect(ids.has('report')).toBe(false);
+    expect(ids.has('report.csv')).toBe(false);
+  });
+
+  it('reads each summary entry a constant number of times for a large session', () => {
+    const name = jest.fn(() => 'session/report.csv');
+    const summaries = Array.from({ length: 10_000 }, () => ({
+      get name() {
+        return name();
+      },
+    }));
+    const ids = getCodeEnvSessionFileIds(summaries, 'session');
+    for (let index = 0; index < 10_000; index++) expect(ids.has('report')).toBe(true);
+    expect(name.mock.calls.length).toBeLessThanOrEqual(30_000);
   });
 });
