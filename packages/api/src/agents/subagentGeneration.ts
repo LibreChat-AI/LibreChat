@@ -8,7 +8,42 @@ import { createSubagentContentFold } from './subagentContent';
 /** Frames waiting on a slow store before the stream is given up, matching the manager's own
  *  early-event ceiling. Merged deltas do not count twice, so only distinct steps reach it. */
 const MAX_QUEUED_FRAMES = 5_000;
+/** How long the child waits on its stream's store before going on without it. Both bound a
+ *  best-effort live view whose fallback is the child's own persisted result, so they are
+ *  internal hygiene and not operator levers. */
 const DEFAULT_SETTLE_TIMEOUT_MS = 1_000;
+const DEFAULT_OPEN_TIMEOUT_MS = 3_000;
+
+const EXPIRED = Symbol('expired');
+
+/** Resolves with the operation, or with `EXPIRED` once it has taken too long. The operation
+ *  keeps running; a rejection after expiry is swallowed. */
+async function within<T>(operation: Promise<T>, timeoutMs: number): Promise<T | typeof EXPIRED> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<typeof EXPIRED>((resolve) => {
+    timer = setTimeout(() => resolve(EXPIRED), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([operation, expired]);
+  } finally {
+    if (timer != null) clearTimeout(timer);
+    operation.catch(() => undefined);
+  }
+}
+
+/** The producer reuses its event objects, so the stream keeps its own copy. */
+function ownCopy(frame: SubagentContentFrame): SubagentContentFrame | null {
+  try {
+    return structuredClone(frame);
+  } catch {
+    try {
+      return JSON.parse(JSON.stringify(frame)) as SubagentContentFrame;
+    } catch {
+      return null;
+    }
+  }
+}
 
 /** The part of the generation job manager a child's stream needs. */
 export type ChildGenerationManager = Pick<
@@ -141,8 +176,16 @@ class ManagedChildGeneration implements ChildGeneration {
 
   emit(frame: SubagentContentFrame): void {
     if (this.settling) return;
-    /** The producer reuses its event objects, so keep our own copy before returning. */
-    const own = structuredClone(frame);
+    const own = ownCopy(frame);
+    if (own == null) {
+      logger.warn('[subagentGeneration] Child frame could not be copied; detaching', {
+        threadId: this.input.threadId,
+        taskId: this.input.taskId,
+        event: frame.event,
+      });
+      this.detach();
+      return;
+    }
     if (this.detached) {
       this.apply(own);
       return;
@@ -165,8 +208,10 @@ class ManagedChildGeneration implements ChildGeneration {
     this.enqueue(this.toEvent(own), own);
   }
 
+  /** A detached stream is touched too: its job is still the record that the child is running,
+   *  and it is ended at settlement like any other. */
   async touch(): Promise<void> {
-    if (this.detached || this.settling) return;
+    if (this.settling) return;
     await this.manager.touchJob(this.input.threadId, this.createdAt).catch(() => false);
   }
 
@@ -185,27 +230,46 @@ class ManagedChildGeneration implements ChildGeneration {
   ): Promise<void> {
     this.settling = true;
     await this.drainWithin(this.settleTimeoutMs);
-    const claim = this.detached ? null : await this.claim(aborted);
+    /** A detached stream is claimed too. Its final event carries the whole response, and a
+     *  job left running would read as a live child long after this one ended. */
+    const claim = await this.claimWithin(aborted);
     let final: ChildGenerationFinal | null;
     try {
       final = await persist();
     } catch (error) {
-      if (claim != null) await this.publish(claim, null);
+      if (claim != null) await within(this.publish(claim, null), this.settleTimeoutMs);
       throw error;
     }
     if (claim == null) return;
-    await this.publish(
-      claim,
-      final == null
-        ? null
-        : {
-            final: true,
-            conversation: { conversationId: this.input.threadId },
-            requestMessage: final.requestMessage,
-            responseMessage: final.responseMessage,
-            ...(aborted ? { aborted: true } : {}),
-          },
+    await within(
+      this.publish(
+        claim,
+        final == null
+          ? null
+          : {
+              final: true,
+              conversation: { conversationId: this.input.threadId },
+              requestMessage: final.requestMessage,
+              responseMessage: final.responseMessage,
+              ...(aborted ? { aborted: true } : {}),
+            },
+      ),
+      this.settleTimeoutMs,
     );
+  }
+
+  /** The child's result is never held behind a stalled store. A claim that lands after the
+   *  wait is released with a refetch notice, since nothing will publish its final event. */
+  private async claimWithin(aborted: boolean): Promise<TerminalJobClaim | null> {
+    const claiming = this.claim(aborted);
+    const claim = await within(claiming, this.settleTimeoutMs);
+    if (claim !== EXPIRED) return claim;
+    logger.warn('[subagentGeneration] Child stream terminal claim timed out', {
+      threadId: this.input.threadId,
+      taskId: this.input.taskId,
+    });
+    void claiming.then((late) => (late == null ? undefined : this.publish(late, null)));
+    return null;
   }
 
   private toEvent(frame: SubagentContentFrame): ServerSentEvent {
@@ -310,8 +374,24 @@ class ManagedChildGeneration implements ChildGeneration {
 /** Runs each background child as a generation job keyed by its thread id. */
 export function createChildGenerationHost(
   manager: ChildGenerationManager,
-  options: { settleTimeoutMs?: number } = {},
+  options: { settleTimeoutMs?: number; openTimeoutMs?: number } = {},
 ): ChildGenerationHost {
+  /** Ends a job created after its child stopped waiting for it, so it does not read as live. */
+  const discard = async (streamId: string, createdAt: number): Promise<void> => {
+    try {
+      const claim = await manager.claimTerminalJob(streamId, 'aborted', undefined, createdAt, {
+        persistencePending: true,
+      });
+      if (claim == null) return;
+      try {
+        await manager.publishTerminalClaim(claim, null);
+      } finally {
+        await manager.finishTerminalJob(claim);
+      }
+    } catch (error) {
+      logger.warn('[subagentGeneration] Failed to discard a late child stream', error);
+    }
+  };
   return {
     async open(input) {
       const responseMessageId = `${input.taskId}:assistant`;
@@ -322,7 +402,9 @@ export function createChildGenerationHost(
         text: input.userMessage.text,
       };
       try {
-        const job = await manager.createJob(input.threadId, input.userId, input.threadId, {
+        /** A live job on this thread is someone else's: an event-bound child paused for
+         *  approval keeps its job without holding the thread lease. It is never replaced. */
+        const creating = manager.createJob(input.threadId, input.userId, input.threadId, {
           rejectActivePredecessor: true,
           initialMetadata: {
             conversationId: input.threadId,
@@ -335,6 +417,14 @@ export function createChildGenerationHost(
             ...(input.agentId == null ? {} : { agent_id: input.agentId }),
           },
         });
+        const job = await within(creating, options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS);
+        if (job === EXPIRED) {
+          void creating.then(
+            (late) => discard(input.threadId, late.createdAt),
+            () => undefined,
+          );
+          throw new Error('child_stream_open_timeout');
+        }
         const generation = new ManagedChildGeneration(
           manager,
           input,

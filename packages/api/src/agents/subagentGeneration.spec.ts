@@ -288,9 +288,105 @@ describe('child generation host', () => {
     generation?.emit(text('s1', 'whole'));
 
     expect(JSON.stringify(generation?.content())).toContain('kept whole');
+    let done: ServerSentEvent | undefined;
+    await manager.subscribe(
+      threadId,
+      () => undefined,
+      (event) => {
+        done = event;
+      },
+    );
     const persist = jest.fn(async () => final);
     await expect(generation?.settle(false, persist)).resolves.toBeUndefined();
     expect(persist).toHaveBeenCalledTimes(1);
+    /** The stream stopped being written, but its job must not read as a live child. */
+    expect((await manager.getJob(threadId))?.status).toBe('complete');
+    expect(done).toMatchObject({ final: true, responseMessage: { text: 'Done' } });
+  });
+
+  it('keeps a detached stream alive on touch until it is settled', async () => {
+    const flaky: ChildGenerationManager = {
+      createJob: manager.createJob.bind(manager),
+      touchJob: jest.fn(manager.touchJob.bind(manager)),
+      setContentParts: manager.setContentParts.bind(manager),
+      claimTerminalJob: manager.claimTerminalJob.bind(manager),
+      publishTerminalClaim: manager.publishTerminalClaim.bind(manager),
+      finishTerminalJob: manager.finishTerminalJob.bind(manager),
+      emitChunk: async () => {
+        throw new Error('redis unavailable');
+      },
+    };
+    const generation = await createChildGenerationHost(flaky).open(input());
+    await flush();
+
+    await generation?.touch();
+
+    expect(flaky.touchJob).toHaveBeenCalledWith(threadId, generation?.createdAt);
+  });
+
+  it('never throws into the child for a frame it cannot copy', async () => {
+    const generation = await createChildGenerationHost(manager).open(input());
+    const uncopyable = {
+      event: StepEvents.ON_RUN_STEP_COMPLETED,
+      data: { result: { id: 's1', callback: () => undefined, big: BigInt(1) } },
+    } as unknown as SubagentContentFrame;
+
+    expect(() => generation?.emit(uncopyable)).not.toThrow();
+    generation?.emit(runStep('s1', 0));
+    generation?.emit(text('s1', 'still folding'));
+
+    expect(JSON.stringify(generation?.content())).toContain('still folding');
+    const persist = jest.fn(async () => final);
+    await expect(generation?.settle(false, persist)).resolves.toBeUndefined();
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not hold the result behind a terminal claim that never answers', async () => {
+    const stalled: ChildGenerationManager = {
+      createJob: manager.createJob.bind(manager),
+      touchJob: manager.touchJob.bind(manager),
+      setContentParts: manager.setContentParts.bind(manager),
+      emitChunk: manager.emitChunk.bind(manager),
+      publishTerminalClaim: manager.publishTerminalClaim.bind(manager),
+      finishTerminalJob: manager.finishTerminalJob.bind(manager),
+      claimTerminalJob: () => new Promise(() => undefined),
+    };
+    const generation = await createChildGenerationHost(stalled, { settleTimeoutMs: 20 }).open(
+      input(),
+    );
+    const persist = jest.fn(async () => final);
+
+    await expect(generation?.settle(false, persist)).resolves.toBeUndefined();
+
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up on a stream that takes too long to open, and ends the job if it arrives', async () => {
+    let createLate!: () => Promise<void>;
+    const slow: ChildGenerationManager = {
+      touchJob: manager.touchJob.bind(manager),
+      setContentParts: manager.setContentParts.bind(manager),
+      emitChunk: manager.emitChunk.bind(manager),
+      claimTerminalJob: manager.claimTerminalJob.bind(manager),
+      publishTerminalClaim: manager.publishTerminalClaim.bind(manager),
+      finishTerminalJob: manager.finishTerminalJob.bind(manager),
+      createJob: (...args) =>
+        new Promise((resolve, reject) => {
+          createLate = () => manager.createJob(...args).then(resolve, reject);
+        }),
+    };
+
+    await expect(
+      createChildGenerationHost(slow, { openTimeoutMs: 20 }).open(input()),
+    ).resolves.toBeNull();
+    expect(await manager.getJob(threadId)).toBeUndefined();
+
+    await createLate();
+    await flush();
+    await flush();
+
+    expect((await manager.getJob(threadId))?.status).toBe('aborted');
+    expect(onAbort).not.toHaveBeenCalled();
   });
 
   it('refreshes the idle clock on touch', async () => {
