@@ -313,6 +313,32 @@ describe('SubagentCall', () => {
     expect(litFoldPath(root, row, 155)).toEqual([{ rail: rails[1], branch: 0 }]);
   });
 
+  it.each([
+    { child: 'streams', progress: { initialProgress: 0.1, isSubmitting: true }, running: 'true' },
+    {
+      child: 'has a result',
+      progress: { initialProgress: 1, isSubmitting: true },
+      running: 'false',
+    },
+    {
+      child: 'stops before a result',
+      progress: { initialProgress: 0.1, isSubmitting: false },
+      running: 'false',
+    },
+    {
+      child: 'is cancelled',
+      progress: {
+        initialProgress: 0.1,
+        isSubmitting: true,
+        runStepStatus: 'cancelled' as const,
+      },
+      running: 'false',
+    },
+  ])('marks the card as running only while its child $child', ({ progress, running }) => {
+    renderWithState({ toolCallId: 'pulse', ...progress });
+    expect(screen.getByRole('button')).toHaveAttribute('data-running', running);
+  });
+
   it('keeps the configured name and avatar after live progress is cleared', () => {
     const { setProgress } = renderWithState({
       toolCallId: 'identity',
