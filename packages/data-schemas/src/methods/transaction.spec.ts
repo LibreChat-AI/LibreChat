@@ -1667,6 +1667,42 @@ describe('Balance Reservations', () => {
         expect(resets[0].rawAmount).toBe(-500);
       });
 
+      test('resets at an anchored boundary before a full interval has passed', async () => {
+        const user = new mongoose.Types.ObjectId();
+        const anchor = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        await Balance.create({
+          user,
+          ...resettable,
+          refillIntervalValue: 1,
+          refillIntervalUnit: 'weeks',
+          lastRefill: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+          tokenCredits: 300,
+        });
+
+        expect((await findBalanceByUser(user.toString()))?.tokenCredits).toBe(300);
+        const synced = await reserveBalance({
+          user: user.toString(),
+          reservationId: newId(),
+          amount: 100,
+          expiresAt: inFuture(),
+          refillPolicy: {
+            autoRefillEnabled: true,
+            refillMode: 'reset',
+            refillAmount: 1000,
+            refillIntervalValue: 1,
+            refillIntervalUnit: 'weeks',
+            refillAnchor: anchor,
+          },
+        });
+
+        expect(synced).toEqual({ reserved: true, balance: 1000 });
+        const state = await readState(user);
+        expect(state?.refillAnchor).toBe(anchor);
+        expect(state?.tokenCredits).toBe(1000);
+        expect(await findBalanceByUser(user.toString())).toMatchObject({ tokenCredits: 1000 });
+        expect(await Transaction.countDocuments({ user, context: 'balanceReset' })).toBe(1);
+      });
+
       test('synchronizes a changed allowance before applying a due reset', async () => {
         const user = new mongoose.Types.ObjectId();
         await Balance.create({ user, ...resettable, tokenCredits: 500 });

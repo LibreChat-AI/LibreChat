@@ -324,6 +324,7 @@ export function createUserMethods(
       refillIntervalUnit?: RefillIntervalUnit;
       refillAmount?: number;
       refillMode?: BalanceRefillMode;
+      refillAnchor?: string | null;
       allotment: number;
       allottedAt: Date;
       lastRefill: Date;
@@ -345,6 +346,7 @@ export function createUserMethods(
       initial.refillIntervalUnit = balanceConfig.refillIntervalUnit;
       initial.refillAmount = balanceConfig.refillAmount;
       initial.refillMode = balanceConfig.refillMode ?? 'add';
+      initial.refillAnchor = balanceConfig.refillAnchor ?? null;
     }
 
     await Balance.findOneAndUpdate(

@@ -292,6 +292,7 @@
   "com_ui_balance_no_refill": "Doesn't refill automatically",
   "com_ui_balance_refill_amount_in": "+{{0}} available {{1}}",
   "com_ui_balance_refill_amount_when_empty": "+{{0}} when you run out",
+  "com_ui_balance_on_date": "on {{0}}",
   "com_ui_balance_reset_in": "Usage resets {{0}}",
   "com_ui_balance_reset_due": "Usage resets on your next request",
   "com_ui_balance_reset_amount_in": "Resets to {{0}} {{1}}",

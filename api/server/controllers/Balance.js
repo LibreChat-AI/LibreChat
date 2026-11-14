@@ -19,6 +19,7 @@ async function balanceController(req, res) {
     delete result.refillIntervalValue;
     delete result.refillIntervalUnit;
     delete result.refillAmount;
+    delete result.refillAnchor;
   }
 
   res.status(200).json(result);

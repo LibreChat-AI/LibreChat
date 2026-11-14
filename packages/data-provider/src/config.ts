@@ -22,6 +22,14 @@ import {
   MAX_PII_PATTERN_LENGTH,
 } from './filters';
 import {
+  REFILL_INTERVAL_UNITS,
+  BALANCE_DISPLAY_MODES,
+  BALANCE_REFILL_MODES,
+  MIN_BALANCE_RESERVATION_TTL_MS,
+  DEFAULT_BALANCE_RESERVATION_TTL_MS,
+  parseRefillAnchor,
+} from './balance';
+import {
   EModelEndpoint,
   eModelEndpointSchema,
   isAgentsEndpoint,
@@ -29,13 +37,6 @@ import {
   eReasoningParameterFormatSchema,
   eReasoningResponseKeySchema,
 } from './schemas';
-import {
-  REFILL_INTERVAL_UNITS,
-  BALANCE_DISPLAY_MODES,
-  BALANCE_REFILL_MODES,
-  MIN_BALANCE_RESERVATION_TTL_MS,
-  DEFAULT_BALANCE_RESERVATION_TTL_MS,
-} from './balance';
 import {
   scheduledMCPResourceBindingSchema,
   scheduledMCPReadOnlyPolicySchema,
@@ -4259,6 +4260,14 @@ export const balanceSchema = z
     refillAmount: z.number().optional().default(10000),
     /** Add credits on exhaustion, or replace the allowance on the next read/request once due. */
     refillMode: z.enum(BALANCE_REFILL_MODES).optional().default('add'),
+    /** Aligns every period to this instant plus whole intervals (e.g. a Monday at 00:00Z for
+     *  weekly resets); omitted, each user's period runs from their own last refill. */
+    refillAnchor: z
+      .string()
+      .refine((anchor) => parseRefillAnchor(anchor) != null, {
+        message: 'Use an ISO 8601 timestamp with a Z or ±HH:MM offset',
+      })
+      .optional(),
     reservationTtlMs: z
       .number()
       .int()
@@ -4277,6 +4286,16 @@ export const balanceSchema = z
         code: z.ZodIssueCode.custom,
         path: ['refillIntervalValue'],
         message: 'Reset intervals must be positive integers',
+      });
+    }
+    if (
+      balance.refillAnchor != null &&
+      !(Number.isInteger(balance.refillIntervalValue) && balance.refillIntervalValue > 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['refillIntervalValue'],
+        message: 'Anchored intervals must be positive integers',
       });
     }
   });

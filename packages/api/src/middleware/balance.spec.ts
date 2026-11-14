@@ -846,4 +846,23 @@ describe('balance refill mode synchronization', () => {
     const record = { ...config, refillMode: 'reset', lastRefill: new Date() } as IBalance;
     expect(buildBalanceUpdateFields(config, record, 'user-1')).toEqual({ refillMode: 'add' });
   });
+  test('syncs an added anchor and clears a removed one', () => {
+    const refillAnchor = '2026-01-05T00:00:00Z';
+    const record = { ...config, refillMode: 'add', lastRefill: new Date() } as IBalance;
+    expect(buildBalanceUpdateFields({ ...config, refillAnchor }, record, 'user-1')).toEqual({
+      refillAnchor,
+    });
+    const anchored = { ...record, refillAnchor } as IBalance;
+    expect(buildBalanceUpdateFields(config, anchored, 'user-1')).toEqual({ refillAnchor: null });
+  });
+  test('disables auto-refill for an anchor whose interval cannot form boundaries', () => {
+    const record = { ...config, refillMode: 'add', lastRefill: new Date() } as IBalance;
+    expect(
+      buildBalanceUpdateFields(
+        { ...config, refillIntervalValue: 0.5, refillAnchor: '2026-01-05T00:00:00Z' },
+        record,
+        'user-1',
+      ),
+    ).toEqual({ autoRefillEnabled: false });
+  });
 });

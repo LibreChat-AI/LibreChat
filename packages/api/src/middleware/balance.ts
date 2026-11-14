@@ -94,7 +94,7 @@ export function buildBalanceUpdateFields(
     config.refillIntervalValue != null &&
     config.refillIntervalUnit != null &&
     config.refillAmount != null &&
-    (config.refillMode !== 'reset' ||
+    ((config.refillMode !== 'reset' && config.refillAnchor == null) ||
       (Number.isInteger(config.refillIntervalValue) && config.refillIntervalValue > 0));
 
   if (!isAutoRefillConfigValid) {
@@ -123,6 +123,11 @@ export function buildBalanceUpdateFields(
 
   if (userRecord?.refillAmount !== config.refillAmount) {
     updateFields.refillAmount = config.refillAmount;
+  }
+
+  const refillAnchor = config.refillAnchor ?? null;
+  if ((userRecord?.refillAnchor ?? null) !== refillAnchor) {
+    updateFields.refillAnchor = refillAnchor;
   }
 
   // Initialize lastRefill if it's missing when auto-refill is enabled
