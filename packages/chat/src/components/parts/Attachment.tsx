@@ -1,6 +1,6 @@
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Tools } from 'librechat-data-provider';
-import { useLocalize, useRemScale } from '@librechat/client';
+import { Button, useLocalize, useRemScale } from '@librechat/client';
 import { Loader2, AlertCircle, Download, ChevronDown, Files as FilesIcon } from 'lucide-react';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
@@ -78,14 +78,16 @@ const PreviewPlaceholderRow = memo(
           {visibleFilename}
         </span>
         <span className="min-w-0 shrink-[100] truncate text-xs font-normal">{subtitleText}</span>
-        <button
+        <Button
           type="button"
+          variant="quiet"
+          size="icon"
           onClick={handleDownload}
           aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
-          className="text-text-secondary ring-offset-surface-primary hover:bg-surface-hover hover:text-text-primary hover:active:bg-surface-pressed focus-visible:ring-focus-control duration-theme-fast inline-flex size-5 shrink-0 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-hidden"
+          className="size-5 shrink-0"
         >
           <Download className="size-4" aria-hidden="true" />
-        </button>
+        </Button>
       </div>
     );
   },
