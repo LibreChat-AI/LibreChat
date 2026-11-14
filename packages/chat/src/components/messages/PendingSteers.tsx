@@ -164,6 +164,7 @@ function PendingSteers({
             <SteerPart
               steer={steer.text}
               files={steer.files}
+              quotes={steer.quotes}
               steerId={steer.steerId}
               createdAt={steer.createdAt}
               receiptState={steer.status === 'failed' ? null : receiptState}
