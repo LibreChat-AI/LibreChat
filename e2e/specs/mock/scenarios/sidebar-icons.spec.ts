@@ -11,7 +11,7 @@ import { getPrimaryE2EUser } from '../../../setup/users.mock';
 import { openSidebar } from './sidebar';
 import { NEW_CHAT_PATH } from '../helpers';
 
-test('leading icons preserve conversation focus after keyboard unpin @scenario:sidebar-icons-and-unpin-focus', async ({
+test('row icons preserve conversation focus after keyboard unpin @scenario:sidebar-icons-and-unpin-focus', async ({
   page,
 }) => {
   const ids = [randomUUID(), randomUUID()];
@@ -72,16 +72,16 @@ test('leading icons preserve conversation focus after keyboard unpin @scenario:s
     const title = regular.locator('[data-conversation-link]');
     await expect(project).toBeVisible();
     await expect(pr).toBeVisible();
-    const projectBox = await project.boundingBox();
-    const prBox = await pr.boundingBox();
-    const titleBox = await title.boundingBox();
-    expect(projectBox!.x + projectBox!.width).toBeLessThanOrEqual(prBox!.x);
-    expect(prBox!.x + prBox!.width).toBeLessThanOrEqual(titleBox!.x);
     await title.focus();
     const menu = regular.getByRole('button', { name: 'Conversation Menu Options' });
     await expect(menu).toBeVisible();
+    const projectBox = await project.boundingBox();
+    const prBox = await pr.boundingBox();
+    const titleBox = await title.boundingBox();
+    expect(projectBox!.x + projectBox!.width).toBeLessThanOrEqual(titleBox!.x);
+    expect(titleBox!.x + titleBox!.width).toBeLessThanOrEqual(prBox!.x);
     const menuBox = await menu.boundingBox();
-    expect(menuBox!.x).toBeGreaterThan(titleBox!.x);
+    expect(prBox!.x + prBox!.width).toBeLessThanOrEqual(menuBox!.x);
   } finally {
     await deleteConversations(ids);
     await deleteProjects(projects);
