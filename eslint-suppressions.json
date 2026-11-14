@@ -65,11 +65,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Input/CodeWorkspaceMenu.tsx": {
-    "design/disabled-recipe": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Input/Composer/Files.tsx": {
     "design/disabled-recipe": {
       "count": 1
@@ -109,11 +104,6 @@
     },
     "shadcn/require-static-classes": {
       "count": 3
-    }
-  },
-  "client/src/components/Chat/Input/chip.ts": {
-    "design/disabled-recipe": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Landing.tsx": {
