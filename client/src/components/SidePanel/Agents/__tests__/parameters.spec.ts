@@ -407,3 +407,38 @@ describe('legacy reasoning control visibility', () => {
     },
   );
 });
+
+describe('Hydrogen saved Agent controls', () => {
+  it.each(['google', 'vertexai'])(
+    'offers supported thinking and output controls for %s',
+    (provider) => {
+      const settings = resolveAgentParameterSettings({
+        provider,
+        model: 'gemini-4-hydrogen',
+        endpointsConfig: { google: { order: 0 } },
+        webSearchAllowed: true,
+      });
+      expect(settings.schemaResolved).toBe(true);
+      expect(
+        settings.visibleParameters.find((param) => param.key === 'thinkingLevel')?.options,
+      ).toEqual(['', 'low', 'medium', 'high', 'xhigh']);
+      expect(
+        settings.visibleParameters.find((param) => param.key === 'maxOutputTokens')?.range?.max,
+      ).toBe(65536);
+      expect(settings.visibleParameters.map((param) => param.key)).not.toEqual(
+        expect.arrayContaining(['temperature', 'thinkingBudget']),
+      );
+    },
+  );
+
+  it('honors Google administrator drops for a native Vertex Agent', () => {
+    const settings = resolveAgentParameterSettings({
+      provider: 'vertexai',
+      model: 'gemini-4-hydrogen',
+      endpointsConfig: { google: { order: 0 } },
+      startupConfig: { endpointsDropParamsMap: { google: ['thinkingLevel'] } },
+      webSearchAllowed: true,
+    });
+    expect(settings.visibleParameters.map((param) => param.key)).not.toContain('thinkingLevel');
+  });
+});

@@ -6,6 +6,8 @@ jest.mock('nanoid', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  collectGoogleThoughtSignatures: (...args) =>
+    jest.requireActual('@librechat/api').collectGoogleThoughtSignatures(...args),
   captureResponseAccountingUsage: (...args) =>
     jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
   writeGuarded: (res, chunk) => {

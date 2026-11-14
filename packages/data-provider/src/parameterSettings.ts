@@ -34,6 +34,7 @@ import {
 } from './schemas';
 import { resolveEffectiveUseResponsesApi } from './file-config';
 import { clampSettingRange } from './generate';
+import { isGeminiHydrogen } from './gemini';
 import { gpt6Tier } from './families';
 
 // Base definitions
@@ -826,6 +827,7 @@ const google: Record<string, SettingDefinition> = {
       [ThinkingLevel.low]: 'com_ui_low',
       [ThinkingLevel.medium]: 'com_ui_medium',
       [ThinkingLevel.high]: 'com_ui_high',
+      [ThinkingLevel.xhigh]: 'com_ui_xhigh',
     },
     optionType: 'conversation',
     columnSpan: 4,
@@ -1844,30 +1846,54 @@ function applyModelFamilyDefaults(
   }
   const modelAwareSettings =
     endpoint === EModelEndpoint.google
-      ? settings.map((setting) => {
-          if (setting.key === 'maxOutputTokens') {
-            return { ...setting, default: googleSettings.maxOutputTokens.reset(model) };
-          }
-          /** The shared thinking budget range is model-agnostic, so it caps Pro below
-           *  its real ceiling and accepts Flash values the provider rejects. The
-           *  maximum and the positive floor move together. `range.min` stays -1 so
-           *  the "decide automatically" sentinel remains typeable. */
-          if (setting.key === 'thinkingBudget' && setting.range != null) {
-            const bounds = getGoogleThinkingBudgetBounds(model);
-            if (bounds != null) {
+      ? settings
+          .filter(
+            (setting) =>
+              !isGeminiHydrogen(model) ||
+              !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+          )
+          .map((setting) => {
+            if (setting.key === 'maxOutputTokens') {
+              const max = googleSettings.maxOutputTokens.reset(model);
               return {
                 ...setting,
-                range: {
-                  ...setting.range,
-                  max: bounds.max,
-                  positiveMin: bounds.min,
-                  modelSpecific: true,
-                },
+                default: max,
+                ...(isGeminiHydrogen(model) &&
+                  setting.range && { range: { ...setting.range, max, modelSpecific: true } }),
               };
             }
-          }
-          return setting;
-        })
+            if (setting.key === 'thinkingLevel' && isGeminiHydrogen(model)) {
+              return {
+                ...setting,
+                options: [
+                  ThinkingLevel.unset,
+                  ThinkingLevel.low,
+                  ThinkingLevel.medium,
+                  ThinkingLevel.high,
+                  ThinkingLevel.xhigh,
+                ],
+              };
+            }
+            /** The shared thinking budget range is model-agnostic, so it caps Pro below
+             *  its real ceiling and accepts Flash values the provider rejects. The
+             *  maximum and the positive floor move together. `range.min` stays -1 so
+             *  the "decide automatically" sentinel remains typeable. */
+            if (setting.key === 'thinkingBudget' && setting.range != null) {
+              const bounds = getGoogleThinkingBudgetBounds(model);
+              if (bounds != null) {
+                return {
+                  ...setting,
+                  range: {
+                    ...setting.range,
+                    max: bounds.max,
+                    positiveMin: bounds.min,
+                    modelSpecific: true,
+                  },
+                };
+              }
+            }
+            return setting;
+          })
       : settings;
 
   if (endpoint !== EModelEndpoint.anthropic || supportsPromptCache(model)) {

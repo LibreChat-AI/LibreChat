@@ -107,6 +107,7 @@ function projectFileEntry(entry: unknown, excluded: readonly string[]): unknown 
     return entry;
   }
   let projected: Record<string, unknown> | undefined;
+
   for (const field of excluded) {
     if (field in entry) {
       projected ??= { ...entry };
@@ -142,6 +143,10 @@ function projectMessage<T>(message: T): T {
   }
   let projected: Record<string, unknown> | undefined;
 
+  if (isRecord(message.metadata) && 'thoughtSignatures' in message.metadata) {
+    const { thoughtSignatures: _signatures, ...metadata } = message.metadata;
+    projected = { ...message, metadata };
+  }
   for (const field of TRANSIENT_MESSAGE_FIELDS) {
     if (field in message) {
       projected ??= { ...message };

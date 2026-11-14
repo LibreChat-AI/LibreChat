@@ -483,6 +483,12 @@ modelSpecs:
         endpoint: google
         model: gemini-2.5-flash
 
+    - name: 'e2e-native-hydrogen'
+      label: 'Hydrogen Fixture'
+      preset:
+        endpoint: google
+        model: gemini-4-hydrogen
+
 # Short enough that a stalled fake RAG query fails the tool call well inside a test.
 timeouts:
   ragMs: 3000

@@ -1,3 +1,4 @@
+import { isGeminiHydrogen, getGeminiHydrogenRates } from 'librechat-data-provider';
 import type { TGoogleTokenConfig } from 'librechat-data-provider';
 import type { EndpointTokenConfig } from '~/types';
 
@@ -5,13 +6,20 @@ import type { EndpointTokenConfig } from '~/types';
 export function getGoogleTokenConfig(
   model: string,
   configured?: TGoogleTokenConfig,
+  location?: string,
 ): EndpointTokenConfig[string] | undefined {
-  if (!configured) {
-    return undefined;
-  }
   const bareModel = model.replace(/^models\//, '');
   const keys = [model, bareModel, `models/${bareModel}`];
-  const key = keys.find((candidate) => Object.prototype.hasOwnProperty.call(configured, candidate));
-  const rates = key == null ? undefined : configured[key];
-  return rates == null ? undefined : { ...rates, read: rates.cacheRead };
+  const key = keys.find(
+    (candidate) => configured && Object.prototype.hasOwnProperty.call(configured, candidate),
+  );
+  const rates = key == null ? undefined : configured?.[key];
+  if (rates) {
+    return { ...rates, read: rates.cacheRead };
+  }
+  if (!isGeminiHydrogen(model)) {
+    return undefined;
+  }
+  const standard = getGeminiHydrogenRates(location);
+  return { ...standard, cacheRead: standard.read };
 }

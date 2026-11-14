@@ -353,6 +353,13 @@ describe('shouldReplayReasoningContent', () => {
     ).toBe(false);
   });
 
+  it.each([Providers.GOOGLE, Providers.VERTEXAI])(
+    'preserves reasoning needed by %s signed history',
+    (provider) => {
+      expect(shouldReplayReasoningContent({ provider, includeReasoningHistory: false })).toBe(true);
+    },
+  );
+
   it('returns false for nullish agents', () => {
     expect(shouldReplayReasoningContent(null)).toBe(false);
     expect(shouldReplayReasoningContent(undefined)).toBe(false);
