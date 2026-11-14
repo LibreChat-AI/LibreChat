@@ -277,7 +277,7 @@ function supportsUrlContext(model: string): boolean {
   return major > 2 || (major === 2 && minor >= 5);
 }
 
-function getVertexMultiRegionEndpoint(location: string): string | undefined {
+export function getVertexMultiRegionEndpoint(location: string): string | undefined {
   return vertexMultiRegionEndpoints.get(location);
 }
 

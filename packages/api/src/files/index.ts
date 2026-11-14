@@ -30,6 +30,7 @@ export * from './regexEngine';
 export * from './resize';
 export * from './retention';
 export * from './speech';
+export * from './stt/google';
 export * from './sse';
 export * from './sweep';
 export * from './usage';

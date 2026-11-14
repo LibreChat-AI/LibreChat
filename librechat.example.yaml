@@ -548,6 +548,18 @@ registration:
 #       url: ''
 #       apiKey: '${STT_API_KEY}'
 #       model: ''
+#     # Gemini instead of openai (configure one STT provider at a time):
+#     # google:
+#     #   model: 'gemini-3.5-transcribe' # or any audio-capable Gemini model
+#     #   # With apiKey, the Gemini API is used. Without one, the Gemini Enterprise Agent Platform
+#     #   # (Vertex AI), authenticated by GOOGLE_SERVICE_KEY_FILE or Application Default Credentials.
+#     #   # Uncomment apiKey for the Gemini API. Leave it unset for Agent Platform.
+#     #   # apiKey: '${STT_API_KEY}'
+#     #   location: 'eu' # gemini-3.5-transcribe supports global (default), us and eu
+#     #   # projectId: 'my-project' # optional override for the detected Google Cloud project
+#     #   # serviceKeyFile: '/app/api/data/auth.json' # optional path to a local credentials file
+#     #   # mode: 'SMART' # optional, defaults to VERBATIM
+#     #   # customVocabulary: ['LibreChat', 'Kubernetes']
 #     allowedAddresses:
 #       - 'localhost:8000'
 #       - '127.0.0.1:8000'

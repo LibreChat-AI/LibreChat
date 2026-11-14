@@ -32,6 +32,7 @@ import {
   resolveMCPAppsPolicy,
   endpointSchema,
   isTwoFactorPolicyProvider,
+  isSpeechProviderConfigured,
   resolveEndpointType,
   webSearchSchema,
   isSafeLinkUrl,
@@ -1722,6 +1723,46 @@ describe('speechTab schema', () => {
     const result = configSchema.safeParse({
       version: '1.0',
       speech: { speechTab: { textToSpeech: { engineTTS: 'unknown' } } },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('google speech-to-text schema', () => {
+  it('accepts an Agent Platform transcription config as the one configured provider', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      speech: {
+        stt: {
+          google: {
+            model: 'gemini-3.5-transcribe',
+            location: 'eu',
+            projectId: 'my-project',
+            mode: 'SMART',
+            customVocabulary: ['LibreChat'],
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(isSpeechProviderConfigured(result.data?.speech?.stt)).toBe(true);
+  });
+
+  it('requires a model', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      speech: { stt: { google: { apiKey: '${STT_API_KEY}' } } },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown transcription mode', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      speech: { stt: { google: { model: 'gemini-3.5-transcribe', mode: 'FAST' } } },
     });
 
     expect(result.success).toBe(false);

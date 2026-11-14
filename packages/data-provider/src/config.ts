@@ -2845,10 +2845,35 @@ const sttAzureOpenAISchema = z.object({
   apiVersion: z.string(),
 });
 
+/**
+ * Gemini transcription. With `apiKey` requests go to the Gemini API; without it, to the
+ * Gemini Enterprise Agent Platform (Vertex AI) using the service account or, when none is
+ * found, Application Default Credentials.
+ */
+const sttGoogleSchema = z.object({
+  /** A dedicated transcription model (`gemini-3.5-transcribe`) or any audio-capable Gemini model. */
+  model: z.string().trim().min(1),
+  apiKey: z.string().optional(),
+  apiKeyPreview: apiKeyPreviewSchema,
+  /** Agent Platform location: `global` (default), a multi-region (`us`, `eu`), or a region. */
+  location: z.string().optional(),
+  /** Defaults to the detected Google Cloud project. */
+  projectId: z.string().optional(),
+  /** Defaults to `GOOGLE_SERVICE_KEY_FILE`, then `api/data/auth.json`. */
+  serviceKeyFile: z.string().optional(),
+  /** Transcription models only: `SMART` removes disfluencies and formats the text. */
+  mode: z.enum(['VERBATIM', 'SMART']).optional(),
+  /** Transcription models only: terms to favor, such as names and jargon. */
+  customVocabulary: z.array(z.string()).max(1000).optional(),
+});
+
+export type TGoogleSTTConfig = z.infer<typeof sttGoogleSchema>;
+
 const sttSchema = z.object({
   allowedAddresses: allowedAddressesSchema,
   openai: sttOpenaiSchema.optional(),
   azureOpenAI: sttAzureOpenAISchema.optional(),
+  google: sttGoogleSchema.optional(),
 });
 
 /**
@@ -5851,6 +5876,10 @@ export enum STTProviders {
    * Provider for Microsoft Azure STT
    */
   AZURE_OPENAI = 'azureOpenAI',
+  /**
+   * Provider for Google Gemini STT (Gemini API or Agent Platform)
+   */
+  GOOGLE = 'google',
 }
 
 export enum TTSProviders {
