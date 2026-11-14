@@ -58,7 +58,7 @@ describe('formatToolContent', () => {
   });
 
   describe('unrecognized-provider display images', () => {
-    it.each(['unknown', 'vertexai'])(
+    it.each(['unknown', 'mistralai'])(
       'retains ordered standalone, remote and embedded images without vision content for %s',
       (provider) => {
         const result: t.MCPToolCallResponse = {
@@ -98,6 +98,7 @@ describe('formatToolContent', () => {
   describe('recognized providers', () => {
     const allProviders: t.Provider[] = [
       'google',
+      'vertexai',
       'anthropic',
       'openai',
       'azureopenai',
@@ -220,6 +221,22 @@ describe('formatToolContent', () => {
       expect(content).toBe('');
       expect(artifacts).toBeDefined();
       expect(artifacts?.content).toHaveLength(2);
+    });
+
+    it('should deliver Vertex AI screenshots as image artifacts instead of base64 text', () => {
+      const result: t.MCPToolCallResponse = {
+        content: [
+          { type: 'text', text: '### Result\n- Screenshot of viewport' },
+          { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+        ],
+      };
+      const [content, artifacts] = formatToolContent(result, 'vertexai');
+      expect(content).toContain('Screenshot of viewport');
+      expect(content).not.toContain('iVBORw0KGgo');
+      expect(artifacts?.content).toEqual([
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+      ]);
+      expect(artifacts?.imageAttachments).toBeUndefined();
     });
 
     it('should reject oversized base64 image data before creating artifacts', () => {
@@ -1310,7 +1327,7 @@ describe('formatToolContent', () => {
         ],
       };
 
-      const [content, artifacts] = formatToolContent(result, 'vertexai' as t.Provider, {
+      const [content, artifacts] = formatToolContent(result, 'mistralai' as t.Provider, {
         serverName: 's',
         serverBinding: 'binding',
         toolName: 't',
@@ -1326,7 +1343,7 @@ describe('formatToolContent', () => {
     it('synthesizes the tool-declared app for an unrecognized provider', () => {
       const [, artifacts] = formatToolContent(
         { content: [{ type: 'text', text: 'done' }] },
-        'vertexai' as t.Provider,
+        'mistralai' as t.Provider,
         {
           serverName: 's',
           serverBinding: 'binding',
@@ -1351,7 +1368,7 @@ describe('formatToolContent', () => {
         ],
       };
 
-      const [content, artifacts] = formatToolContent(result, 'vertexai' as t.Provider, {
+      const [content, artifacts] = formatToolContent(result, 'mistralai' as t.Provider, {
         serverName: 's',
         serverBinding: 'binding',
         toolName: 't',
@@ -1376,7 +1393,7 @@ describe('formatToolContent', () => {
         ],
       };
 
-      const [content, artifacts] = formatToolContent(result, 'vertexai' as t.Provider, {
+      const [content, artifacts] = formatToolContent(result, 'mistralai' as t.Provider, {
         serverName: 's',
         serverBinding: 'binding',
         toolName: 't',
@@ -1399,7 +1416,7 @@ describe('formatToolContent', () => {
         ],
       };
 
-      const [content, artifacts] = formatToolContent(result, 'vertexai' as t.Provider);
+      const [content, artifacts] = formatToolContent(result, 'mistralai' as t.Provider);
 
       const resource = artifacts?.ui_resources?.data?.[0];
       expect(content).toContain('base64data');
@@ -1424,7 +1441,7 @@ describe('formatToolContent', () => {
         ],
       };
 
-      const [content, artifacts] = formatToolContent(result, 'vertexai' as t.Provider);
+      const [content, artifacts] = formatToolContent(result, 'mistralai' as t.Provider);
 
       expect(content).toContain('data:image/png;base64,aW1hZ2U=');
       expect(artifacts?.content).toEqual([]);
@@ -1458,7 +1475,7 @@ describe('formatToolContent', () => {
           ],
         };
 
-        expect(() => formatToolContent(result, 'vertexai' as t.Provider)).toThrow(
+        expect(() => formatToolContent(result, 'mistralai' as t.Provider)).toThrow(
           'MCP image result exceeds maximum size of 3 bytes',
         );
       } finally {
@@ -1484,7 +1501,7 @@ describe('formatToolContent', () => {
         ],
       };
 
-      const [content, artifacts] = formatToolContent(result, 'vertexai' as t.Provider, {
+      const [content, artifacts] = formatToolContent(result, 'mistralai' as t.Provider, {
         mcpApps: { enabled: false, legacyHtmlEnabled: false },
       });
 
@@ -1512,7 +1529,7 @@ describe('formatToolContent', () => {
         ],
       };
 
-      const [, artifacts] = formatToolContent(result, 'vertexai' as t.Provider, {
+      const [, artifacts] = formatToolContent(result, 'mistralai' as t.Provider, {
         serverName: 's',
         serverBinding: 'binding',
         toolName: 't',
@@ -1644,7 +1661,7 @@ describe('formatToolContent', () => {
       const [, recognized] = formatToolContent(echoResult(resource), 'openai', appMetadata);
       const [, unrecognized] = formatToolContent(
         echoResult(resource),
-        'vertexai' as t.Provider,
+        'mistralai' as t.Provider,
         appMetadata,
       );
 
