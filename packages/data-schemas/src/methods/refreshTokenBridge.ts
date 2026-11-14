@@ -1,6 +1,7 @@
-import type { DeleteResult, FilterQuery, Model, UpdateQuery } from 'mongoose';
+import type { FilterQuery, Model, UpdateQuery } from 'mongoose';
 import type {
   IRefreshTokenBridge,
+  BridgeRecord,
   RefreshTokenBridgeCreateData,
   RefreshTokenBridgeDeleteData,
   RefreshTokenBridgeQuery,
@@ -23,9 +24,11 @@ function bridgeFilter({
 export function createRefreshTokenBridgeMethods(mongoose: typeof import('mongoose')): {
   upsertRefreshTokenBridge: (
     bridgeData: RefreshTokenBridgeCreateData,
-  ) => Promise<IRefreshTokenBridge | null>;
-  findRefreshTokenBridge: (query: RefreshTokenBridgeQuery) => Promise<IRefreshTokenBridge | null>;
-  deleteRefreshTokenBridges: (data: RefreshTokenBridgeDeleteData) => Promise<DeleteResult>;
+  ) => Promise<BridgeRecord | null>;
+  findRefreshTokenBridge: (query: RefreshTokenBridgeQuery) => Promise<BridgeRecord | null>;
+  deleteRefreshTokenBridges: (
+    data: RefreshTokenBridgeDeleteData,
+  ) => Promise<{ deletedCount: number }>;
 } {
   let indexesPromise: Promise<void> | null = null;
 
@@ -52,7 +55,7 @@ export function createRefreshTokenBridgeMethods(mongoose: typeof import('mongoos
 
   async function upsertRefreshTokenBridge(
     bridgeData: RefreshTokenBridgeCreateData,
-  ): Promise<IRefreshTokenBridge | null> {
+  ): Promise<BridgeRecord | null> {
     try {
       await ensureIndexes();
       const RefreshTokenBridge = getRefreshTokenBridgeModel();
@@ -72,10 +75,11 @@ export function createRefreshTokenBridgeMethods(mongoose: typeof import('mongoos
         },
         ...(bridgeData.openidIssuer == null && { $unset: { openidIssuer: '' } }),
       };
-      return await RefreshTokenBridge.findOneAndUpdate(filter, update, {
+      const found = await RefreshTokenBridge.findOneAndUpdate(filter, update, {
         upsert: true,
         new: true,
       }).lean<IRefreshTokenBridge>();
+      return found ? { ...found, _id: String(found._id) } : null;
     } catch (error) {
       logger.debug('[upsertRefreshTokenBridge] Error storing bridge:', error);
       throw error;
@@ -84,13 +88,14 @@ export function createRefreshTokenBridgeMethods(mongoose: typeof import('mongoos
 
   async function findRefreshTokenBridge(
     query: RefreshTokenBridgeQuery,
-  ): Promise<IRefreshTokenBridge | null> {
+  ): Promise<BridgeRecord | null> {
     try {
       const RefreshTokenBridge = getRefreshTokenBridgeModel();
-      return await RefreshTokenBridge.findOne({
+      const found = await RefreshTokenBridge.findOne({
         ...bridgeFilter(query),
         expiresAt: { $gt: new Date() },
       }).lean<IRefreshTokenBridge>();
+      return found ? { ...found, _id: String(found._id) } : null;
     } catch (error) {
       logger.debug('[findRefreshTokenBridge] Error finding bridge:', error);
       throw error;
@@ -99,7 +104,7 @@ export function createRefreshTokenBridgeMethods(mongoose: typeof import('mongoos
 
   async function deleteRefreshTokenBridges(
     data: RefreshTokenBridgeDeleteData,
-  ): Promise<DeleteResult> {
+  ): Promise<{ deletedCount: number }> {
     try {
       const RefreshTokenBridge = getRefreshTokenBridgeModel();
       return await RefreshTokenBridge.deleteMany({

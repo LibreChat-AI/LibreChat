@@ -4,7 +4,7 @@ import { MAX_MCP_OAUTH_PERSISTENCE_WAIT_MS } from 'librechat-data-provider';
 import { logger, encryptV2, decryptV2, getTenantId } from '@librechat/data-schemas';
 import type {
   TokenMethods,
-  IToken,
+  TokenRecord,
   TokenCreateData,
   TokenUpdateData,
 } from '@librechat/data-schemas';
@@ -67,9 +67,9 @@ interface StoreTokensParams {
   signal?: AbortSignal;
   /** Optional: Pass existing token state to avoid duplicate DB calls */
   existingTokens?: {
-    accessToken?: IToken | null;
-    refreshToken?: IToken | null;
-    clientInfoToken?: IToken | null;
+    accessToken?: TokenRecord | null;
+    refreshToken?: TokenRecord | null;
+    clientInfoToken?: TokenRecord | null;
   };
   /** Runs after all token rows are written but while the rollback journal is still available. */
   onStoreCommitted?: (tokens: MCPOAuthTokens) => Promise<void>;
@@ -125,7 +125,7 @@ interface GetTokensParams {
    * `getTokens` reads it to decide a refresh is needed, so passing it keeps the flight off a path
    * the repository's latency budget already counts.
    */
-  existingRefreshToken?: IToken | null;
+  existingRefreshToken?: TokenRecord | null;
   /** Rejected credential: null means known absence; undefined means no request identity was captured. */
   rejectedCredentialSetId?: string | null;
   /** Per-server `oauthRefreshWaitTimeout`: how long to wait on another replica's redemption. */
@@ -191,29 +191,17 @@ function getJwtAccessTokenExpiry(accessToken?: string): number | null {
   return null;
 }
 
-function getTokenMetadata(tokenData: IToken | null | undefined): Record<string, unknown> {
-  if (tokenData?.metadata == null) {
-    return {};
-  }
-  if (tokenData.metadata instanceof Map) {
-    return Object.fromEntries(tokenData.metadata);
-  }
-  return { ...(tokenData.metadata as unknown as Record<string, unknown>) };
+function getTokenMetadata(tokenData: TokenRecord | null | undefined): Record<string, unknown> {
+  return { ...tokenData?.metadata };
 }
 
-function getCredentialSetId(tokenData: IToken | null | undefined): string | undefined {
+function getCredentialSetId(tokenData: TokenRecord | null | undefined): string | undefined {
   const value = getTokenMetadata(tokenData).credential_set_id;
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function cloneTokenMetadata(tokenData: IToken): Record<string, unknown> | Map<string, unknown> {
-  if (tokenData.metadata instanceof Map) {
-    return new Map(tokenData.metadata);
-  }
-  if (tokenData.metadata) {
-    return { ...(tokenData.metadata as unknown as Record<string, unknown>) };
-  }
-  return {};
+function cloneTokenMetadata(tokenData: TokenRecord): Record<string, unknown> {
+  return getTokenMetadata(tokenData);
 }
 
 /** Outcome of trying to take the cross-replica refresh flight (`beginRefreshFlight`). */
@@ -226,7 +214,7 @@ interface MCPRefreshFlight {
    * The refresh record read under the flight, handed to the redemption so one read serves both
    * rotation detection and the credential submitted. Absent when no flight manager is supplied.
    */
-  leasedRefreshToken?: IToken | null;
+  leasedRefreshToken?: TokenRecord | null;
   /** Teardown or the stale timer fired during the wait; the caller resolves null. */
   aborted?: boolean;
 }
@@ -633,9 +621,9 @@ export class MCPTokenStorage {
        * encrypted values and generation IDs as an optimistic lock, so a refresh response from
        * generation A cannot overwrite a newer interactive authorization B.
        */
-      let existingAccessToken: IToken | null | undefined;
-      let existingRefreshToken: IToken | null | undefined;
-      let existingClientInfo: IToken | null | undefined;
+      let existingAccessToken: TokenRecord | null | undefined;
+      let existingRefreshToken: TokenRecord | null | undefined;
+      let existingClientInfo: TokenRecord | null | undefined;
       if (findToken && updateToken) {
         const accessLookup =
           existingTokens?.accessToken !== undefined
@@ -692,7 +680,7 @@ export class MCPTokenStorage {
       }
 
       const updateIfCurrent = async (
-        existingToken: IToken,
+        existingToken: TokenRecord,
         type: string,
         recordIdentifier: string,
         tokenData: TokenUpdateData,
@@ -764,7 +752,7 @@ export class MCPTokenStorage {
       interface PlannedTokenWrite {
         type: string;
         identifier: string;
-        existingToken?: IToken | null;
+        existingToken?: TokenRecord | null;
         createData?: TokenCreateData;
         updateData: TokenUpdateData;
         description: string;
@@ -1043,7 +1031,7 @@ export class MCPTokenStorage {
    */
   static async forceRefreshTokens(
     params: GetTokensParams & {
-      existingAccessToken?: IToken | null;
+      existingAccessToken?: TokenRecord | null;
     },
   ): Promise<MCPOAuthTokens | null> {
     const {
@@ -1326,8 +1314,8 @@ export class MCPTokenStorage {
     serverName: string;
     findToken: GetTokensParams['findToken'];
     flowManager: NonNullable<GetTokensParams['flowManager']>;
-    existingRefreshToken?: IToken | null;
-    existingAccessToken?: IToken | null;
+    existingRefreshToken?: TokenRecord | null;
+    existingAccessToken?: TokenRecord | null;
     rejectedCredentialSetId?: string | null;
     waitMs: number;
     /** Internal stale-abort signal owned by `forceRefreshTokens`, also fired by teardown. */
@@ -1434,12 +1422,12 @@ export class MCPTokenStorage {
     serverName: string;
     findToken: GetTokensParams['findToken'];
     lease: FlowLease;
-    observedRefreshToken: IToken | null;
-    existingAccessToken?: IToken | null;
+    observedRefreshToken: TokenRecord | null;
+    existingAccessToken?: TokenRecord | null;
     rejectedCredentialSetId?: string | null;
     logPrefix: string;
   }): Promise<MCPRefreshFlight> {
-    let leasedRefreshToken: IToken | null;
+    let leasedRefreshToken: TokenRecord | null;
     try {
       leasedRefreshToken = await this.readRefreshTokenRecord({ userId, serverName, findToken });
     } catch (readError) {
@@ -1487,7 +1475,7 @@ export class MCPTokenStorage {
     userId: string;
     serverName: string;
     findToken: GetTokensParams['findToken'];
-  }): Promise<IToken | null> {
+  }): Promise<TokenRecord | null> {
     return findToken({
       userId,
       type: 'mcp_oauth_refresh',
@@ -1519,11 +1507,11 @@ export class MCPTokenStorage {
     serverName: string;
     findToken: GetTokensParams['findToken'];
     /** The credential as this replica saw it before contending for the flight. */
-    observedRefreshToken: IToken | null;
-    existingAccessToken?: IToken | null;
+    observedRefreshToken: TokenRecord | null;
+    existingAccessToken?: TokenRecord | null;
     rejectedCredentialSetId?: string | null;
     /** The credential as stored once the flight was held. */
-    leasedRefreshToken: IToken | null;
+    leasedRefreshToken: TokenRecord | null;
   }): Promise<MCPOAuthTokens | null> {
     if (!leasedRefreshToken || (!observedRefreshToken && rejectedCredentialSetId === undefined)) {
       return null;
@@ -1625,13 +1613,13 @@ export class MCPTokenStorage {
     leaseId,
     leaseGeneration,
   }: GetTokensParams & {
-    existingAccessToken?: IToken | null;
+    existingAccessToken?: TokenRecord | null;
     /**
      * The refresh record already read under the flight this redemption holds. Reused rather than
      * re-read, because a read taken under the flight is exactly what this redemption needs. Never
      * `existingRefreshToken`, which predates the flight and may name a consumed credential.
      */
-    leasedRefreshToken?: IToken | null;
+    leasedRefreshToken?: TokenRecord | null;
     refreshTokens: NonNullable<GetTokensParams['refreshTokens']>;
     createToken: NonNullable<GetTokensParams['createToken']>;
     /** Internal stale-abort signal owned by `forceRefreshTokens` — never a caller's. */
@@ -2029,7 +2017,7 @@ export class MCPTokenStorage {
     userId: string;
     serverName: string;
     findToken: GetTokensParams['findToken'];
-    accessTokenData: IToken;
+    accessTokenData: TokenRecord;
   }): Promise<MCPOAuthTokens> {
     const logPrefix = this.getLogPrefix(userId, serverName);
     const identifier = `mcp:${serverName}`;
@@ -2086,7 +2074,7 @@ export class MCPTokenStorage {
   } | null> {
     const identifier = `mcp:${serverName}`;
 
-    const clientInfoData: IToken | null = await findToken({
+    const clientInfoData: TokenRecord | null = await findToken({
       userId,
       type: 'mcp_oauth_client',
       identifier: `${identifier}:client`,

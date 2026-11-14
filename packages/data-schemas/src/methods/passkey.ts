@@ -1,4 +1,3 @@
-import type { DeleteResult } from 'mongoose';
 import type { IPasskey, PasskeyCreateData, PasskeyRecord } from '~/types';
 import { createIndexesWithRetry } from '~/utils/retry';
 import logger from '~/config/winston';
@@ -10,8 +9,13 @@ export interface PasskeyMethods {
   countPasskeysByUser: (userId: string) => Promise<number>;
   recordPasskeyUse: (credentialId: string, counter: number, backedUp?: boolean) => Promise<boolean>;
   renamePasskey: (passkeyId: string, userId: string, name: string) => Promise<PasskeyRecord | null>;
-  deletePasskey: (passkeyId: string, userId: string) => Promise<DeleteResult>;
-  deletePasskeysByUser: (userId: string) => Promise<DeleteResult>;
+  deletePasskey: (
+    passkeyId: string,
+    userId: string,
+  ) => Promise<{ acknowledged: boolean; deletedCount: number }>;
+  deletePasskeysByUser: (
+    userId: string,
+  ) => Promise<{ acknowledged: boolean; deletedCount: number }>;
 }
 
 /** The shapes a `Buffer` schema field can come back as, depending on `lean()`. */
@@ -180,12 +184,17 @@ export function createPasskeyMethods(mongoose: typeof import('mongoose')): Passk
     return renamed ? toPasskeyRecord(renamed) : null;
   }
 
-  async function deletePasskey(passkeyId: string, userId: string): Promise<DeleteResult> {
+  async function deletePasskey(
+    passkeyId: string,
+    userId: string,
+  ): Promise<{ acknowledged: boolean; deletedCount: number }> {
     const Passkey = mongoose.models.Passkey;
     return await Passkey.deleteOne({ _id: passkeyId, user: userId }).exec();
   }
 
-  async function deletePasskeysByUser(userId: string): Promise<DeleteResult> {
+  async function deletePasskeysByUser(
+    userId: string,
+  ): Promise<{ acknowledged: boolean; deletedCount: number }> {
     const Passkey = mongoose.models.Passkey;
     return await Passkey.deleteMany({ user: userId }).exec();
   }

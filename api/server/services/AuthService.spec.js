@@ -1814,6 +1814,12 @@ describe('CloudFront cookie integration', () => {
       });
     });
 
+    it('normalizes an OAuth ObjectId before invoking the selected session store', async () => {
+      const id = { toString: () => '0123456789abcdef01234567' };
+      await setAuthTokens(id, mockResponse());
+      expect(createSession).toHaveBeenCalledWith(id.toString(), expect.any(Object));
+    });
+
     it('calls setCloudFrontCookies with response object and user scope', async () => {
       const res = mockResponse();
 
@@ -1897,6 +1903,52 @@ describe('CloudFront cookie integration', () => {
         userId: 'user-123',
         tenantId: 'tenantA',
       });
+    });
+
+    it('rotates a plain session through the selected storage method without mutating it', async () => {
+      const session = Object.freeze({
+        _id: 'session-1',
+        user: 'user-123',
+        refreshTokenHash: 'previous-hash',
+        expiration: new Date(Date.now() + 3600000),
+      });
+      const res = mockResponse();
+
+      await expect(setAuthTokens('user-123', res, session)).resolves.toBe('mock-access-token');
+
+      expect(generateRefreshToken).toHaveBeenCalledWith(session);
+      expect(createSession).not.toHaveBeenCalled();
+      expect(session.refreshTokenHash).toBe('previous-hash');
+      expect(setLocalSessionCookies).toHaveBeenCalledWith(res, {
+        refreshToken: 'mock-refresh-token',
+        expires: session.expiration,
+        userId: 'user-123',
+        tenantId: 'tenantA',
+      });
+    });
+
+    it('does not mint credentials or create a replacement when session rotation fails', async () => {
+      const failure = new Error('storage rejected sensitive-refresh-token');
+      generateRefreshToken.mockRejectedValueOnce(failure);
+      const res = mockResponse();
+
+      await expect(
+        setAuthTokens('user-123', res, {
+          _id: 'session-1',
+          user: 'user-123',
+          refreshTokenHash: 'previous-hash',
+          expiration: new Date(Date.now() + 3600000),
+        }),
+      ).rejects.toBe(failure);
+
+      expect(createSession).not.toHaveBeenCalled();
+      expect(generateToken).not.toHaveBeenCalled();
+      expect(setLocalSessionCookies).not.toHaveBeenCalled();
+      expect(setCloudFrontCookies).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        '[setAuthTokens] Error in setting authentication tokens:',
+        { type: 'Error' },
+      );
     });
 
     it('succeeds even when setCloudFrontCookies returns false', async () => {

@@ -18,6 +18,7 @@ import {
   createMCPAuthorityMethods,
   createMCPAuthorityBootRevision,
 } from './mcpAuthority';
+import { createMongoTokenQueries } from '~/postgres/auth/tokenQueries';
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
 import { tenantStorage } from '~/config/tenantContext';
 import { createModels } from '~/models';
@@ -1288,5 +1289,74 @@ describe('MCP authority proofs', () => {
     );
 
     await expect(assertCurrent(proof)).rejects.toEqual(expectReason('access_revoked'));
+  });
+});
+
+test('reads injected token authority even when the Mongo Token collection is empty', async () => {
+  await inTenant(async () => {
+    const input = {
+      userId: userId.toHexString(),
+      tenantId: TENANT_ID,
+      serverNames: [SERVER_NAME],
+      limit: 96,
+    };
+    const snapshot = await createMongoTokenQueries(mongoose).getMCPAuthorityTokens(input);
+    await models.Token.deleteMany({});
+    const getMCPAuthorityTokens = jest.fn().mockResolvedValue(snapshot);
+    const selected = createMCPAuthorityMethods(mongoose, {}, { getMCPAuthorityTokens });
+    await selected.resolveMCPAuthorityProof({
+      userId: userId.toHexString(),
+      tenantId: TENANT_ID,
+      boot,
+      targets: [target()],
+    });
+    expect(getMCPAuthorityTokens).toHaveBeenCalledWith(input);
+  });
+});
+
+test('rejects a selected token generation changed across the Mongo snapshot', async () => {
+  await inTenant(async () => {
+    const snapshot = await createMongoTokenQueries(mongoose).getMCPAuthorityTokens({
+      userId: userId.toHexString(),
+      tenantId: TENANT_ID,
+      serverNames: [SERVER_NAME],
+      limit: 96,
+    });
+    const changed = {
+      ...snapshot,
+      tokens: snapshot.tokens.map((token) => ({
+        ...token,
+        metadata: { ...token.metadata, credential_set_id: 'changed' },
+      })),
+    };
+    const supplied = await mongoose.startSession();
+    let crossedSnapshot = false;
+    const getMCPAuthorityTokens = jest.fn().mockImplementation(async () => {
+      expect(supplied.inTransaction()).toBe(false);
+      return crossedSnapshot ? changed : snapshot;
+    });
+    const selected = createMCPAuthorityMethods(
+      mongoose,
+      {
+        afterPrincipalSnapshot: () => {
+          crossedSnapshot = true;
+        },
+      },
+      { getMCPAuthorityTokens },
+    );
+    try {
+      await expect(
+        selected.resolveMCPAuthorityProof({
+          userId: userId.toHexString(),
+          tenantId: TENANT_ID,
+          boot,
+          targets: [target()],
+          session: supplied,
+        }),
+      ).rejects.toEqual(expectReason('proof_unavailable'));
+      expect(getMCPAuthorityTokens).toHaveBeenCalledTimes(2);
+    } finally {
+      await supplied.endSession();
+    }
   });
 });

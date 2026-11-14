@@ -1,5 +1,5 @@
-import { logger, TokenMethods } from '@librechat/data-schemas';
-import type { IToken } from '@librechat/data-schemas';
+import { logger } from '@librechat/data-schemas';
+import type { TokenMethods, TokenRecord } from '@librechat/data-schemas';
 import type { ParsedServerConfig } from '../..';
 import { OAuthReconnectionManager } from './OAuthReconnectionManager';
 import { OAuthReconnectionTracker } from './OAuthReconnectionTracker';
@@ -106,7 +106,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should return true when server is actively reconnecting', () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const serverName = 'test-server';
 
       expect(reconnectionManager.isReconnecting(userId, serverName)).toBe(false);
@@ -117,7 +117,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should return false when server is not reconnecting', () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const serverName = 'test-server';
 
       const result = reconnectionManager.isReconnecting(userId, serverName);
@@ -137,7 +137,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should clear both failed and active reconnection states', () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const serverName = 'test-server';
 
       reconnectionTracker.setFailed(userId, serverName);
@@ -163,7 +163,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should reconnect eligible servers', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const oauthServers = new Set(['server1', 'server2', 'server3']);
       (mockRegistryInstance.getOAuthServers as jest.Mock).mockResolvedValue(oauthServers);
 
@@ -183,10 +183,13 @@ describe('OAuthReconnectionManager', () => {
       tokenMethods.findToken.mockImplementation(async ({ identifier }) => {
         if (identifier === 'mcp:server3') {
           return {
+            _id: '000000001111111133333333',
+            token: 'encrypted-token',
+            createdAt: new Date(),
             userId,
             identifier,
             expiresAt: new Date(Date.now() + 3600000), // 1 hour from now
-          } as unknown as IToken;
+          } satisfies TokenRecord;
         }
         return null;
       });
@@ -232,16 +235,19 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should handle failed reconnection attempts', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const oauthServers = new Set(['server1']);
       (mockRegistryInstance.getOAuthServers as jest.Mock).mockResolvedValue(oauthServers);
 
       // server1: has valid token
       tokenMethods.findToken.mockResolvedValue({
+        _id: '000000001111111133333333',
+        token: 'encrypted-token',
+        createdAt: new Date(),
         userId,
         identifier: 'mcp:server1',
         expiresAt: new Date(Date.now() + 3600000),
-      } as unknown as IToken);
+      } satisfies TokenRecord);
 
       // Mock failed connection
       mockMCPManager.getUserConnection.mockRejectedValue(new Error('Connection failed'));
@@ -264,17 +270,20 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should not reconnect servers with expired tokens and no refresh token', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const oauthServers = new Set(['server1']);
       (mockRegistryInstance.getOAuthServers as jest.Mock).mockResolvedValue(oauthServers);
 
       tokenMethods.findToken.mockImplementation(async ({ identifier }) => {
         if (identifier === 'mcp:server1') {
           return {
+            _id: '000000001111111133333333',
+            token: 'encrypted-token',
+            createdAt: new Date(),
             userId,
             identifier,
             expiresAt: new Date(Date.now() - 3600000),
-          } as unknown as IToken;
+          } satisfies TokenRecord;
         }
         return null;
       });
@@ -287,23 +296,30 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should reconnect servers with expired access token but valid refresh token', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const oauthServers = new Set(['server1']);
       (mockRegistryInstance.getOAuthServers as jest.Mock).mockResolvedValue(oauthServers);
 
       tokenMethods.findToken.mockImplementation(async ({ identifier }) => {
         if (identifier === 'mcp:server1') {
           return {
+            _id: '000000001111111133333333',
+            token: 'encrypted-token',
+            createdAt: new Date(),
             userId,
             identifier,
             expiresAt: new Date(Date.now() - 3600000),
-          } as unknown as IToken;
+          } satisfies TokenRecord;
         }
         if (identifier === 'mcp:server1:refresh') {
           return {
+            _id: '000000001111111133333333',
+            token: 'encrypted-token',
+            createdAt: new Date(),
+            expiresAt: new Date(Date.now() + 3600000),
             userId,
             identifier,
-          } as unknown as IToken;
+          } satisfies TokenRecord;
         }
         return null;
       });
@@ -331,16 +347,20 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should reconnect when access token is TTL-deleted but refresh token exists', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const oauthServers = new Set(['server1']);
       (mockRegistryInstance.getOAuthServers as jest.Mock).mockResolvedValue(oauthServers);
 
       tokenMethods.findToken.mockImplementation(async ({ identifier }) => {
         if (identifier === 'mcp:server1:refresh') {
           return {
+            _id: '000000001111111133333333',
+            token: 'encrypted-token',
+            createdAt: new Date(),
+            expiresAt: new Date(Date.now() + 3600000),
             userId,
             identifier,
-          } as unknown as IToken;
+          } satisfies TokenRecord;
         }
         return null;
       });
@@ -368,15 +388,18 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should handle connection that returns but is not connected', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const oauthServers = new Set(['server1']);
       (mockRegistryInstance.getOAuthServers as jest.Mock).mockResolvedValue(oauthServers);
 
       tokenMethods.findToken.mockResolvedValue({
+        _id: '000000001111111133333333',
+        token: 'encrypted-token',
+        createdAt: new Date(),
         userId,
         identifier: 'mcp:server1',
         expiresAt: new Date(Date.now() + 3600000),
-      } as unknown as IToken);
+      } satisfies TokenRecord);
 
       // Mock connection that returns but is not connected
       const mockConnection = {
@@ -406,7 +429,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should handle MCPManager not available gracefully', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
 
       // Reset singleton first
       (OAuthReconnectionManager as unknown as { instance: null }).instance = null;
@@ -446,7 +469,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should return true on successful reconnection', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const serverName = 'server1';
 
       const mockConnection = {
@@ -465,7 +488,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should defer request-scoped reconnection without reporting success', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const serverName = 'request-scoped-server';
 
       reconnectionTracker.setFailed(userId, serverName);
@@ -489,7 +512,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should classify request scope from the effective config-tier overlay', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const serverName = 'overlaid-server';
       const configServers: Record<string, ParsedServerConfig> = {
         [serverName]: {
@@ -530,7 +553,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should return false on failed reconnection', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const serverName = 'server1';
 
       mockMCPManager.getUserConnection.mockRejectedValue(new Error('Connection failed'));
@@ -543,7 +566,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should return false when MCPManager is not available', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const serverName = 'server1';
 
       (OAuthReconnectionManager as unknown as { instance: null }).instance = null;
@@ -580,17 +603,20 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should stagger reconnection attempts for multiple servers', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const oauthServers = new Set(['server1', 'server2', 'server3']);
       (mockRegistryInstance.getOAuthServers as jest.Mock).mockResolvedValue(oauthServers);
 
       // All servers have valid tokens and are not connected
       tokenMethods.findToken.mockImplementation(async ({ identifier }) => {
         return {
+          _id: '000000001111111133333333',
+          token: 'encrypted-token',
+          createdAt: new Date(),
           userId,
-          identifier,
+          identifier: typeof identifier === 'string' ? identifier : undefined,
           expiresAt: new Date(Date.now() + 3600000),
-        } as unknown as IToken;
+        } satisfies TokenRecord;
       });
 
       const mockNewConnection = {
@@ -646,15 +672,18 @@ describe('OAuthReconnectionManager', () => {
      * `RECONNECTION_TIMEOUT_MS` window before retries become possible again.
      */
     it('should clean up tracker state when getServerConfig rejects', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const oauthServers = new Set(['server1']);
       (mockRegistryInstance.getOAuthServers as jest.Mock).mockResolvedValue(oauthServers);
 
       tokenMethods.findToken.mockResolvedValue({
+        _id: '000000001111111133333333',
+        token: 'encrypted-token',
+        createdAt: new Date(),
         userId,
         identifier: 'mcp:server1',
         expiresAt: new Date(Date.now() + 3600000),
-      } as unknown as IToken);
+      } satisfies TokenRecord);
 
       const boom = new Error('boom');
       (mockRegistryInstance.getServerConfig as jest.Mock).mockRejectedValue(boom);
@@ -694,7 +723,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should handle timed out reconnections via isReconnecting check', () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const serverName = 'test-server';
       const now = Date.now();
       jest.setSystemTime(now);
@@ -713,7 +742,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should not attempt to reconnect servers that have timed out during reconnection', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const oauthServers = new Set(['server1', 'server2']);
       (mockRegistryInstance.getOAuthServers as jest.Mock).mockResolvedValue(oauthServers);
 
@@ -728,10 +757,13 @@ describe('OAuthReconnectionManager', () => {
       tokenMethods.findToken.mockImplementation(async ({ identifier }) => {
         if (identifier === 'mcp:server2') {
           return {
+            _id: '000000001111111133333333',
+            token: 'encrypted-token',
+            createdAt: new Date(),
             userId,
             identifier,
             expiresAt: new Date(Date.now() + 3600000),
-          } as unknown as IToken;
+          } satisfies TokenRecord;
         }
         return null;
       });
@@ -767,7 +799,7 @@ describe('OAuthReconnectionManager', () => {
     });
 
     it('should properly track reconnection time for multiple sequential reconnect attempts', async () => {
-      const userId = 'user-123';
+      const userId = '000000001111111122222222';
       const serverName = 'server1';
       const oauthServers = new Set([serverName]);
       (mockRegistryInstance.getOAuthServers as jest.Mock).mockResolvedValue(oauthServers);
@@ -777,10 +809,13 @@ describe('OAuthReconnectionManager', () => {
 
       // Setup valid token
       tokenMethods.findToken.mockResolvedValue({
+        _id: '000000001111111133333333',
+        token: 'encrypted-token',
+        createdAt: new Date(),
         userId,
         identifier: `mcp:${serverName}`,
         expiresAt: new Date(Date.now() + 3600000),
-      } as unknown as IToken);
+      } satisfies TokenRecord);
 
       // First reconnect attempt - will fail
       mockMCPManager.getUserConnection.mockRejectedValueOnce(new Error('Connection failed'));
