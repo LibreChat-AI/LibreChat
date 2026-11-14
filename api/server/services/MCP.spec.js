@@ -1681,6 +1681,37 @@ describe('User parameter passing tests', () => {
       expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ mcpApps }));
     });
 
+    it("passes the endpoint's accepted image input types to the MCP call", async () => {
+      const imageInputMimeTypes = ['image/png', 'image/jpeg'];
+      const callTool = jest.fn().mockResolvedValue(['ok', undefined]);
+      const { getRoleByName } = require('~/models');
+      getRoleByName.mockResolvedValue({
+        permissions: { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } },
+      });
+      mockGetMCPManager.mockReturnValue({ callTool });
+
+      const mcpTool = await createMCPTool({
+        res: { write: jest.fn(), flush: jest.fn() },
+        user: { id: 'custom-endpoint-user', role: 'USER' },
+        config: { url: 'https://images.example.com/mcp' },
+        toolKey: `test-tool${D}test-server`,
+        provider: 'My Gateway',
+        imageInputMimeTypes,
+        userMCPAuthMap: {},
+        availableTools: {
+          [`test-tool${D}test-server`]: {
+            function: {
+              description: 'Cached tool',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        },
+      });
+
+      await mcpTool._call({});
+      expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ imageInputMimeTypes }));
+    });
+
     it('preserves a completed tool result when optional App enrichment observes cancellation', async () => {
       const mockUser = { id: 'completed-result-user', role: 'USER' };
       const mockRes = { write: jest.fn(), flush: jest.fn() };

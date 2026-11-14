@@ -57,6 +57,73 @@ describe('formatToolContent', () => {
     });
   });
 
+  describe('endpoint image input opt-in', () => {
+    const gateway = 'my gateway' as t.Provider;
+    const screenshot: t.MCPToolCallResponse = {
+      content: [
+        { type: 'text', text: '### Result\n- Screenshot of viewport' },
+        { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+      ],
+    };
+
+    it('delivers images as model input when the endpoint accepts every image type', () => {
+      const [content, artifacts] = formatToolContent(screenshot, gateway, {
+        imageInputMimeTypes: ['image/png', 'image/jpeg'],
+      });
+      expect(content).toBe('### Result\n- Screenshot of viewport');
+      expect(artifacts).toEqual({
+        content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } }],
+      });
+    });
+
+    it('matches MIME types case-insensitively and without parameters', () => {
+      const result: t.MCPToolCallResponse = {
+        content: [{ type: 'image', data: 'iVBORw0KGgo=', mimeType: 'IMAGE/PNG; charset=binary' }],
+      };
+      const [content, artifacts] = formatToolContent(result, gateway, {
+        imageInputMimeTypes: ['image/png'],
+      });
+      expect(content).not.toContain('iVBORw0KGgo');
+      expect(artifacts?.content).toHaveLength(1);
+    });
+
+    it('accepts image resource bodies of an accepted type', () => {
+      const result: t.MCPToolCallResponse = {
+        content: [
+          {
+            type: 'resource',
+            resource: { uri: 'file:///chart.png', mimeType: 'image/png', blob: 'aW1hZ2U=' },
+          },
+        ],
+      };
+      const [content, artifacts] = formatToolContent(result, gateway, {
+        imageInputMimeTypes: ['image/png'],
+      });
+      expect(content).not.toContain('aW1hZ2U=');
+      expect(artifacts?.content).toEqual([
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=' } },
+      ]);
+    });
+
+    it('keeps the unrecognized-provider output when one image type is not accepted', () => {
+      const optedIn = formatToolContent(screenshot, gateway, {
+        imageInputMimeTypes: ['image/jpeg'],
+      });
+      expect(optedIn).toEqual(formatToolContent(screenshot, gateway));
+      expect(optedIn[1]?.content).toEqual([]);
+      expect(optedIn[1]?.imageAttachments).toHaveLength(1);
+    });
+
+    it('keeps the unrecognized-provider output for results without images', () => {
+      const textOnly: t.MCPToolCallResponse = {
+        content: [{ type: 'text', text: 'Page URL: https://example.com/' }],
+      };
+      expect(formatToolContent(textOnly, gateway, { imageInputMimeTypes: ['image/png'] })).toEqual(
+        formatToolContent(textOnly, gateway),
+      );
+    });
+  });
+
   describe('unrecognized-provider display images', () => {
     it.each(['unknown', 'vertexai'])(
       'retains ordered standalone, remote and embedded images without vision content for %s',
