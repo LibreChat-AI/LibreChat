@@ -1,5 +1,6 @@
 import type { IPasskey, PasskeyCreateData, PasskeyRecord } from '~/types';
 import { createIndexesWithRetry } from '~/utils/retry';
+import { PasskeyConflictError } from '~/types/passkey';
 import logger from '~/config/winston';
 
 export interface PasskeyMethods {
@@ -95,8 +96,26 @@ export function createPasskeyMethods(mongoose: typeof import('mongoose')): Passk
   async function createPasskey(data: PasskeyCreateData): Promise<PasskeyRecord> {
     await ensurePasskeyIndexes();
     const Passkey = mongoose.models.Passkey;
-    const stored = (await Passkey.create(data)) as unknown as StoredPasskey;
-    return toPasskeyRecord(stored);
+    try {
+      const stored = (await Passkey.create(data)) as unknown as StoredPasskey;
+      return toPasskeyRecord(stored);
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 11000 &&
+        'keyPattern' in error &&
+        typeof error.keyPattern === 'object' &&
+        error.keyPattern !== null &&
+        'credentialId' in error.keyPattern &&
+        error.keyPattern.credentialId === 1 &&
+        Object.keys(error.keyPattern).length === 1
+      ) {
+        throw new PasskeyConflictError();
+      }
+      throw error;
+    }
   }
 
   /** Lists a user's credentials, newest first. */

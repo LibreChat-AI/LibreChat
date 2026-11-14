@@ -65,7 +65,19 @@ postgres('PostgreSQL passkeys', () => {
     await inTenant('a', () => methods.createPasskey(data()));
     await expect(
       inTenant('b', () => methods.createPasskey(data({ user: other }))),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ code: 'PASSKEY_ALREADY_REGISTERED' });
+  });
+
+  it.each([
+    Object.assign(new Error('primary key conflict'), {
+      code: '23505',
+      constraint: 'auth_passkeys_pkey',
+    }),
+    Object.assign(new Error('unknown unique index'), { code: '23505' }),
+    new Error('database unavailable'),
+  ])('does not translate other database failures: %s', async (error) => {
+    jest.spyOn(db, 'query').mockRejectedValueOnce(error);
+    await expect(methods.createPasskey(data())).rejects.toBe(error);
   });
 
   it('lists only owner credentials newest first and counts them', async () => {

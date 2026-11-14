@@ -2,6 +2,15 @@ import type { Document, Types } from 'mongoose';
 
 export type PasskeyDeviceType = 'singleDevice' | 'multiDevice';
 
+export class PasskeyConflictError extends Error {
+  readonly code = 'PASSKEY_ALREADY_REGISTERED' as const;
+
+  constructor() {
+    super('This passkey is already registered');
+    this.name = 'PasskeyConflictError';
+  }
+}
+
 export interface IPasskey extends Document {
   _id: Types.ObjectId;
   user: Types.ObjectId;

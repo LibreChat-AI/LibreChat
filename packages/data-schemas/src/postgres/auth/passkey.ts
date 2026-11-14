@@ -3,6 +3,7 @@ import type { PasskeyMethods } from '~/methods/passkey';
 import type { PasskeyRecord } from '~/types/passkey';
 import type { PostgresDatabase } from '../pool';
 import { resolveTenantScope, tenantFilter, stampTenantOnDocument } from '~/tenant/policy';
+import { PasskeyConflictError } from '~/types/passkey';
 
 const columns = `id, user_id AS "userId", credential_id AS "credentialId", public_key AS "publicKey",
   counter::text, transports, device_type AS "deviceType", backed_up AS "backedUp", name,
@@ -49,24 +50,38 @@ export function createPostgresPasskeyMethods(db: PostgresDatabase): PasskeyMetho
       ) {
         throw new Error('Invalid passkey');
       }
-      const result = await db.query<PasskeyRow>(
-        `INSERT INTO auth_passkeys (id,user_id,tenant_id,credential_id,public_key,counter,transports,
-          device_type,backed_up,name,last_used_at,created_at,updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,now(),now()) RETURNING ${columns}`,
-        [
-          randomBytes(12).toString('hex'),
-          objectId(data.user),
-          document.tenantId ?? null,
-          data.credentialId,
-          data.publicKey,
-          data.counter,
-          data.transports ?? [],
-          data.deviceType,
-          data.backedUp,
-          passkeyName(data.name),
-        ],
-      );
-      return record(result.rows[0]);
+      try {
+        const result = await db.query<PasskeyRow>(
+          `INSERT INTO auth_passkeys (id,user_id,tenant_id,credential_id,public_key,counter,transports,
+            device_type,backed_up,name,last_used_at,created_at,updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,now(),now()) RETURNING ${columns}`,
+          [
+            randomBytes(12).toString('hex'),
+            objectId(data.user),
+            document.tenantId ?? null,
+            data.credentialId,
+            data.publicKey,
+            data.counter,
+            data.transports ?? [],
+            data.deviceType,
+            data.backedUp,
+            passkeyName(data.name),
+          ],
+        );
+        return record(result.rows[0]);
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          error.code === '23505' &&
+          'constraint' in error &&
+          error.constraint === 'auth_passkeys_credential_id_key'
+        ) {
+          throw new PasskeyConflictError();
+        }
+        throw error;
+      }
     },
     async findPasskeysByUser(userId) {
       const result = await db.query<PasskeyRow>(

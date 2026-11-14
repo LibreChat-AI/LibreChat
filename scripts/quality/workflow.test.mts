@@ -325,6 +325,8 @@ test('native PostgreSQL selection covers authentication state writers and owning
     'config/__tests__/reset-password.spec.js',
     'config/__tests__/create-user.spec.js',
     'config/__tests__/delete-user.recovery.spec.js',
+    'config/ban-user.js',
+    'config/__tests__/ban-user.spec.js',
   ])
     assert.equal(selected.test(path), true, path);
   for (const path of ['client/src/App.jsx', 'docs/auth.md'])
