@@ -148,6 +148,51 @@ describe('composer motion in the app cascade', () => {
   });
 });
 
+describe('subagent card pulse in the app cascade', () => {
+  let sheet: HTMLStyleElement;
+
+  beforeAll(() => {
+    sheet = document.createElement('style');
+    sheet.textContent = `${parts}\n${plainRules(appStyles)}`;
+    document.head.appendChild(sheet);
+  });
+
+  afterAll(() => sheet.remove());
+
+  it.each(['animate-pulse-slow', 'activity-card'])(
+    'keeps the three second pulse for %s after the app stylesheet loads',
+    (className) => {
+      const element = document.createElement('div');
+      element.className = className;
+      if (className === 'activity-card') element.setAttribute('data-activity-card', 'true');
+      element.setAttribute('data-running', 'true');
+      document.body.appendChild(element);
+      const style = getComputedStyle(element);
+      element.remove();
+      // jsdom exposes this shorthand and leaves the animation longhands empty.
+      expect(style.animation).toBe('pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite');
+    },
+  );
+
+  it('dims a disabled card without changing its surface or its descendant ink', () => {
+    const card = document.createElement('button');
+    card.setAttribute('data-activity-card', 'true');
+    card.disabled = true;
+    document.body.appendChild(card);
+    expect(getComputedStyle(card).opacity).toBe('0.8');
+    expect(getComputedStyle(card).cursor).toBe('default');
+    card.remove();
+  });
+
+  it('ships the pulse with the client package and leaves it out of the app sheet', () => {
+    expect(parts).toMatch(/^\.animate-pulse-slow[\s,{]/m);
+    expect(appStyles).not.toMatch(/^\s*\.animate-pulse-slow[\s,{]/m);
+    expect(reducedMotion).toMatch(/\.animate-pulse-slow[\s,{]/);
+    expect(reducedMotion).toContain("[data-activity-card][data-running='true']");
+    expect(parts).toMatch(/@keyframes pulse-slow \{\s*50% \{\s*opacity: 0\.5;/);
+  });
+});
+
 describe('shared message body typography', () => {
   it('ships the message-content rule with the published styles', () => {
     const rule = stylesheet.match(/^\.message-content \{([^}]*)\}/m);

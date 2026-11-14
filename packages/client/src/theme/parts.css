@@ -388,6 +388,36 @@
   }
 }
 
+/* A status card with no available details retains its surface and descendant ink. */
+[data-activity-card]:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+
+/**
+ * Slow pulse for a running subagent card and the searching field. The app used
+ * to define this in `style.css`; a package component cannot depend on that
+ * sheet. The keyframes live here so a host that loads only the client package
+ * still pulses, and reduced motion stops the loop.
+ */
+@keyframes pulse-slow {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse-slow,
+[data-activity-card][data-running='true'] {
+  animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-slow,
+  [data-activity-card][data-running='true'] {
+    animation: none;
+  }
+}
+
 /**
  * Edge fade for a live reasoning peek. A mask stencil, not paint: only the
  * alpha channel is read. Opaque black means "keep this pixel" and
