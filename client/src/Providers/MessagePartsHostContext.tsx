@@ -135,6 +135,16 @@ function useAppLiveAppliedSteer(steerId: string): [boolean, (steerId: string) =>
   return [isLiveApplied, consume];
 }
 
+/** Service and logging callbacks keep one identity for the page: the card's OAuth bind effect lists
+ *  them as dependencies, so a catalog or locale change must not look like a new bind. */
+const bindMCPOAuth: ToolCallChrome['bindMCPOAuth'] = (serverName) =>
+  dataService.bindMCPOAuth(serverName);
+const bindActionOAuth: ToolCallChrome['bindActionOAuth'] = (actionId) =>
+  dataService.bindActionOAuth(actionId);
+const logToolCallError: ToolCallChrome['logError'] = (message, error) => {
+  logger.error(message, error);
+};
+
 function useAppToolCallChrome(): ToolCallChrome {
   const localize = useLocalize();
   const mcpServerNames = useMCPServerNames();
@@ -144,12 +154,10 @@ function useAppToolCallChrome(): ToolCallChrome {
       localize: (key, values) => localize(key as TranslationKeys, values as TOptions | undefined),
       mcpServerNames,
       mcpIconUrl: (serverName: string) => mcpIconMap.get(serverName),
-      bindMCPOAuth: (serverName: string) => dataService.bindMCPOAuth(serverName),
-      bindActionOAuth: (actionId: string) => dataService.bindActionOAuth(actionId),
+      bindMCPOAuth,
+      bindActionOAuth,
       openUrl: openInNewTab,
-      logError: (message, error) => {
-        logger.error(message, error);
-      },
+      logError: logToolCallError,
       renderProgress: (props) => <ProgressText {...props} />,
       renderInfo: (props) => <ToolCallInfo input={props.input} output={props.output} />,
       renderIcon: ({ name, iconUrl, isAnimating }) => (
