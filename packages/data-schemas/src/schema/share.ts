@@ -54,7 +54,6 @@ const shareSchema: Schema<ISharedLink> = new Schema(
     },
     user: {
       type: String,
-      index: true,
     },
     messages: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Message' }],
     shareId: {
