@@ -25,6 +25,7 @@ import type {
   ParkedSteerClaim,
   ScheduleCleanupScope,
   ScheduleProviderOwner,
+  ActiveJobFilter,
 } from '~/stream/interfaces/IJobStore';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { RecoveredSteerPayload } from '~/stream/SteerRecovery';
@@ -1476,8 +1477,12 @@ export class InMemoryJobStore implements IJobStoreV2 {
    * Returns conversation IDs of running jobs belonging to the user.
    * Also performs self-healing cleanup: removes stale entries for jobs that no longer exist.
    */
-  async getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
-    return this.getJobIdsByUser(userId, tenantId, false);
+  async getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]> {
+    return this.getJobIdsByUser(userId, tenantId, false, accept);
   }
 
   async getCleanupBlockingJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
@@ -1501,6 +1506,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     userId: string,
     tenantId: string | undefined,
     includeUndrained: boolean,
+    accept?: ActiveJobFilter,
   ): string[] {
     const userKey = tenantId ? `${tenantId}:${userId}` : userId;
     const trackedIds = this.userJobMap.get(userKey);
@@ -1544,7 +1550,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
         ) {
           continue;
         }
-        activeIds.push(streamId);
+        if (accept == null || accept(job)) {
+          activeIds.push(streamId);
+        }
       } else if (
         job.providerDrained !== false &&
         job.terminalPersistencePending !== true &&

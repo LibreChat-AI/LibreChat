@@ -2,7 +2,7 @@ import {
   scheduleMCPOutcomeSchema,
   isScheduleMCPAuthorizationFailure,
 } from 'librechat-data-provider';
-import type { JobMetadataPatch } from './interfaces/IJobStore';
+import type { JobMetadataPatch, SerializableJobData } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
 import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 
@@ -11,6 +11,20 @@ export function parseTerminalPersistenceOwner(value: unknown): 'external' | unde
   if (value === undefined) return undefined;
   if (value !== 'external') throw new Error('terminal_persistence_owner_invalid');
   return value;
+}
+
+/**
+ * A job whose stream is a subagent child thread. An event binding always targets a reserved
+ * child thread, so its id on the job marks the stream as one. Child threads are not listed
+ * conversations: a client has no row to mark for them and no record to load.
+ */
+export function isChildThreadJob(job: Pick<SerializableJobData, 'agentEventBindingId'>): boolean {
+  return job.agentEventBindingId != null && job.agentEventBindingId !== '';
+}
+
+/** A job a client can show as a running chat. */
+export function isListedChatJob(job: Pick<SerializableJobData, 'agentEventBindingId'>): boolean {
+  return !isChildThreadJob(job);
 }
 
 /** The acknowledgement carries the reply ID already reserved for this generation. */
