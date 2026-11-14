@@ -135,3 +135,36 @@ Worker admission limits are configurable through `createRemoteSdkServer` options
 tracking is process-local; deployments requiring replay exclusion across worker replicas must supply
 that admission guarantee at their deployment boundary. This is not remote worker enrollment or a
 replacement for domain-specific authorization inside tools.
+
+## Main-chat parity and rollout gates
+
+This is the first remote execution transport, not a completed main-chat parity release. The
+acceptance target remains the main chat's functionality and experience, with measured performance.
+Using native events and the native renderer proves only the behaviors tested below. Missing
+adapters and unverified behaviors remain release gates for products that depend on them.
+
+| Main-chat capability                                        | This bridge                                                              | Remaining work / verification                                                                                                                         |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Saved agent identity, role authorization, picker            | Reuses the existing registration and picker                              | Remote enrollment/discovery is not implemented; operators configure deployments.                                                                      |
+| Text and tool-step rendering, persistence                   | Verified with a minimal Run and a custom graph in real LibreChat         | Deterministic models were used; repeat with production providers and representative workloads.                                                        |
+| Reasoning, citations, rich/custom tool events               | Native event transport is available                                      | Provider-specific and rich-content end-to-end parity has not been verified.                                                                           |
+| Custom graph, nested SDK node, conditional refinement       | Verified in another process                                              | Broader graphs, parallel branches, and large checkpoints need workload acceptance tests.                                                              |
+| Approval after browser reload and worker restart            | Approve verified with host Mongo checkpoints                             | Edit/reject, ask-user questions, and repeated/batched interruptions need remote browser tests.                                                        |
+| Stop and browser reconnection to an active job              | Verified; stop reaches the worker abort signal and persists no error     | Cancellation is cooperative and cannot undo completed tool effects.                                                                                   |
+| Host-worker connection recovery                             | A lost socket fails the turn and aborts the worker                       | Durable event replay/resume is not implemented; there is no automatic execution retry.                                                                |
+| Model/PII/provider-text protection                          | Remote execution is blocked when these host policies are active          | A supported host policy adapter is required before protected deployments can enable remote execution.                                                 |
+| Stream circuit breakers and tool-policy hooks               | Forwarded to the worker; hook failure stops execution                    | Domain tools must also authorize signed caller identity; trusted factories must retain the supplied adapters.                                         |
+| Agent-builder model, parameters, tools, capabilities        | Name/instructions/identity are passed; worker owns the graph/model/tools | Other builder settings are not automatically applied. A runtime capability/configuration contract is needed to make controls authoritative.           |
+| Host MCP, web/code/browser tools, user tool credentials     | Not automatically available inside the worker                            | Supply authorized runtime tools today; shared host-tool adapters remain missing.                                                                      |
+| Uploaded files, generated artifacts, download authorization | Message data can cross the wire                                          | Host file services, sandbox storage, and artifact authorization do not have remote adapters; attachment/file parity is not established.               |
+| Live steering and mid-stream preemption                     | Not integrated                                                           | A remote execution-control adapter and acceptance tests are required.                                                                                 |
+| Foreground/nested/detached subagents                        | Worker may construct its own SDK graph                                   | Native configured compositions are rejected; detached child checkpoint threads/context/usage sinks are not integrated.                                |
+| Context pruning, compaction, summaries, cache/fading policy | Worker can use SDK features; terminal context metadata is returned       | Host configuration and continuation policy are not automatically installed on the worker. Main-chat behavioral/performance parity is not established. |
+| Token usage, cost/balance accounting                        | Native model events can be transported                                   | Arbitrary worker model attribution and nested usage/balance enforcement need an explicit contract and tests; do not assume billing parity.            |
+| Tracing and tenant trace/export/redaction policy            | Worker can configure SDK tracing itself                                  | Host tracing callbacks and tenant export policy are not automatically inherited. Correlated, policy-safe tracing remains an integration gap.          |
+| Schedules/background/Responses callers                      | The bridge returns a Run through the common execution seam               | Full lifecycle acceptance for these callers has not been performed.                                                                                   |
+| Console Assistant and Schema Advisor                        | No product cutover in this change                                        | Wire Schema Advisor, close its required gaps, then adopt shared chat components and compare performance.                                              |
+
+Do not enable a workflow on the assumption that a native chat control is honored remotely. Its
+required rows must be implemented and verified first. Keep this matrix current as adapters land;
+transport success alone is insufficient to mark a product migration complete.

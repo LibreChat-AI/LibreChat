@@ -61,3 +61,11 @@ separate process, reporting first text event and completion medians. It includes
 and the socket handshake, but excludes browser rendering, TLS, WAN latency, and provider inference.
 Use the browser test `e2e/specs/mock/remote-sdk.spec.ts` for native approval/reload/stop verification.
 Its test attachment also records send-to-approval and approval-to-visible-output timings.
+
+## Capability status
+
+This example validates the initial transport. It does **not** establish all main-chat features.
+Read the [parity matrix and rollout gates](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
+before enabling a product workflow. In particular, host model/PII protection blocks remote
+execution, and model/tool builder settings, files/artifacts, steering, nested usage/billing, and
+host tracing policies are not automatically inherited by the worker.
