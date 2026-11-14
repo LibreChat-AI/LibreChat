@@ -70,6 +70,84 @@ describe('composer palette styles', () => {
   );
 });
 
+/** The plain top-level rules of the app stylesheet: what can outrank a rule of `parts.css`. */
+function plainRules(css: string): string {
+  const rules: string[] = [];
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < clean.length; i++) {
+    if (clean[i] === '{') {
+      depth += 1;
+    } else if (clean[i] === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        const rule = clean.slice(start, i + 1).trim();
+        if (!rule.startsWith('@')) {
+          rules.push(rule);
+        }
+        start = i + 1;
+      }
+    } else if (clean[i] === ';' && depth === 0) {
+      start = i + 1;
+    }
+  }
+  return rules.join('\n');
+}
+
+/**
+ * `main.jsx` loads the client package styles before `style.css`, so a later app rule of equal
+ * weight beats `parts.css`. The motion has to come out the way it did when the app defined it.
+ */
+describe('composer motion in the app cascade', () => {
+  let sheet: HTMLStyleElement;
+
+  beforeAll(() => {
+    sheet = document.createElement('style');
+    sheet.textContent = `${parts}\n${plainRules(appStyles)}`;
+    document.head.appendChild(sheet);
+  });
+
+  afterAll(() => sheet.remove());
+
+  const render = (className: string, attribute?: string): CSSStyleDeclaration => {
+    const element = document.createElement('div');
+    element.className = className;
+    if (attribute != null) {
+      element.setAttribute(attribute, '');
+    }
+    document.body.appendChild(element);
+    const style = getComputedStyle(element);
+    element.remove();
+    return style;
+  };
+
+  it('keeps the popover closed, scaled and on its own curves', () => {
+    const style = render('animate-composer-popover');
+    expect(style.opacity).toBe('0');
+    expect(style.transform).toBe('scale(0.94)');
+    expect(style.transition).toContain('opacity 190ms cubic-bezier(0.32, 0.72, 0, 1)');
+    expect(style.transition).toContain('transform 260ms cubic-bezier(0.32, 0.72, 0, 1)');
+    expect(style.willChange).toBe('transform, opacity');
+  });
+
+  it('opens to full size and leaves faster than it enters', () => {
+    const entered = render('animate-composer-popover', 'data-enter');
+    expect(entered.opacity).toBe('1');
+    expect(entered.transform).toBe('scale(1)');
+    expect(render('animate-composer-popover', 'data-leave').transitionDuration).toBe(
+      '120ms, 140ms',
+    );
+  });
+
+  it('turns the trigger glyph on the same curve', () => {
+    const style = render('animate-composer-icon');
+    expect(style.transitionProperty).toBe('transform, rotate');
+    expect(style.transitionDuration).toBe('260ms');
+    expect(style.transitionTimingFunction).toBe('cubic-bezier(0.32, 0.72, 0, 1)');
+  });
+});
+
 describe('shared message body typography', () => {
   it('ships the message-content rule with the published styles', () => {
     const rule = stylesheet.match(/^\.message-content \{([^}]*)\}/m);
