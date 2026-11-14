@@ -1,6 +1,11 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import type { CheckpointIdentity, CheckpointRepository, SerializedCheckpoint } from './types';
+import type {
+  CheckpointIdentity,
+  CheckpointReadOptions,
+  CheckpointRepository,
+  SerializedCheckpoint,
+} from './types';
 import { createCheckpointDeletionJournal, checkpointDeletionTarget } from './journal';
 import { checkpointOwnerNamespacePrefix } from './identity';
 import { createMongoCheckpointRepository } from './mongo';
@@ -53,6 +58,25 @@ test('round-trips opaque bytes, explicit type tags and lineage with trusted root
     await repository.get({ ...key, owner: checkpointOwnerNamespacePrefix('foreign') }),
   ).toBeNull();
 });
+
+test.each([undefined, { consistency: 'authoritative' } satisfies CheckpointReadOptions])(
+  'supports standalone checkpoint and pending-write reads with %j',
+  async (options) => {
+    const exact = { ...key, checkpointId: '001' };
+    const write = {
+      taskId: 'task',
+      index: -1,
+      channel: '__interrupt__',
+      value: { type: 'opaque', bytes: Uint8Array.of(1) },
+    };
+    await repository.save(key, payload(exact.checkpointId), {});
+    await repository.saveWrites(exact, [write], { replace: true });
+    expect(await repository.get(exact, options)).toEqual(payload(exact.checkpointId));
+    expect(await repository.readWrites(exact, options)).toEqual([write]);
+    expect(await repository.get({ ...exact, checkpointId: 'missing' }, options)).toBeNull();
+    expect(await repository.readWrites({ ...exact, checkpointId: 'missing' }, options)).toEqual([]);
+  },
+);
 
 test('requires an exact historical proof and never falls back to the latest legacy head', async () => {
   await repository.save({ ...key, owner: undefined }, payload('001'), {});
