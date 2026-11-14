@@ -22,7 +22,7 @@ import type {
 } from './types';
 import type { SdkAgentIdentity } from './identity';
 import { hydrateResumeRunSteps, createContentIndexOffsetHandlers } from '../hitl/resume';
-import { remoteSdkLimits } from './types';
+import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { createSdkPeer } from './peer';
 
 /** Construct a real local Run whose execution is delegated to one operator-trusted runtime. */
@@ -49,7 +49,7 @@ export async function createRemoteSdkRun({
     url.search ||
     (url.protocol !== 'wss:' &&
       !(url.protocol === 'ws:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname))) ||
-    remote.secret.length < 32
+    !isRemoteSdkSecret(remote.secret)
   )
     throw new Error('Invalid SDK runtime connection configuration');
   const run = await Run.create(config);
@@ -222,34 +222,62 @@ export async function createRemoteSdkRun({
           if (!saver || typeof saver !== 'object' || !method.startsWith('checkpoint.'))
             throw new Error('Unsupported SDK operation');
           const args = data as Parameters<typeof saver.put>;
-          const configurable = args[0]?.configurable;
-          const allowed = boundConfigurable;
-          const ns = configurable?.checkpoint_ns ?? '';
-          if (
-            configurable?.thread_id !== allowed?.thread_id ||
-            !allowed?.thread_id ||
-            (configurable?.__librechat_checkpoint_ns != null &&
-              configurable.__librechat_checkpoint_ns !== allowed?.__librechat_checkpoint_ns) ||
-            typeof ns !== 'string'
-          )
-            throw new Error('Checkpoint scope mismatch');
-          args[0] = {
-            configurable: {
-              ...configurable,
-              ...Object.fromEntries(
-                Object.entries(allowed).filter(([key]) => key.startsWith('__librechat_')),
-              ),
-            },
+          const scope = (config: Parameters<typeof saver.getTuple>[0], before = false) => {
+            const configurable = config?.configurable;
+            const ns = configurable?.checkpoint_ns ?? '';
+            if (
+              ((!before || configurable?.thread_id != null) &&
+                configurable?.thread_id !== threadId) ||
+              (configurable?.__librechat_checkpoint_ns != null &&
+                configurable.__librechat_checkpoint_ns !==
+                  boundConfigurable.__librechat_checkpoint_ns) ||
+              typeof ns !== 'string' ||
+              (configurable?.checkpoint_id != null &&
+                typeof configurable.checkpoint_id !== 'string')
+            ) {
+              throw new Error('Checkpoint scope mismatch');
+            }
+            return {
+              configurable: {
+                thread_id: threadId,
+                checkpoint_ns: ns,
+                ...(configurable?.checkpoint_id != null
+                  ? { checkpoint_id: configurable.checkpoint_id }
+                  : {}),
+                ...Object.fromEntries(
+                  Object.entries(boundConfigurable).filter(([key]) =>
+                    key.startsWith('__librechat_'),
+                  ),
+                ),
+              },
+            };
           };
+          args[0] = scope(args[0]);
           if (method === 'checkpoint.getTuple') return saver.getTuple(args[0]);
           if (method === 'checkpoint.put') return saver.put(...args);
           if (method === 'checkpoint.putWrites')
             return saver.putWrites(...(data as Parameters<typeof saver.putWrites>));
           if (method === 'checkpoint.list') {
+            const list = z
+              .object({
+                limit: z.number().int().nonnegative().optional(),
+                filter: z.record(z.string(), z.unknown()).optional(),
+                before: z
+                  .object({ configurable: z.record(z.string(), z.unknown()).optional() })
+                  .optional(),
+              })
+              .strict()
+              .parse(Array.isArray(data) ? (data[1] ?? {}) : {});
+            const limit = Math.min(list.limit ?? 32, 32);
+            if (limit === 0) return [];
             const tuples = [];
-            for await (const tuple of saver.list(args[0], { limit: 32 })) {
+            for await (const tuple of saver.list(args[0], {
+              limit,
+              filter: list.filter,
+              before: list.before ? scope(list.before, true) : undefined,
+            })) {
               tuples.push(tuple);
-              if (tuples.length >= 32) break;
+              if (tuples.length >= limit) break;
             }
             return tuples;
           }

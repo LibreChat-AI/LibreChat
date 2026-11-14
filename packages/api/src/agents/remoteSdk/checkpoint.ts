@@ -34,7 +34,10 @@ export class RemoteSdkCheckpointer extends BaseCheckpointSaver {
   async *list(...args: Parameters<Saver['list']>): ReturnType<Saver['list']> {
     const tuples = (await this.call('checkpoint.list', [
       checkpointConfig(args[0]),
-      args[1],
+      args[1] && {
+        ...args[1],
+        before: args[1].before ? checkpointConfig(args[1].before) : undefined,
+      },
     ])) as Awaited<ReturnType<Saver['getTuple']>>[];
     for (const tuple of tuples) if (tuple != null) yield tuple;
   }

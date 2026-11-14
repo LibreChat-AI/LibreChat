@@ -176,6 +176,68 @@ describe('remote SDK runtime bridge', () => {
     release(true);
     await new Promise<void>((resolve) => setImmediate(resolve));
   });
+  it.each(['short', '${UNRESOLVED_REMOTE_SDK_RUNTIME_SECRET_VARIABLE}'])(
+    'rejects missing or unresolved signing credentials',
+    async (secret) => {
+      await expect(
+        createRemoteSdkRun({
+          config: hostConfig(),
+          identity,
+          remote: { url: 'ws://127.0.0.1:1/sdk', secret },
+        }),
+      ).rejects.toThrow();
+      expect(() =>
+        createRemoteSdkServer({
+          runtimeId: identity.runtimeId,
+          secret,
+          authorize: () => true,
+          createRun: factory,
+        }),
+      ).toThrow();
+    },
+  );
+  it('preserves checkpoint history filters, pagination, and limits inside the signed scope', async () => {
+    const saver = new MemorySaver();
+    const list = jest.spyOn(saver, 'list').mockImplementation(async function* () {
+      yield* [];
+    });
+    const runtime = await fixture(async (input) => {
+      const checkpointer = input.compileOptions.checkpointer as MemorySaver;
+      for await (const _tuple of checkpointer.list(
+        { configurable: { thread_id: identity.conversationId } },
+        {
+          limit: 1,
+          filter: { source: 'input' },
+          before: { configurable: { checkpoint_id: 'cursor' } },
+        },
+      )) {
+        /* Consume the scoped cursor. */
+      }
+      return factory(input);
+    });
+    try {
+      const config = hostConfig();
+      config.graphConfig.compileOptions = { checkpointer: saver };
+      const run = await createRemoteSdkRun({ config, identity, remote: runtime.remote });
+      await run.processStream({ messages: [new HumanMessage('hello')] }, invocation());
+      expect(list).toHaveBeenCalledWith(
+        { configurable: { thread_id: identity.conversationId, checkpoint_ns: '' } },
+        {
+          limit: 1,
+          filter: { source: 'input' },
+          before: {
+            configurable: {
+              thread_id: identity.conversationId,
+              checkpoint_ns: '',
+              checkpoint_id: 'cursor',
+            },
+          },
+        },
+      );
+    } finally {
+      await runtime.close();
+    }
+  });
   it('rejects replayed invocation credentials before execution', async () => {
     const createRun = jest.fn(factory);
     const runtime = await fixture(createRun);

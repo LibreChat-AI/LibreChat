@@ -8,8 +8,8 @@ import type { Duplex } from 'node:stream';
 import type { Server } from 'node:http';
 import type { RemoteSdkFactoryInput, RemoteSdkLimits, RemoteSdkStart, SdkRun } from './types';
 import type { SdkAgentIdentity } from './identity';
+import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { RemoteSdkCheckpointer } from './checkpoint';
-import { remoteSdkLimits } from './types';
 import { createSdkPeer } from './peer';
 
 const identitySchema = z
@@ -41,7 +41,7 @@ const startSchema = z.object({
     configurable: z.record(z.string(), z.unknown()),
     recursionLimit: z.number().int().positive().optional(),
   }),
-  handlers: z.array(z.string()).max(128),
+  handlers: z.array(z.nativeEnum(GraphEvents)).max(128),
   hooks: z.array(z.enum(HOOK_EVENTS)),
   checkpoint: z.boolean(),
   streamLimits: z
@@ -80,7 +80,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
   server: Server;
   close: () => Promise<void>;
 } {
-  if (options.secret.length < 32 || !options.runtimeId)
+  if (!isRemoteSdkSecret(options.secret) || !options.runtimeId)
     throw new Error('Invalid SDK runtime server configuration');
   const limits = remoteSdkLimits(options);
   if (

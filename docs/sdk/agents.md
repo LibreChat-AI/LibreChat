@@ -130,6 +130,8 @@ instead of silently losing state.
 
 Transport limits on each `remote` registration are `connectTimeoutMs` (10000), `rpcTimeoutMs`
 (60000), `maxRunMs` (600000), `maxFrameBytes` (1048576), and `maxBufferedBytes` (4194304).
+Checkpoint history lists preserve filters/cursors with a protocol page cap of 32 entries.
+Unresolved secret environment references fail closed rather than becoming signing keys.
 Oversized events/checkpoints/results fail closed; raise limits explicitly for larger workloads.
 Worker admission limits are configurable through `createRemoteSdkServer` options. Authorization
 receives an abort signal; pending authorizations count against admission until they settle, even

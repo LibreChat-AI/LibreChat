@@ -80,3 +80,8 @@ export interface RemoteSdkResumeState {
   content: NonNullable<RemoteSdkSnapshot['content']>;
   steps: import('@librechat/agents').RunStep[];
 }
+
+/** Missing environment substitutions must never become predictable signing keys. */
+export function isRemoteSdkSecret(secret: unknown): secret is string {
+  return typeof secret === 'string' && secret.length >= 32 && !/\$\{[^}]+\}/.test(secret);
+}
