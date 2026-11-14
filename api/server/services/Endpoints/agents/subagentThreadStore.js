@@ -5,6 +5,7 @@ const {
   duplicateIoRedisClient,
   createIoRedisSubscriber,
   createSubagentThreadTaskStore,
+  createChildGenerationHost,
   createSubagentCompletionWakeupHandler,
   GenerationJobManager,
   RedisSubagentTaskControlTransport,
@@ -80,6 +81,7 @@ const subagentThreadTaskStore = createSubagentThreadTaskStore(
     renewOwnerAdmission: db.renewSubagentAdmission,
     releaseOwnerAdmission: db.releaseSubagentAdmission,
     cancelUnroutedTask: cancelUnroutedGeneration,
+    childGenerations: createChildGenerationHost(GenerationJobManager),
     onTaskPrepared: completionWakeupHandler,
     onTaskSettled: (userId, conversationId, taskIds) =>
       expediteCompletionWakeups({ user: userId, conversationId, taskIds }),
