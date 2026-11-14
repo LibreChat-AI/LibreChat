@@ -73,3 +73,13 @@ the sweeper retains any blob still referenced by the current file row.
 
 Git-synced and deployment-provided Skills are readable but cannot be changed through this API.
 Change their upstream source instead. Browser routes keep their existing behavior.
+
+## Runtime file paths
+
+Bundled Skill files use `/mnt/data/skills/{name}/{relativePath}` in the code environment.
+LibreChat adds this base-directory context to Skill instructions for model invocation,
+manual and always-apply priming, and history reconstruction. Relative paths in a Skill body
+refer to that Skill's directory, not the shell's working directory. Invoke bundled scripts
+with absolute paths and specify input and output paths explicitly. This does not change the
+working directory or guarantee that bundled files were loaded; priming failures retain their
+existing warning. Stored Skill bodies remain portable and are not rewritten.
