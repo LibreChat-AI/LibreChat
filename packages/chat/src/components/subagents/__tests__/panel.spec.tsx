@@ -32,6 +32,7 @@ import { SubagentsHostProvider } from '../../../react/subagents/host';
 import { subagentPanelState } from '../../../react/subagents/runtime';
 import { MessagesHostProvider } from '../../../react/messages/host';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { emptyToolCallChrome } from '../../../react/host';
 import SubagentThreadPanel from '../panel';
 
 type JotaiStore = ReturnType<typeof createStore>;
@@ -138,6 +139,7 @@ const partsHost: MessagePartsHost = {
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, jest.fn()],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 /** Main chat's author glyph, reduced to the face it draws: the agent's avatar

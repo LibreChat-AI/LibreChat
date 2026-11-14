@@ -208,6 +208,18 @@
   }
 }
 
+/**
+ * The open and closed heights of a tool call's parameter panel. The component
+ * sets the rows, opacity and transition so a reduced-motion reader still gets
+ * a transitionend the collapse waits on.
+ */
+.tool-call-expand {
+  display: grid;
+  grid-template-rows: var(--tool-expand-rows);
+  opacity: var(--tool-expand-opacity);
+  transition: var(--tool-expand-transition);
+}
+
 .progress-text-wrapper button {
   font-size: inherit;
   line-height: inherit;

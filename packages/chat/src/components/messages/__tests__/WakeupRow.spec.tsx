@@ -6,9 +6,9 @@ import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Agent, ParentSubagentSummary, TMessage } from 'librechat-data-provider';
 import type { MessagePartsHost, MessagePartsShare } from '../../../react/host';
+import { emptyToolCallChrome, MessagePartsHostProvider } from '../../../react/host';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
-import { MessagePartsHostProvider } from '../../../react/host';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import WakeupRow from '../WakeupRow';
 
@@ -118,6 +118,7 @@ const partsHost: MessagePartsHost = {
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, () => undefined],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 function renderRow({

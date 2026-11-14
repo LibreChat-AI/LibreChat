@@ -49,12 +49,12 @@ jest.mock('../ToolApproval', () => ({ __esModule: true, default: mockStub('tool-
 jest.mock('../AgentHandoff', () => ({ __esModule: true, default: mockStub('agent-handoff') }));
 jest.mock('../CodeAnalyze', () => ({ __esModule: true, default: mockStub('code-analyze') }));
 jest.mock('../WebSearch', () => ({ __esModule: true, default: mockStub('web-search') }));
-jest.mock('../ToolCall', () => ({ __esModule: true, default: mockStub('tool-call') }));
 jest.mock('../Image', () => ({ __esModule: true, default: mockStub('image') }));
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
   Container: mockPassthrough,
   ToolPreparation: mockPassthrough,
+  ToolCall: mockStub('tool-call'),
 }));
 /** What `Part` drew: the stubbed component's test id, or the text of an inline element. */
 const drawn = (part: TMessageContentParts): string | null => {

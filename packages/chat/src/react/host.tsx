@@ -8,6 +8,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { TShowToast } from '@librechat/client';
+import type { ToolCallPhase } from '../core/parts/toolCallPhase';
 
 /** The message a part renders in, as its host reports it. */
 export type MessagePartMessage = {
@@ -72,6 +73,80 @@ export type MessagePartsShare = {
   isSharedConvo?: boolean;
   shareId?: string;
 };
+
+/** Strings a tool call card asks the host to resolve. Values fill `{0}`-style placeholders. */
+export type ToolCallLocalize = (key: string, values?: Record<string, string | number>) => string;
+
+/** What the app's progress row draws for one tool call. */
+export type ToolCallProgressProps = {
+  phase: ToolCallPhase;
+  onClick: () => void;
+  inProgressText: string;
+  authText?: string;
+  finishedText: string;
+  subtitle?: string;
+  durationMs?: number;
+  toolPreparationDurationMs?: number;
+  toolExecutionDurationMs?: number;
+  phaseStartAt?: number;
+  phaseStepId?: string;
+  icon: ReactNode;
+  hasInput: boolean;
+  isExpanded: boolean;
+};
+
+/** What the app's parameter and output panel draws for one tool call. */
+export type ToolCallInfoProps = {
+  input: string;
+  output?: string | null;
+};
+
+/** What the app's tool icon draws for one tool call. `name` is the raw tool id. */
+export type ToolCallIconProps = {
+  name: string;
+  iconUrl?: string;
+  isAnimating: boolean;
+};
+
+/**
+ * App services and renderers for a generic tool call card. The progress row, parameter panel,
+ * icon and attachment stack stay in the app because other cards still share them.
+ */
+export type ToolCallChrome = {
+  localize: ToolCallLocalize;
+  /** Configured MCP server names in the normalized form tool keys use. */
+  mcpServerNames: readonly string[];
+  /** Icon URL for an MCP server, when the catalog has one. */
+  mcpIconUrl: (serverName: string) => string | undefined;
+  bindMCPOAuth: (serverName: string) => Promise<unknown>;
+  bindActionOAuth: (actionId: string) => Promise<unknown>;
+  /** Opens a URL in a new tab. Called synchronously inside the sign-in click. */
+  openUrl: (url: string) => void;
+  logError: (message: string, error?: unknown) => void;
+  renderProgress: (props: ToolCallProgressProps) => ReactNode;
+  renderInfo: (props: ToolCallInfoProps) => ReactNode;
+  renderIcon: (props: ToolCallIconProps) => ReactNode;
+  renderAttachments: (attachments: TAttachment[]) => ReactNode;
+};
+
+const emptyChrome: ToolCallChrome = {
+  localize: (key) => key,
+  mcpServerNames: [],
+  mcpIconUrl: () => undefined,
+  bindMCPOAuth: () => Promise.resolve(undefined),
+  bindActionOAuth: () => Promise.resolve(undefined),
+  openUrl: () => undefined,
+  logError: () => undefined,
+  renderProgress: () => null,
+  renderInfo: () => null,
+  renderIcon: () => null,
+  renderAttachments: () => null,
+};
+
+/** A chrome that renders nothing and binds nothing. Test hosts that never draw a tool call use it. */
+export function emptyToolCallChrome(): ToolCallChrome {
+  return emptyChrome;
+}
 
 /** What a part asks the host's image renderer to draw: an attached image, opened full size on click. */
 export type MessagePartsImageProps = {
@@ -181,6 +256,8 @@ export interface MessagePartsHost {
   useLiveAppliedSteer: (steerId: string) => [boolean, (steerId: string) => void];
   /** Whether the calling message renders under a public share link, and which. */
   useShare: () => MessagePartsShare;
+  /** Localization, MCP lookups, OAuth binding and the app's renderers for a generic tool call. */
+  useToolCallChrome: () => ToolCallChrome;
 }
 
 const MessagePartsHostContext = createContext<MessagePartsHost | null>(null);

@@ -10,10 +10,10 @@ import type { MessagesHost } from '../../../../react/messages/host';
 import type { ChatContract } from '../../../../react/chat/contract';
 import type { MessagePartsHost } from '../../../../react/host';
 import type { MessagesViewProps } from '../../MessagesView';
+import { emptyToolCallChrome, MessagePartsHostProvider } from '../../../../react/host';
 import { createMessagesHost } from '../../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../../react/messages/host';
 import { createSteerHost } from '../../../../__fixtures__/steerHost';
-import { MessagePartsHostProvider } from '../../../../react/host';
 import { SteerHostProvider } from '../../../../react/steer/host';
 import { ChatContext } from '../../../../react/chat/context';
 import { initEnglish } from '../../../../__fixtures__/i18n';
@@ -84,6 +84,7 @@ const partsHost: MessagePartsHost = {
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, () => undefined],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 const renderActivity = jest.fn<null, Parameters<MessagesHost['renderActivity']>>(() => null);

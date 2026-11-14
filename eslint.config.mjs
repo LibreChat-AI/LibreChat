@@ -375,6 +375,7 @@ export default [
             'attachment-settle',
             'part-fold',
             'tool-status-text',
+            'tool-call-expand',
             'message-render',
             'message-timestamp',
             'popover-animate',

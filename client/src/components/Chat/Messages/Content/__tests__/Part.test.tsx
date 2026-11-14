@@ -50,17 +50,13 @@ jest.mock('../CodeAnalyze', () => ({
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
   Container: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  ToolCall: ({ runStepStatus }: { runStepStatus?: string }) => (
+    <div data-testid="tool-call" data-run-step-status={runStepStatus} />
+  ),
 }));
 jest.mock('../WebSearch', () => ({
   __esModule: true,
   default: () => <div data-testid="web-search" />,
-}));
-
-jest.mock('../ToolCall', () => ({
-  __esModule: true,
-  default: ({ runStepStatus }: { runStepStatus?: string }) => (
-    <div data-testid="tool-call" data-run-step-status={runStepStatus} />
-  ),
 }));
 
 jest.mock('../Parts/BackgroundTaskCall', () => ({
@@ -80,6 +76,7 @@ jest.mock('../Image', () => ({
 jest.mock('~/utils', () => ({
   getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
   getCachedPreview: jest.fn(),
+  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
 }));
 
 const renderPart = (part: TMessageContentParts) =>
