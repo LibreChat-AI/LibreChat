@@ -1,19 +1,11 @@
-import React, { createRef, isValidElement } from 'react';
+import React from 'react';
 import '@testing-library/jest-dom';
-import type { ChatScreenMessagesSlots, ChatScreenProps } from '@librechat/chat/components';
-import type { ReactElement, ReactNode } from 'react';
-import PendingSteers from '../Messages/Content/Parts/PendingSteers';
-import PendingTurn from '../Messages/PendingTurn';
-import { messagesSlots } from '../Messages/slots';
+import type { ChatScreenProps } from '@librechat/chat/components';
 import { renderMessages } from '../Messages/load';
-import { FLAT_THREAD } from '../Messages/Thread';
 import { render } from 'test/layout-test-utils';
 import ChatView from '../ChatView';
 
 const mockScreenProps = jest.fn<void, [ChatScreenProps]>();
-
-/** The row hosts import the whole message renderer; the slots under test do not need them. */
-jest.mock('../Messages/hosts', () => ({}));
 
 jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
@@ -75,50 +67,11 @@ jest.mock('../Footer', () => ({
   useLandingFooter: () => true,
 }));
 
-/** The slots load with the list, so ChatView hands the screen the loader's renderer. */
-const screenSlots = (): ChatScreenMessagesSlots => messagesSlots;
-
-const scrollableRef = createRef<HTMLDivElement>();
-
-/** A slot's output as an element, failing the test when the slot rendered nothing. */
-function element(node: ReactNode): ReactElement {
-  if (!isValidElement(node)) {
-    throw new Error('The slot did not render an element');
-  }
-  return node;
-}
-
-describe('ChatView message list slots', () => {
-  test('hands the screen the on-demand list instead of the slots', () => {
+describe('ChatView message list', () => {
+  test('hands the screen the on-demand list and no message slots', () => {
     render(<ChatView />);
     const props = mockScreenProps.mock.calls.at(-1)?.[0];
     expect(props?.renderMessages).toBe(renderMessages);
     expect(props?.messagesSlots).toBeUndefined();
-  });
-
-  test('leaves the list to ChatScreen and fills it with the app thread mode', () => {
-    expect(screenSlots().flatThread).toBe(FLAT_THREAD);
-  });
-
-  test('leaves the scroll control to the package list', () => {
-    expect(screenSlots().renderScrollButton).toBeUndefined();
-  });
-
-  test('renders the app pending turn and steers with what the list passes', () => {
-    const slots = screenSlots();
-    const turn = { scrollableRef, messages: null, maximizeChatSpace: true };
-    const steers = { conversationId: 'convo-1', index: 0, fullWidth: false };
-
-    const turnElement = element(slots.renderPendingTurn?.(turn));
-    const steersElement = element(slots.renderPendingSteers?.(steers));
-
-    expect(turnElement.type).toBe(PendingTurn);
-    expect(turnElement.props).toEqual(turn);
-    expect(steersElement.type).toBe(PendingSteers);
-    expect(steersElement.props).toEqual(steers);
-  });
-
-  test('leaves the navigation rail to the package list', () => {
-    expect(screenSlots().renderNav).toBeUndefined();
   });
 });

@@ -15,7 +15,9 @@ import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
 import { useMessagePartsHost } from '../../react/host';
+import PendingSteers from './PendingSteers';
 import ScrollButton from './ScrollButton';
+import PendingTurn from './PendingTurn';
 import MessageNav from './MessageNav';
 import Thread from './thread/Thread';
 
@@ -65,25 +67,43 @@ const renderDefaultNav: NonNullable<MessagesViewProps['renderNav']> = ({
   <MessageNav key={conversationId} conversationId={conversationId} scrollableRef={scrollableRef} />
 );
 
+const renderDefaultPendingTurn: NonNullable<MessagesViewProps['renderPendingTurn']> = ({
+  scrollableRef,
+  messages,
+  maximizeChatSpace,
+}) => (
+  <PendingTurn
+    scrollableRef={scrollableRef}
+    messages={messages}
+    maximizeChatSpace={maximizeChatSpace}
+  />
+);
+
+const renderDefaultPendingSteers: NonNullable<MessagesViewProps['renderPendingSteers']> = (
+  props,
+) => <PendingSteers {...props} />;
+
 /**
  * The message list: the scroll container, the rendered thread with its progressive mount
- * window, the pending tail, and the end marker the scroll and seen reporting watch. The rows,
- * the pending pieces, the scroll control and the navigation rail arrive as slots.
+ * window, the pending tail, and the end marker the scroll and seen reporting watch. The
+ * pending turn, pending steers, scroll control and navigation rail are the package's own
+ * unless a caller passes a slot.
  */
 export default function MessagesView({
   messagesTree,
   messages,
   showScrollButton,
   maximizeChatSpace,
-  flatThread = true,
+  flatThread,
   renderThread = renderDefaultThread,
-  renderPendingTurn,
-  renderPendingSteers,
+  renderPendingTurn = renderDefaultPendingTurn,
+  renderPendingSteers = renderDefaultPendingSteers,
   renderScrollButton = renderDefaultScrollButton,
   renderNav = renderDefaultNav,
 }: MessagesViewProps): ReactElement {
   const localize = useLocalize();
   const host = useMessagesHost();
+  const flat = flatThread ?? host.useFlatThread();
   const fontSize = useMessagePartsHost().useFontSize();
   const screenshotTargetRef = host.useScreenshotTarget();
   const [currentEditId, setCurrentEditId] = useState<string | number | null>(-1);
@@ -227,7 +247,7 @@ export default function MessagesView({
                       messagesTree,
                       messages,
                       conversationId: treeConversationId,
-                      flat: flatThread,
+                      flat: flat,
                       currentEditId,
                       setCurrentEditId,
                     })}

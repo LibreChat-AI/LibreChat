@@ -1,45 +1,67 @@
 import { memo, useMemo, useRef, useState } from 'react';
-import { hasLiveRunPause } from '@librechat/chat';
+import { useAtomValue } from 'jotai';
 import { Clock, TextQuote, X } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
-import { Button, TooltipAnchor } from '@librechat/client';
-import { QueryKeys, type TMessage } from 'librechat-data-provider';
-import { SteerPart, EscalateNowButton, getMessageRowWidthClass } from '@librechat/chat/components';
-import {
-  useSteerCancel,
+import { Button, TooltipAnchor, useLocalize } from '@librechat/client';
+import type { ReactElement, NamedExoticComponent } from 'react';
+import type { TMessage } from 'librechat-data-provider';
+import type { SteerReceiptState } from '../composer/steering/Receipt';
+import useSteerCancel, {
   useSteerMoveToQueue,
   useSteerRehome,
-  useSteerEscalate,
-  useSteerRecovery,
-} from '@librechat/chat/react';
-import type { SteerReceiptState } from '@librechat/chat/components';
-import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { cn, isLegacyDeliveryUncertain } from '~/utils';
-import { useCachedMessages } from '~/data-provider';
-import { useLatestMessage } from '~/hooks/Messages';
-import { useLocalize } from '~/hooks';
+} from '../../react/steering/useSteerCancel';
+import { hasLiveRunPause, isLegacyDeliveryUncertain } from '../../core';
+import useSteerRecovery from '../../react/steering/useSteerRecovery';
+import useSteerEscalate from '../../react/steering/useSteerEscalate';
+import { pendingSteersByConvoId } from '../../react/steer/atoms';
+import EscalateNowButton from '../composer/EscalateNowButton';
+import { useMessagesHost } from '../../react/messages/host';
+import { useMessagePartsHost } from '../../react/host';
+import { useBranchTail } from '../../react/latest';
+import { getMessageRowWidthClass } from './width';
+import SteerPart from '../parts/SteerPart';
 
-/**
- * Steers that have not been confirmed by the server yet, rendered at the tail
- * of the streaming reply (the place the words will land) instead of in a
- * floating overlay over the composer. Confirmation swaps them for the real
- * `ContentTypes.STEER` part (`useResumableSSE` removes the pending entry), so
- * the row's whole job is to hold the position and admit it is provisional.
- */
-interface PendingSteersProps {
+/** Steers the server has not confirmed, at the tail of the reply they will join.
+ *  Confirmation swaps them for the real steer part, so the row holds the place
+ *  and says it is provisional. */
+export interface PendingSteersProps {
   conversationId: string;
-  /** The pane rendering this tree: its sibling selection picks the branch the
-   *  pause check reads, which another pane's selection would get wrong. */
+  /** The pane rendering this tree. Its sibling selection is the branch the pause
+   *  check reads; another pane's selection would get that wrong. */
   index?: number;
   fullWidth?: boolean;
 }
 
-function PendingSteers({ conversationId, index = 0, fullWidth = false }: PendingSteersProps) {
+/** Whether escalation must stay off. A multi-message cache follows the branch on
+ *  screen once this pane owns the conversation, and any branch until then. A
+ *  one-message cache is that branch. */
+function resolvePaused(
+  cachedMessages: TMessage[],
+  paneConversationId: string | null,
+  conversationId: string,
+  latestMessage: TMessage | null,
+  fallbackPaused: boolean | undefined,
+): boolean {
+  if (cachedMessages.length > 1) {
+    if (paneConversationId === conversationId && latestMessage != null) {
+      return hasLiveRunPause(latestMessage);
+    }
+    return cachedMessages.some((message) => hasLiveRunPause(message));
+  }
+  if (fallbackPaused != null) {
+    return fallbackPaused;
+  }
+  return cachedMessages.length === 1 && hasLiveRunPause(cachedMessages[0]);
+}
+
+function PendingSteers({
+  conversationId,
+  index = 0,
+  fullWidth = false,
+}: PendingSteersProps): ReactElement | null {
   const localize = useLocalize();
-  const { useToast, usePendingSteers, useSteerEscalating, usePaneConversationId } =
-    useMessagePartsHost();
+  const { useToast, useSteerEscalating, usePaneConversationId } = useMessagePartsHost();
   const showToast = useToast();
-  const steers = usePendingSteers(conversationId);
+  const steers = useAtomValue(pendingSteersByConvoId(conversationId));
   const { retry, sendAsNew } = useSteerRecovery(conversationId);
   const cancelSteer = useSteerCancel(conversationId);
   const escalate = useSteerEscalate(conversationId);
@@ -47,33 +69,14 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
   const rehomeSteer = useSteerRehome(conversationId);
   const [movingId, setMovingId] = useState<string | null>(null);
   const escalating = useSteerEscalating(conversationId);
-  /* Resolve the cache to the branch the user is viewing before applying the
-     shared pause predicate. The cache contains every sibling branch, while
-     `useLatestMessage` follows the same selection state as the message view. */
-  const queryClient = useQueryClient();
-  const cachedMessages =
-    queryClient.getQueryData<TMessage[]>([QueryKeys.messages, conversationId]) ?? [];
-  const latestMessage = useLatestMessage(index, conversationId);
   const paneConversationId = usePaneConversationId(index);
-  const { data: fallbackPaused } = useCachedMessages(conversationId, hasLiveRunPause);
-  /* A one-message cache is necessarily the active branch. Until the
-     conversation atom reaches useLatestMessage, retain the query's established
-     single-branch result so a live question cannot re-enable escalation. The
-     branch tail is keyed by the pane's conversation, which can still name the
-     previous chat while this one renders from cache; until the pane owns this
-     conversation, a pause on any branch keeps escalation off. */
-  const resolvePaused = (): boolean => {
-    if (cachedMessages.length > 1) {
-      if (paneConversationId === conversationId && latestMessage != null) {
-        return hasLiveRunPause(latestMessage);
-      }
-      return cachedMessages.some((message) => hasLiveRunPause(message));
-    }
-    if (fallbackPaused != null) {
-      return fallbackPaused;
-    }
-    return cachedMessages.length === 1 && hasLiveRunPause(cachedMessages[0]);
-  };
+  const cached = useMessagesHost().useConversationMessages(conversationId, true);
+  const latestMessage = useBranchTail(
+    paneConversationId,
+    paneConversationId ? conversationId : null,
+  );
+  const cachedMessages = cached ?? [];
+  const fallbackPaused = cached == null ? undefined : hasLiveRunPause(cached);
   /** Arming removes the control that was activated, so the row's Cancel button
    *  (which survives the `preempt` flip) is where keyboard focus goes next. */
   const cancelButtonRefs = useRef(new Map<string, HTMLButtonElement | null>());
@@ -85,7 +88,13 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
   if (steers.length === 0) {
     return null;
   }
-  const paused = resolvePaused();
+  const paused = resolvePaused(
+    cachedMessages,
+    paneConversationId,
+    conversationId,
+    latestMessage,
+    fallbackPaused,
+  );
 
   const queueSteer = async (steer: (typeof steers)[number]) => {
     if (movingId != null) {
@@ -134,7 +143,7 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
     <div
       role="list"
       aria-label={localize('com_ui_steer_in_flight')}
-      className={cn('mx-auto min-w-0 px-4', getMessageRowWidthClass({ fullWidth }))}
+      className={`mx-auto min-w-0 px-4 ${getMessageRowWidthClass({ fullWidth })}`}
       data-testid="pending-steers"
     >
       {steers.map((steer) => {
@@ -266,4 +275,6 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
   );
 }
 
-export default memo(PendingSteers);
+const MemoizedPendingSteers: NamedExoticComponent<PendingSteersProps> = memo(PendingSteers);
+
+export default MemoizedPendingSteers;

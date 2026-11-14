@@ -9,19 +9,14 @@ type MessagesModule = { default: ComponentType<ChatScreenMessagesProps> };
 let pending: Promise<MessagesModule> | null = null;
 
 /**
- * Loads the package message list together with the app's hosts and slots, once. A routed
+ * Loads the package message list together with the app's hosts, once. A routed
  * conversation and the composer start it early so the list is not fetched only after the
  * conversation's messages arrive; a failed load is dropped so the next attempt retries.
+ * The list renders its own pending turn, pending steers and thread mode from those hosts.
  */
 export function preloadMessages(): Promise<MessagesModule> {
   pending ??= importWithRecovery(() =>
-    Promise.all([loadScreenMessages(), import('./slots')]).then(([list, app]) => {
-      const ScreenMessages = list.default;
-      function AppScreenMessages(props: ChatScreenMessagesProps): ReactElement {
-        return <ScreenMessages {...props} slots={app.messagesSlots} />;
-      }
-      return { default: AppScreenMessages };
-    }),
+    Promise.all([loadScreenMessages(), import('./hosts')]).then(([list]) => list),
   ).catch((error: unknown) => {
     pending = null;
     throw error;
