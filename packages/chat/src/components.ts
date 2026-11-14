@@ -75,6 +75,15 @@ export { getFileType } from './components/composer/files/kinds';
 export type { FileKind } from './components/composer/files/kinds';
 export type { SubtitleAction } from './components/composer/files/FileContainer';
 export type { PastedTextEdit } from './components/composer/files/PastedTextDialog';
+export { composerChipClasses } from './components/composer/chip';
+export type { ComposerChipClasses } from './components/composer/chip';
+export { default as CodeWorkspaceMenu } from './components/composer/Workspace';
+export type {
+  WorkspaceLocalize,
+  WorkspaceMachineQuery,
+  CodeWorkspaceMenuProps,
+  CodeWorkspaceMenuWorkspace,
+} from './components/composer/Workspace';
 
 /** Message list building blocks: rows, headers, sibling navigation and the streaming timer. */
 export { default as SubRow } from './components/messages/SubRow';
@@ -271,3 +280,23 @@ export {
 export { default as CopyButton } from './components/parts/CopyButton';
 export { default as ActionButton } from './components/parts/ActionButton';
 export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';
+
+/** Tool approval: the shared decision state and the composer's review panel. */
+export {
+  default as ApprovalProvider,
+  ResumeSubmitContext,
+  useApprovalContext,
+  useAskSubmitStatus,
+  useResumeSubmit,
+} from './components/approval/context';
+export type {
+  ResumeSubmitTransport,
+  ToolApprovalDecisionDraft,
+} from './components/approval/context';
+export { PendingToolApprovalButton, PendingToolApprovalPanel } from './components/approval/Review';
+export type {
+  ApprovalRequestRenderProps,
+  ApprovalReviewCopy,
+  PendingToolApprovalButtonProps,
+  PendingToolApprovalPanelProps,
+} from './components/approval/Review';
