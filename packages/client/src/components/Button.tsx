@@ -433,10 +433,11 @@ const buttonVariantRecipe = cva(
         size: 'default',
         class: 'h-auto rounded-none p-0',
       },
+      /* Sized by its glyph slot and status line, and pill-shaped so its focus ring hugs the row. */
       {
         variant: 'disclosure-search',
         size: 'default',
-        class: 'h-5 rounded-full p-0',
+        class: 'h-auto rounded-full p-0',
       },
       /* Sized by the text it stands for, like `section-header`, so the default
        * size recipe must not pad it away from the content it lines up with. */
