@@ -119,3 +119,14 @@
   font-size: inherit;
   line-height: inherit;
 }
+
+/**
+ * Message body typography for the package's message text, steers and queued turns. Following the
+ * chat font setting, it ships here so a consumer with only `@librechat/client/style.css` gets it.
+ */
+.message-content {
+  font-size: var(--markdown-font-size, var(--font-size-base, 1rem));
+  line-height: 1.6;
+  /* `.prose` sets max-width: 65ch; fill the message column instead. */
+  max-width: none;
+}

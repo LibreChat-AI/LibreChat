@@ -1832,7 +1832,6 @@ html {
   transform-origin: 50% 50%;
 }
 
-.message-content,
 .message-editor-text {
   font-size: var(--markdown-font-size, var(--font-size-base));
   line-height: 1.6;
