@@ -1504,3 +1504,36 @@ describe('chat list endpoint filter limit', () => {
     });
   });
 });
+
+describe('max context tokens reset on model switch', () => {
+  const loadAppConfig = async (config) => {
+    const { AppService } = require('@librechat/data-schemas');
+    mockGetAppConfig.mockResolvedValue(await AppService({ config }));
+  };
+
+  it('publishes the librechat.yaml value in the authenticated interface config', async () => {
+    await loadAppConfig({ interface: { resetMaxContextTokensOnModelSwitch: true } });
+
+    const response = await request(createApp(mockUser)).get('/api/config');
+
+    expect(response.status).toBe(200);
+    expect(response.body.interface.resetMaxContextTokensOnModelSwitch).toBe(true);
+  });
+
+  it('publishes the schema default of false when librechat.yaml does not set it', async () => {
+    await loadAppConfig({});
+
+    const response = await request(createApp(mockUser)).get('/api/config');
+
+    expect(response.body.interface.resetMaxContextTokensOnModelSwitch).toBe(false);
+  });
+
+  it('keeps the setting out of the pre-login interface config', async () => {
+    await loadAppConfig({ interface: { resetMaxContextTokensOnModelSwitch: true } });
+
+    const response = await request(createApp()).get('/api/config');
+
+    expect(response.status).toBe(200);
+    expect(response.body.interface ?? {}).not.toHaveProperty('resetMaxContextTokensOnModelSwitch');
+  });
+});
