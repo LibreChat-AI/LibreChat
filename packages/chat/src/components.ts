@@ -174,10 +174,7 @@ export { default as ToolCall } from './components/parts/ToolCall';
 export type { ToolCallProps } from './components/parts/ToolCall';
 export { default as ProgressText } from './components/parts/ProgressText';
 export type { ProgressTextProps } from './components/parts/ProgressText';
-export {
-  default as SubagentCall,
-  SUBAGENT_TICKER_THROTTLE_MS,
-} from './components/parts/SubagentCall';
+export { default as SubagentCall } from './components/parts/SubagentCall';
 export type { SubagentCallProps, SubagentCallContext } from './components/parts/SubagentCall';
 export { default as ResumeAuthorHeader } from './components/parts/ResumeAuthorHeader';
 export { ToolAuthWarning, ToolAuthWarningContext } from './components/parts/auth';

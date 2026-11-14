@@ -12,9 +12,6 @@ import { MCPAppViews } from '~/components/MCPUIResource';
 import { useMCPServerNames } from '~/hooks/MCP';
 import { useLocalize } from '~/hooks';
 
-export { SUBAGENT_TICKER_THROTTLE_MS } from '@librechat/chat/components';
-export type { SubagentCallProps } from '@librechat/chat/components';
-
 const agentMessage = { endpoint: EModelEndpoint.agents, isCreatedByUser: false } as TMessage;
 const renderAgentIcon = (agent: Agent | undefined) => (
   <MessageIcon message={agentMessage} agent={agent} />
