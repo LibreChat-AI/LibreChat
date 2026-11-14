@@ -42,6 +42,8 @@ export async function startRedis(cluster: boolean) {
   const sockets = new Set<Socket>();
   let blocked = false;
   let dropReplies = false;
+  let interruptSubscription = false;
+  let interruptedSubscriptions = 0;
   const proxy = net.createServer((socket) => {
     if (blocked) {
       socket.destroy();
@@ -58,7 +60,18 @@ export async function startRedis(cluster: boolean) {
       });
     }
     socket.pipe(upstream);
-    upstream.on('data', (chunk) => {
+    let replyTail = '';
+    const subscribeReply = '$9\r\nsubscribe\r\n';
+    upstream.on('data', (chunk: Buffer) => {
+      const reply = replyTail + chunk.toString('latin1');
+      replyTail = reply.slice(-subscribeReply.length);
+      if (interruptSubscription && reply.includes(subscribeReply)) {
+        interruptSubscription = false;
+        interruptedSubscriptions++;
+        socket.destroy();
+        upstream.destroy();
+        return;
+      }
       if (!dropReplies) {
         socket.write(chunk);
       }
@@ -128,6 +141,12 @@ export async function startRedis(cluster: boolean) {
     admin,
     dropReplies: () => {
       dropReplies = true;
+    },
+    interruptNextSubscription: () => {
+      interruptSubscription = true;
+    },
+    get interruptedSubscriptions() {
+      return interruptedSubscriptions;
     },
     block: () => {
       blocked = true;

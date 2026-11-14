@@ -53,7 +53,18 @@ export function duplicateIoRedisClient(
  * The heartbeat is the traffic the shared client gets for free.
  */
 export function createIoRedisSubscriber(client: Redis | Cluster, label: string): Redis | Cluster {
-  const subscriber = duplicateIoRedisClient(client);
+  // Retain idempotent SUBSCRIBE/PING commands across lost acknowledgements. Publishers
+  // keep their fail-fast policy so uncertain application writes are never replayed.
+  const redisOptions: RedisOptions = {
+    maxRetriesPerRequest: null,
+    autoResendUnfulfilledCommands: true,
+  };
+  const subscriber = duplicateIoRedisClient(
+    client,
+    client.isCluster
+      ? { redisOptions: { ...(client as Cluster).options.redisOptions, ...redisOptions } }
+      : redisOptions,
+  );
   subscriber.on('error', (error: Error) => {
     logger.error(`${label} error:`, error);
   });

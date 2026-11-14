@@ -1,4 +1,5 @@
 import type { Redis, Cluster } from 'ioredis';
+import type { RedisEventTransport } from '~/stream/implementations/RedisEventTransport';
 import type { RedisClientsModule } from './redisClients.helper';
 import { startRedis, sleep, waitUntil } from './outage.helper';
 import { isRedisReady } from '~/app/readiness';
@@ -16,6 +17,8 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
   let clients: RedisClientsModule | undefined;
   let subscriber: Redis | Cluster | undefined;
   let env: NodeJS.ProcessEnv;
+  const transports: RedisEventTransport[] = [];
+  const extraClients: (Redis | Cluster)[] = [];
 
   const ready = (): boolean =>
     isRedisReady({
@@ -39,6 +42,7 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
       REDIS_URI: server.url,
       REDIS_RETRY_MAX_DELAY: '100',
       REDIS_PING_INTERVAL: '0',
+      REDIS_SUBSCRIBER_PING_INTERVAL: '0',
       REDIS_KEY_PREFIX: '',
       REDIS_KEY_PREFIX_VAR: '',
       REDIS_USERNAME: '',
@@ -51,6 +55,12 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
   });
 
   afterEach(async () => {
+    for (const transport of transports.splice(0)) {
+      transport.destroy();
+    }
+    for (const client of extraClients.splice(0)) {
+      client.disconnect();
+    }
     subscriber?.disconnect();
     subscriber = undefined;
     clients?.ioredisClient?.disconnect();
@@ -75,8 +85,8 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
     await connect();
     const io = clients!.ioredisClient!;
     const keyv = clients!.keyvRedisClient!;
-    subscriber = io.duplicate();
-    subscriber.on('error', () => undefined);
+    const { createIoRedisSubscriber } = await import('../redisUtils');
+    subscriber = createIoRedisSubscriber(io, 'outage-subscriber');
     const messages: string[] = [];
     subscriber.on('message', (_channel: string, value: string) => messages.push(value));
     await waitUntil(() => subscriber?.status === 'ready');
@@ -123,9 +133,67 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
     expect(messages).toEqual(['before', 'after']);
   }, 40_000);
 
+  it('keeps stream and abort subscriptions after an interrupted resubscribe acknowledgement', async () => {
+    await connect();
+    const { createIoRedisSubscriber, duplicateIoRedisClient } = await import('../redisUtils');
+    const { RedisEventTransport } = await import('~/stream/implementations/RedisEventTransport');
+    const io = clients!.ioredisClient!;
+    subscriber = createIoRedisSubscriber(io, 'outage-owner');
+    let readyEvents = 0;
+    subscriber.on('ready', () => readyEvents++);
+    const publisher = duplicateIoRedisClient(io);
+    extraClients.push(publisher);
+    const owner = new RedisEventTransport(io, subscriber);
+    const peer = new RedisEventTransport(publisher, createIoRedisSubscriber(io, 'outage-peer'));
+    transports.push(owner, peer);
+    const streamId = 'interrupted-subscription';
+    const channel = `stream:{${streamId}}:events`;
+    const chunks: unknown[] = [];
+    let abortedGeneration: number | undefined;
+    const attachment = owner.subscribe(streamId, { onChunk: (event) => chunks.push(event) });
+    await attachment.ready;
+    const unsubscribeAbort = await owner.onAbort(streamId, (generation) => {
+      abortedGeneration = generation;
+    });
+    await waitUntil(() => publisher.status === 'ready');
+    await peer.emitChunk(streamId, { value: 'before' });
+    await waitUntil(() => chunks.length === 1);
+
+    server.block();
+    await waitUntil(() => !ready());
+    server.interruptNextSubscription();
+    server.restore();
+    await waitUntil(() => server.interruptedSubscriptions === 1);
+    await waitUntil(
+      () => ready() && subscriber?.status === 'ready' && readyEvents >= (cluster ? 2 : 3),
+    );
+
+    const isSubscribed = async (): Promise<boolean> => {
+      const counts = await server.admin.pubsub('NUMSUB', channel);
+      return Array.isArray(counts) && counts[1] === 1;
+    };
+    let subscribed = await isSubscribed();
+    const deadline = Date.now() + 2000;
+    while (!subscribed && Date.now() < deadline) {
+      await sleep(20);
+      subscribed = await isSubscribed();
+    }
+    expect(subscribed).toBe(true);
+    await peer.emitChunk(streamId, { value: 'after' });
+    peer.emitAbort(streamId, 7);
+    await waitUntil(() => chunks.length === 2 && abortedGeneration === 7);
+    expect(chunks).toEqual([{ value: 'before' }, { value: 'after' }]);
+    unsubscribeAbort();
+    attachment.unsubscribe();
+  }, 15_000);
+
   it('honors an explicit finite reconnect budget and remains not ready', async () => {
     process.env.REDIS_RETRY_MAX_ATTEMPTS = '2';
     await connect();
+    const { createIoRedisSubscriber } = await import('../redisUtils');
+    subscriber = createIoRedisSubscriber(clients!.ioredisClient!, 'finite-subscriber');
+    await waitUntil(() => subscriber?.status === 'ready');
+    await subscriber.subscribe('finite-events');
     server.block();
     await waitUntil(() => !ready());
     await sleep(2000);
@@ -133,6 +201,7 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
     await sleep(500);
     expect(ready()).toBe(false);
     expect(clients!.ioredisClient!.status).not.toBe('ready');
+    expect(subscriber.status).not.toBe('ready');
     expect(
       isRedisReady({
         useRedis: true,
