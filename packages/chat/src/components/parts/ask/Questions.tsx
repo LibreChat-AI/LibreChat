@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
 import { TriangleAlert } from 'lucide-react';
-import { Input, Button, useLocalize } from '@librechat/client';
+import { cn, Input, Button, useLocalize } from '@librechat/client';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent, ReactNode } from 'react';
 import type { AskAnswerSubmit } from '../../../react/parts/ask';
@@ -10,7 +10,6 @@ import { useOptionalChatSurface } from '../../../react/subagents/surface';
 import useAskQuestionsForm from '../../../react/parts/questionsForm';
 import AutoHeight from '../AutoHeight';
 import AskOptions from '../AskOptions';
-import { classes } from '../classes';
 
 /**
  * One bounded batch of `ask_user_question` items, presented a single question at
@@ -259,7 +258,7 @@ export default function AskUserQuestions({
   };
 
   return (
-    <div className={classes('flex min-h-0 flex-col', className)} onKeyDown={handleKeyDown}>
+    <div className={cn('flex min-h-0 flex-col', className)} onKeyDown={handleKeyDown}>
       {/* Only the active step renders, laid out at its final size at once.
           One `AutoHeight` holds everything above the buttons and clips only at
           its bottom edge, so the header and title stay put and the footer
@@ -314,7 +313,7 @@ export default function AskUserQuestions({
                         onClick={() => goToStep(index)}
                       >
                         <span
-                          className={classes(
+                          className={cn(
                             'h-2 rounded-full transition-all duration-300 ease-out motion-reduce:transition-none',
                             isActive ? 'w-4' : 'w-2',
                             isAnswered ? 'bg-surface-submit' : 'bg-border-heavy',
@@ -419,7 +418,7 @@ export default function AskUserQuestions({
         </div>
       </AutoHeight>
       <div
-        className={classes(
+        className={cn(
           'flex shrink-0 items-center gap-2 p-3',
           stepped ? 'justify-between' : 'justify-end',
         )}

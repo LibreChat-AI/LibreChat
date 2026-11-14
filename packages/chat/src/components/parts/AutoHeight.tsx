@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
+import { cn } from '@librechat/client';
 import type { ReactNode } from 'react';
-import { classes } from './classes';
 
 /**
  * Swaps its content instantly and eases only its own height to the new
@@ -41,7 +41,7 @@ export default function AutoHeight({
 
   return (
     <div
-      className={classes(
+      className={cn(
         '-m-1 overflow-hidden transition-all duration-300 ease-out motion-reduce:transition-none',
         className,
       )}

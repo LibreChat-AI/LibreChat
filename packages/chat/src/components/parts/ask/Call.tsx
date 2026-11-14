@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react';
 import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
-import { Button, disclosureChevronVariants, useLocalize } from '@librechat/client';
+import { cn, Button, disclosureChevronVariants, useLocalize } from '@librechat/client';
 import type { Agents, PartMetadata } from 'librechat-data-provider';
 import type { CSSProperties, ReactNode } from 'react';
 import {
@@ -21,7 +21,6 @@ import AskUserQuestionProgress from './Progress';
 import { useFailedReveal } from '../reveal';
 import EmptyText from '../../EmptyText';
 import Container from '../Container';
-import { classes } from '../classes';
 
 /**
  * Static rendering of a COMPLETED (or abandoned) `ask_user_question` tool call,
@@ -176,7 +175,7 @@ export default function AskUserQuestionCall({
       >
         <div className="overflow-hidden" ref={expandRef}>
           <div
-            className={classes(
+            className={cn(
               toolPanelSpacingClassName,
               'border-border-light bg-surface-secondary flex w-full flex-col gap-4 rounded-lg border p-4',
             )}
@@ -284,7 +283,7 @@ function AskCallHeader({
           </span>
           <span className="flex min-w-0 items-center gap-2">
             <span
-              className={classes(
+              className={cn(
                 'max-w-full min-w-0 truncate font-medium',
                 subtitle != null && 'shrink-0',
               )}
@@ -305,7 +304,7 @@ function AskCallHeader({
           )}
           <span className="ms-auto flex shrink-0 items-center gap-2">
             <ChevronDown
-              className={classes(
+              className={cn(
                 disclosureChevronVariants({ expanded }),
                 'size-4 shrink-0 translate-y-[0.0625rem]',
               )}

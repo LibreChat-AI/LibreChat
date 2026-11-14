@@ -1,7 +1,14 @@
 import { useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
-import { Button, Shimmer, TextareaAutosize, TooltipAnchor, useLocalize } from '@librechat/client';
+import {
+  cn,
+  Button,
+  Shimmer,
+  TextareaAutosize,
+  TooltipAnchor,
+  useLocalize,
+} from '@librechat/client';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent, ReactNode } from 'react';
 import type { AskAnswerSubmit } from '../../../react/parts/ask';
@@ -19,7 +26,6 @@ import { askSubmitStatusAtom } from '../../../react/parts/ask';
 import { NO_HOST_BINDINGS } from '../../../core/shortcuts';
 import AskUserQuestions from './Questions';
 import AskOptions from '../AskOptions';
-import { classes } from '../classes';
 
 /**
  * Single questions whose card has already had its arrival. A card remounts when
@@ -136,7 +142,7 @@ function AskUserQuestionsCard({
   const localize = useLocalize();
   return (
     <div
-      className={classes(
+      className={cn(
         'border-border-light bg-surface-secondary my-2 flex w-full flex-col rounded-2xl border',
         live && '[view-transition-name:ask-question]',
         reserved && 'invisible',
@@ -392,7 +398,7 @@ function AskUserQuestionSingle({
   const card = (
     <div
       ref={cardRef}
-      className={classes(
+      className={cn(
         'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2.5 rounded-2xl border p-3',
         showPlaceholder && 'invisible',
         isLivePause && !showPlaceholder && '[view-transition-name:ask-question]',
