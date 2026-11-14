@@ -1,6 +1,11 @@
 import { ScrollText } from 'lucide-react';
 import { cn, Shimmer, useLocalize } from '@librechat/client';
-import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
+import {
+  PROGRESS_TEXT_CONTENT,
+  PROGRESS_TEXT_WRAPPER,
+  ROW_GLYPH_SLOT,
+  TOOL_ROW_CLASSES,
+} from './rows';
 
 /**
  * Minimal variant of `SkillCall` used for the interim window between
@@ -34,8 +39,8 @@ export default function PendingSkillCall({
 
   return (
     <div className={TOOL_ROW_CLASSES}>
-      <div className="progress-text-wrapper text-text-secondary relative -mt-[0.046875rem] h-5 w-full leading-5">
-        <div className="progress-text-content absolute top-0 right-0 left-0 max-w-full overflow-visible whitespace-nowrap">
+      <div className={PROGRESS_TEXT_WRAPPER}>
+        <div className={PROGRESS_TEXT_CONTENT}>
           <div className="inline-flex w-full items-center gap-2">
             {/** The real `SkillCall` replaces this row in place once the skill
              *   finalizes; sharing its glyph slot keeps that swap still. */}

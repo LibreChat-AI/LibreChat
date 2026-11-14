@@ -1,20 +1,20 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { ASK_USER_DECLINED_ANSWER } from '@librechat/chat';
-import { ChatSurfaceProvider } from '@librechat/chat/react';
+import { getDefaultStore } from 'jotai';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
-import AskUserQuestions from '../AskUserQuestions';
+import type { AskAnswerStatus } from '../../../../react/parts/ask';
+import { ChatSurfaceProvider } from '../../../../react/subagents/provider';
+import { askSubmitStatusAtom } from '../../../../react/parts/ask';
+import { ASK_USER_DECLINED_ANSWER } from '../../../../core';
+import AskUserQuestions from '../Questions';
 
 const mockSubmitAskAnswer = jest.fn();
-let mockStatus = 'idle';
 
-jest.mock('~/components/Chat/Messages/Content/ApprovalContext', () => ({
-  useAskSubmitStatus: () => ({ getAskStatus: () => mockStatus }),
-  useResumeSubmit: () => ({ submitAskAnswer: mockSubmitAskAnswer }),
-}));
-
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string, values?: Record<number, number>) => {
     const labels: Record<string, string> = {
       com_ui_question_number: `Question ${values?.[0] ?? ''}`,
@@ -35,6 +35,11 @@ jest.mock('~/hooks', () => ({
   },
 }));
 
+const setStatus = (actionId: string, status: AskAnswerStatus) => {
+  const store = getDefaultStore();
+  store.set(askSubmitStatusAtom, { ...store.get(askSubmitStatusAtom), [actionId]: status });
+};
+
 const questions: Agents.AskUserQuestionBatchItem[] = [
   {
     id: 'environment',
@@ -54,9 +59,12 @@ const renderBatch = (
   focusOnArrival = true,
 ) =>
   render(
-    <RecoilRoot>
-      <AskUserQuestions actionId={actionId} questions={batch} focusOnArrival={focusOnArrival} />
-    </RecoilRoot>,
+    <AskUserQuestions
+      actionId={actionId}
+      questions={batch}
+      focusOnArrival={focusOnArrival}
+      submitAskAnswer={mockSubmitAskAnswer}
+    />,
   );
 
 const optionBatch: Agents.AskUserQuestionBatchItem[] = [
@@ -84,7 +92,7 @@ const isShown = (text: string) => screen.queryByText(text) != null;
 
 describe('AskUserQuestions', () => {
   beforeEach(() => {
-    mockStatus = 'idle';
+    getDefaultStore().set(askSubmitStatusAtom, {});
     mockSubmitAskAnswer.mockClear();
   });
 
@@ -245,12 +253,14 @@ describe('AskUserQuestions', () => {
   test('Enter in an answer field confirms the answer instead of submitting a surrounding form', () => {
     const onFormSubmit = jest.fn((event: React.FormEvent) => event.preventDefault());
     render(
-      <RecoilRoot>
-        <form onSubmit={onFormSubmit}>
-          <AskUserQuestions actionId="ask-enter" questions={questions} />
-          <button type="submit" aria-label="Send composer" />
-        </form>
-      </RecoilRoot>,
+      <form onSubmit={onFormSubmit}>
+        <AskUserQuestions
+          submitAskAnswer={mockSubmitAskAnswer}
+          actionId="ask-enter"
+          questions={questions}
+        />
+        <button type="submit" aria-label="Send composer" />
+      </form>,
     );
 
     const first = screen.getByRole('textbox', { name: /Where should this run/ });
@@ -310,11 +320,13 @@ describe('AskUserQuestions', () => {
   test('modified or repeated Enter in an answer field keeps the enclosing form from submitting', () => {
     const onSubmit = jest.fn((event: React.FormEvent) => event.preventDefault());
     render(
-      <RecoilRoot>
-        <form onSubmit={onSubmit}>
-          <AskUserQuestions actionId="ask-implicit-submit" questions={questions} />
-        </form>
-      </RecoilRoot>,
+      <form onSubmit={onSubmit}>
+        <AskUserQuestions
+          submitAskAnswer={mockSubmitAskAnswer}
+          actionId="ask-implicit-submit"
+          questions={questions}
+        />
+      </form>,
     );
     const first = screen.getByRole('textbox', { name: /Where should this run/ });
     fireEvent.change(first, { target: { value: 'Locally' } });
@@ -329,24 +341,26 @@ describe('AskUserQuestions', () => {
 
   test('a submit shortcut rebound off Enter confirms the answer like Enter', () => {
     render(
-      <RecoilRoot>
-        <ChatSurfaceProvider
-          value={{
-            enterToSend: false,
-            maximizeChatSpace: false,
-            showScrollButton: false,
-            composerBindings: {
-              shortcutsEnabled: true,
-              submitOverride: { meta: false, ctrl: true, alt: false, shift: false, key: 'J' },
-              yieldedChords: new Set(),
-            },
-            claimForeground: jest.fn(),
-            handOffComposerText: jest.fn(),
-          }}
-        >
-          <AskUserQuestions actionId="ask-rebound-submit" questions={questions} />
-        </ChatSurfaceProvider>
-      </RecoilRoot>,
+      <ChatSurfaceProvider
+        value={{
+          enterToSend: false,
+          maximizeChatSpace: false,
+          showScrollButton: false,
+          composerBindings: {
+            shortcutsEnabled: true,
+            submitOverride: { meta: false, ctrl: true, alt: false, shift: false, key: 'J' },
+            yieldedChords: new Set(),
+          },
+          claimForeground: jest.fn(),
+          handOffComposerText: jest.fn(),
+        }}
+      >
+        <AskUserQuestions
+          submitAskAnswer={mockSubmitAskAnswer}
+          actionId="ask-rebound-submit"
+          questions={questions}
+        />
+      </ChatSurfaceProvider>,
     );
     const first = screen.getByRole('textbox', { name: /Where should this run/ });
     fireEvent.change(first, { target: { value: 'Locally' } });
@@ -421,17 +435,23 @@ describe('AskUserQuestions', () => {
 
     test('takes focus again when the batch is moved onto a new surface', () => {
       const view = render(
-        <RecoilRoot>
-          <AskUserQuestions actionId="ask-focus-handoff" questions={questions} focusOnArrival />
-        </RecoilRoot>,
+        <AskUserQuestions
+          submitAskAnswer={mockSubmitAskAnswer}
+          actionId="ask-focus-handoff"
+          questions={questions}
+          focusOnArrival
+        />,
       );
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
       view.unmount();
 
       render(
-        <RecoilRoot>
-          <AskUserQuestions actionId="ask-focus-handoff" questions={questions} focusOnHandoff />
-        </RecoilRoot>,
+        <AskUserQuestions
+          submitAskAnswer={mockSubmitAskAnswer}
+          actionId="ask-focus-handoff"
+          questions={questions}
+          focusOnHandoff
+        />,
       );
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
     });
@@ -444,9 +464,12 @@ describe('AskUserQuestions', () => {
       leftBehind.focus();
 
       render(
-        <RecoilRoot>
-          <AskUserQuestions actionId="ask-focus-left-behind" questions={questions} focusOnHandoff />
-        </RecoilRoot>,
+        <AskUserQuestions
+          submitAskAnswer={mockSubmitAskAnswer}
+          actionId="ask-focus-left-behind"
+          questions={questions}
+          focusOnHandoff
+        />,
       );
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
       leftBehind.remove();
@@ -627,9 +650,11 @@ describe('AskUserQuestions', () => {
     });
 
     view.rerender(
-      <RecoilRoot>
-        <AskUserQuestions actionId="ask-remount" questions={questions} />
-      </RecoilRoot>,
+      <AskUserQuestions
+        submitAskAnswer={mockSubmitAskAnswer}
+        actionId="ask-remount"
+        questions={questions}
+      />,
     );
 
     expect(screen.getByText('Question 2 of 2')).toBeInTheDocument();
@@ -675,17 +700,19 @@ describe('AskUserQuestions', () => {
   });
 
   test('keeps an expired batch readable but freezes steps mid-submit', () => {
-    mockStatus = 'expired';
+    setStatus('ask-expired', 'expired');
     const view = renderBatch('ask-expired');
 
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     expect(isShown('Which time window?')).toBe(true);
 
-    mockStatus = 'submitting';
+    setStatus('ask-expired', 'submitting');
     view.rerender(
-      <RecoilRoot>
-        <AskUserQuestions actionId="ask-expired" questions={questions} />
-      </RecoilRoot>,
+      <AskUserQuestions
+        submitAskAnswer={mockSubmitAskAnswer}
+        actionId="ask-expired"
+        questions={questions}
+      />,
     );
     expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
   });
@@ -732,13 +759,12 @@ describe('AskUserQuestions', () => {
     test('hands Escape to the surface instead of skipping when it supplies one', () => {
       const onEscape = jest.fn();
       render(
-        <RecoilRoot>
-          <AskUserQuestions
-            actionId="ask-escape-surface"
-            questions={questions}
-            onEscape={onEscape}
-          />
-        </RecoilRoot>,
+        <AskUserQuestions
+          submitAskAnswer={mockSubmitAskAnswer}
+          actionId="ask-escape-surface"
+          questions={questions}
+          onEscape={onEscape}
+        />,
       );
       fireEvent.keyDown(screen.getByRole('button', { name: /Staging/ }), { key: 'Escape' });
       expect(onEscape).toHaveBeenCalledTimes(1);

@@ -1,12 +1,10 @@
 import { useCallback, useMemo } from 'react';
-import { atom, useAtom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
-import { ASK_USER_DECLINED_ANSWER } from '@librechat/chat';
+import { atom, useAtom, useAtomValue } from 'jotai';
 import type { Agents } from 'librechat-data-provider';
-import {
-  useAskSubmitStatus,
-  useResumeSubmit,
-} from '~/components/Chat/Messages/Content/ApprovalContext';
+import type { AskAnswerStatus, AskAnswerSubmit } from './ask';
+import { ASK_USER_DECLINED_ANSWER } from '../../core/parts/questions';
+import { askSubmitStatusAtom } from './ask';
 
 interface AskQuestionsFormState {
   /** Index of the question currently on screen. Lives beside the answers so the
@@ -33,18 +31,34 @@ const askQuestionsFormFamily = atomFamily((_actionId: string) =>
 );
 
 function ownValue<T>(record: Record<string, T>, key: string): T | undefined {
-  return Object.hasOwn(record, key) ? record[key] : undefined;
+  return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+}
+
+interface AskQuestionsForm {
+  state: AskQuestionsFormState;
+  step: number;
+  status: AskAnswerStatus;
+  locked: boolean;
+  answers: Record<string, string>;
+  canSubmit: boolean;
+  setText: (question: Agents.AskUserQuestionBatchItem, value: string) => void;
+  selectOption: (question: Agents.AskUserQuestionBatchItem, value: string) => void;
+  goToStep: (index: number) => void;
+  submit: () => boolean;
+  skip: () => boolean;
+  arrivalFocused: boolean;
+  markArrivalFocused: () => void;
 }
 
 export default function useAskQuestionsForm(
   actionId: string,
   questions: Agents.AskUserQuestionBatchItem[],
-) {
+  submitAskAnswer: AskAnswerSubmit,
+): AskQuestionsForm {
   const [state, setState] = useAtom(askQuestionsFormFamily(actionId));
   const resetState = useCallback(() => setState(EMPTY_FORM), [setState]);
-  const { submitAskAnswer } = useResumeSubmit();
-  const { getAskStatus } = useAskSubmitStatus();
-  const status = getAskStatus(actionId);
+  const statusMap = useAtomValue(askSubmitStatusAtom);
+  const status: AskAnswerStatus = ownValue(statusMap, actionId) ?? 'idle';
   const locked = status === 'submitting' || status === 'submitted' || status === 'expired';
 
   const setText = useCallback(

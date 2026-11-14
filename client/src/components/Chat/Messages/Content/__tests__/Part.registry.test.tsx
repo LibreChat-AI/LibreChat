@@ -36,10 +36,6 @@ jest.mock('../Parts/BackgroundTaskCall', () => ({
   default: mockStub('background-task-call'),
 }));
 jest.mock('../MessageContent', () => ({ ErrorMessage: mockStub('error-message') }));
-jest.mock('../AskUserQuestionCall', () => ({
-  __esModule: true,
-  default: mockStub('ask-user-question-call'),
-}));
 jest.mock('../AskUserQuestion', () => ({
   __esModule: true,
   default: mockStub('ask-user-question'),
@@ -55,6 +51,7 @@ jest.mock('@librechat/chat/components', () => ({
   Container: mockPassthrough,
   ToolPreparation: mockPassthrough,
   ToolCall: mockStub('tool-call'),
+  AskUserQuestionCall: mockStub('ask-user-question-call'),
 }));
 /** What `Part` drew: the stubbed component's test id, or the text of an inline element. */
 const drawn = (part: TMessageContentParts): string | null => {

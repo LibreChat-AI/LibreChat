@@ -142,16 +142,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/AskUserQuestion.tsx": {
-    "shadcn/no-restyle": {
-      "count": 11
-    }
-  },
-  "client/src/components/Chat/Messages/Content/AskUserQuestionCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/EditContentParts.tsx": {
     "design/disabled-recipe": {
       "count": 1

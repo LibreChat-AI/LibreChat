@@ -20,6 +20,19 @@ const EMBEDDED = [
   'text-text-primary',
   'theme-field-fill:bg-surface-tertiary-alt',
 ];
+const FILLED = [
+  'rounded-lg',
+  'border',
+  'border-border-light',
+  'bg-surface-chat',
+  'px-3',
+  'py-2',
+  'text-sm',
+  'text-text-primary',
+  'placeholder:text-text-secondary',
+  'focus-visible:ring-2',
+  'focus-visible:ring-text-primary',
+];
 const FRAMED = [
   'lc-own-focus',
   'rounded-xl',
@@ -96,6 +109,14 @@ describe('field variants', () => {
       'theme-field-fill:bg-field-fill',
       'resize-none',
     );
+  });
+
+  it('TextareaAutosize filled carries the compact card field exactly', () => {
+    render(
+      <TextareaAutosize aria-label="answer" variant="filled" className="w-full resize-none" />,
+    );
+    const field = screen.getByLabelText('answer');
+    expect(field).toHaveClass(...FILLED, 'w-full', 'resize-none');
   });
 
   it('TextareaAutosize framed carries the bordered editor box exactly', () => {

@@ -1,12 +1,14 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { ASK_USER_DECLINED_ANSWER } from '@librechat/chat';
-import { ChatSurfaceProvider } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import type { ShortcutBinding } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
-import ApprovalProvider from '../ApprovalContext';
-import AskUserQuestion from '../AskUserQuestion';
+import type { ShortcutBinding } from '../../../../core/shortcuts';
+import type { AskCardMode } from '../Question';
+import { ChatSurfaceProvider } from '../../../../react/subagents/provider';
+import { ASK_USER_DECLINED_ANSWER } from '../../../../core';
+import AskUserQuestion from '../Question';
 
 const mockSubmitAnswer = jest.fn();
 const mockSetAnswerText = jest.fn();
@@ -18,13 +20,14 @@ let mockChecked: number[] = [];
 let mockAnswerText = '';
 
 /** jsdom has no execCommand, so the newline path is observed through the mock. */
-jest.mock('~/utils/textarea', () => ({
-  ...jest.requireActual('~/utils/textarea'),
+jest.mock('../../../../core/textarea', () => ({
+  ...jest.requireActual('../../../../core/textarea'),
   forceResize: jest.fn(),
   insertTextAtCursor: (...args: unknown[]) => mockInsertTextAtCursor(...args),
 }));
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => {
     const labels: Record<string, string> = {
       com_ui_your_answer: 'Your answer',
@@ -36,36 +39,20 @@ jest.mock('~/hooks', () => ({
   },
 }));
 
-jest.mock('~/hooks/Input/useAskAnswerMode', () => ({
-  __esModule: true,
-  default: () => ({
-    popoverVisible: mockPopoverVisible,
-    collapsed: mockCollapsed,
-    expand: jest.fn(),
-    liveAsk: mockLiveActionId == null ? null : { actionId: mockLiveActionId },
-    checked: mockChecked,
-    toggleChecked: jest.fn(),
-    submitOption: jest.fn(),
-    submitAnswer: mockSubmitAnswer,
-    answerText: mockAnswerText,
-    setAnswerText: mockSetAnswerText,
-  }),
-}));
+const drafts = new Map<string, string>();
 
-jest.mock('~/data-provider', () => ({
-  useSubmitToolApprovalMutation: () => ({ mutate: jest.fn() }),
-  useSubmitAskAnswerMutation: () => ({ mutate: jest.fn() }),
-}));
-
-jest.mock('~/store/agents', () => ({
-  useGetEphemeralAgent: () => () => undefined,
-}));
-
-jest.mock('~/Providers/ChatContext', () => ({
-  ChatContext: jest.requireActual('react').createContext({
-    conversation: { conversationId: 'conversation-1' },
-  }),
-}));
+const answerMode = (): AskCardMode => ({
+  popoverVisible: mockPopoverVisible,
+  collapsed: mockCollapsed,
+  expand: jest.fn(),
+  liveAsk: mockLiveActionId == null ? null : { actionId: mockLiveActionId },
+  checked: mockChecked,
+  toggleChecked: jest.fn(),
+  submitOption: jest.fn(),
+  submitAnswer: mockSubmitAnswer,
+  answerText: mockAnswerText,
+  setAnswerText: mockSetAnswerText,
+});
 
 const yieldedChords = new Set<string>();
 let submitOverride: ShortcutBinding | undefined;
@@ -76,22 +63,32 @@ const tree = (
   enterToSend = true,
   actionId = 'ask-1',
 ) => (
-  <RecoilRoot>
-    <ChatSurfaceProvider
-      value={{
-        enterToSend,
-        maximizeChatSpace: false,
-        showScrollButton: false,
-        composerBindings: { shortcutsEnabled: true, submitOverride, yieldedChords },
-        claimForeground: jest.fn(),
-        handOffComposerText: jest.fn(),
+  <ChatSurfaceProvider
+    value={{
+      enterToSend,
+      maximizeChatSpace: false,
+      showScrollButton: false,
+      composerBindings: { shortcutsEnabled: true, submitOverride, yieldedChords },
+      claimForeground: jest.fn(),
+      handOffComposerText: jest.fn(),
+    }}
+  >
+    <AskUserQuestion
+      key={key}
+      actionId={actionId}
+      question={question}
+      answerMode={answerMode()}
+      submitAskAnswer={mockSubmitAnswer}
+      getAskAnswerDraft={(id) => drafts.get(id) ?? ''}
+      setAskAnswerDraft={(id, answer) => {
+        if (answer.length === 0) {
+          drafts.delete(id);
+          return;
+        }
+        drafts.set(id, answer);
       }}
-    >
-      <ApprovalProvider>
-        <AskUserQuestion key={key} actionId={actionId} question={question} />
-      </ApprovalProvider>
-    </ChatSurfaceProvider>
-  </RecoilRoot>
+    />
+  </ChatSurfaceProvider>
 );
 
 const withOptions: Agents.AskUserQuestionRequest = {
@@ -105,6 +102,7 @@ const withOptions: Agents.AskUserQuestionRequest = {
 describe('AskUserQuestion', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    drafts.clear();
     mockPopoverVisible = false;
     mockCollapsed = false;
     mockLiveActionId = null;

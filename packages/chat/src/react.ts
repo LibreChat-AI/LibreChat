@@ -247,6 +247,7 @@ export { default as useRowHandoff } from './react/parts/handoff';
 export {
   askAnswerTextAtom,
   useAskAnswerHost,
+  useLiveAskPauses,
   askSubmitStatusAtom,
   askAnswerCheckedAtom,
   AskAnswerHostProvider,
@@ -254,7 +255,12 @@ export {
   expandedAskActionsAtom,
   releasedComposerTextAtom,
 } from './react/parts/ask';
-export type { AskAnswerStatus, ReleasedComposerStash } from './react/parts/ask';
+export type {
+  LiveAskPauses,
+  AskAnswerStatus,
+  AskAnswerSubmit,
+  ReleasedComposerStash,
+} from './react/parts/ask';
 export { default as useComposerItems } from './react/items';
 export type { ComposerItem, ComposerItemKind } from './react/items';
 export { useFilesHost, FilesHostProvider } from './react/files';

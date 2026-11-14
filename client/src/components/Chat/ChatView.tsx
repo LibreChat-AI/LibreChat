@@ -9,7 +9,6 @@ import {
   submissionByIndex,
   ChatSessionProvider,
   useScrollbarGutterSeed,
-  AskAnswerHostProvider,
   ComposerRestoreProvider,
   pendingApprovalActionFamily,
 } from '@librechat/chat/react';
@@ -32,6 +31,7 @@ import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
 import Lia from '~/components/Lia';
+import AskHost from './AskHost';
 import Landing from './Landing';
 import Header from './Header';
 import store from '~/store';
@@ -150,7 +150,7 @@ function ChatViewPane({
     <TargetContext.Provider value={readiness}>
       <AgentsMapContext.Provider value={selectedAgents}>
         <AssistantsMapContext.Provider value={selectedAssistants}>
-          <AskAnswerHostProvider saveDrafts={saveDrafts}>
+          <AskHost saveDrafts={saveDrafts}>
             <ChatFormProvider {...methods}>
               <ComposerRestoreProvider>
                 <QueuedTurnPortalProvider>
@@ -219,7 +219,7 @@ function ChatViewPane({
                 </QueuedTurnPortalProvider>
               </ComposerRestoreProvider>
             </ChatFormProvider>
-          </AskAnswerHostProvider>
+          </AskHost>
         </AssistantsMapContext.Provider>
       </AgentsMapContext.Provider>
     </TargetContext.Provider>
