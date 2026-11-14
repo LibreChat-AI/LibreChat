@@ -19,6 +19,7 @@ import {
 } from '~/data-provider';
 import { PanelFooter, PanelContent, PanelHeader } from '~/components/ui';
 import { useLocalize, useAuthContext, useHasAccess } from '~/hooks';
+import CollectionError from '~/components/ui/CollectionError';
 import MemoryCardSkeleton from './MemoryCardSkeleton';
 import MemoryCreateDialog from './MemoryCreateDialog';
 import MemoryUsageBadge from './MemoryUsageBadge';
@@ -35,7 +36,6 @@ export default function MemoryPanel() {
   const headingId = useId();
   const { user } = useAuthContext();
   const { data: userData } = useGetUserQuery();
-  const { data: memData, isLoading } = useMemoriesQuery();
   const { showToast } = useToastContext();
   const [searchQuery, setSearchQuery] = useState('');
   const [partitionFilter, setPartitionFilter] = useState(PARTITION_ALL);
@@ -72,6 +72,15 @@ export default function MemoryPanel() {
   const hasReadAccess = useHasAccess({
     permissionType: PermissionTypes.MEMORIES,
     permission: Permissions.READ,
+  });
+
+  const {
+    data: memData,
+    isLoading,
+    isError,
+    refetch,
+  } = useMemoriesQuery({
+    enabled: hasReadAccess,
   });
 
   const hasUpdateAccess = useHasAccess({
@@ -240,11 +249,15 @@ export default function MemoryPanel() {
 
       {/* Only the list scrolls */}
       <PanelContent isLoading={isLoading} skeleton={<MemoryCardSkeleton />} className="px-3 pb-3">
-        <MemoryList
-          memories={filteredMemories}
-          hasUpdateAccess={hasUpdateAccess}
-          isFiltered={searchQuery.length > 0}
-        />
+        {isError ? (
+          <CollectionError onRetry={() => refetch()} />
+        ) : (
+          <MemoryList
+            memories={filteredMemories}
+            hasUpdateAccess={hasUpdateAccess}
+            isFiltered={searchQuery.length > 0 || activePartition !== PARTITION_ALL}
+          />
+        )}
       </PanelContent>
 
       {user?.role === SystemRoles.ADMIN && (

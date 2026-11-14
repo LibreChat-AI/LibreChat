@@ -5,6 +5,7 @@ import type { CodeApprovalModeInputs, CodeWorkspaceInputs } from '@librechat/cha
 import type { TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import { ComposerRouteContext } from '~/Providers/ComposerRouteContext';
 import useTurnServices from '../services';
 
 type ApprovalInputs = Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'>;
@@ -172,5 +173,38 @@ describe('useTurnServices readCodeInputs', () => {
     const latest = conversation({ conversationId: 'later', codeApprovalMode: 'acceptEdits' });
     mockGetLatestConversation.mockReturnValue(latest);
     expect(result.current.readCodeInputs().latest).toBe(latest);
+  });
+});
+
+describe('retained turn project ownership', () => {
+  it('reads the owner project during an automatic new-chat send behind a feature page', () => {
+    const sourceProject = 'a'.repeat(24);
+    const nextProject = 'b'.repeat(24);
+    let route = '/c/new?projectId=' + sourceProject;
+    const readRoute = () => route;
+    const ownerWrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <ChatSettingsContext.Provider value={defaultChatSettings}>
+          <ComposerRouteContext.Provider value={readRoute}>
+            {children}
+          </ComposerRouteContext.Provider>
+        </ChatSettingsContext.Provider>
+      </QueryClientProvider>
+    );
+    window.history.replaceState({}, '', route);
+    const { result, unmount } = renderHook(
+      () => useTurnServices({ index: 0, conversation: null }),
+      { wrapper: ownerWrapper },
+    );
+    const project = result.current.getRouteProjectId;
+    expect(project()).toBe(sourceProject);
+    window.history.replaceState({}, '', '/agent-builder');
+    expect(project()).toBe(sourceProject);
+    route = '/c/new?projectId=' + nextProject;
+    expect(project()).toBe(nextProject);
+    route = '/c/new?projectId=not-a-project';
+    expect(project()).toBeNull();
+    unmount();
+    window.history.replaceState({}, '', '/');
   });
 });

@@ -9,9 +9,13 @@ import { useLocalize } from '~/hooks';
 export default function List({
   groups = [],
   isChatRoute,
+  isFiltered = false,
+  onUsePrompt,
 }: {
   groups?: TPromptGroup[];
   isChatRoute?: boolean;
+  isFiltered?: boolean;
+  onUsePrompt?: (group: TPromptGroup) => void;
 }) {
   const localize = useLocalize();
   const { data: permissionsMap } = useGetAllEffectivePermissionsQuery(ResourceType.PROMPTGROUP, {
@@ -23,8 +27,8 @@ export default function List({
       return (
         <EmptyState
           icon={FileText}
-          title={localize('com_ui_no_prompts_title')}
-          description={localize('com_ui_add_first_prompt')}
+          title={localize(isFiltered ? 'com_ui_no_results_found' : 'com_ui_no_prompts_title')}
+          description={isFiltered ? undefined : localize('com_ui_add_first_prompt')}
           className="my-2"
         />
       );
@@ -35,6 +39,7 @@ export default function List({
         key={group._id}
         group={group}
         isChatRoute={isChatRoute}
+        onUsePrompt={onUsePrompt}
         permissionBits={group._id ? permissionsMap?.[group._id] : 0}
       />
     ));

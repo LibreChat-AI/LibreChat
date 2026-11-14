@@ -2,8 +2,8 @@ import React from 'react';
 import { getDefaultStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
 import { PermissionBits } from 'librechat-data-provider';
-import { MemoryRouter, useNavigate } from 'react-router-dom';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, useNavigate, useLocation } from 'react-router-dom';
 import type { TPromptGroup } from 'librechat-data-provider';
 import { navigationGenerationAtom } from '~/store/navigation';
 import ChatGroupItem from '../ChatGroupItem';
@@ -11,6 +11,8 @@ import ChatGroupItem from '../ChatGroupItem';
 const mockMutate = jest.fn();
 const mockRecordUsageMutate = jest.fn();
 const mockSubmitPrompt = jest.fn();
+const mockUseSubmitMessage = jest.fn(() => ({ submitPrompt: mockSubmitPrompt }));
+const mockUseChatContext = jest.fn(() => ({ conversation: mockConversation.current, index: 0 }));
 const mockShowToast = jest.fn();
 /** Native groups resolve from local text with no request; a test overrides this
  *  per-call (`mockResolvedValueOnce`/`mockRejectedValueOnce`/a controllable
@@ -28,8 +30,14 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, values?: Record<number, string>) =>
     values ? `${key} ${JSON.stringify(values)}` : key,
   useAuthContext: () => ({ user: { id: 'user-owner' } }),
-  useSubmitMessage: () => ({ submitPrompt: mockSubmitPrompt }),
+  useSubmitMessage: () => mockUseSubmitMessage(),
   usePromptContentResolver: () => mockResolve,
+  usePromptContent: () => ({
+    text: 'Preview text',
+    isLoading: false,
+    error: null,
+    refetch: jest.fn(),
+  }),
 }));
 
 /** Only `conversationId` matters: a saved chat's invalidation effect keys on
@@ -39,7 +47,7 @@ jest.mock('~/hooks', () => ({
 const mockConversation = { current: { conversationId: 'convo-1' as string | undefined } };
 jest.mock('~/Providers', () => ({
   useLiveAnnouncer: () => ({ announcePolite: jest.fn() }),
-  useChatContext: () => ({ conversation: mockConversation.current, index: 0 }),
+  useChatContext: () => mockUseChatContext(),
 }));
 
 /** The real token lives in a module-level map keyed by composer index, which
@@ -69,6 +77,11 @@ jest.mock('../../dialogs/VariableDialog', () => ({
   __esModule: true,
   default: ({ open, promptText }: { open: boolean; promptText?: string }) =>
     open ? <div data-testid="variable-dialog">{promptText}</div> : null,
+}));
+
+jest.mock('../../display/PromptTextCard', () => ({
+  __esModule: true,
+  default: ({ mainText }: { mainText: string }) => <pre>{mainText}</pre>,
 }));
 
 function makeGroup(overrides: Partial<TPromptGroup> = {}): TPromptGroup {
@@ -152,6 +165,56 @@ const FULL_BITS =
 beforeEach(() => {
   mockDraftToken.current = Symbol('new-conversation-draft');
   getDefaultStore().set(navigationGenerationAtom, 0);
+});
+
+function ManagementLocation() {
+  const location = useLocation();
+  return <output data-testid="management-path">{location.pathname}</output>;
+}
+
+describe('ChatGroupItem management click', () => {
+  it('opens the existing detail URL without initializing chat hooks or resolving/submitting a prompt', async () => {
+    render(
+      <MemoryRouter initialEntries={['/prompts']}>
+        <ChatGroupItem group={makeGroup()} isChatRoute={false} />
+        <ManagementLocation />
+      </MemoryRouter>,
+    );
+    await userEvent.click(getCardButton());
+    expect(screen.getByTestId('management-path')).toHaveTextContent('/prompts/group-1');
+    expect(mockUseSubmitMessage).not.toHaveBeenCalled();
+    expect(mockUseChatContext).not.toHaveBeenCalled();
+    expect(mockResolve).not.toHaveBeenCalled();
+    expect(mockSubmitPrompt).not.toHaveBeenCalled();
+    expect(mockRecordUsageMutate).not.toHaveBeenCalled();
+  });
+
+  it('previews management content without mounting chat submission actions', async () => {
+    renderGroup(makeGroup(), 0);
+    await userEvent.click(screen.getByRole('button', { name: 'com_nav_convo_menu_options' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /com_ui_preview/ }));
+    expect(await screen.findByText('Preview text')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_use_prompt' })).not.toBeInTheDocument();
+    expect(mockUseSubmitMessage).not.toHaveBeenCalled();
+    expect(mockUseChatContext).not.toHaveBeenCalled();
+  });
+
+  it('only calls the host use action after the explicit menu action', async () => {
+    const onUsePrompt = jest.fn();
+    const group = makeGroup();
+    render(
+      <MemoryRouter initialEntries={['/prompts']}>
+        <ChatGroupItem group={group} isChatRoute={false} onUsePrompt={onUsePrompt} />
+      </MemoryRouter>,
+    );
+    await userEvent.click(getCardButton());
+    expect(onUsePrompt).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'com_nav_convo_menu_options' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /com_ui_use_prompt/ }));
+    expect(onUsePrompt).toHaveBeenCalledWith(group);
+    expect(mockUseSubmitMessage).not.toHaveBeenCalled();
+    expect(mockSubmitPrompt).not.toHaveBeenCalled();
+  });
 });
 
 describe('ChatGroupItem menu', () => {
@@ -273,7 +336,7 @@ describe('ChatGroupItem chat-route click', () => {
 
     /** A dialog opened from a resolved Langfuse read must not survive a chat
      *  change and submit a variable fill into another chat. */
-    getDefaultStore().set(navigationGenerationAtom, 1);
+    act(() => getDefaultStore().set(navigationGenerationAtom, 1));
 
     await waitFor(() => expect(screen.queryByTestId('variable-dialog')).not.toBeInTheDocument());
   });
@@ -430,7 +493,7 @@ describe('ChatGroupItem chat-route click', () => {
      *  navigation starts, before the target conversation's record is
      *  fetched and `conversationId` changes — simulate just that bump,
      *  with the conversation left untouched. */
-    getDefaultStore().set(navigationGenerationAtom, 1);
+    act(() => getDefaultStore().set(navigationGenerationAtom, 1));
 
     await waitFor(() => expect(getCardButton()).not.toBeDisabled());
 

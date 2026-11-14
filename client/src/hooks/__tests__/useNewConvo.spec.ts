@@ -1877,6 +1877,36 @@ describe('passive route navigation', () => {
   );
 });
 
+describe('context-only conversation initialization', () => {
+  beforeEach(() => {
+    mockRunSwitch = true;
+    mockNavigate.mockClear();
+    mockSetConversation.mockClear();
+  });
+  afterEach(() => {
+    mockRunSwitch = false;
+  });
+  it('initializes a conversation without navigating away from its host page', async () => {
+    const { result } = renderHook(() => useNewConvo(0, { navigateOnChange: false }), {
+      wrapper: QueryWrapper,
+    });
+    await act(async () =>
+      result.current.switchToConversation({
+        conversationId: 'new',
+        endpoint: EModelEndpoint.openAI,
+        model: 'selected',
+        title: '',
+        createdAt: '',
+        updatedAt: '',
+      }),
+    );
+    expect(mockSetConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'new', model: 'selected' }),
+    );
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+});
+
 describe('remembered New Chat identity', () => {
   beforeEach(() => {
     localStorage.clear();

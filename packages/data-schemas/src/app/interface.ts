@@ -1,4 +1,4 @@
-import { getConfigDefaults, removeNullishValues } from 'librechat-data-provider';
+import { getConfigDefaults, removeNullishValues, resolveNavigation } from 'librechat-data-provider';
 import type { TCustomConfig, TConfigDefaults } from 'librechat-data-provider';
 import type { AppConfig } from '~/types/app';
 import { isMemoryEnabled } from './memory';
@@ -78,6 +78,7 @@ export async function loadDefaultInterface({
   const shouldDisableMemories = memoryConfig && !memoryEnabled;
 
   const loadedInterface: AppConfig['interfaceConfig'] = removeNullishValues({
+    navigation: resolveNavigation(interfaceConfig?.navigation, defaults.navigation),
     // UI elements - use schema defaults
     modelSelect:
       interfaceConfig?.modelSelect ??

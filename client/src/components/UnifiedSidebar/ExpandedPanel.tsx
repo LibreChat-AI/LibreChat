@@ -4,8 +4,10 @@ import { useLocation } from 'react-router-dom';
 import { Skeleton, Sidebar, Button, TooltipAnchor } from '@librechat/client';
 import type { NavLink } from '~/common';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
+import { useFeaturePresentation } from '~/components/FeaturePresentation/Context';
 import { useActivePanel, resolveActivePanel, DEFAULT_PANEL } from '~/Providers';
 import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
+import { pageRegistry } from '~/components/FeaturePresentation/registry';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import useNewChat from '~/hooks/Conversations/useNewChat';
@@ -142,7 +144,10 @@ function ExpandedPanel({
   const tooltipSide = inlineSide(useDirection(), 'end');
   const location = useLocation();
   const { active, setActive } = useActivePanel();
-  const effectiveActive = resolveActivePanel(active, links);
+  const presentation = useFeaturePresentation();
+  const effectiveActive = presentation?.page
+    ? pageRegistry[presentation.page].navId
+    : resolveActivePanel(active, links);
   const isInsightsRoute = location.pathname.startsWith('/insights');
 
   const toggleLabel = expanded ? 'com_nav_close_sidebar' : 'com_nav_open_sidebar';

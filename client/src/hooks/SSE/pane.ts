@@ -22,6 +22,7 @@ import type {
   RunEnd,
 } from '@librechat/chat';
 import type { EventHandlerParams } from '@librechat/chat/react';
+import { useConversationAssignment } from '~/Providers/ConversationAssignmentContext';
 import { clearComposerDrafts, resolveRunEndTarget } from '~/utils';
 import { activeRunFamily } from './atoms';
 
@@ -76,11 +77,20 @@ export default function useResumablePane({
   refreshBalance: () => void;
   setGenerationEpoch: ResumablePane['setGenerationEpoch'];
 }): { pane: ResumablePane; queue: ResumableQueue } {
+  const assignment = useConversationAssignment();
   const jotaiStore = useStore();
   const setActiveRunId = useSetAtom(activeRunFamily(runIndex));
   const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
   const setSubmission = useSetAtom(submissionByIndex(runIndex));
   const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
+
+  const updateGenerationEpoch = useCallback(
+    (...args: Parameters<ResumablePane['setGenerationEpoch']>) => {
+      if (!isAddedRequest && args[1] == null) assignment?.begin(args[0]);
+      return setGenerationEpoch(...args);
+    },
+    [isAddedRequest, assignment, setGenerationEpoch],
+  );
 
   const publishRunEnd = useSetAtom(runEndByIndex(runIndex));
   const setRunEnd = useCallback(
@@ -101,8 +111,9 @@ export default function useResumablePane({
         }
       }
       publishRunEnd(end);
+      if (!isAddedRequest) assignment?.settle(end.conversationId ?? null);
     },
-    [jotaiStore, publishRunEnd, run],
+    [jotaiStore, publishRunEnd, run, assignment, isAddedRequest],
   );
   const setDrainAfterAbort = useSetAtom(drainAfterAbortByIndex(runIndex));
   const clearDrainAfterAbort = useCallback(
@@ -123,7 +134,7 @@ export default function useResumablePane({
       setShowStopButton,
       setSubmission,
       setStreamId,
-      setGenerationEpoch,
+      setGenerationEpoch: updateGenerationEpoch,
       setPendingAction: (conversationId, action) =>
         jotaiStore.set(pendingApprovalActionFamily(conversationId), action),
       clearComposerDrafts: (conversationId, options) =>
@@ -134,7 +145,8 @@ export default function useResumablePane({
       startNewConversation: newConversation
         ? () => newConversation({ template: { conversationId: String(Constants.NEW_CONVO) } })
         : undefined,
-      replaceNewConversationUrl,
+      replaceNewConversationUrl:
+        !isAddedRequest && assignment ? assignment.acknowledge : replaceNewConversationUrl,
       renewActiveRun: () => setActiveRunId(v4()),
       runEndTarget: resolveRunEndTarget,
       clearDrainAfterAbort,
@@ -155,6 +167,7 @@ export default function useResumablePane({
     }),
     [
       jotaiStore,
+      assignment,
       runIndex,
       isAddedRequest,
       setStreamId,
@@ -166,7 +179,7 @@ export default function useResumablePane({
       setAbortScroll,
       setSubmission,
       setShowStopButton,
-      setGenerationEpoch,
+      updateGenerationEpoch,
       setRunEnd,
       clearDrainAfterAbort,
     ],

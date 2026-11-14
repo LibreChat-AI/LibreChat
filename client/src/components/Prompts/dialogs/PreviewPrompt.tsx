@@ -29,6 +29,7 @@ const PreviewPrompt = ({
         <OGDialogTitle className="sr-only">{localize('com_ui_preview')}</OGDialogTitle>
         <PromptDetails
           group={group}
+          showActions={chatIndex !== undefined}
           chatIndex={chatIndex}
           onUsePrompt={() => onOpenChange(false)}
         />
