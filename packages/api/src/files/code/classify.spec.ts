@@ -45,6 +45,7 @@ describe('classifyCodeArtifact', () => {
     it.each([
       ['report.docx', 'application/octet-stream'],
       ['data.xlsx', 'application/octet-stream'],
+      ['macros.xlsm', 'application/octet-stream'],
       ['legacy.xls', 'application/octet-stream'],
       ['sheet.ods', 'application/octet-stream'],
       ['notes.odt', 'application/octet-stream'],

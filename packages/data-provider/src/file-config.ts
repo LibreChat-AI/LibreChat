@@ -32,6 +32,7 @@ export const excelFileTypes = [
   'application/xls',
   'application/x-xls',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel.sheet.macroEnabled.12',
 ];
 
 export const fullMimeTypesList = [
@@ -319,7 +320,7 @@ export const isAnthropicDocumentType = (mimeType?: string): boolean =>
   mimeType === 'application/pdf' || isAnthropicTextDocumentType(mimeType);
 
 export const excelMimeTypes =
-  /^application\/(vnd\.ms-excel|msexcel|x-msexcel|x-ms-excel|x-excel|x-dos_ms_excel|xls|x-xls|vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet)$/;
+  /^application\/(vnd\.ms-excel|msexcel|x-msexcel|x-ms-excel|x-excel|x-dos_ms_excel|xls|x-xls|vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet|vnd\.ms-excel\.sheet\.macro[Ee]nabled\.12)$/;
 
 export const textMimeTypes =
   /^(text\/(x-c|x-csharp|tab-separated-values|x-c\+\+|x-h|x-java|html|markdown|x-php|x-python|x-script\.python|x-ruby|x-tex|plain|css|vtt|javascript|csv|xml|calendar))$/;
@@ -501,6 +502,7 @@ export const codeTypeMapping: { [key: string]: string } = {
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx - Word
   xls: 'application/vnd.ms-excel', // .xls - Excel (legacy)
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx - Excel
+  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12', // .xlsm - Excel macro-enabled
   ppt: 'application/vnd.ms-powerpoint', // .ppt - PowerPoint (legacy)
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', // .pptx - PowerPoint
   potx: 'application/vnd.openxmlformats-officedocument.presentationml.template', // .potx - PowerPoint template
@@ -871,6 +873,7 @@ const documentMimeExtensions: ReadonlyArray<readonly [string, readonly string[]]
   ['application/xls', ['.xls']],
   ['application/x-xls', ['.xls']],
   ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ['.xlsx']],
+  ['application/vnd.ms-excel.sheet.macroEnabled.12', ['.xlsm']],
   ['application/vnd.ms-powerpoint', ['.ppt']],
   ['application/vnd.openxmlformats-officedocument.presentationml.presentation', ['.pptx']],
   ['application/vnd.openxmlformats-officedocument.presentationml.template', ['.potx']],
