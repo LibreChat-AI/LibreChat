@@ -141,6 +141,7 @@ export {
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
 } from './types/triggerDelivery';
 export type * from './types';
+export { PasskeyConflictError } from './types/passkey';
 export type * from './methods';
 export {
   AUDIT_ACTIONS,

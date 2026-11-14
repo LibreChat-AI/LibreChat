@@ -628,6 +628,75 @@ describe('passkey registration provider enforcement', () => {
     expect(res.json).toHaveBeenCalledWith({ message: 'This passkey is already registered' });
   });
 
+  it('recognizes the storage-neutral conflict code without relying on class identity', async () => {
+    const createPasskey = jest
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error('credential conflict'), { code: 'PASSKEY_ALREADY_REGISTERED' }),
+      );
+    const handlers = createPasskeyHandlers(buildDeps({ createPasskey }));
+    const user = await createUser();
+    const res = buildRes();
+    await handlers.registerPasskeyVerify(
+      authedReq(user, { credential: attestation, password: PASSWORD }),
+      res,
+    );
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({ message: 'This passkey is already registered' });
+  });
+
+  it.each([11000, 'E11000'])(
+    'preserves legacy duplicate code %s without index metadata',
+    async (code) => {
+      const createPasskey = jest
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('duplicate'), { code }));
+      const handlers = createPasskeyHandlers(buildDeps({ createPasskey }));
+      const user = await createUser();
+      const res = buildRes();
+      await handlers.registerPasskeyVerify(
+        authedReq(user, { credential: attestation, password: PASSWORD }),
+        res,
+      );
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith({ message: 'This passkey is already registered' });
+    },
+  );
+
+  it.each(['auth_passkeys_pkey', 'auth_passkeys_credential_id_key'])(
+    'does not interpret raw PostgreSQL constraint %s',
+    async (constraint) => {
+      const createPasskey = jest.fn().mockRejectedValue(
+        Object.assign(new Error('unique violation'), {
+          code: '23505',
+          constraint,
+        }),
+      );
+      const handlers = createPasskeyHandlers(buildDeps({ createPasskey }));
+      const user = await createUser();
+      const res = buildRes();
+      await handlers.registerPasskeyVerify(
+        authedReq(user, { credential: attestation, password: PASSWORD }),
+        res,
+      );
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ message: 'Something went wrong' });
+    },
+  );
+
+  it('does not report unrelated storage failures as credential conflicts', async () => {
+    const createPasskey = jest.fn().mockRejectedValue(new Error('database unavailable'));
+    const handlers = createPasskeyHandlers(buildDeps({ createPasskey }));
+    const user = await createUser();
+    const res = buildRes();
+    await handlers.registerPasskeyVerify(
+      authedReq(user, { credential: attestation, password: PASSWORD }),
+      res,
+    );
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ message: 'Something went wrong' });
+  });
+
   it('still lists passkeys for a non-local account so a stale credential can be removed', async () => {
     const handlers = createPasskeyHandlers(buildDeps());
     const user = await createUser({ provider: 'openid' });
