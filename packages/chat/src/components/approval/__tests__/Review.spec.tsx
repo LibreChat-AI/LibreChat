@@ -1,11 +1,62 @@
-import React from 'react';
-import { RecoilRoot } from 'recoil';
+/**
+ * @jest-environment jsdom
+ */
+import React, { useEffect } from 'react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { composerOverlayCountFamily, pendingApprovalActionFamily } from '@librechat/chat/react';
 import type { Agents } from 'librechat-data-provider';
+import type { ApprovalRequestRenderProps, ApprovalReviewCopy } from '../Review';
 import { PendingToolApprovalButton, PendingToolApprovalPanel } from '../Review';
-import ApprovalProvider from '../../Messages/Content/ApprovalContext';
+import { pendingApprovalActionFamily } from '../../../react/approval';
+import { composerOverlayCountFamily } from '../../../react/overlay';
+import ApprovalProvider, { useApprovalContext } from '../context';
+
+const localize: ApprovalReviewCopy = (key, values) => {
+  const labels: Record<string, string> = {
+    com_ui_review_action: 'Review 1 action',
+    com_ui_review_actions: `Review ${values?.[0]} actions`,
+    com_ui_review_run_command: 'Run command',
+    com_ui_review_create_file: `Create ${values?.[0]}`,
+    com_ui_review_create_file_generic: 'Create file',
+    com_ui_review_edit_file: `Edit ${values?.[0]}`,
+    com_ui_review_edit_file_generic: 'Edit file',
+    com_ui_proposed_command: 'Proposed command',
+    com_ui_proposed_contents: 'Proposed contents',
+    com_ui_proposed_replacements: 'Proposed replacements',
+    com_ui_proposed_arguments: 'Proposed arguments',
+    com_ui_decisions_selected: `${values?.[0]} of ${values?.[1]} decisions selected`,
+    com_ui_approve: 'Approve',
+    com_ui_reject: 'Reject',
+    com_ui_continue: 'Continue',
+    com_ui_collapse: 'Collapse',
+  };
+  return labels[key] ?? key;
+};
+
+function FakeRequest({ approval, toolCallId }: ApprovalRequestRenderProps) {
+  const { registerToolCall, unregisterToolCall, setDecision } = useApprovalContext();
+  useEffect(() => {
+    registerToolCall(approval.actionId, toolCallId);
+    return () => unregisterToolCall(approval.actionId, toolCallId);
+  }, [approval.actionId, toolCallId, registerToolCall, unregisterToolCall]);
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        setDecision(approval.actionId, toolCallId, {
+          tool_call_id: toolCallId,
+          decision: 'approve',
+        })
+      }
+    >
+      Approve
+    </button>
+  );
+}
+
+function renderRequest(props: ApprovalRequestRenderProps) {
+  return <FakeRequest {...props} />;
+}
 
 jest.mock('@librechat/client', () => ({
   Button: jest
@@ -24,39 +75,6 @@ jest.mock('@librechat/client', () => ({
     <textarea {...props} />
   ),
   TooltipAnchor: ({ render }: { render: React.ReactNode }) => render,
-}));
-
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string, values?: Record<string | number, string | number>) => {
-    const labels: Record<string, string> = {
-      com_ui_review_action: 'Review 1 action',
-      com_ui_review_actions: `Review ${values?.[0]} actions`,
-      com_ui_review_run_command: 'Run command',
-      com_ui_review_create_file: `Create ${values?.[0]}`,
-      com_ui_review_create_file_generic: 'Create file',
-      com_ui_review_edit_file: `Edit ${values?.[0]}`,
-      com_ui_review_edit_file_generic: 'Edit file',
-      com_ui_proposed_command: 'Proposed command',
-      com_ui_proposed_contents: 'Proposed contents',
-      com_ui_proposed_replacements: 'Proposed replacements',
-      com_ui_proposed_arguments: 'Proposed arguments',
-      com_ui_decisions_selected: `${values?.[0]} of ${values?.[1]} decisions selected`,
-      com_ui_approve: 'Approve',
-      com_ui_reject: 'Reject',
-      com_ui_continue: 'Continue',
-      com_ui_collapse: 'Collapse',
-    };
-    return labels[key] ?? key;
-  },
-}));
-
-jest.mock('~/data-provider', () => ({
-  useSubmitToolApprovalMutation: () => ({ mutate: jest.fn() }),
-  useSubmitAskAnswerMutation: () => ({ mutate: jest.fn() }),
-}));
-
-jest.mock('~/store/agents', () => ({
-  useGetEphemeralAgent: () => () => undefined,
 }));
 
 const pendingAction: Agents.PendingAction = {
@@ -100,14 +118,16 @@ describe('PendingToolApproval', () => {
     const jotaiStore = createStore();
     jotaiStore.set(pendingApprovalActionFamily('conversation-1'), pendingAction);
     render(
-      <RecoilRoot>
-        <JotaiProvider store={jotaiStore}>
-          <ApprovalProvider pendingAction={pendingAction}>
-            <PendingToolApprovalPanel conversationId="conversation-1" />
-            <PendingToolApprovalButton conversationId="conversation-1" />
-          </ApprovalProvider>
-        </JotaiProvider>
-      </RecoilRoot>,
+      <JotaiProvider store={jotaiStore}>
+        <ApprovalProvider pendingAction={pendingAction}>
+          <PendingToolApprovalPanel
+            conversationId="conversation-1"
+            localize={localize}
+            renderRequest={renderRequest}
+          />
+          <PendingToolApprovalButton conversationId="conversation-1" localize={localize} />
+        </ApprovalProvider>
+      </JotaiProvider>,
     );
 
     expect(await screen.findByRole('region', { name: 'Review 2 actions' })).toBeInTheDocument();
@@ -138,8 +158,17 @@ describe('PendingToolApproval', () => {
       const triggerRef = React.useRef<HTMLButtonElement>(null);
       return (
         <>
-          <PendingToolApprovalPanel conversationId="conversation-1" triggerRef={triggerRef} />
-          <PendingToolApprovalButton conversationId="conversation-1" triggerRef={triggerRef} />
+          <PendingToolApprovalPanel
+            conversationId="conversation-1"
+            triggerRef={triggerRef}
+            localize={localize}
+            renderRequest={renderRequest}
+          />
+          <PendingToolApprovalButton
+            conversationId="conversation-1"
+            triggerRef={triggerRef}
+            localize={localize}
+          />
         </>
       );
     }
@@ -148,13 +177,11 @@ describe('PendingToolApproval', () => {
       const jotaiStore = createStore();
       jotaiStore.set(pendingApprovalActionFamily('conversation-1'), pendingAction);
       render(
-        <RecoilRoot>
-          <JotaiProvider store={jotaiStore}>
-            <ApprovalProvider pendingAction={pendingAction}>
-              <Harness />
-            </ApprovalProvider>
-          </JotaiProvider>
-        </RecoilRoot>,
+        <JotaiProvider store={jotaiStore}>
+          <ApprovalProvider pendingAction={pendingAction}>
+            <Harness />
+          </ApprovalProvider>
+        </JotaiProvider>,
       );
       return jotaiStore;
     };
