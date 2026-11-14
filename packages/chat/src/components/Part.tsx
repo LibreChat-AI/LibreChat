@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { ContentTypes, ToolCallTypes, resolveDisplayToolCall } from 'librechat-data-provider';
 import type { TMessageContentParts, TAttachment } from 'librechat-data-provider';
 import type { MemoExoticComponent, ReactNode } from 'react';
 import { useMessageContext } from '../react/message';
@@ -94,14 +94,16 @@ const renderToolCall = (
   if (!isAgentToolCall(toolCall)) {
     return renderers.parts[ContentTypes.TOOL_CALL]?.(props) ?? null;
   }
+  /** A dispatcher call renders as the tool it ran. */
+  const displayCall = resolveDisplayToolCall(toolCall);
   const toolProps: ToolRenderProps = {
     ...props,
-    toolCall,
+    toolCall: displayCall,
     toolCallId: 'id' in toolCall && typeof toolCall.id === 'string' ? toolCall.id : undefined,
   };
   const render =
-    renderers.matchTool?.(toolCall) ??
-    ownEntry(renderers.tools, toolCall.name) ??
+    renderers.matchTool?.(displayCall) ??
+    ownEntry(renderers.tools, displayCall.name) ??
     renderers.defaultTool;
   const card = render(toolProps);
   return renderers.wrapTool ? renderers.wrapTool(card, toolProps) : card;

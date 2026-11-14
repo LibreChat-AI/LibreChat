@@ -25,6 +25,7 @@ import {
   synthesizeToggleToolOptions,
 } from '~/agents/toggles';
 import { requiresEphemeralUserConnection, validateMCPServerConfig } from '~/mcp/utils';
+import { orderNames } from '~/agents/promptCache';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { getCustomEndpointConfig } from '~/app/config';
@@ -105,8 +106,9 @@ export async function loadEphemeralAgent(
    *  instruction path reads `req.body.ephemeralAgent.mcp` directly and prefers
    *  it over the agent's tools, so it would otherwise both inject a deselected
    *  or hidden server's `serverInstructions` and omit a spec-pinned server's. */
+  const sortedMcpServers = orderNames(req.config, mcpServers);
   if (requestAgent != null && Array.isArray(requestAgent.mcp)) {
-    requestAgent.mcp = [...mcpServers];
+    requestAgent.mcp = sortedMcpServers;
   }
   /** Spec flags are defaults an explicit request toggle overrides. Same
    *  downstream gating as persisted agents still applies: `createRun` only
@@ -114,9 +116,9 @@ export async function loadEphemeralAgent(
    *  not a subagent, and the admin hasn't excluded it. */
   const tools: string[] = resolveEphemeralTools(ephemeralAgent, modelSpec);
 
-  if (mcpServers.size > 0) {
+  if (sortedMcpServers.length > 0) {
     const serverToolKeys = await mapWithConcurrency(
-      [...mcpServers],
+      sortedMcpServers,
       getLookupConcurrency(req.config, 'mcpCatalogLookups'),
       async (mcpServer): Promise<string[]> => {
         /** Address durable catalogs by the effective request overlay; request-scoped
@@ -129,7 +131,9 @@ export async function loadEphemeralAgent(
           overlayConfig && requiresEphemeralUserConnection(overlayConfig)
             ? null
             : await deps.getMCPServerTools(userId, mcpServer, overlayConfig, capabilityProfile);
-        return serverTools ? Object.keys(serverTools) : [`${mcp_all}${mcp_delimiter}${mcpServer}`];
+        return serverTools
+          ? orderNames(req.config, Object.keys(serverTools))
+          : [`${mcp_all}${mcp_delimiter}${mcpServer}`];
       },
     );
     for (const keys of serverToolKeys) {

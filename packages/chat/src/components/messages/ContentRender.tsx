@@ -6,6 +6,7 @@ import type { TMessageProps, TMessageChatContext } from '../../react/messages/ty
 import type { MessageIconData } from '../../react/messages/host';
 import { areMessageFieldsEqual, isSameTailRelation } from '../../react/messages/equal';
 import useContentMetadata from '../../react/messages/useContentMetadata';
+import PromptCacheResetNotice from '../parts/PromptCacheResetNotice';
 import ToolCallLimitNotice from '../parts/ToolCallLimitNotice';
 import ResumeAuthorHeader from '../parts/ResumeAuthorHeader';
 import { useMessagesHost } from '../../react/messages/host';
@@ -190,15 +191,18 @@ const ContentRender: NamedExoticComponent<ContentRenderProps> = memo(function Co
           : undefined
       }
       notice={
-        /** A turn that ran out of agent steps is incomplete, not broken. Rendered
-         *  here rather than inside `ContentParts` because it is a message-level
-         *  outcome, and `ContentParts` also serves surfaces (subagent panels,
-         *  search) that have no message row behind them. */
-        msg.unfinished === true &&
-        !isSubmitting &&
-        msg.finish_reason === Constants.TOOL_CALL_LIMIT_FINISH_REASON ? (
-          <ToolCallLimitNotice message={msg} />
-        ) : undefined
+        <>
+          {!msg.isCreatedByUser && <PromptCacheResetNotice message={msg} />}
+          {/** A turn that ran out of agent steps is incomplete, not broken. Rendered
+           *  here rather than inside `ContentParts` because it is a message-level
+           *  outcome, and `ContentParts` also serves surfaces (subagent panels,
+           *  search) that have no message row behind them. */}
+          {msg.unfinished === true &&
+            !isSubmitting &&
+            msg.finish_reason === Constants.TOOL_CALL_LIMIT_FINISH_REASON && (
+              <ToolCallLimitNotice message={msg} />
+            )}
+        </>
       }
     />
   );
