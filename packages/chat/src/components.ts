@@ -280,3 +280,23 @@ export {
 export { default as CopyButton } from './components/parts/CopyButton';
 export { default as ActionButton } from './components/parts/ActionButton';
 export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';
+
+/** Tool approval: the shared decision state and the composer's review panel. */
+export {
+  default as ApprovalProvider,
+  ResumeSubmitContext,
+  useApprovalContext,
+  useAskSubmitStatus,
+  useResumeSubmit,
+} from './components/approval/context';
+export type {
+  ResumeSubmitTransport,
+  ToolApprovalDecisionDraft,
+} from './components/approval/context';
+export { PendingToolApprovalButton, PendingToolApprovalPanel } from './components/approval/Review';
+export type {
+  ApprovalRequestRenderProps,
+  ApprovalReviewCopy,
+  PendingToolApprovalButtonProps,
+  PendingToolApprovalPanelProps,
+} from './components/approval/Review';

@@ -2,10 +2,17 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { composerOverlayCountFamily, pendingApprovalActionFamily } from '@librechat/chat/react';
+import {
+  activeGenerationCreatedAtByConvoId,
+  pendingApprovalActionFamily,
+} from '@librechat/chat/react';
 import type { Agents } from 'librechat-data-provider';
-import { PendingToolApprovalButton, PendingToolApprovalPanel } from '../Review';
-import ApprovalProvider from '../../Messages/Content/ApprovalContext';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
+import { ChatContext } from '~/Providers/ChatContext';
+import { PendingToolApprovalPanel } from '../Review';
+
+const mockApprovalMutate = jest.fn();
 
 jest.mock('@librechat/client', () => ({
   Button: jest
@@ -31,15 +38,10 @@ jest.mock('~/hooks', () => ({
     const labels: Record<string, string> = {
       com_ui_review_action: 'Review 1 action',
       com_ui_review_actions: `Review ${values?.[0]} actions`,
-      com_ui_review_run_command: 'Run command',
       com_ui_review_create_file: `Create ${values?.[0]}`,
-      com_ui_review_create_file_generic: 'Create file',
-      com_ui_review_edit_file: `Edit ${values?.[0]}`,
-      com_ui_review_edit_file_generic: 'Edit file',
-      com_ui_proposed_command: 'Proposed command',
+      com_ui_review_run_command: 'Run command',
       com_ui_proposed_contents: 'Proposed contents',
-      com_ui_proposed_replacements: 'Proposed replacements',
-      com_ui_proposed_arguments: 'Proposed arguments',
+      com_ui_proposed_command: 'Proposed command',
       com_ui_decisions_selected: `${values?.[0]} of ${values?.[1]} decisions selected`,
       com_ui_approve: 'Approve',
       com_ui_reject: 'Reject',
@@ -51,13 +53,26 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useSubmitToolApprovalMutation: () => ({ mutate: jest.fn() }),
+  useSubmitToolApprovalMutation: () => ({ mutate: mockApprovalMutate }),
   useSubmitAskAnswerMutation: () => ({ mutate: jest.fn() }),
 }));
 
 jest.mock('~/store/agents', () => ({
   useGetEphemeralAgent: () => () => undefined,
 }));
+
+const getEphemeralAgent = jest.fn(() => ({ mcp: ['server'] }));
+
+const chatContextValue = {
+  conversation: {
+    conversationId: 'conversation-1',
+    endpoint: 'agents',
+    agent_id: 'agent-1',
+    model: 'model-1',
+  },
+  getMessages: () => [],
+  setMessages: jest.fn(),
+} as unknown as React.ContextType<typeof ChatContext>;
 
 const pendingAction: Agents.PendingAction = {
   actionId: 'action-1',
@@ -95,97 +110,53 @@ const pendingAction: Agents.PendingAction = {
   },
 };
 
-describe('PendingToolApproval', () => {
-  test('reviews the authoritative batch beside the composer and can be collapsed', async () => {
+describe('app composer review panel', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('Continue sends the whole batch with the conversation fields through the app host', async () => {
     const jotaiStore = createStore();
     jotaiStore.set(pendingApprovalActionFamily('conversation-1'), pendingAction);
+    jotaiStore.set(activeGenerationCreatedAtByConvoId('conversation-1'), 1000);
     render(
       <RecoilRoot>
         <JotaiProvider store={jotaiStore}>
-          <ApprovalProvider pendingAction={pendingAction}>
-            <PendingToolApprovalPanel conversationId="conversation-1" />
-            <PendingToolApprovalButton conversationId="conversation-1" />
-          </ApprovalProvider>
+          <ChatSettingsContext.Provider value={{ ...defaultChatSettings, getEphemeralAgent }}>
+            <ChatContext.Provider value={chatContextValue}>
+              <ApprovalProvider pendingAction={pendingAction}>
+                <PendingToolApprovalPanel conversationId="conversation-1" />
+              </ApprovalProvider>
+            </ChatContext.Provider>
+          </ChatSettingsContext.Provider>
         </JotaiProvider>
       </RecoilRoot>,
     );
 
-    expect(await screen.findByRole('region', { name: 'Review 2 actions' })).toBeInTheDocument();
-    expect(jotaiStore.get(composerOverlayCountFamily('conversation-1'))).toBe(1);
-    expect(screen.getByText(/Create src\/new\.ts/)).toBeInTheDocument();
-    expect(screen.getByText('npm test -- new')).toBeInTheDocument();
-    expect(screen.getByText('0 of 2 decisions selected')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
-
+    await screen.findByRole('region', { name: 'Review 2 actions' });
     const approvals = screen.getAllByRole('button', { name: 'Approve' });
     fireEvent.click(approvals[0]);
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
     fireEvent.click(approvals[1]);
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
-    expect(screen.getByText('2 of 2 decisions selected')).toBeInTheDocument();
+    const submit = screen.getByRole('button', { name: 'Continue' });
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse' }));
-    expect(screen.queryByRole('region', { name: 'Review 2 actions' })).not.toBeInTheDocument();
-    expect(jotaiStore.get(composerOverlayCountFamily('conversation-1'))).toBe(0);
-    expect(screen.getByTestId('pending-tool-approval-button')).toHaveAttribute(
-      'aria-expanded',
-      'false',
+    expect(mockApprovalMutate).toHaveBeenCalledTimes(1);
+    expect(mockApprovalMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conversation-1',
+        generationCreatedAt: 1000,
+        endpoint: 'agents',
+        agent_id: 'agent-1',
+        model: 'model-1',
+        ephemeralAgent: { mcp: ['server'] },
+        actionId: 'action-1',
+        decisions: [
+          expect.objectContaining({ tool_call_id: 'call-1', decision: 'approve' }),
+          expect.objectContaining({ tool_call_id: 'call-2', decision: 'approve' }),
+        ],
+      }),
+      expect.any(Object),
     );
-  });
-
-  describe('collapsing from the keyboard', () => {
-    function Harness() {
-      const triggerRef = React.useRef<HTMLButtonElement>(null);
-      return (
-        <>
-          <PendingToolApprovalPanel conversationId="conversation-1" triggerRef={triggerRef} />
-          <PendingToolApprovalButton conversationId="conversation-1" triggerRef={triggerRef} />
-        </>
-      );
-    }
-
-    const renderPanel = () => {
-      const jotaiStore = createStore();
-      jotaiStore.set(pendingApprovalActionFamily('conversation-1'), pendingAction);
-      render(
-        <RecoilRoot>
-          <JotaiProvider store={jotaiStore}>
-            <ApprovalProvider pendingAction={pendingAction}>
-              <Harness />
-            </ApprovalProvider>
-          </JotaiProvider>
-        </RecoilRoot>,
-      );
-      return jotaiStore;
-    };
-
-    test('Escape collapses the panel, keeps decisions and returns focus to the toggle', async () => {
-      renderPanel();
-      await screen.findByRole('region', { name: 'Review 2 actions' });
-      const approve = screen.getAllByRole('button', { name: 'Approve' })[0];
-      fireEvent.click(approve);
-      approve.focus();
-
-      fireEvent.keyDown(approve, { key: 'Escape', isComposing: true });
-      fireEvent.keyDown(approve, { key: 'Escape', keyCode: 229 });
-      fireEvent.keyDown(approve, { key: 'Escape', shiftKey: true });
-      expect(screen.getByRole('region', { name: 'Review 2 actions' })).toBeInTheDocument();
-
-      fireEvent.keyDown(approve, { key: 'Escape' });
-      expect(screen.queryByRole('region', { name: 'Review 2 actions' })).not.toBeInTheDocument();
-      const toggle = screen.getByTestId('pending-tool-approval-button');
-      expect(toggle).toHaveFocus();
-      expect(toggle).toHaveAttribute('aria-expanded', 'false');
-
-      fireEvent.click(toggle);
-      expect(screen.getByText('1 of 2 decisions selected')).toBeInTheDocument();
-    });
-
-    test('the Collapse button also returns focus to the toggle', async () => {
-      renderPanel();
-      await screen.findByRole('region', { name: 'Review 2 actions' });
-      fireEvent.click(screen.getByRole('button', { name: 'Collapse' }));
-      expect(screen.getByTestId('pending-tool-approval-button')).toHaveFocus();
-    });
   });
 });
