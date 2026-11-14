@@ -30,7 +30,7 @@ import type { SubagentUpdateEvent } from '@librechat/agents';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
 import { toWireRunSteps } from '~/stream/interfaces/IJobStore';
-import { createToolTimingAdapter } from './toolTiming';
+import { createToolTimingAdapter, createToolTimingTracker } from './toolTiming';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 const CONTENT_GRAPH_EVENTS = {
@@ -380,6 +380,63 @@ export class SubagentContentJournal {
   }
 }
 
+export type SubagentContentFold = {
+  readonly aggregator: ReturnType<typeof createContentAggregator>;
+  /** Synchronous, so a caller can fold a frame and publish it without yielding in between. */
+  apply(frame: SubagentContentFrame): void;
+};
+
+/** Folds public child frames into content parts the way main chat aggregates its own stream. */
+export function createSubagentContentFold(): SubagentContentFold {
+  const aggregator = createContentAggregator();
+  const tracker = createToolTimingTracker();
+  const timing = createToolTimingAdapter({ emit: () => undefined });
+  const apply = (frame: SubagentContentFrame): void => {
+    if (frame.event === SteerEvents.ON_STEER_APPLIED) {
+      aggregator.contentParts[frame.data.index] = frame.data.part;
+      return;
+    }
+    if (frame.event === StepEvents.ON_RUN_STEP_CLOSED) {
+      const step = aggregator.stepMap.get(frame.data.id);
+      if (step != null) step.status = frame.data.status;
+      const part = step == null ? undefined : aggregator.contentParts[step.index];
+      if (part?.type === ContentTypes.TOOL_CALL && part.tool_call != null) {
+        part.tool_call.runStepStatus = frame.data.status;
+        Object.assign(part.tool_call, getRunStepCloseMetadata(frame.data));
+        const duration = getRunStepDurationMs(frame.data);
+        if (duration != null) part.tool_call.runStepDurationMs = duration;
+      }
+      return;
+    }
+    if (frame.event === StepEvents.ON_RUN_STEP_DELTA) {
+      for (const marker of tracker.observe(frame.data)) {
+        timing.child(aggregator, { phase: 'tool_preparation', data: marker });
+      }
+    }
+    /** SDK and wire enums have identical values, as in main-chat Redis recovery. */
+    if (
+      frame.event !== StepEvents.ON_TOOL_PREPARATION &&
+      frame.event !== StepEvents.ON_TOOL_CALLS_DISPATCHED
+    ) {
+      aggregator.aggregateContent({
+        event: CONTENT_GRAPH_EVENTS[frame.event],
+        data: frame.data,
+      } as Parameters<typeof aggregator.aggregateContent>[0]);
+    }
+    if (frame.event === StepEvents.ON_MESSAGE_DELTA) {
+      const step = aggregator.stepMap.get(frame.data.id);
+      const part = step == null ? undefined : aggregator.contentParts[step.index];
+      if (part?.type === ContentTypes.TEXT && step?.stepDetails.type === 'message_creation') {
+        const creation = step.stepDetails.message_creation;
+        const phase = creation != null && 'phase' in creation ? creation.phase : undefined;
+        if (phase === 'commentary' || phase === 'final_answer') part.phase = phase;
+      }
+    }
+    timing.child(aggregator, { phase: frame.event.slice(3), data: frame.data });
+  };
+  return { aggregator, apply };
+}
+
 type ContentReadMethods = Pick<
   SubagentContentMethods,
   'getSubagentContentHead' | 'streamSubagentContentBatches'
@@ -431,14 +488,8 @@ export async function readSubagentContent(
       },
     };
   }
-  const aggregator = createContentAggregator();
-  const timing = createToolTimingAdapter({
-    emit: (event) =>
-      timing.child(aggregator, {
-        phase: event.event.slice(3),
-        data: event.data,
-      }),
-  });
+  const fold = createSubagentContentFold();
+  const { aggregator } = fold;
   const events: SubagentContentEvent[] = [];
   let throughSequence = afterSequence ?? -1;
   let revision: number | undefined;
@@ -484,44 +535,7 @@ export async function readSubagentContent(
         events.push(entry);
         continue;
       }
-      const frame = entry.frame;
-      if (frame.event === SteerEvents.ON_STEER_APPLIED) {
-        aggregator.contentParts[frame.data.index] = frame.data.part;
-        continue;
-      }
-      if (frame.event === StepEvents.ON_RUN_STEP_CLOSED) {
-        const step = aggregator.stepMap.get(frame.data.id);
-        if (step != null) step.status = frame.data.status;
-        const part = step == null ? undefined : aggregator.contentParts[step.index];
-        if (part?.type === ContentTypes.TOOL_CALL && part.tool_call != null) {
-          part.tool_call.runStepStatus = frame.data.status;
-          Object.assign(part.tool_call, getRunStepCloseMetadata(frame.data));
-          const duration = getRunStepDurationMs(frame.data);
-          if (duration != null) part.tool_call.runStepDurationMs = duration;
-        }
-        continue;
-      }
-      if (frame.event === StepEvents.ON_RUN_STEP_DELTA) await timing.delta(frame.data);
-      /** SDK and wire enums have identical values, as in main-chat Redis recovery. */
-      if (
-        frame.event !== StepEvents.ON_TOOL_PREPARATION &&
-        frame.event !== StepEvents.ON_TOOL_CALLS_DISPATCHED
-      ) {
-        aggregator.aggregateContent({
-          event: CONTENT_GRAPH_EVENTS[frame.event],
-          data: frame.data,
-        } as Parameters<typeof aggregator.aggregateContent>[0]);
-      }
-      if (frame.event === StepEvents.ON_MESSAGE_DELTA) {
-        const step = aggregator.stepMap.get(frame.data.id);
-        const part = step == null ? undefined : aggregator.contentParts[step.index];
-        if (part?.type === ContentTypes.TEXT && step?.stepDetails.type === 'message_creation') {
-          const creation = step.stepDetails.message_creation;
-          const phase = creation != null && 'phase' in creation ? creation.phase : undefined;
-          if (phase === 'commentary' || phase === 'final_answer') part.phase = phase;
-        }
-      }
-      timing.child(aggregator, { phase: frame.event.slice(3), data: frame.data });
+      fold.apply(entry.frame);
     }
     throughSequence = batch.throughSequence;
     revision = batch.revision;
