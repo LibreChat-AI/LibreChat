@@ -4856,7 +4856,7 @@ class AgentClient extends BaseClient {
       restoreGoogleThoughtSignatures(
         initialMessages,
         this.modelBoundStoredMessages ?? [],
-        this.options.agent.provider,
+        reachableAgents,
       );
       if (this.eventActorContinuation !== 'warm') {
         this.eventActorSummary = initialSummary;
