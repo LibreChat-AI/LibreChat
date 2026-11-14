@@ -110,7 +110,8 @@ export default function MessagesView({
     renderPendingTurnSlot ?? (steerHost == null ? undefined : renderDefaultPendingTurn);
   const renderPendingSteers =
     renderPendingSteersSlot ?? (steerHost == null ? undefined : renderDefaultPendingSteers);
-  const flat = flatThread ?? host.useFlatThread();
+  const hostFlatThread = host.useFlatThread();
+  const flat = flatThread ?? hostFlatThread;
   const fontSize = useMessagePartsHost().useFontSize();
   const screenshotTargetRef = host.useScreenshotTarget();
   const [currentEditId, setCurrentEditId] = useState<string | number | null>(-1);
@@ -254,7 +255,7 @@ export default function MessagesView({
                       messagesTree,
                       messages,
                       conversationId: treeConversationId,
-                      flat: flat,
+                      flat,
                       currentEditId,
                       setCurrentEditId,
                     })}

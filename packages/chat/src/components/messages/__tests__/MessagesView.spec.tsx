@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -127,6 +127,26 @@ describe('MessagesView', () => {
 
     expect(screen.getByText('Nothing found')).toBeInTheDocument();
     expect(renderThread).not.toHaveBeenCalled();
+  });
+
+  it('takes the thread mode from the host unless the caller sets it', () => {
+    const renderThread = jest.fn((_props: { flat?: boolean }) => null);
+    const { rerenderView } = renderView(
+      { renderThread },
+      createHost({ useFlatThread: () => false }).host,
+    );
+
+    expect(renderThread).toHaveBeenLastCalledWith(expect.objectContaining({ flat: false }));
+
+    rerenderView({ flatThread: true });
+    expect(renderThread).toHaveBeenLastCalledWith(expect.objectContaining({ flat: true }));
+  });
+
+  it('keeps the host hook order when the thread mode prop comes and goes', () => {
+    const host = createHost({ useFlatThread: () => useState(false)[0] }).host;
+    const { rerenderView } = renderView({ flatThread: true }, host);
+
+    expect(() => rerenderView({ flatThread: undefined })).not.toThrow();
   });
 
   it('keys the thread and the rail to the rendered tree, not the lagging conversation', () => {
