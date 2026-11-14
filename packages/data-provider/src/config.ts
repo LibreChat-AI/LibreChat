@@ -180,6 +180,7 @@ export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
  */
 export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnlyConfigReason>> = {
   persistence: 'operator',
+  configCache: 'operator',
   'telemetry.stackTraceLimit': 'operator',
   'telemetry.rum': 'operator',
   clientLimits: 'operator',
@@ -4706,6 +4707,10 @@ export const persistenceConfigSchema = z
     }
   });
 
+/** Local APP_CONFIG retention only; eviction changes cache hits, never resolved configuration. */
+export const DEFAULT_CONFIG_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_CONFIG_CACHE_MAX_ENTRIES = 1000;
+
 export const configSchema = z.object({
   persistence: persistenceConfigSchema,
   version: z.string(),
@@ -4719,6 +4724,23 @@ export const configSchema = z.object({
     })
     .optional(),
   cache: z.boolean().default(true),
+  configCache: z
+    .object({
+      maxBytes: z
+        .number()
+        .int()
+        .min(1)
+        .max(Number.MAX_SAFE_INTEGER)
+        .default(DEFAULT_CONFIG_CACHE_MAX_BYTES),
+      maxEntries: z
+        .number()
+        .int()
+        .min(1)
+        .max(Number.MAX_SAFE_INTEGER)
+        .default(DEFAULT_CONFIG_CACHE_MAX_ENTRIES),
+    })
+    .strict()
+    .optional(),
   projects: chatProjectsConfigSchema,
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
