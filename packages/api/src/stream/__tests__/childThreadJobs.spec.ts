@@ -1,7 +1,7 @@
+import { isChildThreadJob, isListedChatJob, isBackgroundChildJob } from '~/stream/metadata';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
-import { isChildThreadJob, isListedChatJob } from '~/stream/metadata';
 
 jest.spyOn(console, 'log').mockImplementation();
 
@@ -56,6 +56,28 @@ describe('child-thread jobs in the active chat list', () => {
   it('lists nothing when only a child thread is running', async () => {
     await manager.completeJob(chatId);
     await expect(manager.getActiveJobIdsForUser(userId)).resolves.toEqual([]);
+  });
+
+  it('leaves a running background child out of the active chat list', async () => {
+    const backgroundId = 'background-child-thread';
+    await manager.createJob(backgroundId, userId, backgroundId, {
+      initialMetadata: { subagentTaskId: 'task-1', subagentParentConversationId: chatId },
+    });
+
+    await expect(manager.getActiveJobIdsForUser(userId)).resolves.toEqual([chatId]);
+    const job = await manager.getJob(backgroundId);
+    expect(job?.metadata).toMatchObject({
+      subagentTaskId: 'task-1',
+      subagentParentConversationId: chatId,
+    });
+  });
+
+  it('tells a background child apart from an event-bound one', () => {
+    expect(isBackgroundChildJob({ subagentTaskId: 'task-1' })).toBe(true);
+    expect(isBackgroundChildJob({ subagentTaskId: '' })).toBe(false);
+    expect(isBackgroundChildJob({})).toBe(false);
+    expect(isChildThreadJob({ subagentTaskId: 'task-1' })).toBe(true);
+    expect(isListedChatJob({ subagentTaskId: 'task-1' })).toBe(false);
   });
 
   it('reads the child-thread marker from the event binding', () => {

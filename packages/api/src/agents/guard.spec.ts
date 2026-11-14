@@ -3,6 +3,7 @@ import request from 'supertest';
 import type { AllMethods, IConversation } from '@librechat/data-schemas';
 import {
   CHILD_THREAD_READ_ONLY_ERROR,
+  createBackgroundChildAbortGuard,
   createSubagentThreadTurnGuard,
   isSubagentThreadWriteBlocked,
 } from './guard';
@@ -352,5 +353,104 @@ describe('subagent child-thread write policy', () => {
     ).resolves.toBe(true);
 
     expect(getConvo).toHaveBeenCalledWith('owner', 'child-conversation');
+  });
+});
+
+describe('background child abort guard', () => {
+  const childJob = { metadata: { userId: 'owner', subagentTaskId: 'task-1' } };
+
+  function abortApp(
+    getJob: (streamId: string) => Promise<unknown>,
+    user: { id?: string; tenantId?: string } = { id: 'owner' },
+  ) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as express.Request & { user?: typeof user }).user = user;
+      next();
+    });
+    app.post(
+      '/abort',
+      createBackgroundChildAbortGuard({
+        getJob: getJob as Parameters<typeof createBackgroundChildAbortGuard>[0]['getJob'],
+      }),
+      (_req, res) => {
+        res.status(200).json({ reached: 'route' });
+      },
+    );
+    return app;
+  }
+
+  it("answers 409 for the owner's background child job without reaching the route", async () => {
+    const getJob = jest.fn(async () => childJob);
+
+    const response = await request(abortApp(getJob)).post('/abort').send({ streamId: 'thread-1' });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      code: 'CHILD_THREAD_READ_ONLY',
+      error: CHILD_THREAD_READ_ONLY_ERROR,
+    });
+    expect(getJob).toHaveBeenCalledWith('thread-1');
+  });
+
+  it.each([
+    ['conversationId', { conversationId: 'thread-1' }],
+    ['abortKey', { abortKey: 'thread-1:suffix' }],
+    ['the first concrete id after a placeholder', { streamId: 'new', conversationId: 'thread-1' }],
+  ])('reads the target from %s', async (_name, body) => {
+    const getJob = jest.fn(async () => childJob);
+
+    const response = await request(abortApp(getJob)).post('/abort').send(body);
+
+    expect(response.status).toBe(409);
+    expect(getJob).toHaveBeenCalledWith('thread-1');
+  });
+
+  it.each([
+    ['an ordinary chat job', { metadata: { userId: 'owner' } }],
+    ["another user's child job", { metadata: { userId: 'someone-else', subagentTaskId: 't' } }],
+    [
+      "another tenant's child job",
+      { metadata: { userId: 'owner', tenantId: 'tenant-b', subagentTaskId: 't' } },
+    ],
+    ['a job with no owner', { metadata: { subagentTaskId: 't' } }],
+    ['no job', undefined],
+  ])('falls through to the route for %s', async (_name, job) => {
+    const response = await request(abortApp(async () => job, { id: 'owner', tenantId: 'tenant-a' }))
+      .post('/abort')
+      .send({ streamId: 'thread-1' });
+
+    expect(response.body).toEqual({ reached: 'route' });
+  });
+
+  it('falls through without reading a job for a placeholder, a missing id or no user', async () => {
+    const getJob = jest.fn(async () => childJob);
+
+    for (const body of [{ streamId: 'new' }, {}, { streamId: 42 }, { streamId: 'x'.repeat(513) }]) {
+      const response = await request(abortApp(getJob)).post('/abort').send(body);
+      expect(response.body).toEqual({ reached: 'route' });
+    }
+    const anonymous = await request(abortApp(getJob, {})).post('/abort').send({ streamId: 't' });
+    expect(anonymous.body).toEqual({ reached: 'route' });
+    expect(getJob).not.toHaveBeenCalled();
+  });
+
+  it('fails closed, without reaching the route, when the job lookup fails', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation();
+    try {
+      const response = await request(
+        abortApp(async () => {
+          throw new Error('store down');
+        }),
+      )
+        .post('/abort')
+        .send({ streamId: 'thread-1' });
+
+      expect(response.status).toBe(500);
+      expect(response.body).not.toEqual({ reached: 'route' });
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

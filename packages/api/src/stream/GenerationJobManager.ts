@@ -3158,6 +3158,8 @@ class GenerationJobManagerClass {
         agentEventDetachedActionProducerRequired: jobData.agentEventDetachedActionProducerRequired,
         agentEventDetachedTerminalEvidence: jobData.agentEventDetachedTerminalEvidence,
         agentEventBindingId: jobData.agentEventBindingId,
+        subagentTaskId: jobData.subagentTaskId,
+        subagentParentConversationId: jobData.subagentParentConversationId,
         agentEventExpectedAction: jobData.agentEventExpectedAction,
         agentEventSuspension: jobData.agentEventSuspension,
         scheduleId: jobData.scheduleId,
@@ -8735,6 +8737,24 @@ class GenerationJobManagerClass {
     // terminal CAS. Re-read the exact segment only after terminal ownership is
     // committed, when no not-yet-started provider can begin anymore.
     await this.waitForProviderExecutionDrain(streamId, job.createdAt, job.providerExecutionId);
+  }
+
+  /**
+   * Keeps a silent run alive. A job's idle clock otherwise advances only with emitted chunks,
+   * so an owner whose run is working without output, such as a child waiting on a long tool
+   * call, calls this on its own heartbeat. Only the replica that owns the runtime may touch.
+   */
+  async touchJob(streamId: string, expectedCreatedAt: number): Promise<boolean> {
+    const runtime = this.runtimeState.get(streamId);
+    if (
+      !runtime ||
+      runtime.createdAt !== expectedCreatedAt ||
+      !this.isCurrentRuntime(streamId, runtime) ||
+      this.jobStore.touchJob == null
+    ) {
+      return false;
+    }
+    return this.jobStore.touchJob(streamId, expectedCreatedAt);
   }
 
   /**

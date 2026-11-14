@@ -183,6 +183,30 @@ describe('handleSteerRequest (real in-memory job manager)', () => {
     await expect(GenerationJobManager.steering.peek(streamId)).resolves.toEqual([]);
   });
 
+  it('409s for a background child job and queues nothing', async () => {
+    const streamId = 'steer-req-background-child';
+    await GenerationJobManager.createJob(streamId, user.id, streamId, {
+      initialMetadata: { subagentTaskId: 'task-1', subagentParentConversationId: 'parent' },
+    });
+
+    const result = await handleSteerRequest(user, { conversationId: streamId, text: 'x' });
+
+    expect(result).toEqual({ status: 409, body: { code: 'CHILD_THREAD_READ_ONLY' } });
+    await expect(GenerationJobManager.steering.peek(streamId)).resolves.toEqual([]);
+  });
+
+  it('403s for another user on a background child job before any other answer', async () => {
+    const streamId = 'steer-req-background-child-owner';
+    await GenerationJobManager.createJob(streamId, 'someone-else', streamId, {
+      initialMetadata: { subagentTaskId: 'task-1', subagentParentConversationId: 'parent' },
+    });
+
+    const result = await handleSteerRequest(user, { conversationId: streamId, text: 'x' });
+
+    expect(result.status).toBe(403);
+    expect(result.body.code).toBe('UNAUTHORIZED');
+  });
+
   it('409s while the run is paused for human review', async () => {
     const streamId = 'steer-req-paused';
     await GenerationJobManager.createJob(streamId, user.id);
