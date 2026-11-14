@@ -12,6 +12,7 @@ import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
 import { getSkillToolDefinition, isSkillToolAvailable, registerCodeExecutionTools } from './tools';
+import { ContextPartKeys, contributeContext } from './systemParts';
 import { createSkillContentDigest } from './compatibility';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { mapWithConcurrency } from '~/utils/promise';
@@ -815,9 +816,7 @@ export async function injectSkillCatalog(
             : `[injectSkillCatalog] skill "${s.name}" description reached the model truncated to ${reached} of ${s.description.length} chars`,
         );
       }
-      agent.additional_instructions = agent.additional_instructions
-        ? `${agent.additional_instructions}\n\n${catalog}`
-        : catalog;
+      contributeContext(agent, ContextPartKeys.skills, catalog);
     }
   }
 

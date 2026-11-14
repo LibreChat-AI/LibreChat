@@ -78,6 +78,24 @@ describe('validateConvoAccess', () => {
     expect(req.resolvedConversation).not.toHaveProperty('messages');
   });
 
+  it('reads the turn context anchor with the conversation only when stableContext is on', async () => {
+    await Conversation.updateOne(
+      { conversationId: CONVERSATION_ID },
+      { $set: { contextAnchor: [{ key: 'project', value: 'Anchored.' }] } },
+      { strict: false },
+    );
+    const off = createRequest(OWNER_ID, CONVERSATION_ID);
+    await validateConvoAccess(off, res, next);
+    expect(off.resolvedConversation).not.toHaveProperty('contextAnchor');
+
+    const on = createRequest(OWNER_ID, CONVERSATION_ID);
+    on.config = { endpoints: { agents: { promptCache: { stableContext: true } } } };
+    await validateConvoAccess(on, res, next);
+    expect(on.resolvedConversation.contextAnchor).toEqual([
+      expect.objectContaining({ key: 'project', value: 'Anchored.' }),
+    ]);
+  });
+
   it('stashes null when the conversation does not exist so later readers skip their own lookup', async () => {
     const req = createRequest(OWNER_ID, 'never-created');
 
