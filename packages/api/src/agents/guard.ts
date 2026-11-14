@@ -9,6 +9,30 @@ import { isAgentEventRetentionActive } from './eventRetention';
 export const CHILD_THREAD_READ_ONLY_ERROR =
   'This subagent thread is view-only. Continue it from its parent agent or create a separate chat.';
 
+export const CHILD_THREAD_READ_ONLY_CODE = 'CHILD_THREAD_READ_ONLY';
+
+export type BackgroundChildJobRefusal = {
+  status: 409;
+  body: { code: typeof CHILD_THREAD_READ_ONLY_CODE; error: string };
+};
+
+/**
+ * The answer for a chat route asked to end or steer a background child's job. The subagent
+ * task store owns that run: it stops and steers the child through its own control endpoint
+ * and writes the child's rows itself, so a chat route acting on the job would write a second,
+ * chat-shaped history into a view-only thread. Null for every other job.
+ */
+export function backgroundChildJobRefusal(
+  job: { metadata?: { subagentTaskId?: string } } | null | undefined,
+): BackgroundChildJobRefusal | null {
+  const taskId = job?.metadata?.subagentTaskId;
+  if (taskId == null || taskId === '') return null;
+  return {
+    status: 409,
+    body: { code: CHILD_THREAD_READ_ONLY_CODE, error: CHILD_THREAD_READ_ONLY_ERROR },
+  };
+}
+
 interface SubagentTurnBody {
   conversationId?: unknown;
   arg?: { conversationId?: unknown };

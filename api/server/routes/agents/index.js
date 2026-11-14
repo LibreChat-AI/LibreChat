@@ -3,6 +3,7 @@ const {
   reportLocatorTraversalFailure,
   isEnabled,
   GenerationJobManager,
+  backgroundChildJobRefusal,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
   announceStoppedReply,
@@ -727,6 +728,15 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
 
       if (hasTenantMismatch(job, req.user)) {
         return sendGenerationJson(res, 403, { error: 'Unauthorized' }, requestProtocolVersion);
+      }
+      const childRefusal = backgroundChildJobRefusal(job);
+      if (childRefusal) {
+        return sendGenerationJson(
+          res,
+          childRefusal.status,
+          childRefusal.body,
+          requestProtocolVersion,
+        );
       }
       const generationProtocolVersion = negotiateExistingGenerationProtocol(req, job);
       responseProtocolVersion = generationProtocolVersion;

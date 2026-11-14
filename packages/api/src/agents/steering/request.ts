@@ -21,6 +21,7 @@ import {
   STEER_ENQUEUE_RECEIPT_FULL,
 } from '~/stream/interfaces/IJobStore';
 import { toSteerFileRef, collectFileIds, buildOwnerFilter } from './refs';
+import { backgroundChildJobRefusal, CHILD_THREAD_READ_ONLY_CODE } from '~/agents/guard';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
 import { sanitizeFileForTransmit } from '../../utils/message';
 import { isSteeringSupported } from './runtime';
@@ -543,6 +544,11 @@ async function handleSteerRequestInternal(
   }
   if (expectedGeneration.value != null && job.createdAt !== expectedGeneration.value) {
     return { status: 409, body: { code: 'RUN_REPLACED' } };
+  }
+  /** The subagent task store runs a background child and injects guidance through its
+   *  own control path; a steer queued here would be accepted and never drained. */
+  if (backgroundChildJobRefusal(job) != null) {
+    return { status: 409, body: { code: CHILD_THREAD_READ_ONLY_CODE } };
   }
 
   /** A steer is model-bound instruction text for the ORIGINATING agent, so it
