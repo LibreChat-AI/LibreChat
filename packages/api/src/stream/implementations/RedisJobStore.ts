@@ -5859,6 +5859,8 @@ export class RedisJobStore implements IJobStoreV2 {
         ? JSON.parse(data.agentEventDetachedTerminalEvidence)
         : undefined,
       agentEventBindingId: data.agentEventBindingId || undefined,
+      subagentTaskId: data.subagentTaskId || undefined,
+      subagentParentConversationId: data.subagentParentConversationId || undefined,
       agentEventExpectedAction: data.agentEventExpectedAction
         ? JSON.parse(data.agentEventExpectedAction)
         : undefined,

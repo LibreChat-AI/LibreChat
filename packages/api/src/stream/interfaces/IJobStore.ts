@@ -368,6 +368,10 @@ export interface SerializableJobData {
   agentEventDetachedTerminalEvidence?: AgentEventDetachedTerminalEvidence;
   /** Trusted actor binding copied from the authenticated delivery envelope. */
   agentEventBindingId?: string;
+  /** The background subagent task this generation streams; set only by the task store. */
+  subagentTaskId?: string;
+  /** The conversation that dispatched that task. */
+  subagentParentConversationId?: string;
   agentEventExpectedAction?: import('~/agents/triggers/types').AgentTriggerExpectedAction;
   /** Versioned pointer to the canonical signed Conversation suspension. */
   agentEventSuspension?: import('~/agents/triggers/types').AgentEventSuspensionProjection;
@@ -526,6 +530,8 @@ export type JobMetadataPatch = Partial<
     | 'agentEventDetachedActionProducerRequired'
     | 'agentEventDetachedTerminalEvidence'
     | 'agentEventBindingId'
+    | 'subagentTaskId'
+    | 'subagentParentConversationId'
     | 'agentEventExpectedAction'
     | 'agentEventSuspension'
     | 'agentEventLegacyTurnToken'

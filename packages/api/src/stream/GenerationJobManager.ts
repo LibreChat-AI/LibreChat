@@ -3158,6 +3158,8 @@ class GenerationJobManagerClass {
         agentEventDetachedActionProducerRequired: jobData.agentEventDetachedActionProducerRequired,
         agentEventDetachedTerminalEvidence: jobData.agentEventDetachedTerminalEvidence,
         agentEventBindingId: jobData.agentEventBindingId,
+        subagentTaskId: jobData.subagentTaskId,
+        subagentParentConversationId: jobData.subagentParentConversationId,
         agentEventExpectedAction: jobData.agentEventExpectedAction,
         agentEventSuspension: jobData.agentEventSuspension,
         scheduleId: jobData.scheduleId,
