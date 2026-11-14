@@ -21,9 +21,9 @@ import {
   blockquote,
 } from './MarkdownComponents';
 import { MESSAGE_HIGHLIGHT, getLoadedRehypeModules } from './rehype';
+import { rehypeSafeBreaks, remarkApproxTilde } from '~/utils';
 import { reportBoundaryError } from '~/lib/rum/logs';
 import { CodeBlockProvider } from '~/Providers';
-import { remarkApproxTilde } from '~/utils';
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -67,8 +67,8 @@ class MarkdownErrorBoundary extends React.Component<
       /* A class component cannot wait on the loader; highlight only if it already arrived. */
       const loaded = getLoadedRehypeModules();
       const rehypePlugins: PluggableList = loaded
-        ? [[loaded.rehypeHighlight, MESSAGE_HIGHLIGHT]]
-        : [];
+        ? [[loaded.rehypeHighlight, MESSAGE_HIGHLIGHT], rehypeSafeBreaks]
+        : [rehypeSafeBreaks];
 
       return (
         <CodeBlockProvider>
