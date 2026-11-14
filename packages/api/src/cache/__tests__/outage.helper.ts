@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
+import type { ChildProcess } from 'node:child_process';
 import type { Socket } from 'node:net';
 
 export const sleep = (ms: number): Promise<void> =>
@@ -22,14 +23,17 @@ export async function waitUntil(predicate: () => boolean, timeout = 5000): Promi
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    throw new Error('Expected a TCP address');
+  try {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected a TCP address');
+    }
+    return address.port;
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return address.port;
 }
 
 /** Real Redis behind a TCP fault boundary, including the port advertised to Cluster clients. */
@@ -77,99 +81,140 @@ export async function startRedis(cluster: boolean) {
       }
     });
   });
-  proxy.listen(0, '127.0.0.1');
-  await once(proxy, 'listening');
-  const address = proxy.address();
-  if (!address || typeof address === 'string') {
-    throw new Error('Expected a TCP proxy address');
-  }
-  const dir = await mkdtemp(join(tmpdir(), 'redis-outage-'));
-  const child = spawn(
-    process.env.REDIS_SERVER_BIN ?? 'redis-server',
-    [
-      '--bind',
-      '127.0.0.1',
-      '--port',
-      String(port),
-      '--dir',
-      dir,
-      '--save',
-      '',
-      '--appendonly',
-      'no',
-      '--unixsocket',
-      '',
-      ...(cluster
-        ? [
-            '--cluster-enabled',
-            'yes',
-            '--cluster-config-file',
-            'nodes.conf',
-            '--cluster-port',
-            String(busPort),
-            '--cluster-announce-ip',
-            '127.0.0.1',
-            '--cluster-announce-port',
-            String(address.port),
-            '--cluster-announce-bus-port',
-            String(busPort),
-          ]
-        : []),
-    ],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
-  );
-  const admin = new Redis(port, '127.0.0.1', {
-    retryStrategy: () => 20,
-    enableReadyCheck: false,
-    maxRetriesPerRequest: 3,
-    keyPrefix: '',
-  });
-  admin.on('error', () => undefined);
-  await waitUntil(() => admin.status === 'ready');
-  if (cluster) {
-    await admin.cluster('ADDSLOTSRANGE', '0', '16383');
-    const deadline = Date.now() + 5000;
-    while (!((await admin.cluster('INFO')) as string).includes('cluster_state:ok')) {
-      if (Date.now() > deadline) {
-        throw new Error('Redis cluster did not become ready');
-      }
-      await sleep(50);
+  let dir: string | undefined;
+  let child: ChildProcess | undefined;
+  let childClosed: Promise<void> | undefined;
+  let admin: Redis | undefined;
+  let startupError: Error | undefined;
+  const close = async (): Promise<void> => {
+    admin?.disconnect();
+    for (const socket of sockets) {
+      socket.destroy();
     }
-  }
-  return {
-    url: `redis://127.0.0.1:${address.port}`,
-    admin,
-    dropReplies: () => {
-      dropReplies = true;
-    },
-    interruptNextSubscription: () => {
-      interruptSubscription = true;
-    },
-    get interruptedSubscriptions() {
-      return interruptedSubscriptions;
-    },
-    block: () => {
-      blocked = true;
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-    },
-    restore: () => {
-      blocked = false;
-      dropReplies = false;
-    },
-    close: async () => {
-      admin.disconnect();
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-      await new Promise<void>((resolve) => proxy.close(() => resolve()));
-      if (child.exitCode === null && child.signalCode === null) {
-        const exit = once(child, 'exit');
-        child.kill('SIGTERM');
-        await exit;
-      }
-      await rm(dir, { recursive: true });
-    },
+    const proxyClosed = new Promise<void>((resolve) => proxy.close(() => resolve()));
+    if (child?.pid && child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGTERM');
+    }
+    await Promise.all([proxyClosed, childClosed]);
+    if (dir) {
+      await rm(dir, { recursive: true, force: true });
+    }
   };
+
+  try {
+    proxy.listen(0, '127.0.0.1');
+    await once(proxy, 'listening');
+    const address = proxy.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected a TCP proxy address');
+    }
+    dir = await mkdtemp(join(tmpdir(), 'redis-outage-'));
+    const binary = process.env.REDIS_SERVER_BIN ?? 'redis-server';
+    child = spawn(
+      binary,
+      [
+        '--bind',
+        '127.0.0.1',
+        '--port',
+        String(port),
+        '--dir',
+        dir,
+        '--save',
+        '',
+        '--appendonly',
+        'no',
+        '--unixsocket',
+        '',
+        ...(cluster
+          ? [
+              '--cluster-enabled',
+              'yes',
+              '--cluster-config-file',
+              'nodes.conf',
+              '--cluster-port',
+              String(busPort),
+              '--cluster-announce-ip',
+              '127.0.0.1',
+              '--cluster-announce-port',
+              String(address.port),
+              '--cluster-announce-bus-port',
+              String(busPort),
+            ]
+          : []),
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let stderr = '';
+    child.stdout?.resume();
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString()).slice(-4096);
+    });
+    child.on('error', (error: Error) => {
+      startupError = new Error(`Unable to start Redis (${binary}): ${error.message}`, {
+        cause: error,
+      });
+    });
+    childClosed = new Promise<void>((resolve) => {
+      child!.once('close', (code, signal) => {
+        startupError ??= new Error(
+          `Redis exited before becoming ready (code=${code}, signal=${signal}): ${stderr.trim()}`,
+        );
+        resolve();
+      });
+    });
+    admin = new Redis(port, '127.0.0.1', {
+      retryStrategy: () => 20,
+      enableReadyCheck: false,
+      maxRetriesPerRequest: 3,
+      keyPrefix: '',
+    });
+    admin.on('error', () => undefined);
+    await waitUntil(() => {
+      if (startupError) {
+        throw startupError;
+      }
+      return admin?.status === 'ready';
+    });
+    if (cluster) {
+      await admin.cluster('ADDSLOTSRANGE', '0', '16383');
+      const deadline = Date.now() + 5000;
+      while (!((await admin.cluster('INFO')) as string).includes('cluster_state:ok')) {
+        if (startupError) {
+          throw startupError;
+        }
+        if (Date.now() > deadline) {
+          throw new Error('Redis cluster did not become ready');
+        }
+        await sleep(50);
+      }
+    }
+    return {
+      url: `redis://127.0.0.1:${address.port}`,
+      admin,
+      dropReplies: () => {
+        dropReplies = true;
+      },
+      interruptNextSubscription: () => {
+        interruptSubscription = true;
+      },
+      get interruptedSubscriptions() {
+        return interruptedSubscriptions;
+      },
+      block: () => {
+        blocked = true;
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+      },
+      restore: () => {
+        blocked = false;
+        dropReplies = false;
+      },
+      close,
+    };
+  } catch (error) {
+    const failure = startupError ?? error;
+    await close();
+    throw failure;
+  }
 }

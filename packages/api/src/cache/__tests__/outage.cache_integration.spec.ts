@@ -13,7 +13,7 @@ jest.mock('~/utils', () => ({
 }));
 
 describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => {
-  let server: Awaited<ReturnType<typeof startRedis>>;
+  let server: Awaited<ReturnType<typeof startRedis>> | undefined;
   let clients: RedisClientsModule | undefined;
   let subscriber: Redis | Cluster | undefined;
   let env: NodeJS.ProcessEnv;
@@ -76,8 +76,12 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
       }
     } finally {
       clients = undefined;
-      await server.close();
-      process.env = env;
+      try {
+        await server?.close();
+      } finally {
+        server = undefined;
+        process.env = env;
+      }
     }
   });
 
@@ -94,7 +98,7 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
     await io.publish('outage-events', 'before');
     await waitUntil(() => messages.includes('before'));
 
-    server.dropReplies();
+    server!.dropReplies();
     const pendingWrite = io.incr('outage-counter').then(
       () => 'resolved',
       () => 'rejected',
@@ -107,27 +111,27 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
     const deadline = Date.now() + 5000;
     while (!applied && Date.now() < deadline) {
       applied =
-        (await server.admin.get('::outage-counter')) === '1' &&
-        (await server.admin.get('keyv-outage-counter')) === '1';
+        (await server!.admin.get('::outage-counter')) === '1' &&
+        (await server!.admin.get('keyv-outage-counter')) === '1';
       if (!applied) await sleep(20);
     }
     expect(applied).toBe(true);
-    server.block();
+    server!.block();
     await waitUntil(() => !ready());
     await sleep(20_000);
     expect(ready()).toBe(false);
     await expect(pendingWrite).resolves.toBe('rejected');
     await expect(pendingKeyvWrite).resolves.toBe('rejected');
 
-    server.restore();
+    server!.restore();
     await waitUntil(ready);
     await waitUntil(() => subscriber?.status === 'ready');
     await expect(io.set('after-outage', 'ioredis')).resolves.toBe('OK');
     await expect(io.get('after-outage')).resolves.toBe('ioredis');
     await expect(keyv.set('keyv-after-outage', 'keyv')).resolves.toBe('OK');
     await expect(keyv.get('keyv-after-outage')).resolves.toBe('keyv');
-    await expect(server.admin.get('::outage-counter')).resolves.toBe('1');
-    await expect(server.admin.get('keyv-outage-counter')).resolves.toBe('1');
+    await expect(server!.admin.get('::outage-counter')).resolves.toBe('1');
+    await expect(server!.admin.get('keyv-outage-counter')).resolves.toBe('1');
     await io.publish('outage-events', 'after');
     await waitUntil(() => messages.includes('after'));
     expect(messages).toEqual(['before', 'after']);
@@ -159,17 +163,17 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
     await peer.emitChunk(streamId, { value: 'before' });
     await waitUntil(() => chunks.length === 1);
 
-    server.block();
+    server!.block();
     await waitUntil(() => !ready());
-    server.interruptNextSubscription();
-    server.restore();
-    await waitUntil(() => server.interruptedSubscriptions === 1);
+    server!.interruptNextSubscription();
+    server!.restore();
+    await waitUntil(() => server!.interruptedSubscriptions === 1);
     await waitUntil(
       () => ready() && subscriber?.status === 'ready' && readyEvents >= (cluster ? 2 : 3),
     );
 
     const isSubscribed = async (): Promise<boolean> => {
-      const counts = await server.admin.pubsub('NUMSUB', channel);
+      const counts = await server!.admin.pubsub('NUMSUB', channel);
       return Array.isArray(counts) && counts[1] === 1;
     };
     let subscribed = await isSubscribed();
@@ -194,10 +198,10 @@ describe.each([false, true])('Redis outage recovery (cluster=%s)', (cluster) => 
     subscriber = createIoRedisSubscriber(clients!.ioredisClient!, 'finite-subscriber');
     await waitUntil(() => subscriber?.status === 'ready');
     await subscriber.subscribe('finite-events');
-    server.block();
+    server!.block();
     await waitUntil(() => !ready());
     await sleep(2000);
-    server.restore();
+    server!.restore();
     await sleep(500);
     expect(ready()).toBe(false);
     expect(clients!.ioredisClient!.status).not.toBe('ready');
