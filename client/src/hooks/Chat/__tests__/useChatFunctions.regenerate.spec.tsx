@@ -312,7 +312,7 @@ function renderAsk(
     () =>
       useChatFunctions({
         isSubmitting: options.isSubmitting ?? false,
-        latestMessage: messages?.at(-1) ?? null,
+        getLatestMessage: () => messages?.at(-1) ?? null,
         conversation: immutableConversation,
         getMessages,
         setMessages,
@@ -1093,7 +1093,7 @@ describe('useChatFunctions regenerate', () => {
       const { result } = renderHook(() =>
         useChatFunctions({
           isSubmitting: false,
-          latestMessage: response,
+          getLatestMessage: () => response,
           conversation: conversation('conversation-1'),
           getMessages: () => [original, response],
           setMessages: jest.fn(),
@@ -1136,7 +1136,7 @@ describe('useChatFunctions regenerate', () => {
     const { result } = renderHook(() =>
       useChatFunctions({
         isSubmitting: false,
-        latestMessage: messages[5],
+        getLatestMessage: () => messages[5],
         conversation,
         getMessages: () => messages,
         setMessages,
@@ -1262,7 +1262,7 @@ describe('useChatFunctions ask attachments', () => {
     const { result } = renderHook(() =>
       useChatFunctions({
         isSubmitting: false,
-        latestMessage: null,
+        getLatestMessage: () => null,
         conversation: conversation(Constants.NEW_CONVO as string),
         getMessages: () => [],
         setMessages,
@@ -1303,7 +1303,7 @@ describe('useChatFunctions ask attachments', () => {
       () =>
         useChatFunctions({
           isSubmitting: false,
-          latestMessage: null,
+          getLatestMessage: () => null,
           conversation: conversation(Constants.NEW_CONVO as string),
           getMessages: () => [],
           setMessages,
@@ -1351,7 +1351,7 @@ describe('useChatFunctions ask attachments', () => {
     const { result } = renderHook(() =>
       useChatFunctions({
         isSubmitting: false,
-        latestMessage: null,
+        getLatestMessage: () => null,
         conversation: conversation(Constants.NEW_CONVO as string),
         getMessages: () => [],
         setMessages: jest.fn(),
@@ -1385,7 +1385,7 @@ describe('useChatFunctions ask attachments', () => {
     const { result } = renderHook(() =>
       useChatFunctions({
         isSubmitting: false,
-        latestMessage: null,
+        getLatestMessage: () => null,
         conversation: conversation(Constants.NEW_CONVO as string),
         getMessages: () => [],
         setMessages: jest.fn(),
@@ -1441,7 +1441,7 @@ describe('useChatFunctions ask attachments', () => {
     const { result } = renderHook(() =>
       useChatFunctions({
         isSubmitting: false,
-        latestMessage: null,
+        getLatestMessage: () => null,
         conversation: conversation(Constants.NEW_CONVO as string),
         getMessages: () => [],
         setMessages,
@@ -1546,7 +1546,7 @@ describe('useChatFunctions ask compaction and the composer', () => {
     const { result } = renderHook(() =>
       useChatFunctions({
         isSubmitting: false,
-        latestMessage: messages[1],
+        getLatestMessage: () => messages[1],
         conversation: conversation('conversation-1'),
         getMessages: () => messages,
         setMessages,

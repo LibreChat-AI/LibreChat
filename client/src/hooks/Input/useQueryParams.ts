@@ -45,6 +45,14 @@ import store from '~/store';
 
 const PROJECT_ID_SEARCH_PARAM = 'projectId';
 
+/** What the history observer reports while a submission waits for the history to settle. */
+const HISTORY_SETTLING_PROPS: Array<'status' | 'fetchStatus' | 'dataUpdatedAt'> = [
+  'status',
+  'fetchStatus',
+  'dataUpdatedAt',
+];
+const NO_PROPS: never[] = [];
+
 const injectAgentIntoAgentsMap = (
   queryClient: QueryClient,
   agent: AgentListResponse['data'][number],
@@ -88,6 +96,9 @@ export default function useQueryParams({
   const validSettingsRef = useRef<TPreset | null>(null);
   const settingsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const awaitingHistoryRef = useRef(false);
+  /** Mirrors the ref for the one thing that has to render on it: the history observer below
+   *  listens only while a submission is waiting. */
+  const [awaitingHistory, setAwaitingHistory] = useState(false);
   const requestIdRef = useRef(0);
   const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'preparing' | 'failed'>('idle');
 
@@ -273,6 +284,7 @@ export default function useQueryParams({
       requestIdRef.current += 1;
       attemptsRef.current = 0;
       awaitingHistoryRef.current = false;
+      setAwaitingHistory(false);
       processedRef.current = false;
       submissionHandledRef.current = false;
       pendingSubmitRef.current = false;
@@ -505,6 +517,7 @@ export default function useQueryParams({
     }
 
     awaitingHistoryRef.current = isHistoryPending();
+    setAwaitingHistory(awaitingHistoryRef.current);
     if (awaitingHistoryRef.current) {
       return;
     }
@@ -605,18 +618,25 @@ export default function useQueryParams({
   ]);
 
   /** Observes the history the composer sends from, so a retry runs after the
-   * render that derives the latest message from it, not during the cache write. */
+   * render that derives the latest message from it, not during the cache write.
+   * Only while a submission waits on it: every streamed delta is a write to this
+   * query, and an observer that always listened would render the composer for
+   * each one. */
   const historyKey = [QueryKeys.messages, conversation?.conversationId ?? ''];
   const history = useQuery<TMessage[]>(
     historyKey,
     async () => queryClient.getQueryData<TMessage[]>(historyKey) ?? [],
-    { enabled: false },
+    {
+      enabled: false,
+      notifyOnChangeProps: awaitingHistory ? HISTORY_SETTLING_PROPS : NO_PROPS,
+    },
   );
   useEffect(() => {
     if (awaitingHistoryRef.current && !isHistoryPending()) {
       processSubmission();
     }
   }, [
+    awaitingHistory,
     history.status,
     history.fetchStatus,
     history.dataUpdatedAt,

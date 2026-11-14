@@ -34,11 +34,11 @@ import {
   resolveCodeApprovalModes,
 } from '../../core';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../composer';
+import { useBranchTailSelect } from '../latest';
 import useQueuedTurnReceipts from './receipts';
 import { useSteerHost } from '../steer/host';
 import useDuringRunActions from './actions';
 import useQueuedRecovery from './recovery';
-import { useBranchTail } from '../latest';
 import useComposerTake from './composer';
 import useQueueEnqueue from './enqueue';
 import useSubmitSteer from './submit';
@@ -127,6 +127,16 @@ export interface SteeringControls {
   interruptAndSend: DuringRunActions['interruptAndSend'];
   interruptSteer: DuringRunActions['interruptSteer'];
 }
+
+/**
+ * What steering reads of the branch tail: where a queued turn anchors and whether the run is
+ * paused. Neither moves while a reply streams, so the projection keeps one identity through
+ * structural sharing and the composer sits out every delta.
+ */
+const pickLiveTail = (tail: TMessage | null): { parentMessageId?: string; paused: boolean } => ({
+  parentMessageId: selectLiveMessageState(tail).parentMessageId,
+  paused: hasLiveRunPause(tail),
+});
 
 /**
  * The composer's during-run brain: decides what Enter does while a run is
@@ -224,18 +234,18 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   const paneConversationId = conversation?.conversationId ?? null;
   const routeConversationId = host.useRouteConversationId();
   const unsavedQueryId = (index === 0 ? routeConversationId : undefined) ?? paneConversationId;
-  const latestMessage = useBranchTail(
+  const liveTail = useBranchTailSelect(
     paneConversationId,
     paneConversationId && (hasRealConvoId ? conversationId : unsavedQueryId),
+    pickLiveTail,
   );
-  const liveMessageState = useMemo(() => selectLiveMessageState(latestMessage), [latestMessage]);
   /** Both approval cards and `ask_user_question` suspend the current
    * generation while keeping its submission slot occupied. Answer mode hides
    * the ordinary during-run composer, but waiting-message controls still need
    * to know a live generation exists so they remain discoverable and disabled
    * instead of looking as though the action disappeared. */
   const pausedOnApproval =
-    enabled && isSubmitting ? answerModeActive || hasLiveRunPause(latestMessage) : false;
+    enabled && isSubmitting ? answerModeActive || liveTail?.paused === true : false;
   const canSteer = hasRealConvoId && canControlGeneration && !pausedOnApproval;
   const canSendQueuedNow = (!isSubmitting && !revealPending) || (duringRunActive && canSteer);
 
@@ -258,7 +268,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     conversationId,
     serverQueueEnabled,
     codeApprovalMode,
-    liveParentMessageId: liveMessageState?.parentMessageId,
+    liveParentMessageId: liveTail?.parentMessageId,
     pendingReveal,
     activeGenerationCreatedAt,
     applyQueuedTurnReceipts,

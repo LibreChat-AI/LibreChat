@@ -49,6 +49,8 @@ by side.
 | `FADE_PERF_REPLAY_PARTS` | Replays only the first N content parts.                              |
 | `FADE_PERF_GAP_MS`       | Pause after each replayed frame; 150 by default.                     |
 | `FADE_PERF_ANIMATIONS`   | `1` lists what is animating during the replay, and which properties. |
+| `FADE_PERF_WHY`          | `1` counts component renders across the replay, with their causes.   |
+| `FADE_PERF_WHY_LIMIT`    | How many components that count lists; 80 by default.                 |
 
 ## Reading the output
 
@@ -60,6 +62,19 @@ In the replay tables every column is the median over that kind's windows, in
 milliseconds of main-thread time per window, split by self time: a layout
 forced from script counts as layout. `worst` is the longest single task seen
 for the kind. Subtract the `idle` row to get what an event adds.
+
+The replay also times the turn's two ends as windows of their own: `send` is
+the keypress that publishes the turn, `created` the frame that confirms it, and
+`final` the frame that closes the run. Each of those changes every row's
+toolbar, so they are where a long thread shows its long tasks.
+
+`FADE_PERF_WHY=1` swaps the trace for a render count: for the send, the events
+and the final frame, each component that rendered, how many times, and why (a
+prop that changed identity, a state or store hook of its own, query data it
+selects, a context it reads, or only its parent). It runs on the production
+bundle and names components by the source map when the build wrote one, else
+by where the function sits in its chunk. A component that renders once per
+event with nothing to show for it is the thing to look for.
 
 Role locators are kept out of the measured windows: Playwright computes
 accessible names across the whole transcript on each poll, which a trace

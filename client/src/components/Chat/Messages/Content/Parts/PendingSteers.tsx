@@ -13,11 +13,18 @@ import {
   useSteerRecovery,
 } from '@librechat/chat/react';
 import type { SteerReceiptState } from '@librechat/chat/components';
+import { useLatestMessageSelect } from '~/hooks/Messages/useLatestMessage';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { cn, isLegacyDeliveryUncertain } from '~/utils';
 import { useCachedMessages } from '~/data-provider';
-import { useLatestMessage } from '~/hooks/Messages';
 import { useLocalize } from '~/hooks';
+
+/**
+ * Whether the tail of the branch on screen has paused its run. A streamed delta rarely changes
+ * the answer, so the projection holds its identity and this row does not render for each one.
+ */
+const pickTailPause = (tail: TMessage | null): { paused: boolean } | null =>
+  tail && { paused: hasLiveRunPause(tail) };
 
 /**
  * Steers that have not been confirmed by the server yet, rendered at the tail
@@ -53,7 +60,7 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
   const queryClient = useQueryClient();
   const cachedMessages =
     queryClient.getQueryData<TMessage[]>([QueryKeys.messages, conversationId]) ?? [];
-  const latestMessage = useLatestMessage(index, conversationId);
+  const tailPause = useLatestMessageSelect(index, pickTailPause, conversationId);
   const paneConversationId = usePaneConversationId(index);
   const { data: fallbackPaused } = useCachedMessages(conversationId, hasLiveRunPause);
   /* A one-message cache is necessarily the active branch. Until the
@@ -64,8 +71,8 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
      conversation, a pause on any branch keeps escalation off. */
   const resolvePaused = (): boolean => {
     if (cachedMessages.length > 1) {
-      if (paneConversationId === conversationId && latestMessage != null) {
-        return hasLiveRunPause(latestMessage);
+      if (paneConversationId === conversationId && tailPause != null) {
+        return tailPause.paused;
       }
       return cachedMessages.some((message) => hasLiveRunPause(message));
     }

@@ -356,6 +356,57 @@ const MessageIndicator = memo(function MessageIndicator({
   );
 });
 
+/**
+ * The ribs of the scrolling column, one per message. Memoized apart from the rail: the rail
+ * renders for every write to the conversation's messages, which while a reply streams is every
+ * delta, and building a label for each rib of a long thread on each of those was most of what
+ * the rail cost. The ribs change only when the entries or the reader's position among them do.
+ */
+const MessageRibs = memo(function MessageRibs({
+  entries,
+  visibleIds,
+  currentId,
+  hoveredId,
+  rovingId,
+  pendingId,
+  onSelect,
+}: {
+  entries: MessageEntry[];
+  visibleIds: Set<string>;
+  currentId: string | null;
+  hoveredId: string | null;
+  /** The one rib in the tab order. */
+  rovingId: string;
+  /** The reply still generating, which has no preview of its own yet. */
+  pendingId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const localize = useLocalize();
+  return entries.map((entry) => {
+    let labelKey: TranslationKeys = entry.isUser
+      ? 'com_ui_message_nav_go_to_user'
+      : 'com_ui_message_nav_go_to_assistant';
+    if (entry.isSystem) {
+      labelKey = 'com_ui_message_nav_go_to_system';
+    }
+    const label = localize(labelKey, {
+      0: previewTextFor(entry, localize, entry.id === pendingId).slice(0, 30),
+    });
+    return (
+      <MessageIndicator
+        key={entry.id}
+        entry={entry}
+        isInView={visibleIds.has(entry.id)}
+        isCurrent={currentId === entry.id}
+        isFocused={hoveredId === entry.id}
+        tabIndex={entry.id === rovingId ? 0 : -1}
+        onSelect={onSelect}
+        label={label}
+      />
+    );
+  });
+});
+
 /** Built on call: this module must not read `@librechat/client` while it loads. */
 const chevronButtonClasses = (): string =>
   cn(
@@ -1668,29 +1719,15 @@ function MessageNav({
         data-message-nav-column=""
         className="hide-scrollbar relative flex min-h-0 w-14 cursor-pointer touch-none flex-col items-stretch gap-1.5 overflow-y-auto select-none [&::-webkit-scrollbar]:hidden"
       >
-        {messageEntries.map((entry) => {
-          let labelKey: TranslationKeys = entry.isUser
-            ? 'com_ui_message_nav_go_to_user'
-            : 'com_ui_message_nav_go_to_assistant';
-          if (entry.isSystem) {
-            labelKey = 'com_ui_message_nav_go_to_system';
-          }
-          const label = localize(labelKey, {
-            0: previewTextFor(entry, localize, entry.id === pendingId).slice(0, 30),
-          });
-          return (
-            <MessageIndicator
-              key={entry.id}
-              entry={entry}
-              isInView={visibleIds.has(entry.id)}
-              isCurrent={currentId === entry.id}
-              isFocused={hoveredId === entry.id}
-              tabIndex={entry.id === rovingId ? 0 : -1}
-              onSelect={handleSelect}
-              label={label}
-            />
-          );
-        })}
+        <MessageRibs
+          entries={messageEntries}
+          visibleIds={visibleIds}
+          currentId={currentId}
+          hoveredId={hoveredId}
+          rovingId={rovingId}
+          pendingId={pendingId}
+          onSelect={handleSelect}
+        />
       </div>
 
       {endEntry && (

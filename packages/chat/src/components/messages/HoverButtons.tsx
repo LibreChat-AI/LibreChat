@@ -86,6 +86,28 @@ const HoverButton = memo(
 
 HoverButton.displayName = 'HoverButton';
 
+type ToolbarIcons = Record<'copy' | 'copied' | 'edit' | 'regenerate' | 'continue', ReactNode>;
+
+let toolbarIcons: ToolbarIcons | undefined;
+
+/**
+ * The toolbar's glyphs, one element each for every row. A send and its completion re-render the
+ * toolbar of every row in the thread, and an element built in that render is a new `icon` prop:
+ * `HoverButton`'s memo then fails for each button of each row, and the tooltip and button under
+ * it render again for nothing. Built on first use, since this module must not read
+ * `@librechat/client` while it loads.
+ */
+function getToolbarIcons(): ToolbarIcons {
+  toolbarIcons ??= {
+    copy: <MorphIcon icon={Copy} size="1.1875rem" />,
+    copied: <MorphIcon icon={Check} size="1.1875rem" />,
+    edit: <EditIcon size="19" />,
+    regenerate: <RegenerateIcon size="19" />,
+    continue: <ContinueIcon className="size-4.75" />,
+  };
+  return toolbarIcons;
+}
+
 const HoverButtons = ({
   index,
   isEditing,
@@ -172,21 +194,26 @@ const HoverButtons = ({
     [isActiveStreamingMessage, getCanCopy],
   );
 
+  /** Stable for the same reason the icons are: a handler made in render is a new `onClick`. */
+  const onEdit = useCallback(() => {
+    if (isEditing) {
+      return enterEdit(true);
+    }
+    enterEdit();
+  }, [isEditing, enterEdit]);
+  const handleCopy = useCallback(() => copyToClipboard(setIsCopied), [copyToClipboard]);
+  const onContinue = useCallback(
+    (e?: React.MouseEvent<HTMLButtonElement>) => e && handleContinue(e),
+    [handleContinue],
+  );
+
   if (!conversation) {
     return null;
   }
 
   const { isCreatedByUser, error } = message;
   const isSubagentThreadReadOnly = conversation.subagentThread != null;
-
-  const onEdit = () => {
-    if (isEditing) {
-      return enterEdit(true);
-    }
-    enterEdit();
-  };
-
-  const handleCopy = () => copyToClipboard(setIsCopied);
+  const icons = getToolbarIcons();
   const speechText = getSpeechText(message);
 
   return (
@@ -218,7 +245,7 @@ const HoverButtons = ({
           title={
             isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_to_clipboard')
           }
-          icon={<MorphIcon icon={isCopied ? Check : Copy} size="1.1875rem" />}
+          icon={isCopied ? icons.copied : icons.copy}
           isLast={isLast}
           disabled={!canCopy}
           reveal={!isLast || (isSubmitting && isCreatedByUser)}
@@ -232,7 +259,7 @@ const HoverButtons = ({
           id={`edit-${message.messageId}`}
           onClick={onEdit}
           title={localize('com_ui_edit')}
-          icon={<EditIcon size="19" />}
+          icon={icons.edit}
           isActive={isEditing}
           isLast={isLast}
         />
@@ -260,7 +287,7 @@ const HoverButtons = ({
         <HoverButton
           onClick={regenerate}
           title={localize('com_ui_regenerate')}
-          icon={<RegenerateIcon size="19" />}
+          icon={icons.regenerate}
           isLast={isLast}
           dataTestId={isLast ? 'regenerate-generation-button' : undefined}
         />
@@ -269,9 +296,9 @@ const HoverButtons = ({
       {/* Continue Button */}
       {!isSubagentThreadReadOnly && continueSupported && (
         <HoverButton
-          onClick={(e) => e && handleContinue(e)}
+          onClick={onContinue}
           title={localize('com_ui_continue')}
-          icon={<ContinueIcon className="size-4.75" />}
+          icon={icons.continue}
           isLast={isLast}
           dataTestId={isLast ? 'continue-generation-button' : undefined}
         />
