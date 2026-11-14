@@ -177,6 +177,9 @@ fileConfig:
           'text/markdown': 'provider'
 
 endpoints:
+  google:
+    tokenConfig:
+      gemini-2.5-flash: { prompt: 1.23, completion: 4.56, cacheRead: 0.09 }
   # Default capabilities plus run_in_background (off by default upstream) so the
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
@@ -473,6 +476,12 @@ modelSpecs:
       preset:
         endpoint: 'Mock Provider A'
         model: 'mock-model-a'
+
+    - name: 'e2e-native-google-billing'
+      label: 'Google Billing Fixture'
+      preset:
+        endpoint: google
+        model: gemini-2.5-flash
 
 # Short enough that a stalled fake RAG query fails the tool call well inside a test.
 timeouts:
