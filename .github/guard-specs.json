@@ -34,7 +34,8 @@
     "client/src/components/Chat/Input/Composer/__tests__/semanticTokens.spec.ts": [
       "client/src/components/Chat/",
       "client/src/hooks/Input/usePaletteEntries.tsx",
-      "packages/chat/src/components/composer/"
+      "packages/chat/src/components/composer/",
+      "packages/chat/src/components/messages/PendingSteers.tsx"
     ],
     "client/src/components/Chat/Input/__tests__/appearanceTokens.spec.ts": [
       "client/src/components/Chat/Input/",
