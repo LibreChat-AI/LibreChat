@@ -231,6 +231,7 @@ describe('ComposerPalette', () => {
 
       expect(screen.queryByRole('button', { name: 'com_ui_favorite' })).not.toBeInTheDocument();
       expect(toggleFavorite).not.toHaveBeenCalled();
+      expect(screen.getByText('com_ui_composer_palette_help_basic')).toBeInTheDocument();
     });
 
     it('draws the star and takes the shortcut where the host stores favorites', () => {
@@ -243,6 +244,7 @@ describe('ComposerPalette', () => {
 
       expect(screen.getByRole('button', { name: 'com_ui_favorite' })).toBeInTheDocument();
       expect(toggleFavorite).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('com_ui_composer_palette_help')).toBeInTheDocument();
     });
 
     it('keeps the cap and the Show all button where the host has the dialog', () => {
