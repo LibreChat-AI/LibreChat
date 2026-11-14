@@ -112,7 +112,10 @@ function accumulateResponseUsage(
 /**
  * Validate a request body
  */
-export function validateResponseRequest(body: unknown): RequestValidationResult {
+export function validateResponseRequest(
+  body: unknown,
+  options: { deferStoredToolOutputs?: boolean } = {},
+): RequestValidationResult {
   if (!body || typeof body !== 'object') {
     return { valid: false, error: 'Request body is required' };
   }
@@ -185,9 +188,17 @@ export function validateResponseRequest(body: unknown): RequestValidationResult 
   }
 
   if (Array.isArray(request.input)) {
+    if (
+      request.input.some((item) => item == null || typeof item !== 'object' || Array.isArray(item))
+    ) {
+      return { valid: false, error: 'input items must be objects' };
+    }
     const toolExchangeError = validateInputToolExchanges(
       request.input as InputItem[],
       declaredClientToolNames(request.tools),
+      options.deferStoredToolOutputs === true &&
+        typeof request.previous_response_id === 'string' &&
+        request.previous_response_id.startsWith('resp_'),
     );
     if (toolExchangeError !== undefined) {
       return { valid: false, error: toolExchangeError };
@@ -242,25 +253,24 @@ function validateFunctionCallOutput(output: unknown): string | undefined {
 /**
  * Validates the replayed tool exchanges in `input`.
  *
- * A turn is persisted as text, so `previous_response_id` does not carry a tool
- * exchange: replaying the `function_call` together with its
- * `function_call_output` is the only supported continuation. For a tool the
- * caller executes, both halves are therefore required, and an unpaired half is
- * the caller's error rather than something to hand to the provider — an
+ * The execution payload must contain both the `function_call` and its
+ * `function_call_output`. Stored continuation admission can defer orphan-output
+ * checks until the owned pending calls have been resolved; it then revalidates
+ * the normalized payload strictly. For a tool the caller executes, an unpaired
+ * half is the caller's error rather than something to hand to the provider — an
  * unanswered tool call reaches the model as a malformed conversation and comes
  * back as an opaque upstream failure.
  *
- * A call to a tool the *server* owns is not held to that rule. The server emits
- * a `function_call` for its own tools but no `function_call_output`, so the
- * usual continuation — appending the previous response's `output` to the next
- * request's `input` — carries calls the caller cannot answer and never could.
- * Those are dropped in {@link convertInputToMessages} instead of refused here.
+ * A call to a tool the server owns is not held to that rule: older responses
+ * may contain its call without a result the caller can supply. Such unmatched
+ * server calls are dropped in {@link convertInputToMessages} instead of refused.
  *
  * @returns An error message, or `undefined` when every exchange is well formed.
  */
 export function validateInputToolExchanges(
   input: InputItem[],
   clientToolNames: ReadonlySet<string> = new Set<string>(),
+  deferStoredOutputs = false,
 ): string | undefined {
   const callIds = new Set<string>();
   const clientCallIds = new Set<string>();
@@ -315,7 +325,7 @@ export function validateInputToolExchanges(
   }
 
   for (const callId of outputCallIds) {
-    if (!callIds.has(callId)) {
+    if (!callIds.has(callId) && !deferStoredOutputs) {
       return `function_call_output ${callId} has no matching function_call in input`;
     }
   }

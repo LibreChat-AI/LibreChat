@@ -3756,6 +3756,30 @@ function codeExecResponses({ filename, toolCallId, finalText, code }, toolNames)
 }
 
 function resolveResponses({ graph, messages, text, toolNames }) {
+  if (text.startsWith('E2E_STORED_CLIENT_TOOLS:')) {
+    const results = messages.filter((message) => messageType(message) === 'tool');
+    if (results.length) {
+      return {
+        responses: [
+          `E2E_CLIENT_RESULTS:${JSON.stringify(
+            results.map((message) => ({
+              id: message.tool_call_id,
+              content: message.content,
+            })),
+          )}`,
+        ],
+      };
+    }
+    const ids = text.includes(':parallel') ? ['call_a', 'call_b'] : ['call_a'];
+    return {
+      responses: [''],
+      toolCalls: ids.map((id) => ({
+        id,
+        name: 'client_lookup',
+        args: { key: id },
+      })),
+    };
+  }
   const history = subagentHistory.responsesForText(text, {
     getLatestUserText,
     messageType,

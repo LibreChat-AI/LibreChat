@@ -39,6 +39,7 @@ import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
 import { getRunDiscoveredTools, getRunMCPToolAliases } from '../run';
 import { markNativeCodeToolApprovalRequests } from '../hitl/byom';
 import { assertCodeExecutionApprovalBinding } from '../execution';
+import { storedToolContinuationReference } from './continuation';
 import { getBackgroundResponseWorkerAdmission } from './worker';
 import { getChatProjectContextKey } from '~/projects/context';
 import { buildPendingBackgroundResponse } from './background';
@@ -838,10 +839,17 @@ export function createResponseExecutionRuntime(
     hooks,
     async resolveContinuation(envelope: ResponsesRunEnvelope) {
       if (!admission)
-        return resolveResponseContinuation(
-          envelope.payload.previous_response_id,
-          envelope.principal.userId,
-          continuation,
+        return (
+          storedToolContinuationReference(
+            req,
+            envelope.principal,
+            envelope.payload.previous_response_id,
+          ) ??
+          resolveResponseContinuation(
+            envelope.payload.previous_response_id,
+            envelope.principal.userId,
+            continuation,
+          )
         );
       const record = admission.record;
       if (

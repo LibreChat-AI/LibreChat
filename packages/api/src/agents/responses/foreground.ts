@@ -20,6 +20,7 @@ import {
   ResponsePersistenceError,
   selectResponseHistory,
   projectResponseMessage,
+  pendingClientToolIds,
 } from './persistence';
 import { resolvePersistableCodeEnvironmentDecision } from '~/code/decision';
 import { getConversationWriteContext } from '~/conversations/save';
@@ -66,23 +67,51 @@ export type ForegroundHistoryMessage = InternalMessage &
     | 'isUserSubmitted'
     | 'userSubmittedPaths'
     | 'userSubmittedMessageFieldPaths'
-  >;
+  > & { responseClientToolNames?: string[] };
 
-function internalHistoryContent(message: ResponseHistoryMessage): InternalMessage['content'] {
-  if (!Array.isArray(message.content)) return message.text ?? '';
-  const content = message.content;
-  if (
-    !content.every(
-      (part): part is { type: string; text?: string; image_url?: unknown } =>
-        part != null &&
-        typeof part === 'object' &&
-        'type' in part &&
-        typeof part.type === 'string' &&
-        (!('text' in part) || typeof part.text === 'string'),
+function internalHistoryContent(
+  message: ResponseHistoryMessage,
+): Pick<ForegroundHistoryMessage, 'content' | 'responseClientToolNames'> {
+  if (!Array.isArray(message.content)) return { content: message.text ?? '' };
+  const content: Exclude<InternalMessage['content'], string> = [];
+  const pending = pendingClientToolIds(message);
+  const clientTools = new Set<string>();
+  for (const part of message.content) {
+    if (
+      part == null ||
+      typeof part !== 'object' ||
+      !('type' in part) ||
+      typeof part.type !== 'string' ||
+      ('text' in part && typeof part.text !== 'string')
     )
-  )
-    throw new ResponsePersistenceError();
-  return content;
+      throw new ResponsePersistenceError();
+    if (
+      part.type === ContentTypes.TOOL_CALL &&
+      'tool_call' in part &&
+      part.tool_call != null &&
+      typeof part.tool_call === 'object'
+    ) {
+      const call = part.tool_call;
+      if (
+        'id' in call &&
+        typeof call.id === 'string' &&
+        pending.has(call.id) &&
+        'name' in call &&
+        typeof call.name === 'string'
+      )
+        clientTools.add(call.name);
+      // The next request replays the completed pair. Do not also send its
+      // unanswered historical call to the model.
+      if (!('output' in call) || call.output == null) continue;
+    }
+    content.push(part);
+  }
+  return { content, ...(clientTools.size ? { responseClientToolNames: [...clientTools] } : {}) };
+}
+
+/** Historical availability permits replay only; it does not install executable tools. */
+export function responseClientToolNames(messages: ForegroundHistoryMessage[]): Set<string> {
+  return new Set(messages.flatMap((message) => message.responseClientToolNames ?? []));
 }
 
 function historyRole(message: ResponseHistoryMessage): InternalMessage['role'] {
@@ -110,7 +139,7 @@ export async function loadForegroundResponseHistory(
       throw new ResponsePersistenceError();
     return messages.map((message) => ({
       role: historyRole(message),
-      content: internalHistoryContent(message),
+      ...internalHistoryContent(message),
       messageId: message.messageId,
       isCreatedByUser: message.isCreatedByUser === true,
       ...(message.text !== undefined && { text: message.text }),
@@ -132,6 +161,7 @@ export interface StoredResponseOutputLayout {
   type: 'message' | 'function_call' | 'function_call_output';
   callId?: string;
   textParts?: number;
+  pendingClientTool?: boolean;
 }
 
 /** Keep accounting beside canonical message content, without a second copy of private output. */
@@ -149,6 +179,12 @@ export function projectStoredResponseMessage(
     };
   };
 } {
+  const clientTools = new Set(
+    (response.tools ?? []).flatMap((tool) => (tool.type === 'function' ? [tool.name] : [])),
+  );
+  const completedCalls = new Set(
+    response.output.flatMap((item) => (item.type === 'function_call_output' ? [item.call_id] : [])),
+  );
   return {
     ...projectResponseMessage(response),
     parentMessageId,
@@ -162,7 +198,14 @@ export function projectStoredResponseMessage(
               type: item.type,
               ...(item.type === 'message'
                 ? { textParts: item.content.filter((part) => part.type === 'output_text').length }
-                : { callId: item.call_id }),
+                : {
+                    callId: item.call_id,
+                    ...(item.type === 'function_call' &&
+                    clientTools.has(item.name) &&
+                    !completedCalls.has(item.call_id)
+                      ? { pendingClientTool: true }
+                      : {}),
+                  }),
             },
           ];
         }),

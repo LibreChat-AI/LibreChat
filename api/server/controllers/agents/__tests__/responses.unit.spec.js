@@ -215,6 +215,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').buildResponseInputChain(...args),
   loadForegroundResponseHistory: (...args) =>
     jest.requireActual('@librechat/api').loadForegroundResponseHistory(...args),
+  responseClientToolNames: (...args) =>
+    jest.requireActual('@librechat/api').responseClientToolNames(...args),
   projectStoredResponseMessage: (...args) =>
     jest.requireActual('@librechat/api').projectStoredResponseMessage(...args),
   requireResponseStorageWrite: (...args) =>
@@ -2430,6 +2432,12 @@ describe('createResponse controller', () => {
     it('rechecks conversation existence after enrollment before provider or persistence work', async () => {
       const api = require('@librechat/api');
       const models = require('~/models');
+      req.body = { ...req.body, store: true, previous_response_id: 'resp_abc' };
+      models.getMessage.mockResolvedValueOnce({
+        messageId: 'resp_abc',
+        conversationId: 'resp_abc',
+        isCreatedByUser: false,
+      });
       api.validateResponseRequest.mockReturnValueOnce({
         request: {
           model: 'agent-123',
@@ -2448,9 +2456,16 @@ describe('createResponse controller', () => {
         return mockExecution;
       });
 
-      await createResponse(req, res);
+      const next = jest.fn(() => createResponse(req, res));
+      await jest.requireActual('@librechat/api').createStoredToolContinuation({
+        getMessage: models.getMessage,
+        logger: require('@librechat/data-schemas').logger,
+      })(req, res, next);
 
+      expect(next).toHaveBeenCalledTimes(1);
       expect(mockEnrollAgentExecution).toHaveBeenCalledTimes(1);
+      expect(models.getMessage).toHaveBeenCalledTimes(1);
+      expect(models.getConvo).toHaveBeenCalledTimes(1);
       expect(api.initializeAgent).not.toHaveBeenCalled();
       expect(api.createRun).not.toHaveBeenCalled();
       expect(models.saveConvo).not.toHaveBeenCalled();
