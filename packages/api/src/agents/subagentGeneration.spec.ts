@@ -130,6 +130,7 @@ describe('child generation host', () => {
     let release: (() => void) | undefined;
     const written: ServerSentEvent[] = [];
     const slow: ChildGenerationManager = {
+      getJob: manager.getJob.bind(manager),
       createJob: manager.createJob.bind(manager),
       touchJob: manager.touchJob.bind(manager),
       setContentParts: manager.setContentParts.bind(manager),
@@ -260,16 +261,51 @@ describe('child generation host', () => {
     expect(persist).toHaveBeenCalledTimes(1);
   });
 
-  it('returns null when the thread already has a live job', async () => {
-    await manager.createJob(threadId, 'owner', threadId);
+  it.each([
+    ['a chat', {}],
+    ['an event-bound child', { agentEventBindingId: 'binding-1' }],
+  ])('never replaces a live job that belongs to %s', async (_name, initialMetadata) => {
+    const live = await manager.createJob(threadId, 'owner', threadId, { initialMetadata });
 
     await expect(createChildGenerationHost(manager).open(input())).resolves.toBeNull();
-    expect((await manager.getJob(threadId))?.metadata.subagentTaskId).toBeUndefined();
+
+    const job = await manager.getJob(threadId);
+    expect(job).toMatchObject({ status: 'running', createdAt: live.createdAt });
+    expect(job?.metadata.subagentTaskId).toBeUndefined();
+  });
+
+  it('replaces a background child job its owner left behind, and tells its readers', async () => {
+    const abandoned = await createChildGenerationHost(manager).open({
+      ...input(),
+      taskId: 'crashed-task',
+    });
+    let notice: ServerSentEvent | undefined;
+    await manager.subscribe(
+      threadId,
+      () => undefined,
+      (event) => {
+        notice = event;
+      },
+    );
+
+    const generation = await createChildGenerationHost(manager).open(input());
+
+    expect(generation).not.toBeNull();
+    expect(generation?.createdAt).toBeGreaterThan(abandoned?.createdAt ?? 0);
+    const job = await manager.getJob(threadId);
+    expect(job).toMatchObject({ status: 'running', createdAt: generation?.createdAt });
+    expect(job?.metadata.subagentTaskId).toBe(taskId);
+    expect(notice).toMatchObject({
+      final: true,
+      reconcile: true,
+      reconcileReason: 'generation_replaced',
+    });
   });
 
   it('keeps folding content after a write fails, and still persists', async () => {
     let fail = false;
     const flaky: ChildGenerationManager = {
+      getJob: manager.getJob.bind(manager),
       createJob: manager.createJob.bind(manager),
       touchJob: manager.touchJob.bind(manager),
       setContentParts: manager.setContentParts.bind(manager),
@@ -308,6 +344,7 @@ describe('child generation host', () => {
 
   it('keeps a detached stream alive on touch until it is settled', async () => {
     const flaky: ChildGenerationManager = {
+      getJob: manager.getJob.bind(manager),
       createJob: manager.createJob.bind(manager),
       touchJob: jest.fn(manager.touchJob.bind(manager)),
       setContentParts: manager.setContentParts.bind(manager),
@@ -345,6 +382,7 @@ describe('child generation host', () => {
 
   it('does not hold the result behind a terminal claim that never answers', async () => {
     const stalled: ChildGenerationManager = {
+      getJob: manager.getJob.bind(manager),
       createJob: manager.createJob.bind(manager),
       touchJob: manager.touchJob.bind(manager),
       setContentParts: manager.setContentParts.bind(manager),
@@ -366,6 +404,7 @@ describe('child generation host', () => {
   it('gives up on a stream that takes too long to open, and ends the job if it arrives', async () => {
     let createLate!: () => Promise<void>;
     const slow: ChildGenerationManager = {
+      getJob: manager.getJob.bind(manager),
       touchJob: manager.touchJob.bind(manager),
       setContentParts: manager.setContentParts.bind(manager),
       emitChunk: manager.emitChunk.bind(manager),

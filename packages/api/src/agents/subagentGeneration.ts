@@ -48,6 +48,7 @@ function ownCopy(frame: SubagentContentFrame): SubagentContentFrame | null {
 /** The part of the generation job manager a child's stream needs. */
 export type ChildGenerationManager = Pick<
   GenerationJobManagerClass,
+  | 'getJob'
   | 'createJob'
   | 'emitChunk'
   | 'touchJob'
@@ -97,7 +98,10 @@ export interface ChildGeneration {
 }
 
 export interface ChildGenerationHost {
-  /** Null when the stream could not be opened; the child runs without one. */
+  /**
+   * Opens the stream for a run whose caller holds the child thread's lease. Null when the
+   * stream could not be opened; the child runs without one.
+   */
   open(input: ChildGenerationInput): Promise<ChildGeneration | null>;
 }
 
@@ -398,10 +402,20 @@ export function createChildGenerationHost(
         text: input.userMessage.text,
       };
       try {
-        /** A live job on this thread is someone else's: an event-bound child paused for
-         *  approval keeps its job without holding the thread lease. It is never replaced. */
+        /**
+         * The caller holds the thread's lease, so a background child's job still marked live
+         * here has lost its owner: a crashed replica, or a settlement that could not reach the
+         * store. It is replaced, and its readers are told to refetch. Any other live job is
+         * someone else's and is never replaced: an event-bound child paused for approval keeps
+         * its job without holding the lease.
+         */
+        const abandoned = await within(
+          manager.getJob(input.threadId).then((job) => job?.metadata.subagentTaskId != null),
+          options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS,
+        );
+        if (abandoned === EXPIRED) throw new Error('child_stream_open_timeout');
         const creating = manager.createJob(input.threadId, input.userId, input.threadId, {
-          rejectActivePredecessor: true,
+          ...(abandoned ? {} : { rejectActivePredecessor: true }),
           initialMetadata: {
             conversationId: input.threadId,
             endpoint: EModelEndpoint.agents,

@@ -147,6 +147,7 @@ describe('a background child read from another replica', () => {
     let written = 0;
     let onWritten: (() => void) | undefined;
     const counted: ChildGenerationManager = {
+      getJob: owner.getJob.bind(owner),
       createJob: owner.createJob.bind(owner),
       touchJob: owner.touchJob.bind(owner),
       setContentParts: owner.setContentParts.bind(owner),
