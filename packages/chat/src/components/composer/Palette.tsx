@@ -55,6 +55,20 @@ const VIEWPORT_PADDING = 12;
 /** Length of the landing screen's lift transition; see `ChatView`'s
  *  `duration-200` on the same element. */
 const LIFT_MS = 200;
+const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set([
+  'text',
+  'search',
+  'email',
+  'url',
+  'tel',
+  'password',
+  'number',
+]);
+/** A control that takes typing, as opposed to a button or link that merely holds focus. */
+const isTextField = (element: Element | null): boolean =>
+  element instanceof HTMLTextAreaElement ||
+  (element instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(element.type)) ||
+  (element instanceof HTMLElement && element.isContentEditable);
 /** Hidden until the row is hovered or focused, wherever no pointer is coarse.
  *  Any touchscreen keeps them visible, including a 2-in-1's beside its hovering
  *  trackpad. `transition-none` overrides IconButton's color fade so the reveal
@@ -798,6 +812,11 @@ function Palette({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
+      /* Arrows pick an IME candidate and Enter commits it; Safari reports the committing Enter
+         only through keyCode 229. None of them is a palette command. */
+      if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        return;
+      }
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         step(1);
@@ -1284,6 +1303,16 @@ function Palette({
                    upload shortcut must not inherit this session's input. */
                 touchInteractionRef.current = null;
                 if (touch) {
+                  return;
+                }
+                /* A press on another text field closed the palette, and that field has the caret
+                   now: the other pane's composer, a search box. Taking focus back would pull it
+                   out from under the click. */
+                const focused = document.activeElement;
+                if (
+                  isTextField(focused) &&
+                  popover.getState().contentElement?.contains(focused) !== true
+                ) {
                   return;
                 }
                 anchorRef.current

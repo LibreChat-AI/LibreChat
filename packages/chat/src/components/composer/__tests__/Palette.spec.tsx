@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { PaletteEntryView, PaletteSources } from '../../../react/palette';
 import type { ComposerHost } from '../../../react/input';
 import type { ComposerPaletteProps } from '../Palette';
@@ -133,6 +133,55 @@ describe('ComposerPalette', () => {
       expect(screen.queryByTestId('composer-palette-search')).not.toBeInTheDocument(),
     );
     await waitFor(() => expect(document.activeElement).toBe(field));
+  });
+
+  it('leaves focus on the text field a press outside moved it to', async () => {
+    const { field } = renderPalette();
+    const other = document.createElement('input');
+    document.body.appendChild(other);
+    await screen.findByTestId('composer-palette-search');
+
+    /* The press as a browser orders it: the popover is dismissed on the press itself, and the
+       field takes focus afterwards. */
+    const pointer = new MouseEvent('pointerdown', { bubbles: true, cancelable: true });
+    Object.defineProperty(pointer, 'pointerType', { value: 'mouse' });
+    act(() => {
+      other.dispatchEvent(pointer);
+    });
+    fireEvent.mouseDown(other);
+    act(() => other.focus());
+    fireEvent.click(other);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('composer-palette-search')).not.toBeInTheDocument(),
+    );
+    await act(() => new Promise((resolve) => window.requestAnimationFrame(resolve)));
+    expect(document.activeElement).toBe(other);
+    expect(document.activeElement).not.toBe(field);
+  });
+
+  it('leaves the keys of an IME composition to the composition', () => {
+    const picked = jest.fn();
+    renderPalette({
+      canAttach: false,
+      entries: [
+        entry({ key: 'a', label: 'Alpha' }),
+        entry({ key: 'b', label: 'Bravo', onSelect: picked }),
+      ],
+    });
+    const input = screen.getByTestId('composer-palette-search');
+    const active = () => document.querySelector('[aria-selected="true"]');
+
+    fireEvent.keyDown(input, { key: 'ArrowDown', isComposing: true });
+    expect(active()).toHaveTextContent('Alpha');
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    expect(picked).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(active()).toHaveTextContent('Bravo');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(picked).toHaveBeenCalledTimes(1);
   });
 
   describe('without a windowed list', () => {
