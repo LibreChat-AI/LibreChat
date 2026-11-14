@@ -227,7 +227,11 @@ describe('ComposerPalette', () => {
         { canAttach: false },
         hostWith({ ...sources, favorites: false, toggleFavorite }),
       );
-      fireEvent.keyDown(screen.getByTestId('composer-palette-search'), { key: 'd', ctrlKey: true });
+      const search = screen.getByTestId('composer-palette-search');
+      /* fireEvent returns false when the key was cancelled, which would swallow the browser's own
+         bookmark shortcut. */
+      expect(fireEvent.keyDown(search, { key: 'd', ctrlKey: true })).toBe(true);
+      expect(fireEvent.keyDown(search, { key: 'd', metaKey: true })).toBe(true);
 
       expect(screen.queryByRole('button', { name: 'com_ui_favorite' })).not.toBeInTheDocument();
       expect(toggleFavorite).not.toHaveBeenCalled();
@@ -240,10 +244,12 @@ describe('ComposerPalette', () => {
         { canAttach: false },
         hostWith({ ...sources, favorites: true, toggleFavorite }),
       );
-      fireEvent.keyDown(screen.getByTestId('composer-palette-search'), { key: 'd', ctrlKey: true });
+      const search = screen.getByTestId('composer-palette-search');
+      expect(fireEvent.keyDown(search, { key: 'd', ctrlKey: true })).toBe(false);
+      expect(fireEvent.keyDown(search, { key: 'd', metaKey: true })).toBe(false);
 
       expect(screen.getByRole('button', { name: 'com_ui_favorite' })).toBeInTheDocument();
-      expect(toggleFavorite).toHaveBeenCalledTimes(1);
+      expect(toggleFavorite).toHaveBeenCalledTimes(2);
       expect(screen.getByText('com_ui_composer_palette_help')).toBeInTheDocument();
     });
 

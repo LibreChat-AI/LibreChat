@@ -834,7 +834,7 @@ function Palette({
         activate(activeIndex);
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') {
+      if (favoritesEnabled && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') {
         e.preventDefault();
         toggleFavoriteAt(activeIndex);
         return;
@@ -847,7 +847,7 @@ function Palette({
         popover.hide();
       }
     },
-    [step, activate, activeIndex, toggleFavoriteAt, search, popover],
+    [step, activate, activeIndex, favoritesEnabled, toggleFavoriteAt, search, popover],
   );
 
   /* Keyed by the row's own identity rather than by the index the list hands
