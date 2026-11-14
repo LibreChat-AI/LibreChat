@@ -24,7 +24,7 @@ function PackageList({ messages, slots }: ListProps) {
 function loadModule(): typeof import('../load') {
   let module: typeof import('../load') | undefined;
   jest.isolateModules(() => {
-    module = jest.requireActual('../load');
+    module = jest.requireActual<typeof import('../load')>('../load');
   });
   return module as typeof import('../load');
 }
