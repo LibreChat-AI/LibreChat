@@ -172,7 +172,7 @@ jobs:
         id: postgres
         if: github.event_name != 'issue_comment'
         run: |
-          if git diff --name-only "$QUALITY_BASE...$QUALITY_HEAD" | grep -Eq '^(packages/data-schemas/src/(postgres/|types/favorite|methods/(favorite|index))|packages/api/src/app/(persistence|postgres|authentication)|packages/data-provider/src/config|api/(models/index|server/(index|experimental))|config/(postgres|delete-user)|packages/data-schemas/jest.postgres|package-lock.json|.github/workflows/change-quality.yml)'; then
+          if git diff --name-only "$QUALITY_BASE...$QUALITY_HEAD" | grep -Eq '^(packages/data-schemas/src/(postgres/|types/(favorite|session|token|passkey|refreshTokenBridge|openidRefreshFlight)|methods/(favorite|index|session|token|passkey|refreshTokenBridge|openidRefreshFlight|mcpServer|mcpAuthority|toolApprovalGrant))|packages/api/src/(app/(persistence|postgres|authentication)|auth/|oauth/tokens|mcp/oauth/tokens|images/session)|packages/data-provider/src/(config|persistence.spec)|api/(models/index|server/(index|experimental|services/AuthService|controllers/mcp))|config/(__tests__/)?(postgres|delete-user|create-user|invite-user|reset-password)|packages/data-schemas/jest.postgres|package-lock.json|.github/workflows/change-quality.yml)'; then
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           fi
 
@@ -211,7 +211,7 @@ jobs:
       - run: npx --no-install jest src/app/persistence.spec.ts src/app/postgres.spec.ts src/app/authentication.spec.ts src/app/authenticationCommand.spec.ts src/auth/authentication.integration.spec.ts src/favorites/handlers.spec.ts src/user/erasure.spec.ts --coverage=false --runInBand
         working-directory: packages/api
       - run: npx --no-install jest --config config/jest.config.js --runTestsByPath config/__tests__/delete-user.recovery.spec.js --coverage=false --runInBand
-      - run: npx --no-install jest --config api/jest.config.js --roots ../packages/api/src/auth --runTestsByPath packages/api/src/auth/logout.integration.spec.ts --coverage=false --runInBand
+      - run: npx --no-install jest --config api/jest.config.js --runTestsByPath api/server/services/AuthService.postgres.spec.js --coverage=false --runInBand
 
   reports:
     name: ${{ matrix.task.check == 'risk' && 'Change risk' || format('Mutation testing {0}/4', matrix.task.shard) }} (${{ matrix.workspace }})

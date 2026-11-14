@@ -57,7 +57,7 @@ beforeEach(() => {
   mockMethods.initializeAuthentication.mockResolvedValue(undefined);
   mockMethods.closeAuthentication.mockResolvedValue(undefined);
   mockMethods.updateUser.mockResolvedValue({ _id: 'mongo-user-id' });
-  mockMethods.deletePasskeysByUser.mockResolvedValue(2);
+  mockMethods.deletePasskeysByUser.mockResolvedValue({ acknowledged: true, deletedCount: 2 });
   mockMethods.deleteAllUserSessions.mockResolvedValue({ deletedCount: 1 });
   mockMethods.awaitAuthUserDocEviction.mockResolvedValue(undefined);
   mockDisconnect.mockResolvedValue(undefined);

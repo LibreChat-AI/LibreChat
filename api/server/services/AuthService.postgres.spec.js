@@ -1,23 +1,22 @@
-import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
-import {
+const mongoose = require('mongoose');
+const { MongoMemoryServer } = require('mongodb-memory-server');
+const {
   createModels,
   importAuthentication,
   migratePostgresAuthentication,
   createMongoAuthenticationMethods,
   createPostgresAuthenticationBackend,
-} from '@librechat/data-schemas';
-import type { AuthenticationMethods, PostgresDatabase } from '@librechat/data-schemas';
-import { createPostgresTestDatabase } from '../../../data-schemas/src/postgres/postgres.helper';
-import { logoutUser } from '../../../../api/server/services/AuthService';
-import { createAuthenticationRuntime } from '../app/authentication';
+} = require('@librechat/data-schemas');
+const {
+  createPostgresTestDatabase,
+} = require('../../../packages/data-schemas/src/postgres/postgres.helper');
+const { createAuthenticationRuntime } = require('@librechat/api');
+const { logoutUser } = require('./AuthService');
 
-let mockSelected: AuthenticationMethods;
+let mockSelected;
 jest.mock('~/models', () => ({
-  findSession: (query: Parameters<AuthenticationMethods['findSession']>[0]) =>
-    mockSelected.findSession(query),
-  deleteSession: (query: Parameters<AuthenticationMethods['deleteSession']>[0]) =>
-    mockSelected.deleteSession(query),
+  findSession: (query) => mockSelected.findSession(query),
+  deleteSession: (query) => mockSelected.deleteSession(query),
 }));
 jest.mock('~/strategies/validators', () => ({ registerSchema: {} }));
 jest.mock('~/server/services/Config', () => ({ getAppConfig: () => undefined }));
@@ -25,9 +24,9 @@ jest.mock('~/server/utils', () => ({ sendEmail: () => undefined }));
 
 const postgres = process.env.PG_TEST_URL ? describe : describe.skip;
 postgres('logout service with PostgreSQL sessions and a Mongo ObjectId user', () => {
-  let mongo: MongoMemoryServer;
-  let db: PostgresDatabase;
-  let runtime: ReturnType<typeof createAuthenticationRuntime>;
+  let mongo;
+  let db;
+  let runtime;
   const previousSecret = process.env.JWT_REFRESH_SECRET;
 
   beforeAll(async () => {
