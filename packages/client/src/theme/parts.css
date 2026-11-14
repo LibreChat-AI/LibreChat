@@ -184,7 +184,9 @@
   line-height: 1.6;
   /* `.prose` sets max-width: 65ch; fill the message column instead. */
   max-width: none;
+}
 
+/**
  * Composer palette list. The thumb stays drawn and the gutter stays reserved, and only when the
  * list overflows, so a short list keeps its full width. Standard properties only: styling
  * `::-webkit-scrollbar` opts an element out of overlay scrollbars.
@@ -239,5 +241,59 @@
   .animate-composer-palette-row,
   .animate-composer-palette-row-out {
     animation-duration: 1ms;
+  }
+}
+
+/**
+ * Composer popovers. Its own curve rather than `animate-popover`'s: these are
+ * large surfaces, and the shared 150ms ease-in-out reads as a snap at that size.
+ * Decelerating hard from the first frame and then settling is what makes a panel
+ * feel placed rather than switched on. Leaving is quicker than entering, so
+ * dismissing never feels like waiting.
+ */
+.animate-composer-popover {
+  /* Ariakit resolves this to the edge nearest the trigger, so the panel grows
+     out of the button whether it opens below or flips above. `animate-popover`
+     pins the origin to the top and translates down, which is right one way
+     round and backwards the other. */
+  transform-origin: var(--popover-transform-origin, top center);
+  opacity: 0;
+  transform: scale(0.94);
+  transition:
+    opacity 190ms cubic-bezier(0.32, 0.72, 0, 1),
+    transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform, opacity;
+}
+/* Resizable anchored panels share the composer entrance and exit clock. */
+.animate-composer-popover-resize {
+  transition-property: opacity, transform, width, max-height;
+}
+.animate-composer-popover[data-enter] {
+  opacity: 1;
+  transform: scale(1);
+}
+.animate-composer-popover[data-leave] {
+  transition-duration: 120ms, 140ms;
+}
+
+/** Trigger glyphs that turn as their popover opens, on the same curve. */
+.animate-composer-icon {
+  /* Tailwind v4's rotate-* utilities set `rotate`, not `transform`. */
+  transition-property: transform, rotate;
+  transition-duration: 260ms;
+  transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-composer-popover,
+  .animate-composer-popover[data-enter],
+  .animate-composer-popover[data-leave],
+  .animate-composer-icon {
+    transition-duration: 1ms;
+  }
+  .animate-composer-popover,
+  .animate-composer-popover[data-enter],
+  .animate-composer-popover[data-leave] {
+    transform: none;
   }
 }

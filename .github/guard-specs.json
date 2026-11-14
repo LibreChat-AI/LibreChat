@@ -84,7 +84,11 @@
     ],
     "packages/client/src/components/__tests__/radixLayers.spec.ts": ["package-lock.json"],
     "packages/client/src/theme/defaults.spec.ts": ["packages/client/src/theme/defaults.css"],
-    "packages/client/src/theme/parts.spec.ts": ["packages/client/src/theme/parts.css"],
+    "packages/client/src/theme/parts.spec.ts": [
+      "client/src/style.css",
+      "packages/client/src/theme/parts.css",
+      "packages/chat/src/components/composer/Palette.tsx"
+    ],
     "packages/client/src/theme/primitives.spec.ts": [
       "eslint-suppressions.json",
       "packages/client/src/components/"

@@ -2120,40 +2120,8 @@ html[data-input-modality='keyboard']
   transform: scale(1) translate(0, 0);
 }
 
-/**
- * Composer popovers. Its own curve rather than `animate-popover`'s: these are
- * large surfaces, and the shared 150ms ease-in-out reads as a snap at that size.
- * Decelerating hard from the first frame and then settling is what makes a panel
- * feel placed rather than switched on. Leaving is quicker than entering, so
- * dismissing never feels like waiting.
- */
-.animate-composer-popover {
-  /* Ariakit resolves this to the edge nearest the trigger, so the panel grows
-     out of the button whether it opens below or flips above. `animate-popover`
-     pins the origin to the top and translates down, which is right one way
-     round and backwards the other. */
-  transform-origin: var(--popover-transform-origin, top center);
-  opacity: 0;
-  transform: scale(0.94);
-  transition:
-    opacity 190ms cubic-bezier(0.32, 0.72, 0, 1),
-    transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
-  will-change: transform, opacity;
-}
-/* Resizable anchored panels share the composer entrance and exit clock. */
-.animate-composer-popover-resize {
-  transition-property: opacity, transform, width, max-height;
-}
-.animate-composer-popover[data-enter] {
-  opacity: 1;
-  transform: scale(1);
-}
-.animate-composer-popover[data-leave] {
-  transition-duration: 120ms, 140ms;
-}
-
 /* The Thinking pill's label slot resizes with the popover it opens: same
-   duration and curve as the opacity leg above. */
+   duration and curve as the opacity leg of `.animate-composer-popover`. */
 .composer-slot-resize {
   transition: width 190ms cubic-bezier(0.32, 0.72, 0, 1);
 }
@@ -2248,19 +2216,7 @@ html[data-input-modality='keyboard']
   animation: composer-label-in-down 280ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-/** Trigger glyphs that turn as their popover opens, on the same curve. */
-.animate-composer-icon {
-  /* Tailwind v4's rotate-* utilities set `rotate`, not `transform`. */
-  transition-property: transform, rotate;
-  transition-duration: 260ms;
-  transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .animate-composer-popover,
-  .animate-composer-popover[data-enter],
-  .animate-composer-popover[data-leave],
-  .animate-composer-icon,
   .composer-slot-resize,
   .composer-effort-glide,
   .composer-effort-thumb,
@@ -2272,11 +2228,6 @@ html[data-input-modality='keyboard']
   .composer-label-in-up,
   .composer-label-in-down {
     animation-duration: 1ms;
-  }
-  .animate-composer-popover,
-  .animate-composer-popover[data-enter],
-  .animate-composer-popover[data-leave] {
-    transform: none;
   }
 }
 
