@@ -1,7 +1,7 @@
+import { isChildThreadJob, isListedChatJob, isBackgroundChildJob } from '~/stream/metadata';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
-import { isChildThreadJob, isListedChatJob, isBackgroundChildJob } from '~/stream/metadata';
 
 jest.spyOn(console, 'log').mockImplementation();
 

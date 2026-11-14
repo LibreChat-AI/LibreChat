@@ -72,12 +72,12 @@ import {
 } from './subagentTaskRouting';
 import { boundSubagentActivityUpdate, SubagentActivityStream } from './subagentActivity';
 import { createSubagentAttemptKey, createSubagentThreadId } from './subagentThreadIds';
+import { SubagentContentJournal, subagentContentFrame } from './subagentContent';
 import { describeErrorCauses, describeStackFrames } from './failures/subagent';
 import { ActivityRecorder, activityTreeFromProjection } from './digest';
 import { runWithDetachedSubagentUsage } from './subagentTaskContext';
 import { SUBAGENT_COMPLETION_DELIVERY } from './subagentDelivery';
 import { createConcurrencyLimiter } from '~/utils/promise';
-import { SubagentContentJournal, subagentContentFrame } from './subagentContent';
 import { retainMCPRequestContext } from '~/mcp/request';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { InMemoryEventTransport } from '~/stream';

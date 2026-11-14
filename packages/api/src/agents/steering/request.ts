@@ -20,8 +20,8 @@ import {
   STEER_ENQUEUE_QUEUE_FULL,
   STEER_ENQUEUE_RECEIPT_FULL,
 } from '~/stream/interfaces/IJobStore';
-import { toSteerFileRef, collectFileIds, buildOwnerFilter } from './refs';
 import { backgroundChildJobRefusal, CHILD_THREAD_READ_ONLY_CODE } from '~/agents/guard';
+import { toSteerFileRef, collectFileIds, buildOwnerFilter } from './refs';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
 import { sanitizeFileForTransmit } from '../../utils/message';
 import { isSteeringSupported } from './runtime';
