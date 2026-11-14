@@ -27,7 +27,6 @@ export const GLOSSARY = [
   'Docker',
   'Helm',
   'Railway',
-  'Zeabur',
   'Sealos',
   'API',
   'URL',
