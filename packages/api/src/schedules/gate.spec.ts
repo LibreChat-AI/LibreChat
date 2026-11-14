@@ -33,6 +33,7 @@ function makeService(base: Cfg, merged: Cfg = base) {
     initializeNullBalance: jest.fn(async () => null),
     preflightMCP: jest.fn().mockResolvedValue([]),
     resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
+    getAgentBillingMode: jest.fn(async () => 'user' as const),
     getChatProject: jest.fn(async () => ({ _id: 'proj-1' })),
     isUserDeleting: jest.fn(async () => false),
     enqueueAgentTrigger: jest.fn(async () => undefined),
@@ -169,6 +170,7 @@ describe('v1 experimental gate, asserted at real entry points', () => {
         initializeNullBalance: jest.fn(),
         preflightMCP: jest.fn().mockResolvedValue([]),
         resolveAgentFireAccess: jest.fn(),
+        getAgentBillingMode: jest.fn(),
         getChatProject: jest.fn(),
       } as unknown as SchedulesServiceDeps),
     ).toThrow(/isUserDeleting/);
