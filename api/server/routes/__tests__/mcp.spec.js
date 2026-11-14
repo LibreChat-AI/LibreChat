@@ -5001,6 +5001,62 @@ describe('MCP Routes', () => {
         expect(response.body.message).toMatch(/Insufficient permissions to configure OBO/);
         expect(mockRegistryInstance.inspectServerUpdate).not.toHaveBeenCalled();
       });
+
+      describe('custom headers on an OBO server without CONFIGURE_OBO', () => {
+        const storedObo = {
+          ...oboConfig,
+          obo: { scopes: 'api://mcp-server-id/Mcp.Tools.ReadWrite' },
+          headers: { 'X-Tenant': 'tenant-1' },
+        };
+
+        beforeEach(() => {
+          db.getRoleByName.mockResolvedValue({
+            name: 'USER',
+            permissions: {
+              MCP_SERVERS: { USE: true, CREATE: true, CONFIGURE_OBO: false },
+            },
+          });
+          mockRegistryInstance.getServerConfig.mockResolvedValue(storedObo);
+          mockRegistryInstance.inspectServerUpdate.mockResolvedValue(storedObo);
+          mockRegistryInstance.commitServerUpdate.mockResolvedValue(undefined);
+        });
+
+        it('allows a rename when the stored header is re-sent blank (kept)', async () => {
+          const response = await request(app)
+            .patch('/api/mcp/servers/obo-server')
+            .send({
+              config: {
+                ...oboConfig,
+                title: 'Renamed',
+                obo: storedObo.obo,
+                headers: { 'X-Tenant': '' },
+              },
+            });
+
+          expect(response.status).toBe(200);
+          expect(mockRegistryInstance.commitServerUpdate).toHaveBeenCalled();
+        });
+
+        it('rejects changing a header value', async () => {
+          const response = await request(app)
+            .patch('/api/mcp/servers/obo-server')
+            .send({
+              config: { ...oboConfig, obo: storedObo.obo, headers: { 'X-Tenant': 'other' } },
+            });
+
+          expect(response.status).toBe(403);
+          expect(mockRegistryInstance.inspectServerUpdate).not.toHaveBeenCalled();
+        });
+
+        it('rejects removing a header', async () => {
+          const response = await request(app)
+            .patch('/api/mcp/servers/obo-server')
+            .send({ config: { ...oboConfig, obo: storedObo.obo } });
+
+          expect(response.status).toBe(403);
+          expect(mockRegistryInstance.inspectServerUpdate).not.toHaveBeenCalled();
+        });
+      });
     });
 
     it('should fail closed when config-managed names cannot be resolved', async () => {

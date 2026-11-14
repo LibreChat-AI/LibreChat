@@ -45,6 +45,13 @@ export interface AuthConfig {
   server_id?: string;
 }
 
+/** Custom header row; `stored` marks a header loaded from the server, whose value is kept when blank. */
+export interface HeaderRow {
+  name: string;
+  value: string;
+  stored: boolean;
+}
+
 // Form data interface
 export interface MCPServerFormData {
   title: string;
@@ -53,7 +60,25 @@ export interface MCPServerFormData {
   url: string;
   type: 'streamable-http' | 'sse';
   auth: AuthConfig;
+  headers: HeaderRow[];
   trust: boolean;
+}
+
+/**
+ * Builds `config.headers` from the form rows. A blank value on a stored header is sent as an empty
+ * string, which the server reads as "keep the stored value"; a blank value on a new row is
+ * dropped. Removed rows are absent, so the server deletes them.
+ */
+export function buildHeadersConfig(rows: HeaderRow[] = []): Record<string, string> | undefined {
+  const headers: Record<string, string> = {};
+  for (const row of rows) {
+    const name = row.name.trim();
+    if (!name || (!row.value && !row.stored)) {
+      continue;
+    }
+    headers[name] = row.value;
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
 interface UseMCPServerFormProps {
@@ -115,6 +140,7 @@ export function useMCPServerForm({ server, onSuccess, onClose }: UseMCPServerFor
           obo_scopes: 'obo' in server.config && server.config.obo ? server.config.obo.scopes : '',
           server_id: server.serverName,
         },
+        headers: (server.headerNames ?? []).map((name) => ({ name, value: '', stored: true })),
         trust: true, // Pre-checked for existing servers
       };
     }
@@ -139,6 +165,7 @@ export function useMCPServerForm({ server, onSuccess, onClose }: UseMCPServerFor
         oauth_token_exchange_method: undefined,
         obo_scopes: '',
       },
+      headers: [],
       trust: false,
     };
   }, [server]);
@@ -192,6 +219,11 @@ export function useMCPServerForm({ server, onSuccess, onClose }: UseMCPServerFor
         ...(formData.description && { description: formData.description }),
         ...(formData.icon && { iconPath: formData.icon }),
       };
+
+      const headers = buildHeadersConfig(formData.headers);
+      if (headers) {
+        config.headers = headers;
+      }
 
       // Add OAuth configuration
       const oauthConfig = getOAuthConfig(formData.auth);
