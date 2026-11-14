@@ -524,6 +524,8 @@ export interface InjectSkillCatalogResult {
    * doesn't resolve.
    */
   activeSkillNames: Set<string>;
+  /** Names of the skills in the model's catalog, which the model can load with the `skill` tool. */
+  catalogSkillNames: string[];
 }
 
 /**
@@ -727,6 +729,7 @@ export async function injectSkillCatalog(
       toolNames: [],
       activeSkillIds: [],
       activeSkillNames: new Set<string>(),
+      catalogSkillNames: [],
     };
   }
 
@@ -898,6 +901,7 @@ export async function injectSkillCatalog(
     toolNames,
     activeSkillIds: executableSkills.map((s) => s._id),
     activeSkillNames: new Set<string>(executableSkills.map((s) => s.name)),
+    catalogSkillNames: Array.from(invocableNames),
   };
 }
 

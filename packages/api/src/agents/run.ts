@@ -541,6 +541,8 @@ type RunAgent = Omit<Agent, 'tools'> & {
   }>;
   /** Member-scoped always-apply skills resolved during agent initialization. */
   alwaysApplySkillPrimes?: ResolvedAlwaysApplySkill[];
+  /** Names of the skills in the agent's model catalog. */
+  catalogSkillNames?: string[];
   /** Source subagent spawning configuration (enabled / allowSelf / agent_ids). */
   subagents?: AgentSubagentsConfig;
 };
@@ -2812,6 +2814,9 @@ export async function createRun({
       maxToolResultChars: agent.maxToolResultChars,
       initialSessions: buildAgentInitialToolSessions(agent, initialSessions),
       codeSessionKey: agent.codeSessionKey,
+      ...(agent.catalogSkillNames?.length
+        ? { langfuse: { skillsAvailable: agent.catalogSkillNames.map((name) => ({ name })) } }
+        : {}),
     };
     if (runFilesActive && runFiles != null && (isSubagent || agent.subagents?.enabled === true)) {
       graphTools = [...(graphTools ?? []), ...createRunFileTools(runFiles, agent.id, signal)];
