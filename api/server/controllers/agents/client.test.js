@@ -5731,6 +5731,45 @@ describe('AgentClient - titleConvo', () => {
       client.maxContextTokens = 4096;
     });
 
+    it('bounds admission and fallback estimates without changing stored history counts', async () => {
+      const getReqData = jest.fn();
+      const messages = [
+        {
+          messageId: 'old-user',
+          parentMessageId: Constants.NO_PARENT,
+          text: 'Old prompt',
+          isCreatedByUser: true,
+          tokenCount: 1000000,
+        },
+        {
+          messageId: 'old-answer',
+          parentMessageId: 'old-user',
+          text: 'Old answer',
+          isCreatedByUser: false,
+          tokenCount: 1277600,
+        },
+        {
+          messageId: 'new-user',
+          parentMessageId: 'old-answer',
+          text: 'Continue',
+          isCreatedByUser: true,
+          tokenCount: 30,
+        },
+      ];
+      client.maxContextTokens = 250000;
+
+      const built = await client.buildMessages(messages, 'new-user', {}, { getReqData });
+
+      expect(built.promptTokens).toBe(250000);
+      expect(getReqData).toHaveBeenCalledWith({ promptTokens: 250000 });
+      expect(built.tokenCountMap).toEqual({
+        'old-user': 1000000,
+        'old-answer': 1277600,
+        'new-user': 30,
+      });
+      expect(built.prompt).toHaveLength(3);
+    });
+
     it('loads RAG, memory, attachment, and MCP context without serial waits', async () => {
       const ragContext = deferred();
       const memoryContext = deferred();
