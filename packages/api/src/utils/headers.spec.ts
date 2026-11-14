@@ -257,6 +257,23 @@ describe('resolveConfigHeaders', () => {
     });
   });
 
+  it('normalizes parallel identity across provider carriers without rewriting managed Google auth', () => {
+    const template = { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' };
+    const credential = 'Bearer {{LIBRECHAT_AGENT_ID}}';
+    const llmConfig = {
+      configuration: { defaultHeaders: { ...template } },
+      clientOptions: { defaultHeaders: { ...template } },
+      customHeaders: mergeGoogleHeaders(template, { Authorization: credential }),
+    };
+
+    resolveConfigHeaders({ llmConfig, agent: { id: 'agent_root____12' } });
+
+    expect(llmConfig.configuration.defaultHeaders['X-Agent-Id']).toBe('agent_root');
+    expect(llmConfig.clientOptions.defaultHeaders['X-Agent-Id']).toBe('agent_root');
+    expect(llmConfig.customHeaders?.['X-Agent-Id']).toBe('agent_root');
+    expect(llmConfig.customHeaders?.Authorization).toBe(credential);
+  });
+
   it('leaves configs without header maps untouched', () => {
     const llmConfig = { model: 'gpt-4o', configuration: {} } as unknown as RunLLMConfig;
     expect(() => resolveConfigHeaders({ llmConfig, user, body })).not.toThrow();
