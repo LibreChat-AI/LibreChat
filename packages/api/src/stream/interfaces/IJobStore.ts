@@ -1078,6 +1078,9 @@ export interface IJobStore {
   clearTerminalHostAction?(streamId: string, expectedCreatedAt?: number): Promise<void>;
   cleanup(): Promise<number>;
   recordActivity?(streamId: string, expectedCreatedAt?: number): void;
+  /** Refreshes a running generation's idle clock and storage lifetimes without an event.
+   * False when the epoch is not current or the job is not running. */
+  touchJob?(streamId: string, expectedCreatedAt: number): Promise<boolean>;
   getJobCount(): Promise<number>;
   getJobCountByStatus(status: JobStatus): Promise<number>;
   destroy(): Promise<void>;

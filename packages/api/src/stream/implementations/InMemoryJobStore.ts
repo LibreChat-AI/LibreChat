@@ -1135,6 +1135,15 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
   }
 
+  async touchJob(streamId: string, expectedCreatedAt: number): Promise<boolean> {
+    const job = this.jobs.get(streamId);
+    if (job?.createdAt !== expectedCreatedAt || job.status !== 'running') {
+      return false;
+    }
+    this.recordActivity(streamId, expectedCreatedAt);
+    return true;
+  }
+
   async hasJob(streamId: string): Promise<boolean> {
     return this.jobs.has(streamId);
   }
