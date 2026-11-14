@@ -111,6 +111,30 @@ const RECOGNIZED_PROVIDERS = new Set([
   'bedrock',
 ]);
 
+/**
+ * Providers known NOT to speak the OpenAI message format. Used only to reject a caller's
+ * `openAICompatible` claim that contradicts a provider we already know about.
+ */
+const NON_OPENAI_PROVIDERS = new Set(['google', 'anthropic', 'bedrock', 'ollama']);
+
+/**
+ * Whether a provider should get structured content formatting for MCP tool results.
+ *
+ * A custom endpoint reaches this function under its own name ("scaleway", "together",
+ * "perplexity", ...) and never as "openai", so the allowlist cannot recognize it and the
+ * result silently degrades to `parseAsString` - images included, which is how an MCP image
+ * tool ends up returning base64 as chat text on a custom endpoint.
+ *
+ * The provider string alone cannot answer this, so the caller declares it via
+ * `openAICompatible`. Unset keeps the conservative allowlist behaviour.
+ */
+function isRecognizedProviderName(provider: t.Provider, openAICompatible?: boolean): boolean {
+  if (RECOGNIZED_PROVIDERS.has(provider)) {
+    return true;
+  }
+  return openAICompatible === true && !NON_OPENAI_PROVIDERS.has(provider);
+}
+
 const imageFormatters: Record<string, undefined | t.ImageFormatter> = {
   // google: (item) => ({
   //   type: 'image',
@@ -336,10 +360,16 @@ export function formatToolContent(
     serverBinding?: string;
     toolArgs?: Record<string, unknown>;
     mcpApps?: TMCPAppsPolicy;
+    /**
+     * Set when the caller knows this provider speaks the OpenAI message format - notably a
+     * custom endpoint, which is OpenAI-compatible by definition but arrives under its own
+     * name. Without it, unknown providers keep the conservative string fallback.
+     */
+    openAICompatible?: boolean;
   },
 ): t.FormattedContentResult {
   const mcpApps = metadata?.mcpApps ?? resolveMCPAppsPolicy();
-  const isRecognizedProvider = RECOGNIZED_PROVIDERS.has(provider);
+  const isRecognizedProvider = isRecognizedProviderName(provider, metadata?.openAICompatible);
   // Truthiness, not != null: an empty resourceUri/serverName/toolName cannot address an app, and a
   // single predicate keeps this gate and the synthesis below from drifting apart.
   const hasSyntheticApp = !!(
