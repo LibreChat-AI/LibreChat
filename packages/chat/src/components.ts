@@ -105,6 +105,8 @@ export { default as MessageRow } from './components/messages/MessageRow';
 export { default as WakeupRow } from './components/messages/WakeupRow';
 export { default as PendingTurn } from './components/messages/PendingTurn';
 export type { PendingTurnProps } from './components/messages/PendingTurn';
+export { default as PendingSteers } from './components/messages/PendingSteers';
+export type { PendingSteersProps } from './components/messages/PendingSteers';
 export { default as MessageTimestamp } from './components/messages/MessageTimestamp';
 export { getMessageRowWidthClass } from './components/messages/width';
 export { isValidTimestamp, getMessageTimestamp } from './components/messages/time';

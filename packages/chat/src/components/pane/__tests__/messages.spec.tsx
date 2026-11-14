@@ -37,9 +37,8 @@ function MessageNav({ conversationId }: { conversationId?: string | null }) {
   return <div data-testid="message-nav" data-conversation-id={conversationId} />;
 }
 
-/** The app's slots, the way ChatView fills them, with each piece reduced to what it was handed. */
+/** A host's optional replacements. Flat thread mode comes from the messages host. */
 const slots = (): ChatScreenMessagesSlots => ({
-  flatThread: mockFlatThread,
   renderPendingTurn: () => null,
   renderPendingSteers: ({ conversationId, fullWidth }) => (
     <div
@@ -114,6 +113,7 @@ const host: MessagesHost = {
   }),
   renderMessageIcon: () => null,
   useMaximizeChatSpace: () => false,
+  useFlatThread: () => mockFlatThread,
   useHideSelectedAuthor: () => false,
   useAgentsMap: () => undefined,
   renderMessageBody: ({ message }) => <div data-testid="row">{message.messageId}</div>,

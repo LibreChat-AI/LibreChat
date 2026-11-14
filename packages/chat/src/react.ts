@@ -78,7 +78,7 @@ export {
   abortScrollFamily,
   launchedConversationFamily,
 } from './react/generation';
-export { SteerHostProvider, useSteerHost } from './react/steer/host';
+export { SteerHostProvider, useOptionalSteerHost, useSteerHost } from './react/steer/host';
 export type {
   SteerHost,
   SteerPane,

@@ -12,7 +12,9 @@ import type { MessagePartsHost } from '../../../../react/host';
 import type { MessagesViewProps } from '../../MessagesView';
 import { createMessagesHost } from '../../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../../react/messages/host';
+import { createSteerHost } from '../../../../__fixtures__/steerHost';
 import { MessagePartsHostProvider } from '../../../../react/host';
+import { SteerHostProvider } from '../../../../react/steer/host';
 import { ChatContext } from '../../../../react/chat/context';
 import { initEnglish } from '../../../../__fixtures__/i18n';
 import { resolveThreadRows } from '../../../../core/thread';
@@ -115,18 +117,20 @@ function renderThread(
   const view = (next: Partial<MessagesViewProps>) => (
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>
-          <MessagesHostProvider host={host}>
-            <MessagePartsHostProvider host={partsHost}>
-              <MessagesView
-                showScrollButton={false}
-                maximizeChatSpace={false}
-                {...props}
-                {...next}
-              />
-            </MessagePartsHostProvider>
-          </MessagesHostProvider>
-        </ChatContext.Provider>
+        <SteerHostProvider host={createSteerHost()}>
+          <ChatContext.Provider value={contract}>
+            <MessagesHostProvider host={host}>
+              <MessagePartsHostProvider host={partsHost}>
+                <MessagesView
+                  showScrollButton={false}
+                  maximizeChatSpace={false}
+                  {...props}
+                  {...next}
+                />
+              </MessagePartsHostProvider>
+            </MessagesHostProvider>
+          </ChatContext.Provider>
+        </SteerHostProvider>
       </QueryClientProvider>
     </Provider>
   );

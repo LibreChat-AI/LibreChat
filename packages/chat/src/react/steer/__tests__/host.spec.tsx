@@ -4,7 +4,7 @@
 import { renderHook } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { SteerHost } from '../host';
-import { SteerHostProvider, useSteerHost } from '../host';
+import { SteerHostProvider, useOptionalSteerHost, useSteerHost } from '../host';
 
 const createHost = (label: string): SteerHost => ({
   useSteerMessage: () => () => undefined,
@@ -56,5 +56,19 @@ describe('useSteerHost', () => {
       'The steer hooks need a SteerHostProvider above them.',
     );
     consoleError.mockRestore();
+  });
+
+  it('returns null from the optional lookup when no provider is mounted', () => {
+    const { result } = renderHook(() => useOptionalSteerHost());
+    expect(result.current).toBeNull();
+  });
+
+  it('returns the provided host from the optional lookup', () => {
+    const host = createHost('provided');
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <SteerHostProvider host={host}>{children}</SteerHostProvider>
+    );
+    const { result } = renderHook(() => useOptionalSteerHost(), { wrapper });
+    expect(result.current).toBe(host);
   });
 });
