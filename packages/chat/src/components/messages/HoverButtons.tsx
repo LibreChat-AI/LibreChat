@@ -66,6 +66,9 @@ type HoverButtonProps = {
  * row re-styles that row's entire subtree; flipped on every row at once that is the whole
  * transcript, 90 ms of it in a 250-message thread against 9 ms for the class alone. Mounting and
  * unmounting the button invalidates the same way.
+ *
+ * `data-concealed` is for the app's narrow-screen stylesheet, which forces every toolbar button
+ * visible from outside any cascade layer and would otherwise outrank both utilities.
  */
 const CONCEALED = 'max-lg:hidden lg:invisible';
 
@@ -93,6 +96,7 @@ const HoverButton = memo(
             data-hover-active={isActive || undefined}
             aria-label={title}
             aria-hidden={concealed || undefined}
+            data-concealed={concealed || undefined}
             onClick={concealed ? undefined : onClick}
             disabled={disabled}
             className={concealed ? CONCEALED : undefined}

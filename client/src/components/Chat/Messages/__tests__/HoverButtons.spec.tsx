@@ -643,6 +643,8 @@ describe('HoverButtons submission state', () => {
     act(() => setSubmitting(true));
     expect(screen.getByTestId('regenerate-generation-button')).toBe(rerun);
     expect(rerun).toHaveAttribute('aria-hidden', 'true');
+    /** The marker the narrow-screen stylesheet exempts from its forced visibility. */
+    expect(rerun).toHaveAttribute('data-concealed', 'true');
     expect(rerun).toHaveClass('lg:invisible', 'max-lg:hidden');
     expect(rerun).not.toBeDisabled();
     fireEvent.click(rerun);
@@ -651,6 +653,7 @@ describe('HoverButtons submission state', () => {
     act(() => setSubmitting(false));
     expect(screen.getByTestId('regenerate-generation-button')).toBe(rerun);
     expect(rerun).not.toHaveAttribute('aria-hidden');
+    expect(rerun).not.toHaveAttribute('data-concealed');
     expect(rerun).not.toHaveClass('lg:invisible');
     fireEvent.click(rerun);
     expect(regenerate).toHaveBeenCalledTimes(2);
