@@ -1362,6 +1362,8 @@ export type TBalanceResponse = {
   lastRefill?: Date | string;
   refillAmount?: number;
   refillMode?: BalanceRefillMode;
+  /** ISO timestamp with offset that periods are aligned to; null or absent for rolling periods. */
+  refillAnchor?: string | null;
   /** Credits granted at the start of the current period; absent on records not yet granted one. */
   allotment?: number;
   /** When `allotment` was granted; a later `lastRefill` means a writer replaced the period without it. */
