@@ -14,6 +14,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/actions/mongodb-binary/**'
+      - '.github/actions/redis-binaries/**'
       - 'packages/data-schemas/src/postgres/**'
       - 'packages/data-schemas/src/types/favorite*'
       - 'packages/data-schemas/src/methods/favorite*'
@@ -131,6 +132,8 @@ jobs:
           --strict --types node scripts/quality/*.mts
       - name: Test change selection and metrics
         run: node --test scripts/crap.test.mts scripts/quality/*.test.mts
+      - name: Test Redis binary provisioning
+        run: node --test .github/actions/redis-binaries/provision.test.mjs
 
   select:
     needs: [request]
@@ -288,6 +291,10 @@ jobs:
           cache-dependency-path: |
             source/package-lock.json
             tooling/package-lock.json
+      - name: Provision Redis tools for API coverage
+        if: matrix.workspace == 'api' && matrix.task.check == 'risk'
+        timeout-minutes: 8
+        uses: ./tooling/.github/actions/redis-binaries
       - run: npm ci
       - name: Install quality tooling
         working-directory: tooling
