@@ -4,7 +4,14 @@ import throttle from 'lodash/throttle';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
-import { Button, EmptyState, Spinner, useRemScale, buttonVariants } from '@librechat/client';
+import {
+  Button,
+  Shimmer,
+  Spinner,
+  EmptyState,
+  useRemScale,
+  buttonVariants,
+} from '@librechat/client';
 import {
   Archive,
   ChevronDown,
@@ -659,7 +666,7 @@ const Conversations: FC<ConversationsProps> = ({
     body = (
       <div className="text-text-primary flex flex-1 items-center justify-center">
         <Spinner className="m-0" />
-        <span className="shimmer ml-2">{localize('com_ui_loading')}</span>
+        <Shimmer className="ml-2">{localize('com_ui_loading')}</Shimmer>
       </div>
     );
   } else if (isListError) {

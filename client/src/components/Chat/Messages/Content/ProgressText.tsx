@@ -4,8 +4,8 @@ import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
 import { phaseReceipts } from '@librechat/chat/react';
-import { Button, disclosureChevronVariants } from '@librechat/client';
 import { isReportableRunStepDuration } from 'librechat-data-provider';
+import { Button, Shimmer, disclosureChevronVariants } from '@librechat/client';
 import {
   ElapsedTimer,
   CancelledIcon,
@@ -228,15 +228,12 @@ export default function ProgressText({
             up the subtitle first, and a label wider than the box truncates at
             the box (`max-w-full`), not past the row. */}
         <span className="flex min-w-0 items-center gap-2">
-          <span
-            className={cn(
-              showShimmer ? 'shimmer' : '',
-              'max-w-full min-w-0 truncate font-medium',
-              subtitle && 'shrink-0',
-            )}
+          <Shimmer
+            active={showShimmer}
+            className={cn('max-w-full min-w-0 truncate font-medium', subtitle && 'shrink-0')}
           >
             {text}
-          </span>
+          </Shimmer>
           {subtitle && (
             <span className="text-text-secondary min-w-0 shrink truncate font-normal">
               {subtitle}

@@ -1,5 +1,5 @@
 import { ScrollText } from 'lucide-react';
-import { cn, useLocalize } from '@librechat/client';
+import { cn, Shimmer, useLocalize } from '@librechat/client';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 
 /**
@@ -44,7 +44,9 @@ export default function PendingSkillCall({
                 className={cn('text-text-secondary size-4 shrink-0', !loaded && 'animate-pulse')}
               />
             </span>
-            <span className={cn(!loaded && 'shimmer', 'min-w-0 truncate font-medium')}>{text}</span>
+            <Shimmer active={!loaded} className="min-w-0 truncate font-medium">
+              {text}
+            </Shimmer>
           </div>
         </div>
       </div>

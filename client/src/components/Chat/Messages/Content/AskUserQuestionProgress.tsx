@@ -1,4 +1,5 @@
 import { useContext } from 'react';
+import { Shimmer } from '@librechat/client';
 import { MessageCircleQuestion } from 'lucide-react';
 import { useToolPreparation } from '@librechat/chat/components';
 import {
@@ -79,7 +80,7 @@ export default function AskUserQuestionProgress({
         role="status"
       >
         <MessageCircleQuestion className="h-4 w-4 animate-pulse" aria-hidden="true" />
-        <span className="shimmer">{preparationText ?? localize('com_ui_asking')}</span>
+        <Shimmer>{preparationText ?? localize('com_ui_asking')}</Shimmer>
       </div>
       {question.length > 0 ? (
         <p className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]">{question}</p>

@@ -21,6 +21,7 @@ export * from './OriginalDialog';
 export * from './Slider';
 export * from './Separator';
 export * from './InputCombobox';
+export * from './Shimmer';
 export * from './Skeleton';
 export * from './Switch';
 export * from './Table';

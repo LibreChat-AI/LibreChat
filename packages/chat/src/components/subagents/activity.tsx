@@ -1,6 +1,6 @@
 import { useCallback, useId, useMemo, useState } from 'react';
 import { Bot, ChevronDown } from 'lucide-react';
-import { Button, cn, useLocalize, disabledInkClasses } from '@librechat/client';
+import { Button, cn, Shimmer, useLocalize, disabledInkClasses } from '@librechat/client';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
@@ -223,9 +223,9 @@ function EventSubagentRow({
             change inboard of it, so the color lands on the same pixel
             column in every row and cannot drift as statuses change. */}
       <span className="text-text-secondary flex w-24 shrink-0 items-center justify-end gap-1.5 text-xs">
-        <span className={cn('min-w-0 truncate', isLiveSubagentStatus(child.status) && 'shimmer')}>
+        <Shimmer active={isLiveSubagentStatus(child.status)} className="min-w-0 truncate">
           {localize(subagentStatusLabelKey(child.status))}
-        </span>
+        </Shimmer>
         <span
           className={cn(
             'border-border-heavy/40 h-2 w-2 shrink-0 rounded-full border',

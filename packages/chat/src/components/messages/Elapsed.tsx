@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import { useAtomValue } from 'jotai';
-import { useLocalize, useLanguage } from '@librechat/client';
+import { Shimmer, useLocalize, useLanguage } from '@librechat/client';
 import type { NamedExoticComponent } from 'react';
 import { submissionStartFamily } from '../../react/generation';
 import { getElapsedDurationLabels } from './duration';
@@ -85,9 +85,9 @@ export const ElapsedTimer: NamedExoticComponent<{ start?: number }> = memo(funct
    *  the alignment holds in RTL. */
   return (
     <span className="text-text-secondary flex items-center ps-1.5">
-      <span aria-hidden="true" className="shimmer tabular-nums" data-testid="stream-elapsed">
+      <Shimmer aria-hidden="true" className="tabular-nums" data-testid="stream-elapsed">
         {localize(labels.key, labels.values)}
-      </span>
+      </Shimmer>
       <span className="sr-only">{localize(labels.announcedKey, labels.announcedValues)}</span>
     </span>
   );

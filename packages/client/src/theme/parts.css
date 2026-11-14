@@ -38,63 +38,118 @@
   line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));
 }
 
-@keyframes shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
+/* Half of the sweep: the band travels two label widths, one period of its mask. */
+@keyframes shimmer-band {
+  to {
+    transform: translateX(calc(200% / 3));
   }
 }
 
-@keyframes shimmer-rtl {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
+/* The other half: the copy inside the band travels the same distance back, so
+   its glyphs never leave the label they are drawn over. */
+@keyframes shimmer-copy {
+  to {
+    transform: translateX(-200%);
   }
 }
 
 /* The sweep every in-flight label shares: a running tool call, streaming
-   reasoning, the elapsed timer. Painted from theme roles rather than fixed
-   black/white keyed off `.dark`, so a stored or custom theme restates it the
-   way it restates any other color. Unset, the base falls back to whatever
-   `--text-primary` is in scope AT THE LABEL; resolving it in a `:root`
-   declaration instead would freeze the default and ignore theme scopes applied
-   further down. Dark declares a base outright: its established value is dimmer
-   than that theme's text color rather than equal to it. */
+   reasoning, the elapsed timer. `Shimmer` in `@librechat/client` renders the
+   elements below; a bare `.shimmer` with no band inside it is plain text.
+
+   Painted from theme roles rather than fixed black/white keyed off `.dark`, so
+   a stored or custom theme restates it the way it restates any other color.
+   Unset, the base falls back to whatever `--text-primary` is in scope AT THE
+   LABEL; resolving it in a `:root` declaration instead would freeze the default
+   and ignore theme scopes applied further down. Dark declares a base outright:
+   its established value is dimmer than that theme's text color rather than
+   equal to it. */
 .shimmer {
   display: inline-block;
   position: relative;
-  background: linear-gradient(
+}
+
+/* Nothing in the sweep may repaint. The label's own glyphs hold the dim stop;
+   `.shimmer-band` is three labels wide and carries a mask whose gap is one
+   label wide and repeats every two; `.shimmer-copy` inside it is the label
+   again at the base color. The band slides one way and the copy slides back, both by
+   transform, so the compositor moves the gap across glyphs that stay put.
+   Animating `background-position` under `background-clip: text` repainted the
+   label on every frame, and each repaint walked the transcript around it.
+
+   The dim color is conditional on the band so the two cannot come apart: a
+   label that has lost its band, or a browser that drops the motion, shows its
+   ordinary color instead of resting at the dim stop. */
+@media (prefers-reduced-motion: no-preference) {
+  .shimmer:has(> .shimmer-clip) {
+    color: rgb(var(--shimmer-dip) / var(--shimmer-dip-alpha, 1));
+  }
+}
+
+/* Clips the band to the label, so three label widths of it never become
+   scrollable overflow in whatever the label sits in. */
+.shimmer-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.shimmer-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -200%;
+  width: 300%;
+  /* An alpha mask: only the opacity of each stop is read, never its hue. */
+  --shimmer-mask: linear-gradient(
     90deg,
-    rgb(var(--shimmer-base, var(--text-primary)) / var(--shimmer-base-alpha, 1)) 25%,
-    rgb(var(--shimmer-dip) / var(--shimmer-dip-alpha, 1)) 50%,
-    rgb(var(--shimmer-base, var(--text-primary)) / var(--shimmer-base-alpha, 1)) 75%
+    rgb(var(--black)) 25%,
+    transparent 50%,
+    rgb(var(--black)) 75%
   );
-  background-size: 200% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: shimmer 4s linear infinite;
+  -webkit-mask: var(--shimmer-mask) 0 0 / calc(200% / 3) 100% repeat-x;
+  mask: var(--shimmer-mask) 0 0 / calc(200% / 3) 100% repeat-x;
+  animation: shimmer-band 2s linear infinite;
 }
 
-[dir='rtl'] .shimmer,
-.shimmer:dir(rtl) {
-  animation-name: shimmer-rtl;
+/* Pinned to the band's far edge rather than given a third of its width: the
+   copy must be exactly as wide as the label, or a wrapped or truncated label
+   would break a line somewhere its copy does not. `white-space` inherits, and
+   the ellipsis is restated because `text-overflow` does not.
+
+   An element of its own, and not the band's `::before`: Chromium keeps a
+   pseudo-element's animation on the main thread when the element that
+   generates it is animating too, and a sweep that ticks there every frame is
+   the cost this arrangement exists to remove. Only the text is generated. */
+.shimmer-copy {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(200% / 3);
+  right: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgb(var(--shimmer-base, var(--text-primary)) / var(--shimmer-base-alpha, 1));
+  animation: shimmer-copy 2s linear infinite;
 }
 
-/* Halting the animation alone is not a fallback: the background would settle
-   at position 0 and show only half the sweep, stranding the tail of the label
-   in the near-invisible dip. Drop the gradient and hand the glyphs back to the
-   color they would have had. */
+.shimmer-copy::before {
+  content: attr(data-text);
+}
+
+[dir='rtl'] .shimmer-band,
+[dir='rtl'] .shimmer-copy,
+.shimmer-band:dir(rtl),
+.shimmer-copy:dir(rtl) {
+  animation-direction: reverse;
+}
+
+/* Without motion there is no sweep to draw, so the band goes and the label
+   keeps the color it would have had. */
 @media (prefers-reduced-motion: reduce) {
-  .shimmer,
-  [dir='rtl'] .shimmer {
-    background: none;
-    animation: none;
-    -webkit-text-fill-color: currentcolor;
+  .shimmer-clip {
+    display: none;
   }
 }
 

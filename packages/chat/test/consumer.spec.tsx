@@ -743,9 +743,10 @@ describe('a consumer styled by the published stylesheet alone', () => {
     const statusRule = declaredFor(screen.getByText('Woke up'));
     expect(statusRule.match(/var\(--font-size-base, 1rem\)/g)).toHaveLength(2);
 
-    expect(declaredFor(screen.getByTestId('stream-elapsed'))).toMatch(/animation:[^;]*\bshimmer\b/);
-    expect(stylesheet).toMatch(/@keyframes shimmer\s*\{/);
-    expect(stylesheet).toMatch(/@keyframes shimmer-rtl\s*\{/);
+    const band = screen.getByTestId('stream-elapsed').querySelector('.shimmer-band');
+    expect(band && declaredFor(band)).toMatch(/animation:[^;]*\bshimmer-band\b/);
+    expect(stylesheet).toMatch(/@keyframes shimmer-band\s*\{/);
+    expect(stylesheet).toMatch(/@keyframes shimmer-copy\s*\{/);
     expect(stylesheet).toMatch(/html\.high-contrast\s*\{[^}]*--shimmer-dip-alpha: 1/);
 
     const icon = screen.getByRole('button', { name: 'Remove report.pdf' }).querySelector('svg');

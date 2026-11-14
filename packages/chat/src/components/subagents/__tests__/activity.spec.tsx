@@ -56,6 +56,7 @@ jest.mock('@librechat/client', () => ({
     <button {...props}>{children}</button>
   ),
   cn: (...values: Array<string | false | undefined>) => values.filter(Boolean).join(' '),
+  Shimmer: jest.requireActual('@librechat/client').Shimmer,
   useLocalize: () => (key: string) => key,
 }));
 jest.mock('lucide-react', () => ({

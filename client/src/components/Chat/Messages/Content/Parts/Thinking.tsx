@@ -9,7 +9,7 @@ import {
   type MouseEvent,
 } from 'react';
 import { Lightbulb, ChevronDown } from 'lucide-react';
-import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
+import { Button, Shimmer, MorphIcon, TooltipAnchor } from '@librechat/client';
 import { ChevronUp as ChevronUpNode, ChevronDown as ChevronDownNode } from 'lucide';
 import { ROW_GLYPH_SLOT, CopyButton, useExpandCollapse } from '@librechat/chat/components';
 import type { FocusEvent, FC } from 'react';
@@ -153,33 +153,29 @@ export const ThinkingButton = memo(
               bottom margin edge, growing the line box and lifting the label off
               the icon's axis.
 
-              Only the generated-label entrance forces a nested span: it and the
-              sweep both drive `animation-name`, so they cannot share an element.
-              There the entrance must stay outside — the clipped element paints
-              the glyphs itself, so a descendant's opacity cannot fade them — and
-              the inner span takes `align-top` to keep the baseline rule above
-              from reopening the same gap.
-
-              `key` remounts the row so the entrance replays, and that restarts
-              the sweep with it. Reasoning labels revise on a 3s default against
-              a 4s sweep, so the restart is frequent; it reads as intentional
-              only while the entrance is there to cover it. With no entrance to
-              play, the row keeps its identity and the sweep runs unbroken. */}
-          <span
-            key={animateLabel ? label : undefined}
-            className={cn(
-              'min-w-0 truncate text-start font-medium',
-              shimmerLabel && !animateLabel && 'shimmer',
-              animateLabel &&
-                'animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out motion-reduce:animate-none',
-            )}
-          >
-            {shimmerLabel && animateLabel ? (
-              <span className="shimmer max-w-full truncate align-top">{label}</span>
-            ) : (
-              label
-            )}
-          </span>
+              The generated-label entrance keeps its own element so a revised
+              label can replay it: `key` remounts that row, and the sweep inside
+              restarts with it, which reads as intentional only while the
+              entrance is there to cover it. The inner span takes `align-top` to
+              keep the baseline rule above from reopening the same gap. With no
+              entrance to play, the row keeps its identity and the sweep runs
+              unbroken. */}
+          {animateLabel ? (
+            <span
+              key={label}
+              className="animate-in fade-in-0 slide-in-from-bottom-1 min-w-0 truncate text-start font-medium duration-300 ease-out motion-reduce:animate-none"
+            >
+              {shimmerLabel ? (
+                <Shimmer className="max-w-full truncate align-top">{label}</Shimmer>
+              ) : (
+                label
+              )}
+            </span>
+          ) : (
+            <Shimmer active={shimmerLabel} className="min-w-0 truncate text-start font-medium">
+              {label}
+            </Shimmer>
+          )}
         </button>
         {content && showCopyButton && isExpanded && (
           <CopyButton

@@ -1,5 +1,6 @@
 import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
+import { Shimmer } from '@librechat/client';
 import { ContentTypes } from 'librechat-data-provider';
 import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import {
@@ -124,14 +125,13 @@ function PhaseGlyph({ failed, partial = false }: { failed: boolean; partial?: bo
  */
 /**
  * The shimmering text of a live line, on its own element. `.shimmer` declares
- * `animation`, `position` and `display`, so sharing an element with the ticker
- * would replace the slide with the sweep — the retired line would never leave,
- * and would sit inline beside its successor. `align-top` keeps the inline box
- * from adding descender space, which made a live row 2px taller than the
- * settled row it becomes.
+ * `position` and `display`, so sharing an element with the ticker would undo
+ * the slide's absolute placement — the retired line would sit inline beside
+ * its successor. `align-top` keeps the inline box from adding descender space,
+ * which made a live row 2px taller than the settled row it becomes.
  */
 function LiveLine({ text }: { text: string }) {
-  return <span className="shimmer max-w-full truncate align-top">{text}</span>;
+  return <Shimmer className="max-w-full truncate align-top">{text}</Shimmer>;
 }
 
 export const PhaseLabel = memo(function PhaseLabel({
