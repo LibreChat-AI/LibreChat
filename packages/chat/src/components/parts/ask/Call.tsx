@@ -142,13 +142,15 @@ export default function AskUserQuestionCall({
       <div className={TOOL_ROW_CLASSES} data-testid="ask-user-question-call">
         {/* Settled row. Same disclosure, failure reveal, and line as the other
             tool cards. `failed` keeps the warning glyph; `cancelled` would
-            replace it with the stop mark, which a rejected question does not use. */}
+            replace it with the stop mark, which a rejected question does not use.
+            A blank question keeps its empty summary slot, as this header always did. */}
         <ProgressText
           phase={terminalFailure ? 'failed' : 'completed'}
           onClick={toggleExpanded}
           inProgressText={statusLabel}
           finishedText={statusLabel}
           subtitle={summary}
+          keepEmptySubtitle
           icon={
             terminalFailure ? (
               <TriangleAlert className="text-text-warning size-4 shrink-0" aria-hidden="true" />

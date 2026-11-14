@@ -81,7 +81,7 @@ describe('ProgressText duration', () => {
     });
     expect(screen.getByText('(prepared in 4m 2s)')).toBeInTheDocument();
     expect(screen.getByText('5.7s')).toBeInTheDocument();
-    expect(screen.queryByText(/Total elapsed/)).not.toBeInTheDocument();
+    expect(screen.queryByText('4m 8s')).not.toBeInTheDocument();
   });
 
   it('shows a few-hundred-millisecond tool call beside minutes of preparation', () => {
@@ -92,7 +92,7 @@ describe('ProgressText duration', () => {
     });
     expect(screen.getByText('(prepared in 4m 7s)')).toBeInTheDocument();
     expect(screen.getByText('0.3s')).toBeInTheDocument();
-    expect(screen.queryByText(/Total elapsed/)).not.toBeInTheDocument();
+    expect(screen.queryByText('4m 7s')).not.toBeInTheDocument();
   });
 
   it('does not show a measured call too short to format as a nonzero interval', () => {
@@ -228,9 +228,25 @@ describe('ProgressText subtitle', () => {
     expect(screen.getByText('Completed foo')).not.toHaveClass('shrink-0');
   });
 
-  it('keeps the label from shrinking when the subtitle is present but empty', () => {
+  it('treats an empty subtitle as no subtitle', () => {
     renderProgressText({ subtitle: '' });
-    expect(screen.getByText('Completed foo')).toHaveClass('shrink-0');
+    const label = screen.getByText('Completed foo');
+    expect(label).not.toHaveClass('shrink-0');
+    expect(label.nextElementSibling).toBeNull();
+  });
+
+  it('keeps an empty subtitle when the caller keeps the slot', () => {
+    renderProgressText({ subtitle: '', keepEmptySubtitle: true });
+    const label = screen.getByText('Completed foo');
+    expect(label).toHaveClass('shrink-0');
+    expect(label.nextElementSibling).toBeEmptyDOMElement();
+  });
+
+  it('adds no subtitle slot without a subtitle, even when the caller keeps empty ones', () => {
+    renderProgressText({ keepEmptySubtitle: true });
+    const label = screen.getByText('Completed foo');
+    expect(label).not.toHaveClass('shrink-0');
+    expect(label.nextElementSibling).toBeNull();
   });
 });
 
@@ -335,7 +351,7 @@ describe('ProgressText verdict', () => {
       phaseStartAt: 1_000,
     });
     expect(screen.getByRole('button')).toHaveTextContent('exit code 2');
-    expect(screen.queryByText(/Preparation|Tool call|Total elapsed|took/)).toBeNull();
+    expect(screen.queryByText(/Preparation|Tool call|took/)).toBeNull();
     expect(screen.queryByTestId('stream-elapsed')).toBeNull();
   });
 

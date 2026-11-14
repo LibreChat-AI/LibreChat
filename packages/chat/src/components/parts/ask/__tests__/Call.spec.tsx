@@ -119,6 +119,29 @@ describe('AskUserQuestionCall', () => {
     expect(icons[icons.length - 1]).toHaveClass('transition-transform');
   });
 
+  test('keeps the subtitle slot for a blank question, as the settled header always drew it', () => {
+    renderCall(<AskUserQuestionCall args={JSON.stringify({ question: '' })} output="done" />);
+
+    const header = screen.getByRole('button');
+    expect(header.querySelector('.font-medium')).toHaveClass('shrink-0');
+    expect(header.querySelector('.font-normal')).toBeEmptyDOMElement();
+  });
+
+  test('summarizes a batch by its count, so the header has no subtitle slot', () => {
+    const batch = JSON.stringify({
+      questions: [
+        { id: 'first', question: 'First?' },
+        { id: 'second', question: 'Second?' },
+      ],
+    });
+    renderCall(<AskUserQuestionCall args={batch} output="" />);
+
+    const header = screen.getByRole('button');
+    expect(header).toHaveTextContent('Asked 2 questions');
+    expect(header.querySelector('.font-medium')).not.toHaveClass('shrink-0');
+    expect(header.querySelector('.font-normal')).toBeNull();
+  });
+
   test('keeps the warning glyph and failure suffix on a rejected question', () => {
     renderCall(<AskUserQuestionCall args={args} output="" failed />);
 

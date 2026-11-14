@@ -71,10 +71,16 @@ export type ProgressTextProps = {
   authText?: string;
   icon?: ReactNode;
   /**
-   * Secondary line beside the label. An empty string still counts as present,
-   * so the label keeps `shrink-0` the way a blank question summary does.
+   * Secondary line beside the label. An empty string is no subtitle, so a card
+   * with nothing to say lays out the same as one that passes none.
    */
   subtitle?: string;
+  /**
+   * Counts an empty `subtitle` as present: the label stops shrinking and the
+   * empty line holds its place in the row, as the settled question header
+   * draws a blank question.
+   */
+  keepEmptySubtitle?: boolean;
   /** Total run-step lifetime, not necessarily tool execution. */
   durationMs?: number;
   toolPreparationDurationMs?: number;
@@ -98,6 +104,7 @@ export default function ProgressText({
   authText,
   icon: iconProp,
   subtitle,
+  keepEmptySubtitle = false,
   durationMs,
   toolPreparationDurationMs,
   toolExecutionDurationMs,
@@ -163,7 +170,7 @@ export default function ProgressText({
   const icon = phase === 'cancelled' ? <CancelledIcon /> : (iconProp ?? null);
   const showShimmer = isRunning;
   const errorSuffix = phase === 'failed' ? localize('com_ui_tool_failed') : undefined;
-  const hasSubtitle = subtitle != null;
+  const hasSubtitle = keepEmptySubtitle ? subtitle != null : Boolean(subtitle);
   /**
    * Shown only on a settled, successful card. While the step is still running
    * the number would be stale the instant it rendered, and on a cancelled or
