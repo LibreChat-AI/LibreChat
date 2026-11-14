@@ -4,7 +4,7 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { MessagePartsHost } from '../../../../react/host';
-import { MessagePartsHostProvider } from '../../../../react/host';
+import { emptyToolCallChrome, MessagePartsHostProvider } from '../../../../react/host';
 import { FailedRevealContext } from '../../reveal';
 import AskUserQuestionCall from '../Call';
 
@@ -58,6 +58,7 @@ const createHost = (autoExpand: boolean): MessagePartsHost => ({
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, jest.fn()],
+  useToolCallChrome: emptyToolCallChrome,
   useShare: () => ({}),
 });
 
