@@ -564,6 +564,8 @@ const appearanceValidators = {
   insetBorderAlpha: isOpacity,
   /** `fill` paints a destructive action in the solid destructive surface; `soft` in a tint of it. */
   destructiveStyle: (value: unknown) => value === 'fill' || value === 'soft',
+  /** A closed list: each value names a backdrop the app may provide. */
+  welcomeBackdrop: (value: unknown) => value === 'none' || value === 'dots',
 } satisfies Record<string, (value: unknown) => boolean>;
 
 export type ThemeAppearanceToken = keyof typeof appearanceValidators;

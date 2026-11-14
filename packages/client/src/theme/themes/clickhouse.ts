@@ -585,6 +585,9 @@ const clickHouseShape = {
   insetBorderAlpha: '0', // separation by fill, not a nested stroke
   /** Click UI's danger button: a 10% tint of danger under the danger text (button.*.danger). */
   destructiveStyle: 'soft' as const,
+  /** The welcome screen's dot field, from the Agents launch mock. Plain wherever the build
+   *  registers no `dots` backdrop. */
+  welcomeBackdrop: 'dots' as const,
 };
 
 const elevation = (alpha: number): string =>

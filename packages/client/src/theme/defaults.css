@@ -379,6 +379,8 @@ html {
   --theme-border-chrome-alpha: 1;
   --theme-border-inset-alpha: 1;
   --theme-destructive-style: fill;
+  /* The welcome screen paints nothing behind its greeting unless a theme asks. */
+  --theme-welcome-backdrop: none;
   --switch-unchecked: 148 148 148;
   --switch-thumb: 255 255 255;
   /* Follows the secondary text it was before it had a role, in every mode. */

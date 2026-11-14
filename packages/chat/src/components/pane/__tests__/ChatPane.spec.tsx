@@ -36,8 +36,10 @@ const LANDING = { isLanding: true, column: 'landing' } as const;
 
 const paneColumn = (container: HTMLElement) =>
   container.querySelector('[data-chat-pane="0"]') as HTMLElement;
+/** Keyed off the band's own marker, not its background: the welcome screen's band is
+ * transparent so a backdrop behind the column shows through it. */
 const composerBand = (container: HTMLElement) =>
-  paneColumn(container).querySelector('.bg-surface-canvas') as HTMLElement;
+  paneColumn(container).querySelector('[data-composer-band]') as HTMLElement;
 
 describe('getChatPaneView', () => {
   it.each([
