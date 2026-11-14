@@ -51,6 +51,9 @@ export function isExtractedTextPreviewLoading(
   return !isError && (isInitialLoading || status === 'pending');
 }
 
+/** XML proper and XML-based formats such as SVG; Office Open XML packages are zipped binaries. */
+const isXmlMime = (mime: string): boolean => mime === 'application/xml' || mime.endsWith('+xml');
+
 function getPreviewKindByMime(mime?: string): PreviewKind {
   if (!mime) {
     return false;
@@ -61,7 +64,7 @@ function getPreviewKindByMime(mime?: string): PreviewKind {
   if (
     mime.startsWith('text/') ||
     mime.includes('json') ||
-    mime.includes('xml') ||
+    isXmlMime(mime) ||
     mime.includes('javascript') ||
     mime.includes('typescript') ||
     mime.includes('yaml') ||

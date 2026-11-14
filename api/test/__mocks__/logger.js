@@ -24,6 +24,8 @@ jest.mock('winston', () => {
       warn: jest.fn(),
       debug: jest.fn(),
       error: jest.fn(),
+      /** Real winston derives `is<Level>Enabled` from its levels; the delivery log gates on it. */
+      isDebugEnabled: jest.fn(() => false),
     }),
     transports: {
       Console: jest.fn(),

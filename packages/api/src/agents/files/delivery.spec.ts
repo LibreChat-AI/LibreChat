@@ -1,9 +1,29 @@
-import type { TurnFileConsumers, TurnDeliveryFile } from 'librechat-data-provider';
+import { FileContext, FileSources } from 'librechat-data-provider';
+import type {
+  TurnReadingInputs,
+  TurnFileConsumers,
+  TurnDeliveryFile,
+  ReadingEvidence,
+  FiltersConfig,
+} from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
+import type {
+  DerivedText,
+  FileTextDeriver,
+  TurnReadingFile,
+  TextDerivationPersister,
+} from '~/files/reading/turn';
 import {
   applyTurnDelivery as materializeTurnDelivery,
-  resolveTurnDeliveryRouting,
+  prepareScopedTurnCandidates,
   resolveScopedTurnAttachments,
+  resolveTurnDeliveryRouting,
+  toClassicInspectionView,
+  applyCheckpointDelivery,
 } from './delivery';
+import * as modelBoundContent from '~/middleware/modelBoundContent';
+import { buildTurnReadingContext } from '~/files/reading/turn';
+import { UninspectableFileError } from '~/protection/files';
 
 function applyTurnDelivery<T extends TurnDeliveryFile>(
   files: T[],
@@ -320,5 +340,455 @@ describe('resolveScopedTurnAttachments', () => {
         sharedRunAttachmentIds: new Set(['csv']),
       }).get('handoff'),
     ).toEqual([]);
+  });
+});
+
+describe('the automatic policy', () => {
+  const agent = { provider: 'openAI' };
+  const automatic = {
+    fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' as const } } },
+  };
+  /** The turn's evidence seam, answering every file with the same verdicts. */
+  const withEvidence = (evidence: ReadingEvidence) => ({
+    ...resolveTurnDeliveryRouting({ agent, config: automatic }),
+    reading: { judge: () => evidence, canDerive: false } satisfies TurnReadingInputs,
+  });
+  const attachment = {
+    source: FileSources.local,
+    context: FileContext.message_attachment,
+    metadata: { destinationChosen: false },
+  };
+  /** A PDF too large for the provider, with complete extracted text that fits the prompt. */
+  const largePdf = {
+    ...attachment,
+    file_id: 'large-pdf',
+    type: 'application/pdf',
+    bytes: 40 * 1024 * 1024,
+    text: 'quarterly totals',
+    llmDeliveryPath: 'provider',
+  };
+  /** A spreadsheet extracted at upload under classic routing. */
+  const csv = {
+    ...attachment,
+    file_id: 'csv',
+    type: 'text/csv',
+    bytes: 20,
+    text: 'region,total\nwest,4',
+    llmDeliveryPath: 'text',
+  };
+
+  describe('applyTurnDelivery', () => {
+    it('gives a classic-era spreadsheet to Run Code and back to text without changing it', () => {
+      const routing = withEvidence({});
+      const files = [csv];
+
+      expect(materializeTurnDelivery(files, { routing, consumers: runsCode })).toEqual([
+        { ...csv, llmDeliveryPath: 'none' },
+      ]);
+      expect(materializeTurnDelivery(files, { routing, consumers: noReader })).toBe(files);
+    });
+  });
+
+  describe('toClassicInspectionView', () => {
+    const routing = withEvidence({});
+    const strictContent = {
+      files: { pii: { fields: ['content'], starterPatterns: [], uninspectable: 'block' } },
+    } as FiltersConfig;
+
+    it('shows a spreadsheet Run Code reads with the text route classic routing gives it', () => {
+      const copies = materializeTurnDelivery([csv], { routing, consumers: runsCode });
+
+      const view = toClassicInspectionView(copies, routing, runsCode);
+
+      expect(view).toEqual([{ ...csv, llmDeliveryPath: 'text' }]);
+      expect(view).not.toBe(copies);
+      expect(copies).toEqual([{ ...csv, llmDeliveryPath: 'none' }]);
+    });
+
+    it('keeps the inspected content of a rerouted file under a fail-closed content filter', () => {
+      /* Coverage reads the text route, so the code-routed copy alone would read as
+       * uninspectable although classic routing inspects and delivers the same text. */
+      const copies = materializeTurnDelivery([csv], { routing, consumers: runsCode });
+
+      expect(() =>
+        modelBoundContent.assertModelBoundContent({ filters: strictContent, files: copies }),
+      ).toThrow(UninspectableFileError);
+      expect(() =>
+        modelBoundContent.assertModelBoundContent({
+          filters: strictContent,
+          files: toClassicInspectionView(copies, routing, runsCode),
+        }),
+      ).not.toThrow();
+    });
+
+    it('returns its input when no copy differs from its classic route', () => {
+      const pdf = { ...largePdf, bytes: 20 };
+      const copies = materializeTurnDelivery([pdf, csv], { routing, consumers: noReader });
+
+      expect(toClassicInspectionView(copies, routing, noReader)).toBe(copies);
+    });
+
+    it('returns its input under classic routing', () => {
+      const classic = resolveTurnDeliveryRouting({ agent, config });
+      const copies = [{ ...csv, llmDeliveryPath: 'none' }];
+
+      expect(toClassicInspectionView(copies, classic, runsCode)).toBe(copies);
+      expect(toClassicInspectionView(copies, undefined, runsCode)).toBe(copies);
+    });
+  });
+});
+
+describe('applyCheckpointDelivery', () => {
+  const agent = { provider: 'openAI' };
+  const routing = resolveTurnDeliveryRouting({
+    agent,
+    config: { fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } } },
+  });
+  const csv = {
+    file_id: 'csv',
+    type: 'text/csv',
+    bytes: 20,
+    source: FileSources.local,
+    context: FileContext.message_attachment,
+    text: 'region,total\nwest,4',
+    llmDeliveryPath: 'none',
+    metadata: { destinationChosen: false },
+  };
+  /** A record written before uploads marked whether a destination was chosen. */
+  const unmarked = { ...csv, file_id: 'unmarked', metadata: {} };
+
+  it('charges retained fallback text for every inferred tool file under classic routing', () => {
+    const classic = resolveTurnDeliveryRouting({ agent, config });
+
+    expect(applyCheckpointDelivery([csv, unmarked])).toEqual([
+      { ...csv, llmDeliveryPath: 'text' },
+      { ...unmarked, llmDeliveryPath: 'text' },
+    ]);
+    expect(applyCheckpointDelivery([csv], { routing: classic, consumers: runsCode })).toEqual([
+      { ...csv, llmDeliveryPath: 'text' },
+    ]);
+  });
+
+  it('charges the automatic decision for files it reads and the fallback for the rest', () => {
+    /* Text the policy withheld for Run Code never reached the checkpoint, so charging it would
+     * spend the resumed turn's budget on content the model never received. */
+    const charged = applyCheckpointDelivery([csv, unmarked], { routing, consumers: runsCode });
+
+    expect(charged[0]).toBe(csv);
+    expect(charged[1]).toEqual({ ...unmarked, llmDeliveryPath: 'text' });
+    expect(applyCheckpointDelivery([csv], { routing, consumers: noReader })).toEqual([
+      { ...csv, llmDeliveryPath: 'text' },
+    ]);
+    expect(csv.llmDeliveryPath).toBe('none');
+  });
+});
+
+describe('prepareScopedTurnCandidates', () => {
+  const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const automatic = {
+    fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' as const } } },
+  };
+  const derived: DerivedText = {
+    status: 'derived',
+    text: 'quarter,total\nQ1,42',
+    textDerivation: { outcome: 'complete', extractor: 'document_parser', at: 1 },
+  };
+  /** A workbook uploaded under the automatic policy with extraction left for a later turn. */
+  const workbook = (file_id: string): TurnReadingFile => ({
+    file_id,
+    filename: `${file_id}.xlsx`,
+    type: XLSX,
+    bytes: 2048,
+    source: FileSources.local,
+    context: FileContext.message_attachment,
+    llmDeliveryPath: 'none',
+    metadata: { destinationChosen: false, textDerivation: { outcome: 'deferred' } },
+  });
+  const historical = workbook('history-xlsx');
+  const requested = workbook('request-xlsx');
+  const messages = [{ files: [{ file_id: historical.file_id }] }];
+
+  /** A receiver whose turn carries a reading context over the given deriver. */
+  function receiver(
+    agentId: string,
+    {
+      consumers = noReader,
+      deriveText,
+      persistDerivation,
+      endpoint = 'openAI',
+      config = automatic,
+    }: {
+      consumers?: TurnFileConsumers;
+      deriveText?: FileTextDeriver;
+      persistDerivation?: TextDerivationPersister;
+      endpoint?: string;
+      config?: Pick<AppConfig, 'fileConfig'>;
+    } = {},
+  ) {
+    const deliveryRouting = resolveTurnDeliveryRouting({
+      agent: { provider: endpoint },
+      config,
+    });
+    const context = buildTurnReadingContext({
+      routing: deliveryRouting,
+      provider: endpoint,
+      fileTokenLimit: 100_000,
+      configuredFileSizeLimit: undefined,
+      countTokens: (text) => text.length,
+      deriveText,
+      persistDerivation,
+    });
+    if (context == null) {
+      throw new Error('expected a reading context');
+    }
+    deliveryRouting.reading = context;
+    return { agentId, agent: { deliveryRouting, fileConsumers: consumers }, context };
+  }
+
+  const deriver = () =>
+    jest.fn<ReturnType<FileTextDeriver>, Parameters<FileTextDeriver>>(async () => derived);
+
+  /** The app config a receiver's endpoint file policy is read from. */
+  const appConfigWith = (fileConfig: AppConfig['fileConfig']): AppConfig => ({
+    config: {},
+    fileStrategy: FileSources.local,
+    imageOutputType: 'png',
+    fileConfig,
+  });
+
+  it('collects nothing when no receiver has a reading context', async () => {
+    const historicalFiles = new Map([[historical.file_id, historical]]);
+    const requestAttachments = [requested];
+    const routing = resolveTurnDeliveryRouting({
+      agent: { provider: 'openAI' },
+      config: automatic,
+    });
+
+    const prepared = await prepareScopedTurnCandidates({
+      agents: [
+        { agentId: 'handoff', agent: { deliveryRouting: routing, fileConsumers: noReader } },
+      ],
+      historicalFiles,
+      requestAttachments,
+    });
+
+    expect(prepared).toEqual({});
+  });
+
+  it('derives each candidate once for every receiver that needs its text', async () => {
+    const firstDeriver = deriver();
+    const secondDeriver = deriver();
+    const persistDerivation = jest.fn<
+      ReturnType<TextDerivationPersister>,
+      Parameters<TextDerivationPersister>
+    >(async () => true);
+    const first = receiver('first', { deriveText: firstDeriver, persistDerivation });
+    const second = receiver('second', { deriveText: secondDeriver });
+    const flushSpy = jest.spyOn(first.context, 'flush');
+    const inputs = {
+      agents: [first, second],
+      sharedConversationAgentIds: ['first', 'second'],
+      messages,
+      historicalFiles: new Map([[historical.file_id, historical]]),
+      requestAttachments: [requested],
+      sharedRunAttachmentIds: new Set<string>(),
+    };
+
+    const prepared = await prepareScopedTurnCandidates(inputs);
+
+    expect(firstDeriver).toHaveBeenCalledTimes(2);
+    expect(secondDeriver).not.toHaveBeenCalled();
+    expect(flushSpy).toHaveBeenCalledTimes(1);
+    expect(persistDerivation.mock.calls.map(([update]) => update.file_id).sort()).toEqual([
+      historical.file_id,
+      requested.file_id,
+    ]);
+    expect(prepared.candidates?.get(historical.file_id)).toMatchObject({
+      text: derived.text,
+      metadata: { textDerivation: derived.textDerivation },
+    });
+    expect(prepared.candidates?.get(requested.file_id)).toMatchObject({ text: derived.text });
+    expect(historical.text).toBeUndefined();
+    expect(requested.text).toBeUndefined();
+
+    const historyWalk = jest.spyOn(modelBoundContent, 'collectModelBoundHistoricalFileIdState');
+    const scoped = resolveScopedTurnAttachments({ ...inputs, ...prepared });
+    expect(historyWalk).not.toHaveBeenCalled();
+    historyWalk.mockRestore();
+    for (const agentId of ['first', 'second']) {
+      expect(scoped.get(agentId)?.map((file) => [file.file_id, file.llmDeliveryPath])).toEqual([
+        [historical.file_id, 'text'],
+        [requested.file_id, 'text'],
+      ]);
+    }
+  });
+
+  it('derives nothing for a receiver that reads the candidates with Run Code', async () => {
+    const deriveText = deriver();
+    const historicalFiles = new Map([[historical.file_id, historical]]);
+    const requestAttachments = [requested];
+
+    const prepared = await prepareScopedTurnCandidates({
+      agents: [receiver('handoff', { consumers: runsCode, deriveText })],
+      historicalFiles,
+      requestAttachments,
+    });
+
+    expect(deriveText).not.toHaveBeenCalled();
+    expect(prepared.candidates?.get(historical.file_id)).toBe(historical);
+    expect(prepared.candidates?.get(requested.file_id)).toBe(requested);
+  });
+
+  it('derives the workbook once for a parallel text reader while the primary uses code', async () => {
+    const deriveText = deriver();
+    const persistDerivation = jest.fn<
+      ReturnType<TextDerivationPersister>,
+      Parameters<TextDerivationPersister>
+    >(async () => true);
+    const primary = receiver('primary', { consumers: runsCode, deriveText, persistDerivation });
+    const parallel = receiver('parallel', { deriveText, persistDerivation });
+    const secondParallel = receiver('second-parallel', { deriveText, persistDerivation });
+    const inputs = {
+      agents: [primary, parallel, secondParallel],
+      sharedConversationAgentIds: ['primary', 'parallel', 'second-parallel'],
+      messages: [],
+      requestAttachments: [requested],
+      sharedRunAttachmentIds: new Set<string>(),
+    };
+    const prepared = await prepareScopedTurnCandidates(inputs);
+    const scoped = resolveScopedTurnAttachments({ ...inputs, ...prepared });
+
+    expect(scoped.get('primary')).toEqual([]);
+    for (const agentId of ['parallel', 'second-parallel']) {
+      expect(scoped.get(agentId)).toEqual([
+        expect.objectContaining({
+          file_id: requested.file_id,
+          llmDeliveryPath: 'text',
+          text: derived.text,
+        }),
+      ]);
+    }
+    expect(deriveText).toHaveBeenCalledTimes(1);
+    expect(persistDerivation).toHaveBeenCalledTimes(1);
+    expect(persistDerivation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        file_id: requested.file_id,
+        text: derived.text,
+        textDerivation: derived.textDerivation,
+      }),
+    );
+    expect(requested.text).toBeUndefined();
+    expect(requested.metadata?.textDerivation?.outcome).toBe('deferred');
+  });
+
+  it('decides only what each receiver can be offered', async () => {
+    const deriveText = deriver();
+    const outsideDeriver = deriver();
+    const scopedFile = workbook('scoped-xlsx');
+    const stale = workbook('stale-xlsx');
+
+    const prepared = await prepareScopedTurnCandidates({
+      agents: [
+        receiver('handoff', { deriveText }),
+        receiver('subagent', { deriveText: outsideDeriver }),
+      ],
+      sharedConversationAgentIds: ['handoff'],
+      messages,
+      historicalFiles: new Map([
+        [historical.file_id, historical],
+        [stale.file_id, stale],
+      ]),
+      requestAttachments: [requested, scopedFile],
+      sharedRunAttachmentIds: new Set([historical.file_id]),
+      attachmentsByAgentId: { handoff: [scopedFile] },
+    });
+
+    expect(outsideDeriver).not.toHaveBeenCalled();
+    expect(deriveText.mock.calls.map(([file]) => file.file_id)).toEqual([requested.file_id]);
+    expect(prepared.candidates?.get(requested.file_id)?.text).toBe(derived.text);
+    expect(prepared.candidates?.get(scopedFile.file_id)).toBe(scopedFile);
+  });
+
+  it('derives nothing for a receiver whose endpoint refuses the candidate', async () => {
+    const fileConfig = {
+      endpoints: {
+        openAI: { llmDeliveryPolicy: 'automatic' as const, disabled: true },
+        anthropic: {
+          llmDeliveryPolicy: 'automatic' as const,
+          supportedMimeTypes: ['^application/pdf$'],
+        },
+      },
+    };
+    const appConfig = appConfigWith(fileConfig);
+    const disabledDeriver = jest.fn<ReturnType<FileTextDeriver>, Parameters<FileTextDeriver>>(
+      async () => ({ status: 'blocked', error: new UninspectableFileError('extracted_text') }),
+    );
+    const allowlistDeriver = deriver();
+
+    const prepared = await prepareScopedTurnCandidates({
+      agents: [
+        receiver('disabled', { deriveText: disabledDeriver, config: { fileConfig } }),
+        receiver('allowlist', {
+          deriveText: allowlistDeriver,
+          endpoint: 'anthropic',
+          config: { fileConfig },
+        }),
+      ],
+      appConfig,
+      endpointsByAgentId: new Map([['allowlist', { endpointType: null }]]),
+      requestAttachments: [requested],
+    });
+
+    expect(disabledDeriver).not.toHaveBeenCalled();
+    expect(allowlistDeriver).not.toHaveBeenCalled();
+    expect(prepared.candidates?.get(requested.file_id)).toBe(requested);
+  });
+
+  it('still derives for a receiver whose endpoint accepts the candidate', async () => {
+    const fileConfig = {
+      endpoints: {
+        openAI: {
+          llmDeliveryPolicy: 'automatic' as const,
+          supportedMimeTypes: [`^${XLSX}$`],
+        },
+      },
+    };
+    const deriveText = deriver();
+
+    const prepared = await prepareScopedTurnCandidates({
+      agents: [receiver('handoff', { deriveText, config: { fileConfig } })],
+      appConfig: appConfigWith(fileConfig),
+      requestAttachments: [requested],
+    });
+
+    expect(deriveText).toHaveBeenCalledTimes(1);
+    expect(prepared.candidates?.get(requested.file_id)?.text).toBe(derived.text);
+  });
+
+  it('marks the text failed on every receiver that needed it, so each moves on', async () => {
+    const first = receiver('first', {
+      deriveText: async () => ({
+        status: 'failed',
+        textDerivation: { outcome: 'failed', reason: 'parser' },
+        persist: true,
+      }),
+    });
+    const second = receiver('second', { deriveText: deriver() });
+    const inputs = {
+      agents: [first, second],
+      sharedConversationAgentIds: ['first', 'second'],
+      messages: [],
+      requestAttachments: [requested],
+      sharedRunAttachmentIds: new Set<string>(),
+    };
+
+    const prepared = await prepareScopedTurnCandidates(inputs);
+
+    expect(prepared.candidates?.get(requested.file_id)).toBe(requested);
+    expect(first.context.judge(requested).textFailed).toBe(true);
+    expect(second.context.judge(requested).textFailed).toBe(true);
+    const scoped = resolveScopedTurnAttachments({ ...inputs, ...prepared });
+    expect(scoped.get('first')).toEqual([]);
+    expect(scoped.get('second')).toEqual([]);
   });
 });

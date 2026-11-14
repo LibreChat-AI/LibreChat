@@ -156,6 +156,10 @@ const {
   createAgentMemoryCallback,
   assertAgentAttachmentLimits,
   assertAgentAttachmentTopology,
+  allocateTurnAttachmentsWithHistory,
+  allocateTurnAttachmentsWithRetainedContext,
+  admitNativeFallbackAttachments,
+  retainNativeAttachmentTopology,
   collectHistoricalAttachmentIds,
   admitSteerAttachmentHistory,
   rollbackSteerAttachmentHistory,
@@ -165,6 +169,7 @@ const {
   buildAgentScopedContext,
   buildAgentScopedAttachmentMap,
   resolveScopedTurnAttachments,
+  prepareScopedTurnCandidates,
   buildAgentContextAttachmentsByAgentId,
   buildSkillPrimeContentParts,
   buildInitialToolSessions,
@@ -415,6 +420,11 @@ class AgentClient extends BaseClient {
     );
   }
 
+  /** The primary agent and the handoff agents that share its conversation payload. */
+  getConversationAgents() {
+    return [this.options.agent, ...(this.agentConfigs?.values() ?? [])];
+  }
+
   async addDocuments(message, attachments, onMissingFile) {
     const memoryContext = {
       req: this.options.req,
@@ -428,6 +438,10 @@ class AgentClient extends BaseClient {
     } finally {
       logAgentMemorySnapshot('after_encode_documents', memoryContext);
     }
+  }
+
+  admitPreparedAttachments(files, fileConsumers) {
+    return admitNativeFallbackAttachments(this, files, fileConsumers);
   }
 
   async processAttachments(message, attachments, fileConsumers, onMissingFile) {
@@ -482,6 +496,7 @@ class AgentClient extends BaseClient {
       attachmentsByAgentId,
       sharedRunAttachmentIds: sharedAttachmentIds,
       req: this.options.req,
+      consumers: this.options.agent?.fileConsumers,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint ?? EModelEndpoint.agents,
       endpointType: this.options.endpointType,
       endpointsByAgentId,
@@ -518,6 +533,7 @@ class AgentClient extends BaseClient {
       historicalFileIds,
       scopedAttachmentsByAgentId,
       req: this.options.req,
+      consumers: this.options.agent?.fileConsumers,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
       endpointType: this.options.endpointType,
       endpointsByAgentId: this.turnAttachmentEndpointsByAgentId,
@@ -540,27 +556,10 @@ class AgentClient extends BaseClient {
   }
 
   async assertHistoricalAttachmentLimits(historicalAttachments) {
-    const currentAttachments = this.options.attachments ? await this.options.attachments : [];
-    const compatibleHistoricalAttachments =
-      this.getModelBoundAttachmentsForEndpoint(historicalAttachments);
-    const compatibleCurrentAttachments =
-      this.getModelBoundAttachmentsForEndpoint(currentAttachments);
-    this.turnSteerAttachmentHistory = undefined;
-    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-      historicalAttachments,
-      currentAttachments,
-    );
-    const sharedAttachments = [...compatibleHistoricalAttachments, ...compatibleCurrentAttachments];
-    const sharedAttachmentIds = collectFileIds(sharedAttachments);
     const agents = collectReachableAgents([
       this.options.agent,
       ...(this.agentConfigs?.values() ?? []),
     ]);
-    const scopedAttachmentMap = this.getFilteredScopedAttachmentMap(
-      sharedAttachmentIds,
-      this.options.agentContextAttachmentsByAgentId,
-      agents,
-    );
     const endpointsByAgentId = new Map(
       agents
         .filter((agent) => agent?.id)
@@ -572,16 +571,52 @@ class AgentClient extends BaseClient {
           },
         ]),
     );
+    const currentAttachments = await allocateTurnAttachmentsWithHistory({
+      agent: this.options.agent,
+      historical: historicalAttachments,
+      current: this.options.attachments ? await this.options.attachments : [],
+      req: this.options.req,
+      endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
+      endpointType: this.options.endpointType,
+      endpointsByAgentId,
+      onAllocated: (files) => {
+        this.options.attachments = files;
+      },
+      signal: this.options.abortController?.signal,
+    });
+    const compatibleHistoricalAttachments =
+      this.getModelBoundAttachmentsForEndpoint(historicalAttachments);
+    const compatibleCurrentAttachments =
+      this.getModelBoundAttachmentsForEndpoint(currentAttachments);
+    this.turnSteerAttachmentHistory = undefined;
+    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
+      historicalAttachments,
+      currentAttachments,
+    );
+    const sharedAttachments = [...compatibleHistoricalAttachments, ...compatibleCurrentAttachments];
+    const sharedAttachmentIds = collectFileIds(sharedAttachments);
+    const scopedAttachmentMap = this.getFilteredScopedAttachmentMap(
+      sharedAttachmentIds,
+      this.options.agentContextAttachmentsByAgentId,
+      agents,
+    );
     assertAgentAttachmentTopology({
       sharedAttachments,
       historicalFileIds: this.turnHistoricalAttachmentIds,
       scopedAttachmentsByAgentId: scopedAttachmentMap,
       req: this.options.req,
+      consumers: this.options.agent?.fileConsumers,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
       endpointType: this.options.endpointType,
       endpointsByAgentId,
     });
     this.assertTurnAttachmentLimits(sharedAttachments, [...scopedAttachmentMap.values()].flat());
+    retainNativeAttachmentTopology(
+      this,
+      sharedAttachments,
+      scopedAttachmentMap,
+      endpointsByAgentId,
+    );
     return compatibleHistoricalAttachments;
   }
 
@@ -2486,9 +2521,6 @@ class AgentClient extends BaseClient {
       files: [...modelBoundFileContexts],
     });
     const requestAttachmentsSource = this.options.attachments;
-    const requestAttachments = requestAttachmentsSource ? await requestAttachmentsSource : [];
-    const modelBoundRequestAttachments =
-      this.getModelBoundAttachmentsForEndpoint(requestAttachments);
     const retainedHistoricalFileContexts =
       this.options.resendFiles === false
         ? orderedMessages
@@ -2501,13 +2533,29 @@ class AgentClient extends BaseClient {
               bytes: Buffer.byteLength(message.fileContext, 'utf8'),
             }))
         : [];
+    const requestAttachments = await allocateTurnAttachmentsWithRetainedContext({
+      agent: this.options.agent,
+      resendFiles: this.options.resendFiles,
+      retained: retainedHistoricalFileContexts,
+      current: requestAttachmentsSource ? await requestAttachmentsSource : [],
+      req: this.options.req,
+      endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
+      endpointType: this.options.endpointType,
+      endpointsByAgentId,
+      onAllocated: (files) => {
+        this.options.attachments = files;
+      },
+      signal: this.options.abortController?.signal,
+    });
+    const modelBoundRequestAttachments =
+      this.getModelBoundAttachmentsForEndpoint(requestAttachments);
     const sharedAttachmentFiles = [
       ...Object.values(this.message_file_map ?? {}).flat(),
       ...(this.modelBoundHistoricalSteerFiles ?? []),
       ...modelBoundRequestAttachments,
     ];
     const sharedRunAttachmentIds = collectFileIds(sharedAttachmentFiles);
-    this.options.agentContextAttachmentsByAgentId = resolveScopedTurnAttachments({
+    const scopedInputs = {
       agents: allAgents,
       sharedConversationAgentIds: [this.options.agent.id, ...(this.agentConfigs?.keys() ?? [])],
       resendFiles: this.options.resendFiles,
@@ -2516,12 +2564,23 @@ class AgentClient extends BaseClient {
       requestAttachments,
       sharedRunAttachmentIds,
       attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
+    };
+    const scopedCandidates = await prepareScopedTurnCandidates({
+      ...scopedInputs,
+      appConfig: this.options.req?.config,
+      endpointsByAgentId,
+      signal: this.options.abortController?.signal,
+    });
+    this.options.agentContextAttachmentsByAgentId = resolveScopedTurnAttachments({
+      ...scopedInputs,
+      ...scopedCandidates,
     });
     const scopedAttachmentMap = buildAgentScopedAttachmentMap({
       agentIds: allAgents.map(({ agentId }) => agentId),
       attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
       sharedRunAttachmentIds,
       req: this.options.req,
+      consumers: this.options.agent?.fileConsumers,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint ?? EModelEndpoint.agents,
       endpointType: this.options.endpointType,
       endpointsByAgentId,
@@ -2540,6 +2599,7 @@ class AgentClient extends BaseClient {
       historicalFileIds: this.turnHistoricalAttachmentIds,
       scopedAttachmentsByAgentId: scopedAttachmentMap,
       req: this.options.req,
+      consumers: this.options.agent?.fileConsumers,
       endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
       endpointType: this.options.endpointType,
       endpointsByAgentId,
@@ -2597,10 +2657,12 @@ class AgentClient extends BaseClient {
         };
       }
 
-      const [, files] = await Promise.all([
-        this.addFileContextToMessage(latestMessage, modelBoundRequestAttachments),
-        this.processAttachments(latestMessage, attachments),
-      ]);
+      const files = await this.processMessageAttachments(
+        latestMessage,
+        attachments,
+        undefined,
+        modelBoundRequestAttachments,
+      );
 
       this.options.attachments = files;
     } else {
@@ -5597,6 +5659,10 @@ class AgentClient extends BaseClient {
           checkpointNamespace: this.checkpointNamespace,
           agents,
           files: [...modelBoundAgentFiles, ...dynamicToolContexts],
+          delivery: {
+            routing: this.options.agent?.deliveryRouting,
+            consumers: this.options.agent?.fileConsumers,
+          },
         },
         {
           getAgentCheckpointer,

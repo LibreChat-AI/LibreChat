@@ -1,8 +1,10 @@
 import { FileContext, FileSources, ImageDetail } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { RunFileEncodingAgent, RunFileMessageEncoderDeps } from './encode';
+import type { FileTextDeriver } from '~/files/reading';
 import type { ServerRequest } from '~/types';
 import { AgentAttachmentLimitError, AgentAttachmentPolicyError } from '../attachments';
+import { buildTurnReadingContext, getTurnReadingContext } from '~/files/reading';
 import { resolveTurnDeliveryRouting } from './delivery';
 import { createRunFileMessageEncoder } from './encode';
 
@@ -56,7 +58,10 @@ function setup({
     ]),
   );
   const encodeImages = jest.fn(async () => ({ image_urls: [nativeImage] }));
-  const encodeDocuments = jest.fn(async () => ({ documents: [nativeDocument] }));
+  const encodeDocuments = jest.fn<
+    ReturnType<RunFileMessageEncoderDeps['encodeDocuments']>,
+    Parameters<RunFileMessageEncoderDeps['encodeDocuments']>
+  >(async () => ({ documents: [nativeDocument] }));
   const encodeAudios = jest.fn(async () => ({ audios: [{ type: 'media', data: 'audio' }] }));
   const encodeVideos = jest.fn(async () => ({ videos: [{ type: 'media', data: 'video' }] }));
   const extractText = jest.fn<
@@ -73,7 +78,7 @@ function setup({
     getStrategyFunctions: jest.fn(),
     extractText,
   };
-  return { ...deps, ...createRunFileMessageEncoder(deps) };
+  return { ...deps, encodeDocuments, ...createRunFileMessageEncoder(deps) };
 }
 
 describe('createRunFileMessageEncoder', () => {
@@ -505,5 +510,385 @@ describe('createRunFileMessageEncoder', () => {
     await expect(harness.encode([], 'child')).resolves.toEqual([]);
     expect(harness.encodeDocuments).not.toHaveBeenCalled();
     expect(harness.extractText).not.toHaveBeenCalled();
+  });
+
+  describe('under the automatic policy', () => {
+    const runsCode = { executeCode: true, fileSearch: false };
+    const searches = { executeCode: false, fileSearch: true };
+    const noReader = { executeCode: false, fileSearch: false };
+    const attachment = {
+      context: FileContext.message_attachment,
+      metadata: { destinationChosen: false },
+    };
+    /**
+     * File Search is loaded but queued and registered none of the child's files, as a failed
+     * provisioning leaves it: the walk passes search by, no code tool is loaded, and a document
+     * the provider rejects falls back to its text or, without any, to unavailable.
+     */
+    const withoutSearchFiles = (
+      context: ReturnType<typeof buildTurnReadingContext>,
+    ): ReturnType<typeof buildTurnReadingContext> => {
+      context?.setSearchEvidence({ queued: [], registered: [] });
+      return context;
+    };
+
+    it('admits an oversized file the child reads with Run Code and never counts it', async () => {
+      /* The endpoint size limit is the provider's capacity for a file the policy reads, and a
+       * file left to Run Code never reaches the provider, so it passes the limit and spends none
+       * of the count, byte or text budgets. Classic routing still refuses the same file. */
+      const workbook: TFile = {
+        ...pdf,
+        ...attachment,
+        file_id: 'input-xlsx',
+        filename: 'quarterly.xlsx',
+        filepath: '/files/quarterly.xlsx',
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        bytes: 2 * 1024 * 1024,
+        text: 'quarter,total\nQ1,4',
+        llmDeliveryPath: 'text',
+      };
+      const limits = { fileSizeLimit: 1, fileLimit: 1 };
+      const harness = setup({
+        agents: {
+          automatic: { provider: 'openAI', endpoint: 'automatic', fileConsumers: runsCode },
+          classic: { provider: 'openAI', endpoint: 'classic', fileConsumers: runsCode },
+        },
+        fileConfig: {
+          fileContextSizeLimit: 1,
+          fileContextCharLimit: 5,
+          endpoints: {
+            automatic: { ...limits, llmDeliveryPolicy: 'automatic' },
+            classic: limits,
+          },
+        },
+      });
+
+      await expect(
+        harness.encode([workbook, { ...workbook, file_id: 'second-xlsx' }], 'automatic'),
+      ).resolves.toEqual([]);
+      await expect(harness.encode([workbook], 'classic')).rejects.toBeInstanceOf(
+        AgentAttachmentPolicyError,
+      );
+      expect(harness.encodeDocuments).not.toHaveBeenCalled();
+      expect(harness.extractText).not.toHaveBeenCalled();
+      expect(workbook.llmDeliveryPath).toBe('text');
+    });
+
+    it('inspects a file the child reads with Run Code as classic routing would deliver it', async () => {
+      const csv: TFile = {
+        ...pdf,
+        ...attachment,
+        file_id: 'input-csv',
+        filename: 'sales.csv',
+        filepath: '/files/sales.csv',
+        type: 'text/csv',
+        text: 'region,total\nwest,4',
+        llmDeliveryPath: 'text',
+      };
+      const harness = setup({
+        agents: { child: { provider: 'openAI', fileConsumers: runsCode } },
+        fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } },
+      });
+      harness.req.config!.filters = {
+        files: { pii: { fields: ['content'], starterPatterns: [], uninspectable: 'block' } },
+      };
+
+      await expect(harness.encode([csv], 'child')).resolves.toEqual([]);
+      expect(harness.extractText).not.toHaveBeenCalled();
+    });
+
+    it('leaves out a document the child cannot accept and records it for the next decision', async () => {
+      const brief: TFile = { ...pdf, ...attachment, text: undefined };
+      const harness = setup({
+        agents: {
+          automatic: { provider: 'openAI', endpoint: 'automatic', fileConsumers: searches },
+          classic: { provider: 'openAI', endpoint: 'classic', fileConsumers: searches },
+        },
+        fileConfig: { endpoints: { automatic: { llmDeliveryPolicy: 'automatic' } } },
+      });
+      const child = harness.getAgent('automatic');
+      const context =
+        child &&
+        withoutSearchFiles(
+          buildTurnReadingContext({
+            routing: child.deliveryRouting,
+            provider: 'openAI',
+            fileTokenLimit: 100_000,
+            configuredFileSizeLimit: undefined,
+            countTokens: (text) => text.length,
+          }),
+        );
+      if (child == null || context == null) {
+        throw new Error('expected an automatic reading context');
+      }
+      child.deliveryRouting.reading = context;
+      harness.encodeDocuments.mockResolvedValueOnce({
+        documents: [],
+        rejected: [{ file_id: brief.file_id, reason: 'capacity' }],
+      });
+
+      const [message] = await harness.encode([brief], 'automatic');
+      await harness.encode([brief], 'classic');
+
+      expect(harness.encodeDocuments.mock.calls.map(([, , params]) => params)).toEqual([
+        expect.objectContaining({ endpoint: 'automatic', onValidationFailure: 'skip' }),
+        expect.objectContaining({ endpoint: 'classic', onValidationFailure: 'throw' }),
+      ]);
+      expect(context.judge(brief).rejected).toBe('capacity');
+      expect(context.stats().rejected).toBe(1);
+      expect(getTurnReadingContext(harness.getAgent('classic')?.deliveryRouting)).toBeUndefined();
+      expect(message.content).toBe(
+        [
+          '- Shared files left out of this message (file contents are not listed here):',
+          '\t- "report.pdf" (PDF): cannot be read on this turn (too large to send directly). Say so if asked; do not claim to have read it.',
+        ].join('\n'),
+      );
+    });
+
+    const capacityHarness = ({
+      fileConfig = {},
+      deriveText,
+    }: {
+      fileConfig?: NonNullable<ServerRequest['config']>['fileConfig'];
+      deriveText?: FileTextDeriver;
+    } = {}) => {
+      const harness = setup({
+        agents: { child: { provider: 'anthropic', fileConsumers: searches } },
+        fileConfig: {
+          ...fileConfig,
+          endpoints: {
+            ...fileConfig.endpoints,
+            anthropic: { ...fileConfig.endpoints?.anthropic, llmDeliveryPolicy: 'automatic' },
+          },
+        },
+      });
+      const child = harness.getAgent('child');
+      if (child == null) {
+        throw new Error('expected a child agent');
+      }
+      const context = withoutSearchFiles(
+        buildTurnReadingContext({
+          routing: child.deliveryRouting,
+          provider: 'anthropic',
+          fileTokenLimit: 100_000,
+          configuredFileSizeLimit: undefined,
+          countTokens: (text) => text.length,
+          deriveText,
+        }),
+      );
+      child.deliveryRouting.reading = context;
+      return { ...harness, context, child };
+    };
+
+    it('actually includes cached text after encode-time capacity rejection, once', async () => {
+      const harness = capacityHarness();
+      const file: TFile = { ...pdf, ...attachment, text: 'Complete cached PDF text.' };
+      harness.encodeDocuments.mockResolvedValueOnce({
+        documents: [],
+        rejected: [{ file_id: file.file_id, reason: 'capacity' }],
+      });
+
+      const [message] = await harness.encode([file], 'child');
+
+      const content = JSON.stringify(message.content);
+      expect(content.match(/Complete cached PDF text\./g)).toHaveLength(1);
+      expect(content).not.toContain('file_data');
+      expect(content).not.toContain('left out');
+      expect(harness.extractText).toHaveBeenCalledTimes(1);
+      expect(harness.context?.judge(file).rejected).toBe('capacity');
+      expect(file.llmDeliveryPath).toBe('provider');
+    });
+
+    it('charges a fallback shared with permanent agent context once', async () => {
+      const harness = capacityHarness({
+        fileConfig: { endpoints: { anthropic: { fileLimit: 1 } } },
+      });
+      const file: TFile = { ...pdf, ...attachment, text: 'Complete overlapping PDF text.' };
+      harness.child.agentContextAttachments = [file];
+      harness.encodeDocuments.mockResolvedValueOnce({
+        documents: [],
+        rejected: [{ file_id: file.file_id, reason: 'capacity' }],
+      });
+
+      const [message] = await harness.encode([file], 'child');
+
+      expect(
+        JSON.stringify(message.content).match(/Complete overlapping PDF text\./g),
+      ).toHaveLength(1);
+      expect(harness.context?.judge(file).overflow).not.toBe(true);
+      expect(harness.extractText).toHaveBeenCalledTimes(1);
+    });
+
+    it('derives the capacity fallback after native validation and sends the complete result', async () => {
+      const deriveText = jest.fn<ReturnType<FileTextDeriver>, Parameters<FileTextDeriver>>();
+      deriveText.mockResolvedValue({
+        status: 'derived',
+        text: 'Complete derived PDF text.',
+        textDerivation: { outcome: 'complete', extractor: 'document_parser', at: 2 },
+      });
+      const harness = capacityHarness({ deriveText });
+      const file: TFile = {
+        ...pdf,
+        ...attachment,
+        text: undefined,
+        metadata: { destinationChosen: false, textDerivation: { outcome: 'deferred', at: 1 } },
+      };
+      harness.encodeDocuments.mockResolvedValueOnce({
+        documents: [],
+        rejected: [{ file_id: file.file_id, reason: 'capacity' }],
+      });
+
+      const [message] = await harness.encode([file], 'child');
+
+      expect(deriveText).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(message.content).match(/Complete derived PDF text\./g)).toHaveLength(1);
+      expect(harness.extractText).toHaveBeenCalledTimes(1);
+      expect(file.text).toBeUndefined();
+    });
+
+    it('omits complete text after an integrity rejection', async () => {
+      const harness = capacityHarness();
+      const file: TFile = { ...pdf, ...attachment, text: 'Cached text must not bypass integrity.' };
+      harness.encodeDocuments.mockResolvedValueOnce({
+        documents: [],
+        rejected: [{ file_id: file.file_id, reason: 'integrity' }],
+      });
+
+      const [message] = await harness.encode([file], 'child');
+
+      expect(JSON.stringify(message.content)).not.toContain(file.text);
+      expect(harness.extractText).not.toHaveBeenCalled();
+      expect(message.content).toEqual(expect.stringContaining('could not accept it'));
+    });
+
+    it('moves an aggregate-overflowed derived fallback to unavailable before extraction', async () => {
+      const harness = capacityHarness({
+        fileConfig: { fileContextCharLimit: 8 },
+        deriveText: async () => ({
+          status: 'derived',
+          text: 'This complete text fits per-file but exceeds the aggregate.',
+          textDerivation: { outcome: 'complete', extractor: 'document_parser' },
+        }),
+      });
+      const file: TFile = { ...pdf, ...attachment, text: undefined };
+      harness.encodeDocuments.mockResolvedValueOnce({
+        documents: [],
+        rejected: [{ file_id: file.file_id, reason: 'capacity' }],
+      });
+
+      const [message] = await harness.encode([file], 'child');
+
+      expect(harness.extractText).not.toHaveBeenCalled();
+      expect(harness.context?.judge(file).overflow).toBe(true);
+      expect(JSON.stringify(message.content)).not.toContain('This complete text fits');
+    });
+
+    it('derives the text a file needs inside encode, and validates it without the text', async () => {
+      /* No file tool is loaded, so the deferred workbook keeps its classic text route, which
+       * has no text yet and needs it derived. Validation stays synchronous: the copy is not
+       * model-bound until its text exists, so nothing is counted. */
+      const workbook: TFile = {
+        ...pdf,
+        ...attachment,
+        file_id: 'input-xlsx',
+        filename: 'quarterly.xlsx',
+        filepath: '/files/quarterly.xlsx',
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        text: undefined,
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false, textDerivation: { outcome: 'deferred' } },
+      };
+      const harness = setup({
+        agents: { child: { provider: 'openAI', fileConsumers: noReader } },
+        fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } },
+      });
+      const deriveText = jest.fn<ReturnType<FileTextDeriver>, Parameters<FileTextDeriver>>(
+        async () => ({
+          status: 'derived',
+          text: 'quarter,total\nQ1,42',
+          textDerivation: { outcome: 'complete', extractor: 'document_parser', at: 1 },
+        }),
+      );
+      const child = harness.getAgent('child');
+      const context =
+        child &&
+        buildTurnReadingContext({
+          routing: child.deliveryRouting,
+          provider: 'openAI',
+          fileTokenLimit: 100_000,
+          configuredFileSizeLimit: undefined,
+          countTokens: (text) => text.length,
+          deriveText,
+        });
+      if (child == null || context == null) {
+        throw new Error('expected an automatic reading context');
+      }
+      child.deliveryRouting.reading = context;
+
+      expect(() => harness.validate([workbook], 'child')).not.toThrow();
+      expect(deriveText).not.toHaveBeenCalled();
+
+      const [message] = await harness.encode([workbook], 'child');
+
+      expect(deriveText).toHaveBeenCalledTimes(1);
+      expect(deriveText).toHaveBeenCalledWith(
+        expect.objectContaining({ file_id: 'input-xlsx' }),
+        undefined,
+      );
+      expect(harness.extractText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attachments: [
+            expect.objectContaining({ file_id: 'input-xlsx', text: 'quarter,total\nQ1,42' }),
+          ],
+        }),
+      );
+      expect(message.content).toEqual(expect.stringContaining('Q1,42'));
+      expect(workbook.text).toBeUndefined();
+    });
+
+    it('reuses the token count the reading judged and marks any truncation', async () => {
+      /* The byte length exceeds the 10-token limit, so the judge counts (3 tokens) and the
+       * text fits. Recounting with the host tokenizer (one per character) would truncate it. */
+      const csv: TFile = {
+        ...pdf,
+        ...attachment,
+        file_id: 'input-csv',
+        filename: 'sales.csv',
+        filepath: '/files/sales.csv',
+        type: 'text/csv',
+        text: 'region,total\nwest,4',
+        llmDeliveryPath: 'text',
+      };
+      const harness = setup({
+        agents: { child: { provider: 'openAI', fileConsumers: searches } },
+        fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } },
+      });
+      harness.req.body = { fileTokenLimit: 10 };
+      const child = harness.getAgent('child');
+      const countTokens = jest.fn(() => 3);
+      const context =
+        child &&
+        buildTurnReadingContext({
+          routing: child.deliveryRouting,
+          provider: 'openAI',
+          fileTokenLimit: 10,
+          configuredFileSizeLimit: undefined,
+          countTokens,
+        });
+      if (child == null || context == null) {
+        throw new Error('expected an automatic reading context');
+      }
+      child.deliveryRouting.reading = context;
+
+      const [message] = await harness.encode([csv], 'child');
+
+      expect(harness.extractText).toHaveBeenCalledWith(
+        expect.objectContaining({ markTruncation: true, knownTokenCount: context.knownTokenCount }),
+      );
+      expect(countTokens).toHaveBeenCalledTimes(1);
+      expect(context.knownTokenCount(csv)).toBe(3);
+      expect(message.content).toEqual(expect.stringContaining('west,4'));
+      expect(message.content).toEqual(expect.not.stringContaining('[Truncated'));
+    });
   });
 });

@@ -4,6 +4,7 @@ import type {
   CodeEnvRefMap,
   FileContext,
   RunFileProvenance,
+  TextDerivation,
   TFile,
   TFileWorkspaceImports,
 } from 'librechat-data-provider';
@@ -160,6 +161,14 @@ export type RunArtifactClaim = {
   file?: RunArtifactFile;
 };
 
+/** What a turn-time text derivation writes onto the record whose upload deferred extraction. */
+export interface FileTextDerivationUpdate {
+  file_id: string;
+  /** The derived text; absent when only a failed marker is recorded. */
+  text?: string;
+  textDerivation: TextDerivation;
+}
+
 export interface IMongoFile extends Omit<Document, 'model'> {
   user: Types.ObjectId;
   conversationId?: string;
@@ -253,6 +262,8 @@ export interface IMongoFile extends Omit<Document, 'model'> {
     destinationChosen?: boolean;
     /** The type the delivery route was resolved against, when conversion changed it. */
     routingMimeType?: string;
+    /** How the text a reader may need was obtained, under the automatic reading policy. */
+    textDerivation?: TextDerivation;
     /** Copies placed in attached workspaces. */
     workspaceImports?: TFileWorkspaceImports;
   };

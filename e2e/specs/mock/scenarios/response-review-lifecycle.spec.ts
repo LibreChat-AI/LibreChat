@@ -144,7 +144,9 @@ for (const mode of ['light', 'dark']) {
       await page.getByRole('button', { name: 'Retry', exact: true }).click();
       await expect.poll(() => decisions.length).toBe(2);
       expect(decisions[1]).toEqual(expected);
-      await expect(page.getByRole('status').filter({ hasText: /decision was received/i })).toBeVisible();
+      await expect(
+        page.getByRole('status').filter({ hasText: /decision was received/i }),
+      ).toBeVisible();
     } finally {
       acknowledgement.resolve();
     }

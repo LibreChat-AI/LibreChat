@@ -1088,6 +1088,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         agentIds: contextAgents.map(({ id }) => id),
         attachmentsByAgentId: buildAgentContextAttachmentsByAgentId(contextAgents),
         req,
+        consumers: primaryConfig.fileConsumers,
         endpoint: primaryConfig.endpoint,
         endpointsByAgentId: new Map(
           contextAgents.map((runAgent) => [runAgent.id, { endpoint: runAgent.endpoint }]),

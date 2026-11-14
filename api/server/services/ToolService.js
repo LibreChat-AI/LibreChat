@@ -1541,14 +1541,16 @@ async function loadToolDefinitionsWrapper({
     }
   }
 
+  let primedSearchFiles;
   if (hasFileSearch && tool_resources) {
     try {
-      const { toolContext } = await primeSearchFiles({
+      const { toolContext, files } = await primeSearchFiles({
         req,
         tool_resources,
         agentId: agent.id,
         agentResourceType,
       });
+      primedSearchFiles = files;
       if (toolContext) {
         dynamicToolContextMap[Tools.file_search] = toolContext;
       }
@@ -1557,6 +1559,8 @@ async function loadToolDefinitionsWrapper({
         '[loadToolDefinitionsWrapper] Error priming search files:',
         getSafeErrorMetadata(error),
       );
+      /* Nothing was primed, so no resource file may be advertised as reachable by search. */
+      primedSearchFiles = [];
     }
   }
 
@@ -1602,6 +1606,7 @@ async function loadToolDefinitionsWrapper({
     mcpToolAliases,
     actionsEnabled,
     primedCodeFiles,
+    primedSearchFiles,
     codeContextEntries,
     oauthActionToolNames,
     codeExecutionContext: resolvedCodeExecutionContext,

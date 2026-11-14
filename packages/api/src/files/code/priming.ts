@@ -258,7 +258,8 @@ export interface CodeContextEntry {
   source?: { storage_session_id: string; file_id: string };
 }
 
-const CODE_FILE_CONTEXT_ROOTS: Record<CodeFileLocation, string> = {
+/** The directory primed code files mount under on each execution route. */
+export const CODE_FILE_CONTEXT_ROOTS: Readonly<Record<CodeFileLocation, string>> = {
   sandbox: '/mnt/data',
   programmatic: '$LIBRECHAT_CODE_DATA_DIR',
 };

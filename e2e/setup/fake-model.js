@@ -8,8 +8,17 @@
  * This exercises the real `Run.create` -> graph -> tool-node pipeline end to end
  * without a live provider or a standalone HTTP mock server: responses are decided
  * from the conversation and the agents' advertised tools.
+ *
+ * The hook runs inside the server process, so it has no HTTP surface of its own.
+ * Each model invocation's prompt (system instructions plus messages, inline file
+ * data left out and document parts listed by file name) is written to
+ * `e2e/.generated/last-request.json` (override: `E2E_MODEL_REQUEST_LOG`) for the
+ * most recent runs, which specs read to assert what the model was actually sent.
  */
+const fs = require('fs');
+const path = require('path');
 const sharp = require('sharp');
+const { createHash, randomUUID } = require('crypto');
 const { FakeChatModel } = require('@librechat/agents');
 const { ChatGenerationChunk } = require('@langchain/core/outputs');
 const { AIMessageChunk } = require('@langchain/core/messages');
@@ -239,8 +248,28 @@ const SKILL_DESCRIPTION =
   'Use this skill to verify LibreChat skill file authoring in mock end-to-end tests.';
 const EDITED_SKILL_DESCRIPTION =
   'Use this edited skill to verify LibreChat skill file authoring in mock end-to-end tests.';
+/**
+ * Prompts that make the model read an attachment with Run Code: the model calls the code tool
+ * with `<token><filename>` for the file the instructions advertise to Run Code, then answers
+ * with the tool output verbatim. The fake code server parses the retained upload for the token.
+ */
+const FILE_ANALYSIS_TARGETS = [
+  { marker: 'E2E_ANALYZE_WORKBOOK', token: 'E2E_WORKBOOK:', extensions: ['.xlsx', '.xls', '.ods'] },
+  { marker: 'E2E_ANALYZE_CSV', token: 'E2E_CSV:', extensions: ['.csv', '.tsv'] },
+];
+const FILE_ANALYSIS_TOOLS = [BASH_TOOL_NAME, 'execute_code'];
+/** A path the queued-file note or the file inventory gives Run Code for an attachment. */
+const ADVERTISED_CODE_PATH = /(?:\/mnt\/data|\$LIBRECHAT_CODE_DATA_DIR)\/(\S+)/g;
+const MODEL_REQUEST_LOG_PATH =
+  process.env.E2E_MODEL_REQUEST_LOG || path.resolve(__dirname, '../.generated/last-request.json');
+const MODEL_REQUEST_LOG_RUNS = 8;
+const MODEL_REQUEST_TEXT_LIMIT = 4_000_000;
 const countedReplies = new Map();
 const slowCountedReplies = new Map();
+/** @type {Array<{ sequence: number; conversationId: string | null; userText: string; invocations: Array<{ systemText: string; promptText: string; documentFiles: string[] }> }>} */
+const modelRequestRuns = [];
+let modelRequestSequence = 0;
+let modelRequestWrite = Promise.resolve();
 
 function messageType(message) {
   if (typeof message.getType === 'function') {
@@ -959,6 +988,73 @@ function replyResponses(text) {
   return null;
 }
 
+/** Text a provider would read from a message part; inline file data is left out. */
+function readableText(value, parts = []) {
+  if (value == null) {
+    return parts;
+  }
+  if (typeof value === 'string') {
+    if (!value.startsWith('data:')) {
+      parts.push(value);
+    }
+    return parts;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => readableText(item, parts));
+    return parts;
+  }
+  if (typeof value === 'object' && !ArrayBuffer.isView(value)) {
+    Object.values(value).forEach((child) => readableText(child, parts));
+  }
+  return parts;
+}
+
+function describePromptMessage(message) {
+  const text = readableText(message?.content).join('\n');
+  const toolCalls = message?.tool_calls?.length ? `\n${JSON.stringify(message.tool_calls)}` : '';
+  return `${messageType(message)}: ${text}${toolCalls}`;
+}
+
+function summarizeModelRequest(messages) {
+  const promptText = messages.map(describePromptMessage).join('\n');
+  return {
+    systemText: collectSystemPromptText(messages),
+    promptText:
+      promptText.length > MODEL_REQUEST_TEXT_LIMIT
+        ? `${promptText.slice(0, MODEL_REQUEST_TEXT_LIMIT)}\n[truncated]`
+        : promptText,
+    documentFiles: [...collectProviderFileNames(messages.map((message) => message?.content))],
+  };
+}
+
+/** Writes the recent runs in order; a failed write is logged and never fails the run. */
+function persistModelRequestLog() {
+  const snapshot = JSON.stringify({ runs: modelRequestRuns });
+  modelRequestWrite = modelRequestWrite
+    .then(() => fs.promises.mkdir(path.dirname(MODEL_REQUEST_LOG_PATH), { recursive: true }))
+    .then(() => fs.promises.writeFile(MODEL_REQUEST_LOG_PATH, snapshot))
+    .catch((error) => {
+      console.warn(`[e2e] fake-model request log not written: ${error?.message ?? error}`);
+    });
+}
+
+/** Opens a run's entry in the request log and returns the per-invocation recorder. */
+function startModelRequestLog({ conversationId, userText }) {
+  modelRequestSequence += 1;
+  const run = {
+    sequence: modelRequestSequence,
+    conversationId: conversationId ?? null,
+    userText,
+    invocations: [],
+  };
+  modelRequestRuns.push(run);
+  modelRequestRuns.splice(0, Math.max(0, modelRequestRuns.length - MODEL_REQUEST_LOG_RUNS));
+  return (promptMessages) => {
+    run.invocations.push(summarizeModelRequest(promptMessages));
+    persistModelRequestLog();
+  };
+}
+
 /**
  * Attaches synthetic usage_metadata on a final empty chunk (the OpenAI
  * streaming pattern) so token-usage SSE events flow end to end in mock runs.
@@ -966,11 +1062,12 @@ function replyResponses(text) {
  * instructions included — since the context snapshot calibrates against it.
  */
 class UsageEmittingFakeChatModel extends FakeChatModel {
-  constructor({ graph, resolveInvocation, resolveOnStream, sleep, ...options }) {
+  constructor({ graph, resolveInvocation, resolveOnStream, recordRequest, sleep, ...options }) {
     super({ ...options, sleep });
     this.graph = graph;
     this.resolveInvocation = resolveInvocation;
     this.resolveOnStream = resolveOnStream;
+    this.recordRequest = recordRequest;
     this.streamSleep = sleep ?? CHUNK_DELAY_MS;
   }
 
@@ -1065,6 +1162,13 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
 
   async *_streamResponseChunks(messages, options, runManager) {
     let outputChars = 0;
+    const { messages: promptMessages, toolDefinitions } = await getStreamAgentView({
+      graph: this.graph,
+      messages: messages ?? [],
+      options,
+      runManager,
+    });
+    this.recordRequest?.(promptMessages);
     const scriptedResponse = await this.resolveInvocation?.(messages, options, runManager);
     const dynamicResponse = scriptedResponse
       ? null
@@ -1092,12 +1196,6 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       outputChars += typeof chunk.text === 'string' ? chunk.text.length : 0;
       yield chunk;
     }
-    const { messages: promptMessages, toolDefinitions } = await getStreamAgentView({
-      graph: this.graph,
-      messages: messages ?? [],
-      options,
-      runManager,
-    });
     /** A provider bills the advertised tool definitions too. The context snapshot counts
      *  them inside its instruction share and reconciles against this total, so leaving
      *  them out would leave too little for the messages and the tool results they hold. */
@@ -1131,6 +1229,7 @@ function overrideModel({
   disableHumanInTheLoop,
   resolveInvocation,
   resolveOnStream,
+  recordRequest,
   modelCallbacks,
 }) {
   /** The shared mock profile enables approval HITL for its dedicated specs.
@@ -1163,6 +1262,7 @@ function overrideModel({
       toolCalls,
       resolveInvocation,
       resolveOnStream,
+      recordRequest,
     });
     model.callbacks = modelCallbacks;
     graph.overrideModel = model;
@@ -3724,7 +3824,7 @@ function provisioningToolResponses({ text, toolNames }) {
       responses: ['', `${FILE_SEARCH_FINAL_TEXT}: ${searchLabel}`],
       toolCalls: [
         {
-          id: FILE_SEARCH_TOOL_CALL_ID,
+          id: `${FILE_SEARCH_TOOL_CALL_ID}_${createHash('sha256').update(searchLabel).digest('hex').slice(0, 12)}`,
           name: FILE_SEARCH_TOOL_NAME,
           args: { query: `e2e ${searchLabel}` },
           type: 'tool_call',
@@ -3734,6 +3834,71 @@ function provisioningToolResponses({ text, toolNames }) {
   }
 
   return null;
+}
+
+/** The base name of the first advertised code path with one of `extensions`. */
+function findAdvertisedCodeFile(systemText, extensions) {
+  return (
+    [...systemText.matchAll(ADVERTISED_CODE_PATH)]
+      .map(([, advertised]) => path.posix.basename(advertised.replace(/[.,;:)"'`]+$/, '')))
+      .find((name) => extensions.some((extension) => name.toLowerCase().endsWith(extension))) ?? ''
+  );
+}
+
+const fileAnalysisArgs = (toolName, code) =>
+  toolName === BASH_TOOL_NAME ? { command: `# ${code}` } : { lang: 'py', code: `# ${code}` };
+
+/**
+ * Reads an attachment through Run Code. The file name comes from the prompt the model is sent,
+ * so the call names exactly the path the run advertised, and the answer is the tool output.
+ */
+function fileAnalysisResponses({ graph, text, toolNames }) {
+  const target = FILE_ANALYSIS_TARGETS.find(({ marker }) => text.includes(marker));
+  if (!target) {
+    return null;
+  }
+  const toolName = FILE_ANALYSIS_TOOLS.find((name) => toolNames.has(name));
+  if (!toolName) {
+    return {
+      responses: [
+        `E2E file analysis unavailable: no code-execution tool advertised (saw ${JSON.stringify([
+          ...toolNames,
+        ])}).`,
+      ],
+    };
+  }
+  /** Unique per run, so an analysis earlier in the conversation is never read as this one. */
+  const toolCallId = `call_e2e_file_analysis_${randomUUID().slice(0, 8)}`;
+  return {
+    responses: [''],
+    resolveInvocation: async (messages, options, runManager) => {
+      const result = findLastToolMessage(messages, toolCallId);
+      if (result) {
+        return { response: getContentText(result.content) };
+      }
+      const view = await getStreamAgentView({ graph, messages, options, runManager });
+      const filename = findAdvertisedCodeFile(
+        collectSystemPromptText(view.messages),
+        target.extensions,
+      );
+      if (!filename) {
+        return {
+          response: `E2E file analysis failed: no ${target.extensions.join('/')} file was advertised to Run Code.`,
+        };
+      }
+      return {
+        response: '',
+        toolCalls: [
+          {
+            id: toolCallId,
+            name: toolName,
+            args: fileAnalysisArgs(toolName, `${target.token}${filename}`),
+            type: 'tool_call',
+          },
+        ],
+      };
+    },
+  };
 }
 
 function codeExecResponses({ filename, toolCallId, finalText, code }, toolNames) {
@@ -3872,6 +4037,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
 
   if (text.includes(MCP_LEGACY_ACTION_MARKER)) {
     return mcpLegacyActionResponses(toolNames);
+  }
+
+  const fileAnalysis = fileAnalysisResponses({ graph, text, toolNames });
+  if (fileAnalysis) {
+    return fileAnalysis;
   }
 
   const provisioningTool = provisioningToolResponses({ text, toolNames });
@@ -4103,6 +4273,10 @@ module.exports = function fakeModelHook(run, context) {
   ) {
     return;
   }
+  const recordRequest = startModelRequestLog({
+    conversationId: context?.conversationId,
+    userText: text,
+  });
   const toolNames = collectToolNames(context?.agents);
   const handoffScript = parseHandoffScript(text);
   const {
@@ -4146,6 +4320,7 @@ module.exports = function fakeModelHook(run, context) {
       approvalOutcomeResponses(streamMessages) ??
       resolveOnStream?.(streamMessages, streamOptions, runManager) ??
       null,
+    recordRequest,
     modelCallbacks: context?.modelCallbacks,
   });
 };

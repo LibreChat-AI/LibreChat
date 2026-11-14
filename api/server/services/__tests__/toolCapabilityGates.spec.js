@@ -38,9 +38,11 @@ const CLASSIFIED = {
   /** `codeEnvAvailable` for the memory-agent initializer. */
   'api/server/controllers/agents/client.js': 1,
   /** Upload processing: two consumer-map entries, the role-gated consumer checks,
-   *  and the code-environment/file-search branches. All consumer selection shares
-   *  the role grant resolved before routing. */
-  'api/server/services/Files/process.js': 5,
+   *  the code-environment/file-search branches, and the upload-time Run Code read
+   *  that decides whether a spreadsheet is left to code, paired with the Run Code
+   *  grant inside `resolveUploadCodePossible`. All consumer selection shares the
+   *  role grant resolved before routing. */
+  'api/server/services/Files/process.js': 6,
   /** Agent-management upload purposes. */
   'api/server/routes/agents/management.js': 2,
   /** Two gates, each paired when the embedder wires `getRoleByName`; one in a
