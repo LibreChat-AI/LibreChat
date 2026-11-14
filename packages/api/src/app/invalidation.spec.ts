@@ -183,6 +183,26 @@ describe('createConfigCacheInvalidation', () => {
     expect(second.clearOverrides).not.toHaveBeenCalled();
   });
 
+  it('releases borrowed listeners without waiting for an unavailable unsubscribe acknowledgement', async () => {
+    const broker = createBroker();
+    const subscriber = broker.subscriber();
+    jest.spyOn(subscriber, 'unsubscribe').mockImplementation(() => new Promise(() => undefined));
+    const invalidation = createConfigCacheInvalidation({
+      clears: [],
+      pubsub: { publisher: broker.publisher(), subscriber },
+    });
+    let closed = false;
+
+    void invalidation.close().then(() => {
+      closed = true;
+    });
+    await flush();
+
+    expect(closed).toBe(true);
+    expect(subscriber.events.listenerCount('message')).toBe(0);
+    expect(subscriber.events.listenerCount('ready')).toBe(0);
+  });
+
   it('releases an owned pub/sub pair once instead of awaiting unsubscribe', async () => {
     const broker = createBroker();
     const subscriber = broker.subscriber();

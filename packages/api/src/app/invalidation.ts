@@ -224,7 +224,7 @@ export function createConfigCacheInvalidation(params: {
       pubsub.close();
       return;
     }
-    await pubsub.subscriber.unsubscribe(channel);
+    void pubsub.subscriber.unsubscribe(channel).catch(() => undefined);
   }
 
   return { invalidate, reload, close };

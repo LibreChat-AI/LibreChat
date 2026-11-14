@@ -71,12 +71,18 @@ export function createIoRedisSubscriber(client: Redis | Cluster, label: string):
   subscriber.on('ready', () => {
     logger.info(`${label} ready`);
   });
-  startRedisHeartbeat({
+  const stopHeartbeat = startRedisHeartbeat({
     client: subscriber,
     intervalMs: cacheConfig.REDIS_SUBSCRIBER_PING_INTERVAL * 1000,
     timeoutMs: cacheConfig.REDIS_PING_TIMEOUT,
     label,
   });
+  // An already-closed reconnecting socket need not emit another `end`.
+  const disconnect = subscriber.disconnect.bind(subscriber);
+  subscriber.disconnect = (reconnect?: boolean): void => {
+    if (reconnect !== true) stopHeartbeat();
+    disconnect(reconnect);
+  };
   return subscriber;
 }
 

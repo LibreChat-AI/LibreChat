@@ -42,6 +42,74 @@ function deliverSequencedMessage(
 }
 
 describe('RedisEventTransport', () => {
+  it('cancels a pending attachment locally and disconnects its subscriber only once', async () => {
+    jest.useFakeTimers();
+    const publisher = createMockPublisher();
+    const subscriber = { ...createMockSubscriber(), disconnect: jest.fn() };
+    subscriber.subscribe.mockImplementation(() => new Promise(() => undefined));
+    const transport = new RedisEventTransport(
+      publisher as unknown as Redis,
+      subscriber as unknown as Redis,
+    );
+    try {
+      const attachment = transport.subscribe('unacknowledged-close', { onChunk: jest.fn() });
+      const ready = attachment.ready?.then(
+        () => 'ready',
+        (error: unknown) => error,
+      );
+
+      transport.destroy();
+      transport.destroy();
+
+      expect(await ready).toBeInstanceOf(Error);
+      expect(subscriber.disconnect).toHaveBeenCalledTimes(1);
+      expect(subscriber.unsubscribe).not.toHaveBeenCalled();
+      jest.runAllTicks();
+      expect(jest.getTimerCount()).toBe(0);
+      expect(() => transport.subscribe('after-close', { onChunk: jest.fn() })).toThrow(
+        'Redis event transport is closed.',
+      );
+    } finally {
+      transport.destroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not publish a frontier or reopen a channel after destruction during subscribe', async () => {
+    const publisher = createMockPublisher();
+    const subscriber = createMockSubscriber();
+    let acknowledge!: () => void;
+    subscriber.subscribe.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          acknowledge = resolve;
+        }),
+    );
+    const transport = new RedisEventTransport(
+      publisher as unknown as Redis,
+      subscriber as unknown as Redis,
+    );
+    const attachment = transport.subscribe(
+      'destroyed-attachment',
+      { onChunk: jest.fn() },
+      {
+        deferSequenceDelivery: true,
+        captureSequenceFrontier: true,
+      },
+    );
+    const ready = attachment.ready?.then(
+      () => 'ready',
+      (error: unknown) => error,
+    );
+
+    transport.destroy();
+    acknowledge();
+
+    expect(await ready).toBeInstanceOf(Error);
+    expect(publisher.eval).not.toHaveBeenCalled();
+    expect(transport.getTrackedStreamIds()).toEqual([]);
+  });
+
   it('delivers tagged events and preserves legacy in-memory callback arity', () => {
     const transport = new InMemoryEventTransport();
     const onChunk = jest.fn();

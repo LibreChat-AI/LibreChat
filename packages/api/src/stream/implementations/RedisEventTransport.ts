@@ -251,6 +251,7 @@ interface SubscriptionFrontierWaiter {
 
 interface ChannelSubscriptionState {
   ready: Promise<void>;
+  cancel?: () => void;
   phase: 'pending' | 'active';
   /** A timed-out predecessor became active while this replacement was pending. */
   fallbackActive: boolean;
@@ -304,6 +305,12 @@ interface StreamSubscribers {
  * ```
  */
 export class RedisEventTransport implements IEventTransport {
+  private destroyed = false;
+
+  private assertOpen(): void {
+    if (this.destroyed) throw new Error('Redis event transport is closed.');
+  }
+
   /** Redis client for publishing events */
   private publisher: Redis | Cluster;
   /** Redis client for subscribing to events (separate connection required) */
@@ -338,6 +345,7 @@ export class RedisEventTransport implements IEventTransport {
   }
 
   private getOrCreateStreamState(streamId: string): StreamSubscribers {
+    this.assertOpen();
     const existing = this.streams.get(streamId);
     if (existing) {
       return existing;
@@ -353,6 +361,7 @@ export class RedisEventTransport implements IEventTransport {
     streamId: string,
     replay = false,
   ): Promise<number | ReplaySnapshot> {
+    this.assertOpen();
     const subscriptionFrontierId = randomUUID();
     let operationTimeout: ReturnType<typeof setTimeout> | undefined;
     const observed = new Promise<void>((resolve, reject) => {
@@ -396,6 +405,7 @@ export class RedisEventTransport implements IEventTransport {
         operationTimeout.unref?.();
       });
       const [raw] = await Promise.race([operation, operationDeadline]);
+      this.assertOpen();
       const counter = replay ? (raw as [string, string[]])[0] : raw;
       const parsed = counter != null ? parseInt(String(counter), 10) : 0;
       const frontier = Number.isNaN(parsed) ? 0 : parsed;
@@ -441,7 +451,7 @@ export class RedisEventTransport implements IEventTransport {
 
     // Set up message handler for all subscriptions
     this.subscriber.on('message', (channel: string, message: string) => {
-      this.handleMessage(channel, message);
+      if (!this.destroyed) this.handleMessage(channel, message);
     });
   }
 
@@ -677,6 +687,7 @@ export class RedisEventTransport implements IEventTransport {
   }
 
   private ensureChannelSubscription(streamId: string): Promise<void> {
+    this.assertOpen();
     const channel = CHANNELS.events(streamId);
     const existing = this.channelSubscriptions.get(channel);
     if (existing) {
@@ -692,6 +703,10 @@ export class RedisEventTransport implements IEventTransport {
       fallbackActive: false,
     };
     const deadline = new Promise<never>((_, reject) => {
+      state.cancel = () => {
+        clearTimeout(timeout);
+        reject(new Error('Redis event transport is closed.'));
+      };
       timeout = setTimeout(() => {
         expired = true;
         reject(new Error(`Timed out synchronizing Redis subscription for ${channel}`));
@@ -699,6 +714,7 @@ export class RedisEventTransport implements IEventTransport {
       timeout.unref?.();
     });
     const ready = Promise.race([operation, deadline]).then(() => {
+      this.assertOpen();
       state.phase = 'active';
       state.fallbackActive = false;
       logger.debug(`[RedisEventTransport] Subscription active for channel ${channel}`);
@@ -707,7 +723,7 @@ export class RedisEventTransport implements IEventTransport {
     operation.then(
       () => {
         if (timeout != null) clearTimeout(timeout);
-        if (expired) {
+        if (expired && !this.destroyed) {
           const current = this.channelSubscriptions.get(channel);
           if (current == null || current === state) {
             if (current === state) this.channelSubscriptions.delete(channel);
@@ -725,6 +741,7 @@ export class RedisEventTransport implements IEventTransport {
     );
     this.channelSubscriptions.set(channel, state);
     void ready.catch((err) => {
+      if (this.destroyed) return;
       if (this.channelSubscriptions.get(channel) === state) {
         this.channelSubscriptions.delete(channel);
         if (state.fallbackActive) this.trackOrReleaseActiveChannel(streamId, channel);
@@ -1943,11 +1960,14 @@ export class RedisEventTransport implements IEventTransport {
    * Destroy all resources.
    */
   destroy(): void {
-    for (const streamId of new Set(
-      [...this.subscriptionFrontierWaiters.values()].map((waiter) => waiter.streamId),
-    )) {
-      this.releaseSubscriptionFrontiers(streamId);
+    if (this.destroyed) return;
+    this.destroyed = true;
+    for (const waiter of this.subscriptionFrontierWaiters.values()) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error('Redis event transport is closed.'));
     }
+    this.subscriptionFrontierWaiters.clear();
+    for (const state of this.channelSubscriptions.values()) state.cancel?.();
     for (const streamId of this.pendingBatches.keys()) {
       this.discardCoalescedChunks(streamId);
     }
@@ -1967,10 +1987,6 @@ export class RedisEventTransport implements IEventTransport {
         waiter.resolve(false);
       }
       state.abortAckWaiters.clear();
-    }
-
-    for (const channel of this.channelSubscriptions.keys()) {
-      this.subscriber.unsubscribe(channel).catch(() => {});
     }
 
     this.channelSubscriptions.clear();
