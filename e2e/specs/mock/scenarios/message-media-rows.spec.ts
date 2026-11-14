@@ -186,6 +186,82 @@ async function ensureExpanded(row: Locator) {
   await expect(row).toHaveAttribute('aria-expanded', 'true');
 }
 
+const FOLD_PROPERTIES = [
+  'display',
+  'grid-template-rows',
+  'opacity',
+  'transition-property',
+  'transition-duration',
+  'transition-timing-function',
+  'transition-delay',
+];
+const DEV_FOLD_TRANSITION =
+  'grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1)';
+const DEV_FOLD_REDUCED = 'grid-template-rows 0.01ms linear, opacity 0.01ms linear';
+const DEV_SETTLE = 'transform-origin: center top; will-change: opacity, transform';
+
+/**
+ * Where a stylesheet rule replaced an inline style, the app's later stylesheet can win a tie the
+ * inline style never lost. This clones the element beside itself without the rule's class and
+ * with dev's declarations inline, then lists every property whose computed value differs.
+ */
+async function devDifferences(
+  target: Locator,
+  className: string,
+  inline: string,
+  properties: string[],
+): Promise<string[]> {
+  return target.evaluate(
+    (element, [name, css, names]) => {
+      const dev = element.cloneNode(true) as HTMLElement;
+      dev.classList.remove(name);
+      dev.removeAttribute('id');
+      dev.style.cssText = css;
+      element.after(dev);
+      const real = getComputedStyle(element);
+      const expected = getComputedStyle(dev);
+      const differences = names
+        .split(',')
+        .filter(
+          (property) => real.getPropertyValue(property) !== expected.getPropertyValue(property),
+        )
+        .map(
+          (property) =>
+            `${property}: ${real.getPropertyValue(property)} (dev ${expected.getPropertyValue(property)})`,
+        );
+      dev.remove();
+      return differences;
+    },
+    [className, inline, properties.join(',')] as const,
+  );
+}
+
+async function expectDevFold(fold: Locator, open: boolean, reduced = false) {
+  await expect(fold).toHaveAttribute('data-open', open ? 'true' : 'false');
+  const inline = [
+    'display: grid',
+    `grid-template-rows: ${open ? '1fr' : '0fr'}`,
+    `opacity: ${open ? 1 : 0}`,
+    `transition: ${reduced ? DEV_FOLD_REDUCED : DEV_FOLD_TRANSITION}`,
+  ].join('; ');
+  await expect
+    .poll(() => devDifferences(fold, 'part-fold', inline, FOLD_PROPERTIES), { timeout: 5000 })
+    .toEqual([]);
+}
+
+async function expectDevSettle(settle: Locator) {
+  await expect
+    .poll(
+      () =>
+        devDifferences(settle, 'attachment-settle', DEV_SETTLE, [
+          'transform-origin',
+          'will-change',
+        ]),
+      { timeout: 5000 },
+    )
+    .toEqual([]);
+}
+
 test.describe('attachment and file search rows', () => {
   test('a file search row lists its matched files and opens the preview @scenario:file-search-row-lists-matched-files-and-opens-preview', async ({
     page,
@@ -276,6 +352,47 @@ test.describe('attachment and file search rows', () => {
     } finally {
       await cleanup(search.conversationId);
       await cleanup(artifact.conversationId);
+    }
+  });
+
+  test('the fold and settle rules keep the motion dev drew inline @scenario:attachment-and-file-search-rows-keep-their-fold-and-settle-motion', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    const search = await seed('Fold motion search', searchMessages);
+    const files = await seed('Fold motion files', (id) =>
+      codeMessages(id, [ARCHIVE, SECOND_ARCHIVE]),
+    );
+    try {
+      await page.goto(`/c/${search.conversationId}`, { timeout: 15000 });
+      const row = searchRow(page);
+      await expect(row).toBeVisible({ timeout: 15000 });
+      const retrievalFold = messagesView(page).locator('.part-fold');
+      await expect(retrievalFold).toHaveCount(1);
+      const startsOpen = (await row.getAttribute('aria-expanded')) === 'true';
+      await expectDevFold(retrievalFold, startsOpen);
+      if (!startsOpen) {
+        await ensureExpanded(row);
+      }
+      await expectDevFold(retrievalFold, true);
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await expectDevFold(retrievalFold, true, true);
+      await page.emulateMedia({ reducedMotion: 'no-preference' });
+
+      await page.goto(`/c/${files.conversationId}`, { timeout: 15000 });
+      const toggle = messagesView(page).getByRole('button', { name: /^(Show|Hide) 2 files$/ });
+      await expect(toggle).toBeVisible({ timeout: 15000 });
+      const groupFold = messagesView(page).locator('.part-fold');
+      await expect(groupFold).toHaveCount(1);
+      await expectDevFold(groupFold, false);
+      await expectDevSettle(messagesView(page).locator('.attachment-settle').first());
+      await toggle.click();
+      await expectDevFold(groupFold, true);
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await expectDevFold(groupFold, true, true);
+    } finally {
+      await cleanup(search.conversationId);
+      await cleanup(files.conversationId);
     }
   });
 });

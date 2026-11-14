@@ -146,6 +146,26 @@ describe('AttachmentGroup', () => {
     );
   });
 
+  it('takes the collapsed files out of the tab order and the accessibility tree', () => {
+    renderRow(
+      <AttachmentGroup
+        attachments={[file(), file({ file_id: 'file-2', filename: 'raw-data.zip' })]}
+      />,
+    );
+
+    const toggle = screen.getByRole('button', { name: 'Show 2 files' });
+    const folded = document.getElementById(
+      toggle.getAttribute('aria-controls') ?? '',
+    )?.firstElementChild;
+    expect(folded).toHaveAttribute('aria-hidden', 'true');
+    expect(folded).toHaveAttribute('inert');
+
+    fireEvent.click(toggle);
+
+    expect(folded).toHaveAttribute('aria-hidden', 'false');
+    expect(folded).not.toHaveAttribute('inert');
+  });
+
   it('draws one file without a toggle', () => {
     renderRow(<AttachmentGroup attachments={[file()]} />);
 
