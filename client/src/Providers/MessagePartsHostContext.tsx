@@ -44,6 +44,7 @@ import ToolIcon, { getToolIconType } from '~/components/Chat/Messages/Content/To
 import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import ToolCallInfo from '~/components/Chat/Messages/Content/ToolCallInfo';
+import { AnimatedText } from '~/components/Chat/Messages/Content/animate';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
@@ -176,6 +177,7 @@ function useAppToolCallChrome(): ToolCallChrome {
 export const appMessagePartsHost: MessagePartsHost = {
   useMessage: useAppMessage,
   renderMarkdown: (props) => getAppPartRenderers().renderMarkdown(props),
+  renderStreamingText: (text) => <AnimatedText text={text} />,
   renderImage: (props) => getAppPartRenderers().renderImage(props),
   renderFilePreview: (props) => getAppPartRenderers().renderFilePreview(props),
   useSmoothStreaming,

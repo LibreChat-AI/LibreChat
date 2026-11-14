@@ -1,35 +1,18 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import '@testing-library/jest-dom';
+import type { ReactNode } from 'react';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { MessagePartsHostProvider } from '../../../react/host';
 import { ReasoningCompact } from '../Reasoning';
+import { ROW_GLYPH_SLOT } from '../rows';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
-}));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  CopyButton: () => <button type="button">{'copy'}</button>,
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
-    ref: { current: null },
-  }),
-}));
-
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useLazyCollapseBody: (isExpanded: boolean) => ({
-    shouldRenderBody: isExpanded,
-    mountBody: jest.fn(),
-    handleTransitionEnd: jest.fn(),
-  }),
-}));
-
-jest.mock('../Thinking', () => ({
-  ThinkingContent: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
-  ThinkingButton: () => <button type="button">{'thinking'}</button>,
-  FloatingThinkingBar: () => null,
-  useInViewport: () => ({ ref: { current: null }, inViewport: true }),
 }));
 
 jest.mock('lucide-react', () => ({
@@ -39,9 +22,17 @@ jest.mock('lucide-react', () => ({
   ),
 }));
 
+function renderCompact(node: ReactNode) {
+  return render(
+    <MessagePartsHostProvider host={createMessagePartsHost()}>{node}</MessagePartsHostProvider>,
+  );
+}
+
 describe('ReasoningCompact', () => {
   it('always shows its own Thoughts chevron', () => {
-    render(<ReasoningCompact reasoning="A useful thought" label="Thoughts" showThinking={false} />);
+    renderCompact(
+      <ReasoningCompact reasoning="A useful thought" label="Thoughts" showThinking={false} />,
+    );
 
     const button = screen.getByRole('button', { name: 'Thoughts' });
     const chevron = screen.getByTestId('thoughts-chevron');
@@ -52,33 +43,28 @@ describe('ReasoningCompact', () => {
   });
 
   it('takes the shared glyph slot so it lands on the row rail', () => {
-    /** Every other row under a message header centers its glyph in the 24px
-     *  slot, including the `ThinkingLabel` marker that stands in for this
-     *  exact row when a projection has no text. Bare, the bulb sat on the
-     *  pre-rail axis and the label 8px left of its neighbours. */
-    render(<ReasoningCompact reasoning="A useful thought" label="Thoughts" showThinking={false} />);
+    renderCompact(
+      <ReasoningCompact reasoning="A useful thought" label="Thoughts" showThinking={false} />,
+    );
 
     const slot = screen.getByTestId('thoughts-icon').parentElement;
     for (const token of ROW_GLYPH_SLOT.split(' ')) {
       expect(slot).toHaveClass(token);
     }
-    /** 24px slot plus the row's 8px gap is what puts the label where the
-     *  header's name starts. */
     expect(screen.getByRole('button', { name: 'Thoughts' })).toHaveClass('gap-2');
   });
 
   it('spaces its header like a tool row', () => {
-    render(<ReasoningCompact reasoning="A useful thought" label="Thoughts" showThinking={false} />);
+    renderCompact(
+      <ReasoningCompact reasoning="A useful thought" label="Thoughts" showThinking={false} />,
+    );
 
     const header = screen.getByRole('button', { name: 'Thoughts' }).parentElement;
     expect(header).toHaveClass('my-1.5', 'h-5');
   });
 
   it('leaves the full reasoning text unmounted while collapsed', () => {
-    /** Collapsed is the default whenever thoughts are hidden, and a streaming
-     *  THINK part re-renders on every delta, so keeping the whole text mounted
-     *  behind the invisible panel cost layout work for nothing. */
-    render(
+    renderCompact(
       <ReasoningCompact
         reasoning="A long stream of reasoning"
         label="Thoughts"
@@ -91,12 +77,8 @@ describe('ReasoningCompact', () => {
   });
 
   it('opens from the host preference rather than the app store', () => {
-    render(
-      <ReasoningCompact
-        reasoning="A long stream of reasoning"
-        label="Thoughts"
-        showThinking={true}
-      />,
+    renderCompact(
+      <ReasoningCompact reasoning="A long stream of reasoning" label="Thoughts" showThinking />,
     );
 
     expect(screen.getByText('A long stream of reasoning')).toBeInTheDocument();
@@ -106,7 +88,7 @@ describe('ReasoningCompact', () => {
     const encoded = Buffer.from(Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256)).toString(
       'base64',
     );
-    render(
+    renderCompact(
       <ReasoningCompact
         reasoning={`Checking the manifest.\n${encoded}\nRolling back.`}
         label="Thoughts"
@@ -124,7 +106,7 @@ describe('ReasoningCompact', () => {
     const prefix = Buffer.from(Array.from({ length: 75 }, (_, i) => (i * 37 + 3) % 256)).toString(
       'base64',
     );
-    render(
+    renderCompact(
       <ReasoningCompact
         reasoning={`Checking the manifest. ${prefix}`}
         label="Thinking"

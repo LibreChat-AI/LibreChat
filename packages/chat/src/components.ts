@@ -327,3 +327,30 @@ export type {
   PendingToolApprovalButtonProps,
   PendingToolApprovalPanelProps,
 } from './components/approval/Review';
+
+/** Reasoning, thinking and web search parts, with the source and viewport helpers they share. */
+export {
+  default as Thinking,
+  FloatingThinkingBar,
+  ThinkingButton,
+  ThinkingContent,
+  ThinkingLabel,
+} from './components/parts/Thinking';
+export {
+  default as Reasoning,
+  ReasoningCompact,
+  ReasoningMarker,
+  StreamingThoughtPeek,
+} from './components/parts/Reasoning';
+export { default as WebSearch } from './components/parts/WebSearch';
+export type {
+  WebSearchFailedCall,
+  WebSearchFaviconProps,
+  WebSearchStackProps,
+} from './components/parts/WebSearch';
+export {
+  collectSources,
+  getCleanDomain,
+  getSourceDomains,
+  getUniqueDomainSources,
+} from './components/parts/sources';
