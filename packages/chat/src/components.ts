@@ -218,6 +218,7 @@ export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';
 export { default as ChatScreen } from './components/pane/Screen';
 export { default as ChatStarters } from './components/pane/starters';
 export { getChatPaneChrome } from './components/pane/chrome';
+export { loadScreenMessages } from './components/pane/load';
 export type {
   ChatScreenProps,
   ChatScreenComposerProps,

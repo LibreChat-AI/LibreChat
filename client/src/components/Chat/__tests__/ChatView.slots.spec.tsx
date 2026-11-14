@@ -4,11 +4,16 @@ import type { ChatScreenMessagesSlots, ChatScreenProps } from '@librechat/chat/c
 import type { ReactElement, ReactNode } from 'react';
 import PendingSteers from '../Messages/Content/Parts/PendingSteers';
 import PendingTurn from '../Messages/PendingTurn';
+import { messagesSlots } from '../Messages/slots';
+import { renderMessages } from '../Messages/load';
 import { FLAT_THREAD } from '../Messages/Thread';
 import { render } from 'test/layout-test-utils';
 import ChatView from '../ChatView';
 
 const mockScreenProps = jest.fn<void, [ChatScreenProps]>();
+
+/** The row hosts import the whole message renderer; the slots under test do not need them. */
+jest.mock('../Messages/hosts', () => ({}));
 
 jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
@@ -70,12 +75,8 @@ jest.mock('../Footer', () => ({
   useLandingFooter: () => true,
 }));
 
-const screenSlots = (): ChatScreenMessagesSlots => {
-  render(<ChatView />);
-  const props = mockScreenProps.mock.calls.at(-1)?.[0];
-  expect(props?.renderMessages).toBeUndefined();
-  return props?.messagesSlots ?? {};
-};
+/** The slots load with the list, so ChatView hands the screen the loader's renderer. */
+const screenSlots = (): ChatScreenMessagesSlots => messagesSlots;
 
 const scrollableRef = createRef<HTMLDivElement>();
 
@@ -88,6 +89,13 @@ function element(node: ReactNode): ReactElement {
 }
 
 describe('ChatView message list slots', () => {
+  test('hands the screen the on-demand list instead of the slots', () => {
+    render(<ChatView />);
+    const props = mockScreenProps.mock.calls.at(-1)?.[0];
+    expect(props?.renderMessages).toBe(renderMessages);
+    expect(props?.messagesSlots).toBeUndefined();
+  });
+
   test('leaves the list to ChatScreen and fills it with the app thread mode', () => {
     expect(screenSlots().flatThread).toBe(FLAT_THREAD);
   });

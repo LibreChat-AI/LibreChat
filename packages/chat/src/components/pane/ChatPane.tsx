@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { Suspense, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { cn, Spinner } from '@librechat/client';
 import type { ReactElement, ReactNode, RefObject } from 'react';
@@ -52,7 +52,8 @@ function LoadingSpinner(): ReactElement {
 const columns: Record<ChatPaneColumn, (props: ChatPaneProps) => ReactNode> = {
   loading: () => <LoadingSpinner />,
   landing: ({ landing }) => landing,
-  messages: ({ messages }) => messages,
+  /* The message list loads on demand, so the column shows the spinner until it arrives. */
+  messages: ({ messages }) => <Suspense fallback={<LoadingSpinner />}>{messages}</Suspense>,
 };
 
 /**

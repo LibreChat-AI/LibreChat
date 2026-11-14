@@ -21,8 +21,12 @@ import { migrateStoredFileDeletions } from '~/utils';
 import store from '~/store';
 
 const Artifacts = lazyWithRecovery(() => import('~/components/Artifacts/Artifacts'));
+/** The panel draws message rows, so the app's message hosts load with it. */
 const SubagentThreadPanel = lazyWithRecovery(() =>
-  import('@librechat/chat/components').then((module) => module.loadSubagentThreadPanel()),
+  Promise.all([
+    import('@librechat/chat/components').then((module) => module.loadSubagentThreadPanel()),
+    import('~/components/Chat/Messages/hosts'),
+  ]).then(([panel]) => panel),
 );
 
 export default function Presentation({

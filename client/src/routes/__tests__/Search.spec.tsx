@@ -71,6 +71,8 @@ jest.mock('~/hooks', () => ({
   useElementSize: () => ({ ref: () => {}, width: 800, height: 600 }),
 }));
 jest.mock('~/store', () => ({ __esModule: true, default: { search: 'search-atom' } }));
+/** The row hosts import the whole message renderer; `SearchMessage` is stubbed below. */
+jest.mock('~/components/Chat/Messages/hosts', () => ({}));
 jest.mock('~/components/Chat/Messages/SearchMessage', () => ({
   __esModule: true,
   default: ({ message }: { message: { text: string } }) => (
