@@ -12,11 +12,20 @@ test.describe('composer frame', () => {
   test('a click on the surface focuses the draft, a popup trigger keeps it @scenario:composer-surface-click-focuses-draft', async ({
     page,
   }) => {
+    await page.addInitScript(() => {
+      window.addEventListener('librechat:welcome-greeting-settled', () => {
+        document.documentElement.dataset.greetingSettled = 'true';
+      });
+    });
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     const input = page.getByRole('textbox', { name: 'Message input' });
     const surface = page.getByTestId('composer-surface');
 
+    /* Let the welcome autofocus finish before testing the frame's separate click behavior. */
+    await expect(page.locator('html')).toHaveAttribute('data-greeting-settled', 'true', {
+      timeout: 20000,
+    });
     await page.locator('body').click({ position: { x: 5, y: 5 } });
     await expect(input).not.toBeFocused();
 
