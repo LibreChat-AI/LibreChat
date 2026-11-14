@@ -100,7 +100,24 @@ export async function resolveTokenConfigMap(
   );
 }
 
+export type GoogleBillingConfig = Pick<
+  ResolveTokenConfigParams,
+  'googleUsesVertex' | 'googleLocation'
+>;
+
+/** Resolve existing deployment settings at the application wiring boundary. */
+export function getGoogleBillingConfig(environment: {
+  GOOGLE_KEY?: string;
+  GOOGLE_LOC?: string;
+}): GoogleBillingConfig {
+  return {
+    googleUsesVertex: !environment.GOOGLE_KEY?.trim(),
+    googleLocation: environment.GOOGLE_LOC,
+  };
+}
+
 export interface TokenConfigControllerDeps extends TokenomicsDeps {
+  googleBillingConfig?: GoogleBillingConfig;
   getRequestModelsConfig: (
     req: ServerRequest,
     endpointOverride?: string,
@@ -134,8 +151,7 @@ export function createTokenConfigController(
           modelsConfig: result.modelsConfig,
           userId: req.user.id,
           tenantId: req.user.tenantId,
-          googleUsesVertex: !process.env.GOOGLE_KEY?.trim(),
-          googleLocation: process.env.GOOGLE_LOC,
+          ...deps.googleBillingConfig,
         },
         deps,
       );
