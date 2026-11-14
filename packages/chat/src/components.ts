@@ -29,6 +29,8 @@ export {
   COMPOSER_FOCUS_OWNER_ATTRIBUTE,
 } from './components/composer/Frame';
 export { default as CommandPopover } from './components/composer/popover/Command';
+export { default as ComposerPalette } from './components/composer/Palette';
+export type { ComposerPaletteProps } from './components/composer/Palette';
 export { default as CollapseChat } from './components/composer/CollapseChat';
 export { default as ComposerChip } from './components/composer/bar/Chip';
 export { default as composerClearance } from './components/composer/clearance';

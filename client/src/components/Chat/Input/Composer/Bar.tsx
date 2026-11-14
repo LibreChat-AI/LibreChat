@@ -16,7 +16,7 @@ import { useBadgeRowContext } from '~/Providers';
 import TokenUsage from '../TokenUsage';
 import { useLocalize } from '~/hooks';
 import Thinking from './Thinking';
-import Palette from './Palette';
+import Palette from '../Palette';
 import { cn } from '~/utils';
 
 /** Stable identity so the memo below is not defeated when tools are hidden. */

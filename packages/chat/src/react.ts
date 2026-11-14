@@ -272,6 +272,19 @@ export type {
   CommandListProps,
   ComposerShortcutAction,
 } from './react/input';
+export { emptyPaletteSources } from './react/palette';
+export type {
+  PaletteSection,
+  PaletteModeView,
+  PaletteEntryView,
+  PaletteAttachView,
+  PaletteListProps,
+  PaletteListHandle,
+  PaletteSources,
+  PaletteSourcesInput,
+  PaletteStatusView,
+  PaletteCatalogSection,
+} from './react/palette';
 export {
   RowMountProvider,
   useRowMountWindow,

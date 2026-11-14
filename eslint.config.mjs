@@ -390,6 +390,13 @@ export default [
             'composer-label-out-down',
             'animate-composer-icon',
             'animate-composer-popover',
+            'animate-composer-popover-resize',
+            // Composer palette list chrome and row motion, painted by parts.css.
+            'composer-palette-scroll',
+            'composer-palette-rows',
+            'composer-palette-instant',
+            'animate-composer-palette-row',
+            'animate-composer-palette-row-out',
           ],
         },
       ],
