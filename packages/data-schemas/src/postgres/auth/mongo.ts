@@ -102,7 +102,7 @@ export function createMongoAuthenticationSource(
     for (const kind of AUTHENTICATION_KINDS) {
       const cursor = database.connection
         .collection(names[kind])
-        .find({})
+        .find({}, { readPreference: 'primary', readConcern: { level: 'majority' } })
         .sort({ _id: 1 })
         .batchSize(250);
       try {

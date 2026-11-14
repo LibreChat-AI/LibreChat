@@ -91,7 +91,7 @@ const resetPassword = async () => {
      */
     for (const step of [
       async () => {
-        deletedCount = await methods.deletePasskeysByUser(userId);
+        ({ deletedCount } = await methods.deletePasskeysByUser(userId));
       },
       /** A refresh session outlives the stamp: refreshing mints a token issued after it. */
       () => methods.deleteAllUserSessions(userId),
