@@ -18,6 +18,12 @@ transcript, from a Chromium trace of the built client:
   no event arriving, whatever the main thread does there it does for the run's
   animations.
 
+- **`restyle.perf.spec.ts`**: the cost of one small change in every row at once, which is
+  what a run starting or ending is. It flips a class, flips `disabled` and mounts a button on
+  each row by hand and times the style and layout pass that follows. With a stylesheet whose
+  `:has()` rules name their subjects these are a few milliseconds per hundred rows; a single
+  rule that does not multiplies them by ten.
+
 The transcript is yours. Nothing synthetic stands in for it, because the point
 is a conversation of the size and shape a reader actually has: export one from
 the chat's Export action as JSON and pass its path.

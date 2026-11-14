@@ -628,7 +628,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                 />
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
-                <div className="no-touch:opacity-0 flex items-center group-hover:opacity-100 group-has-[:focus-visible]:opacity-100">
+                <div className="no-touch:opacity-0 grouped-focus-visible:opacity-100 flex items-center group-hover:opacity-100">
                   <RowAction
                     label={channelActionLabel(channel, userId)}
                     disabled={
@@ -644,7 +644,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                   />
                 </div>
                 {channel.createdBy === userId && channel.status !== 'deleting' && (
-                  <div className="no-touch:opacity-0 shrink-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100">
+                  <div className="no-touch:opacity-0 grouped-focus-visible:opacity-100 shrink-0 group-hover:opacity-100">
                     <TooltipAnchor
                       description={localize('com_ui_channels_delete_connection')}
                       render={
