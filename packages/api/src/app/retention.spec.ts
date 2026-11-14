@@ -142,13 +142,14 @@ describe('configuration cache retention through the production service and seria
     const fixture = createFixture();
     fixture.getApplicableConfigs.mockImplementation(async (principals) => {
       const user = principals?.find((principal) => principal.principalType === PrincipalType.USER);
+      if (!user?.principalId) throw new Error('Expected a user principal');
       return [
         layer(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID),
         {
           principalType: PrincipalType.USER,
-          principalId: user?.principalId,
+          principalId: user.principalId,
           priority: 20,
-          overrides: { interface: { customWelcome: `${user?.principalId}:${padding}` } },
+          overrides: { interface: { customWelcome: `${user.principalId}:${padding}` } },
         },
       ];
     });
