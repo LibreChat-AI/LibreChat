@@ -342,19 +342,28 @@ class TTSService {
 
       const textChunks = splitTextIntoChunks(text, 1000);
 
-      for (const chunk of textChunks) {
+      /** Chunks synthesized ahead of the one being written, so playback does not wait between them. */
+      const SPEECH_PREFETCH_CHUNKS = 4;
+      const requestChunk = ({ text: input }) => {
+        const request = this.ttsRequest(
+          provider,
+          ttsSchema,
+          { voice, input, stream: true },
+          allowedAddresses,
+          nextBudget(),
+        );
+        request.catch(() => {}); // surfaces when this chunk's turn comes
+        return request;
+      };
+      const pending = textChunks.slice(0, SPEECH_PREFETCH_CHUNKS).map(requestChunk);
+
+      for (const [index, chunk] of textChunks.entries()) {
         try {
-          const response = await this.ttsRequest(
-            provider,
-            ttsSchema,
-            {
-              voice,
-              input: chunk.text,
-              stream: true,
-            },
-            allowedAddresses,
-            nextBudget(),
-          );
+          const ahead = textChunks[index + SPEECH_PREFETCH_CHUNKS];
+          if (ahead) {
+            pending.push(requestChunk(ahead));
+          }
+          const response = await pending[index];
 
           logger.debug(`[textToSpeech] user: ${req?.user?.id} | writing audio stream`);
           await pipeSegment(response.data, res, { end: chunk.isFinished });
