@@ -202,6 +202,12 @@ projects:
 # Custom interface configuration
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  # Or one message per language, picked by the user's UI language (exact locale, then base
+  # language, then 'en', then the first entry):
+  # customWelcome:
+  #   en: 'Welcome, {{user.name}}!'
+  #   es: '¡Bienvenido, {{user.name}}!'
+  #   pt-BR: 'Boas-vindas, {{user.name}}!'
   # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).
   # 'entity' shows its name; 'greeting' shows the time-of-day greeting (or customWelcome) with the
   # user's name, for deployments where the header selector already names the agent.
