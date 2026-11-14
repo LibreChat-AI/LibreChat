@@ -217,6 +217,12 @@ describe('createEndpointsConfigService', () => {
             endpoints: {
               [EModelEndpoint.agents]: {
                 allowedProviders: ['openAI', 'anthropic'],
+                sdkRuntimes: {
+                  private: {
+                    remote: { url: 'wss://private/sdk', secret: 'private-server-secret' },
+                    roles: ['ADMIN'],
+                  },
+                },
                 capabilities: [AgentCapabilities.execute_code],
                 maxSubagents: 20,
               },
@@ -229,6 +235,7 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.agents]?.allowedProviders).toEqual(['openAI', 'anthropic']);
       expect(result?.[EModelEndpoint.agents]?.maxSubagents).toBe(20);
+      expect(result?.[EModelEndpoint.agents]).not.toHaveProperty('sdkRuntimes');
     });
 
     it.each([true, false, undefined])(

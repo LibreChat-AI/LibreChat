@@ -6,6 +6,12 @@
   "main": "dist/index.cjs",
   "types": "./dist/index.d.cts",
   "exports": {
+    "./sdk": {
+      "require": {
+        "types": "./dist/sdk.d.cts",
+        "default": "./dist/sdk.cjs"
+      }
+    },
     ".": {
       "require": {
         "types": "./dist/index.d.cts",
@@ -182,6 +188,7 @@
     "protobufjs": "^7.6.5",
     "proxy-from-env": "^2.1.0",
     "re2js": "^2.9.1",
-    "@librechat/code": "file:../../vendor/code"
+    "@librechat/code": "file:../../vendor/code",
+    "ws": "^8.21.0"
   }
 }
