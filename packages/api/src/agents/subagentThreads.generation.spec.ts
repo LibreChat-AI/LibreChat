@@ -296,31 +296,33 @@ describe('a background child as a generation job', () => {
     expect((await assistantRow(threadId, taskId))?.error).toBe(true);
   });
 
-  it('stops the child when its job is aborted from outside', async () => {
+  it('lets the child finish and persist after its job is aborted from outside', async () => {
     const { store, scopeId } = await setup();
-    const { threadId, taskId } = threadOf(store.start(taskRequest(scopeId, {})));
+    const { run, release } = gatedRun();
+    const { threadId, taskId } = threadOf(store.start(taskRequest(scopeId, { run })));
     await waitUntil(async () => (await manager.getJob(threadId)) != null, 'the child job');
     const job = await manager.getJob(threadId);
 
     await manager.abortJob(threadId, { expectedCreatedAt: job?.createdAt });
+    /** The stream is over; the run is the task store's to stop, and nobody stopped it. */
+    expect(store.get(scopeId, taskId)?.status).toBe('running');
+    release();
 
-    await waitUntil(() => store.get(scopeId, taskId)?.status === 'cancelled', 'cancellation');
-    await waitUntil(
-      async () => (await assistantRow(threadId, taskId))?.subagentTask?.status === 'cancelled',
-      'the cancelled row',
-    );
-    expect(store.get(scopeId, taskId)?.status).toBe('cancelled');
-    expect((await manager.getJob(threadId))?.status).toBe('aborted');
+    await waitUntil(() => store.get(scopeId, taskId)?.status === 'completed', 'the task');
+    const row = await assistantRow(threadId, taskId);
+    expect(row?.subagentTask?.status).toBe('completed');
+    expect(row?.text).toBe('Looking into it.');
   });
 
-  it('lets the child persist its cancellation when the job manager shuts down first', async () => {
+  it('still persists a cancellation after the job manager has shut down', async () => {
     const { store, scopeId } = await setup();
     const { threadId, taskId } = threadOf(store.start(taskRequest(scopeId, {})));
     await waitUntil(async () => (await manager.getJob(threadId)) != null, 'the child job');
 
     await manager.destroy();
+    expect(store.get(scopeId, taskId)?.status).toBe('running');
+    store.control(scopeId, taskId, { action: 'cancel' });
 
-    await waitUntil(() => store.get(scopeId, taskId)?.status === 'cancelled', 'cancellation');
     await waitUntil(
       async () => (await assistantRow(threadId, taskId))?.subagentTask?.status === 'cancelled',
       'the cancelled row',

@@ -44,7 +44,6 @@ const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe('child generation host', () => {
   let manager: GenerationJobManagerClass;
-  let onAbort: jest.Mock;
 
   const input = (): ChildGenerationInput => ({
     userId: 'owner',
@@ -54,11 +53,9 @@ describe('child generation host', () => {
     agentId: 'agent_child',
     sender: 'researcher',
     userMessage: { messageId: `${taskId}:user`, parentMessageId: 'root', text: 'Do the thing' },
-    onAbort,
   });
 
   beforeEach(() => {
-    onAbort = jest.fn();
     manager = new GenerationJobManagerClass();
     manager.configure({
       jobStore: new InMemoryJobStore({ ttlAfterComplete: 60000 }),
@@ -207,7 +204,6 @@ describe('child generation host', () => {
     await generation?.settle(true, async () => final);
 
     expect(done).toMatchObject({ final: true, aborted: true });
-    expect(onAbort).not.toHaveBeenCalled();
   });
 
   it('tells a reader to refetch when persistence fails, and rethrows', async () => {
@@ -248,13 +244,19 @@ describe('child generation host', () => {
     expect((await manager.getJob(threadId))?.status).toBe('aborted');
   });
 
-  it('reports an abort from outside and still lets the caller persist', async () => {
+  it('keeps folding and still persists after its job is aborted from outside', async () => {
     const generation = await createChildGenerationHost(manager).open(input());
-    await manager.abortJob(threadId, { expectedCreatedAt: generation?.createdAt });
+    generation?.emit(runStep('s1', 0));
+    generation?.emit(text('s1', 'before '));
+    await flush();
 
-    expect(onAbort).toHaveBeenCalledTimes(1);
+    await manager.abortJob(threadId, { expectedCreatedAt: generation?.createdAt });
+    expect(() => generation?.emit(text('s1', 'after'))).not.toThrow();
+    await flush();
+
+    expect(JSON.stringify(generation?.content())).toContain('before after');
     const persist = jest.fn(async () => final);
-    await expect(generation?.settle(true, persist)).resolves.toBeUndefined();
+    await expect(generation?.settle(false, persist)).resolves.toBeUndefined();
     expect(persist).toHaveBeenCalledTimes(1);
   });
 
@@ -386,7 +388,6 @@ describe('child generation host', () => {
     await flush();
 
     expect((await manager.getJob(threadId))?.status).toBe('aborted');
-    expect(onAbort).not.toHaveBeenCalled();
   });
 
   it('refreshes the idle clock on touch', async () => {

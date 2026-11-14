@@ -22,6 +22,67 @@ export type BackgroundChildJobRefusal = {
  * and writes the child's rows itself, so a chat route acting on the job would write a second,
  * chat-shaped history into a view-only thread. Null for every other job.
  */
+type AbortGuardJob = {
+  metadata?: { userId?: string; tenantId?: string; subagentTaskId?: string };
+};
+
+const MAX_ABORT_TARGET_LENGTH = 512;
+
+/** The concrete stream id an abort request names, in the route's own order. The `new`
+ *  placeholder names none: its fallback reads the active chat list, which holds no child. */
+function abortTargetId(body: unknown): string | null {
+  if (body == null || typeof body !== 'object') return null;
+  const { streamId, conversationId, abortKey } = body as Record<string, unknown>;
+  const prefix = typeof abortKey === 'string' ? abortKey.split(':')[0] : undefined;
+  for (const value of [streamId, conversationId, prefix]) {
+    if (
+      typeof value === 'string' &&
+      value !== '' &&
+      value !== 'new' &&
+      value.length <= MAX_ABORT_TARGET_LENGTH
+    ) {
+      return value;
+    }
+  }
+  return null;
+}
+
+/**
+ * Runs ahead of the chat abort route and answers for a background child's job, so the
+ * route's chat-shaped abort never reaches it. Every other request falls through untouched,
+ * including one for a job the caller does not own, which the route refuses itself.
+ */
+export function createBackgroundChildAbortGuard(deps: {
+  getJob: (streamId: string) => Promise<AbortGuardJob | null | undefined>;
+}): RequestHandler {
+  return async (req, res, next) => {
+    const streamId = abortTargetId(req.body);
+    const user = (req as Request & { user?: { id?: string; tenantId?: string } }).user;
+    if (streamId == null || user?.id == null) {
+      next();
+      return;
+    }
+    let job: AbortGuardJob | null | undefined;
+    try {
+      job = await deps.getJob(streamId);
+    } catch {
+      /** The route reads the same job and owns the answer for a store failure. */
+      next();
+      return;
+    }
+    const metadata = job?.metadata;
+    const owned =
+      metadata?.userId === user.id &&
+      (metadata.tenantId == null || metadata.tenantId === user.tenantId);
+    const refusal = owned ? backgroundChildJobRefusal(job) : null;
+    if (refusal == null) {
+      next();
+      return;
+    }
+    res.status(refusal.status).json(refusal.body);
+  };
+}
+
 export function backgroundChildJobRefusal(
   job: { metadata?: { subagentTaskId?: string } } | null | undefined,
 ): BackgroundChildJobRefusal | null {

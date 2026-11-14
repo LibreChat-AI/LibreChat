@@ -1424,7 +1424,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
   }
 
   /** Makes room at capacity. A finished job goes before any live one: evicting a running
-   * or paused generation ends a run somebody is still waiting on. */
+   * or paused generation ends a run somebody is still waiting on. A terminal job that still
+   * owes persistence, a host action, a schedule reconciliation or a provider drain is not
+   * finished, since its owner comes back for the record. */
   private async evictOldest(): Promise<void> {
     let oldestId: string | null = null;
     let oldestTime = Infinity;
@@ -1436,7 +1438,13 @@ export class InMemoryJobStore implements IJobStoreV2 {
         oldestTime = job.createdAt;
         oldestId = streamId;
       }
-      const live = job.status === 'running' || job.status === 'requires_action';
+      const live =
+        job.status === 'running' ||
+        job.status === 'requires_action' ||
+        job.terminalPersistencePending === true ||
+        job.terminalHostActionPending === true ||
+        job.preserveForScheduleReconcile === true ||
+        job.providerDrained === false;
       if (!live && job.createdAt < oldestFinishedTime) {
         oldestFinishedTime = job.createdAt;
         oldestFinishedId = streamId;

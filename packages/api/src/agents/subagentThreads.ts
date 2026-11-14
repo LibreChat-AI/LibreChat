@@ -2117,12 +2117,6 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
           parentMessageId: prepared.userParentMessageId ?? Constants.NO_PARENT,
           text: request.input,
         },
-        /** A deletion drain or an operator stop ended the job; the child must stop too. */
-        onAbort: () => {
-          if (this.get(request.scopeId, taskId)?.status === 'running') {
-            super.control(request.scopeId, taskId, { action: 'cancel' });
-          }
-        },
       });
       return generation ?? undefined;
     } catch (error) {

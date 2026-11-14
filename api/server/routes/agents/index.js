@@ -3,7 +3,7 @@ const {
   reportLocatorTraversalFailure,
   isEnabled,
   GenerationJobManager,
-  backgroundChildJobRefusal,
+  createBackgroundChildAbortGuard,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
   announceStoppedReply,
@@ -623,6 +623,12 @@ router.get('/chat/status/:conversationId', async (req, res) => {
  * @access Private
  * @description Mounted before chatRouter to bypass buildEndpointOption middleware
  */
+router.post(
+  '/chat/abort',
+  createBackgroundChildAbortGuard({
+    getJob: (streamId) => GenerationJobManager.getJob(streamId),
+  }),
+);
 router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
   logger.debug(`[AgentStream] ========== ABORT ENDPOINT HIT ==========`);
   logger.debug(`[AgentStream] Method: ${req.method}, Path: ${req.path}`);
@@ -728,15 +734,6 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
 
       if (hasTenantMismatch(job, req.user)) {
         return sendGenerationJson(res, 403, { error: 'Unauthorized' }, requestProtocolVersion);
-      }
-      const childRefusal = backgroundChildJobRefusal(job);
-      if (childRefusal) {
-        return sendGenerationJson(
-          res,
-          childRefusal.status,
-          childRefusal.body,
-          requestProtocolVersion,
-        );
       }
       const generationProtocolVersion = negotiateExistingGenerationProtocol(req, job);
       responseProtocolVersion = generationProtocolVersion;

@@ -86,7 +86,6 @@ describe('a background child read from another replica', () => {
       parentConversationId: randomUUID(),
       sender: 'researcher',
       userMessage: { messageId: `${taskId}:user`, parentMessageId: 'root', text: 'Look into it' },
-      onAbort: jest.fn(),
     });
     expect(generation).not.toBeNull();
     generation!.emit(runStep('step-1'));
@@ -167,7 +166,6 @@ describe('a background child read from another replica', () => {
       parentConversationId: randomUUID(),
       sender: 'researcher',
       userMessage: { messageId: `${taskId}:user`, parentMessageId: 'root', text: 'Look into it' },
-      onAbort: jest.fn(),
     });
     /** One write per delta, as at an ordinary token rate: each emit waits for the previous
      *  write to land, so nothing queues and nothing merges. */
@@ -223,6 +221,52 @@ describe('a background child read from another replica', () => {
     expect((await owner.getJob(threadId))?.status).toBe('running');
   }, 120_000);
 
+  test('leaves the child alone when the job store rejects a write, and still ends the job', async () => {
+    const owner = replica();
+    const threadId = randomUUID();
+    const taskId = randomUUID();
+    const generation = await createChildGenerationHost(owner).open({
+      userId: 'user',
+      threadId,
+      taskId,
+      parentConversationId: randomUUID(),
+      sender: 'researcher',
+      userMessage: { messageId: `${taskId}:user`, parentMessageId: 'root', text: 'Look into it' },
+    });
+    generation!.emit(runStep('step-1'));
+    await waitUntil(
+      async () =>
+        ((await owner.getResumeState(threadId, generation!.createdAt))?.runSteps ?? []).length ===
+        1,
+      'the first frame',
+    );
+    const append = jest
+      .spyOn(RedisJobStore.prototype, 'appendChunk')
+      .mockRejectedValue(new Error('redis append failed'));
+    try {
+      expect(() => generation!.emit(text('step-1', 'kept '))).not.toThrow();
+      await waitUntil(() => append.mock.calls.length > 0, 'the rejected append');
+      generation!.emit(text('step-1', 'whole'));
+    } finally {
+      append.mockRestore();
+    }
+
+    await waitUntil(
+      () => JSON.stringify(generation!.content()).includes('kept whole'),
+      'the frames written after the failure to fold',
+    );
+    const persist = jest.fn(async () => ({
+      requestMessage: { messageId: `${taskId}:user` },
+      responseMessage: { messageId: `${taskId}:assistant`, text: 'Done' },
+    }));
+    await expect(generation!.settle(false, persist)).resolves.toBeUndefined();
+    expect(persist).toHaveBeenCalledTimes(1);
+    const status = (await owner.getJob(threadId))?.status;
+    expect(status === undefined || (status !== 'running' && status !== 'requires_action')).toBe(
+      true,
+    );
+  });
+
   test('keeps a silent child alive across replicas while its owner touches it', async () => {
     const owner = replica();
     const viewer = replica();
@@ -235,7 +279,6 @@ describe('a background child read from another replica', () => {
       parentConversationId: randomUUID(),
       sender: 'researcher',
       userMessage: { messageId: `${taskId}:user`, parentMessageId: 'root', text: 'Look into it' },
-      onAbort: jest.fn(),
     });
     const jobKey = `stream:{${threadId}}:job`;
     const staleAt = Date.now() - 3_600_000;

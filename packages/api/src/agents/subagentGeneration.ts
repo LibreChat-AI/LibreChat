@@ -66,8 +66,6 @@ export type ChildGenerationInput = {
   agentId?: string;
   sender: string;
   userMessage: { messageId: string; parentMessageId: string; text: string };
-  /** The job was ended from outside the task store, such as by a deletion drain. */
-  onAbort: () => void;
 };
 
 export type ChildGenerationFinal = {
@@ -75,8 +73,12 @@ export type ChildGenerationFinal = {
   responseMessage: FinalMessageFields;
 };
 
-/** One background child's resumable stream. Nothing here can fail the child: a stream that
- *  cannot be opened or written degrades the live view and leaves the run and its result alone. */
+/**
+ * One background child's resumable stream. It observes the run and never controls it: a stream
+ * that cannot be opened or written, or a job that is aborted, reaped or retired after a failed
+ * write, degrades the live view and leaves the run and its result alone. The task store stops a
+ * child through its own cancellation, which deletion, shutdown and the control endpoint all use.
+ */
 export interface ChildGeneration {
   readonly createdAt: number;
   /** Never blocks the caller. While a write is in flight, text deltas for one step merge. */
@@ -162,12 +164,6 @@ class ManagedChildGeneration implements ChildGeneration {
     private readonly responseMessageId: string,
     private readonly settleTimeoutMs: number,
   ) {}
-
-  /** The manager aborts a runtime when its job ends; only an end this store did not start
-   *  is news to the child. */
-  onJobAborted(): void {
-    if (!this.settling) this.input.onAbort();
-  }
 
   enqueue(event: ServerSentEvent, frame?: SubagentContentFrame): void {
     this.queue.push({ event, ...(frame == null ? {} : { frame }) });
@@ -432,9 +428,6 @@ export function createChildGenerationHost(
           responseMessageId,
           options.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS,
         );
-        job.abortController.signal.addEventListener('abort', () => generation.onJobAborted(), {
-          once: true,
-        });
         manager.setContentParts(input.threadId, generation.parts(), job.createdAt);
         generation.enqueue({
           created: true,
