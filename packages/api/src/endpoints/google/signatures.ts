@@ -2,6 +2,7 @@ import { isAIMessage } from '@langchain/core/messages';
 import {
   Providers,
   GEMINI_PARTS,
+  GEMINI_REPLAY_UNSUPPORTED,
   isGeminiReplayParts,
   restoreGeminiReplayParts,
 } from '@librechat/agents';
@@ -40,7 +41,11 @@ export function collectGoogleThoughtSignatures(
 ): void {
   if (!collected || !output) return;
   const parts = output.additional_kwargs?.[GEMINI_PARTS];
-  if (isGeminiReplayParts(parts) && parts.some((part) => !!part.thoughtSignature)) {
+  if (
+    output.additional_kwargs?.[GEMINI_REPLAY_UNSUPPORTED] !== true &&
+    isGeminiReplayParts(parts) &&
+    parts.some((part) => !!part.thoughtSignature)
+  ) {
     (collected.turns ??= []).push(parts.map((part) => ({ ...part })));
     return;
   }

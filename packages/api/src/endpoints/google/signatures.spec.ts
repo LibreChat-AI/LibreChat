@@ -2,6 +2,7 @@ import { AIMessage, HumanMessage } from '@langchain/core/messages';
 import {
   Providers,
   GEMINI_PARTS,
+  GEMINI_REPLAY_UNSUPPORTED,
   captureGeminiReplayParts,
   restoreGeminiReplayParts,
   formatAgentMessages,
@@ -39,6 +40,32 @@ describe.each([Providers.GOOGLE, Providers.VERTEXAI])('persisted %s signatures',
       [{ text: 'First answer', thoughtSignature: 'first-signature' }],
       [{ text: 'Final answer', thoughtSignature: 'final-signature' }],
     ]);
+  });
+
+  it('keeps call signatures without persisting partial native replay from unsupported output', () => {
+    const call = { id: 'call', name: 'lookup', args: {} };
+    const output = new AIMessage({ content: 'Partial', tool_calls: [call] });
+    captureGeminiReplayParts(output, [
+      { text: 'Partial' },
+      { functionCall: call, thoughtSignature: 'call-signature' },
+    ]);
+    output.additional_kwargs[GEMINI_REPLAY_UNSUPPORTED] = true;
+    output.additional_kwargs.__gemini_function_call_thought_signatures__ = {
+      call: 'call-signature',
+    };
+    const collected: GoogleThoughtSignatures = {};
+    collectGoogleThoughtSignatures(collected, output);
+    expect(collected).toEqual({ calls: { call: 'call-signature' } });
+    const restored = new AIMessage({
+      content: 'Partial',
+      tool_calls: [call],
+      additional_kwargs: { sourceMessageId },
+    });
+    restoreGoogleThoughtSignatures([restored], [row(collected)], [{ provider }]);
+    expect(restored.additional_kwargs).not.toHaveProperty(GEMINI_PARTS);
+    expect(restored.additional_kwargs.__gemini_function_call_thought_signatures__).toEqual({
+      call: 'call-signature',
+    });
   });
 
   it('replays signed text after the actual stored-history formatter', () => {
