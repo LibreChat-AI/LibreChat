@@ -23,6 +23,7 @@ jest.mock('~/Providers', () => ({
 }));
 
 jest.mock('~/utils', () => ({
+  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   getDownloadFilename: (filename: string, fileId?: string, source?: string) => {
     const resolvedFilename = filename || fileId || 'download';
     return source === 'text' && !resolvedFilename.toLowerCase().endsWith('.txt')

@@ -23,7 +23,13 @@ export type {
   MessagePartsImageProps,
   MessagePartsFilePreviewProps,
   MessagePartsUserTextPreferences,
+  ToolCallChrome,
+  ToolCallLocalize,
+  ToolCallProgressProps,
+  ToolCallInfoProps,
+  ToolCallIconProps,
 } from './react/host';
+export { emptyToolCallChrome } from './react/host';
 export {
   resetSteerFamilies,
   escalatingSteerFamily,

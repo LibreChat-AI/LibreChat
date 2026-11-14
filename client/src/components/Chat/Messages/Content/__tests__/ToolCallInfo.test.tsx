@@ -23,8 +23,9 @@ jest.mock('@librechat/chat/components', () => ({
   }),
 }));
 
-jest.mock('../ToolOutput', () => ({
-  OutputRenderer: ({ text }: { text: string }) => <div data-testid="output-renderer">{text}</div>,
+jest.mock('../ToolOutput/OutputRenderer', () => ({
+  __esModule: true,
+  default: ({ text }: { text: string }) => <div data-testid="output-renderer">{text}</div>,
 }));
 
 jest.mock('~/utils', () => ({

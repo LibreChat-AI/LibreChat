@@ -13,6 +13,7 @@ import type {
 } from 'librechat-data-provider';
 import { HeaderActionSlotContext } from '../slot';
 import { SearchContext } from '~/Providers';
+import '~/Providers/MessagePartsHostContext';
 import WebSearch from '../WebSearch';
 
 jest.mock('~/hooks', () => ({
