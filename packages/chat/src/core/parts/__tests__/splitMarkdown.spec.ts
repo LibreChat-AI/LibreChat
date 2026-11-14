@@ -304,5 +304,19 @@ describe('splitMarkdownIntoBlocks', () => {
       const blocks = splitMarkdownIntoBlocks('para with <br> inline.\n\nsecond para');
       expect(blocks).toHaveLength(2);
     });
+
+    it('still splits when <br> is inside a GFM table cell', () => {
+      const table = '| col1 | col2 |\n| --- | --- |\n| line1<br>line2 | ok |';
+      const blocks = splitMarkdownIntoBlocks(`Intro.\n\n${table}\n\nOutro.`);
+      expect(blocks).toHaveLength(3);
+      expect(blocks[1].raw).toBe(table);
+    });
+
+    it('falls back to whole-message rendering for standalone <br> blocks', () => {
+      const content = 'First.\n\n<br>\n\nSecond.';
+      const blocks = splitMarkdownIntoBlocks(content);
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].raw).toBe(content);
+    });
   });
 });
