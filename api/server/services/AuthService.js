@@ -671,7 +671,7 @@ const setCloudFrontAuthCookies = (req, res, user, options = {}) => {
  * Set Auth Tokens
  * @param {String | ObjectId} userId
  * @param {ServerResponse} res
- * @param {ISession | null} [_session=null]
+ * @param {import('@librechat/data-schemas').SessionRecord | null} [_session=null]
  * @param {ServerRequest | null} [req=null]
  * @returns
  */
@@ -686,7 +686,7 @@ const setAuthTokens = async (userId, res, _session = null, req = null) => {
       refreshTokenExpires = session.expiration.getTime();
       refreshToken = await generateRefreshToken(session);
     } else {
-      const result = await createSession(userId, { expiresIn });
+      const result = await createSession(String(userId), { expiresIn });
       session = result.session;
       refreshToken = result.refreshToken;
       refreshTokenExpires = session.expiration.getTime();
@@ -707,7 +707,10 @@ const setAuthTokens = async (userId, res, _session = null, req = null) => {
 
     return token;
   } catch (error) {
-    logger.error('[setAuthTokens] Error in setting authentication tokens:', error);
+    logger.error(
+      '[setAuthTokens] Error in setting authentication tokens:',
+      getSafeErrorMetadata(error),
+    );
     throw error;
   }
 };

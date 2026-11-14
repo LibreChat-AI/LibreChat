@@ -172,7 +172,7 @@ jobs:
         id: postgres
         if: github.event_name != 'issue_comment'
         run: |
-          if git diff --name-only "$QUALITY_BASE...$QUALITY_HEAD" | grep -Eq '^(packages/data-schemas/src/(postgres/|types/favorite|methods/(favorite|index))|packages/api/src/app/(persistence|postgres)|packages/data-provider/src/config|api/(models/index|server/(index|experimental))|config/(postgres|delete-user)|packages/data-schemas/jest.postgres|package-lock.json|.github/workflows/change-quality.yml)'; then
+          if git diff --name-only "$QUALITY_BASE...$QUALITY_HEAD" | grep -Eq '^(packages/data-schemas/src/(postgres/|types/favorite|methods/(favorite|index))|packages/api/src/app/(persistence|postgres|authentication)|packages/data-provider/src/config|api/(models/index|server/(index|experimental))|config/(postgres|delete-user)|packages/data-schemas/jest.postgres|package-lock.json|.github/workflows/change-quality.yml)'; then
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           fi
 
@@ -208,7 +208,7 @@ jobs:
       - run: npm ci
       - run: npm run build:data-provider && npm run build:data-schemas && npm run build:api
       - run: npm run test:postgres --workspace packages/data-schemas
-      - run: npx --no-install jest src/app/persistence.spec.ts src/app/postgres.spec.ts src/favorites/handlers.spec.ts src/user/erasure.spec.ts --coverage=false --runInBand
+      - run: npx --no-install jest src/app/persistence.spec.ts src/app/postgres.spec.ts src/app/authentication.spec.ts src/app/authenticationCommand.spec.ts src/auth/authentication.integration.spec.ts src/favorites/handlers.spec.ts src/user/erasure.spec.ts --coverage=false --runInBand
         working-directory: packages/api
       - run: npx --no-install jest --config config/jest.config.js --runTestsByPath config/__tests__/delete-user.recovery.spec.js --coverage=false --runInBand
 

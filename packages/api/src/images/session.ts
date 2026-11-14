@@ -1,5 +1,5 @@
 import { DEFAULT_REFRESH_TOKEN_EXPIRY, runAsSystem } from '@librechat/data-schemas';
-import type { ISession, DeleteSessionParams } from '@librechat/data-schemas';
+import type { SessionRecord, DeleteSessionParams } from '@librechat/data-schemas';
 import { math } from '~/utils/math';
 
 export interface OpenIdSessionParams {
@@ -14,7 +14,7 @@ export interface OpenIdSessionDeps {
     userId: string,
     refreshToken: string,
     options: { expiration: Date; tenantId?: string },
-  ) => Promise<ISession>;
+  ) => Promise<SessionRecord>;
   deleteSession: (params: DeleteSessionParams) => Promise<{ deletedCount?: number }>;
 }
 

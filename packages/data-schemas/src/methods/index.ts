@@ -1,4 +1,6 @@
+import type { TokenQueries } from '../postgres/auth/tokenQueries';
 import { createPermissionPrincipalMethods, type PermissionPrincipalStorage } from './provisioning';
+import { createMongoTokenQueries } from '../postgres/auth/tokenQueries';
 export type {
   PermissionPrincipalStorage,
   PermissionPrincipalChange,
@@ -309,7 +311,8 @@ export {
   AgentQueuedTurnLaneRetiredError,
 };
 
-export type AllMethods = PermissionPrincipalStorage &
+export type AllMethods = TokenQueries &
+  PermissionPrincipalStorage &
   SubagentContentMethods &
   ToolApprovalGrantStorage &
   UserMethods &
@@ -368,6 +371,7 @@ export type AllMethods = PermissionPrincipalStorage &
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
+  authentication?: import('../postgres/auth/backend').AuthenticationMethods;
   toolFavorites?: ToolFavoriteMethods;
   getChannelStorageConfig?: () => Promise<Partial<ChannelStorageConfig>>;
   /** Matches a model name to a canonical key. From @librechat/api. */
@@ -562,15 +566,18 @@ export function createMethods(
       getCache: deps.getCache,
       getChannelStorageConfig: deps.getChannelStorageConfig,
     }),
-    ...createToolApprovalGrantMethods(mongoose),
-    ...createSessionMethods(mongoose),
-    ...createTokenMethods(mongoose),
-    ...createTokenListMethods(mongoose),
-    ...createRefreshTokenBridgeMethods(mongoose),
-    ...createOpenIDRefreshFlightMethods(mongoose),
+    ...createToolApprovalGrantMethods(mongoose, deps.authentication),
+    ...(deps.authentication ?? {
+      ...createSessionMethods(mongoose),
+      ...createTokenMethods(mongoose),
+      ...createTokenListMethods(mongoose),
+      ...createRefreshTokenBridgeMethods(mongoose),
+      ...createOpenIDRefreshFlightMethods(mongoose),
+      ...createPasskeyMethods(mongoose),
+      ...createMongoTokenQueries(mongoose),
+    }),
     ...createResourceLockMethods(mongoose),
     ...createSubagentContentMethods(mongoose),
-    ...createPasskeyMethods(mongoose),
     ...roleMethods,
     ...createKeyMethods(mongoose),
     ...createFileMethods(mongoose),
@@ -581,6 +588,7 @@ export function createMethods(
     ...createAgentApiKeyMethods(mongoose),
     ...createAgentChannelMethods(mongoose, deps.getChannelStorageConfig),
     ...createMCPServerMethods(mongoose, {
+      tokenQueries: deps.authentication,
       getSoleOwnedResourceIds: aclEntryMethods.getSoleOwnedResourceIds,
     }),
     ...createCodeEnvironmentMethods(mongoose),
@@ -623,7 +631,7 @@ export function createMethods(
     ...createConfigMethods(mongoose),
     ...createPrincipalMethods(mongoose),
     /* MCP authority proofs */
-    ...createMCPAuthorityMethods(mongoose),
+    ...createMCPAuthorityMethods(mongoose, {}, deps.authentication),
     /* Insights */
     ...createInsightsMethods(mongoose),
   };

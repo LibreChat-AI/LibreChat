@@ -4726,6 +4726,7 @@ export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchem
 export const persistenceConfigSchema = z
   .object({
     favorites: z.enum(['mongo', 'postgres']).default('mongo'),
+    authentication: z.enum(['mongo', 'postgres']).default('mongo'),
     postgres: z
       .object({
         connectionStringEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
@@ -4734,14 +4735,19 @@ export const persistenceConfigSchema = z
         acquireTimeoutMs: z.number().int().min(1).max(60000).default(5000),
         queryTimeoutMs: z.number().int().min(1).max(300000).default(15000),
         idleTimeoutMs: z.number().int().min(1).max(300000).default(30000),
+        authenticationCleanupIntervalMs: z.number().int().min(1000).max(3600000).default(60000),
+        authenticationCleanupBatchSize: z.number().int().min(1).max(10000).default(250),
       })
       .strict()
       .optional(),
   })
   .strict()
-  .default({ favorites: 'mongo' })
+  .default({ favorites: 'mongo', authentication: 'mongo' })
   .superRefine((config, context) => {
-    if (config.favorites === 'postgres' && !config.postgres) {
+    if (
+      (config.favorites === 'postgres' || config.authentication === 'postgres') &&
+      !config.postgres
+    ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['postgres'],

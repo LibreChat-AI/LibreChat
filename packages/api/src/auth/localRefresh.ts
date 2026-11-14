@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
-import type { ISession, OIDCTokens } from '@librechat/data-schemas';
+import type { SessionRecord, OIDCTokens } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { TokenIssuance, TwoFactorAccount } from './twoFactor';
 import {
@@ -15,8 +15,6 @@ import { clearSessionHintCookie } from '~/oauth/csrf';
 
 const EXPIRED_REFRESH_MESSAGE = 'Refresh token expired or not found for this user';
 
-type UserIdentifier = string | { toString(): string };
-
 type RefreshUser = Pick<
   TwoFactorAccount,
   | '_id'
@@ -29,17 +27,14 @@ type RefreshUser = Pick<
   | 'credentialsChangedAt'
 >;
 
-type RefreshSession = Pick<ISession, 'expiration'> & { _id: UserIdentifier };
+type RefreshSession = SessionRecord;
 type SessionDeletionResult = { deletedCount?: number };
 type AuthResponseSource = TwoFactorAccount & { __v?: number; federatedTokens?: OIDCTokens };
 
 interface LocalRefreshDependencies {
   userProjection: string;
   getUserById: (userId: string, projection: string) => Promise<RefreshUser | null>;
-  findSession: (
-    query: { userId: string; refreshToken: string },
-    options: { lean: false },
-  ) => Promise<RefreshSession | null>;
+  findSession: (query: { userId: string; refreshToken: string }) => Promise<RefreshSession | null>;
   setAuthTokens: (
     userId: string,
     res: Response,
@@ -153,7 +148,7 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
         return res.status(200).send({ token, user: sanitizeUserForAuthResponse(user) });
       }
 
-      const session = await deps.findSession({ userId, refreshToken }, { lean: false });
+      const session = await deps.findSession({ userId, refreshToken });
       if (session && session.expiration > new Date()) {
         if (requiresEnrollment(user)) {
           await deps.deleteSession({ sessionId: session._id.toString() });

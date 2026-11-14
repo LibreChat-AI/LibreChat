@@ -1,16 +1,21 @@
 const path = require('path');
 const mongoose = require('mongoose');
-const { checkEmailConfig, createInvite } = require('@librechat/api');
+const {
+  checkEmailConfig,
+  createInvite,
+  getSafeErrorMetadata,
+  runAuthenticationOperation,
+} = require('@librechat/api');
 const { User } = require('@librechat/data-schemas').createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const { askQuestion, silentExit, coloredConsole } = require('./helpers');
-const { createToken, findToken } = require('../api/models');
+const methods = require('../api/models');
+const { createToken, findToken } = methods;
+const loadCustomConfig = require('~/server/services/Config/loadCustomConfig');
 const { sendEmail } = require('../api/server/utils');
 const connect = require('./connect');
 
-(async () => {
-  await connect();
-
+const inviteUser = async () => {
   coloredConsole.purple('--------------------------');
   coloredConsole.purple('Invite a new user account!');
   coloredConsole.purple('--------------------------');
@@ -26,7 +31,7 @@ const connect = require('./connect');
   // Check if email service is enabled
   if (!checkEmailConfig()) {
     coloredConsole.red('Error: Email service is not enabled!');
-    silentExit(1);
+    return 1;
   }
 
   // Get the email of the user to be invited
@@ -43,20 +48,20 @@ const connect = require('./connect');
   // Validate the email
   if (!email.includes('@')) {
     coloredConsole.red('Error: Invalid email address!');
-    silentExit(1);
+    return 1;
   }
 
   // Check if the user already exists
   const userExists = await User.findOne({ email });
   if (userExists) {
     coloredConsole.red('Error: A user with that email already exists!');
-    silentExit(1);
+    return 1;
   }
 
   const token = await createInvite(email, { createToken, findToken });
   if (typeof token !== 'string') {
     coloredConsole.red('Error: Failed to create the invite token!');
-    silentExit(1);
+    return 1;
   }
 
   const inviteLink = `${process.env.DOMAIN_CLIENT}/register?token=${token}`;
@@ -65,7 +70,7 @@ const connect = require('./connect');
 
   if (!checkEmailConfig()) {
     coloredConsole.green(`Send this link to the user: ${inviteLink}`);
-    silentExit(0);
+    return 0;
   }
 
   try {
@@ -80,19 +85,34 @@ const connect = require('./connect');
       template: 'inviteUser.handlebars',
     });
   } catch (error) {
-    console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
-    silentExit(1);
+    console.error('Error sending invitation:', getSafeErrorMetadata(error));
+    return 1;
   }
 
   // Done!
   coloredConsole.green('Invitation sent successfully!');
-  silentExit(0);
-})();
+  return 0;
+};
+
+runAuthenticationOperation(
+  {
+    initialize: async () => {
+      await connect();
+      await methods.initializeAuthentication(
+        await loadCustomConfig(false, { storageSelection: true }),
+      );
+    },
+    close: () => methods.closeAuthentication(),
+    disconnect: () => mongoose.disconnect(),
+    error: console.error,
+  },
+  inviteUser,
+).then((code) => silentExit(code));
 
 process.on('uncaughtException', (err) => {
   if (!err.message.includes('fetch failed')) {
     console.error('There was an uncaught error:');
-    console.error(err);
+    console.error(getSafeErrorMetadata(err));
   }
 
   if (err.message.includes('fetch failed')) {

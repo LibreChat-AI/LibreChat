@@ -210,3 +210,14 @@ export * from './postgres/migrations';
 export * from './postgres/favorite';
 export * from './postgres/import';
 export * from './postgres/mongo';
+
+export * from './postgres/auth/backend';
+export * from './postgres/auth/schema';
+export * from './postgres/auth/import';
+export * from './postgres/auth/mongo';
+export type {
+  TokenQueries,
+  MCPTokenSelection,
+  MCPTokenGeneration,
+  MCPAuthorityTokenRecord,
+} from './postgres/auth/tokenQueries';

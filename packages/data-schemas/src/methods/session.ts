@@ -16,12 +16,11 @@ export class SessionError extends Error {
 /** Default refresh token expiry: 7 days in milliseconds */
 export const DEFAULT_REFRESH_TOKEN_EXPIRY: number = 1000 * 60 * 60 * 24 * 7;
 
-// Factory function that takes mongoose instance and returns the methods
-export function createSessionMethods(mongoose: typeof import('mongoose')): {
+export interface SessionMethods {
   findSession: (
     params: t.SessionSearchParams,
     options?: t.SessionQueryOptions,
-  ) => Promise<t.ISession | null>;
+  ) => Promise<t.SessionRecord | null>;
   SessionError: typeof SessionError;
   deleteSession: (params: t.DeleteSessionParams) => Promise<{ deletedCount?: number }>;
   createSession: (userId: string, options?: t.CreateSessionOptions) => Promise<t.SessionResult>;
@@ -29,14 +28,57 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     userId: string,
     refreshToken: string,
     options: t.UpsertSessionOptions,
-  ) => Promise<t.ISession>;
+  ) => Promise<t.SessionRecord>;
   ensureSessionIndexes: () => Promise<void>;
-  generateRefreshToken: (session: t.ISession) => Promise<string>;
+  generateRefreshToken: (session: t.SessionRecord) => Promise<string>;
   deleteAllUserSessions: (
     userId: string | { userId: string },
     options?: t.DeleteAllSessionsOptions,
   ) => Promise<{ deletedCount?: number }>;
-} {
+}
+
+export interface SessionMethodDeps {
+  signPayload?: typeof signPayload;
+  hashToken?: typeof hashToken;
+}
+
+/** Shared signing policy; repositories own the insert or compare-and-swap. */
+export async function createSessionToken(
+  session: Pick<t.SessionRecord, '_id' | 'user' | 'expiration'>,
+  deps: SessionMethodDeps = {},
+): Promise<{ refreshToken: string; refreshTokenHash: string }> {
+  const refreshToken = await (deps.signPayload ?? signPayload)({
+    payload: {
+      id: session.user,
+      sessionId: session._id,
+      issuedAtMs: Date.now(),
+    },
+    secret: process.env.JWT_REFRESH_SECRET!,
+    expirationTime: Math.floor((session.expiration.getTime() - Date.now()) / 1000),
+  });
+  return { refreshToken, refreshTokenHash: await (deps.hashToken ?? hashToken)(refreshToken) };
+}
+
+type StoredSession = Omit<t.SessionRecord, '_id' | 'user'> & {
+  _id: { toString(): string };
+  user: { toString(): string };
+};
+
+function toSessionRecord(session: StoredSession): t.SessionRecord {
+  return {
+    _id: session._id.toString(),
+    user: session.user.toString(),
+    refreshTokenHash: session.refreshTokenHash,
+    expiration: session.expiration,
+    ...(session.tenantId == null ? {} : { tenantId: session.tenantId }),
+  };
+}
+
+export function createSessionMethods(
+  mongoose: typeof import('mongoose'),
+  deps: SessionMethodDeps = {},
+): SessionMethods {
+  const digest = deps.hashToken ?? hashToken;
   let sessionIndexesPromise: Promise<void> | null = null;
 
   function ensureSessionIndexes(): Promise<void> {
@@ -65,13 +107,14 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     try {
       await ensureSessionIndexes();
       const Session = mongoose.models.Session;
-      const currentSession = new Session({
+      const session = {
+        _id: new mongoose.Types.ObjectId().toString(),
         user: userId,
         expiration: options.expiration || new Date(Date.now() + expiresIn),
-      });
-      const refreshToken = await generateRefreshToken(currentSession);
-
-      return { session: currentSession, refreshToken };
+      };
+      const { refreshToken, refreshTokenHash } = await createSessionToken(session, deps);
+      const stored = await Session.create({ ...session, refreshTokenHash });
+      return { session: toSessionRecord(stored), refreshToken };
     } catch (error) {
       logger.error('[createSession] Error creating session:', error);
       throw new SessionError('Failed to create session', 'CREATE_SESSION_FAILED');
@@ -83,7 +126,7 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     userId: string,
     refreshToken: string,
     options: t.UpsertSessionOptions,
-  ): Promise<t.ISession> {
+  ): Promise<t.SessionRecord> {
     if (!userId || !refreshToken || !options.expiration) {
       throw new SessionError('User, refresh token, and expiration are required', 'INVALID_SESSION');
     }
@@ -91,7 +134,7 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     try {
       await ensureSessionIndexes();
       const Session = mongoose.models.Session;
-      const refreshTokenHash = await hashToken(refreshToken);
+      const refreshTokenHash = await digest(refreshToken);
       const update: Record<string, unknown> = {
         user: userId,
         refreshTokenHash,
@@ -104,11 +147,13 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
         { user: userId, refreshTokenHash },
         { $set: update },
         { upsert: true, new: true, setDefaultsOnInsert: true },
-      ).exec();
+      )
+        .lean<StoredSession>()
+        .exec();
       if (!session) {
         throw new SessionError('Stored session was not returned', 'SESSION_NOT_FOUND');
       }
-      return session as t.ISession;
+      return toSessionRecord(session);
     } catch (error) {
       logger.error('[upsertSession] Error storing session:', error);
       throw new SessionError('Failed to store session', 'UPSERT_SESSION_FAILED');
@@ -120,8 +165,8 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
    */
   async function findSession(
     params: t.SessionSearchParams,
-    options: t.SessionQueryOptions = { lean: true },
-  ): Promise<t.ISession | null> {
+    _options: t.SessionQueryOptions = { lean: true },
+  ): Promise<t.SessionRecord | null> {
     try {
       const Session = mongoose.models.Session;
       const query: Record<string, unknown> = {};
@@ -134,7 +179,7 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
       }
 
       if (params.refreshToken) {
-        const tokenHash = await hashToken(params.refreshToken);
+        const tokenHash = await digest(params.refreshToken);
         query.refreshTokenHash = tokenHash;
       }
 
@@ -158,13 +203,8 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
       // Add expiration check to only return valid sessions
       query.expiration = { $gt: new Date() };
 
-      const sessionQuery = Session.findOne(query);
-
-      if (options.lean) {
-        return (await sessionQuery.lean()) as t.ISession | null;
-      }
-
-      return await sessionQuery.exec();
+      const session = await Session.findOne(query).lean<StoredSession>().exec();
+      return session ? toSessionRecord(session) : null;
     } catch (error) {
       logger.error('[findSession] Error finding session:', error);
       throw new SessionError('Failed to find session', 'FIND_SESSION_FAILED');
@@ -187,7 +227,7 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
       const query: Record<string, unknown> = {};
 
       if (params.refreshToken) {
-        query.refreshTokenHash = await hashToken(params.refreshToken);
+        query.refreshTokenHash = await digest(params.refreshToken);
       }
 
       if (params.sessionId) {
@@ -251,35 +291,31 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
   /**
    * Generates a refresh token for a session
    */
-  async function generateRefreshToken(session: t.ISession): Promise<string> {
+  async function generateRefreshToken(session: t.SessionRecord): Promise<string> {
     if (!session || !session.user) {
       throw new SessionError('Invalid session object', 'INVALID_SESSION');
     }
-
     try {
-      const expiresIn = session.expiration
-        ? session.expiration.getTime()
-        : Date.now() + DEFAULT_REFRESH_TOKEN_EXPIRY;
-
-      if (!session.expiration) {
-        session.expiration = new Date(expiresIn);
-      }
-
-      const refreshToken = await signPayload({
-        payload: {
-          id: session.user,
-          sessionId: session._id,
-          /** `iat` is whole seconds, too coarse to order this token against a password reset that
-           * lands in the same second. `isTokenRetired` reads this claim to settle that exactly. */
-          issuedAtMs: Date.now(),
+      const previousHash = session.refreshTokenHash;
+      const expiration = session.expiration ?? new Date(Date.now() + DEFAULT_REFRESH_TOKEN_EXPIRY);
+      const { refreshToken, refreshTokenHash } = await createSessionToken(
+        { ...session, expiration },
+        deps,
+      );
+      if (refreshTokenHash === previousHash) throw new Error('Refresh token did not change');
+      const result = await mongoose.models.Session.updateOne(
+        {
+          _id: session._id,
+          user: session.user,
+          tenantId: session.tenantId ?? null,
+          refreshTokenHash: previousHash,
+          expiration: { $gt: new Date() },
         },
-        secret: process.env.JWT_REFRESH_SECRET!,
-        expirationTime: Math.floor((expiresIn - Date.now()) / 1000),
-      });
-
-      session.refreshTokenHash = await hashToken(refreshToken);
-      await session.save();
-
+        { $set: { refreshTokenHash } },
+      );
+      if (result.matchedCount !== 1) {
+        throw new SessionError('Session is no longer current', 'SESSION_NOT_FOUND');
+      }
       return refreshToken;
     } catch (error) {
       logger.error('[generateRefreshToken] Error generating refresh token:', error);
@@ -298,5 +334,3 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     deleteAllUserSessions,
   };
 }
-
-export type SessionMethods = ReturnType<typeof createSessionMethods>;

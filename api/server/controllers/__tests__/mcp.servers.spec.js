@@ -572,9 +572,9 @@ describe('DB-backed server mutation fencing', () => {
     mockRegistryInstance.getServerConfig.mockResolvedValue(createDbConfig(dbId));
     mockRegistryInstance.removeServer.mockResolvedValue(undefined);
     const tokenSnapshot = jest
-      .spyOn(mongoose.models.Token, 'distinct')
+      .spyOn(require('~/models'), 'findMCPTokenUserIds')
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([new mongoose.Types.ObjectId(sharedUser.id)]);
+      .mockResolvedValueOnce([sharedUser.id]);
 
     try {
       await deleteMCPServerController(

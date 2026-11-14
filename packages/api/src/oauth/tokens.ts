@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { logger, encryptV2 } from '@librechat/data-schemas';
 import { TokenExchangeMethodEnum } from 'librechat-data-provider';
-import type { IToken, TokenMethods } from '@librechat/data-schemas';
+import type { TokenRecord, TokenMethods } from '@librechat/data-schemas';
 import { getSafeErrorMetadata, outboundRequestBudget, DEFAULT_OUTBOUND_TIMEOUTS_MS } from '~/utils';
 import { DEFAULT_OAUTH_TOKEN_TTL_SECONDS, normalizeExpiresIn } from './expiry';
 import { validateActionOAuthEndpoint } from './validation';
@@ -60,7 +60,7 @@ export function createHandleOAuthToken({
     expiresIn?: number | string | null;
     metadata?: Record<string, unknown>;
     type?: string;
-  }): Promise<IToken | null> {
+  }): Promise<TokenRecord | null> {
     const encrypedToken = await encryptV2(token);
     const expiresInNumber = normalizeExpiresIn(expiresIn) ?? DEFAULT_OAUTH_TOKEN_TTL_SECONDS;
     const tokenData = {
