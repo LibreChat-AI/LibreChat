@@ -227,3 +227,39 @@ describe('SDK agent registration and native execution', () => {
     expect(loadModule).not.toHaveBeenCalled();
   });
 });
+
+it('refuses remote execution when host model protection cannot cross the boundary', () => {
+  const remoteBinding = { id: 'private', protocolVersion: 1 as const };
+  const remoteEndpoint = {
+    sdkRuntimes: {
+      private: {
+        remote: {
+          url: 'wss://worker/sdk',
+          secret: '${SDK_RUNTIME_SECRET}',
+          connectTimeoutMs: 10000,
+          rpcTimeoutMs: 60000,
+          maxFrameBytes: 1048576,
+          maxBufferedBytes: 4194304,
+          maxRunMs: 600000,
+        },
+        roles: ['ADMIN'],
+      },
+    },
+  };
+  expect(() =>
+    resolveSdkAgentBinding(
+      [{ id: 'saved', sdk_runtime: remoteBinding }],
+      remoteEndpoint,
+      'ADMIN',
+      true,
+    ),
+  ).toThrow(expect.objectContaining({ code: 'sdk_runtime_policy_unsupported' }));
+  expect(
+    resolveSdkAgentBinding(
+      [{ id: 'saved', sdk_runtime: remoteBinding }],
+      remoteEndpoint,
+      'ADMIN',
+      false,
+    ),
+  ).toMatchObject({ binding: remoteBinding, remote: remoteEndpoint.sdkRuntimes.private.remote });
+});

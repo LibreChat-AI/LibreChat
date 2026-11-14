@@ -1832,6 +1832,9 @@ html {
   transform-origin: 50% 50%;
 }
 
+/* `.message-content` is also published in @librechat/client (theme/parts.css) for other hosts.
+ * That stylesheet loads before this one, so `.prose` and `.markdown` above would win; keeping the
+ * rule here at its original place preserves the app's message line height and width. */
 .message-content,
 .message-editor-text {
   font-size: var(--markdown-font-size, var(--font-size-base));

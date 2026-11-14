@@ -1955,3 +1955,26 @@ describe('isConfigSecretKeyRename', () => {
     ).toBe(false);
   });
 });
+
+describe('remote SDK deployment credentials', () => {
+  it('redacts runtime secrets from resolved YAML and keeps unresolved env references', () => {
+    const config = {
+      endpoints: {
+        agents: {
+          sdkRuntimes: {
+            'schema.advisor': {
+              remote: { url: 'wss://worker/sdk', secret: 'private-runtime-secret' },
+            },
+            env: { remote: { url: 'wss://worker/sdk', secret: '${SDK_RUNTIME_SECRET}' } },
+          },
+        },
+      },
+    };
+    const redacted = redactResolvedConfigSecrets(config);
+    expect(redacted.endpoints.agents.sdkRuntimes['schema.advisor'].remote).toEqual({
+      url: 'wss://worker/sdk',
+    });
+    expect(redacted.endpoints.agents.sdkRuntimes.env.remote.secret).toBe('${SDK_RUNTIME_SECRET}');
+    expect(JSON.stringify(redacted)).not.toContain('private-runtime-secret');
+  });
+});
