@@ -7,6 +7,7 @@ import type { RedisClientType, RedisClusterType } from '@redis/client';
 import type { Redis, Cluster } from 'ioredis';
 import type { ReadonlyRecoveryHandler } from './recovery';
 import { createReadonlyRecovery, isReadonlyReplicaError } from './recovery';
+import { createRedisRetryStrategy } from './retry';
 import { startRedisHeartbeat } from './heartbeat';
 import { cacheConfig } from './cacheConfig';
 
@@ -48,22 +49,13 @@ if (cacheConfig.USE_REDIS) {
     tls: useTls ? { ca: ca ?? undefined } : undefined,
     keyPrefix: `${cacheConfig.REDIS_KEY_PREFIX}${cacheConfig.GLOBAL_PREFIX_SEPARATOR}`,
     maxListeners: cacheConfig.REDIS_MAX_LISTENERS,
-    retryStrategy: (times: number) => {
-      if (
-        cacheConfig.REDIS_RETRY_MAX_ATTEMPTS > 0 &&
-        times > cacheConfig.REDIS_RETRY_MAX_ATTEMPTS
-      ) {
-        logger.error(
-          `ioredis giving up after ${cacheConfig.REDIS_RETRY_MAX_ATTEMPTS} reconnection attempts`,
-        );
-        return null;
-      }
-      const base = Math.min(Math.pow(2, times) * 50, cacheConfig.REDIS_RETRY_MAX_DELAY);
-      const jitter = Math.floor(Math.random() * Math.min(base, 1000));
-      const delay = Math.min(base + jitter, cacheConfig.REDIS_RETRY_MAX_DELAY);
-      logger.info(`ioredis reconnecting... attempt ${times}, delay ${delay}ms`);
-      return delay;
-    },
+    retryStrategy: createRedisRetryStrategy({
+      label: 'ioredis',
+      maxAttempts: cacheConfig.REDIS_RETRY_MAX_ATTEMPTS,
+      maxDelay: cacheConfig.REDIS_RETRY_MAX_DELAY,
+      initialDelay: 50,
+      log: (message) => logger.error(message),
+    }),
     reconnectOnError: (err: Error) => {
       if (isReadonlyReplicaError(err)) {
         logger.warn('ioredis reconnecting due to READONLY error');
@@ -73,7 +65,9 @@ if (cacheConfig.USE_REDIS) {
     },
     enableOfflineQueue: cacheConfig.REDIS_ENABLE_OFFLINE_QUEUE,
     connectTimeout: cacheConfig.REDIS_CONNECT_TIMEOUT,
-    maxRetriesPerRequest: 3,
+    // A lost reply does not prove a write failed. Reconnect without replaying it.
+    maxRetriesPerRequest: 0,
+    autoResendUnfulfilledCommands: false,
     keepAlive: cacheConfig.REDIS_KEEP_ALIVE,
   };
 
@@ -91,32 +85,25 @@ if (cacheConfig.USE_REDIS) {
               }
             : {}),
           redisOptions,
-          clusterRetryStrategy: (times: number) => {
-            if (
-              cacheConfig.REDIS_RETRY_MAX_ATTEMPTS > 0 &&
-              times > cacheConfig.REDIS_RETRY_MAX_ATTEMPTS
-            ) {
-              logger.error(
-                `ioredis cluster giving up after ${cacheConfig.REDIS_RETRY_MAX_ATTEMPTS} reconnection attempts`,
-              );
-              return null;
-            }
-            const base = Math.min(Math.pow(2, times) * 100, cacheConfig.REDIS_RETRY_MAX_DELAY);
-            const jitter = Math.floor(Math.random() * Math.min(base, 1000));
-            const delay = Math.min(base + jitter, cacheConfig.REDIS_RETRY_MAX_DELAY);
-            logger.info(`ioredis cluster reconnecting... attempt ${times}, delay ${delay}ms`);
-            return delay;
-          },
+          // Keep MOVED/ASK routing, but never resend a command after losing its reply.
+          retryDelayOnFailover: 0,
+          clusterRetryStrategy: createRedisRetryStrategy({
+            label: 'ioredis cluster',
+            maxAttempts: cacheConfig.REDIS_RETRY_MAX_ATTEMPTS,
+            maxDelay: cacheConfig.REDIS_RETRY_MAX_DELAY,
+            initialDelay: 100,
+            log: (message) => logger.error(message),
+          }),
           enableOfflineQueue: cacheConfig.REDIS_ENABLE_OFFLINE_QUEUE,
         },
       );
 
   ioredisClient.on('error', (err) => {
-    logger.error('ioredis client error:', err);
+    logger.debug('ioredis client error:', err);
   });
 
   ioredisClient.on('connect', () => {
-    logger.info('ioredis client connected');
+    logger.debug('ioredis client connected');
   });
 
   ioredisClient.on('ready', () => {
@@ -124,11 +111,11 @@ if (cacheConfig.USE_REDIS) {
   });
 
   ioredisClient.on('reconnecting', (delay: number) => {
-    logger.info(`ioredis client reconnecting in ${delay}ms`);
+    logger.debug(`ioredis client reconnecting in ${delay}ms`);
   });
 
   ioredisClient.on('close', () => {
-    logger.warn('ioredis client connection closed');
+    logger.debug('ioredis client connection closed');
   });
 
   /** Deadline-bounded keepalive PINGs; an unanswered probe forces a reconnect. */
@@ -201,6 +188,14 @@ if (cacheConfig.USE_REDIS) {
    * ** WARNING ** Keyv Redis client does not support Prefix like ioredis above.
    * The prefix feature will be handled by the Keyv-Redis store in cacheFactory.js
    */
+  const retry = createRedisRetryStrategy({
+    label: '@keyv/redis client',
+    maxAttempts: cacheConfig.REDIS_RETRY_MAX_ATTEMPTS,
+    maxDelay: cacheConfig.REDIS_RETRY_MAX_DELAY,
+    initialDelay: 100,
+    firstAttempt: 0,
+    log: (message) => logger.error(message),
+  });
   const redisOptions: Record<string, unknown> = {
     username,
     password,
@@ -208,22 +203,8 @@ if (cacheConfig.USE_REDIS) {
       ...(isRedisCluster ? { tls: useTls } : {}),
       ...(ca ? { ca } : {}),
       connectTimeout: cacheConfig.REDIS_CONNECT_TIMEOUT,
-      reconnectStrategy: (retries: number) => {
-        if (
-          cacheConfig.REDIS_RETRY_MAX_ATTEMPTS > 0 &&
-          retries > cacheConfig.REDIS_RETRY_MAX_ATTEMPTS
-        ) {
-          logger.error(
-            `@keyv/redis client giving up after ${cacheConfig.REDIS_RETRY_MAX_ATTEMPTS} reconnection attempts`,
-          );
-          return new Error('Max reconnection attempts reached');
-        }
-        const base = Math.min(Math.pow(2, retries) * 100, cacheConfig.REDIS_RETRY_MAX_DELAY);
-        const jitter = Math.floor(Math.random() * Math.min(base, 1000));
-        const delay = Math.min(base + jitter, cacheConfig.REDIS_RETRY_MAX_DELAY);
-        logger.info(`@keyv/redis reconnecting... attempt ${retries}, delay ${delay}ms`);
-        return delay;
-      },
+      reconnectStrategy: (retries: number) =>
+        retry(retries) ?? new Error('Max reconnection attempts reached'),
     },
     disableOfflineQueue: !cacheConfig.REDIS_ENABLE_OFFLINE_QUEUE,
     ...(cacheConfig.REDIS_PING_INTERVAL > 0
@@ -264,11 +245,11 @@ if (cacheConfig.USE_REDIS) {
   }
 
   keyvRedisClient.on('error', (err) => {
-    logger.error('@keyv/redis client error:', err);
+    logger.debug('@keyv/redis client error:', err);
   });
 
   keyvRedisClient.on('connect', () => {
-    logger.info('@keyv/redis client connected');
+    logger.debug('@keyv/redis client connected');
   });
 
   keyvRedisClient.on('ready', () => {
@@ -276,11 +257,11 @@ if (cacheConfig.USE_REDIS) {
   });
 
   keyvRedisClient.on('reconnecting', () => {
-    logger.info('@keyv/redis client reconnecting...');
+    logger.debug('@keyv/redis client reconnecting...');
   });
 
   keyvRedisClient.on('disconnect', () => {
-    logger.warn('@keyv/redis client disconnected');
+    logger.debug('@keyv/redis client disconnected');
   });
 
   // Start connection immediately and settle the gate created before client initialization.

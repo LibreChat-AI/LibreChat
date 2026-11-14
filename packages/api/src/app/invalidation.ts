@@ -31,6 +31,8 @@ export interface ConfigInvalidationPubSub {
   publisher: ConfigInvalidationPublisher;
   subscriber: ConfigInvalidationSubscriber;
   channel?: string;
+  /** Releases owned connections without waiting for a Redis acknowledgement. */
+  close?(): void;
 }
 
 /** One cache a config write invalidates; `tenantId` scopes it when the cache supports that. */
@@ -158,6 +160,9 @@ export function createConfigCacheInvalidation(params: {
       },
       (error: unknown) => {
         subscribing = false;
+        if (closed) {
+          return;
+        }
         logger.error(
           '[invalidateConfigCaches] Subscribing to cross-instance invalidations failed; retrying when the subscriber reconnects. Until then this instance may serve cached config until it expires:',
           getSafeErrorMetadata(error),
@@ -209,13 +214,17 @@ export function createConfigCacheInvalidation(params: {
   }
 
   async function close(): Promise<void> {
-    if (!pubsub) {
+    if (!pubsub || closed) {
       return;
     }
     closed = true;
     pubsub.subscriber.off('ready', subscribe);
     pubsub.subscriber.off('message', onMessage);
-    await pubsub.subscriber.unsubscribe(channel);
+    if (pubsub.close) {
+      pubsub.close();
+      return;
+    }
+    void pubsub.subscriber.unsubscribe(channel).catch(() => undefined);
   }
 
   return { invalidate, reload, close };
@@ -242,9 +251,14 @@ export function createRedisConfigInvalidationPubSub(params: {
   publisher.on('error', (error: Error) => {
     logger.error('[ConfigInvalidation] publisher error:', getSafeErrorMetadata(error));
   });
+  const subscriber = createIoRedisSubscriber(client, '[ConfigInvalidation] subscriber');
   return {
     publisher,
-    subscriber: createIoRedisSubscriber(client, '[ConfigInvalidation] subscriber'),
+    subscriber,
     channel: `${CONFIG_INVALIDATION_CHANNEL}:${namespace?.trim() || 'default'}`,
+    close: () => {
+      subscriber.disconnect();
+      publisher.disconnect();
+    },
   };
 }
