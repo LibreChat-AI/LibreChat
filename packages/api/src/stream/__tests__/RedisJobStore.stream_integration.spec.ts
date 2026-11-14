@@ -1247,6 +1247,38 @@ describe('RedisJobStore Integration Tests', () => {
       await store.destroy();
     });
 
+    test('should apply the active filter without hiding the job from cleanup', async () => {
+      if (!ioredisClient) {
+        return;
+      }
+
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const { isListedChatJob } = await import('../metadata');
+      const store = new RedisJobStore(ioredisClient);
+      await store.initialize();
+
+      const userId = `child-thread-user-${Date.now()}`;
+      const chatId = `child-thread-chat-${Date.now()}`;
+      const childId = `child-thread-child-${Date.now()}`;
+      try {
+        await store.createJob(chatId, userId, chatId);
+        await store.createJob(childId, userId, childId, undefined, {
+          agentEventBindingId: 'binding-1',
+        });
+
+        expect((await store.getActiveJobIdsByUser(userId)).sort()).toEqual(
+          [chatId, childId].sort(),
+        );
+        expect(await store.getActiveJobIdsByUser(userId, undefined, isListedChatJob)).toEqual([
+          chatId,
+        ]);
+        expect(await store.getCleanupBlockingJobIdsByUser(userId)).toContain(childId);
+        expect((await store.getJob(childId))?.agentEventBindingId).toBe('binding-1');
+      } finally {
+        await store.destroy();
+      }
+    });
+
     test('should return resumed requires_action jobs to the running index', async () => {
       if (!ioredisClient) {
         return;

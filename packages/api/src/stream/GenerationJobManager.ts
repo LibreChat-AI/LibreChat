@@ -98,7 +98,7 @@ import { toClientPendingAction } from '~/agents/hitl/policy';
 import { markAbortedCompactionContent } from '~/agents/compaction';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { projectPendingMCPOAuthPrompts } from '~/mcp/oauth/resume';
-import { sanitizeJobMetadata } from './metadata';
+import { sanitizeJobMetadata, isListedChatJob } from './metadata';
 
 /** Terminal error surfaced to a client still attached when its approval window lapses. */
 const APPROVAL_EXPIRED_ERROR = 'Approval expired before a decision was made';
@@ -9936,15 +9936,16 @@ class GenerationJobManagerClass {
   }
 
   /**
-   * Get active job IDs for a user.
-   * Returns conversation IDs of running jobs belonging to the user.
+   * The user's running chats: the stream ids a client lists as conversations.
+   * A job whose stream is a subagent child thread is left out. It still answers its own
+   * status and stream reads, and cleanup enumeration still counts it.
    * Performs self-healing cleanup of stale entries.
    *
    * @param userId - The user ID to query
    * @returns Array of conversation IDs with active jobs
    */
   async getActiveJobIdsForUser(userId: string, tenantId?: string): Promise<string[]> {
-    return this.jobStore.getActiveJobIdsByUser(userId, tenantId);
+    return this.jobStore.getActiveJobIdsByUser(userId, tenantId, isListedChatJob);
   }
 
   /** Returns every generation whose provider can still mutate user-owned data,

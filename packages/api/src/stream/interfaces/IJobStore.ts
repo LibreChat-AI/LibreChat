@@ -411,6 +411,9 @@ export interface SerializableJobData {
   steersClosed?: boolean;
 }
 
+/** Narrows an owner's active jobs, such as to the ones a client lists as chats. */
+export type ActiveJobFilter = (job: SerializableJobData) => boolean;
+
 /** Exact active hash replaced by one atomic job creation. Built-in stores keep
  * this as non-enumerable transaction metadata; Redis also retains a private
  * receipt in the replacement hash so a committed create with a lost reply can
@@ -1078,7 +1081,11 @@ export interface IJobStore {
   getJobCount(): Promise<number>;
   getJobCountByStatus(status: JobStatus): Promise<number>;
   destroy(): Promise<void>;
-  getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]>;
+  getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]>;
 
   /** Complete owner cleanup query, including terminal host work and legacy-index recovery.
    * Managers retain the global-index fallback for older third-party stores. */
@@ -1380,9 +1387,14 @@ export interface IJobStoreV2 extends IJobStore {
    * Also performs self-healing cleanup of stale entries.
    *
    * @param userId - The user ID to query
+   * @param accept - Leaves out the active jobs it returns false for
    * @returns Array of conversation IDs with active jobs
    */
-  getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]>;
+  getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]>;
 
   // ===== Content State Methods =====
   // These methods manage volatile content state tied to each job.

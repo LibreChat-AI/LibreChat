@@ -35,6 +35,7 @@ import type {
   ParkedSteerClaim,
   ScheduleCleanupScope,
   ScheduleProviderOwner,
+  ActiveJobFilter,
 } from '~/stream/interfaces/IJobStore';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
@@ -4009,8 +4010,12 @@ export class RedisJobStore implements IJobStoreV2 {
    * @param userId - The user ID to query
    * @returns Array of conversation IDs with active jobs
    */
-  async getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
-    return this.getJobIdsByUser(userId, tenantId, false);
+  async getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]> {
+    return this.getJobIdsByUser(userId, tenantId, false, accept);
   }
 
   async getCleanupBlockingJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
@@ -4039,6 +4044,7 @@ export class RedisJobStore implements IJobStoreV2 {
     userId: string,
     tenantId: string | undefined,
     includeUndrained: boolean,
+    accept?: ActiveJobFilter,
   ): Promise<string[]> {
     const userJobsKey = KEYS.userJobs(userId, tenantId);
     const trackedIds = await this.redis.smembers(userJobsKey);
@@ -4083,7 +4089,9 @@ export class RedisJobStore implements IJobStoreV2 {
         ) {
           continue;
         }
-        activeIds.push(streamId);
+        if (accept == null || accept(job)) {
+          activeIds.push(streamId);
+        }
       } else {
         // Self-heal from durable state instead of a raw SREM, which could remove
         // a replacement's membership after the read.
@@ -4115,7 +4123,8 @@ export class RedisJobStore implements IJobStoreV2 {
                 currentJob.terminalPersistencePending === true ||
                 currentJob.terminalHostActionPending === true)
             )
-          )
+          ) &&
+          (accept == null || accept(currentJob))
         ) {
           activeIds.push(streamId);
         }
