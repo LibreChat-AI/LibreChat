@@ -96,6 +96,10 @@ export interface PaletteSources {
   onFileChange(event: ChangeEvent<HTMLInputElement>): void;
   recentFiles: readonly TFile[];
   attachFile(file: TFile): void;
+  /** The sections whose full list the host shows in a "Show all" dialog, drawn through
+   *  `overlays`. A section outside it has no dialog to hand over to, so the palette lists it whole
+   *  instead of capping it behind a button that opens nothing. */
+  catalogs: readonly PaletteCatalogSection[];
   /** The upload picker dialogs and the show-all catalog. */
   overlays: ReactNode;
 }
@@ -131,6 +135,7 @@ const EMPTY_PALETTE_SOURCES: PaletteSources = {
   onFileChange: () => undefined,
   recentFiles: [],
   attachFile: () => undefined,
+  catalogs: [],
   overlays: null,
 };
 

@@ -1,5 +1,9 @@
 import { useCallback } from 'react';
-import type { PaletteSources, PaletteSourcesInput } from '@librechat/chat/react';
+import type {
+  PaletteSources,
+  PaletteSourcesInput,
+  PaletteCatalogSection,
+} from '@librechat/chat/react';
 import type { TToolFavoriteType } from 'librechat-data-provider';
 import type { PaletteEntry } from '~/hooks/Input/usePaletteEntries';
 import type { TranslationKeys } from '~/hooks';
@@ -12,6 +16,9 @@ import { useBadgeRowContext } from '~/Providers';
 import { isUnifiedUploadMode } from '~/utils';
 import { useLocalize } from '~/hooks';
 import Catalog from './Catalog';
+
+/** The sections `Catalog` lists in full behind their "Show all" button. */
+const CATALOGS: readonly PaletteCatalogSection[] = ['skill', 'mcp', 'files'];
 
 /**
  * Favorites, upload destinations, recent files and the dialogs the palette hands off to.
@@ -77,6 +84,7 @@ export function usePaletteSources(input: PaletteSourcesInput): PaletteSources {
     onFileChange: attach.onFileChange,
     recentFiles: recent.files,
     attachFile: recent.attach,
+    catalogs: CATALOGS,
     overlays: (
       <>
         <SharePointPickerDialog

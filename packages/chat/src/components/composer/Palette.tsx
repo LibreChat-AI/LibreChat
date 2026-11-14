@@ -247,6 +247,7 @@ function Palette({
     onFileChange,
     recentFiles,
     attachFile,
+    catalogs,
     overlays,
   } = (usePaletteSources ?? emptyPaletteSources)({
     index,
@@ -495,8 +496,9 @@ function Palette({
         return;
       }
       /* Tools are a short fixed set; skills and servers run to hundreds, so
-         the palette keeps a handful and the dialog holds the rest. */
-      const capped = section !== 'tool';
+         the palette keeps a handful and the dialog holds the rest. A host with
+         no dialog for the section gets the whole list instead. */
+      const capped = section !== 'tool' && catalogs.includes(section);
       next.push({
         type: 'header',
         key: `h:${section}`,
@@ -514,13 +516,14 @@ function Palette({
     pushSection('mcp');
 
     if (canAttach && recentFiles.length > 0) {
+      const filesCatalog = catalogs.includes('files');
       next.push({
         type: 'header',
         key: 'h:files',
         label: localize('com_ui_composer_files'),
-        showAll: 'files',
+        showAll: filesCatalog ? 'files' : undefined,
       });
-      for (const file of recentFiles.slice(0, SECTION_LIMIT)) {
+      for (const file of filesCatalog ? recentFiles.slice(0, SECTION_LIMIT) : recentFiles) {
         next.push({ type: 'file', key: `file:${file.file_id}`, file });
       }
     }
@@ -536,6 +539,7 @@ function Palette({
     expanded,
     recentFiles,
     canAttach,
+    catalogs,
     localize,
   ]);
 
@@ -834,6 +838,18 @@ function Palette({
   const paletteRowId = useCallback((key: string) => rowElementId(index, key), [index]);
   const listId = `composer-palette-list-${index}`;
   const helpId = `composer-palette-help-${index}`;
+
+  /* The windowed list brings the active row into view through `scrollToIndex`. The plain grid
+     has no such prop, so an arrow past the visible rows is followed here. */
+  useEffect(() => {
+    if (renderPaletteList != null || !scrollToActive || activeRow == null) {
+      return;
+    }
+    const element = document.getElementById(paletteRowId(activeRow.key));
+    if (element != null && typeof element.scrollIntoView === 'function') {
+      element.scrollIntoView({ block: 'nearest' });
+    }
+  }, [renderPaletteList, scrollToActive, activeRow, paletteRowId]);
 
   const rowRenderer = useCallback(
     ({ index, style }: { index: number; key: string; style: React.CSSProperties }) => {
@@ -1378,8 +1394,9 @@ function Palette({
                   aria-label={localize('com_ui_composer_palette')}
                   aria-rowcount={rows.length}
                   tabIndex={-1}
+                  style={{ height: Math.min(layout.height, LIST_MAX_HEIGHT) }}
                   className={cn(
-                    'focus:outline-hidden',
+                    'overflow-y-auto focus:outline-hidden',
                     layout.height > LIST_MAX_HEIGHT && 'composer-palette-scroll',
                   )}
                 >
