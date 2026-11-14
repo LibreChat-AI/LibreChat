@@ -308,7 +308,7 @@ export default function WebSearch({
     const details = (
       <div
         className={classes(
-          'ms-auto',
+          'ms-auto flex',
           /** On the title line it sits beside the always-visible chevron. */
           !inHeader &&
             'opacity-0 group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100',
