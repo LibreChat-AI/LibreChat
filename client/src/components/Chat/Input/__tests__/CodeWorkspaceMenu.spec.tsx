@@ -33,10 +33,20 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('@librechat/client', () => {
-  const { CheckboxGlyph, TooltipAnchor, cn } = jest.requireActual('@librechat/client');
+  const {
+    CheckboxGlyph,
+    TooltipAnchor,
+    cn,
+    mergeComposerClasses,
+    disabledFillClasses,
+    disabledInkClasses,
+  } = jest.requireActual('@librechat/client');
   return {
     cn,
     CheckboxGlyph,
+    mergeComposerClasses,
+    disabledFillClasses,
+    disabledInkClasses,
     composerControlClasses: () => 'composer-control',
     useToastContext: () => ({ showToast: mockShowToast }),
     TooltipAnchor,
