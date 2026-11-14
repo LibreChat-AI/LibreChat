@@ -197,6 +197,7 @@ export default function usePresets(index = 0) {
     newPreset.spec = null;
     newPreset.iconURL = newPreset.iconURL ?? null;
     newPreset.modelLabel = newPreset.modelLabel ?? null;
+    newPreset.greeting = newPreset.greeting ?? undefined;
     const isModular = isCurrentModular && isNewModular && shouldSwitch;
     const disableParams = newPreset.defaultPreset === true;
     if (isExistingConversation && isModular) {
@@ -207,6 +208,7 @@ export default function usePresets(index = 0) {
           spec: null,
           iconURL: null,
           modelLabel: null,
+          greeting: newPreset.greeting ?? undefined,
           endpointType: newEndpointType,
         },
         preset: { ...newPreset, endpointType: newEndpointType },
