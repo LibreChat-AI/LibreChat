@@ -10,9 +10,9 @@ import type { TAskUserQuestionConfig } from 'librechat-data-provider';
 import type { TokenCounter } from '@librechat/agents';
 import type { EncodingName } from '~/utils/tokenizer';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
+import Tokenizer, { getExactCountWork } from '~/utils/tokenizer';
 import { CLAUDE_TOKEN_CORRECTION } from '../client';
 import { getSafeErrorMetadata } from '~/utils';
-import Tokenizer from '~/utils/tokenizer';
 
 /** The projection a stored-row loader needs; nothing else is read. */
 export const RETAINED_ANSWER_ROW_FIELDS =
@@ -463,16 +463,36 @@ async function buildContext({
   return renderRetainedAnswers(sets, resolved.maxTokens, countTokens);
 }
 
+/** Bytes' worth of merge work one retained-answer text may cost to count exactly
+ *  (~30 ms of ordinary text); a block is measured several times per turn. Not a
+ *  config field: it changes no retention decision beyond the budgeting counter's
+ *  fraction-of-a-percent margin, and raising it only lets one answer stall the
+ *  server again. */
+const MAX_EXACT_ANSWER_COUNT_WORK = 1024 * 1024;
+
 /**
  * Exact counting is limited to retained context. The general prompt counter's
  * 4 KiB byte-estimate shortcut would discard answers that fit the token budget.
  * Initialize lazily so disabled retention and histories without answers cost no
  * tokenizer load. Runtime recounts use this same exact-counting implementation.
+ *
+ * An answer is user text, and one long unbroken run in it blocks the server each
+ * time the block is measured: the SDK hands this counter 8,192-character slices,
+ * and one slice of unbroken CJK text takes ~0.3 s to count whole. Text past
+ * {@link MAX_EXACT_ANSWER_COUNT_WORK} uses the warm budgeting counter instead: it
+ * runs in linear time and errs a fraction of a percent high, never dropping an
+ * answer that fits.
  */
 function countRetainedAnswerMessage(message: BaseMessage, encoding: EncodingName): number {
   const count = getTokenCountForMessage(
     message,
     (text) => {
+      if (
+        getExactCountWork(text, { limit: MAX_EXACT_ANSWER_COUNT_WORK, encoding }) >
+        MAX_EXACT_ANSWER_COUNT_WORK
+      ) {
+        return Tokenizer.getTokenCount(text, encoding);
+      }
       const tokens = Tokenizer.countExactTokens(text, encoding);
       if (tokens == null) {
         throw new Error('Retained-answer tokenizer unavailable');

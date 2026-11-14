@@ -9,6 +9,93 @@ const MAX_TOKENIZER_INPUT_LENGTH = 4 * 1024;
 /** Bound BPE's quadratic merge work on uninterrupted text, including whitespace. */
 const MAX_TOKENIZER_RUN_LENGTH = 256;
 const WHITESPACE = /\s/u;
+const LETTER = /[\p{L}\p{M}]/u;
+const NUMBER = /\p{N}/u;
+/** Unbroken runs up to this many UTF-8 bytes cost no more than their length to merge. */
+const LINEAR_RUN_LENGTH = 32;
+
+const RUN_SPACE = 1;
+const RUN_LETTER = 2;
+const RUN_NUMBER = 3;
+const RUN_OTHER = 4;
+
+function classifyRunCharacter(character: string): number {
+  if (WHITESPACE.test(character)) {
+    return RUN_SPACE;
+  }
+  if (LETTER.test(character)) {
+    return RUN_LETTER;
+  }
+  return NUMBER.test(character) ? RUN_NUMBER : RUN_OTHER;
+}
+
+const ASCII_RUN_CLASSES = Uint8Array.from({ length: 128 }, (_, code) =>
+  classifyRunCharacter(String.fromCharCode(code)),
+);
+
+function runWork(length: number): number {
+  return length <= LINEAR_RUN_LENGTH ? length : Math.ceil((length * length) / LINEAR_RUN_LENGTH);
+}
+
+/**
+ * Bytes' worth of merge work an exact count of `text` costs. The encoder merges
+ * the UTF-8 bytes of one pre-tokenized piece at a time (a word, a whitespace run,
+ * a punctuation run), and that work grows with the square of the piece's byte
+ * length: 200 KB of unbroken whitespace takes ~25 s, while 1 MB of ordinary text
+ * takes ~30 ms, and 16,000 unbroken CJK characters cost about seven times as much
+ * as 16,000 ASCII letters. Ordinary text therefore costs its UTF-8 length here (its
+ * length, for ASCII), and each long run of whitespace, letters or punctuation
+ * costs the square of its byte length, so the budget keeps meaning time. Digits
+ * depend on the encoding: o200k splits them into groups of three, so they never
+ * form a long piece, while the Claude encoding keeps a whole digit run as one
+ * piece (` ?\p{N}+`), so there it is charged like any other run. Letter runs that
+ * change case may split into several pieces, so the figure can overstate the work
+ * but does not understate it. The figure is never below `text.length`.
+ *
+ * With `limit`, the scan stops as soon as the work exceeds it and returns the
+ * figure reached so far (still above `limit`), so rejecting huge input costs no
+ * more than the budget it is checked against.
+ */
+export function getExactCountWork(
+  text: string,
+  {
+    limit = Number.POSITIVE_INFINITY,
+    encoding = 'o200k_base',
+  }: { limit?: number; encoding?: EncodingName } = {},
+): number {
+  const digitsSplit = encoding === 'o200k_base';
+  let work = 0;
+  let run = 0;
+  let previous = 0;
+  for (let index = 0; index < text.length; index++) {
+    if (work + runWork(run) > limit) {
+      return work + runWork(run);
+    }
+    const code = text.charCodeAt(index);
+    let runClass: number;
+    let width = 1;
+    if (code < 128) {
+      runClass = ASCII_RUN_CLASSES[code];
+    } else {
+      const point = text.codePointAt(index) ?? code;
+      if (point > 0xffff) {
+        index++;
+        width = 4;
+      } else {
+        width = point < 0x800 ? 2 : 3;
+      }
+      runClass = classifyRunCharacter(String.fromCodePoint(point));
+    }
+    if (runClass === previous && (runClass !== RUN_NUMBER || !digitsSplit)) {
+      run += width;
+      continue;
+    }
+    work += runWork(run);
+    run = width;
+    previous = runClass;
+  }
+  return work + runWork(run);
+}
 
 /** Near-exact budgeting count; seams can change BPE merges, but no content is omitted. */
 function countBoundedTokens(text: string, tokenizer: AiTokenizer): number {
@@ -119,9 +206,10 @@ class Tokenizer {
    * approximation must not be added to exact provider accounting.
    *
    * The input is tokenized whole. Counting it in slices would be cheaper but not
-   * exact — seams can change BPE merges — and this caller needs the real number. It costs
-   * ~60 ms/MB, so the caller decides how much content is worth counting
-   * (`endpoints.agents.maxRetainedToolCountChars`) rather than a bound here.
+   * exact, since seams can change BPE merges, and this caller needs the real number. It costs
+   * ~60 ms/MB for ordinary text but grows quadratically on a long unbroken run, so the
+   * caller decides how much work is worth doing, measured by {@link getExactCountWork}
+   * (`endpoints.agents.maxRetainedToolCountChars`), rather than a bound here.
    */
   countExactTokens(text: string, encoding: EncodingName = 'o200k_base'): number | undefined {
     if (text.length === 0) {
