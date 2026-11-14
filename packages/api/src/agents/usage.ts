@@ -1,11 +1,16 @@
 import { logger } from '@librechat/data-schemas';
-import { inputTokensIncludesCache, reconcileContextUsageFromEvent } from 'librechat-data-provider';
+import {
+  ContentTypes,
+  inputTokensIncludesCache,
+  reconcileContextUsageFromEvent,
+} from 'librechat-data-provider';
 import type {
   TCustomConfig,
   TResponseUsage,
   TTokenUsageEvent,
   TContextUsageEvent,
   TTransactionsConfig,
+  TMessageContentParts,
 } from 'librechat-data-provider';
 import type { SubagentUsageEvent as AgentsSubagentUsageEvent } from '@librechat/agents';
 import type {
@@ -810,6 +815,16 @@ export function hasRecordedPrimaryUsage(
   );
 }
 
+/** A pre-pruning estimate, not measured usage. Stored history can exceed one request's budget. */
+export function getAgentPromptTokenEstimate(
+  promptTokens: number,
+  maxContextTokens?: number,
+): number {
+  return maxContextTokens != null && Number.isFinite(maxContextTokens) && maxContextTokens > 0
+    ? Math.min(promptTokens, maxContextTokens)
+    : promptTokens;
+}
+
 export interface FallbackTokenUsageParams {
   /** Usage the run already recorded for this response, when it recorded any. */
   usage?:
@@ -818,7 +833,10 @@ export interface FallbackTokenUsageParams {
   /** Every entry the run collected; a billed call the aggregate hides still suppresses the estimate. */
   collectedUsage?: ReadonlyArray<UsageMetadata | null | undefined> | null;
   promptTokens?: number;
+  maxContextTokens?: number;
   completionTokens?: number;
+  /** Terminal error content suppresses estimates, never the run's reported-usage settlement. */
+  contentParts?: ReadonlyArray<Pick<TMessageContentParts, 'type'> | null | undefined>;
   /** Whether the run was stopped; labels the row when no explicit `context` is given. */
   aborted?: boolean;
   /** Explicit transaction label; otherwise derived from `aborted`. */
@@ -841,17 +859,32 @@ export async function recordFallbackTokenUsage(
     usage,
     collectedUsage,
     promptTokens,
+    maxContextTokens,
     completionTokens,
+    contentParts,
     aborted = false,
     context = resolveRunUsageContext(aborted),
     txMetadata,
   }: FallbackTokenUsageParams,
 ): Promise<void> {
-  if (hasRecordedPrimaryUsage(collectedUsage) || hasRecordedProviderUsage(usage)) {
+  if (
+    hasRecordedPrimaryUsage(collectedUsage) ||
+    hasRecordedProviderUsage(usage) ||
+    contentParts?.some((part) => part?.type === ContentTypes.ERROR)
+  ) {
     return;
   }
   try {
-    await deps.spendTokens({ ...txMetadata, context }, { promptTokens, completionTokens });
+    await deps.spendTokens(
+      { ...txMetadata, context },
+      {
+        promptTokens:
+          promptTokens == null
+            ? promptTokens
+            : getAgentPromptTokenEstimate(promptTokens, maxContextTokens),
+        completionTokens,
+      },
+    );
     const reasoningTokens = usage?.reasoning_tokens;
     if (typeof reasoningTokens === 'number') {
       await deps.spendTokens(
