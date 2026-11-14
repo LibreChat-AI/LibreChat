@@ -4,11 +4,11 @@ import SkillsSidePanel from './SkillsSidePanel';
 import { PanelFooter } from '~/components/ui';
 import { useAuthContext } from '~/hooks';
 
-export default function SkillsAccordion() {
+export default function SkillsAccordion({ visible }: { visible?: boolean } = {}) {
   const { user } = useAuthContext();
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
-      <SkillsSidePanel className="min-h-0 flex-1 border-e-0" />
+      <SkillsSidePanel visible={visible} className="min-h-0 flex-1 border-e-0" />
       {user?.role === SystemRoles.ADMIN && (
         <PanelFooter>
           <AdminSettings />

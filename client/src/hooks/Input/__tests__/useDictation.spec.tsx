@@ -1,5 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import type { TAskFunction } from '~/common';
+import { ChatInteractionContext } from '~/Providers/ChatInteractionContext';
 import useDictation from '../useDictation';
 
 /**
@@ -66,6 +68,7 @@ function setup({
   filesLoading = false,
   deferComposerReset = false,
   disabled = false,
+  visible = true,
   index,
 }: {
   autoSendText?: number;
@@ -76,11 +79,13 @@ function setup({
   filesLoading?: boolean;
   deferComposerReset?: boolean;
   disabled?: boolean;
+  visible?: boolean;
   index?: number;
 } = {}) {
   let text = draft;
   let uploading = filesLoading;
   let speechDisabled = disabled;
+  let chatVisible = visible;
   const methods = {
     setValue: jest.fn((_name: string, value: string) => {
       text = value;
@@ -90,21 +95,30 @@ function setup({
     }),
     getValues: jest.fn(() => text),
   };
-  const view = renderHook(() => {
-    const dictationOptions = {
-      ask: ask as unknown as TAskFunction,
-      methods: methods as never,
-      isSubmitting,
-      duringRunSubmit,
-      filesLoading: uploading,
-      deferComposerReset,
-      disabled: speechDisabled,
-      autoSendText,
-      speechToText,
-      index,
-    };
-    return useDictation(dictationOptions);
-  });
+  const view = renderHook(
+    () => {
+      const dictationOptions = {
+        ask: ask as unknown as TAskFunction,
+        methods: methods as never,
+        isSubmitting,
+        duringRunSubmit,
+        filesLoading: uploading,
+        deferComposerReset,
+        disabled: speechDisabled,
+        autoSendText,
+        speechToText,
+        index,
+      };
+      return useDictation(dictationOptions);
+    },
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <ChatInteractionContext.Provider value={chatVisible}>
+          {children}
+        </ChatInteractionContext.Provider>
+      ),
+    },
+  );
   return {
     ...view,
     methods,
@@ -114,6 +128,9 @@ function setup({
     },
     setDisabled: (value: boolean) => {
       speechDisabled = value;
+    },
+    setVisible: (value: boolean) => {
+      chatVisible = value;
     },
   };
 }
@@ -225,6 +242,166 @@ describe('useDictation', () => {
 
     first.section.remove();
     second.section.remove();
+  });
+
+  it('leaves shortcuts outside a hidden chat untouched and refuses captured starts', () => {
+    const { result, rerender, setVisible } = setup();
+    const start = result.current.start;
+    setVisible(false);
+    act(() => rerender());
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.focus();
+    const shortcut = () =>
+      new KeyboardEvent('keydown', {
+        code: 'KeyL',
+        shiftKey: true,
+        altKey: true,
+        cancelable: true,
+      });
+    const hiddenShortcut = shortcut();
+
+    act(() => start());
+    act(() => result.current.start());
+    act(() => {
+      window.dispatchEvent(hiddenShortcut);
+    });
+
+    expect(mockStart).not.toHaveBeenCalled();
+    expect(hiddenShortcut.defaultPrevented).toBe(false);
+    expect(result.current.startDisabled).toBe(true);
+
+    setVisible(true);
+    act(() => rerender());
+    const visibleShortcut = shortcut();
+    act(() => {
+      window.dispatchEvent(visibleShortcut);
+    });
+
+    expect(mockStart).toHaveBeenCalledTimes(1);
+    expect(visibleShortcut.defaultPrevented).toBe(true);
+    expect(result.current.startDisabled).toBe(false);
+    button.remove();
+  });
+
+  it.each(['browser', 'external'] as const)(
+    'retains a pending %s stop-and-send transcript while hidden',
+    async (endpoint) => {
+      mockSpeechEndpoint = endpoint;
+      const { result, rerender, currentText, methods, setVisible } = setup({ draft: 'my draft' });
+      act(() => result.current.start());
+      mockIsListening = true;
+      act(() => rerender());
+      act(() => result.current.stopAndSend());
+      const setText = mockSetTextCallback;
+      const complete = mockOnTranscriptionComplete;
+      mockIsListening = false;
+      setVisible(false);
+      act(() => rerender());
+      act(() => setText('keep these words'));
+      await settle(rerender);
+      act(() => complete('keep these words'));
+
+      expect(ask).not.toHaveBeenCalled();
+      expect(currentText()).toBe('my draft keep these words');
+      expect(methods.reset).not.toHaveBeenCalled();
+      expect(mockAbort).not.toHaveBeenCalled();
+
+      setVisible(true);
+      act(() => rerender());
+      act(() => complete('keep these words'));
+      expect(ask).not.toHaveBeenCalled();
+      expect(currentText()).toBe('my draft keep these words');
+    },
+  );
+
+  it.each(['browser', 'external'] as const)(
+    'blocks a captured %s auto-send callback while hidden, including during-run submission',
+    async (endpoint) => {
+      mockSpeechEndpoint = endpoint;
+      const duringRunSubmit = jest.fn(() => true);
+      const { result, rerender, currentText, methods, setVisible } = setup({
+        autoSendText: 0,
+        isSubmitting: true,
+        duringRunSubmit,
+      });
+      act(() => result.current.start());
+      mockIsListening = true;
+      act(() => rerender());
+      act(() => result.current.stopToComposer());
+      const setText = mockSetTextCallback;
+      const completeBeforeHide = mockOnTranscriptionComplete;
+      mockIsListening = false;
+      setVisible(false);
+      act(() => rerender());
+      const completeWhileHidden = mockOnTranscriptionComplete;
+      act(() => setText('save for later'));
+      await settle(rerender);
+      act(() => completeBeforeHide('save for later'));
+
+      expect(ask).not.toHaveBeenCalled();
+      expect(duringRunSubmit).not.toHaveBeenCalled();
+      expect(currentText()).toBe('save for later');
+      expect(methods.reset).not.toHaveBeenCalled();
+
+      setVisible(true);
+      act(() => rerender());
+      act(() => completeWhileHidden('save for later'));
+      expect(ask).not.toHaveBeenCalled();
+      expect(duringRunSubmit).not.toHaveBeenCalled();
+      expect(currentText()).toBe('save for later');
+    },
+  );
+
+  it.each(['browser', 'external'] as const)(
+    'stops active %s capture to the composer on hide without replaying a late auto-send',
+    async (endpoint) => {
+      mockSpeechEndpoint = endpoint;
+      const { result, rerender, currentText, methods, setVisible } = setup({
+        autoSendText: 0,
+        draft: 'my draft',
+      });
+      act(() => result.current.start());
+      mockIsListening = true;
+      act(() => rerender());
+      const setText = mockSetTextCallback;
+      const complete = mockOnTranscriptionComplete;
+      const stopAndSend = result.current.stopAndSend;
+      setVisible(false);
+      act(() => rerender());
+
+      expect(mockStop).toHaveBeenCalledTimes(1);
+      expect(mockAbort).not.toHaveBeenCalled();
+      expect(result.current.transcribing).toBe(true);
+      act(() => stopAndSend());
+      expect(mockStop).toHaveBeenCalledTimes(1);
+      act(() => setText('last words'));
+      await settle(rerender);
+
+      setVisible(true);
+      act(() => rerender());
+      act(() => complete('last words'));
+      expect(ask).not.toHaveBeenCalled();
+      expect(currentText()).toBe('my draft last words');
+      expect(methods.reset).not.toHaveBeenCalled();
+    },
+  );
+
+  it('stops capture that becomes active after its owner is already hidden', async () => {
+    const { result, rerender, currentText, setVisible } = setup({ autoSendText: 0 });
+    act(() => result.current.start());
+    setVisible(false);
+    act(() => rerender());
+    expect(mockStop).not.toHaveBeenCalled();
+
+    mockIsListening = true;
+    act(() => rerender());
+    expect(mockStop).toHaveBeenCalledTimes(1);
+    act(() => mockSetTextCallback('late permission'));
+    await settle(rerender);
+    act(() => mockOnTranscriptionComplete('late permission'));
+    expect(ask).not.toHaveBeenCalled();
+    expect(currentText()).toBe('late permission');
   });
 
   it('refuses both direct and shortcut starts while the host disables speech', () => {

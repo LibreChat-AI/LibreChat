@@ -3344,8 +3344,68 @@ export const isAllDataRetention = (mode?: RetentionMode | null): boolean =>
 export const isForcedTemporaryRetention = (mode?: RetentionMode | null): boolean =>
   mode === RetentionMode.EPHEMERAL;
 
+export const navigationPageSchema = z.enum([
+  'agentBuilder',
+  'skills',
+  'prompts',
+  'schedules',
+  'memories',
+  'bookmarks',
+  'parameters',
+  'mcpSettings',
+]);
+
+export type NavigationPage = z.infer<typeof navigationPageSchema>;
+export type NavigationView = 'page' | 'panel';
+
+const pagePresentationSchema = (enabled: boolean) =>
+  z
+    .object({
+      enabled: z.boolean().default(enabled),
+      defaultView: z.enum(['page', 'panel']).default('panel'),
+    })
+    .refine((page) => page.enabled || page.defaultView !== 'page', {
+      message: 'A disabled page cannot be the default view',
+      path: ['defaultView'],
+    })
+    .prefault({});
+
+export const navigationSchema = z
+  .object({
+    layout: z.enum(['current', 'console']).default('current'),
+    pages: z
+      .object({
+        agentBuilder: pagePresentationSchema(false),
+        skills: pagePresentationSchema(true),
+        prompts: pagePresentationSchema(true),
+        schedules: pagePresentationSchema(false),
+        memories: pagePresentationSchema(false),
+        bookmarks: pagePresentationSchema(false),
+        parameters: pagePresentationSchema(false),
+        mcpSettings: pagePresentationSchema(false),
+      })
+      .prefault({}),
+  })
+  .prefault({});
+
+export type NavigationConfig = z.infer<typeof navigationSchema>;
+
+/** Merge unparsed runtime overrides per field without losing sibling page defaults. */
+export function resolveNavigation(
+  value?: z.input<typeof navigationSchema>,
+  defaults: z.input<typeof navigationSchema> = {},
+): NavigationConfig {
+  const baseline = navigationSchema.parse(defaults);
+  const pages = { ...baseline.pages };
+  for (const page of navigationPageSchema.options) {
+    pages[page] = { ...baseline.pages[page], ...value?.pages?.[page] };
+  }
+  return navigationSchema.parse({ ...baseline, ...value, pages });
+}
+
 export const interfaceSchema = z
   .object({
+    navigation: navigationSchema,
     theme: deploymentThemeSchema.optional(),
     privacyPolicy: z
       .object({

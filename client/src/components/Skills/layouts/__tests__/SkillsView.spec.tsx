@@ -40,6 +40,11 @@ jest.mock('~/data-provider', () => ({
   useGetSkillByIdQuery: () => mockGetSkillByIdQuery(),
 }));
 
+jest.mock('../SkillsCollection', () => ({
+  __esModule: true,
+  default: () => <div data-testid="skills-collection" />,
+}));
+
 jest.mock('~/components/Skills/forms', () => ({
   CreateSkillForm: () => <div data-testid="create-skill-form" />,
   SkillForm: () => <div data-testid="skill-form" />,
@@ -67,6 +72,54 @@ describe('SkillsView', () => {
     mockUseMediaQuery.mockReturnValue(false);
     mockGetSkillByIdQuery.mockReset();
     mockGetSkillByIdQuery.mockReturnValue({ isLoading: false, isError: false, data: null });
+  });
+
+  it('renders the collection for /skills instead of a no-selection screen', () => {
+    const router = createMemoryRouter([{ path: '/skills', element: <SkillsView /> }], {
+      initialEntries: ['/skills'],
+    });
+    render(<RouterProvider router={router} />);
+    expect(screen.getByTestId('skills-collection')).toBeInTheDocument();
+    expect(mockGetSkillByIdQuery).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing edit route', () => {
+    const router = createMemoryRouter(
+      [{ path: '/skills/:skillId/edit', element: <SkillsView /> }],
+      {
+        initialEntries: ['/skills/skill-id/edit'],
+      },
+    );
+    render(<RouterProvider router={router} />);
+    expect(screen.getByTestId('skill-form')).toBeInTheDocument();
+    expect(screen.queryByTestId('skills-collection')).not.toBeInTheDocument();
+  });
+
+  it('keeps the existing detail route', () => {
+    mockGetSkillByIdQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: { _id: 'skill-id', name: 'stored skill' },
+    });
+    const router = createMemoryRouter([{ path: '/skills/:skillId', element: <SkillsView /> }], {
+      initialEntries: ['/skills/skill-id'],
+    });
+    render(<RouterProvider router={router} />);
+    expect(screen.getByTestId('skill-detail')).toBeInTheDocument();
+  });
+
+  it('does not mount collection queries without the independent SKILLS capability', () => {
+    mockUseHasAccess.mockReturnValue(false);
+    const router = createMemoryRouter(
+      [
+        { path: '/skills', element: <SkillsView /> },
+        { path: '/c/new', element: <div>{'chat'}</div> },
+      ],
+      { initialEntries: ['/skills'] },
+    );
+    render(<RouterProvider router={router} />);
+    expect(screen.getByText('chat')).toBeInTheDocument();
+    expect(screen.queryByTestId('skills-collection')).not.toBeInTheDocument();
   });
 
   it('renders the create skill form for /skills/new', () => {

@@ -8,6 +8,9 @@ import {
   TwoFactorSetupScreen,
   RequestPasswordReset,
 } from '~/components/Auth';
+import ParametersPage from '~/components/FeaturePresentation/ParametersPage';
+import ChatRouteOwner from '~/components/FeaturePresentation/Route';
+import FeaturePage from '~/components/FeaturePresentation/Page';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { importWithRecovery } from '~/lib/assets/lazy';
@@ -164,7 +167,35 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'c/:conversationId?',
-                  element: <ChatRoute />,
+                  element: (
+                    <ChatRouteOwner>
+                      <ChatRoute />
+                    </ChatRouteOwner>
+                  ),
+                },
+                {
+                  path: 'agent-builder',
+                  element: <FeaturePage page="agentBuilder" />,
+                },
+                {
+                  path: 'schedules',
+                  element: <FeaturePage page="schedules" />,
+                },
+                {
+                  path: 'memories',
+                  element: <FeaturePage page="memories" />,
+                },
+                {
+                  path: 'bookmarks',
+                  element: <FeaturePage page="bookmarks" />,
+                },
+                {
+                  path: 'parameters',
+                  element: <ParametersPage />,
+                },
+                {
+                  path: 'mcp-settings',
+                  element: <FeaturePage page="mcpSettings" />,
                 },
                 {
                   path: 'search',
@@ -172,7 +203,7 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'prompts',
-                  element: <Navigate to="/c/new" replace={true} />,
+                  element: <FeaturePage page="prompts" />,
                 },
                 {
                   /** Prompts are created from a dialog, so there is no "new" page to land on */
@@ -185,7 +216,7 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'skills',
-                  lazy: loadSkillsView,
+                  element: <FeaturePage page="skills" />,
                 },
                 {
                   path: 'insights',
