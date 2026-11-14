@@ -193,6 +193,92 @@ test('Node and Undici enforce integrity metadata separated by ASCII whitespace',
   }
 });
 
+test('HTTP instrumentation redacts signed credentials from real incoming server spans', () => {
+  // HTTP must load after instrumentation, in a process isolated from the other dependency tests.
+  const verify = async () => {
+    const assert = require('node:assert/strict');
+    const { once } = require('node:events');
+    const { createRequire } = require('node:module');
+    const api = createRequire(require.resolve('./api/package.json'));
+    const sdkRequire = createRequire(api.resolve('@opentelemetry/sdk-node'));
+    const { NodeSDK } = api('@opentelemetry/sdk-node');
+    const { SpanKind } = api('@opentelemetry/api');
+    const { HttpInstrumentation } = api('@opentelemetry/instrumentation-http');
+    const { InMemorySpanExporter, SimpleSpanProcessor } = sdkRequire(
+      '@opentelemetry/sdk-trace-base',
+    );
+    const exporter = new InMemorySpanExporter();
+    const sdk = new NodeSDK({
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
+      logRecordProcessors: [],
+      metricReaders: [],
+      instrumentations: [new HttpInstrumentation({ disableOutgoingRequestInstrumentation: true })],
+    });
+    await sdk.start();
+    const http = require('node:http');
+    const credentials = [
+      'sig',
+      'Signature',
+      'AWSAccessKeyId',
+      'X-Goog-Signature',
+      'X-Amz-Signature',
+      'X-Amz-Credential',
+      'X-Amz-Security-Token',
+    ];
+    const query = new URLSearchParams({ page: 'visible' });
+    for (const name of credentials) query.append(name, 'credential-canary-' + name);
+    let receivedUrl;
+    const server = http.createServer((req, res) => {
+      receivedUrl = req.url;
+      res.end('ok');
+    });
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const path = '/signed?' + query;
+      await new Promise((resolve, reject) => {
+        const req = http.get({ host: '127.0.0.1', port: server.address().port, path }, (res) => {
+          res.resume();
+          res.on('end', resolve);
+          res.on('error', reject);
+        });
+        req.on('error', reject);
+      });
+      assert.equal(receivedUrl, path, 'instrumentation must not alter the request');
+      const spans = exporter.getFinishedSpans().filter((span) => span.kind === SpanKind.SERVER);
+      assert.equal(spans.length, 1);
+      const attributes = spans[0].attributes;
+      assert.equal(attributes['url.path'], '/signed');
+      const exported = new URLSearchParams(attributes['url.query']);
+      assert.equal(exported.get('page'), 'visible');
+      for (const name of credentials) assert.equal(exported.get(name), 'REDACTED', name);
+      assert.equal(JSON.stringify(attributes).includes('credential-canary-'), false);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+      await sdk.shutdown();
+    }
+  };
+  execFileSync(
+    process.execPath,
+    [
+      '-e',
+      `(${verify.toString()})().catch((error) => { console.error(error); process.exitCode = 1; })`,
+    ],
+    {
+      cwd: new URL('../', import.meta.url),
+      env: {
+        ...process.env,
+        OTEL_SDK_DISABLED: 'false',
+        OTEL_NODE_RESOURCE_DETECTORS: 'none',
+        OTEL_SEMCONV_STABILITY_OPT_IN: 'http',
+      },
+      timeout: 10000,
+      stdio: 'pipe',
+    },
+  );
+});
+
 test('Workbox preserves precache globs and ignores', async (t) => {
   const cwd = fixture(t, {
     'index.html': '<html></html>',
@@ -362,6 +448,7 @@ test('the lockfile retains patched database, HTTP, XML, and matcher dependencies
   const { satisfies } = require('semver');
   const ranges = {
     mongoose: '^8.24.7',
+    '@opentelemetry/instrumentation-http': '>=0.222.0',
     hono: '^4.13.16',
     '@hono/node-server': '^2.1.6',
     'fast-xml-parser': '>=5.11.3',
