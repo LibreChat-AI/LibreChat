@@ -12,6 +12,7 @@ import {
 import useMessageScrolling from '../../react/messages/useMessageScrolling';
 import useConversationSeen from '../../react/messages/useConversationSeen';
 import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
+import { useOptionalSteerHost } from '../../react/steer/host';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
 import { useMessagePartsHost } from '../../react/host';
@@ -87,7 +88,8 @@ const renderDefaultPendingSteers: NonNullable<MessagesViewProps['renderPendingSt
  * The message list: the scroll container, the rendered thread with its progressive mount
  * window, the pending tail, and the end marker the scroll and seen reporting watch. The
  * pending turn, pending steers, scroll control and navigation rail are the package's own
- * unless a caller passes a slot.
+ * unless a caller passes a slot. The pending rows stay unmounted when no steer host is
+ * present, so a shared page does not call the steer hooks.
  */
 export default function MessagesView({
   messagesTree,
@@ -96,13 +98,18 @@ export default function MessagesView({
   maximizeChatSpace,
   flatThread,
   renderThread = renderDefaultThread,
-  renderPendingTurn = renderDefaultPendingTurn,
-  renderPendingSteers = renderDefaultPendingSteers,
+  renderPendingTurn: renderPendingTurnSlot,
+  renderPendingSteers: renderPendingSteersSlot,
   renderScrollButton = renderDefaultScrollButton,
   renderNav = renderDefaultNav,
 }: MessagesViewProps): ReactElement {
   const localize = useLocalize();
   const host = useMessagesHost();
+  const steerHost = useOptionalSteerHost();
+  const renderPendingTurn =
+    renderPendingTurnSlot ?? (steerHost == null ? undefined : renderDefaultPendingTurn);
+  const renderPendingSteers =
+    renderPendingSteersSlot ?? (steerHost == null ? undefined : renderDefaultPendingSteers);
   const flat = flatThread ?? host.useFlatThread();
   const fontSize = useMessagePartsHost().useFontSize();
   const screenshotTargetRef = host.useScreenshotTarget();
