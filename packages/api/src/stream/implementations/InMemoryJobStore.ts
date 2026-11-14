@@ -1423,16 +1423,26 @@ export class InMemoryJobStore implements IJobStoreV2 {
     return toDelete.length + retainedRecovered;
   }
 
+  /** Makes room at capacity. A finished job goes before any live one: evicting a running
+   * or paused generation ends a run somebody is still waiting on. */
   private async evictOldest(): Promise<void> {
     let oldestId: string | null = null;
     let oldestTime = Infinity;
+    let oldestFinishedId: string | null = null;
+    let oldestFinishedTime = Infinity;
 
     for (const [streamId, job] of this.jobs) {
       if (job.createdAt < oldestTime) {
         oldestTime = job.createdAt;
         oldestId = streamId;
       }
+      const live = job.status === 'running' || job.status === 'requires_action';
+      if (!live && job.createdAt < oldestFinishedTime) {
+        oldestFinishedTime = job.createdAt;
+        oldestFinishedId = streamId;
+      }
     }
+    oldestId = oldestFinishedId ?? oldestId;
 
     if (oldestId) {
       logger.warn(`[InMemoryJobStore] Evicting oldest job: ${oldestId}`);

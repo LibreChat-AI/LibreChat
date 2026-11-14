@@ -313,6 +313,22 @@ describe('a background child as a generation job', () => {
     expect((await manager.getJob(threadId))?.status).toBe('aborted');
   });
 
+  it('lets the child persist its cancellation when the job manager shuts down first', async () => {
+    const { store, scopeId } = await setup();
+    const { threadId, taskId } = threadOf(store.start(taskRequest(scopeId, {})));
+    await waitUntil(async () => (await manager.getJob(threadId)) != null, 'the child job');
+
+    await manager.destroy();
+
+    await waitUntil(() => store.get(scopeId, taskId)?.status === 'cancelled', 'cancellation');
+    await waitUntil(
+      async () => (await assistantRow(threadId, taskId))?.subagentTask?.status === 'cancelled',
+      'the cancelled row',
+    );
+    expect(store.get(scopeId, taskId)?.status).toBe('cancelled');
+    expect((await assistantRow(threadId, taskId))?.text).toBe('Subagent task was cancelled.');
+  });
+
   it('gives a continuation of the thread a new generation of the same stream', async () => {
     const { store, scopeId } = await setup();
     const first = gatedRun();
