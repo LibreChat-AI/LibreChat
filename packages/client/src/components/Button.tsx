@@ -92,7 +92,7 @@ type ButtonVariantOptions =
  * `hover-button` is the marker the app's narrow-screen stylesheet keeps visible.
  */
 const messageHoverClasses =
-  'hover-button size-auto rounded-lg p-1.5 transition-none text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-text-primary group-has-[[data-hover-active]]:opacity-100 data-[hover-active]:bg-surface-hover data-[hover-active]:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent';
+  'hover-button size-auto rounded-lg p-1.5 transition-none text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-text-primary grouped-hover-active:opacity-100 data-[hover-active]:bg-surface-hover data-[hover-active]:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent';
 
 const buttonVariantRecipe = cva(
   [

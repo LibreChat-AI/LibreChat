@@ -6,6 +6,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import type { SteeringControls } from '../../../react/steering/useSteering';
 import type { ComposerBindings } from '../../../core/shortcuts';
 import type { ComposerHost } from '../../../react/input';
+import { emptyPaletteSources } from '../../../react/palette';
 import { ComposerHostProvider } from '../../../react/input';
 import { NO_HOST_BINDINGS } from '../../../core/shortcuts';
 import DuringRunSendButton from '../DuringRunSendButton';
@@ -44,6 +45,7 @@ const hostWith = (bindings: ComposerBindings): ComposerHost => ({
   useComposerBindings: () => bindings,
   useShortcutDisplay: () => '',
   useShortcutAriaKey: () => undefined,
+  usePaletteSources: emptyPaletteSources,
 });
 
 function renderButton({

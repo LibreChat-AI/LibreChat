@@ -78,7 +78,7 @@ export default function Usage({
     <section
       aria-labelledby={headingId}
       data-testid={testId}
-      className="border-border-light rounded-theme-menu-panel min-w-0 border p-3"
+      className="border-border-light rounded-theme-menu-panel min-w-0 border p-3 [--collapsible-duration:0.25s] [--collapsible-ease:cubic-bezier(0.4,0,0.2,1)]"
     >
       <Collapsible open={expanded} onOpenChange={setExpanded}>
         <h3 aria-labelledby={headingId}>
@@ -119,9 +119,19 @@ export default function Usage({
         {usage == null ? (
           <p className="text-text-secondary mt-2 text-xs">{unavailable}</p>
         ) : (
+          /** The condensed reading rolls away as the detailed one rolls in. One
+           *  pace for both (set on the section) keeps their combined height
+           *  moving in a single direction. Each gap sits inside its roll and
+           *  collapses with it. */
           <>
-            {!expanded && <div className="mt-2">{reading(false)}</div>}
-            <CollapsibleContent className="mt-2">{reading(true)}</CollapsibleContent>
+            <Collapsible open={!expanded}>
+              <CollapsibleContent motion="height" className="overflow-hidden">
+                <div className="pt-2">{reading(false)}</div>
+              </CollapsibleContent>
+            </Collapsible>
+            <CollapsibleContent motion="height" className="overflow-hidden">
+              <div className="pt-2">{reading(true)}</div>
+            </CollapsibleContent>
           </>
         )}
       </Collapsible>

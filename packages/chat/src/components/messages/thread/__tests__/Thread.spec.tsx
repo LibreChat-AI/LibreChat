@@ -10,9 +10,11 @@ import type { MessagesHost } from '../../../../react/messages/host';
 import type { ChatContract } from '../../../../react/chat/contract';
 import type { MessagePartsHost } from '../../../../react/host';
 import type { MessagesViewProps } from '../../MessagesView';
+import { emptyToolCallChrome, MessagePartsHostProvider } from '../../../../react/host';
 import { createMessagesHost } from '../../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../../react/messages/host';
-import { MessagePartsHostProvider } from '../../../../react/host';
+import { createSteerHost } from '../../../../__fixtures__/steerHost';
+import { SteerHostProvider } from '../../../../react/steer/host';
 import { ChatContext } from '../../../../react/chat/context';
 import { initEnglish } from '../../../../__fixtures__/i18n';
 import { resolveThreadRows } from '../../../../core/thread';
@@ -82,6 +84,7 @@ const partsHost: MessagePartsHost = {
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, () => undefined],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 const renderActivity = jest.fn<null, Parameters<MessagesHost['renderActivity']>>(() => null);
@@ -115,18 +118,20 @@ function renderThread(
   const view = (next: Partial<MessagesViewProps>) => (
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>
-          <MessagesHostProvider host={host}>
-            <MessagePartsHostProvider host={partsHost}>
-              <MessagesView
-                showScrollButton={false}
-                maximizeChatSpace={false}
-                {...props}
-                {...next}
-              />
-            </MessagePartsHostProvider>
-          </MessagesHostProvider>
-        </ChatContext.Provider>
+        <SteerHostProvider host={createSteerHost()}>
+          <ChatContext.Provider value={contract}>
+            <MessagesHostProvider host={host}>
+              <MessagePartsHostProvider host={partsHost}>
+                <MessagesView
+                  showScrollButton={false}
+                  maximizeChatSpace={false}
+                  {...props}
+                  {...next}
+                />
+              </MessagePartsHostProvider>
+            </MessagesHostProvider>
+          </ChatContext.Provider>
+        </SteerHostProvider>
       </QueryClientProvider>
     </Provider>
   );

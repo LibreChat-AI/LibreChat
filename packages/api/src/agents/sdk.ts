@@ -2,17 +2,13 @@ import { z } from 'zod';
 import { resolve } from 'node:path';
 import { Run } from '@librechat/agents';
 import { createRequire } from 'node:module';
+import { extractEnvVariable } from 'librechat-data-provider';
 import type { Agent, SdkRuntimeBinding, TAgentsEndpoint } from 'librechat-data-provider';
 import type { RunConfig } from '@librechat/agents';
-
-export interface SdkAgentIdentity {
-  readonly agentId: string;
-  readonly runtimeId: string;
-  readonly runId: string;
-  readonly conversationId?: string;
-  readonly userId: string;
-  readonly tenantId?: string;
-}
+import type { RemoteSdkOptions, RemoteSdkResumeState } from './remoteSdk/types';
+import type { SdkAgentIdentity } from './remoteSdk/identity';
+import { createRemoteSdkRun } from './remoteSdk/client';
+export type { SdkAgentIdentity } from './remoteSdk/identity';
 
 export interface SdkAgentRuntime {
   protocolVersion: 1;
@@ -27,6 +23,10 @@ export type SdkAgentRuntimeLoader = (module: string) => unknown;
 
 type AgentBinding = Pick<Agent, 'id' | 'sdk_runtime' | 'subagents'>;
 type RuntimeConfig = Pick<NonNullable<TAgentsEndpoint>, 'sdkRuntimes'>;
+type SdkRegistration = { binding: SdkRuntimeBinding } & (
+  | { module: string; remote?: never }
+  | { module?: never; remote: RemoteSdkOptions }
+);
 
 export class SdkAgentRuntimeError extends Error {
   constructor(
@@ -35,6 +35,7 @@ export class SdkAgentRuntimeError extends Error {
       | 'sdk_runtime_forbidden'
       | 'sdk_runtime_composition_unsupported'
       | 'sdk_runtime_invalid'
+      | 'sdk_runtime_policy_unsupported'
       | 'sdk_runtime_identity_mismatch',
   ) {
     super('The SDK agent runtime is unavailable for this request.');
@@ -82,7 +83,8 @@ export function resolveSdkAgentBinding(
   agents: readonly AgentBinding[],
   endpoint: RuntimeConfig | undefined,
   role: string | undefined,
-): { binding: SdkRuntimeBinding; module: string } | undefined {
+  modelProtectionActive = false,
+): SdkRegistration | undefined {
   if (!agents.some((agent) => agent.sdk_runtime != null)) return undefined;
   const binding = agents[0]?.sdk_runtime;
   if (agents.length !== 1 || binding == null || agents[0]?.subagents?.enabled === true) {
@@ -97,7 +99,12 @@ export function resolveSdkAgentBinding(
   if (role == null || !configured.roles.includes(role)) {
     throw new SdkAgentRuntimeError('sdk_runtime_forbidden');
   }
-  return { binding, module: configured.module };
+  if ('remote' in configured && modelProtectionActive) {
+    throw new SdkAgentRuntimeError('sdk_runtime_policy_unsupported');
+  }
+  return 'module' in configured
+    ? { binding, module: configured.module }
+    : { binding, remote: configured.remote };
 }
 
 /** Dispatch an already-authorized agent through its operator-installed SDK factory. */
@@ -106,17 +113,32 @@ export async function createSdkAgentRun({
   config,
   identity,
   signal,
+  resumeState,
   loadModule = requireRuntime,
 }: {
-  registration: { binding: SdkRuntimeBinding; module: string };
+  registration: SdkRegistration;
   config: RunConfig;
   identity: Omit<SdkAgentIdentity, 'runtimeId' | 'runId'>;
   signal?: AbortSignal;
+  resumeState?: RemoteSdkResumeState;
   loadModule?: SdkAgentRuntimeLoader;
 }): ReturnType<typeof Run.create> {
   signal?.throwIfAborted();
   if (!identity.agentId || !identity.userId) {
     throw new SdkAgentRuntimeError('sdk_runtime_identity_mismatch');
+  }
+  const boundIdentity = Object.freeze({
+    ...identity,
+    runId: config.runId,
+    runtimeId: registration.binding.id,
+  });
+  if (registration.remote != null) {
+    return createRemoteSdkRun({
+      config,
+      identity: boundIdentity,
+      resumeState,
+      remote: { ...registration.remote, secret: extractEnvVariable(registration.remote.secret) },
+    });
   }
   let runtime: SdkAgentRuntime;
   try {

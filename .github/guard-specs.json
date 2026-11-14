@@ -24,17 +24,22 @@
     "client/src/__tests__/hosts.test.tsx": [
       "client/src/App.jsx",
       "client/src/components/Chat/Messages/hosts.ts",
-      "client/src/components/Chat/Messages/slots.tsx",
+      "client/src/components/Chat/Messages/load.tsx",
       "client/src/components/Chat/Presentation.tsx",
       "client/src/routes/ShareRoute.tsx",
       "client/src/routes/Search.tsx"
+    ],
+    "client/src/__tests__/messageContentCascade.spec.ts": [
+      "client/src/style.css",
+      "packages/client/src/theme/parts.css"
     ],
     "client/src/__tests__/loadingCanvas.spec.ts": ["client/index.html"],
     "client/src/__tests__/loadingSpinner.spec.tsx": ["client/index.html"],
     "client/src/components/Chat/Input/Composer/__tests__/semanticTokens.spec.ts": [
       "client/src/components/Chat/",
       "client/src/hooks/Input/usePaletteEntries.tsx",
-      "packages/chat/src/components/composer/"
+      "packages/chat/src/components/composer/",
+      "packages/chat/src/components/messages/PendingSteers.tsx"
     ],
     "client/src/components/Chat/Input/__tests__/appearanceTokens.spec.ts": [
       "client/src/components/Chat/Input/",
@@ -79,6 +84,11 @@
     ],
     "packages/client/src/components/__tests__/radixLayers.spec.ts": ["package-lock.json"],
     "packages/client/src/theme/defaults.spec.ts": ["packages/client/src/theme/defaults.css"],
+    "packages/client/src/theme/parts.spec.ts": [
+      "client/src/style.css",
+      "packages/client/src/theme/parts.css",
+      "packages/chat/src/components/composer/Palette.tsx"
+    ],
     "packages/client/src/theme/primitives.spec.ts": [
       "eslint-suppressions.json",
       "packages/client/src/components/"

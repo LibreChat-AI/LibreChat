@@ -50,6 +50,36 @@ describe('visitNestedStrings', () => {
 });
 
 describe('isContentTraversalProtected', () => {
+  it('excludes catalog traversal only from legacy protection, not selected new policies', () => {
+    const error = new ContentTraversalLimitError(
+      [],
+      [{ source: 'tool_argument', fields: ['arguments'], legacyPii: false }],
+    );
+    const legacyPii = { starterPatterns: ['sk_prefix'] };
+    expect(isContentTraversalProtected({ error, legacyPii })).toBe(false);
+    expect(
+      isContentTraversalProtected({
+        error,
+        legacyPii,
+        filters: {
+          toolArguments: { pii: { fields: ['arguments'], starterPatterns: ['sk_prefix'] } },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isContentTraversalProtected({
+        error: new ContentTraversalLimitError(
+          [],
+          [
+            { source: 'tool_argument', fields: ['arguments'], legacyPii: false },
+            { source: 'message', fields: ['content_part'] },
+          ],
+        ),
+        legacyPii,
+      }),
+    ).toBe(true);
+  });
+
   it.each([
     {
       source: 'prompt' as const,

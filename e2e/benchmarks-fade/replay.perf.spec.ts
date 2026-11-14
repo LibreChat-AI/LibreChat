@@ -16,7 +16,8 @@ import {
   seedChat,
 } from './chats';
 import { buildFrames, startReplayServer } from './replay';
-import { formatFrameCost, profileScript, traceFrames, traceWindows } from './trace';
+import { installRenderProbe } from './why';
+import { formatFrameCost, traceFrames, traceWindows } from './trace';
 
 /**
  * What each kind of stream event costs the main thread.
@@ -41,12 +42,16 @@ const REPLAY_INDEX = process.env.FADE_PERF_REPLAY_INDEX;
 const MAX_PARTS = Number(process.env.FADE_PERF_REPLAY_PARTS) || Number.POSITIVE_INFINITY;
 const CPU_RATE = Number(process.env.FADE_PERF_CPU) || 1;
 const DUMP_DIR = process.env.FADE_PERF_DUMP;
-/** `1` samples the page's JavaScript across the replay instead of tracing it. */
+/** `1` samples the page's JavaScript across the replay instead of tracing it; needs `FADE_PERF_DUMP`. */
 const WITH_PROFILE = process.env.FADE_PERF_PROFILE === '1';
 /** A stylesheet laid over the shipped one, to try a remedy. */
 const EXTRA_CSS = process.env.FADE_PERF_CSS;
 /** `1` prints what is animating after each idle window, and on which properties. */
 const LIST_ANIMATIONS = process.env.FADE_PERF_ANIMATIONS === '1';
+/** `1` counts component renders across the replay and says what caused each. */
+const WITH_WHY = process.env.FADE_PERF_WHY === '1';
+/** How many components the render count lists, most rendered first. */
+const WHY_LIMIT = Number(process.env.FADE_PERF_WHY_LIMIT) || 80;
 const MARK = 'fade:';
 
 function variety(message: ExportedMessage): number {
@@ -155,6 +160,7 @@ test.describe('stream event cost', () => {
       const content = (source.content ?? []).slice(0, MAX_PARTS) as Part[];
       const runId = randomUUID();
       const frames = buildFrames(content, runId);
+      const why = WITH_WHY ? await installRenderProbe(page) : null;
       const size = await openChat(page, convo);
       console.log(
         `\n##### ${chatName(convo)}: ${size.rows} rows, ${size.nodes} elements; ` +
@@ -194,48 +200,79 @@ test.describe('stream event cost', () => {
       }
 
       await draft(page, 'Replay the recorded run.');
-      await page.keyboard.press('Enter');
-      await Promise.race([
-        server.connected,
-        page.waitForTimeout(30_000).then(() => {
-          throw new Error('The client never opened the replayed stream');
-        }),
-      ]);
-      const requestMessage = {
-        messageId: sent.messageId,
-        parentMessageId: sent.parentMessageId,
-        conversationId: convo.id,
-        text: sent.text,
-        sender: 'User',
-        isCreatedByUser: true,
-      };
-      server.send({ created: true, message: requestMessage, streamId: convo.id });
-      await page.waitForTimeout(1500);
-
+      /** One profile from the keypress to the end of the run, so the send, every
+       *  event and the final frame can each be read out of it by time. */
+      const profiler = WITH_PROFILE ? await page.context().newCDPSession(page) : null;
+      if (profiler) {
+        await profiler.send('Profiler.enable');
+        await profiler.send('Profiler.setSamplingInterval', { interval: 200 });
+        await profiler.send('Profiler.start');
+      }
       const windows: WindowCost[] = [];
       const mark = (name: string) =>
         page.evaluate((value) => {
           performance.mark(value);
         }, `${MARK}${name}`);
-      if (WITH_PROFILE) {
-        const session = await page.context().newCDPSession(page);
-        const top = await profileScript(
-          session,
-          async () => {
-            for (const frame of frames) {
-              server.send(frame.payload);
-              await page.waitForTimeout(GAP_MS);
-            }
-          },
-          40,
-          DUMP_DIR ? `${DUMP_DIR}/${chatName(convo)}.replay.cpuprofile` : undefined,
-        );
-        console.log('script self time across the replay:');
-        for (const line of top) {
-          console.log(`    ${line}`);
+      /** A profile or a render count wants the events alone, without the trace's marks. */
+      const untraced = WITH_PROFILE || WITH_WHY;
+
+      /** The send: the keypress that publishes the turn, then the frame that confirms it. */
+      let requestMessage: Record<string, unknown> = {};
+      const send = async () => {
+        await mark('send|0');
+        await page.keyboard.press('Enter');
+        await Promise.race([
+          server.connected,
+          page.waitForTimeout(30_000).then(() => {
+            throw new Error('The client never opened the replayed stream');
+          }),
+        ]);
+        await page.waitForTimeout(500);
+        requestMessage = {
+          messageId: sent.messageId,
+          parentMessageId: sent.parentMessageId,
+          conversationId: convo.id,
+          text: sent.text,
+          sender: 'User',
+          isCreatedByUser: true,
+        };
+        await mark('created|0');
+        server.send({ created: true, message: requestMessage, streamId: convo.id });
+        await page.waitForTimeout(1500);
+        await mark('end|0');
+      };
+      if (untraced) {
+        await why?.start();
+        await send();
+        const rendered = await why?.finish(25);
+        if (rendered) {
+          console.log(`\ncomponent renders for the send (${rendered.commits} commits):`);
+          for (const line of rendered.lines) {
+            console.log(line);
+          }
+        }
+      } else {
+        const traced = await traceWindows(browser, page, MARK, send);
+        windows.push(...traced.filter((window) => !window.name.startsWith('end|')));
+      }
+
+      if (untraced) {
+        await why?.start();
+        for (const frame of frames) {
+          server.send(frame.payload);
+          await page.waitForTimeout(GAP_MS);
+        }
+        const rendered = await why?.finish(WHY_LIMIT);
+        if (rendered) {
+          console.log(
+            `\ncomponent renders across ${frames.length} frames (${rendered.commits} commits):`,
+          );
+          for (const line of rendered.lines) {
+            console.log(line);
+          }
         }
       }
-      for (let offset = 0; !WITH_PROFILE && offset < frames.length; offset += SEGMENT) {
+      for (let offset = 0; !untraced && offset < frames.length; offset += SEGMENT) {
         const segment = frames.slice(offset, offset + SEGMENT);
         if (offset > 0 && offset <= SEGMENT) {
           /** The run held still: no frame arrives, so whatever the main thread
@@ -280,7 +317,7 @@ test.describe('stream event cost', () => {
         windows.push(...traced.filter((window) => !window.name.startsWith('end|')));
       }
 
-      const finalWindows = await traceWindows(browser, page, MARK, async () => {
+      const finish = async () => {
         await mark('final|0');
         server.send({
           final: true,
@@ -309,8 +346,27 @@ test.describe('stream event cost', () => {
         server.end();
         await awaitRunEnd(page, true);
         await page.waitForTimeout(500);
-      });
-      windows.push(...finalWindows);
+      };
+      if (profiler) {
+        await finish();
+        const { profile } = await profiler.send('Profiler.stop');
+        if (DUMP_DIR) {
+          fs.writeFileSync(
+            `${DUMP_DIR}/${chatName(convo)}.replay.cpuprofile`,
+            JSON.stringify(profile),
+          );
+        }
+      } else if (why) {
+        await why.start();
+        await finish();
+        const rendered = await why.finish(25);
+        console.log(`\ncomponent renders for the final frame (${rendered.commits} commits):`);
+        for (const line of rendered.lines) {
+          console.log(line);
+        }
+      } else {
+        windows.push(...(await traceWindows(browser, page, MARK, finish)));
+      }
       await server.close();
 
       const kindOf = (name: string) => name.split('|')[0];

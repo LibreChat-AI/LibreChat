@@ -170,7 +170,180 @@
   line-height: inherit;
 }
 
+/**
+ * Entrance of a message attachment. `will-change` has no static utility that
+ * names both opacity and transform, and an inline style for it is rejected
+ * on package components.
+ */
+.attachment-settle {
+  transform-origin: center top;
+  will-change: opacity, transform;
+}
+
+/**
+ * Disclosure grid shared by message part rows. The open and closed sizes are
+ * animated numbers, and `prefers-reduced-motion` has to shorten that
+ * transition without dropping it: a closed panel waits on `transitionend`
+ * before it unmounts, and `transition: none` never fires.
+ */
+.part-fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.part-fold[data-open='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .part-fold {
+    transition:
+      grid-template-rows 0.01ms linear,
+      opacity 0.01ms linear;
+  }
+}
+
+/**
+ * The open and closed heights of a tool call's parameter panel. The component
+ * sets the rows, opacity and transition so a reduced-motion reader still gets
+ * a transitionend the collapse waits on.
+ */
+.tool-call-expand {
+  display: grid;
+  grid-template-rows: var(--tool-expand-rows);
+  opacity: var(--tool-expand-opacity);
+  transition: var(--tool-expand-transition);
+}
+
 .progress-text-wrapper button {
   font-size: inherit;
   line-height: inherit;
+}
+
+/**
+ * Message body typography for the package's message text, steers and queued turns. Following the
+ * chat font setting, it ships here so a consumer with only `@librechat/client/style.css` gets it.
+ */
+.message-content {
+  font-size: var(--markdown-font-size, var(--font-size-base, 1rem));
+  line-height: 1.6;
+  /* `.prose` sets max-width: 65ch; fill the message column instead. */
+  max-width: none;
+}
+
+/**
+ * Composer palette list. The thumb stays drawn and the gutter stays reserved, and only when the
+ * list overflows, so a short list keeps its full width. Standard properties only: styling
+ * `::-webkit-scrollbar` opts an element out of overlay scrollbars.
+ */
+.composer-palette-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1)) transparent;
+  scrollbar-gutter: stable;
+}
+
+/**
+ * The palette growing or shrinking as its list rearranges. Rows are moved by the palette itself,
+ * which plays each one back to where it was after the list has been redrawn; a re-inserted node
+ * drops any transition it was about to run. The panel's own height has no such problem.
+ */
+.composer-palette-rows .ReactVirtualized__Grid {
+  transition: height 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+/* Held for the frame a search redraws in, so the panel does not lag behind the typing. */
+.composer-palette-instant .ReactVirtualized__Grid {
+  transition-duration: 0s;
+}
+@keyframes composer-palette-row {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-composer-palette-row {
+  animation: composer-palette-row 200ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+@keyframes composer-palette-row-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+/* Accelerating away: the shared decelerating curve would spend this beat almost entirely at
+   zero, leaving the rows gone well before the list starts closing over them. */
+.animate-composer-palette-row-out {
+  animation: composer-palette-row-out 110ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-palette-rows .ReactVirtualized__Grid {
+    transition-duration: 1ms;
+  }
+  .animate-composer-palette-row,
+  .animate-composer-palette-row-out {
+    animation-duration: 1ms;
+  }
+}
+
+/**
+ * Composer popovers. Its own curve rather than `animate-popover`'s: these are
+ * large surfaces, and the shared 150ms ease-in-out reads as a snap at that size.
+ * Decelerating hard from the first frame and then settling is what makes a panel
+ * feel placed rather than switched on. Leaving is quicker than entering, so
+ * dismissing never feels like waiting.
+ */
+.animate-composer-popover {
+  /* Ariakit resolves this to the edge nearest the trigger, so the panel grows
+     out of the button whether it opens below or flips above. `animate-popover`
+     pins the origin to the top and translates down, which is right one way
+     round and backwards the other. */
+  transform-origin: var(--popover-transform-origin, top center);
+  opacity: 0;
+  transform: scale(0.94);
+  transition:
+    opacity 190ms cubic-bezier(0.32, 0.72, 0, 1),
+    transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform, opacity;
+}
+/* Resizable anchored panels share the composer entrance and exit clock. */
+.animate-composer-popover-resize {
+  transition-property: opacity, transform, width, max-height;
+}
+.animate-composer-popover[data-enter] {
+  opacity: 1;
+  transform: scale(1);
+}
+.animate-composer-popover[data-leave] {
+  transition-duration: 120ms, 140ms;
+}
+
+/** Trigger glyphs that turn as their popover opens, on the same curve. */
+.animate-composer-icon {
+  /* Tailwind v4's rotate-* utilities set `rotate`, not `transform`. */
+  transition-property: transform, rotate;
+  transition-duration: 260ms;
+  transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-composer-popover,
+  .animate-composer-popover[data-enter],
+  .animate-composer-popover[data-leave],
+  .animate-composer-icon {
+    transition-duration: 1ms;
+  }
+  .animate-composer-popover,
+  .animate-composer-popover[data-enter],
+  .animate-composer-popover[data-leave] {
+    transform: none;
+  }
 }

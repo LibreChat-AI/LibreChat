@@ -429,7 +429,7 @@ function setupTurn(files: Map<string, ExtendedFile>, overrides: Partial<TurnServ
     setMessages,
     isSubmitting: false,
     conversation,
-    latestMessage: null,
+    getLatestMessage: () => null,
     setSubmission,
     setConversation: jest.fn(),
   };

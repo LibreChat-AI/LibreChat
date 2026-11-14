@@ -13,7 +13,7 @@ import type {
   MessagePartsFilePreviewProps,
 } from '../../../react/host';
 import { liveAppliedSteerFamily, liveAppliedSteerIdsAtom } from '../../../react/steer/atoms';
-import { MessagePartsHostProvider } from '../../../react/host';
+import { emptyToolCallChrome, MessagePartsHostProvider } from '../../../react/host';
 import { STEER_ICON } from '../../composer/steering/identity';
 import SteerPart from '../SteerPart';
 
@@ -94,6 +94,7 @@ function createHost(user: MessagePartsUser | null): MessagePartsHost {
     usePaneConversationId: () => null,
     useLiveAppliedSteer: useTestLiveAppliedSteer,
     useShare: () => mockShareContext,
+    useToolCallChrome: emptyToolCallChrome,
   } as MessagePartsHost;
 }
 

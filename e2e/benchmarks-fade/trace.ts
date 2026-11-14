@@ -39,6 +39,10 @@ const CATEGORIES = [
   '__metadata',
 ];
 
+/** More trace categories for a dump, comma-separated: invalidation tracking, for one, names
+ *  the nodes a layout was scheduled for and why. */
+const EXTRA_CATEGORIES = (process.env.FADE_PERF_CATEGORIES ?? '').split(',').filter(Boolean);
+
 const MAIN_EVENTS = [
   'UpdateLayoutTree',
   'Layout',
@@ -69,7 +73,7 @@ export async function traceFrames(
   /** Keeps the raw trace, for a closer look than the reduction gives. */
   dumpPath?: string,
 ): Promise<FrameCost> {
-  await browser.startTracing(page, { categories: CATEGORIES });
+  await browser.startTracing(page, { categories: [...CATEGORIES, ...EXTRA_CATEGORIES] });
   await during();
   const buffer = await browser.stopTracing();
   if (dumpPath) {

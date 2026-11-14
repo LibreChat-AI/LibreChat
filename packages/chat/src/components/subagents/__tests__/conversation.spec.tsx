@@ -17,7 +17,11 @@ import type { ChatSurface } from '../../../react/subagents/surface';
 import type { SubagentsHost } from '../../../react/subagents/host';
 import type { TurnAuthor } from '../../../react/subagents/author';
 import type { ChatContract } from '../../../react/chat/contract';
-import { MessagePartsHostProvider, useMessagePartsHost } from '../../../react/host';
+import {
+  emptyToolCallChrome,
+  MessagePartsHostProvider,
+  useMessagePartsHost,
+} from '../../../react/host';
 import { mergeChildConversationTurns } from '../../../react/subagents/adapters';
 import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
@@ -115,6 +119,7 @@ const parentHost: AskPartsHost = {
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, jest.fn()],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
   useMessagesAsk: () => mockParentAsk,
 };
 

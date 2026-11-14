@@ -65,7 +65,7 @@ describe('HeaderLabel', () => {
     render(<HeaderLabel label="Ollama" hoverLabel="gemma4:12b-it-qat" />);
 
     const self = 'group-focus-visible';
-    const descendant = 'group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]';
+    const descendant = 'grouped-keyboard-focus';
 
     const provider = screen.getByText('Ollama').className;
     const model = screen.getByText('gemma4:12b-it-qat').className;

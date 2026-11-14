@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Part as ChatPart, ToolPreparation, Container } from '@librechat/chat/components';
+import { Part as ChatPart, ToolCall, ToolPreparation, Container } from '@librechat/chat/components';
 import {
   isBashProgrammaticToolCall,
   getAskUserQuestionPart,
@@ -53,8 +53,8 @@ import ToolApproval from './ToolApproval';
 import AgentHandoff from './AgentHandoff';
 import CodeAnalyze from './CodeAnalyze';
 import WebSearch from './WebSearch';
-import ToolCall from './ToolCall';
 import Image from './Image';
+import './toolCallSlots';
 
 const isFailedImageCall = (
   output: string | null | undefined,

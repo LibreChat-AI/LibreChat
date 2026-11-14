@@ -29,6 +29,8 @@ export {
   COMPOSER_FOCUS_OWNER_ATTRIBUTE,
 } from './components/composer/Frame';
 export { default as CommandPopover } from './components/composer/popover/Command';
+export { default as ComposerPalette } from './components/composer/Palette';
+export type { ComposerPaletteProps } from './components/composer/Palette';
 export { default as CollapseChat } from './components/composer/CollapseChat';
 export { default as ComposerChip } from './components/composer/bar/Chip';
 export { default as composerClearance } from './components/composer/clearance';
@@ -105,6 +107,8 @@ export { default as MessageRow } from './components/messages/MessageRow';
 export { default as WakeupRow } from './components/messages/WakeupRow';
 export { default as PendingTurn } from './components/messages/PendingTurn';
 export type { PendingTurnProps } from './components/messages/PendingTurn';
+export { default as PendingSteers } from './components/messages/PendingSteers';
+export type { PendingSteersProps } from './components/messages/PendingSteers';
 export { default as MessageTimestamp } from './components/messages/MessageTimestamp';
 export { getMessageRowWidthClass } from './components/messages/width';
 export { isValidTimestamp, getMessageTimestamp } from './components/messages/time';
@@ -158,6 +162,8 @@ export { default as MemoryInfo } from './components/parts/MemoryInfo';
 export { default as DialogImage } from './components/parts/DialogImage';
 export { default as PendingSkillCall } from './components/parts/PendingSkillCall';
 export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
+export { default as ToolCall } from './components/parts/ToolCall';
+export type { ToolCallProps } from './components/parts/ToolCall';
 export { default as ResumeAuthorHeader } from './components/parts/ResumeAuthorHeader';
 export { ToolAuthWarning, ToolAuthWarningContext } from './components/parts/auth';
 export { ToolPreparation, useToolPreparation } from './components/parts/preparation';
@@ -280,6 +286,19 @@ export {
 export { default as CopyButton } from './components/parts/CopyButton';
 export { default as ActionButton } from './components/parts/ActionButton';
 export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';
+export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';
+export { default as RetrievalCall } from './components/parts/Retrieval';
+export type { RetrievalCallProps, RetrievalProgress } from './components/parts/Retrieval';
+export {
+  bySalience,
+  byEntrySalience,
+  displayFilename,
+  attachmentSalience,
+  isTextAttachment,
+  isImageAttachment,
+  renderAttachmentKey,
+  isInternalSandboxArtifact,
+} from './components/parts/attachmentTypes';
 
 /** Tool approval: the shared decision state and the composer's review panel. */
 export {

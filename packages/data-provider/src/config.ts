@@ -142,6 +142,7 @@ export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
  * is part of the API host, stay librechat.yaml's. The admin catalog's model-list lifetime is one
  * value for the whole deployment, which `GET /api/admin/config/meta` reports. */
 export const BASE_ONLY_CONFIG_PATHS = [
+  'endpoints.agents.sdkRuntimes',
   'endpoints.agents.pullRequests.provider',
   'endpoints.agents.pullRequests.host',
   'endpoints.agents.pullRequests.oauth',
@@ -180,6 +181,7 @@ export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
  */
 export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnlyConfigReason>> = {
   persistence: 'operator',
+  configCache: 'operator',
   'telemetry.stackTraceLimit': 'operator',
   'telemetry.rum': 'operator',
   clientLimits: 'operator',
@@ -1887,12 +1889,33 @@ export const agentsEndpointSchema = baseEndpointSchema
       sdkRuntimes: z
         .record(
           z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
-          z
-            .object({
-              module: z.string().min(1),
-              roles: z.array(z.string().min(1)).min(1).default(['ADMIN']),
-            })
-            .strict(),
+          z.union([
+            z
+              .object({
+                module: z.string().min(1),
+                roles: z.array(z.string().min(1)).min(1).default(['ADMIN']),
+              })
+              .strict(),
+            z
+              .object({
+                remote: z
+                  .object({
+                    url: z
+                      .string()
+                      .url()
+                      .regex(/^wss?:\/\//),
+                    secret: z.string().min(1),
+                    connectTimeoutMs: z.number().int().min(100).max(120_000).default(10_000),
+                    rpcTimeoutMs: z.number().int().min(100).max(600_000).default(60_000),
+                    maxFrameBytes: z.number().int().min(1024).max(16_777_216).default(1_048_576),
+                    maxBufferedBytes: z.number().int().min(1024).max(67_108_864).default(4_194_304),
+                    maxRunMs: z.number().int().min(1000).max(86_400_000).default(600_000),
+                  })
+                  .strict(),
+                roles: z.array(z.string().min(1)).min(1).default(['ADMIN']),
+              })
+              .strict(),
+          ]),
         )
         .optional(),
       hostFileEdits: hostFileEditLimitsSchema.optional(),
@@ -4706,6 +4729,10 @@ export const persistenceConfigSchema = z
     }
   });
 
+/** Local APP_CONFIG retention only; eviction changes cache hits, never resolved configuration. */
+export const DEFAULT_CONFIG_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_CONFIG_CACHE_MAX_ENTRIES = 1000;
+
 export const configSchema = z.object({
   persistence: persistenceConfigSchema,
   version: z.string(),
@@ -4719,6 +4746,23 @@ export const configSchema = z.object({
     })
     .optional(),
   cache: z.boolean().default(true),
+  configCache: z
+    .object({
+      maxBytes: z
+        .number()
+        .int()
+        .min(1)
+        .max(Number.MAX_SAFE_INTEGER)
+        .default(DEFAULT_CONFIG_CACHE_MAX_BYTES),
+      maxEntries: z
+        .number()
+        .int()
+        .min(1)
+        .max(Number.MAX_SAFE_INTEGER)
+        .default(DEFAULT_CONFIG_CACHE_MAX_ENTRIES),
+    })
+    .strict()
+    .optional(),
   projects: chatProjectsConfigSchema,
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),

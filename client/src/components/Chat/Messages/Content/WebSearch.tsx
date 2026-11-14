@@ -2,6 +2,7 @@ import { useMemo, useState, useContext } from 'react';
 import { createPortal } from 'react-dom';
 import { Tools } from 'librechat-data-provider';
 import { parseJsonField } from '@librechat/chat';
+import { ToolCall } from '@librechat/chat/components';
 import { Globe, ChevronDown, Info } from 'lucide-react';
 import { ROW_GLYPH_SLOT, useToolPreparation, useExpandCollapse } from '@librechat/chat/components';
 import {
@@ -37,8 +38,8 @@ import { HeaderActionSlotContext } from './slot';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';
 import { useLocalize } from '~/hooks';
-import ToolCall from './ToolCall';
 import cn from '~/utils/cn';
+import './toolCallSlots';
 
 type ProgressKeys =
   | 'com_ui_web_searching'

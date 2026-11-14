@@ -3,6 +3,7 @@ import { logger } from '@librechat/data-schemas';
 import { ensureHandler } from '@langchain/core/callbacks/manager';
 import { Run, Providers, Constants, GraphEvents, HookRegistry } from '@librechat/agents';
 import {
+  hasActivePiiPatterns,
   KnownEndpoints,
   EModelEndpoint,
   ReasoningEffort,
@@ -126,6 +127,7 @@ import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils
 import { createSdkAgentRun, resolveSdkAgentBinding, SdkAgentRuntimeError } from './sdk';
 import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
+import { hasModelBoundContentProtection } from '../middleware/modelBoundContent';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
@@ -2319,6 +2321,7 @@ export async function createRun({
   toolInputValidationErrors,
   sessionStartSource,
   loadSdkRuntime,
+  sdkResumeState,
   streaming = true,
   streamUsage = true,
 }: {
@@ -2474,12 +2477,19 @@ export async function createRun({
   /** Request-scoped tool input failures consumed by the completion handler. */
   toolInputValidationErrors?: Map<string, ToolInputValidationError>;
   loadSdkRuntime?: SdkAgentRuntimeLoader;
+  sdkResumeState?: import('./remoteSdk/types').RemoteSdkResumeState;
 } & Pick<
   RunConfig,
   'tokenCounter' | 'customHandlers' | 'indexTokenCountMap' | 'initialSessions'
 >): Promise<Run<IState>> {
   const resolvedRunId = runId ?? randomUUID();
-  const registration = resolveSdkAgentBinding(agents, appConfig?.endpoints?.agents, user?.role);
+  const registration = resolveSdkAgentBinding(
+    agents,
+    appConfig?.endpoints?.agents,
+    user?.role,
+    hasModelBoundContentProtection(appConfig?.filters) ||
+      hasActivePiiPatterns(appConfig?.messageFilter?.pii),
+  );
   const runFilesActive =
     runFiles?.activate(
       resolvedRunId,
@@ -3322,6 +3332,7 @@ export async function createRun({
         registration,
         config: runConfig,
         loadModule: loadSdkRuntime,
+        resumeState: sdkResumeState,
         signal,
         identity: {
           agentId: agents[0].id,

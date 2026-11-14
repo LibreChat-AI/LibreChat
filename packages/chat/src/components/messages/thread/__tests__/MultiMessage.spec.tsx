@@ -10,10 +10,10 @@ import type { ReactElement, ReactNode } from 'react';
 import type { ChatContract } from '../../../../react/chat/contract';
 import type { MessagesHost } from '../../../../react/messages/host';
 import type { MessagePartsHost } from '../../../../react/host';
+import { emptyToolCallChrome, MessagePartsHostProvider } from '../../../../react/host';
 import { RowMountProvider } from '../../../../react/messages/useProgressiveRowMount';
 import { createMessagesHost } from '../../../../__fixtures__/messagesHost';
 import { setDefaultMessagesHost } from '../../../../react/messages/host';
-import { MessagePartsHostProvider } from '../../../../react/host';
 import { ChatContext } from '../../../../react/chat/context';
 import { initEnglish } from '../../../../__fixtures__/i18n';
 import MultiMessage from '../MultiMessage';
@@ -49,6 +49,7 @@ const partsHost: MessagePartsHost = {
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, () => undefined],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 const contract = {

@@ -3884,14 +3884,14 @@ function inspectModelBoundContent(
         messageCount: input.storedMessages?.length ?? 0,
       }),
     );
-    appendExtractedContent(() => extractAgentContent(agent));
+    appendExtractedContent(() => extractAgentContent(agent, inspector?.shouldInspect));
   }
   for (const assistant of input.assistants ?? []) {
     assertInspectableFileInput(input.filters, assistant);
-    appendExtractedContent(() => extractAssistantContent(assistant));
+    appendExtractedContent(() => extractAssistantContent(assistant, inspector?.shouldInspect));
   }
   for (const action of input.actions ?? []) {
-    appendExtractedContent(() => extractAssistantActionContent(action));
+    appendExtractedContent(() => extractAssistantActionContent(action, inspector?.shouldInspect));
   }
   for (const skill of input.skills ?? []) {
     appendExtractedContent(() => extractSkillContent(skill));

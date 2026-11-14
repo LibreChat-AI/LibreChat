@@ -1,57 +1,59 @@
-import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { MemoryRouter } from 'react-router-dom';
+/**
+ * @jest-environment jsdom
+ */
+import { useEffect } from 'react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
-import { pendingSteersByConvoId } from '@librechat/chat/react';
-import { hasLiveRunPause, applyPendingAction } from '@librechat/chat';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
-import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
-import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
-import type { PendingSteer } from '@librechat/chat';
-import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
-import { setAppPartRenderers } from '../slots';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import type { Agents, TMessage } from 'librechat-data-provider';
+import type {
+  PendingSteer,
+  ChatSteerResult,
+  ChatArmSteerResult,
+  ChatCancelSteerResult,
+} from '../../../core';
+import type { RestoreToComposer } from '../../../react/steer/restore';
+import {
+  pendingSteersByConvoId,
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+} from '../../../react/steer/atoms';
+import { ComposerRestoreProvider, useComposerRestoreHost } from '../../../react/steer/restore';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { queuedMessagesByConvoId } from '../../../react/steer/queue';
+import { siblingIdxFamily, siblingKey } from '../../../react/thread';
+import { hasLiveRunPause, applyPendingAction } from '../../../core';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { createSteerHost } from '../../../__fixtures__/steerHost';
+import { MessagePartsHostProvider } from '../../../react/host';
+import { SteerHostProvider } from '../../../react/steer/host';
 import PendingSteers from '../PendingSteers';
-import store from '~/store';
 
-const mockRetry = jest.fn();
-const mockSendAsNew = jest.fn();
-const mockEscalate = jest.fn();
-const mockMoveToQueue = jest.fn();
-const mockRehome = jest.fn(() => 'composer' as const);
-const mockShowToast = jest.fn();
+const cancelSteer = jest.fn(async (): Promise<ChatCancelSteerResult> => ({ removed: true }));
+const armSteer = jest.fn(async (): Promise<ChatArmSteerResult> => ({ armed: true }));
+const steerMessage = jest.fn(
+  (): Promise<ChatSteerResult> => new Promise<ChatSteerResult>(() => undefined),
+);
+const showToast = jest.fn();
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
-  useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-}));
-
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useSteerEscalate: () => mockEscalate,
-  useSteerCancel: () => jest.fn(),
-  useSteerMoveToQueue: () => mockMoveToQueue,
-  useSteerRehome: () => mockRehome,
-  useSteerRecovery: () => ({ retry: mockRetry, sendAsNew: mockSendAsNew }),
-}));
-
-jest.mock('~/Providers', () => ({
-  useShareContext: () => ({}),
-  useFileMapContext: () => ({}),
-}));
-
-/** The parts barrel registers the app's renderers; this spec loads PendingSteers alone. */
-setAppPartRenderers({
-  renderMarkdown: ({ content }) => <span>{content}</span>,
-  renderAgentIcon: () => null,
-  renderImage: () => null,
-  renderFilePreview: () => null,
-});
+function PublishRestore({ restore }: { restore?: RestoreToComposer }) {
+  const host = useComposerRestoreHost();
+  useEffect(() => {
+    if (restore == null) {
+      return;
+    }
+    host.publish(restore);
+    return () => host.publish(null);
+  }, [host, restore]);
+  return null;
+}
 
 const CONVO_ID = 'convo-1';
 
@@ -72,9 +74,8 @@ function renderPending(
   /** Pane 0 still names the previous chat while this one renders from cache. */
   stalePaneConversationId?: string,
   fullWidth = false,
+  restore?: RestoreToComposer,
 ) {
-  /* The escalation control resolves the cache through the branch-aware
-     latest-message hook, using the same providers the chat view supplies. */
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, staleTime: Infinity },
@@ -84,6 +85,8 @@ function renderPending(
   queryClient.setQueryData([QueryKeys.messages, CONVO_ID], messages ?? []);
   const jotaiStore = createStore();
   jotaiStore.set(pendingSteersByConvoId(CONVO_ID), steers);
+  jotaiStore.set(activeGenerationCreatedAtByConvoId(CONVO_ID), 1);
+  jotaiStore.set(activeGenerationProtocolVersionByConvoId(CONVO_ID), 1);
   if (activeSiblingIndex != null) {
     jotaiStore.set(
       siblingIdxFamily(
@@ -94,34 +97,54 @@ function renderPending(
       activeSiblingIndex,
     );
   }
-  return render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <JotaiProvider store={jotaiStore}>
-          <RecoilRoot
-            initializeState={({ set }) => {
-              set(store.conversationByIndex(0), {
-                conversationId: pane?.otherConversationId ?? stalePaneConversationId ?? CONVO_ID,
-              } as TConversation);
-              if (pane != null) {
-                set(store.conversationByIndex(pane.index), {
-                  conversationId: CONVO_ID,
-                } as TConversation);
-              }
-            }}
-          >
-            <PendingSteers conversationId={CONVO_ID} index={pane?.index} fullWidth={fullWidth} />
-          </RecoilRoot>
-        </JotaiProvider>
-      </QueryClientProvider>
-    </MemoryRouter>,
+  const paneIds: Record<number, string | null> = {
+    0: pane?.otherConversationId ?? stalePaneConversationId ?? CONVO_ID,
+  };
+  if (pane != null) {
+    paneIds[pane.index] = CONVO_ID;
+  }
+  const partsHost = createMessagePartsHost({
+    useToast: () => showToast,
+    usePaneConversationId: (paneIndex) => paneIds[paneIndex] ?? null,
+    renderMarkdown: ({ content }) => <span>{content}</span>,
+  });
+  const messagesHost = createMessagesHost({
+    useConversationMessages: (id) =>
+      queryClient.getQueryData<TMessage[]>([QueryKeys.messages, id ?? '']),
+  });
+  const steerHost = createSteerHost({
+    useCancelSteer: () => cancelSteer,
+    useArmSteer: () => armSteer,
+    useSteerMessageAsync: () => steerMessage,
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <JotaiProvider store={jotaiStore}>
+        <SteerHostProvider host={steerHost}>
+          <MessagesHostProvider host={messagesHost}>
+            <MessagePartsHostProvider host={partsHost}>
+              <ComposerRestoreProvider>
+                <PublishRestore restore={restore} />
+                <PendingSteers
+                  conversationId={CONVO_ID}
+                  index={pane?.index}
+                  fullWidth={fullWidth}
+                />
+              </ComposerRestoreProvider>
+            </MessagePartsHostProvider>
+          </MessagesHostProvider>
+        </SteerHostProvider>
+      </JotaiProvider>
+    </QueryClientProvider>,
   );
+  return { ...view, jotaiStore };
 }
 
 describe('PendingSteers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockMoveToQueue.mockResolvedValue('reclaimed');
+    cancelSteer.mockResolvedValue({ removed: true });
+    armSteer.mockResolvedValue({ armed: true });
   });
 
   it('renders nothing with no pending steers', () => {
@@ -304,21 +327,29 @@ describe('PendingSteers', () => {
 
   it('reclaims an acknowledged steer before moving it to the queue', async () => {
     const steer = pending({ status: 'pending', steerId: 's-ack' });
-    renderPending([steer]);
+    const { jotaiStore } = renderPending([steer]);
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }));
 
-    await waitFor(() => expect(mockMoveToQueue).toHaveBeenCalledWith(steer));
+    await waitFor(() =>
+      expect(cancelSteer).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: CONVO_ID, steerId: steer.steerId }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByRole('listitem')).not.toBeInTheDocument());
+    expect(jotaiStore.get(queuedMessagesByConvoId(CONVO_ID)).map((item) => item.text)).toContain(
+      steer.text,
+    );
   });
 
   it('reports when a steer reached the agent before it could be reclaimed', async () => {
-    mockMoveToQueue.mockResolvedValue('applied');
+    cancelSteer.mockResolvedValue({ removed: false });
     renderPending([pending({ status: 'pending' })]);
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }));
 
     await waitFor(() =>
-      expect(mockShowToast).toHaveBeenCalledWith({
+      expect(showToast).toHaveBeenCalledWith({
         message: 'com_ui_steer_already_applied',
         status: 'info',
       }),
@@ -328,26 +359,50 @@ describe('PendingSteers', () => {
   it('retries the failed steer by id', () => {
     renderPending([pending({ status: 'failed', steerId: 's-failed' })]);
     fireEvent.click(screen.getByText('com_ui_retry'));
-    expect(mockRetry).toHaveBeenCalledWith('s-failed');
-    expect(mockSendAsNew).not.toHaveBeenCalled();
+    expect(steerMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: CONVO_ID,
+        text: 'change of plan',
+        clientSteerId: 's-failed',
+      }),
+    );
   });
 
   it('sends the failed steer as new by id', () => {
-    renderPending([pending({ status: 'failed', steerId: 's-failed' })]);
+    const { jotaiStore } = renderPending([pending({ status: 'failed', steerId: 's-failed' })]);
     fireEvent.click(screen.getByText('com_ui_send_as_new'));
-    expect(mockSendAsNew).toHaveBeenCalledWith('s-failed');
-    expect(mockRetry).not.toHaveBeenCalled();
+    expect(steerMessage).not.toHaveBeenCalled();
+    expect(screen.queryByText('com_ui_retry')).not.toBeInTheDocument();
+    expect(jotaiStore.get(queuedMessagesByConvoId(CONVO_ID)).map((item) => item.text)).toContain(
+      'change of plan',
+    );
   });
 
   it('returns a definitively failed steer whole so it can be corrected', () => {
+    const restore = jest.fn(() => true);
     const steer = pending({ status: 'failed', steerId: 's-failed', quotes: ['excerpt'] });
-    renderPending([steer]);
+    renderPending([steer], undefined, undefined, undefined, undefined, false, restore);
     fireEvent.click(screen.getByText('com_ui_edit'));
-    /* Queued as a fallback it must wait for an explicit send: the server
-       refused this payload, so the run-end drain must not send it anyway. */
-    expect(mockRehome).toHaveBeenCalledWith(steer, { rejectedByServer: true });
-    expect(mockSendAsNew).not.toHaveBeenCalled();
-    expect(mockRetry).not.toHaveBeenCalled();
+    expect(restore).toHaveBeenCalledWith(
+      steer.text,
+      undefined,
+      expect.objectContaining({ quotes: ['excerpt'] }),
+      CONVO_ID,
+    );
+    expect(showToast).not.toHaveBeenCalled();
+    expect(steerMessage).not.toHaveBeenCalled();
+  });
+
+  it('queues a rejected steer for an explicit send when the composer will not take it', () => {
+    const { jotaiStore } = renderPending([
+      pending({ status: 'failed', steerId: 's-failed', quotes: ['excerpt'] }),
+    ]);
+    fireEvent.click(screen.getByText('com_ui_edit'));
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'com_ui_steer_moved_to_queue',
+      status: 'info',
+    });
+    expect(jotaiStore.get(queuedMessagesByConvoId(CONVO_ID))[0]?.needsExplicitSend).toBe(true);
   });
 
   /* An uncertain delivery may still be held by the server, so every action that
@@ -366,30 +421,27 @@ describe('PendingSteers', () => {
       expect(screen.getByTestId('steer-escalate-now')).toBeEnabled();
     });
 
-    it('arms the steer by id, carrying its own generation', () => {
+    it('arms the steer by id, carrying its own generation', async () => {
       renderPending([pending({ status: 'pending', steerId: 's-ack', generationCreatedAt: 4141 })]);
       fireEvent.click(screen.getByTestId('steer-escalate-now'));
-      expect(mockEscalate).toHaveBeenCalledWith(
-        {
+      await waitFor(() =>
+        expect(armSteer).toHaveBeenCalledWith({
+          conversationId: CONVO_ID,
           steerId: 's-ack',
           generationCreatedAt: 4141,
-        },
-        expect.any(Function),
+        }),
       );
     });
 
     /* Arming removes the control that was just activated, so a keyboard user
        would be dropped on the document body in the middle of the thread. */
-    it('moves focus to the row`s cancel action once the arm is confirmed', () => {
+    it('moves focus to the row`s cancel action once the arm is confirmed', async () => {
       renderPending([pending({ status: 'pending', steerId: 's-ack' })]);
       fireEvent.click(screen.getByTestId('steer-escalate-now'));
 
-      const onArmed = mockEscalate.mock.calls[0][1] as () => void;
-      act(() => {
-        onArmed();
-      });
-
-      expect(screen.getByRole('button', { name: 'com_ui_cancel' })).toHaveFocus();
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'com_ui_cancel' })).toHaveFocus(),
+      );
     });
 
     it.each([

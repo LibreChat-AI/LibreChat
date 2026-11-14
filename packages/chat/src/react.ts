@@ -23,7 +23,13 @@ export type {
   MessagePartsImageProps,
   MessagePartsFilePreviewProps,
   MessagePartsUserTextPreferences,
+  ToolCallChrome,
+  ToolCallLocalize,
+  ToolCallProgressProps,
+  ToolCallInfoProps,
+  ToolCallIconProps,
 } from './react/host';
+export { emptyToolCallChrome } from './react/host';
 export {
   resetSteerFamilies,
   escalatingSteerFamily,
@@ -78,7 +84,7 @@ export {
   abortScrollFamily,
   launchedConversationFamily,
 } from './react/generation';
-export { SteerHostProvider, useSteerHost } from './react/steer/host';
+export { SteerHostProvider, useOptionalSteerHost, useSteerHost } from './react/steer/host';
 export type {
   SteerHost,
   SteerPane,
@@ -252,7 +258,15 @@ export type { AskAnswerStatus, ReleasedComposerStash } from './react/parts/ask';
 export { default as useComposerItems } from './react/items';
 export type { ComposerItem, ComposerItemKind } from './react/items';
 export { useFilesHost, FilesHostProvider } from './react/files';
-export type { FilesHost, FileDeleteScope, FileMapSetter } from './react/files';
+export type {
+  FilesHost,
+  FileDeleteScope,
+  FileMapSetter,
+  KnownFilesQuery,
+  AttachmentPreview,
+  AttachmentArtifact,
+  AttachmentDownloadTarget,
+} from './react/files';
 export { default as useReducedMotion } from './react/motion';
 export { default as useElementSize } from './react/size';
 export { default as useAudioLevels, frameLevel } from './react/levels';
@@ -264,6 +278,19 @@ export type {
   CommandListProps,
   ComposerShortcutAction,
 } from './react/input';
+export { emptyPaletteSources } from './react/palette';
+export type {
+  PaletteSection,
+  PaletteModeView,
+  PaletteEntryView,
+  PaletteAttachView,
+  PaletteListProps,
+  PaletteListHandle,
+  PaletteSources,
+  PaletteSourcesInput,
+  PaletteStatusView,
+  PaletteCatalogSection,
+} from './react/palette';
 export {
   RowMountProvider,
   useRowMountWindow,

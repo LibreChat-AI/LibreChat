@@ -89,6 +89,41 @@ describe('MCP executing agent context', () => {
     expect(requiresEphemeralUserConnection(config)).toBe(true);
   });
 
+  it('emits the persisted tool owner while keeping parallel connection identities distinct', async () => {
+    const runtimeIds = ['agent_root____1', 'agent_root____12'];
+    const keys = new Set<string>();
+    for (const agentId of runtimeIds) {
+      const callTool = jest.fn().mockImplementation(({ requestBody }) => {
+        expect(requestBody.agentId).toBe(agentId);
+        keys.add(getMCPAgentConnectionKey('connection', config, requestBody));
+        return Promise.resolve(processMCPEnv({ options: config, body: requestBody }));
+      });
+      const tool = createAgentMCPTool(
+        { agentId, requestBody: { agentId: 'agent_spoofed' } },
+        ({ requestBody, invokeTool }) => {
+          expect(requestBody.agentId).toBe(agentId);
+          expect(processMCPEnv({ options: config, body: requestBody })).toMatchObject({
+            headers: { 'X-Agent-Id': 'agent_root' },
+          });
+          return () =>
+            invokeTool(
+              { callTool },
+              {
+                serverName: 'analytics',
+                toolName: 'select',
+                provider: 'openai',
+                flowManager: {} as Parameters<typeof invokeTool>[1]['flowManager'],
+                requestBody: { agentId: 'agent_override' },
+              },
+            );
+        },
+      );
+      await expect(tool()).resolves.toMatchObject({ headers: { 'X-Agent-Id': 'agent_root' } });
+      expect(callTool).toHaveBeenCalledTimes(1);
+    }
+    expect(keys.size).toBe(runtimeIds.length);
+  });
+
   it('does not let a custom user variable replace the tool owner', () => {
     expect(
       processMCPEnv({

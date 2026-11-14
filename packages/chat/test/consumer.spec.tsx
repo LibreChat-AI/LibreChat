@@ -33,10 +33,13 @@ import {
   MessagePartIndex,
   StreamHostProvider,
   ChatSurfaceProvider,
+  SteerHostProvider,
   MessagesHostProvider,
   MessagePartsHostProvider,
   ParentSubagentsProvider,
+  emptyToolCallChrome,
 } from '@librechat/chat/react';
+import { createSteerHost } from '../src/__fixtures__/steerHost';
 import type {
   ChatEvent,
   TMessage,
@@ -213,6 +216,7 @@ const host: MessagePartsHost = {
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, () => undefined],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 const messagesHost: MessagesHost = {
@@ -246,6 +250,7 @@ const messagesHost: MessagesHost = {
   }),
   renderMessageIcon: () => null,
   useMaximizeChatSpace: () => false,
+  useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
   useAgentsMap: () => undefined,
   renderMessageBody: () => null,
@@ -670,16 +675,18 @@ describe('a consumer rendering subagent activity', () => {
       <I18nextProvider i18n={i18n}>
         <QueryClientProvider client={new QueryClient()}>
           <ChatContext.Provider value={contract}>
-            <MessagesHostProvider host={threadHost}>
-              <MessagePartsHostProvider host={host}>
-                <MessagesView
-                  messages={messages}
-                  messagesTree={messages}
-                  showScrollButton={false}
-                  maximizeChatSpace={false}
-                />
-              </MessagePartsHostProvider>
-            </MessagesHostProvider>
+            <SteerHostProvider host={createSteerHost()}>
+              <MessagesHostProvider host={threadHost}>
+                <MessagePartsHostProvider host={host}>
+                  <MessagesView
+                    messages={messages}
+                    messagesTree={messages}
+                    showScrollButton={false}
+                    maximizeChatSpace={false}
+                  />
+                </MessagePartsHostProvider>
+              </MessagesHostProvider>
+            </SteerHostProvider>
           </ChatContext.Provider>
         </QueryClientProvider>
       </I18nextProvider>,
