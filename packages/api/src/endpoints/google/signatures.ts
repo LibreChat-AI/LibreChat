@@ -59,9 +59,13 @@ export function collectGoogleThoughtSignatures(
 export function restoreGoogleThoughtSignatures(
   messages: readonly BaseMessage[],
   history: readonly Pick<TMessage, 'messageId' | 'isCreatedByUser' | 'metadata'>[],
-  provider: string,
+  agents: readonly { provider?: string | null }[],
 ): void {
-  if (provider !== Providers.GOOGLE && provider !== Providers.VERTEXAI) return;
+  if (
+    !agents.some(({ provider }) => provider === Providers.GOOGLE || provider === Providers.VERTEXAI)
+  )
+    return;
+  const usesVertex = agents.some(({ provider }) => provider === Providers.VERTEXAI);
   const byMessage = new Map<string, Record<string, unknown>>();
   for (const row of history) {
     const saved = row.metadata?.thoughtSignatures;
@@ -98,7 +102,7 @@ export function restoreGoogleThoughtSignatures(
       byId[id] = signature;
       return signature;
     });
-    if (provider === Providers.VERTEXAI) message.additional_kwargs.signatures = positional;
+    if (usesVertex) message.additional_kwargs.signatures = positional;
     message.additional_kwargs[functionSignaturesKey] = byId;
   }
 }

@@ -34,7 +34,7 @@ describe.each([Providers.GOOGLE, Providers.VERTEXAI])('persisted %s signatures',
     const messages = ['First answer', 'Final answer'].map(
       (content) => new AIMessage({ content, additional_kwargs: { sourceMessageId } }),
     );
-    restoreGoogleThoughtSignatures(messages, [row(collected)], provider);
+    restoreGoogleThoughtSignatures(messages, [row(collected)], [{ provider }]);
     expect(messages.map((message) => restoreGeminiReplayParts(message))).toEqual([
       [{ text: 'First answer', thoughtSignature: 'first-signature' }],
       [{ text: 'Final answer', thoughtSignature: 'final-signature' }],
@@ -51,7 +51,7 @@ describe.each([Providers.GOOGLE, Providers.VERTEXAI])('persisted %s signatures',
       content: [{ type: 'text' as const, text: 'Stored answer' }],
     };
     const { messages } = formatAgentMessages([history]);
-    restoreGoogleThoughtSignatures(messages, [history], provider);
+    restoreGoogleThoughtSignatures(messages, [history], [{ provider }]);
     expect(restoreGeminiReplayParts(messages[0])).toEqual([
       { text: 'Stored answer', thoughtSignature: 'stored-signature' },
     ]);
@@ -79,7 +79,7 @@ describe.each([Providers.GOOGLE, Providers.VERTEXAI])('persisted %s signatures',
       preserveReasoningContent: true,
       preserveTextContent: true,
     });
-    restoreGoogleThoughtSignatures(messages, [history], provider);
+    restoreGoogleThoughtSignatures(messages, [history], [{ provider }]);
     expect(restoreGeminiReplayParts(messages[0])).toEqual(native);
   });
 
@@ -106,7 +106,7 @@ describe.each([Providers.GOOGLE, Providers.VERTEXAI])('persisted %s signatures',
       tool_calls,
       additional_kwargs: { sourceMessageId },
     });
-    restoreGoogleThoughtSignatures([restored], [row(collected)], provider);
+    restoreGoogleThoughtSignatures([restored], [row(collected)], [{ provider }]);
     expect(restoreGeminiReplayParts(restored)).toEqual(native);
   });
 
@@ -129,7 +129,7 @@ describe.each([Providers.GOOGLE, Providers.VERTEXAI])('persisted %s signatures',
       });
       const history = row(collected);
       if (variant === 'user-row') history.isCreatedByUser = true;
-      restoreGoogleThoughtSignatures([message], [history], provider);
+      restoreGoogleThoughtSignatures([message], [history], [{ provider }]);
       expect(message.additional_kwargs).not.toHaveProperty(GEMINI_PARTS);
     },
   );
@@ -144,7 +144,7 @@ describe.each([Providers.GOOGLE, Providers.VERTEXAI])('persisted %s signatures',
       additional_kwargs: { sourceMessageId },
     });
     const history = { ...row({}), metadata: { thoughtSignatures: { b: 'signed-b' } } };
-    restoreGoogleThoughtSignatures([message], [history], provider);
+    restoreGoogleThoughtSignatures([message], [history], [{ provider }]);
     expect(message.additional_kwargs.__gemini_function_call_thought_signatures__).toEqual({
       b: 'signed-b',
     });
@@ -158,8 +158,26 @@ it('does not expose Google metadata to another provider or a user message', () =
   collectGoogleThoughtSignatures(collected, signedText('Answer', 'signature'));
   const message = new AIMessage({ content: 'Answer', additional_kwargs: { sourceMessageId } });
   const user = new HumanMessage({ content: 'Answer', additional_kwargs: { sourceMessageId } });
-  restoreGoogleThoughtSignatures([message, user], [row(collected)], Providers.OPENAI);
+  restoreGoogleThoughtSignatures(
+    [message, user],
+    [row(collected)],
+    [{ provider: Providers.OPENAI }],
+  );
   expect(message.additional_kwargs).not.toHaveProperty(GEMINI_PARTS);
-  restoreGoogleThoughtSignatures([user], [row(collected)], Providers.GOOGLE);
+  restoreGoogleThoughtSignatures([user], [row(collected)], [{ provider: Providers.GOOGLE }]);
   expect(user.additional_kwargs).not.toHaveProperty(GEMINI_PARTS);
+});
+
+it('restores signed history for a reachable Google agent under a different primary provider', () => {
+  const collected: GoogleThoughtSignatures = {};
+  collectGoogleThoughtSignatures(collected, signedText('Answer', 'signature'));
+  const message = new AIMessage({ content: 'Answer', additional_kwargs: { sourceMessageId } });
+  restoreGoogleThoughtSignatures(
+    [message],
+    [row(collected)],
+    [{ provider: Providers.OPENAI }, { provider: Providers.GOOGLE }],
+  );
+  expect(restoreGeminiReplayParts(message)).toEqual([
+    { text: 'Answer', thoughtSignature: 'signature' },
+  ]);
 });
