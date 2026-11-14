@@ -906,6 +906,42 @@ describe('steps', () => {
       ).toBeUndefined();
     });
 
+    it('replaces what an abandoned attempt streamed when a delta is marked reset', () => {
+      const text = (message: TMessage) =>
+        ((message.content?.[1] as SummaryContentPart).content ?? [])
+          .map((block) => ('text' in block ? block.text : ''))
+          .join('');
+      const abandoned = streamSummary();
+      expect(text(abandoned)).toBe('Earlier, we talked.');
+
+      let retried = applySummarizeDelta(
+        abandoned,
+        summarize,
+        { ...summaryDelta('Second '), reset: true },
+        0,
+      );
+      retried = applySummarizeDelta(retried, summarize, summaryDelta('attempt.'), 0);
+      expect(text(retried)).toBe('Second attempt.');
+      expect(retried.content?.[1]).toMatchObject({ summarizing: true });
+      expectStepPositions(retried, [[summarize, ContentTypes.SUMMARY]]);
+
+      const withdrawn = applySummarizeDelta(
+        retried,
+        summarize,
+        {
+          id: summarize.id,
+          reset: true,
+          delta: { summary: { type: ContentTypes.SUMMARY, content: [] } as SummaryContentPart },
+        },
+        0,
+      );
+      expect(text(withdrawn)).toBe('');
+      expect(withdrawn.content?.[1]).toMatchObject({
+        type: ContentTypes.SUMMARY,
+        summarizing: true,
+      });
+    });
+
     it('carries agent and group metadata onto the finalized summary', () => {
       const parallel = messageStep('step-summary-p', 1, {
         agentId: 'agent-b',
