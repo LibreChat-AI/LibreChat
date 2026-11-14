@@ -29,6 +29,10 @@
       "client/src/routes/ShareRoute.tsx",
       "client/src/routes/Search.tsx"
     ],
+    "client/src/__tests__/messageContentCascade.spec.ts": [
+      "client/src/style.css",
+      "packages/client/src/theme/parts.css"
+    ],
     "client/src/__tests__/loadingCanvas.spec.ts": ["client/index.html"],
     "client/src/__tests__/loadingSpinner.spec.tsx": ["client/index.html"],
     "client/src/components/Chat/Input/Composer/__tests__/semanticTokens.spec.ts": [
