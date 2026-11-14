@@ -26,9 +26,18 @@ export function createMongoFavoriteStore(database: typeof mongoose): MongoFavori
   // eslint-disable-next-line no-restricted-syntax -- Collection name metadata only, no raw driver operations.
   const name = metadata.model('ToolFavorite', schema).collection.name;
   const collection = database.connection.collection(name);
-  const snapshot = (target: typeof collection): FavoriteSnapshotSource =>
+  const snapshot = (target: typeof collection, authoritative = false): FavoriteSnapshotSource =>
     async function* () {
-      const cursor = target.find({}).sort({ _id: 1 }).batchSize(250);
+      const cursor = target
+        .find(
+          {},
+          {
+            readPreference: 'primary',
+            readConcern: { level: authoritative ? 'majority' : 'local' },
+          },
+        )
+        .sort({ _id: 1 })
+        .batchSize(250);
       try {
         for await (const row of cursor) {
           yield {
@@ -46,7 +55,7 @@ export function createMongoFavoriteStore(database: typeof mongoose): MongoFavori
       }
     };
   return {
-    source: snapshot(collection),
+    source: snapshot(collection, true),
     async stage() {
       const stagingName = `${name}_reconcile_${randomBytes(6).toString('hex')}`;
       const staging = database.connection.collection(stagingName);

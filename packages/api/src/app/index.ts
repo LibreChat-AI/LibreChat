@@ -26,3 +26,6 @@ export * from './migrations';
 export * from './persistence';
 
 export * from './postgres';
+
+export * from './authentication';
+export * from './authenticationCommand';

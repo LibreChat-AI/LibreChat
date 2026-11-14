@@ -42,6 +42,11 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
     options.connectionString = url.toString();
     db = schemas.createPostgresDatabase(options);
     await schemas.migratePostgres(db);
+    await schemas.migratePostgresAuthentication(db);
+    await schemas.importAuthentication(db, async function* () {}, {
+      offline: true,
+      verifiedEmpty: true,
+    });
     await schemas.importFavorites(db, async function* () {}, {
       offline: true,
       verifiedEmpty: true,
@@ -62,7 +67,7 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
   async function runCli(
     email,
     now,
-    { failCascade = true, failAdopt = false, failCancel = false } = {},
+    { failCascade = true, failAdopt = false, failCancel = false, authentication = 'mongo' } = {},
   ) {
     const runtime = api.createFavoriteRuntime(
       schemas.createToolFavoriteMethods(mongoose),
@@ -71,7 +76,15 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
       },
       schemas.createPostgresFavoriteBackend,
     );
-    const methods = schemas.createMethods(mongoose, { toolFavorites: runtime.methods });
+    const auth = api.createAuthenticationRuntime(
+      schemas.createMongoAuthenticationMethods(mongoose),
+      { PG_TEST_URL: options.connectionString },
+      schemas.createPostgresAuthenticationBackend,
+    );
+    const methods = schemas.createMethods(mongoose, {
+      toolFavorites: runtime.methods,
+      authentication: auth.methods,
+    });
     const suspend = jest.spyOn(methods, 'suspendUserSchedulesForDeletion');
     if (failAdopt)
       jest
@@ -109,6 +122,8 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
         },
         '~/models': {
           ...methods,
+          initializeAuthentication: (value) => auth.initialize(value.persistence),
+          closeAuthentication: () => auth.close(),
           initializeFavorites: async (value) => {
             await runtime.initialize(value.persistence);
             if (failCancel) await installFault();
@@ -121,7 +136,10 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
         '~/config': {},
         '~/cache/getLogStores': () => undefined,
         '~/server/services/Config': { getAppConfig: async () => ({}) },
-        '~/server/services/Config/loadCustomConfig': async () => config,
+        '~/server/services/Config/loadCustomConfig': async () => ({
+          ...config,
+          persistence: { ...config.persistence, authentication },
+        }),
         '~/server/services/Files/process': {
           processDeleteRequest: async () => ({ deletedFileIds: [], failedFileIds: [] }),
         },
@@ -157,14 +175,16 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
     await db.query('DROP TRIGGER reject_cancel ON tool_favorite_erasure');
     await db.query('DROP FUNCTION reject_cancel()');
   }
-  it.each([
-    { outcome: 'cancel', origin: 'system' },
-    { outcome: 'commit', origin: 'system' },
-    { outcome: 'cancel', origin: 'tenant' },
-    { outcome: 'commit', origin: 'tenant' },
-  ])(
-    'adopts the canonical UUID from $origin through real offline CLI recovery and then $outcome',
-    async ({ outcome, origin }) => {
+  it.each(
+    ['mongo', 'postgres'].flatMap((authentication) => [
+      { outcome: 'cancel', origin: 'system', authentication },
+      { outcome: 'commit', origin: 'system', authentication },
+      { outcome: 'cancel', origin: 'tenant', authentication },
+      { outcome: 'commit', origin: 'tenant', authentication },
+    ]),
+  )(
+    'adopts the canonical UUID from $origin through real offline CLI recovery and then $outcome (authentication: $authentication)',
+    async ({ outcome, origin, authentication }) => {
       const id = new mongoose.Types.ObjectId();
       const email = `${id}@example.com`;
       await mongoose.models.User.create({
@@ -191,7 +211,7 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
             .deleteUserToolFavorites(id.toString(), priorToken),
         );
       }
-      const first = await runCli(email, time, { failCancel: true });
+      const first = await runCli(email, time, { failCancel: true, authentication });
       expect(first.code).toBe(1);
       const original = await owned(id);
       const token = original.agentTriggerDeletionAttemptId;
@@ -199,12 +219,19 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
       if (origin === 'tenant') expect(token).toBe(priorToken);
       // A takeover that loses its identity read must retain the adopted identity and owner.
       if (outcome === 'cancel') {
-        expect((await runCli(email, time + stale, { failAdopt: true })).code).toBe(1);
+        expect((await runCli(email, time + stale, { failAdopt: true, authentication })).code).toBe(
+          1,
+        );
         expect((await owned(id)).agentTriggerDeletionAttemptId).toBe(token);
-        expect((await runCli(email, time + 2 * stale, { failCancel: true })).code).toBe(1);
+        expect(
+          (await runCli(email, time + 2 * stale, { failCancel: true, authentication })).code,
+        ).toBe(1);
         expect((await owned(id)).agentTriggerDeletionAttemptId).toBe(token);
       }
-      const result = await runCli(email, time + 3 * stale, { failCascade: outcome === 'cancel' });
+      const result = await runCli(email, time + 3 * stale, {
+        failCascade: outcome === 'cancel',
+        authentication,
+      });
       expect(result.code).toBe(outcome === 'cancel' ? 1 : 0);
       expect(result.suspend.mock.calls[0][1]).not.toBe(first.suspend.mock.calls[0][1]);
       expect(result.suspend.mock.calls[0][1]).not.toBe(token);

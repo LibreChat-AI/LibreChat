@@ -323,6 +323,43 @@ test('comment publication is trusted and serialized while PR execution stays rea
   }
 });
 
+test('native PostgreSQL selection covers authentication state writers and owning integration tests', () => {
+  const select = workflow.jobs.select.steps.find(({ id }) => id === 'postgres')!;
+  const match = /grep -Eq '([^']+)'/.exec(select.run!);
+  assert.ok(match);
+  const selected = new RegExp(match[1]);
+  for (const path of [
+    'packages/data-schemas/src/methods/session.ts',
+    'packages/data-schemas/src/methods/tokenList.ts',
+    'packages/data-schemas/src/methods/passkey.ts',
+    'packages/data-schemas/src/methods/refreshTokenBridge.ts',
+    'packages/data-schemas/src/methods/openidRefreshFlight.ts',
+    'packages/data-schemas/src/methods/mcpAuthority.ts',
+    'packages/data-schemas/src/postgres/auth/mongo.spec.ts',
+    'packages/api/src/auth/authentication.integration.spec.ts',
+    'packages/api/src/images/session.ts',
+    'api/server/services/AuthService.js',
+    'api/server/services/AuthService.postgres.spec.js',
+    'config/create-user.js',
+    'config/reset-password.js',
+    'config/invite-user.js',
+    'config/postgres-auth.js',
+    'config/__tests__/reset-password.spec.js',
+    'config/__tests__/create-user.spec.js',
+    'config/__tests__/delete-user.recovery.spec.js',
+    'config/ban-user.js',
+    'config/__tests__/ban-user.spec.js',
+  ])
+    assert.equal(selected.test(path), true, path);
+  for (const path of ['client/src/App.jsx', 'docs/auth.md'])
+    assert.equal(selected.test(path), false, path);
+  const command = workflow.jobs.postgres.steps.find(({ run }) =>
+    run?.includes('AuthService.postgres.spec.js'),
+  );
+  assert.ok(command);
+  assert.doesNotMatch(command.run!, /--roots/);
+});
+
 for (const olderHead of [true, false]) {
   test(`real reports use exact head source and dependencies with ${olderHead ? 'absent' : 'edited'} head tooling`, (t) => {
     const directory = mkdtempSync(join(tmpdir(), 'quality-workflow-'));

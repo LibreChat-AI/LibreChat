@@ -98,6 +98,8 @@ const {
   updateAccessPermissions,
   seedDatabase,
   initializeFavorites,
+  initializeAuthentication,
+  closeAuthentication,
   closeFavorites,
   recordAuditEntry,
   sweepOrphanedPreviews,
@@ -526,8 +528,13 @@ if (cluster.isMaster) {
      * deletion, the expired-file sweep, tool-approval hooks and the other worker-wide settings
      * below are fixed for the process lifetime, so DB `__base__` overrides must not decide them.
      */
-    await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
+    const persistenceConfig = await loadCustomConfig(false, { storageSelection: true });
+    await Promise.all([
+      initializeAuthentication(persistenceConfig),
+      initializeFavorites(persistenceConfig),
+    ]);
     registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
+    registerShutdownTask('authentication persistence', closeAuthentication, { priority: -100 });
     const appConfig = await getAppConfig({ baseOnly: true });
     initializeFileStorage(appConfig);
     initializeGitHubSkillSync(appConfig);
@@ -796,7 +803,7 @@ if (cluster.isMaster) {
   };
 
   startServer().catch(async (err) => {
-    await closeFavorites().catch(() => undefined);
+    await Promise.allSettled([closeFavorites(), closeAuthentication()]);
     logger.error(`Failed to start worker ${process.pid}:`, err);
     process.exit(1);
   });

@@ -32,13 +32,23 @@ const connect = require('./connect');
 
 const TRIGGER_DRAIN_TIMEOUT_MS = 35_000;
 const TRIGGER_DRAIN_POLL_MS = 100;
-const { initializeFavorites, closeFavorites, ...methods } = require('~/models');
+const {
+  initializeFavorites,
+  closeFavorites,
+  initializeAuthentication,
+  closeAuthentication,
+  ...methods
+} = require('~/models');
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function gracefulExit(code = 0) {
   try {
-    const cleanup = await Promise.allSettled([closeFavorites(), mongoose.disconnect()]);
+    const cleanup = await Promise.allSettled([
+      closeFavorites(),
+      closeAuthentication(),
+      mongoose.disconnect(),
+    ]);
     if (cleanup.some((result) => result.status === 'rejected')) {
       throw new Error('Persistence cleanup failed');
     }
@@ -50,9 +60,11 @@ async function gracefulExit(code = 0) {
 
 (async () => {
   await connect();
-  await initializeFavorites(
-    await require('~/server/services/Config/loadCustomConfig')(false, { storageSelection: true }),
-  );
+  const persistence = await require('~/server/services/Config/loadCustomConfig')(false, {
+    storageSelection: true,
+  });
+  await initializeAuthentication(persistence);
+  await initializeFavorites(persistence);
 
   console.purple('---------------');
   console.purple('Deleting a user and all related data');

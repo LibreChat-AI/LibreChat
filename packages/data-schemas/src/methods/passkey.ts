@@ -1,6 +1,6 @@
-import type { DeleteResult } from 'mongoose';
 import type { IPasskey, PasskeyCreateData, PasskeyRecord } from '~/types';
 import { createIndexesWithRetry } from '~/utils/retry';
+import { PasskeyConflictError } from '~/types/passkey';
 import logger from '~/config/winston';
 
 export interface PasskeyMethods {
@@ -10,8 +10,13 @@ export interface PasskeyMethods {
   countPasskeysByUser: (userId: string) => Promise<number>;
   recordPasskeyUse: (credentialId: string, counter: number, backedUp?: boolean) => Promise<boolean>;
   renamePasskey: (passkeyId: string, userId: string, name: string) => Promise<PasskeyRecord | null>;
-  deletePasskey: (passkeyId: string, userId: string) => Promise<DeleteResult>;
-  deletePasskeysByUser: (userId: string) => Promise<DeleteResult>;
+  deletePasskey: (
+    passkeyId: string,
+    userId: string,
+  ) => Promise<{ acknowledged: boolean; deletedCount: number }>;
+  deletePasskeysByUser: (
+    userId: string,
+  ) => Promise<{ acknowledged: boolean; deletedCount: number }>;
 }
 
 /** The shapes a `Buffer` schema field can come back as, depending on `lean()`. */
@@ -91,8 +96,26 @@ export function createPasskeyMethods(mongoose: typeof import('mongoose')): Passk
   async function createPasskey(data: PasskeyCreateData): Promise<PasskeyRecord> {
     await ensurePasskeyIndexes();
     const Passkey = mongoose.models.Passkey;
-    const stored = (await Passkey.create(data)) as unknown as StoredPasskey;
-    return toPasskeyRecord(stored);
+    try {
+      const stored = (await Passkey.create(data)) as unknown as StoredPasskey;
+      return toPasskeyRecord(stored);
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 11000 &&
+        'keyPattern' in error &&
+        typeof error.keyPattern === 'object' &&
+        error.keyPattern !== null &&
+        'credentialId' in error.keyPattern &&
+        error.keyPattern.credentialId === 1 &&
+        Object.keys(error.keyPattern).length === 1
+      ) {
+        throw new PasskeyConflictError();
+      }
+      throw error;
+    }
   }
 
   /** Lists a user's credentials, newest first. */
@@ -180,12 +203,17 @@ export function createPasskeyMethods(mongoose: typeof import('mongoose')): Passk
     return renamed ? toPasskeyRecord(renamed) : null;
   }
 
-  async function deletePasskey(passkeyId: string, userId: string): Promise<DeleteResult> {
+  async function deletePasskey(
+    passkeyId: string,
+    userId: string,
+  ): Promise<{ acknowledged: boolean; deletedCount: number }> {
     const Passkey = mongoose.models.Passkey;
     return await Passkey.deleteOne({ _id: passkeyId, user: userId }).exec();
   }
 
-  async function deletePasskeysByUser(userId: string): Promise<DeleteResult> {
+  async function deletePasskeysByUser(
+    userId: string,
+  ): Promise<{ acknowledged: boolean; deletedCount: number }> {
     const Passkey = mongoose.models.Passkey;
     return await Passkey.deleteMany({ user: userId }).exec();
   }

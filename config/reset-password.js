@@ -2,15 +2,19 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const readline = require('readline');
 const mongoose = require('mongoose');
-const { createPasswordResetUpdate, restampRetirementCutoff } = require('@librechat/api');
-const { createModels, createMethods } = require('@librechat/data-schemas');
-const { User, Passkey, Session } = createModels(mongoose);
+const {
+  createPasswordResetUpdate,
+  restampRetirementCutoff,
+  getSafeErrorMetadata,
+  runAuthenticationOperation,
+} = require('@librechat/api');
+const { createModels } = require('@librechat/data-schemas');
+const { User } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
-const getLogStores = require('~/cache/getLogStores');
+const methods = require('~/models');
+const loadCustomConfig = require('~/server/services/Config/loadCustomConfig');
 const { askSilentQuestion } = require('./helpers');
 const connect = require('./connect');
-
-const methods = createMethods(mongoose, { getCache: getLogStores });
 
 const question = (query) => {
   const rl = readline.createInterface({
@@ -28,14 +32,12 @@ const question = (query) => {
 
 const resetPassword = async () => {
   try {
-    await connect();
-
     const email = await question('Enter user email: ');
     const user = await User.findOne({ email });
 
     if (!user) {
       console.error('User not found!');
-      process.exit(1);
+      return 1;
     }
 
     let validPassword = false;
@@ -73,7 +75,7 @@ const resetPassword = async () => {
 
     if (!updated) {
       console.error('User not found during update!');
-      process.exit(1);
+      return 1;
     }
 
     /**
@@ -89,10 +91,10 @@ const resetPassword = async () => {
      */
     for (const step of [
       async () => {
-        ({ deletedCount } = await Passkey.deleteMany({ user: user._id }));
+        ({ deletedCount } = await methods.deletePasskeysByUser(userId));
       },
       /** A refresh session outlives the stamp: refreshing mints a token issued after it. */
-      () => Session.deleteMany({ user: user._id }),
+      () => methods.deleteAllUserSessions(userId),
       () =>
         restampRetirementCutoff(
           'credentialsChangedAt',
@@ -106,7 +108,7 @@ const resetPassword = async () => {
       try {
         await step();
       } catch (err) {
-        console.error('Password reset step failed:', err);
+        console.error('Password reset step failed:', getSafeErrorMetadata(err));
         failure ??= err;
       }
     }
@@ -118,11 +120,24 @@ const resetPassword = async () => {
     if (deletedCount > 0) {
       console.log(`Removed ${deletedCount} passkey(s); the user must enroll again.`);
     }
-    process.exit(0);
+    return 0;
   } catch (err) {
-    console.error('Error resetting password:', err);
-    process.exit(1);
+    console.error('Error resetting password:', getSafeErrorMetadata(err));
+    return 1;
   }
 };
 
-resetPassword();
+runAuthenticationOperation(
+  {
+    initialize: async () => {
+      await connect();
+      await methods.initializeAuthentication(
+        await loadCustomConfig(false, { storageSelection: true }),
+      );
+    },
+    close: () => methods.closeAuthentication(),
+    disconnect: () => mongoose.disconnect(),
+    error: console.error,
+  },
+  resetPassword,
+).then((code) => process.exit(code));

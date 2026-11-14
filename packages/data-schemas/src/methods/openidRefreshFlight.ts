@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { Model } from 'mongoose';
 import type {
   IOpenIDRefreshFlight,
+  FlightRecord,
   OpenIDRefreshFlightCreateData,
   OpenIDRefreshFlightCompleteData,
   OpenIDRefreshFlightRenewData,
@@ -36,25 +37,17 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
   ) => Promise<OpenIDRefreshFlightAcquireResult>;
   completeOpenIDRefreshFlight: (
     data: OpenIDRefreshFlightCompleteData,
-  ) => Promise<IOpenIDRefreshFlight | null>;
-  renewOpenIDRefreshFlight: (
-    data: OpenIDRefreshFlightRenewData,
-  ) => Promise<IOpenIDRefreshFlight | null>;
-  failOpenIDRefreshFlight: (
-    data: OpenIDRefreshFlightFailData,
-  ) => Promise<IOpenIDRefreshFlight | null>;
-  revokeOpenIDRefreshFlight: (
-    data: OpenIDRefreshFlightRevokeData,
-  ) => Promise<IOpenIDRefreshFlight | null>;
+  ) => Promise<FlightRecord | null>;
+  renewOpenIDRefreshFlight: (data: OpenIDRefreshFlightRenewData) => Promise<FlightRecord | null>;
+  failOpenIDRefreshFlight: (data: OpenIDRefreshFlightFailData) => Promise<FlightRecord | null>;
+  revokeOpenIDRefreshFlight: (data: OpenIDRefreshFlightRevokeData) => Promise<FlightRecord | null>;
   claimOpenIDRefreshFlightDelivery: (
     data: OpenIDRefreshFlightClaimDeliveryData,
-  ) => Promise<IOpenIDRefreshFlight | null>;
+  ) => Promise<FlightRecord | null>;
   releaseOpenIDRefreshFlightDelivery: (
     data: OpenIDRefreshFlightReleaseDeliveryData,
-  ) => Promise<IOpenIDRefreshFlight | null>;
-  findOpenIDRefreshFlight: (
-    query: OpenIDRefreshFlightQuery,
-  ) => Promise<IOpenIDRefreshFlight | null>;
+  ) => Promise<FlightRecord | null>;
+  findOpenIDRefreshFlight: (query: OpenIDRefreshFlightQuery) => Promise<FlightRecord | null>;
 } {
   let indexesPromise: Promise<void> | null = null;
 
@@ -85,7 +78,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
         createdAt: now,
         updatedAt: now,
       });
-      return { acquired: true, flight };
+      return { acquired: true, flight: toFlightRecord(flight) };
     } catch (error) {
       if (!isDuplicateKeyError(error)) {
         logger.debug('[acquireOpenIDRefreshFlight] Error creating flight:', error);
@@ -124,7 +117,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
       ).lean<IOpenIDRefreshFlight>();
 
       if (reclaimed) {
-        return { acquired: true, flight: reclaimed };
+        return { acquired: true, flight: toFlightRecord(reclaimed) };
       }
 
       const existing = await OpenIDRefreshFlight.findOne({
@@ -134,7 +127,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
         .read('primary')
         .lean<IOpenIDRefreshFlight>();
 
-      return { acquired: false, flight: existing };
+      return { acquired: false, flight: existing ? toFlightRecord(existing) : null };
     } catch (error) {
       logger.debug('[acquireOpenIDRefreshFlight] Error acquiring flight:', error);
       throw error;
@@ -143,7 +136,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
 
   async function completeOpenIDRefreshFlight(
     data: OpenIDRefreshFlightCompleteData,
-  ): Promise<IOpenIDRefreshFlight | null> {
+  ): Promise<FlightRecord | null> {
     try {
       const OpenIDRefreshFlight = mongoose.models
         .OpenIDRefreshFlight as Model<IOpenIDRefreshFlight>;
@@ -168,7 +161,9 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
           },
         },
         { new: true },
-      ).lean<IOpenIDRefreshFlight>();
+      )
+        .lean<IOpenIDRefreshFlight>()
+        .then((value) => (value ? toFlightRecord(value) : null));
     } catch (error) {
       logger.debug('[completeOpenIDRefreshFlight] Error completing flight:', error);
       throw error;
@@ -177,7 +172,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
 
   async function renewOpenIDRefreshFlight(
     data: OpenIDRefreshFlightRenewData,
-  ): Promise<IOpenIDRefreshFlight | null> {
+  ): Promise<FlightRecord | null> {
     try {
       const OpenIDRefreshFlight = mongoose.models
         .OpenIDRefreshFlight as Model<IOpenIDRefreshFlight>;
@@ -195,7 +190,9 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
           },
         },
         { new: true },
-      ).lean<IOpenIDRefreshFlight>();
+      )
+        .lean<IOpenIDRefreshFlight>()
+        .then((value) => (value ? toFlightRecord(value) : null));
     } catch (error) {
       logger.debug('[renewOpenIDRefreshFlight] Error renewing flight:', error);
       throw error;
@@ -204,7 +201,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
 
   async function failOpenIDRefreshFlight(
     data: OpenIDRefreshFlightFailData,
-  ): Promise<IOpenIDRefreshFlight | null> {
+  ): Promise<FlightRecord | null> {
     try {
       const OpenIDRefreshFlight = mongoose.models
         .OpenIDRefreshFlight as Model<IOpenIDRefreshFlight>;
@@ -229,7 +226,9 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
           },
         },
         { new: true },
-      ).lean<IOpenIDRefreshFlight>();
+      )
+        .lean<IOpenIDRefreshFlight>()
+        .then((value) => (value ? toFlightRecord(value) : null));
     } catch (error) {
       logger.debug('[failOpenIDRefreshFlight] Error failing flight:', error);
       throw error;
@@ -238,7 +237,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
 
   async function findOpenIDRefreshFlight(
     query: OpenIDRefreshFlightQuery,
-  ): Promise<IOpenIDRefreshFlight | null> {
+  ): Promise<FlightRecord | null> {
     try {
       const OpenIDRefreshFlight = mongoose.models
         .OpenIDRefreshFlight as Model<IOpenIDRefreshFlight>;
@@ -247,7 +246,8 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
         expiresAt: { $gt: new Date() },
       })
         .read('primary')
-        .lean<IOpenIDRefreshFlight>();
+        .lean<IOpenIDRefreshFlight>()
+        .then((value) => (value ? toFlightRecord(value) : null));
     } catch (error) {
       logger.debug('[findOpenIDRefreshFlight] Error finding flight:', error);
       throw error;
@@ -256,7 +256,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
 
   async function claimOpenIDRefreshFlightDelivery(
     data: OpenIDRefreshFlightClaimDeliveryData,
-  ): Promise<IOpenIDRefreshFlight | null> {
+  ): Promise<FlightRecord | null> {
     try {
       const OpenIDRefreshFlight = mongoose.models
         .OpenIDRefreshFlight as Model<IOpenIDRefreshFlight>;
@@ -290,7 +290,9 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
               : {}),
           },
           { new: true, upsert: Boolean(data.createdAt) },
-        ).lean<IOpenIDRefreshFlight>();
+        )
+          .lean<IOpenIDRefreshFlight>()
+          .then((value) => (value ? toFlightRecord(value) : null));
       } catch (error) {
         if (isDuplicateKeyError(error)) return null;
         throw error;
@@ -303,7 +305,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
 
   async function releaseOpenIDRefreshFlightDelivery(
     data: OpenIDRefreshFlightReleaseDeliveryData,
-  ): Promise<IOpenIDRefreshFlight | null> {
+  ): Promise<FlightRecord | null> {
     const OpenIDRefreshFlight = mongoose.models.OpenIDRefreshFlight as Model<IOpenIDRefreshFlight>;
     const delivery = {
       key: data.key,
@@ -329,7 +331,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
         },
         { new: true },
       ).lean<IOpenIDRefreshFlight>();
-      if (revoked) return revoked;
+      if (revoked) return toFlightRecord(revoked);
 
       const synthetic = await OpenIDRefreshFlight.findOneAndDelete({
         ...delivery,
@@ -350,7 +352,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
         },
         { new: true },
       ).lean<IOpenIDRefreshFlight>();
-      if (completed) return completed;
+      if (completed) return toFlightRecord(completed);
 
       return await OpenIDRefreshFlight.findOneAndUpdate(
         { ...delivery, revocationRequestedAt: { $exists: true } },
@@ -368,7 +370,9 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
           },
         },
         { new: true },
-      ).lean<IOpenIDRefreshFlight>();
+      )
+        .lean<IOpenIDRefreshFlight>()
+        .then((value) => (value ? toFlightRecord(value) : null));
     } catch (error) {
       logger.debug('[releaseOpenIDRefreshFlightDelivery] Error releasing delivery:', error);
       throw error;
@@ -377,7 +381,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
 
   async function revokeOpenIDRefreshFlight(
     data: OpenIDRefreshFlightRevokeData,
-  ): Promise<IOpenIDRefreshFlight | null> {
+  ): Promise<FlightRecord | null> {
     const OpenIDRefreshFlight = mongoose.models.OpenIDRefreshFlight as Model<IOpenIDRefreshFlight>;
     const now = new Date();
     await ensureIndexes();
@@ -409,7 +413,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
           },
           { new: true },
         ).lean<IOpenIDRefreshFlight>();
-        if (revoked) return revoked;
+        if (revoked) return toFlightRecord(revoked);
 
         const delivering = await OpenIDRefreshFlight.findOneAndUpdate(
           {
@@ -433,16 +437,18 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
         }
 
         try {
-          return await OpenIDRefreshFlight.create({
-            key: data.key,
-            ownerId: 'revoked',
-            status: 'revoked',
-            errorMessage: 'OpenID refresh was revoked by logout',
-            lockExpiresAt: data.expiresAt,
-            expiresAt: data.expiresAt,
-            createdAt: now,
-            updatedAt: now,
-          });
+          return toFlightRecord(
+            await OpenIDRefreshFlight.create({
+              key: data.key,
+              ownerId: 'revoked',
+              status: 'revoked',
+              errorMessage: 'OpenID refresh was revoked by logout',
+              lockExpiresAt: data.expiresAt,
+              expiresAt: data.expiresAt,
+              createdAt: now,
+              updatedAt: now,
+            }),
+          );
         } catch (error) {
           if (!isDuplicateKeyError(error)) throw error;
         }
@@ -466,3 +472,21 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
 }
 
 export type OpenIDRefreshFlightMethods = ReturnType<typeof createOpenIDRefreshFlightMethods>;
+
+function toFlightRecord(value: IOpenIDRefreshFlight): FlightRecord {
+  return {
+    _id: String(value._id),
+    key: value.key,
+    ownerId: value.ownerId,
+    status: value.status,
+    encryptedResult: value.encryptedResult,
+    errorMessage: value.errorMessage,
+    deliveryId: value.deliveryId,
+    deliveryExpiresAt: value.deliveryExpiresAt,
+    revocationRequestedAt: value.revocationRequestedAt,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    lockExpiresAt: value.lockExpiresAt,
+    expiresAt: value.expiresAt,
+  };
+}

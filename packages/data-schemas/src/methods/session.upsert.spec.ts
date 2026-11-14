@@ -9,15 +9,21 @@ jest.mock('~/config/winston', () => ({
 
 describe('upsertSession', () => {
   it('stores an externally issued refresh token as a revocable hash', async () => {
-    const storedSession = { _id: 'session-id' };
+    const expiration = new Date(Date.now() + 60_000);
+    const storedSession = {
+      _id: 'session-id',
+      user: 'user-id',
+      expiration,
+      refreshTokenHash: 'stored-hash',
+    };
     const createIndexes = jest.fn().mockResolvedValue(undefined);
     const exec = jest.fn().mockResolvedValue(storedSession);
-    const findOneAndUpdate = jest.fn().mockReturnValue({ exec });
+    const lean = jest.fn().mockReturnValue({ exec });
+    const findOneAndUpdate = jest.fn().mockReturnValue({ lean });
     const mongoose = {
       models: { Session: { modelName: 'Session', createIndexes, findOneAndUpdate } },
     } as unknown as typeof import('mongoose');
     const methods = createSessionMethods(mongoose);
-    const expiration = new Date(Date.now() + 60_000);
 
     const result = await methods.upsertSession('user-id', 'external-refresh', {
       expiration,
@@ -38,6 +44,7 @@ describe('upsertSession', () => {
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
-    expect(result).toBe(storedSession);
+    expect(result).toEqual(storedSession);
+    expect(result).not.toHaveProperty('save');
   });
 });

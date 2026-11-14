@@ -26,6 +26,7 @@ jest.mock(
   () => {
     const shouldUseSecureCookie = jest.fn(() => false);
     return {
+      ...jest.requireActual('../../../packages/api/src/auth/storage'),
       isEnabled: jest.fn((val) => val === 'true' || val === true),
       /** Real bcrypt on the test thread; the worker pool has its own spec in packages/api. */
       hashSecret: jest.fn((plain) => require('bcryptjs').hash(plain, 4)),
@@ -174,6 +175,7 @@ let updateUser;
 let deleteUserById;
 let countUsers;
 let getUserById;
+let findSession;
 let generateToken;
 let generateRefreshToken;
 let createSession;
@@ -191,6 +193,7 @@ let registerUser;
 let resetPassword;
 let resendVerificationEmail;
 let setAuthTokens;
+let logoutUser;
 let setCloudFrontAuthCookies;
 let verifyEmail;
 let resetPasswordWithToken;
@@ -221,6 +224,7 @@ jest.isolateModules(() => {
     deleteUserById,
     countUsers,
     getUserById,
+    findSession,
     generateToken,
     generateRefreshToken,
     createSession,
@@ -240,6 +244,7 @@ jest.isolateModules(() => {
     resetPassword,
     resendVerificationEmail,
     setAuthTokens,
+    logoutUser,
     setCloudFrontAuthCookies,
     verifyEmail,
   } = require('./AuthService'));
@@ -1814,6 +1819,12 @@ describe('CloudFront cookie integration', () => {
       });
     });
 
+    it('normalizes an OAuth ObjectId before invoking the selected session store', async () => {
+      const id = { toString: () => '0123456789abcdef01234567' };
+      await setAuthTokens(id, mockResponse());
+      expect(createSession).toHaveBeenCalledWith(id.toString(), expect.any(Object));
+    });
+
     it('calls setCloudFrontCookies with response object and user scope', async () => {
       const res = mockResponse();
 
@@ -1897,6 +1908,52 @@ describe('CloudFront cookie integration', () => {
         userId: 'user-123',
         tenantId: 'tenantA',
       });
+    });
+
+    it('rotates a plain session through the selected storage method without mutating it', async () => {
+      const session = Object.freeze({
+        _id: 'session-1',
+        user: 'user-123',
+        refreshTokenHash: 'previous-hash',
+        expiration: new Date(Date.now() + 3600000),
+      });
+      const res = mockResponse();
+
+      await expect(setAuthTokens('user-123', res, session)).resolves.toBe('mock-access-token');
+
+      expect(generateRefreshToken).toHaveBeenCalledWith(session);
+      expect(createSession).not.toHaveBeenCalled();
+      expect(session.refreshTokenHash).toBe('previous-hash');
+      expect(setLocalSessionCookies).toHaveBeenCalledWith(res, {
+        refreshToken: 'mock-refresh-token',
+        expires: session.expiration,
+        userId: 'user-123',
+        tenantId: 'tenantA',
+      });
+    });
+
+    it('does not mint credentials or create a replacement when session rotation fails', async () => {
+      const failure = new Error('storage rejected sensitive-refresh-token');
+      generateRefreshToken.mockRejectedValueOnce(failure);
+      const res = mockResponse();
+
+      await expect(
+        setAuthTokens('user-123', res, {
+          _id: 'session-1',
+          user: 'user-123',
+          refreshTokenHash: 'previous-hash',
+          expiration: new Date(Date.now() + 3600000),
+        }),
+      ).rejects.toBe(failure);
+
+      expect(createSession).not.toHaveBeenCalled();
+      expect(generateToken).not.toHaveBeenCalled();
+      expect(setLocalSessionCookies).not.toHaveBeenCalled();
+      expect(setCloudFrontCookies).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        '[setAuthTokens] Error in setting authentication tokens:',
+        { type: 'Error' },
+      );
     });
 
     it('succeeds even when setCloudFrontCookies returns false', async () => {
@@ -2077,5 +2134,39 @@ describe('registerUser - allowedDomains admin-panel override', () => {
     expect(result.message).toMatch(/cannot be used/i);
     // Domain check must happen before any DB user lookup.
     expect(findUser).not.toHaveBeenCalled();
+  });
+});
+
+describe('logoutUser storage-neutral identifiers', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('normalizes the Mongo user id before lookup and destroys the Express session', async () => {
+    const userId = new (require('mongoose').Types.ObjectId)();
+    findSession.mockResolvedValueOnce({ _id: 'stored-session-id' });
+    deleteSession.mockResolvedValueOnce({ deletedCount: 1 });
+    const destroy = jest.fn();
+
+    await expect(
+      logoutUser({ user: { _id: userId }, session: { destroy } }, 'refresh-token'),
+    ).resolves.toEqual({ status: 200, message: 'Logout successful' });
+
+    expect(findSession).toHaveBeenCalledWith({
+      userId: String(userId),
+      refreshToken: 'refresh-token',
+    });
+    expect(deleteSession).toHaveBeenCalledWith({ sessionId: 'stored-session-id' });
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not disclose a storage exception or report successful logout after lookup fails', async () => {
+    findSession.mockRejectedValueOnce(new Error('private credential or database query'));
+    const destroy = jest.fn();
+
+    await expect(
+      logoutUser({ user: { _id: 'user-1' }, session: { destroy } }, 'refresh-token'),
+    ).resolves.toEqual({ status: 500, message: 'Failed to logout.' });
+
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
   });
 });

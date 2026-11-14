@@ -3,6 +3,8 @@ const {
   createMethods,
   createToolFavoriteMethods,
   createPostgresFavoriteBackend,
+  createPostgresAuthenticationBackend,
+  createMongoAuthenticationMethods,
 } = require('@librechat/data-schemas');
 const {
   matchModelName,
@@ -10,6 +12,7 @@ const {
   isDeploymentSkillId,
   createMessageBudgetReader,
   createFavoriteRuntime,
+  createAuthenticationRuntime,
   getPersistenceConfig,
   createChannelStorageConfigReader,
 } = require('@librechat/api');
@@ -24,7 +27,14 @@ const favorites = createFavoriteRuntime(
   createPostgresFavoriteBackend,
 );
 
+const authentication = createAuthenticationRuntime(
+  createMongoAuthenticationMethods(mongoose),
+  process.env,
+  createPostgresAuthenticationBackend,
+);
+
 const methods = createMethods(mongoose, {
+  authentication: authentication.methods,
   toolFavorites: favorites.methods,
   matchModelName,
   findMatchingPattern,
@@ -43,6 +53,8 @@ const seedDatabase = async () => {
 
 module.exports = {
   ...methods,
+  initializeAuthentication: (config) => authentication.initialize(getPersistenceConfig(config)),
+  closeAuthentication: authentication.close,
   initializeFavorites: (config) => favorites.initialize(getPersistenceConfig(config)),
   closeFavorites: favorites.close,
   initializeMessageBudget: messageBudget.initialize,
