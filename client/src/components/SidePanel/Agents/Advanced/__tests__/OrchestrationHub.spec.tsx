@@ -1,3 +1,4 @@
+jest.mock('~/data-provider', () => ({ useModelSpecHandoffsQuery: () => ({ data: [] }) }));
 import { useForm, FormProvider } from 'react-hook-form';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { UseFormReturn } from 'react-hook-form';

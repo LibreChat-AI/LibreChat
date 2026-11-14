@@ -22,6 +22,12 @@ import { isEphemeralAgent } from '~/common';
 /**
  * AGENTS
  */
+export const useModelSpecHandoffsQuery = (enabled = true) =>
+  useQuery([QueryKeys.modelSpecHandoffs], dataService.getModelSpecHandoffs, {
+    enabled,
+    refetchOnWindowFocus: true,
+  });
+
 export const defaultAgentParams: t.AgentListParams = {
   requiredPermission: PermissionBits.EDIT,
 };

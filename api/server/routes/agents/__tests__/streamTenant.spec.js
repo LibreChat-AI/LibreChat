@@ -46,23 +46,34 @@ jest.mock('~/models', () => ({
 let mockUserId = 'user-123';
 let mockTenantId;
 
-jest.mock('~/server/middleware', () => ({
-  uaParser: (req, res, next) => next(),
-  checkBan: (req, res, next) => next(),
-  requireJwtAuth: (req, res, next) => {
-    req.user = { id: mockUserId, tenantId: mockTenantId };
-    next();
-  },
-  moderateText: (req, res, next) => next(),
-  messageIpLimiter: (req, res, next) => next(),
-  configMiddleware: (req, res, next) => next(),
-  requireTermsAcceptance: (req, res, next) => next(),
-  loadStreamKeepaliveMs: (req) =>
-    jest
-      .requireActual('@librechat/api')
-      .createStreamKeepaliveLoader((...args) => mockLoadPlainAppConfig(...args))(req),
-  messageUserLimiter: (req, res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const middleware = {
+    uaParser: (req, res, next) => next(),
+    checkBan: (req, res, next) => next(),
+    requireJwtAuth: (req, res, next) => {
+      req.user = { id: mockUserId, tenantId: mockTenantId };
+      next();
+    },
+    moderateText: (req, res, next) => next(),
+    messageIpLimiter: (req, res, next) => next(),
+    configMiddleware: (req, res, next) => next(),
+    requireTermsAcceptance: (req, res, next) => next(),
+    loadStreamKeepaliveMs: (req) =>
+      jest
+        .requireActual('@librechat/api')
+        .createStreamKeepaliveLoader((...args) => mockLoadPlainAppConfig(...args))(req),
+    messageUserLimiter: (req, res, next) => next(),
+  };
+  const strictRequests = new WeakSet();
+  return {
+    ...middleware,
+    strictConfigMiddleware: (req, res, next) => {
+      if (strictRequests.has(req)) return next();
+      strictRequests.add(req);
+      return middleware.configMiddleware(req, res, next);
+    },
+  };
+});
 
 jest.mock('~/server/routes/agents/chat', () => require('express').Router());
 jest.mock('~/server/routes/agents/v1', () => {

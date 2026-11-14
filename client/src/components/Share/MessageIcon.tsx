@@ -10,7 +10,7 @@ import { isImageURL } from '~/utils/icons';
 export default function MessageIcon(
   props: Pick<TMessageProps, 'message' | 'conversation'> & {
     assistant?: false | Assistant;
-    agent?: false | Agent;
+    agent?: false | Pick<Agent, 'name' | 'avatar'>;
   },
 ) {
   const { message, conversation, assistant, agent } = props;

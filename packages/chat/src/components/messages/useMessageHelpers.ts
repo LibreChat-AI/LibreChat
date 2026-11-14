@@ -4,7 +4,12 @@ import {
   isAgentsEndpoint,
   isConfiguredSender,
 } from 'librechat-data-provider';
-import type { Agent, Assistant, TConversation, SearchResultData } from 'librechat-data-provider';
+import type {
+  AgentDisplay,
+  Assistant,
+  TConversation,
+  SearchResultData,
+} from 'librechat-data-provider';
 import type { TMessageProps } from '../../react/messages/types';
 import type { MessageCopy } from '../../react/messages/host';
 import type { TAskFunction } from '../../core';
@@ -16,7 +21,7 @@ import { useMessagePartsHost } from '../../react/host';
 export type MessageHelpers = {
   ask: TAskFunction;
   edit: boolean;
-  agent: Agent | undefined;
+  agent: AgentDisplay | undefined;
   index: number;
   isLast: boolean;
   assistant: Assistant | undefined;

@@ -1323,3 +1323,7 @@ export type AgentFile = {
   object: string;
   purpose: 'fine-tune' | 'fine-tune-results' | 'agents' | 'agents_output';
 };
+
+/** Display identity shared by saved agents and model-spec transcript targets. */
+export type AgentDisplay = Pick<Agent, 'id' | 'name' | 'provider' | 'model' | 'avatar'>;
+export type ModelSpecHandoffTarget = AgentDisplay;

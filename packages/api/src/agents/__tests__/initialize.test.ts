@@ -1,3 +1,4 @@
+import { modelSpecAgentId, loadModelSpecHandoff } from '../specs';
 /**
  * Stub `buildBashExecutionToolDescription` since the installed SDK version
  * may pre-date the export. Kept as a partial mock so `Providers` and the
@@ -2221,9 +2222,26 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     );
   });
 
-  it('resolves temporal special vars in the request timezone', async () => {
-    const { agent, req, res, loadTools, db } = createMocks();
-    agent.instructions = 'It is currently {{current_datetime}}.';
+  it('resolves a handoff preset template in the turn timezone and keeps it in the dynamic tail', async () => {
+    const { agent: primary, req, res, loadTools, db } = createMocks();
+    if (!req.config) throw new Error('Missing fixture configuration');
+    req.config.modelSpecs = {
+      list: [
+        {
+          name: 'clock',
+          label: 'Clock',
+          handoff: true,
+          preset: {
+            endpoint: EModelEndpoint.openAI,
+            model: primary.model,
+            promptPrefix: 'It is currently {{current_datetime}}.',
+          },
+        },
+      ],
+    };
+    const agent = await loadModelSpecHandoff(modelSpecAgentId('clock'), req);
+    if (!agent) throw new Error('Missing clock preset');
+    expect(agent.instructions).toBe('It is currently {{current_datetime}}.');
     req.turnStartedAt = new Date('2024-01-15T18:30:00.000Z').getTime();
     req.body = { timezone: 'America/New_York' };
 

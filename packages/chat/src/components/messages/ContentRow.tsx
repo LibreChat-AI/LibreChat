@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useLocalize } from '@librechat/client';
 import type {
-  Agent,
+  AgentDisplay,
   TMessage,
   Assistant,
   TAttachment,
@@ -28,7 +28,7 @@ export type ContentRowProps = {
   /** The author's name, also the icon's model label. */
   label: string;
   iconData: MessageIconData;
-  agent?: Agent;
+  agent?: AgentDisplay;
   assistant?: Assistant;
   /** Whether the sender's name comes from configuration rather than the model. */
   hasConfiguredSender: boolean;

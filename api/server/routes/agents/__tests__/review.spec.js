@@ -8,36 +8,48 @@ jest.mock('@librechat/api', () => ({
   isEnabled: () => true,
   captureScheduleFireContext: jest.fn(),
 }));
-jest.mock('~/server/middleware', () => ({
-  uaParser: (_req, _res, next) => next(),
-  checkBan: (_req, _res, next) => next(),
-  requireJwtAuth: (req, res, next) => {
-    if (req.headers['x-test-owner'] !== 'yes') return res.sendStatus(401);
-    req.user = { id: 'owner' };
-    mockOrder.push('auth');
-    next();
-  },
-  requireTermsAcceptance: (_req, _res, next) => {
-    mockOrder.push('terms');
-    next();
-  },
-  configMiddleware: (req, _res, next) => {
-    mockOrder.push('config');
-    req.config = {};
-    next();
-  },
-  messageIpLimiter: (_req, res, next) => {
-    mockOrder.push('ip');
-    if (mockLimit === 'ip') return res.sendStatus(429);
-    next();
-  },
-  messageUserLimiter: (_req, res, next) => {
-    mockOrder.push('user');
-    if (mockLimit === 'user') return res.sendStatus(429);
-    next();
-  },
-  moderateText: (_req, _res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const middleware = {
+    uaParser: (_req, _res, next) => next(),
+    checkBan: (_req, _res, next) => next(),
+    requireJwtAuth: (req, res, next) => {
+      if (req.headers['x-test-owner'] !== 'yes') return res.sendStatus(401);
+      req.user = { id: 'owner' };
+      req.config = { untrustedFallback: true };
+      mockOrder.push('auth');
+      next();
+    },
+    requireTermsAcceptance: (_req, _res, next) => {
+      mockOrder.push('terms');
+      next();
+    },
+    configMiddleware: (req, _res, next) => {
+      mockOrder.push('config');
+      req.config = {};
+      next();
+    },
+    messageIpLimiter: (_req, res, next) => {
+      mockOrder.push('ip');
+      if (mockLimit === 'ip') return res.sendStatus(429);
+      next();
+    },
+    messageUserLimiter: (_req, res, next) => {
+      mockOrder.push('user');
+      if (mockLimit === 'user') return res.sendStatus(429);
+      next();
+    },
+    moderateText: (_req, _res, next) => next(),
+  };
+  const strictRequests = new WeakSet();
+  return {
+    ...middleware,
+    strictConfigMiddleware: (req, res, next) => {
+      if (strictRequests.has(req)) return next();
+      strictRequests.add(req);
+      return middleware.configMiddleware(req, res, next);
+    },
+  };
+});
 jest.mock('~/server/services/Responses', () => ({
   reviewBackgroundResponse: (_req, res) => res.sendStatus(200),
   submitBackgroundResponseReview: (req, res) => {

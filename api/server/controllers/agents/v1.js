@@ -14,6 +14,7 @@ const {
   resolveAvatarRefresh,
   applyCachedAvatarUrl,
   collectEdgeAgentIds,
+  validateHandoffReferences,
   replaceEdgeSourceId,
   mergeDeploymentSkillIds,
   getAgentListAccess,
@@ -369,22 +370,19 @@ const classifyAgentReferences = async (agentIds, userId, userRole) => {
  * @param {Set<string>} [allowedMissingIds]
  * @returns {Promise<{ missing: string[], unauthorized: string[] }>}
  */
-const validateEdgeAgentReferences = async (
+const validateEdgeAgentReferences = (
   edges,
   userId,
   userRole,
   allowedMissingIds = new Set(),
-) => {
-  const { missing, unauthorized } = await classifyAgentReferences(
-    collectEdgeAgentIds(edges),
-    userId,
-    userRole,
-  );
-  return {
-    missing: missing.filter((id) => !allowedMissingIds.has(id)),
-    unauthorized,
-  };
-};
+  specs,
+) =>
+  validateHandoffReferences({
+    edges,
+    specs,
+    allowedMissingIds,
+    classifySavedReferences: (ids) => classifyAgentReferences(ids, userId, userRole),
+  });
 
 /**
  * Collects every saved agent referenced by a spawn target. Graph edge
@@ -832,6 +830,7 @@ const createAgentHandler = async (req, res) => {
         userId,
         userRole,
         new Set([agentData.id]),
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
@@ -1240,6 +1239,8 @@ const updateAgentHandler = async (req, res) => {
         updateData.edges,
         userId,
         userRole,
+        undefined,
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
@@ -1575,6 +1576,7 @@ const duplicateAgentHandler = async (req, res) => {
         userId,
         userRole,
         new Set([newAgentId]),
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
@@ -2154,6 +2156,8 @@ const revertAgentVersionHandler = async (req, res) => {
         revertEdges,
         req.user.id,
         req.user.role,
+        undefined,
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
