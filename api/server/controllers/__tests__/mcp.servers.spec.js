@@ -60,7 +60,7 @@ const {
   deleteMCPServerController,
 } = require('~/server/controllers/mcp');
 const { grantPermission } = require('~/server/services/PermissionService');
-const { seedDefaultRoles } = require('~/models');
+const { seedDefaultRoles, initializeAuthentication, closeAuthentication } = require('~/models');
 
 let mongoServer;
 let SystemGrant;
@@ -106,10 +106,12 @@ beforeAll(async () => {
   AclEntry = dbModels.AclEntry;
   User = dbModels.User;
 
+  await initializeAuthentication({});
   await seedDefaultRoles();
 });
 
 afterAll(async () => {
+  await closeAuthentication();
   await mongoose.disconnect();
   await mongoServer?.stop();
 });

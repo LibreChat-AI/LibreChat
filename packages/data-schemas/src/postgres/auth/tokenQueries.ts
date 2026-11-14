@@ -4,6 +4,7 @@ import type { IToken } from '~/types/token';
 import { resolveTenantScope, tenantFilter } from '~/tenant/policy';
 
 export interface MCPAuthorityTokenRecord {
+  readonly storageRevision: string;
   _id: string;
   type?: string;
   identifier?: string;
@@ -61,10 +62,12 @@ export function createMongoTokenQueries(
   return {
     async findMCPTokenUserIds(input) {
       const identifier = `mcp:${input.serverName}`;
-      const ids = await model().distinct('userId', {
-        ...(input.scope === 'exact' ? { tenantId: input.tenantId ?? null } : {}),
-        identifier: { $in: [identifier, `${identifier}:client`, `${identifier}:refresh`] },
-      });
+      const ids = await model()
+        .distinct('userId', {
+          ...(input.scope === 'exact' ? { tenantId: input.tenantId ?? null } : {}),
+          identifier: { $in: [identifier, `${identifier}:client`, `${identifier}:refresh`] },
+        })
+        .read('primary');
       return ids.map(String);
     },
     async getMCPAuthorityTokens(input) {
@@ -74,20 +77,24 @@ export function createMongoTokenQueries(
         ...filter(input),
         ...(input.tenantId === undefined ? { tenantId: { $exists: false } } : {}),
       };
-      const count = await model()
+      const countQuery = model()
         .countDocuments(queryFilter)
         .limit(maximum)
         .session(session ?? null);
-      const found = await model()
+      if (!session) countQuery.read('primary').readConcern('majority');
+      const count = await countQuery;
+      const rowQuery = model()
         .find(queryFilter)
-        .select('_id type identifier token metadata createdAt expiresAt')
+        .select('_id type identifier token metadata createdAt expiresAt __v')
         .sort({ _id: 1 })
         .limit(maximum)
         .setOptions({ singleBatch: true })
-        .session(session ?? null)
-        .lean<IToken[]>({ flattenMaps: true });
+        .session(session ?? null);
+      if (!session) rowQuery.read('primary').readConcern('majority');
+      const found = await rowQuery.lean<IToken[]>({ flattenMaps: true });
       const tokens = found.map((row) => ({
         _id: String(row._id),
+        storageRevision: String(row.__v ?? 0),
         type: row.type,
         identifier: row.identifier,
         token: row.token,
@@ -99,35 +106,37 @@ export function createMongoTokenQueries(
     },
     async getMCPTokenGenerations(input) {
       if (!input.serverNames.length) return [];
-      const rows = await model().aggregate<{
-        _id: { type: string; identifier: string };
-        minimum: string | null;
-        maximum: string | null;
-        invalid: number;
-      }>([
-        { $match: filter(input) },
-        {
-          $project: {
-            type: 1,
-            identifier: 1,
-            generation: {
-              $cond: [
-                { $eq: [{ $type: '$metadata.credential_set_id' }, 'string'] },
-                '$metadata.credential_set_id',
-                null,
-              ],
+      const rows = await model()
+        .aggregate<{
+          _id: { type: string; identifier: string };
+          minimum: string | null;
+          maximum: string | null;
+          invalid: number;
+        }>([
+          { $match: filter(input) },
+          {
+            $project: {
+              type: 1,
+              identifier: 1,
+              generation: {
+                $cond: [
+                  { $eq: [{ $type: '$metadata.credential_set_id' }, 'string'] },
+                  '$metadata.credential_set_id',
+                  null,
+                ],
+              },
             },
           },
-        },
-        {
-          $group: {
-            _id: { type: '$type', identifier: '$identifier' },
-            minimum: { $min: '$generation' },
-            maximum: { $max: '$generation' },
-            invalid: { $sum: { $cond: [{ $in: ['$generation', [null, '']] }, 1, 0] } },
+          {
+            $group: {
+              _id: { type: '$type', identifier: '$identifier' },
+              minimum: { $min: '$generation' },
+              maximum: { $max: '$generation' },
+              invalid: { $sum: { $cond: [{ $in: ['$generation', [null, '']] }, 1, 0] } },
+            },
           },
-        },
-      ]);
+        ])
+        .read('primary');
       return rows.map((row) => ({
         type: row._id.type,
         identifier: row._id.identifier,
@@ -176,7 +185,7 @@ export function createPostgresTokenQueries(db: PostgresDatabase): TokenQueries {
       const maximum = limit(input.limit);
       const query = selection(input);
       const result = await db.query<MCPAuthorityTokenRecord>(
-        `SELECT id AS "_id",type,identifier,token,metadata,created_at AS "createdAt",expires_at AS "expiresAt"
+        `SELECT id AS "_id",revision::text AS "storageRevision",type,identifier,token,metadata,created_at AS "createdAt",expires_at AS "expiresAt"
          FROM auth_tokens WHERE ${query.text} ORDER BY id LIMIT $6`,
         [...query.values, maximum],
       );

@@ -174,6 +174,7 @@ let updateUser;
 let deleteUserById;
 let countUsers;
 let getUserById;
+let findSession;
 let generateToken;
 let generateRefreshToken;
 let createSession;
@@ -191,6 +192,7 @@ let registerUser;
 let resetPassword;
 let resendVerificationEmail;
 let setAuthTokens;
+let logoutUser;
 let setCloudFrontAuthCookies;
 let verifyEmail;
 let resetPasswordWithToken;
@@ -221,6 +223,7 @@ jest.isolateModules(() => {
     deleteUserById,
     countUsers,
     getUserById,
+    findSession,
     generateToken,
     generateRefreshToken,
     createSession,
@@ -240,6 +243,7 @@ jest.isolateModules(() => {
     resetPassword,
     resendVerificationEmail,
     setAuthTokens,
+    logoutUser,
     setCloudFrontAuthCookies,
     verifyEmail,
   } = require('./AuthService'));
@@ -2129,5 +2133,39 @@ describe('registerUser - allowedDomains admin-panel override', () => {
     expect(result.message).toMatch(/cannot be used/i);
     // Domain check must happen before any DB user lookup.
     expect(findUser).not.toHaveBeenCalled();
+  });
+});
+
+describe('logoutUser storage-neutral identifiers', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('normalizes the Mongo user id before lookup and destroys the Express session', async () => {
+    const userId = new (require('mongoose').Types.ObjectId)();
+    findSession.mockResolvedValueOnce({ _id: 'stored-session-id' });
+    deleteSession.mockResolvedValueOnce({ deletedCount: 1 });
+    const destroy = jest.fn();
+
+    await expect(
+      logoutUser({ user: { _id: userId }, session: { destroy } }, 'refresh-token'),
+    ).resolves.toEqual({ status: 200, message: 'Logout successful' });
+
+    expect(findSession).toHaveBeenCalledWith({
+      userId: String(userId),
+      refreshToken: 'refresh-token',
+    });
+    expect(deleteSession).toHaveBeenCalledWith({ sessionId: 'stored-session-id' });
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not disclose a storage exception or report successful logout after lookup fails', async () => {
+    findSession.mockRejectedValueOnce(new Error('private credential or database query'));
+    const destroy = jest.fn();
+
+    await expect(
+      logoutUser({ user: { _id: 'user-1' }, session: { destroy } }, 'refresh-token'),
+    ).resolves.toEqual({ status: 500, message: 'Failed to logout.' });
+
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
   });
 });

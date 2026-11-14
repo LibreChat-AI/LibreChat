@@ -29,6 +29,7 @@ export const AUTHENTICATION_COLUMNS = {
     'identifier',
     'token',
     'metadata',
+    'revision',
     'created_at',
     'expires_at',
   ],
@@ -149,9 +150,11 @@ export function authenticationSnapshotKey(row: AuthenticationSnapshotRow): strin
         throw new Error('Invalid passkey transports');
       continue;
     }
-    if (column === 'counter') {
+    if (column === 'counter' || column === 'revision') {
       if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
-        throw new Error('Invalid passkey counter');
+        throw new Error(
+          column === 'counter' ? 'Invalid passkey counter' : 'Invalid token revision',
+        );
       continue;
     }
     if (column === 'backed_up') {
@@ -211,6 +214,7 @@ export function readPostgresAuthentication(sql: SqlExecutor): AuthenticationSnap
         if (!result.rows.length) break;
         for (const value of result.rows) {
           if (kind === 'passkeys') value.counter = Number(value.counter);
+          if (kind === 'tokens') value.revision = Number(value.revision);
           yield { kind, values: value };
           after = String(value.id);
         }

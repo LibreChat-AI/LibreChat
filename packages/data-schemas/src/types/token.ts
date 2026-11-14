@@ -1,6 +1,7 @@
 import { Document, Types } from 'mongoose';
 
 export interface IToken extends Document {
+  __v?: number;
   userId: Types.ObjectId;
   email?: string;
   type?: string;

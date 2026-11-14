@@ -95,7 +95,9 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
       try {
         const replacedToken = await Token.findOneAndUpdate(
           query,
-          expectedToken === null ? { $setOnInsert: replacement } : { $set: replacement },
+          expectedToken === null
+            ? { $setOnInsert: { ...replacement, __v: 0 } }
+            : { $set: replacement, $inc: { __v: 1 } },
           {
             new: true,
             upsert: expectedToken === null,
@@ -133,12 +135,22 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
         dbQuery['metadata.credential_set_id'] = metadataCredentialSetId;
       }
 
-      const dataToUpdate = { ...updateData };
-      if (updateData?.expiresIn !== undefined) {
-        dataToUpdate.expiresAt = new Date(Date.now() + updateData.expiresIn * 1000);
+      const { expiresIn, ...dataToUpdate } = updateData;
+      if (expiresIn !== undefined) {
+        dataToUpdate.expiresAt = new Date(Date.now() + expiresIn * 1000);
       }
-
-      const updated = await Token.findOneAndUpdate(dbQuery, dataToUpdate, { new: true });
+      const fields = Object.fromEntries(
+        Object.entries(dataToUpdate).filter(([, value]) => value !== undefined),
+      );
+      if (Object.keys(fields).length === 0) {
+        const found = await Token.findOne(dbQuery);
+        return found ? toTokenRecord(found) : null;
+      }
+      const updated = await Token.findOneAndUpdate(
+        dbQuery,
+        { $set: fields, $inc: { __v: 1 } },
+        { new: true },
+      );
       return updated ? toTokenRecord(updated) : null;
     } catch (error) {
       logger.debug('An error occurred while updating token', {
