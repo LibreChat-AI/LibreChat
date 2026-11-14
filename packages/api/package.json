@@ -157,7 +157,7 @@
     "mathjs": "^15.2.0",
     "memorystore": "^1.6.7",
     "mongodb": "^6.14.2",
-    "mongoose": "^8.24.1",
+    "mongoose": "^8.24.9",
     "nanoid": "^3.3.7",
     "node-fetch": "2.7.0",
     "pdfjs-dist": "^5.5.207",

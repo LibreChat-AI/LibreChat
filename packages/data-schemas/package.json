@@ -90,7 +90,7 @@
     "librechat-data-provider": "*",
     "lodash": "^4.17.23",
     "meilisearch": "^0.38.0",
-    "mongoose": "^8.24.1",
+    "mongoose": "^8.24.9",
     "nanoid": "^3.3.18",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^5.0.0"
