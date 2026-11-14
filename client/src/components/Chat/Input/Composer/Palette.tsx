@@ -55,8 +55,6 @@ const VIEWPORT_PADDING = 12;
 /** Length of the landing screen's lift transition; see `ChatView`'s
  *  `duration-200` on the same element. */
 const LIFT_MS = 200;
-/** Ariakit portals to document.body by default, which puts the palette outside every landmark. */
-const getMainLandmark = () => document.querySelector<HTMLElement>('main');
 /** Hidden until the row is hovered or focused, wherever no pointer is coarse.
  *  Any touchscreen keeps them visible, including a 2-in-1's beside its hovering
  *  trackpad. `transition-none` overrides IconButton's color fade so the reveal
@@ -1240,9 +1238,11 @@ function Palette({
               />
             </Ariakit.PopoverDisclosure>
           </span>
+          {/* Keep fixed positioning outside the main container query boundary.
+              Floating UI treats that boundary as a containing block and subtracts
+              its offset even in browsers where fixed elements use the viewport. */}
           <Ariakit.Popover
             portal
-            portalElement={getMainLandmark}
             data-chat-pane-portal={index}
             preserveTabOrder
             fixed
