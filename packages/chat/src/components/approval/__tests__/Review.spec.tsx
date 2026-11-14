@@ -3,11 +3,12 @@
  */
 import React, { useEffect } from 'react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
 import type { ApprovalRequestRenderProps, ApprovalReviewCopy } from '../Review';
+import type { ApprovalResumeHost } from '../../../react/approval';
+import { ApprovalResumeHostProvider, pendingApprovalActionFamily } from '../../../react/approval';
 import { PendingToolApprovalButton, PendingToolApprovalPanel } from '../Review';
-import { pendingApprovalActionFamily } from '../../../react/approval';
 import { composerOverlayCountFamily } from '../../../react/overlay';
 import ApprovalProvider, { useApprovalContext } from '../context';
 
@@ -28,6 +29,7 @@ const localize: ApprovalReviewCopy = (key, values) => {
     com_ui_approve: 'Approve',
     com_ui_reject: 'Reject',
     com_ui_continue: 'Continue',
+    com_ui_submitting: 'Submitting',
     com_ui_collapse: 'Collapse',
   };
   return labels[key] ?? key;
@@ -151,6 +153,97 @@ describe('PendingToolApproval', () => {
       'aria-expanded',
       'false',
     );
+  });
+
+  describe('resuming through the host', () => {
+    const createHost = (fields: ReturnType<ApprovalResumeHost['readFields']>) => {
+      const submitToolApproval = jest.fn();
+      const host: ApprovalResumeHost = {
+        readFields: () => fields,
+        submitToolApproval,
+        submitAskAnswer: jest.fn(),
+        readMessages: () => null,
+      };
+      return { host, submitToolApproval };
+    };
+
+    const renderWithHost = (host: ApprovalResumeHost) => {
+      const jotaiStore = createStore();
+      jotaiStore.set(pendingApprovalActionFamily('conversation-1'), pendingAction);
+      render(
+        <JotaiProvider store={jotaiStore}>
+          <ApprovalResumeHostProvider host={host}>
+            <ApprovalProvider pendingAction={pendingAction}>
+              <PendingToolApprovalPanel
+                conversationId="conversation-1"
+                localize={localize}
+                renderRequest={renderRequest}
+              />
+            </ApprovalProvider>
+          </ApprovalResumeHostProvider>
+        </JotaiProvider>,
+      );
+      return jotaiStore;
+    };
+
+    const approveBoth = async () => {
+      await screen.findByRole('region', { name: 'Review 2 actions' });
+      for (const approve of screen.getAllByRole('button', { name: 'Approve' })) {
+        fireEvent.click(approve);
+      }
+    };
+
+    test('Continue sends the whole batch and closes the review once the host accepts it', async () => {
+      const { host, submitToolApproval } = createHost({
+        conversationId: 'conversation-1',
+        generationCreatedAt: 1000,
+      });
+      const jotaiStore = renderWithHost(host);
+      await approveBoth();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      expect(submitToolApproval).toHaveBeenCalledTimes(1);
+      expect(submitToolApproval).toHaveBeenCalledWith(
+        {
+          conversationId: 'conversation-1',
+          generationCreatedAt: 1000,
+          actionId: 'action-1',
+          decisions: [
+            { tool_call_id: 'call-1', decision: 'approve' },
+            { tool_call_id: 'call-2', decision: 'approve' },
+          ],
+        },
+        expect.any(Object),
+      );
+      expect(screen.getByRole('button', { name: 'Submitting' })).toBeDisabled();
+
+      act(() => submitToolApproval.mock.calls[0][1].onSuccess());
+      expect(jotaiStore.get(pendingApprovalActionFamily('conversation-1'))).toBeNull();
+      expect(screen.queryByRole('region', { name: 'Review 2 actions' })).not.toBeInTheDocument();
+    });
+
+    test('a failed submit keeps the batch and lets Continue retry', async () => {
+      const { host, submitToolApproval } = createHost({ conversationId: 'conversation-1' });
+      renderWithHost(host);
+      await approveBoth();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      act(() => submitToolApproval.mock.calls[0][1].onError(new Error('offline')));
+      expect(screen.getByText('2 of 2 decisions selected')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      expect(submitToolApproval).toHaveBeenCalledTimes(2);
+    });
+
+    test('Continue does nothing while the host has no live conversation', async () => {
+      const { host, submitToolApproval } = createHost(null);
+      renderWithHost(host);
+      await approveBoth();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      expect(submitToolApproval).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
+    });
   });
 
   describe('collapsing from the keyboard', () => {

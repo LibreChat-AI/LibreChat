@@ -1,16 +1,22 @@
 import { memo, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Button } from '@librechat/client';
+import { ApprovalResumeHostProvider } from '@librechat/chat/react';
 import {
   PendingToolApprovalButton as PackageButton,
   PendingToolApprovalPanel as PackagePanel,
 } from '@librechat/chat/components';
 import type { ApprovalRequestRenderProps } from '@librechat/chat/components';
 import type { ReactNode, RefObject } from 'react';
+import { useChatApprovalHost } from '~/components/Chat/Messages/Content/ApprovalContext';
 import ToolApproval from '~/components/Chat/Messages/Content/ToolApproval';
 import { useLocalize } from '~/hooks';
 
-/** The app's review panel: package chrome, with this app's approval card in each row. */
+/**
+ * The app's review panel: package chrome, with this app's approval card in each row. The
+ * panel's Continue button resumes through the host, which only this app can build from
+ * the active conversation.
+ */
 export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
   conversationId,
   triggerRef,
@@ -20,6 +26,7 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
   triggerRef?: RefObject<HTMLButtonElement>;
 }) {
   const localize = useLocalize();
+  const host = useChatApprovalHost();
   const renderRequest = useCallback(
     (props: ApprovalRequestRenderProps) => <ToolApproval {...props} surface="composer" />,
     [],
@@ -40,13 +47,15 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
     [],
   );
   return (
-    <PackagePanel
-      conversationId={conversationId}
-      triggerRef={triggerRef}
-      localize={localize}
-      renderRequest={renderRequest}
-      renderCollapse={renderCollapse}
-    />
+    <ApprovalResumeHostProvider host={host}>
+      <PackagePanel
+        conversationId={conversationId}
+        triggerRef={triggerRef}
+        localize={localize}
+        renderRequest={renderRequest}
+        renderCollapse={renderCollapse}
+      />
+    </ApprovalResumeHostProvider>
   );
 });
 

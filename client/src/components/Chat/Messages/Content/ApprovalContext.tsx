@@ -20,9 +20,10 @@ export type { ResumeSubmitTransport, ToolApprovalDecisionDraft } from '@librecha
  * The app's resume adapter: conversation fields, ephemeral agent settings, and the
  * mutations that send a tool decision or an ask answer. The package hook owns the lock
  * and the status. Built here, not in the provider, so the composer can resume outside
- * `ApprovalProvider`.
+ * `ApprovalProvider`. Package components that submit on their own (the composer review
+ * panel) read it from `ApprovalResumeHostProvider`, so the app wraps them with this host.
  */
-function useChatApprovalHost(): ApprovalResumeHost {
+export function useChatApprovalHost(): ApprovalResumeHost {
   const chatContext = useContext(ChatContext);
   const { getEphemeralAgent } = useChatSettings();
   const approvalMutation = useSubmitToolApprovalMutation();
