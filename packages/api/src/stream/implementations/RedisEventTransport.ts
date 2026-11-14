@@ -319,6 +319,8 @@ export class RedisEventTransport implements IEventTransport {
   private streams = new Map<string, StreamSubscribers>();
   /** Track channel subscription state: resolved promise = active, pending = in-flight */
   private channelSubscriptions = new Map<string, ChannelSubscriptionState>();
+  /** Pending waits outlive channel removal until they settle or the transport closes. */
+  private pendingSubscriptions = new Set<ChannelSubscriptionState>();
   /** Counter for generating unique subscriber IDs */
   private subscriberIdCounter = 0;
   /** Coalescable chunk publications awaiting their window flush, per stream */
@@ -740,14 +742,19 @@ export class RedisEventTransport implements IEventTransport {
       },
     );
     this.channelSubscriptions.set(channel, state);
-    void ready.catch((err) => {
-      if (this.destroyed) return;
-      if (this.channelSubscriptions.get(channel) === state) {
-        this.channelSubscriptions.delete(channel);
-        if (state.fallbackActive) this.trackOrReleaseActiveChannel(streamId, channel);
-      }
-      logger.error(`[RedisEventTransport] Failed to subscribe to ${channel}:`, err);
-    });
+    this.pendingSubscriptions.add(state);
+    void ready.then(
+      () => this.pendingSubscriptions.delete(state),
+      (err) => {
+        this.pendingSubscriptions.delete(state);
+        if (this.destroyed) return;
+        if (this.channelSubscriptions.get(channel) === state) {
+          this.channelSubscriptions.delete(channel);
+          if (state.fallbackActive) this.trackOrReleaseActiveChannel(streamId, channel);
+        }
+        logger.error(`[RedisEventTransport] Failed to subscribe to ${channel}:`, err);
+      },
+    );
     return ready;
   }
 
@@ -1967,7 +1974,8 @@ export class RedisEventTransport implements IEventTransport {
       waiter.reject(new Error('Redis event transport is closed.'));
     }
     this.subscriptionFrontierWaiters.clear();
-    for (const state of this.channelSubscriptions.values()) state.cancel?.();
+    for (const state of this.pendingSubscriptions) state.cancel?.();
+    this.pendingSubscriptions.clear();
     for (const streamId of this.pendingBatches.keys()) {
       this.discardCoalescedChunks(streamId);
     }
