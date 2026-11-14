@@ -67,7 +67,6 @@ jest.mock('@ariakit/react/menu', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useListSkillsQuery: () => ({ data: { skills: [] }, isLoading: false }),
   useGetToolFavoritesQuery: () => ({ data: [] }),
 }));
 
@@ -134,6 +133,7 @@ jest.mock('@librechat/client', () => {
     ({ children, asChild, ...rest }: any) =>
       React.createElement(asChild ? React.Fragment : tag, asChild ? null : rest, children);
   return {
+    TooltipAnchor: ({ render }: any) => render,
     Button: ({ children, onClick, asChild, ...rest }: any) =>
       asChild
         ? React.createElement(React.Fragment, null, children)

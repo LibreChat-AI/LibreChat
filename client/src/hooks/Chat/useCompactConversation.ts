@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { atom, useAtom } from 'jotai';
+import { useChatActions } from '@librechat/chat/react';
 import { Constants, isCompactedLeaf, isAssistantsEndpoint } from 'librechat-data-provider';
 import { useLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import { useChatContext } from '~/Providers/ChatContext';
-import { useChatActions } from './facade';
 
 /** Conversation whose compaction this client submitted and is still streaming. */
 export const compactingConversationAtom = atom<string | null>(null);

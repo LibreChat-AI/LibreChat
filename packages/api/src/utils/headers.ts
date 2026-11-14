@@ -1,7 +1,8 @@
 import type { AnthropicClientOptions } from '@librechat/agents';
+import type { Agent } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { RequestBody, RunLLMConfig } from '~/types';
-import { resolveHeaders } from './env';
+import { resolveHeaders, processAgentPlaceholders } from './env';
 
 const TENANT_ID_HEADER_PLACEHOLDERS = [
   '{{LIBRECHAT_USER_TENANTID}}',
@@ -111,18 +112,21 @@ export function resolveModelHeaders({
   user,
   tenantId,
   body,
+  agent,
   customUserVars,
 }: {
   headers: Record<string, string> | undefined;
   user?: Partial<IUser> | { id: string };
   tenantId?: string;
   body?: RequestBody;
+  agent?: Partial<Agent>;
   customUserVars?: Record<string, string>;
 }): Record<string, string> {
   const resolved = resolveHeaders({
     headers,
     user,
     body,
+    agent,
     customUserVars,
     stripUnresolved: true,
   });
@@ -141,15 +145,31 @@ export function resolveModelHeaders({
  * nothing carries across requests.
  */
 const resolvedHeaderMaps = new WeakSet<object>();
+const googleManagedHeaders = new WeakMap<object, ReadonlySet<string>>();
+
+/** Retain header provenance while layering provider credentials over operator templates. */
+export function mergeGoogleHeaders(
+  configured?: Record<string, string>,
+  managed?: Record<string, string>,
+): Record<string, string> | undefined {
+  const merged = mergeHeaders(configured, managed);
+  if (merged) {
+    googleManagedHeaders.set(
+      merged,
+      new Set(Object.keys(managed ?? {}).map((name) => name.toLowerCase())),
+    );
+  }
+  return merged;
+}
 
 /**
  * Resolves placeholder templates in the outbound request headers of a built LLM
  * config, mutating it in place. Handles the OpenAI-compatible
  * `configuration.defaultHeaders` (OpenAI / Azure / custom) and the native
  * Anthropic `clientOptions.defaultHeaders` (including Vertex) carriers, plus
- * tenant-only substitution in native Google `customHeaders`. Google's map is
- * otherwise resolved at initialization so provider-managed authorization never
- * passes through environment or user-template expansion.
+ * tenant and agent substitution in native Google `customHeaders`. Google's
+ * credential and user templates resolve at initialization; provider-managed
+ * authorization stays opaque during this final pass.
  *
  * Resolution runs at request time so request-body placeholders (e.g.
  * `{{LIBRECHAT_BODY_CONVERSATIONID}}`) resolve against the live request. It is a
@@ -165,6 +185,7 @@ export function resolveConfigHeaders({
   user,
   tenantId,
   body,
+  agent,
   customUserVars,
 }: {
   /** Partial: this only reads the three provider header carriers, so
@@ -176,6 +197,7 @@ export function resolveConfigHeaders({
   /** Authoritative request tenant used only for model-header templates. */
   tenantId?: string;
   body?: RequestBody;
+  agent?: Partial<Agent>;
   customUserVars?: Record<string, string>;
 }): void {
   if (llmConfig == null) {
@@ -186,7 +208,7 @@ export function resolveConfigHeaders({
     if (resolvedHeaderMaps.has(headers)) {
       return headers;
     }
-    const resolved = resolveModelHeaders({ headers, user, tenantId, body, customUserVars });
+    const resolved = resolveModelHeaders({ headers, user, tenantId, body, agent, customUserVars });
     resolvedHeaderMaps.add(resolved);
     return resolved;
   };
@@ -207,7 +229,15 @@ export function resolveConfigHeaders({
   if (customHeadersContainer.customHeaders != null) {
     const headers = customHeadersContainer.customHeaders;
     if (!resolvedHeaderMaps.has(headers)) {
-      customHeadersContainer.customHeaders = resolveTenantPlaceholders(headers, tenantId);
+      const resolved = resolveTenantPlaceholders(headers, tenantId);
+      const managed = googleManagedHeaders.get(headers);
+      for (const [name, value] of Object.entries(headers)) {
+        resolved[name] =
+          (managed?.has(name.toLowerCase()) ?? name.toLowerCase() === 'authorization')
+            ? value
+            : processAgentPlaceholders(resolved[name], agent ?? {});
+      }
+      customHeadersContainer.customHeaders = resolved;
       resolvedHeaderMaps.add(customHeadersContainer.customHeaders);
     }
   }

@@ -5,6 +5,7 @@ import type {
   TurnFileConsumers,
 } from 'librechat-data-provider';
 import type { AgentAttachmentEndpointsByAgentId } from '~/agents/attachments';
+import type { MissingAttachmentHandler } from '~/files/encode/utils';
 import type { HistoryAllocationFile } from './history';
 import type { NativeDeliveryAgent } from './turn';
 import type { ServerRequest } from '~/types';
@@ -26,6 +27,7 @@ interface MessageAttachmentClient<T, M> {
     message: M,
     files: T[],
     consumers?: TurnFileConsumers,
+    onMissingFile?: MissingAttachmentHandler,
   ): Promise<T[] | undefined>;
   prepareTurnAttachments(files: T[], consumers?: TurnFileConsumers): Promise<T[]>;
   addFileContextToMessage(message: M, files: T[], consumers?: TurnFileConsumers): Promise<void>;
@@ -36,6 +38,7 @@ interface MessageAttachmentClient<T, M> {
  * Waits for native validation before extracting text when an automatic document may fall back.
  * Other attachments keep their independent extraction and encoding in parallel. The settled
  * copies are admitted before their text reaches the message and returned for history/projection.
+ * `onMissingFile` lets a replayed message skip attachments storage has deleted.
  */
 export async function prepareMessageAttachments<T extends HistoryAllocationFile, M>({
   client,
@@ -43,12 +46,14 @@ export async function prepareMessageAttachments<T extends HistoryAllocationFile,
   files,
   consumers,
   contextFiles = files,
+  onMissingFile,
 }: {
   client: MessageAttachmentClient<T, M>;
   message: M;
   files: T[];
   consumers?: TurnFileConsumers;
   contextFiles?: T[];
+  onMissingFile?: MissingAttachmentHandler;
 }): Promise<T[] | undefined> {
   const agent = client.options?.agent;
   const signal = client.options?.abortController?.signal;
@@ -64,20 +69,30 @@ export async function prepareMessageAttachments<T extends HistoryAllocationFile,
           consumers ?? agent?.fileConsumers,
         ) === 'provider'),
   );
+  /* Only the arguments a caller supplied are passed, so an override sees the same call shape. */
+  const processFiles = (): Promise<T[] | undefined> => {
+    if (onMissingFile != null) {
+      return client.processAttachments(message, files, consumers, onMissingFile);
+    }
+    return consumers == null
+      ? client.processAttachments(message, files)
+      : client.processAttachments(message, files, consumers);
+  };
   if (!mayReject) {
     const [, processed] = await Promise.all([
       consumers == null
         ? client.addFileContextToMessage(message, contextFiles)
         : client.addFileContextToMessage(message, contextFiles, consumers),
-      consumers == null
-        ? client.processAttachments(message, files)
-        : client.processAttachments(message, files, consumers),
+      processFiles(),
     ]);
     return mergeAttachmentSurvivors(files, processed);
   }
 
   signal?.throwIfAborted();
-  const processed = await client.processAttachments(message, files, consumers);
+  const processed =
+    onMissingFile != null
+      ? await client.processAttachments(message, files, consumers, onMissingFile)
+      : await client.processAttachments(message, files, consumers);
   signal?.throwIfAborted();
   let prepared = await client.prepareTurnAttachments(
     mergeAttachmentSurvivors(files, processed) ?? files,

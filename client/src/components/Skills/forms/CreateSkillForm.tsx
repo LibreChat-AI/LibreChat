@@ -169,7 +169,7 @@ export default function CreateSkillForm({
                     {...field}
                     id="skill-name"
                     type="text"
-                    className="peer border-border-medium text-text-primary mr-2 w-full border p-2 text-2xl"
+                    className="peer text-text-primary me-2 w-full p-2 text-2xl"
                     placeholder=" "
                     tabIndex={0}
                     aria-label={localize('com_ui_name')}
@@ -179,7 +179,7 @@ export default function CreateSkillForm({
                   />
                   <label
                     htmlFor="skill-name"
-                    className="bg-surface-primary-alt text-text-secondary peer-focus:text-text-primary pointer-events-none absolute -top-1 left-3 origin-[0] translate-y-3 scale-100 rounded px-1 text-base transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75"
+                    className="bg-surface-primary-alt text-text-secondary peer-focus:text-text-primary pointer-events-none absolute inset-s-3 -top-1 origin-[0] translate-y-3 scale-100 rounded px-1 text-base transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75 rtl:origin-right"
                   >
                     {localize('com_ui_name')}*
                   </label>
@@ -219,12 +219,14 @@ export default function CreateSkillForm({
               <div className="flex flex-col">
                 <Label
                   htmlFor="skill-description"
-                  className="text-text-secondary mb-1 text-sm font-medium"
+                  variant="secondary"
+                  className="mb-1 text-sm font-medium"
                 >
                   {localize('com_ui_description')}
-                  <span className="text-text-destructive ml-0.5">*</span>
+                  <span className="text-text-destructive ms-0.5">*</span>
                 </Label>
                 <TextareaAutosize
+                  variant="framed"
                   focusOutline="hidden"
                   {...field}
                   id="skill-description"
@@ -234,7 +236,7 @@ export default function CreateSkillForm({
                   aria-label={localize('com_ui_description')}
                   aria-invalid={errors.description ? 'true' : 'false'}
                   aria-describedby={errors.description ? 'skill-description-error' : undefined}
-                  className="border-border-medium text-text-primary placeholder:text-text-secondary focus-visible:ring-ring-primary w-full resize-none rounded-xl border bg-transparent p-3 text-sm focus-visible:ring-2"
+                  className="w-full resize-none p-3 text-sm"
                 />
                 <p className="text-text-secondary mt-1 text-xs">
                   {localize('com_ui_skill_description_field_hint')}
@@ -277,7 +279,7 @@ export default function CreateSkillForm({
               type="submit"
               disabled={createDisabled}
               aria-disabled={createDisabled || undefined}
-              className={cn('w-full sm:w-auto', createDisabled && 'opacity-50')}
+              className="w-full sm:w-auto"
             >
               {localize('com_ui_skill_create_title')}
             </Button>

@@ -70,7 +70,7 @@ const DeleteAccount = ({ disabled = false }: { title?: string; disabled?: boolea
           <OGDialogTrigger asChild>
             <Button
               aria-labelledby="delete-account-label"
-              variant="destructive"
+              variant="destructive-soft"
               onClick={() => setDialogOpen(true)}
               disabled={disabled}
             >
@@ -113,7 +113,6 @@ const DeleteAccount = ({ disabled = false }: { title?: string; disabled?: boolea
                       onChange={setOtpToken}
                       maxLength={6}
                       pattern={REGEXP_ONLY_DIGITS}
-                      className="gap-2"
                     >
                       <>
                         <InputOTPGroup>
@@ -193,12 +192,12 @@ const renderDeleteButton = (
         {isLocked ? (
           <>
             <LockIcon className="size-5" aria-hidden="true" />
-            <span className="ml-2">{localize('com_ui_locked')}</span>
+            <span className="ms-2">{localize('com_ui_locked')}</span>
           </>
         ) : (
           <>
             <Trash className="size-5" aria-hidden="true" />
-            <span className="ml-2">{localize('com_nav_delete_account_button')}</span>
+            <span className="ms-2">{localize('com_nav_delete_account_button')}</span>
           </>
         )}
       </>

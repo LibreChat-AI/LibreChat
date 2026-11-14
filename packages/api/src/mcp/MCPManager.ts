@@ -78,7 +78,9 @@ import { UserConnectionManager } from './UserConnectionManager';
 import { ConnectionsRepository } from './ConnectionsRepository';
 import { MCPConnectionFactory } from './MCPConnectionFactory';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
+import { guardUnattendedOAuth } from './oauth/unattended';
 import { OAuthLifecycleRelay } from './oauth/pending';
+import { getMCPAgentConnectionKey } from './utils';
 import { isOwnedAbortError } from '~/utils/errors';
 import { markMCPToolResultError } from './status';
 import { withMCPRequestSignal } from './signal';
@@ -143,6 +145,11 @@ export class MCPManager extends UserConnectionManager {
     Promise<void>,
     { controller: AbortController; waiters: number; connection: MCPConnection }
   >();
+
+  /** Each OAuth recovery's prompt relay, for waiters that hold only the recovery promise. */
+  private readonly recoveryPrompts = new WeakMap<Promise<void>, OAuthLifecycleRelay>();
+  /** How to end a guarded caller's wait, by the signal its guard issued. */
+  private readonly unattendedCallers = new WeakMap<AbortSignal, () => void>();
 
   private readonly oauthRecoveries = new WeakMap<
     MCPConnection,
@@ -246,10 +253,29 @@ export class MCPManager extends UserConnectionManager {
     await super.disconnectUserConnection(userId, serverName, options);
   }
 
+  /** Guards a caller nobody can sign in for; see {@link guardUnattendedOAuth}. */
+  private guardUnattended(
+    callerSignal: AbortSignal | undefined,
+    logPrefix: string,
+  ): { signal: AbortSignal; oauthStart: t.OAuthStartHandler; oauthEnd: undefined } {
+    const { signal, oauthStart, leave } = guardUnattendedOAuth(callerSignal, () =>
+      logger.warn(`${logPrefix} Sign-in required on an unattended run; not prompting`),
+    );
+    this.unattendedCallers.set(signal, leave);
+    return { signal, oauthStart, oauthEnd: undefined };
+  }
+
   public override getUserConnection(opts: t.UserMCPConnectionOptions): Promise<MCPConnection> {
+    if (opts.unattended) {
+      opts = {
+        ...opts,
+        ...this.guardUnattended(opts.signal, `[MCP][User: ${opts.user?.id}][${opts.serverName}]`),
+        unattended: false,
+      };
+    }
     const connectionTarget = this.getSuppliedConnectionTarget(opts);
     if (connectionTarget) {
-      return this.getManagedUserConnection(opts, connectionTarget);
+      return this.getVisibleUserConnection(opts, connectionTarget);
     }
     return this.resolveConnectionTarget(opts).then((resolvedTarget) => {
       opts.signal?.throwIfAborted();
@@ -261,6 +287,45 @@ export class MCPManager extends UserConnectionManager {
       }
       return this.getManagedUserConnection(opts, resolvedTarget);
     });
+  }
+
+  /**
+   * Hiding is an access boundary, so a target the caller resolved earlier is checked again here,
+   * where every supplied user connection passes; a registry-resolved target was already filtered.
+   * The check is fenced from the call on, as the creation it precedes would be, so a teardown
+   * that lands while it runs still reaches this connection.
+   */
+  private async getVisibleUserConnection(
+    opts: t.UserMCPConnectionOptions,
+    connectionTarget: t.MCPConnectionTarget,
+  ): Promise<MCPConnection> {
+    const userId = opts.user?.id;
+    const fence = userId
+      ? this.createConnectionMutationFence(
+          userId,
+          opts.serverName,
+          opts.capabilityProfile ?? STANDARD_MCP_CAPABILITY_PROFILE,
+        )
+      : undefined;
+    let connection: Promise<MCPConnection>;
+    try {
+      const hidden = await MCPServersRegistry.getInstance().isHiddenFromPrincipal(
+        opts.serverName,
+        connectionTarget.serverConfig,
+        opts.user,
+      );
+      fence?.assertCurrent();
+      if (hidden) {
+        throw new McpError(
+          ErrorCode.InvalidRequest,
+          `[MCP] Configuration for server "${opts.serverName}" not found.`,
+        );
+      }
+      connection = this.getManagedUserConnection(opts, connectionTarget);
+    } finally {
+      fence?.release();
+    }
+    return connection;
   }
 
   private async getManagedUserConnection(
@@ -286,7 +351,11 @@ export class MCPManager extends UserConnectionManager {
     }
 
     const capabilityProfile = opts.capabilityProfile ?? STANDARD_MCP_CAPABILITY_PROFILE;
-    const connectionKey = getMCPUserConnectionPoolKey(userId, opts.serverName, capabilityProfile);
+    const connectionKey = getMCPAgentConnectionKey(
+      getMCPUserConnectionPoolKey(userId, opts.serverName, capabilityProfile),
+      connectionTarget.serverConfig,
+      opts.requestBody,
+    );
     const requestConnection = opts.requestScopedConnections?.connections.get(connectionKey) as
       | MCPConnection
       | undefined;
@@ -349,6 +418,12 @@ export class MCPManager extends UserConnectionManager {
   }
 
   private waitForActiveRecovery(recovery: Promise<void>, signal?: AbortSignal): Promise<void> {
+    /** Every recovery wait passes here, including ones that registered no prompt handler. */
+    const leave = signal && this.unattendedCallers.get(signal);
+    if (leave) {
+      const stopWatching = this.recoveryPrompts.get(recovery)?.onSignInRequested(leave);
+      if (stopWatching) void recovery.then(stopWatching, stopWatching);
+    }
     const shared = this.recoveryCancellation.get(recovery);
     if (shared) {
       shared.waiters++;
@@ -456,12 +531,20 @@ export class MCPManager extends UserConnectionManager {
     connectionTarget?: t.MCPConnectionTarget;
     serverConfig?: t.ParsedServerConfig;
   }): Promise<t.MCPConnectionTarget | undefined> {
+    const registry = MCPServersRegistry.getInstance();
+    const suppliedConfig = args.connectionTarget?.serverConfig ?? args.serverConfig;
+    /** A config resolved before a hide took effect must not outlive it: hiding is an access boundary. */
+    if (
+      suppliedConfig &&
+      (await registry.isHiddenFromPrincipal(args.serverName, suppliedConfig, args.user))
+    ) {
+      return undefined;
+    }
     if (args.connectionTarget) {
       return args.connectionTarget;
     }
-    const registry = MCPServersRegistry.getInstance();
     const resolvedConfig =
-      args.serverConfig ?? (await registry.getServerConfig(args.serverName, args.user?.id));
+      suppliedConfig ?? (await this.getPrincipalServerConfig(args.serverName, args.user));
     if (!resolvedConfig) {
       return undefined;
     }
@@ -559,7 +642,7 @@ export class MCPManager extends UserConnectionManager {
     const { serverName, user } = args;
     const capabilityProfile = args.capabilityProfile ?? STANDARD_MCP_CAPABILITY_PROFILE;
     const registry = MCPServersRegistry.getInstance();
-    const serverConfig = await registry.getServerConfig(serverName, user?.id, args.configServers);
+    const serverConfig = await this.getPrincipalServerConfig(serverName, user, args.configServers);
 
     if (!serverConfig) {
       logger.warn('[MCP][Discovery] Server configuration not found');
@@ -881,18 +964,25 @@ export class MCPManager extends UserConnectionManager {
   /**
    * Get instructions for MCP servers
    * @param serverNames Optional array of server names. If not provided or empty, returns all servers.
+   * @param user The acting user: a librechat.yaml server hidden from them contributes nothing,
+   *   whichever caller named it (a model spec can pin one).
    * @returns Object mapping server names to their instructions
    */
   private async getInstructions(
     serverNames?: string[],
     configServers?: Record<string, t.ParsedServerConfig>,
+    user?: t.MCPLookupUser,
   ): Promise<Record<string, string>> {
     const instructions: Record<string, string> = {};
-    const configs = await MCPServersRegistry.getInstance().getAllServerConfigs(
-      undefined,
-      configServers,
-    );
+    const registry = MCPServersRegistry.getInstance();
+    const [configs, hidden] = await Promise.all([
+      registry.getAllServerConfigs(undefined, configServers),
+      registry.getUserHiddenServerNames(user),
+    ]);
     for (const [serverName, config] of Object.entries(configs)) {
+      if (hidden.has(serverName) && !isUserSourced(config)) {
+        continue;
+      }
       const resolved = resolveServerInstructions(config);
       if (resolved != null) {
         instructions[serverName] = resolved;
@@ -905,13 +995,15 @@ export class MCPManager extends UserConnectionManager {
   /**
    * Format MCP server instructions for injection into context
    * @param serverNames Optional array of server names to include. If not provided, includes all servers.
+   * @param user The acting user, whose hidden librechat.yaml servers are left out.
    * @returns Formatted instructions string ready for context injection
    */
   public async formatInstructionsForContext(
     serverNames?: string[],
     configServers?: Record<string, t.ParsedServerConfig>,
+    user?: t.MCPLookupUser,
   ): Promise<string> {
-    const instructionsToInclude = await this.getInstructions(serverNames, configServers);
+    const instructionsToInclude = await this.getInstructions(serverNames, configServers, user);
 
     if (Object.keys(instructionsToInclude).length === 0) {
       return '';
@@ -1009,6 +1101,7 @@ Please follow these instructions when using tools from the respective MCP server
     });
 
     const recoveryEntry = { promise: recovery, callbacks, allowsTakeover, takeoverClaimed: false };
+    this.recoveryPrompts.set(recovery, callbacks);
     this.oauthRecoveries.set(connection, recoveryEntry);
     this.holdDeferredConnectionDisposal(connection);
     const clearRecovery = () => {
@@ -1095,10 +1188,10 @@ Please follow these instructions when using tools from the respective MCP server
         connection.stopReconnecting();
         await this.waitForConnectionBorrowersToDrain(connection);
         recoverySignal.throwIfAborted();
-        const requestConnectionKey = getMCPUserConnectionPoolKey(
-          user.id,
-          serverName,
-          capabilityProfile,
+        const requestConnectionKey = getMCPAgentConnectionKey(
+          getMCPUserConnectionPoolKey(user.id, serverName, capabilityProfile),
+          serverConfig,
+          requestBody,
         );
         if (requestScopedConnections?.connections.get(requestConnectionKey) === connection) {
           requestScopedConnections.connections.delete(requestConnectionKey);
@@ -1453,7 +1546,10 @@ Please follow these instructions when using tools from the respective MCP server
     onOAuthCredentialsChanging,
     mcpApps,
     scheduledMCPInvocation,
+    unattended,
   }: {
+    /** See {@link t.UserConnectionContext.unattended}. */
+    unattended?: boolean;
     scheduledBearerInvocation?: ScheduledMCPBearerInvocation;
     scheduledMCPInvocation?: ScheduledMCPInvocation;
     user?: IUser;
@@ -1487,6 +1583,11 @@ Please follow these instructions when using tools from the respective MCP server
       scheduledMCPInvocation != null && scheduledMCPInvocation.enrolled !== false;
     const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
     const logPrefix = userId ? `[MCP][User: ${userId}][${serverName}]` : `[MCP][${serverName}]`;
+    if (unattended) {
+      const guard = this.guardUnattended(options?.signal, logPrefix);
+      ({ oauthStart, oauthEnd } = guard);
+      options = { ...options, signal: guard.signal };
+    }
     this.bindRequestScopedConnectionStore(requestScopedConnections);
     let recoveryTakeoverConsumed = false;
     const directBearerRecoveryState: t.DirectBearerRecoveryState = { attempted: false };
@@ -1601,7 +1702,7 @@ Please follow these instructions when using tools from the respective MCP server
 
         const registry = MCPServersRegistry.getInstance();
         const declaredConfig =
-          providedConfig ?? (await registry.getServerConfig(serverName, userId));
+          providedConfig ?? (await this.getPrincipalServerConfig(serverName, user));
         /** Folded in before scope detection, Graph preprocessing and
          *  direct-bearer resolution, so this pipeline sees the same single
          *  header map the factory does. */

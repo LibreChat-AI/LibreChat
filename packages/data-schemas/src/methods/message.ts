@@ -4,14 +4,17 @@ import {
   isForcedTemporaryRetention,
   RetentionMode,
 } from 'librechat-data-provider';
-import type { DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
+import type { ClientSession, DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
 import type { UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { SearchParams } from 'meilisearch';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
+import type { ISubagentContentChunk } from '~/models/subagentContent';
 import type { AppConfig, IConversation, IMessage } from '~/types';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
+import { prepareSubagentContentDeletion } from './subagentContent';
+import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { tenantStorage } from '~/config/tenantContext';
 import logger from '~/config/winston';
@@ -320,6 +323,18 @@ function buildMessageSaveUpdate(
   };
 }
 
+/**
+ * A legacy temporary message stores only its deadline; hydration then fills
+ * `isTemporary` with the schema default `false`, which must not read as permanent.
+ */
+function isTemporaryMessage(message: IMessage): boolean {
+  if (message.isTemporary === true) {
+    return true;
+  }
+  const implicit = message.isTemporary == null || message.$isDefault?.('isTemporary') === true;
+  return implicit && message.expiredAt != null;
+}
+
 async function findOneAndMergeMessageProvenance(
   Message: Model<IMessage>,
   identity: FilterQuery<IMessage>,
@@ -327,6 +342,7 @@ async function findOneAndMergeMessageProvenance(
   userSubmittedPaths: readonly string[],
   userSubmittedMessageFieldPaths: readonly UserSubmittedMessageFieldPath[],
   options: {
+    session?: ClientSession;
     upsert: boolean;
     stampModelOutputOnInsert?: boolean;
     unsetContextMeta?: boolean;
@@ -350,6 +366,7 @@ async function findOneAndMergeMessageProvenance(
   /** A small optimistic loop keeps the merge atomic while using only classic update operators. */
   for (let attempt = 0; attempt < MAX_PROVENANCE_CAS_ATTEMPTS; attempt += 1) {
     const current = await Message.findOne(identity)
+      .session(options.session ?? null)
       .select(
         options.prepareAppUpdate
           ? (options.privateMessagePaths ?? '')
@@ -415,14 +432,19 @@ async function findOneAndMergeMessageProvenance(
             },
           }),
         },
-        { upsert: options.upsert && current == null, new: true, timestamps: options.timestamps },
+        {
+          upsert: options.upsert && current == null,
+          new: true,
+          timestamps: options.timestamps,
+          session: options.session,
+        },
       );
       if (message != null) {
         options.onWrite?.(current == null, message._id);
         return message;
       }
     } catch (err) {
-      if (!isDuplicateKeyError(err) || !options.upsert) {
+      if (options.session || !isDuplicateKeyError(err) || !options.upsert) {
         throw err;
       }
     }
@@ -507,8 +529,7 @@ const traceTenantScope = (tenantId?: string) =>
 
 const SERVER_AUTHORED_SAMPLED_RESPONSE = {
   langfuseSampled: true,
-  isCreatedByUser: false,
-  isUserSubmitted: { $ne: true },
+  ...SERVER_AUTHORED_MESSAGE_FILTER,
 } as const;
 
 export const CLIENT_MESSAGE_SELECT: string = [
@@ -523,6 +544,7 @@ export const CLIENT_MESSAGE_SELECT: string = [
   '-privateText',
   '-privateTextTokens',
   '-contextMeta',
+  '-langfuseCentralTraceExportEnabled',
   '-langfuseSampled',
   '-langfuseDestinationIds',
   '-langfuseRunId',
@@ -578,6 +600,11 @@ export type BackgroundToolResultClaim =
     }
   | { status: 'acquired'; results: BackgroundToolResultRecord[]; messageId?: string };
 
+export type BranchLinkRow = Pick<
+  IMessage,
+  'messageId' | 'parentMessageId' | 'isCreatedByUser' | 'reasoningOverride'
+>;
+
 export type SubagentThreadViewMessageRecord = Pick<
   IMessage,
   | 'messageId'
@@ -591,6 +618,7 @@ export type SubagentThreadViewMessageRecord = Pick<
   | 'subagentTriggerProjection'
 > & {
   textProjectionTruncated?: boolean;
+  contentRecoveryAvailable?: boolean;
   subagentTranscriptProjectionTruncated?: boolean;
   /** Storage-bounded visible content; validated into the public activity type by the API. */
   subagentActivity?: unknown[];
@@ -794,6 +822,7 @@ export interface MessageMethods {
     taskId: string;
     invocationId: string;
     tenantId?: string;
+    activeOnly?: boolean;
   }): Promise<NonNullable<NonNullable<IMessage['subagentTask']>['controlReceipts']>[number] | null>;
   getSubagentTaskControlReplay(input: {
     userId: string;
@@ -820,15 +849,6 @@ export interface MessageMethods {
     overrideTimestamp?: boolean,
     provenance?: { privateTextTokens: ReadonlyMap<string, readonly string[]> },
   ): Promise<unknown>;
-  recordMessage(params: {
-    user: string;
-    endpoint?: string;
-    messageId: string;
-    conversationId?: string;
-    parentMessageId?: string;
-    [key: string]: unknown;
-  }): Promise<IMessage | null>;
-  updateMessageText(userId: string, params: { messageId: string; text: string }): Promise<void>;
   updateToolCallResult(params: {
     userId: string;
     messageId: string;
@@ -915,10 +935,6 @@ export interface MessageMethods {
     kind: 'manual' | 'wakeup';
     claimId: string;
   }): Promise<boolean>;
-  deleteMessagesSince(
-    userId: string,
-    params: { messageId: string; conversationId: string },
-  ): Promise<DeleteResult>;
   getMessages(
     filter: FilterQuery<IMessage>,
     select?: string,
@@ -940,6 +956,7 @@ export interface MessageMethods {
     limitPerThread: number;
   }): Promise<ParentSubagentTaskRecord[]>;
   getMessage(params: { user: string; messageId: string }): Promise<IMessage | null>;
+  getBranchLinks(params: { user: string; conversationId: string }): Promise<BranchLinkRow[]>;
   getMessagesByCursor(
     filter: FilterQuery<IMessage>,
     options?: {
@@ -947,6 +964,7 @@ export interface MessageMethods {
       sortOrder?: 1 | -1;
       limit?: number;
       cursor?: string | null;
+      select?: string;
     },
   ): Promise<{ messages: IMessage[]; nextCursor: string | null }>;
   searchMessages(
@@ -955,6 +973,58 @@ export interface MessageMethods {
     hydrate?: boolean,
   ): Promise<Awaited<ReturnType<SchemaWithMeiliMethods['meiliSearch']>>>;
   deleteMessages(filter: FilterQuery<IMessage>): Promise<DeleteResult>;
+}
+
+const DATE_SORT_FIELDS = new Set(['createdAt', 'updatedAt']);
+/** Cursor marker for a null or missing sort value, which MongoDB orders before every string, '' included. */
+const NULL_SORT_VALUE = '\u0000';
+const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/i;
+
+/** Encodes the last row of a page as `<sortValue>|<_id>`; dates use ISO strings so milliseconds survive. */
+function formatMessageCursor(value: unknown, id: unknown): string {
+  if (value == null) {
+    return id == null ? NULL_SORT_VALUE : `${NULL_SORT_VALUE}|${String(id)}`;
+  }
+  const sortValue = value instanceof Date ? value.toISOString() : String(value);
+  return id == null ? sortValue : `${sortValue}|${String(id)}`;
+}
+
+/** Accepts both the compound cursor and the legacy bare sort value from older clients. */
+function parseMessageCursor(cursor: string): { value: string; id?: string } {
+  const split = cursor.lastIndexOf('|');
+  if (split >= 0 && OBJECT_ID_PATTERN.test(cursor.slice(split + 1))) {
+    return { value: cursor.slice(0, split), id: cursor.slice(split + 1) };
+  }
+  return { value: cursor };
+}
+
+/** The rows after a cursor, following MongoDB's order: null/missing, then '' (strings only), then values. */
+function buildCursorFilter(
+  sortField: string,
+  op: '$gt' | '$lt',
+  value: string | Date,
+  position: { value: string; id?: Types.ObjectId },
+): FilterQuery<IMessage> {
+  if (position.id == null) {
+    return { [sortField]: { [op]: value } };
+  }
+  const tieId = { _id: { [op]: position.id } };
+  const ascending = op === '$gt';
+  if (position.value === NULL_SORT_VALUE) {
+    return {
+      $or: [
+        { [sortField]: null, ...tieId },
+        ...(ascending ? [{ [sortField]: { $ne: null } }] : []),
+      ],
+    };
+  }
+  return {
+    $or: [
+      { [sortField]: { [op]: value } },
+      { [sortField]: value, ...tieId },
+      ...(ascending ? [] : [{ [sortField]: null }]),
+    ],
+  };
 }
 
 /** The agent-ownership rule shared by background-tool settling and claiming:
@@ -1015,6 +1085,8 @@ type SteplessToolCallFallback = {
 };
 
 export interface MessageDependencies {
+  /** Private data-schemas port: only canonical turn saves participate in this transaction. */
+  saveSession?: ClientSession;
   /** Read from deployment config, never from a message/request or a principal override. */
   getMCPAppMessageBudget?: () => Promise<number | undefined>;
 }
@@ -1093,7 +1165,17 @@ export function createMessageMethods(
     const fields = normalizeUserSubmittedMessageFieldPaths(update.userSubmittedMessageFieldPaths);
     delete update.userSubmittedPaths;
     delete update.userSubmittedMessageFieldPaths;
-    if (!hasBoundAppSnapshots(update.attachments) && paths.length === 0 && fields.length === 0) {
+    // A duplicate-key fallback cannot continue an aborted transaction. Inspect the
+    // same snapshot first so existing App rows enter the canonical budgeted writer directly.
+    const existingApps = deps.saveSession
+      ? await Message.findOne(identity).session(deps.saveSession).select('attachments').lean()
+      : null;
+    if (
+      !hasBoundAppSnapshots(update.attachments) &&
+      !hasBoundAppSnapshots(existingApps?.attachments) &&
+      paths.length === 0 &&
+      fields.length === 0
+    ) {
       try {
         // Preserve the single-write common path. If an App row is excluded, its existing
         // unique (messageId, user, tenantId) index rejects the upsert; budget that row below.
@@ -1110,6 +1192,7 @@ export function createMessageMethods(
             new: true,
             timestamps: options.timestamps,
             includeResultMetadata: true,
+            session: deps.saveSession,
           },
         );
         if (fast.value) {
@@ -1117,11 +1200,12 @@ export function createMessageMethods(
           return fast.value;
         }
       } catch (error) {
-        if (!isDuplicateKeyError(error)) throw error;
+        if (deps.saveSession || !isDuplicateKeyError(error)) throw error;
       }
     }
     return findOneAndMergeMessageProvenance(Message, identity, update, paths, fields, {
       ...options,
+      session: deps.saveSession,
       privateMessagePaths: privateMessagePaths(),
       prepareAppUpdate: (current, sanitized) =>
         prepareAppUpdate(sanitized, current, options.unsetContextMeta, options.retentionOnInsert),
@@ -1288,7 +1372,7 @@ export function createMessageMethods(
               updatedAt: now,
             },
           },
-          { upsert: true, new: true, timestamps: false },
+          { upsert: true, new: true, timestamps: false, session: deps.saveSession },
         );
         return existingOrInserted?.toObject();
       }
@@ -1324,7 +1408,7 @@ export function createMessageMethods(
             isTemporary: message.isTemporary === true ? true : { $ne: true },
           },
           { $set: { expiredAt: deadline } },
-          { timestamps: false },
+          { timestamps: false, session: deps.saveSession },
         );
         if (result.modifiedCount > 0) {
           message.expiredAt = deadline;
@@ -1340,12 +1424,14 @@ export function createMessageMethods(
         await Message.updateOne(
           { _id: message._id, isTemporary: { $ne: false } },
           { $set: { isTemporary: false } },
+          { session: deps.saveSession },
         );
         message.isTemporary = false;
       }
 
       return message.toObject();
     } catch (err: unknown) {
+      if (deps.saveSession) throw err;
       logger.error('Error saving message:', err);
       logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
 
@@ -1527,83 +1613,6 @@ export function createMessageMethods(
       };
     } catch (err) {
       logger.error('Error saving messages in bulk:', err);
-      throw err;
-    }
-  }
-
-  /**
-   * Records a message in the database (no UUID validation).
-   */
-  async function recordMessage({
-    user,
-    endpoint,
-    messageId,
-    conversationId,
-    parentMessageId,
-    ...rest
-  }: {
-    user: string;
-    endpoint?: string;
-    messageId: string;
-    conversationId?: string;
-    parentMessageId?: string;
-    [key: string]: unknown;
-  }) {
-    try {
-      const provenance = capNormalizedProvenance(
-        normalizeUserSubmittedPaths(rest.userSubmittedPaths),
-        normalizeUserSubmittedMessageFieldPaths(rest.userSubmittedMessageFieldPaths),
-      );
-      const {
-        userSubmittedPaths: _userSubmittedPaths,
-        userSubmittedMessageFieldPaths: _userSubmittedMessageFieldPaths,
-        ...safeRest
-      } = rest;
-      delete safeRest.privateText;
-      delete safeRest.privacyRevision;
-      delete safeRest.privateTextTokens;
-      const message = {
-        user,
-        endpoint,
-        messageId,
-        conversationId,
-        parentMessageId,
-        ...safeRest,
-        ...(provenance.userSubmittedPaths.length > 0 && {
-          userSubmittedPaths: provenance.userSubmittedPaths,
-        }),
-        ...(provenance.userSubmittedMessageFieldPaths.length > 0 && {
-          userSubmittedMessageFieldPaths: provenance.userSubmittedMessageFieldPaths,
-        }),
-        ...(provenance.promoteWholeMessage && { isUserSubmitted: true }),
-      };
-      return await writeMessage({ user, messageId }, message, {
-        upsert: true,
-        unsetPrivateText: Object.prototype.hasOwnProperty.call(safeRest, 'text'),
-        stampModelOutputOnInsert:
-          rest.isCreatedByUser === false && rest.isUserSubmitted === undefined,
-      });
-    } catch (err) {
-      logger.error('Error recording message:', err);
-      throw err;
-    }
-  }
-
-  /**
-   * Updates the text of a message.
-   */
-  async function updateMessageText(
-    userId: string,
-    { messageId, text }: { messageId: string; text: string },
-  ) {
-    try {
-      await writeMessage(
-        { messageId, user: userId },
-        { text },
-        { upsert: false, unsetPrivateText: true },
-      );
-    } catch (err) {
-      logger.error('Error updating message text:', err);
       throw err;
     }
   }
@@ -2632,6 +2641,7 @@ export function createMessageMethods(
         tokenCount: updatedMessage.tokenCount,
         feedback: updatedMessage.feedback,
         endpoint: updatedMessage.endpoint,
+        isTemporary: isTemporaryMessage(updatedMessage),
         langfuseSampled: updatedMessage.langfuseSampled,
         langfuseDestinationIds: updatedMessage.langfuseDestinationIds,
         langfuseRunId: updatedMessage.langfuseRunId,
@@ -2736,12 +2746,14 @@ export function createMessageMethods(
     taskId,
     invocationId,
     tenantId,
+    activeOnly = false,
   }: {
     userId: string;
     conversationId: string;
     taskId: string;
     invocationId: string;
     tenantId?: string;
+    activeOnly?: boolean;
   }): Promise<StoredSubagentControlReceipt | null> {
     if (
       userId.length === 0 ||
@@ -2756,6 +2768,7 @@ export function createMessageMethods(
     }
     const Message = mongoose.models.Message as Model<IMessage>;
     const input = await Message.findOne({
+      ...(activeOnly ? activeExpirationFilter<IMessage>() : {}),
       user: userId,
       conversationId,
       ...(tenantId == null ? { tenantId: { $exists: false } } : { tenantId }),
@@ -3021,30 +3034,6 @@ export function createMessageMethods(
   }
 
   /**
-   * Deletes messages in a conversation since a specific message.
-   */
-  async function deleteMessagesSince(
-    userId: string,
-    { messageId, conversationId }: { messageId: string; conversationId: string },
-  ) {
-    try {
-      const Message = mongoose.models.Message as Model<IMessage>;
-      const message = await Message.findOne({ messageId, user: userId }).lean<IMessage>();
-
-      if (message) {
-        const query = Message.find({ conversationId, user: userId });
-        return await query.deleteMany({
-          createdAt: { $gt: message.createdAt },
-        });
-      }
-      return undefined;
-    } catch (err) {
-      logger.error('Error deleting messages:', err);
-      throw err;
-    }
-  }
-
-  /**
    * Retrieves messages from the database.
    */
   async function getMessages(
@@ -3115,7 +3104,10 @@ export function createMessageMethods(
       };
       const activityProjectionAvailable = {
         $and: [
-          { $eq: ['$subagentActivityProjection.version', 1] },
+          { $in: ['$subagentActivityProjection.version', [1, 2]] },
+          {
+            $eq: ['$messageId', { $concat: ['$subagentActivityProjection.taskId', ':assistant'] }],
+          },
           '$_subagentActivityProjectionSourceIsString',
           {
             $lte: [
@@ -3128,8 +3120,28 @@ export function createMessageMethods(
       const transcriptAvailable = {
         $and: [
           '$_subagentTranscriptSourceIsString',
+          { $eq: ['$messageId', { $concat: ['$subagentTranscript.taskId', ':assistant'] }] },
           {
             $lte: ['$_subagentTranscriptSourceBytes', SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT],
+          },
+        ],
+      };
+      // Legacy reprojection is optional: retain the usable projection until the
+      // API validates the current input boundary against the bounded transcript.
+      const legacySteeringTranscriptAvailable = {
+        $and: [
+          { $eq: ['$subagentActivityProjection.version', 1] },
+          {
+            $cond: [
+              transcriptAvailable,
+              {
+                $gte: [
+                  { $indexOfBytes: ['$subagentTranscript.messagesJson', '"source":"steer"'] },
+                  0,
+                ],
+              },
+              false,
+            ],
           },
         ],
       };
@@ -3191,17 +3203,14 @@ export function createMessageMethods(
         message: {
           $cond: [
             { $eq: [{ $type: '$$receipt.message' }, 'string'] },
-            boundedString('$$receipt.message', SUBAGENT_VIEW_CONTROL_STRING_CODE_POINT_LIMIT),
+            boundedString('$$receipt.message', MAX_SUBAGENT_CONTROL_MESSAGE_LENGTH),
             null,
           ],
         },
         messageTruncated: {
           $or: [
             { $eq: ['$$receipt.messageTruncated', true] },
-            stringProjectionTruncated(
-              '$$receipt.message',
-              SUBAGENT_VIEW_CONTROL_STRING_CODE_POINT_LIMIT,
-            ),
+            stringProjectionTruncated('$$receipt.message', MAX_SUBAGENT_CONTROL_MESSAGE_LENGTH),
           ],
         },
       };
@@ -3594,6 +3603,12 @@ export function createMessageMethods(
         createdAt: 1,
         error: 1,
         unfinished: 1,
+        contentRecoveryAvailable: {
+          $and: [
+            { $eq: [{ $ifNull: ['$subagentContent.version', 0] }, 1] },
+            { $ne: [{ $ifNull: ['$subagentContent.deleted', false] }, true] },
+          ],
+        },
         subagentTranscriptProjectionTruncated: {
           $cond: [{ $ne: [{ $type: '$subagentTranscript.messagesJson' }, 'missing'] }, true, null],
         },
@@ -3658,13 +3673,23 @@ export function createMessageMethods(
         },
         subagentTranscript: {
           $cond: [
-            activityProjectionAvailable,
-            null,
+            {
+              $and: [
+                transcriptAvailable,
+                {
+                  $or: [
+                    { $eq: [activityProjectionAvailable, false] },
+                    legacySteeringTranscriptAvailable,
+                  ],
+                },
+              ],
+            },
             {
               taskId: '$subagentTranscript.taskId',
               mode: '$subagentTranscript.mode',
               messagesJson: '$subagentTranscript.messagesJson',
             },
+            null,
           ],
         },
       };
@@ -3869,6 +3894,9 @@ export function createMessageMethods(
           return {
             ...projected,
             subagentActivityProjectionJson: source.subagentActivityProjectionJson,
+            ...(source.subagentTranscript == null
+              ? {}
+              : { subagentTranscript: source.subagentTranscript }),
             ...(source.subagentActivityProjectionTruncated === true
               ? { subagentActivityProjectionTruncated: true }
               : {}),
@@ -4205,6 +4233,25 @@ export function createMessageMethods(
   }
 
   /**
+   * Every message of a conversation, on every branch, reduced to the fields a parent-chain walk
+   * reads. One small read answers which level a branch last ran at and which rows a later history
+   * read can skip; the walks themselves are in memory.
+   */
+  async function getBranchLinks({
+    user,
+    conversationId,
+  }: {
+    user: string;
+    conversationId: string;
+  }): Promise<BranchLinkRow[]> {
+    const Message = mongoose.models.Message as Model<IMessage>;
+    return Message.find(
+      { user, conversationId },
+      { _id: 0, messageId: 1, parentMessageId: 1, isCreatedByUser: 1, reasoningOverride: 1 },
+    ).lean<BranchLinkRow[]>();
+  }
+
+  /**
    * Retrieves a single message from the database.
    */
   async function getMessage({ user, messageId }: { user: string; messageId: string }) {
@@ -4223,6 +4270,62 @@ export function createMessageMethods(
   async function deleteMessages(filter: FilterQuery<IMessage>) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
+      if (typeof filter.messageId === 'string' && !/:(user|assistant)$/.test(filter.messageId)) {
+        return await Message.deleteMany(filter);
+      }
+      const wholeScope =
+        typeof filter.user === 'string' &&
+        Object.keys(filter).every((key) => ['user', 'conversationId', 'tenantId'].includes(key));
+      const contentSources = wholeScope
+        ? []
+        : await Message.find({
+            $and: [filter, { subagentContent: { $exists: true } }],
+          })
+            .select('user tenantId conversationId messageId')
+            .lean<IMessage[]>();
+      const SubagentContent = mongoose.models.SubagentContent as
+        | Model<ISubagentContentChunk>
+        | undefined;
+      if (SubagentContent != null) {
+        if (wholeScope) {
+          await prepareSubagentContentDeletion(mongoose, filter);
+          return await Message.deleteMany(filter);
+        }
+        const scopes = new Map<
+          string,
+          {
+            user: string;
+            conversationId: string;
+            taskId: string;
+            tenantId: string | { $exists: false };
+          }
+        >();
+        for (const source of contentSources) {
+          const taskId = source.messageId.replace(/:(user|assistant)$/, '');
+          if (taskId === source.messageId) continue;
+          scopes.set(`${source.tenantId ?? ''}:${source.user}:${source.conversationId}:${taskId}`, {
+            user: source.user,
+            conversationId: source.conversationId,
+            taskId,
+            tenantId: source.tenantId ?? { $exists: false },
+          });
+        }
+        if (scopes.size > 0) {
+          const contentScopes = [...scopes.values()];
+          /** Revoke the task before cleanup, including appends already admitted.
+           * Retain both markers until payload deletion succeeds so retries rediscover them. */
+          await Message.updateMany(
+            {
+              $or: contentScopes.map(({ taskId, ...scope }) => ({
+                ...scope,
+                messageId: { $in: [`${taskId}:user`, `${taskId}:assistant`] },
+              })),
+            },
+            { $set: { 'subagentContent.deleted': true } },
+          );
+          await SubagentContent.deleteMany({ $or: contentScopes });
+        }
+      }
       return await Message.deleteMany(filter);
     } catch (err) {
       logger.error('Error deleting messages:', err);
@@ -4246,16 +4349,28 @@ export function createMessageMethods(
   ) {
     const Message = mongoose.models.Message as Model<IMessage>;
     const { sortField = 'createdAt', sortOrder = -1, limit = 25, cursor, select } = options;
-    const queryFilter = { ...filter };
-    if (cursor) {
-      queryFilter[sortField] = sortOrder === 1 ? { $gt: cursor } : { $lt: cursor };
+    const queryFilter: FilterQuery<IMessage> = { ...filter };
+    const position = cursor ? parseMessageCursor(cursor) : null;
+    if (position != null) {
+      const op = sortOrder === 1 ? '$gt' : '$lt';
+      const value =
+        DATE_SORT_FIELDS.has(sortField) && position.value !== NULL_SORT_VALUE
+          ? new Date(position.value)
+          : position.value;
+      const id = position.id == null ? undefined : new mongoose.Types.ObjectId(position.id);
+      const after = buildCursorFilter(sortField, op, value, { value: position.value, id });
+      queryFilter.$and = [...(queryFilter.$and ?? []), after];
     }
     const query = Message.find(queryFilter);
-    if (select) {
-      query.select(select);
+    /** The cursor needs `_id`, so an `-_id` projection is applied after it is read. */
+    const tokens = select ? select.split(/\s+/).filter(Boolean) : [];
+    const omitId = tokens.includes('-_id');
+    if (tokens.length > 0) {
+      query.select(tokens.filter((token) => token !== '-_id').join(' '));
     }
+    /** `_id` makes the order total, so a page boundary inside a run of equal sort values is stable. */
     const messages = await query
-      .sort({ [sortField]: sortOrder })
+      .sort({ [sortField]: sortOrder, _id: sortOrder })
       .limit(limit + 1)
       .lean<IMessage[]>();
 
@@ -4263,9 +4378,12 @@ export function createMessageMethods(
     if (messages.length > limit) {
       messages.pop();
       const last = messages[messages.length - 1];
-      const cursorValue =
-        sortField === 'createdAt' ? last.createdAt : last[sortField as keyof IMessage];
-      nextCursor = String(cursorValue ?? '');
+      nextCursor = formatMessageCursor(last[sortField as keyof IMessage], last._id);
+    }
+    if (omitId) {
+      for (const message of messages) {
+        delete (message as { _id?: unknown })._id;
+      }
     }
     return { messages, nextCursor };
   }
@@ -4360,8 +4478,6 @@ export function createMessageMethods(
     getPrivateMessageTexts,
     saveMessage,
     bulkSaveMessages,
-    recordMessage,
-    updateMessageText,
     updateToolCallResult,
     claimBackgroundToolResults,
     confirmBackgroundToolResultClaim,
@@ -4372,13 +4488,13 @@ export function createMessageMethods(
     getSubagentTaskControlReplay,
     claimSubagentTaskResult,
     releaseSubagentTaskResultClaim,
-    deleteMessagesSince,
     getMessages,
     getConversationTraceRefs,
     hasSampledTraceMessage,
     getMessagesForSubagentThreadView,
     listSubagentTasksForThreads,
     getMessage,
+    getBranchLinks,
     getMessagesByCursor,
     searchMessages,
     deleteMessages,

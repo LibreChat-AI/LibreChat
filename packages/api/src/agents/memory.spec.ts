@@ -22,6 +22,7 @@ import {
   buildInlineMemoryContext,
 } from './memory';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import Tokenizer from '~/utils/tokenizer';
 
 jest.mock('~/middleware/access', () => ({
   checkAccess: jest.fn().mockResolvedValue(true),
@@ -691,6 +692,25 @@ describe('createMemoryTool tokenLimit enforcement', () => {
     expect(setMemory).toHaveBeenCalledTimes(2);
   });
 
+  it('stores the real token count for a long value written before the tokenizer loads', async () => {
+    const tokenizer = Tokenizer as unknown as {
+      tokenizersCache: Record<string, unknown>;
+      loadingPromises: Record<string, unknown>;
+    };
+    delete tokenizer.tokenizersCache.o200k_base;
+    delete tokenizer.loadingPromises.o200k_base;
+    const setMemory = jest.fn().mockResolvedValue({ ok: true });
+    /** Over the 4 KiB slice length, where the cold-start estimate is the byte length. */
+    const value = 'The user prefers concise answers about gardening. '.repeat(100).trim();
+    const tool = createMemoryTool({ userId: 'user-1', setMemory, tokenLimit: 5000 });
+
+    await tool.invoke({ key: 'k1', value });
+
+    const count = await Tokenizer.createExactTokenCounter('o200k_base');
+    expect(setMemory).toHaveBeenCalledWith(expect.objectContaining({ tokenCount: count(value) }));
+    expect(count(value)).toBeLessThan(Buffer.byteLength(value, 'utf8') / 2);
+  });
+
   it('rejects values longer than charLimit without writing', async () => {
     const setMemory = jest.fn().mockResolvedValue({ ok: true });
     const tool = createMemoryTool({ userId: 'user-1', setMemory, charLimit: 10 });
@@ -935,6 +955,14 @@ describe('formatMemoryContext', () => {
     expect(memoryInstructions).not.toContain('automatically stores');
     expect(memoryInstructions).not.toContain('No existing memories');
     expect(memoryInstructions).not.toMatch(/librechat/i);
+  });
+
+  it('omits the empty-store notice when the caller opts out of announcing it', () => {
+    expect(formatMemoryContext('', { announceEmpty: false })).toBeUndefined();
+    expect(formatMemoryContext(undefined, { announceEmpty: false })).toBeUndefined();
+    expect(formatMemoryContext('name: Danny', { announceEmpty: false })).toBe(
+      `${memoryInstructions}\n\n# Existing memory about the user:\nname: Danny`,
+    );
   });
 
   it('includes existing memories without losing the capability guidance', () => {

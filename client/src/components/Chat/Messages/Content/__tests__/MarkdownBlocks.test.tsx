@@ -2,12 +2,16 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import ReactMarkdown from 'react-markdown';
 import { MemoryRouter } from 'react-router-dom';
+import { splitMarkdownIntoBlocks } from '@librechat/chat';
 import { render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from '../markdownConfig';
 import { MessageContext, ArtifactProvider, CodeBlockProvider } from '~/Providers';
-import { splitMarkdownIntoBlocks } from '../splitMarkdown';
+import { getLoadedRehypeModules, loadRehypeModules } from '../rehype';
 import Markdown from '../Markdown';
+
+/** KaTeX and highlight.js load on first need in the app; load them up front here. */
+beforeAll(() => loadRehypeModules());
 
 /**
  * Mermaid blocks in the fixtures reach `useLocation`, so the markdown tree needs a
@@ -71,8 +75,8 @@ jest.mock('~/components/Messages/Content/CodeBlock', () => ({
 }));
 
 /** The real splitter, observed: whether a render paid for the block-boundary parse. */
-jest.mock('../splitMarkdown', () => {
-  const actual = jest.requireActual<typeof import('../splitMarkdown')>('../splitMarkdown');
+jest.mock('@librechat/chat', () => {
+  const actual = jest.requireActual<typeof import('@librechat/chat')>('@librechat/chat');
   const splitSpy = jest.fn(actual.splitMarkdownIntoBlocks);
   return {
     ...actual,
@@ -91,7 +95,7 @@ const OldMarkdown = ({ content }: { content: string }) => (
         /** @ts-ignore */
         remarkPlugins={getRemarkPlugins()}
         /** @ts-ignore */
-        rehypePlugins={getRehypePlugins()}
+        rehypePlugins={getRehypePlugins(getLoadedRehypeModules())}
         components={getMarkdownComponents()}
       >
         {content}

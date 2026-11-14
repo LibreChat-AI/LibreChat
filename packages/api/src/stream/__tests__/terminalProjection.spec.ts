@@ -33,6 +33,14 @@ function buildAttachmentHeavyFinal(bodyChars: number): FinalEvent {
       text: 'Summarize the attachment',
       sender: 'User',
       isCreatedByUser: true,
+      documents: [
+        {
+          type: 'file',
+          file: { filename: 'report.pdf', file_data: `data:application/pdf;base64,${base64}` },
+        },
+      ],
+      videos: [{ type: 'video_url', video_url: { url: `data:video/mp4;base64,${base64}` } }],
+      audios: [{ type: 'input_audio', input_audio: { data: base64, format: 'wav' } }],
       fileContext: body,
       image_urls: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } }],
       files: [
@@ -114,6 +122,43 @@ describe('projectTerminalEvent', () => {
       expect(filesOf(projected.runMessages?.[1])[0]).not.toHaveProperty('text');
     });
   });
+
+  it.each(['requestMessage', 'responseMessage', 'runMessages'] as const)(
+    'excludes provider payloads from %s without inspecting or mutating them',
+    (slot) => {
+      const message = buildAttachmentHeavyFinal(64).requestMessage!;
+      const opaque = Object.freeze({
+        toJSON: () => {
+          throw new Error('Provider payload must not be serialized');
+        },
+      });
+      message.documents = opaque;
+      message.videos = opaque;
+      message.audios = opaque;
+      Object.freeze(message);
+      const event: FinalEvent = Object.freeze({
+        final: true,
+        [slot]:
+          slot === 'runMessages' ? [message, { ...message, conversationId: 'conv-2' }] : message,
+      });
+
+      const projected = projectTerminalEvent(event);
+      const messages = slot === 'runMessages' ? projected.runMessages! : [projected[slot]!];
+
+      for (const next of messages) {
+        expect(next).not.toHaveProperty('documents');
+        expect(next).not.toHaveProperty('videos');
+        expect(next).not.toHaveProperty('audios');
+        expect(next.text).toBe(message.text);
+        expect(filesOf(next)[0].file_id).toBe('f-1');
+      }
+      expect(() => JSON.stringify(projected)).not.toThrow();
+      expect(message.documents).toBe(opaque);
+      expect(message.videos).toBe(opaque);
+      expect(message.audios).toBe(opaque);
+      expect(projectTerminalEvent(projected)).toBe(projected);
+    },
+  );
 
   describe('preservation of authoritative final state', () => {
     it('keeps legitimate message content and structured response content', () => {
@@ -287,9 +332,15 @@ describe('projectTerminalEvent', () => {
        * annotation is what pins the contract. */
       const fileContext: undefined = projected.requestMessage?.fileContext;
       const imageUrls: undefined = projected.requestMessage?.image_urls;
+      const documents: undefined = projected.requestMessage?.documents;
+      const videos: undefined = projected.requestMessage?.videos;
+      const audios: undefined = projected.requestMessage?.audios;
 
       expect(fileContext).toBeUndefined();
       expect(imageUrls).toBeUndefined();
+      expect(documents).toBeUndefined();
+      expect(videos).toBeUndefined();
+      expect(audios).toBeUndefined();
     });
 
     it('refuses to construct a projected event that carries an excluded field', () => {
@@ -360,9 +411,9 @@ describe('projectTerminalEvent', () => {
   describe('payload scaling', () => {
     it('does not scale with excluded attachment bodies', () => {
       const small = byteLength(projectTerminalEvent(buildAttachmentHeavyFinal(1_000)));
-      const large = byteLength(projectTerminalEvent(buildAttachmentHeavyFinal(200_000)));
+      const large = byteLength(projectTerminalEvent(buildAttachmentHeavyFinal(8 * 1024 * 1024)));
 
-      expect(byteLength(buildAttachmentHeavyFinal(200_000))).toBeGreaterThan(400_000);
+      expect(byteLength(buildAttachmentHeavyFinal(8 * 1024 * 1024))).toBeGreaterThan(400_000);
       expect(large).toBe(small);
     });
 

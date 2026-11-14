@@ -23,6 +23,7 @@
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
 import { render } from '@testing-library/react';
+import { Provider as JotaiProvider } from 'jotai';
 import type {
   TFile,
   TAttachment,
@@ -36,8 +37,13 @@ jest.mock('~/data-provider', () => ({
 }));
 jest.mock('~/hooks/useLocalize', () => () => (key: string) => key);
 
-import useAttachments from '~/hooks/Messages/useAttachments';
+import { useAttachments } from '@librechat/chat/components';
+import { setDefaultMessagesHost, useStreamedAttachments } from '@librechat/chat/react';
+import type { MessagesHost } from '@librechat/chat/react';
 import useAttachmentPreviewSync from '../useAttachmentPreviewSync';
+
+/** The one host member `useAttachments` reads: the streamed map this regression writes through. */
+setDefaultMessagesHost({ useStreamedAttachments } as unknown as MessagesHost);
 
 const messageId = 'msg-1';
 const fileId = 'fid-1';
@@ -103,7 +109,9 @@ describe('useAttachmentPreviewSync — #13916 infinite-loop regression', () => {
     expect(() =>
       render(
         <RecoilRoot>
-          <Consumer />
+          <JotaiProvider>
+            <Consumer />
+          </JotaiProvider>
         </RecoilRoot>,
       ),
     ).not.toThrow();
@@ -134,7 +142,9 @@ describe('useAttachmentPreviewSync — #13916 infinite-loop regression', () => {
 
     render(
       <RecoilRoot>
-        <MapProbe />
+        <JotaiProvider>
+          <MapProbe />
+        </JotaiProvider>
       </RecoilRoot>,
     );
 
@@ -157,7 +167,9 @@ describe('useAttachmentPreviewSync — #13916 infinite-loop regression', () => {
     expect(() =>
       render(
         <RecoilRoot>
-          <Consumer />
+          <JotaiProvider>
+            <Consumer />
+          </JotaiProvider>
         </RecoilRoot>,
       ),
     ).not.toThrow();

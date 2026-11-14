@@ -1,23 +1,24 @@
 import { memo, Suspense, useMemo } from 'react';
-import { useRecoilValue } from 'recoil';
 import { Alert, DelayedRender } from '@librechat/client';
 import { Constants, parseThinkingContent } from 'librechat-data-provider';
+import {
+  EmptyText,
+  CollapsibleText,
+  ToolCallLimitNotice,
+  Container,
+} from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageContentProps, TDisplayProps } from '~/common';
+import AttachmentRecoveryActions from '~/components/Messages/Content/Error/recovery';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import Error from '~/components/Messages/Content/Error';
-import ToolCallLimitNotice from './ToolCallLimitNotice';
-import CollapsibleText from './Parts/CollapsibleText';
-import { useMessageContext } from '~/Providers';
-import EmptyText from './Parts/EmptyText';
+import { useLocalize, useOnline } from '~/hooks';
 import MarkdownLite from './MarkdownLite';
 import EditMessage from './EditMessage';
 import Thinking from './Parts/Thinking';
-import { useLocalize } from '~/hooks';
-import Container from './Container';
 import Markdown from './Markdown';
 import { cn } from '~/utils';
-import store from '~/store';
 
 const ERROR_CONNECTION_TEXT = 'Error connecting to server, try refreshing the page.';
 const DELAYED_ERROR_TIMEOUT = 5500;
@@ -50,6 +51,7 @@ const ErrorBox = ({
 
 const ConnectionError = ({ message }: { message?: TMessage }) => {
   const localize = useLocalize();
+  const online = useOnline();
 
   return (
     <Suspense fallback={<LoadingFallback />}>
@@ -64,7 +66,7 @@ const ConnectionError = ({ message }: { message?: TMessage }) => {
             elevation="raised"
             className="text-text-secondary mt-2 transition-all"
           >
-            {localize('com_ui_error_connection')}
+            {localize(online ? 'com_ui_error_connection' : 'com_ui_error_offline')}
           </Alert>
         </Container>
       </DelayedRender>
@@ -85,15 +87,16 @@ export const ErrorMessage = ({
     <Container message={message}>
       <ErrorBox className={className}>
         <Error text={text} message={message} />
+        <AttachmentRecoveryActions text={text} messageId={message?.messageId} />
       </ErrorBox>
     </Container>
   );
 };
 
 export const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: TDisplayProps) => {
-  const { isSubmitting = false, isLatestMessage = false } = useMessageContext();
-  const enableUserMsgMarkdown = useRecoilValue(store.enableUserMsgMarkdown);
-  const collapseLongUserMessages = useRecoilValue(store.collapseLongUserMessages);
+  const { useMessage, useUserTextPreferences } = useMessagePartsHost();
+  const { isSubmitting = false, isLatestMessage = false } = useMessage();
+  const { enableUserMsgMarkdown, collapseLongUserMessages } = useUserTextPreferences();
   const smoothStreaming = useSmoothStreaming();
 
   // The word fade itself indicates streaming, so the trailing block cursor
@@ -118,7 +121,7 @@ export const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: T
       <CollapsibleText enabled={isCreatedByUser && collapseLongUserMessages}>
         <div
           className={cn(
-            'markdown prose message-content dark:prose-invert light w-full break-words',
+            'markdown prose message-content light w-full break-words',
             isSubmitting && 'submitting',
             showCursorState && text.length > 0 && 'result-streaming',
             isCreatedByUser && !enableUserMsgMarkdown && 'whitespace-pre-wrap',

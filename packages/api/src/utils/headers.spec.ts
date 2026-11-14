@@ -1,5 +1,11 @@
 import type { RunLLMConfig } from '~/types';
-import { mediaTypeEssence, mergeHeaders, resolveConfigHeaders } from './headers';
+import {
+  mergeHeaders,
+  mergeGoogleHeaders,
+  mediaTypeEssence,
+  resolveModelHeaders,
+  resolveConfigHeaders,
+} from './headers';
 
 describe('mediaTypeEssence', () => {
   it('returns the bare type for a header with no parameters', () => {
@@ -34,6 +40,26 @@ describe('mediaTypeEssence', () => {
 });
 
 describe('mergeHeaders', () => {
+  it.each([false, true])(
+    'resolves configured Google auth templates while preserving managed credentials: %s',
+    (hasManagedAuth) => {
+      const credential = 'Bearer {{LIBRECHAT_USER_TENANT_ID}}/{{LIBRECHAT_AGENT_ID}}';
+      const configured = { authorization: credential, 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' };
+      const customHeaders = mergeGoogleHeaders(
+        configured,
+        hasManagedAuth ? { Authorization: credential } : undefined,
+      );
+      const llmConfig = { customHeaders };
+      resolveConfigHeaders({ llmConfig, tenantId: 'tenant-one', agent: { id: 'agent_root' } });
+      expect(llmConfig.customHeaders?.['X-Agent-Id']).toBe('agent_root');
+      if (hasManagedAuth) {
+        expect(llmConfig.customHeaders?.Authorization).toBe(credential);
+        expect(llmConfig.customHeaders?.authorization).toBeUndefined();
+      } else {
+        expect(llmConfig.customHeaders?.authorization).toBe('Bearer tenant-one/agent_root');
+      }
+    },
+  );
   it('returns undefined when neither side has headers', () => {
     expect(mergeHeaders(undefined, undefined)).toBeUndefined();
   });
@@ -211,6 +237,26 @@ describe('resolveConfigHeaders', () => {
     expect(llmConfig.configuration?.defaultHeaders).toEqual({ 'X-Tenant-ID': '' });
   });
 
+  it('resolves the agent id alongside the tenant in one model header', () => {
+    const llmConfig = {
+      configuration: {
+        defaultHeaders: { 'X-Attribution': '{{LIBRECHAT_USER_TENANT_ID}}/{{LIBRECHAT_AGENT_ID}}' },
+      },
+    } as unknown as RunLLMConfig;
+
+    resolveConfigHeaders({
+      llmConfig,
+      user,
+      tenantId: 'request-tenant',
+      body,
+      agent: { id: 'agent_abc' },
+    });
+
+    expect(llmConfig.configuration?.defaultHeaders).toEqual({
+      'X-Attribution': 'request-tenant/agent_abc',
+    });
+  });
+
   it('leaves configs without header maps untouched', () => {
     const llmConfig = { model: 'gpt-4o', configuration: {} } as unknown as RunLLMConfig;
     expect(() => resolveConfigHeaders({ llmConfig, user, body })).not.toThrow();
@@ -247,5 +293,20 @@ describe('resolveConfigHeaders', () => {
     resolveConfigHeaders({ llmConfig, user, body });
 
     expect(llmConfig.configuration?.defaultHeaders).toEqual({ 'X-LibreChat-User': '' });
+  });
+});
+
+describe('resolveModelHeaders', () => {
+  it('resolves the agent id in a standalone header map without mutating it', () => {
+    const headers = { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' };
+
+    const resolved = resolveModelHeaders({
+      headers,
+      user: { id: 'user-123' },
+      agent: { id: 'agent_abc' },
+    });
+
+    expect(resolved).toEqual({ 'X-Agent-Id': 'agent_abc' });
+    expect(headers).toEqual({ 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' });
   });
 });

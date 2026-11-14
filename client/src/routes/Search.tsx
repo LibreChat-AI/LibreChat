@@ -2,13 +2,13 @@ import { memo, useCallback, useEffect, useMemo, useRef, type FC } from 'react';
 import { useAtomValue } from 'jotai';
 import throttle from 'lodash/throttle';
 import { useRecoilValue } from 'recoil';
+import { mergeMessageFile } from 'librechat-data-provider';
 import { Search as SearchIcon, SearchX } from 'lucide-react';
-import { hydrateMessageFile } from 'librechat-data-provider';
+import { getMessageRowWidthClass } from '@librechat/chat/components';
 import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
 import { EmptyState, Spinner, useRemScale, useToastContext } from '@librechat/client';
 import type { Index, ListRowProps } from 'react-virtualized';
 import type { TMessage } from 'librechat-data-provider';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
 import { useElementSize, useLocalize, useAuthContext } from '~/hooks';
 import SearchMessage from '~/components/Chat/Messages/SearchMessage';
 import { useMessagesInfiniteQuery } from '~/data-provider';
@@ -16,6 +16,7 @@ import { useFileMapContext } from '~/Providers';
 import { fontSizeAtom } from '~/store/fontSize';
 import { cn } from '~/utils';
 import store from '~/store';
+import '~/components/Chat/Messages/hosts';
 
 type MeasuredCellParent = {
   invalidateCellSizeAfterRender?: (cell: { columnIndex: number; rowIndex: number }) => void;
@@ -120,7 +121,7 @@ export default function Search() {
           }
           return {
             ...message,
-            files: message.files.map((file) => hydrateMessageFile(file, fileMap)),
+            files: message.files.map((file) => mergeMessageFile(file, fileMap[file.file_id ?? ''])),
           };
         }),
       ) ?? [],
@@ -291,8 +292,8 @@ export default function Search() {
   }, [resultsCount, hasNextPage, localize]);
 
   const loadingSpinner = (
-    <div className="absolute inset-0 flex items-center justify-center">
-      <Spinner className="text-text-primary" />
+    <div className="bg-surface-canvas absolute inset-0 flex items-center justify-center">
+      <Spinner tone="primary" />
     </div>
   );
 
@@ -306,7 +307,7 @@ export default function Search() {
      *  field, or arrived here directly. A blank page reads as a failure, so the
      *  route says what it is waiting for instead. */
     return (
-      <div className="absolute inset-0 flex items-center justify-center">
+      <div className="bg-surface-canvas absolute inset-0 flex items-center justify-center">
         <EmptyState
           icon={SearchIcon}
           title={localize('com_nav_search_placeholder')}
@@ -332,7 +333,7 @@ export default function Search() {
         <div className="sr-only" role="alert" aria-atomic="true">
           {resultsAnnouncement}
         </div>
-        <div className="absolute inset-0 flex items-center justify-center">
+        <div className="bg-surface-canvas absolute inset-0 flex items-center justify-center">
           <EmptyState icon={SearchX} description={localize('com_ui_nothing_found')} />
         </div>
       </>
@@ -340,7 +341,7 @@ export default function Search() {
   }
 
   return (
-    <div className="bg-surface-primary-alt relative flex h-full w-full flex-col pt-4">
+    <div className="bg-surface-canvas relative flex h-full w-full flex-col pt-4">
       {/* The count is the page's one heading, and the live region at the same time:
           announced to a screen reader and read by everyone else, rather than said
           twice out of two nodes. Aligned to the column the results sit in. */}
@@ -362,18 +363,17 @@ export default function Search() {
           overscanRowCount={10}
           aria-label={localize('com_nav_search_placeholder')}
           className={cn(
-            'focus-visible:ring-ring-primary outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+            'focus-visible:ring-ring-primary outline-none focus-visible:ring-2 focus-visible:ring-inset',
             showingStale && 'opacity-70',
           )}
-          style={{ outline: 'none' }}
         />
       </div>
       {isFetchingNextPage && (
         <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex justify-center py-4">
-          <Spinner className="text-text-primary" />
+          <Spinner tone="primary" />
         </div>
       )}
-      <div className="from-surface-primary-alt pointer-events-none absolute right-0 bottom-0 left-0 h-[5%] bg-gradient-to-t to-transparent" />
+      <div className="from-surface-canvas pointer-events-none absolute right-0 bottom-0 left-0 h-[5%] bg-gradient-to-t to-transparent" />
     </div>
   );
 }

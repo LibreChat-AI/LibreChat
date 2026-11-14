@@ -1,5 +1,6 @@
-import { Input, Label } from '@librechat/client';
+import { Input, Label, TooltipAnchor } from '@librechat/client';
 import { Controller, useWatch, useFormContext } from 'react-hook-form';
+import type { ReactNode } from 'react';
 import type { InstructionsPromptStatus } from './Instructions';
 import type { AgentForm } from '~/common';
 import { ResolvedProviderIcon } from '~/components/Endpoints/ResolvedProviderIcon';
@@ -21,9 +22,12 @@ const fieldClass = 'h-9';
 export default function AgentConfig({
   instructionsPromptStatus,
   onRetryInstructionsPrompt,
+  channels,
 }: {
   instructionsPromptStatus?: InstructionsPromptStatus;
   onRetryInstructionsPrompt?: () => void;
+  /** The Channels section, placed with the other parts that shape how people reach the agent. */
+  channels?: ReactNode;
 }) {
   const localize = useLocalize();
   const methods = useFormContext<AgentForm>();
@@ -45,6 +49,34 @@ export default function AgentConfig({
     endpoint: providerValue as string,
     endpointsConfig,
   });
+
+  const modelButton = (
+    <button
+      id="provider"
+      type="button"
+      onClick={() => setActivePanel(Panel.model)}
+      className={cn(
+        'border-border-control bg-surface-secondary text-text-primary hover:bg-surface-tertiary focus-visible:ring-ring-primary relative flex h-9 w-full min-w-0 items-center overflow-hidden rounded-lg border text-sm font-medium transition-colors focus:outline-hidden focus-visible:ring-2',
+        model != null && model ? 'px-1' : 'px-3',
+      )}
+    >
+      <div className="flex w-full min-w-0 items-center gap-2">
+        {providerValue !== undefined && (
+          <div className="avatar-stroke bg-surface-primary text-text-primary relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full">
+            <ResolvedProviderIcon
+              provider={providerId}
+              imageURL={imageURL}
+              size={16}
+              className="h-2/3 w-2/3"
+            />
+          </div>
+        )}
+        <span className="truncate">
+          {model != null && model ? model : localize('com_ui_select_model')}
+        </span>
+      </div>
+    </button>
+  );
 
   return (
     <div className="h-auto pt-1">
@@ -107,41 +139,18 @@ export default function AgentConfig({
       <div className="mb-3 grid grid-cols-2 gap-2">
         <div className="flex min-w-0 flex-col">
           <Label
-            className="text-text-secondary mb-1 block text-[11px] font-medium tracking-wide uppercase"
+            variant="secondary"
+            className="text-2xs mb-1 block font-medium tracking-wide uppercase"
             htmlFor="provider"
           >
             {localize('com_ui_model')} <span className="text-text-destructive">*</span>
           </Label>
-          <button
-            id="provider"
-            type="button"
-            onClick={() => setActivePanel(Panel.model)}
-            title={model || undefined}
-            className={cn(
-              'border-border-control bg-surface-secondary text-text-primary hover:bg-surface-tertiary focus-visible:ring-ring-primary relative flex h-9 w-full min-w-0 items-center overflow-hidden rounded-lg border text-sm font-medium transition-colors focus:outline-hidden focus-visible:ring-2',
-              model != null && model ? 'px-1' : 'px-3',
-            )}
-          >
-            <div className="flex w-full min-w-0 items-center gap-2">
-              {providerValue !== undefined && (
-                <div className="avatar-stroke bg-surface-primary text-text-primary relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full">
-                  <ResolvedProviderIcon
-                    provider={providerId}
-                    imageURL={imageURL}
-                    size={16}
-                    className="h-2/3 w-2/3"
-                  />
-                </div>
-              )}
-              <span className="truncate">
-                {model != null && model ? model : localize('com_ui_select_model')}
-              </span>
-            </div>
-          </button>
+          {model ? <TooltipAnchor description={model} render={modelButton} /> : modelButton}
         </div>
         <div className="flex flex-col">
           <Label
-            className="text-text-secondary mb-1 block text-[11px] font-medium tracking-wide uppercase"
+            variant="secondary"
+            className="text-2xs mb-1 block font-medium tracking-wide uppercase"
             htmlFor="category-selector"
           >
             {localize('com_ui_category')} <span className="text-text-destructive">*</span>
@@ -169,9 +178,15 @@ export default function AgentConfig({
       {/* CONVERSATION STARTERS */}
       <Starters />
 
+      {/* CHANNELS: where else people can talk to the agent */}
+      {channels}
+
       {/* SUPPORT CONTACT */}
       <div className="mb-3 flex flex-col">
-        <Label className="text-text-secondary mb-1 block text-[11px] font-medium tracking-wide uppercase">
+        <Label
+          variant="secondary"
+          className="text-2xs mb-1 block font-medium tracking-wide uppercase"
+        >
           {localize('com_ui_support_contact')}
         </Label>
         <div className="space-y-2">

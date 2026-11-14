@@ -11,7 +11,8 @@ import {
 } from 'librechat-data-provider';
 import type { FilterQuery, Model, PipelineStage, ProjectionType, Types } from 'mongoose';
 import type { AgentSortOption, AgentToolResources } from 'librechat-data-provider';
-import type { IAgent, IAclEntry, IUser, ActionQuery } from '~/types';
+import type { IAgent, IAclEntry, IMongoFile, IUser, ActionQuery, CacheStore } from '~/types';
+import { evictAuthUserDocsForUsers, isAuthUserDocCacheEnabled } from '~/utils/eviction';
 import { withCodeEnvironmentReferences } from './codeEnvironment';
 import { OWNER_ACL_PERMISSION_BIT_SUPERSETS } from './aclEntry';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
@@ -249,6 +250,24 @@ export class AgentSortCursorError extends Error {
   constructor(readonly failure: AgentSortCursorFailure) {
     super(`Agent sort cursor ${failure}`);
     this.name = 'AgentSortCursorError';
+  }
+}
+
+/** Options a caller passes after authorizing a restore against the agent it read. */
+export interface RevertAgentVersionOptions {
+  /** Authorized tools; replace the snapshot's, which were never checked for this user. */
+  tools?: string[];
+  /** Index resolved for `tools`. Derived from the restored tools when omitted. */
+  mcpServerNames?: string[];
+  /** The revision the caller authorized against; the restore is refused once it moves. */
+  expectedUpdatedAt?: Date;
+}
+
+export class AgentRevisionConflictError extends Error {
+  readonly statusCode = 409;
+  constructor() {
+    super('Agent was modified while reverting; reload and try again');
+    this.name = 'AgentRevisionConflictError';
   }
 }
 
@@ -591,12 +610,13 @@ interface GraphEdges {
 async function removeAgentIdsFromEdges(
   Agent: Model<IAgent>,
   agentIds: string[],
-  tenantId?: string,
+  tenantId?: string | null,
 ): Promise<void> {
   if (agentIds.length === 0) {
     return;
   }
   const filter: FilterQuery<IAgent> = {
+    /** `null` pins the cleanup to tenantless graphs (matches a missing field). */
     ...(tenantId !== undefined ? { tenantId } : {}),
     $or: [{ 'edges.from': { $in: agentIds } }, { 'edges.to': { $in: agentIds } }],
   };
@@ -668,9 +688,17 @@ export interface AgentDeps {
   ) => Promise<Types.ObjectId[]>;
   /** Recognizes skill IDs supplied by an external, non-database registry. */
   isExternalSkillId?: (id: string) => boolean;
+  /** Returns a cache store for the given key, so favorite cleanup can evict cached auth users. */
+  getCache?: (key: string) => CacheStore | undefined;
 }
 
 /** Plain projection used to discover runnable agent graphs without exposing Mongoose. */
+/** The agent fields a models list reads. */
+export type AgentModelSummary = Pick<
+  IAgent,
+  '_id' | 'id' | 'name' | 'description' | 'provider' | 'author'
+> & { createdAt?: Date };
+
 export interface AgentGraphNode {
   id: string;
   provider: string;
@@ -1049,8 +1077,13 @@ export function createAgentMethods(
   mongoose: typeof import('mongoose'),
   deps: AgentDeps,
 ): {
+  findAgentIdentity: (agentId: string) => Promise<{ _id: string } | null>;
   getAgent: GetAgent;
-  getAgentName: (id: string, tenantId?: string) => Promise<string | undefined>;
+  getAgentName: (
+    id: string,
+    tenantId?: string,
+    viewer?: { userId: string },
+  ) => Promise<string | undefined>;
   getAgentVersions: (searchParameter: FilterQuery<IAgent>) => Promise<IAgent['versions'] | null>;
   getAgentWithVersionCount: (
     searchParameter: FilterQuery<IAgent>,
@@ -1067,6 +1100,9 @@ export function createAgentMethods(
   createAgent: (agentData: Record<string, unknown>) => Promise<IAgent>;
   getAgentIdsByMCPServerName: (serverName: string) => Promise<Types.ObjectId[]>;
   getAgentsWithMCPServerNames: () => Promise<Array<Pick<IAgent, '_id' | 'mcpServerNames'>>>;
+  getAgentModelSummaries: (
+    agentIds: Array<Types.ObjectId | string>,
+  ) => Promise<AgentModelSummary[]>;
   updateAgent: (
     searchParameter: FilterQuery<IAgent>,
     updateData: Record<string, unknown>,
@@ -1088,6 +1124,7 @@ export function createAgentMethods(
   revertAgentVersion: (
     searchParameter: FilterQuery<IAgent>,
     versionIndex: number,
+    options?: RevertAgentVersionOptions,
   ) => Promise<IAgent>;
   countPromotedAgents: () => Promise<number>;
   addAgentResourceFile: ({
@@ -1273,14 +1310,28 @@ export function createAgentMethods(
     return await Agent.findOne(searchParameter, projection).lean<IAgent>();
   };
 
-  /** Storage-neutral display-name lookup for a known execution subject. */
-  async function getAgentName(id: string, tenantId?: string): Promise<string | undefined> {
+  /** Storage-neutral display name; user-facing callers supply a viewer to enforce VIEW ACLs. */
+  async function getAgentName(
+    id: string,
+    tenantId?: string,
+    viewer?: { userId: string },
+  ): Promise<string | undefined> {
     const agent = await getAgent(
       { id, tenantId: tenantId ?? null },
-      { name: 1, tenantId: 1, _id: 0 },
+      { name: 1, tenantId: 1, _id: 1 },
     );
-    if ((agent?.tenantId ?? undefined) !== tenantId) return undefined;
-    return agent?.name || undefined;
+    if (!agent || (agent.tenantId ?? undefined) !== tenantId) return undefined;
+    if (viewer) {
+      const principals = await deps.getUserPrincipals(viewer);
+      const visible = await deps.findAccessibleResources(
+        principals,
+        ResourceType.AGENT,
+        PermissionBits.VIEW,
+        [agent._id],
+      );
+      if (visible.length === 0) return undefined;
+    }
+    return agent.name || undefined;
   }
 
   /**
@@ -1412,6 +1463,17 @@ export function createAgentMethods(
       Array<Pick<IAgent, '_id'>>
     >();
     return agents.map((agent) => agent._id);
+  }
+
+  /** Loads only the fields a models list shows, never the unbounded `versions` history. */
+  async function getAgentModelSummaries(
+    agentIds: Array<Types.ObjectId | string>,
+  ): Promise<AgentModelSummary[]> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    return await Agent.find(
+      { _id: { $in: agentIds } },
+      { id: 1, name: 1, description: 1, provider: 1, author: 1, createdAt: 1 },
+    ).lean<AgentModelSummary[]>();
   }
 
   /** Returns every agent with a non-empty `mcpServerNames`, so access
@@ -1774,6 +1836,11 @@ export function createAgentMethods(
   /**
    * Removes the given file_ids from every agent's `tool_resources.*.file_ids`
    * so file deletion cannot leave orphaned stubs behind (see issue #12776).
+   *
+   * Only ids that no File document holds are removed. `file_id` is not unique on its own, so a
+   * record another owner keeps under the same id still backs that owner's agent references. The
+   * lookup runs in the caller's tenant scope like the update below, and a failed lookup rejects
+   * before any agent is touched instead of reading as "no holder".
    */
   async function removeAgentResourceFilesFromAllAgents({
     file_ids,
@@ -1784,14 +1851,21 @@ export function createAgentMethods(
       return { matchedCount: 0, modifiedCount: 0 };
     }
 
+    const File = mongoose.models.File as Model<IMongoFile>;
+    const held = new Set(await File.distinct('file_id', { file_id: { $in: file_ids } }));
+    const orphaned = file_ids.filter((fileId) => !held.has(fileId));
+    if (orphaned.length === 0) {
+      return { matchedCount: 0, modifiedCount: 0 };
+    }
+
     const Agent = mongoose.models.Agent as Model<IAgent>;
 
     const orQuery = TOOL_RESOURCE_KEYS.map((key) => ({
-      [`tool_resources.${key}.file_ids`]: { $in: file_ids },
+      [`tool_resources.${key}.file_ids`]: { $in: orphaned },
     }));
 
     const pullAllOps = TOOL_RESOURCE_KEYS.reduce<Record<string, string[]>>((acc, key) => {
-      acc[`tool_resources.${key}.file_ids`] = file_ids;
+      acc[`tool_resources.${key}.file_ids`] = orphaned;
       return acc;
     }, {});
 
@@ -1864,6 +1938,15 @@ export function createAgentMethods(
     return [...shared];
   }
 
+  /** Users whose favorites match, read only when their cached auth documents need evicting. */
+  async function findFavoriteHolders(filter: FilterQuery<unknown>): Promise<string[]> {
+    if (!isAuthUserDocCacheEnabled()) {
+      return [];
+    }
+    const ids = await (mongoose.models.User as Model<unknown>).distinct('_id', filter);
+    return ids.map(String);
+  }
+
   /**
    * Deletes an agent based on the provided search parameter.
    */
@@ -1889,13 +1972,15 @@ export function createAgentMethods(
         logger.error('[deleteAgent] Error removing agent from handoff edges', error);
       }
       try {
-        await User.updateMany(
-          {
-            ...(deletedAgent.tenantId !== undefined ? { tenantId: deletedAgent.tenantId } : {}),
-            'favorites.agentId': deletedAgent.id,
-          },
-          { $pull: { favorites: { agentId: deletedAgent.id } } },
-        );
+        const favoritesFilter = {
+          ...(deletedAgent.tenantId !== undefined ? { tenantId: deletedAgent.tenantId } : {}),
+          'favorites.agentId': deletedAgent.id,
+        };
+        const holders = await findFavoriteHolders(favoritesFilter);
+        await User.updateMany(favoritesFilter, {
+          $pull: { favorites: { agentId: deletedAgent.id } },
+        });
+        await evictAuthUserDocsForUsers(deps.getCache, holders);
       } catch (error) {
         logger.error('[deleteAgent] Error removing agent from user favorites', error);
       }
@@ -1923,7 +2008,9 @@ export function createAgentMethods(
         ResourceType.REMOTE_AGENT,
       ]);
 
-      const authoredAgents = await Agent.find({ author: userObjectId }).select('id _id').lean();
+      const authoredAgents = await Agent.find({ author: userObjectId })
+        .select('id _id tenantId')
+        .lean();
 
       const migratedEntries =
         authoredAgents.length > 0
@@ -1940,42 +2027,50 @@ export function createAgentMethods(
       const soleOwnedAgents =
         soleOwnedObjectIds.length > 0
           ? await Agent.find({ _id: { $in: soleOwnedObjectIds } })
-              .select('id _id')
+              .select('id _id tenantId')
               .lean()
           : [];
 
       const allAgents = [...soleOwnedAgents, ...legacyAgents];
+      /** Sole-owned ids whose agent is already gone: ACLs left by an interrupted earlier attempt. */
+      const aclResourceIds = [...soleOwnedObjectIds, ...legacyAgents.map((a) => a._id)];
 
-      if (allAgents.length === 0) {
+      if (aclResourceIds.length === 0) {
         return;
       }
 
-      const agentIds = allAgents.map((agent) => agent.id);
       const agentObjectIds = allAgents.map((agent) => agent._id);
-
-      await AclEntry.deleteMany({
-        resourceType: { $in: [ResourceType.AGENT, ResourceType.REMOTE_AGENT] },
-        resourceId: { $in: agentObjectIds },
-      });
-
-      try {
-        await removeAgentIdsFromEdges(Agent, agentIds);
-      } catch (error) {
-        logger.error('[deleteUserAgents] Error removing agents from handoff edges', error);
+      /** Agent ids are unique per tenant only, so reference cleanup runs once per agent tenant. */
+      const idsByTenant = new Map<string | null, string[]>();
+      for (const agent of allAgents) {
+        const tenant = agent.tenantId ?? null;
+        const bucket = idsByTenant.get(tenant);
+        if (bucket) {
+          bucket.push(agent.id);
+        } else {
+          idsByTenant.set(tenant, [agent.id]);
+        }
       }
-
-      try {
-        await User.updateMany(
-          { 'favorites.agentId': { $in: agentIds } },
-          { $pull: { favorites: { agentId: { $in: agentIds } } } },
-        );
-      } catch (error) {
-        logger.error('[deleteUserAgents] Error removing agents from user favorites', error);
+      /** Reference cleanup precedes the irreversible delete, so a failure keeps the agent discoverable for retry. */
+      for (const [tenant, tenantAgentIds] of idsByTenant) {
+        await removeAgentIdsFromEdges(Agent, tenantAgentIds, tenant);
+        const favoritesFilter = { tenantId: tenant, 'favorites.agentId': { $in: tenantAgentIds } };
+        const holders = await findFavoriteHolders(favoritesFilter);
+        await User.updateMany(favoritesFilter, {
+          $pull: { favorites: { agentId: { $in: tenantAgentIds } } },
+        });
+        await evictAuthUserDocsForUsers(deps.getCache, holders);
       }
 
       await Agent.deleteMany({ _id: { $in: agentObjectIds } });
+      /** ACL entries are the retry discovery key for sole-owned agents, so they go last. */
+      await AclEntry.deleteMany({
+        resourceType: { $in: [ResourceType.AGENT, ResourceType.REMOTE_AGENT] },
+        resourceId: { $in: aclResourceIds },
+      });
     } catch (error) {
       logger.error('[deleteUserAgents] General error:', error);
+      throw error;
     }
   }
 
@@ -2613,10 +2708,15 @@ export function createAgentMethods(
 
   /**
    * Reverts an agent to a specific version in its version history.
+   *
+   * The MCP server index is always rewritten for the restored tools rather than taken from
+   * the snapshot: a snapshot may predate the index or name servers its tools no longer use,
+   * and agent-scoped MCP access is granted from this index.
    */
   async function revertAgentVersion(
     searchParameter: FilterQuery<IAgent>,
     versionIndex: number,
+    options: RevertAgentVersionOptions = {},
   ): Promise<IAgent> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
     const agent = await Agent.findOne(searchParameter);
@@ -2630,6 +2730,12 @@ export function createAgentMethods(
 
     const revertToVersion = { ...(agent.versions[versionIndex] as Record<string, unknown>) };
     const originalRevision = (agent as unknown as IAgent & { updatedAt: Date }).updatedAt;
+    if (
+      options.expectedUpdatedAt != null &&
+      new Date(options.expectedUpdatedAt).getTime() !== new Date(originalRevision).getTime()
+    ) {
+      throw new AgentRevisionConflictError();
+    }
     delete revertToVersion._id;
     delete revertToVersion.id;
     delete revertToVersion.versions;
@@ -2655,8 +2761,24 @@ export function createAgentMethods(
       }
     }
 
+    if (options.tools) {
+      revertToVersion.tools = options.tools;
+    }
+    const restoredTools = Array.isArray(revertToVersion.tools)
+      ? (revertToVersion.tools as string[])
+      : (agent.tools ?? []);
+    revertToVersion.mcpServerNames =
+      options.mcpServerNames ??
+      rebuildMCPServerNames(
+        restoredTools,
+        Array.isArray(revertToVersion.mcpServerNames)
+          ? (revertToVersion.mcpServerNames as string[])
+          : (agent.mcpServerNames ?? []),
+      );
+
     const unsetOnRestore: Record<string, 1> = {};
     for (const field of [
+      'sdk_runtime',
       'code_environment_id',
       'code_workspace_id',
       'code_environment_ids',
@@ -2696,7 +2818,8 @@ export function createAgentMethods(
       },
     );
     if (!revertedAgent) {
-      throw new Error('Agent not found');
+      /** The agent was read above, so a miss is the revision filter refusing a newer write. */
+      throw new AgentRevisionConflictError();
     }
     return revertedAgent;
   }
@@ -2730,9 +2853,17 @@ export function createAgentMethods(
       },
       { $pull: { favorites: { agentId: agent.id } } },
     );
+    await evictAuthUserDocsForUsers(deps.getCache, userIds);
+  }
+
+  async function findAgentIdentity(agentId: string): Promise<{ _id: string } | null> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    const agent = await Agent.findOne({ id: agentId }).select('_id').lean();
+    return agent ? { _id: agent._id.toString() } : null;
   }
 
   return {
+    findAgentIdentity,
     getAgent,
     getAgentName,
     getAgentVersions,
@@ -2743,6 +2874,7 @@ export function createAgentMethods(
     createAgent,
     getAgentIdsByMCPServerName,
     getAgentsWithMCPServerNames,
+    getAgentModelSummaries,
     updateAgent,
     updateAgentAvatar,
     deleteAgent,

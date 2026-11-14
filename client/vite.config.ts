@@ -3,11 +3,16 @@ import fs from 'fs';
 import path from 'path';
 import { constants } from 'zlib';
 import { defineConfig } from 'vite';
+import { Features } from 'lightningcss';
+import { THEME_BOOT_FILE } from 'librechat-data-provider';
 import { createRequire } from 'module';
 import { VitePWA } from 'vite-plugin-pwa';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { compression, defineAlgorithm } from 'vite-plugin-compression2';
-import type { Plugin } from 'vite';
+import type { Plugin, Rollup } from 'vite';
+import { sandpackConsoleIsolation } from './src/lib/sandpack.ts';
+import { bundledThemeBoot, injectThemeCacheVersion } from './src/Providers/bootVersion.ts';
+import { localeAliases, resolveLocale, supportedLocales } from './src/locales/resolve.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -70,6 +75,7 @@ export default defineConfig(({ command }) => ({
   envDir: '../',
   envPrefix: ['VITE_', 'SCRIPT_', 'DOMAIN_', 'ALLOW_', 'REACT_APP_THEME_'],
   plugins: [
+    sandpackConsoleIsolation(),
     react(),
     {
       name: 'node-polyfills-shims-resolver',
@@ -89,9 +95,16 @@ export default defineConfig(({ command }) => ({
         });
       },
     },
+    themeCacheVersion(),
+    bootLoadingLabels(),
+    lazyChunkGuard(),
     copyPublicAssets(),
     VitePWA({
-      injectRegister: 'auto', // 'auto' | 'manual' | 'disabled'
+      /** `auto` emits a parser-blocking `<script>` at the end of `<head>`. On a slow
+       *  HTTP/1.1 link it queues behind every modulepreload, so the body, and with it
+       *  the loading canvas, cannot paint until most of the bundle has downloaded.
+       *  Registration itself waits for `load` either way. */
+      injectRegister: 'script-defer',
       registerType: 'autoUpdate', // 'prompt' | 'autoUpdate'
       devOptions: {
         enabled: false, // disable service worker registration in development mode
@@ -206,6 +219,7 @@ export default defineConfig(({ command }) => ({
     }),
   ],
   optimizeDeps: {
+    rolldownOptions: { plugins: [sandpackConsoleIsolation()] },
     include: [
       'vite-plugin-node-polyfills/shims/buffer',
       'vite-plugin-node-polyfills/shims/process',
@@ -213,6 +227,12 @@ export default defineConfig(({ command }) => ({
     ],
   },
   publicDir: command === 'serve' ? './public' : false,
+  css: {
+    /** The CSS minifier lowers `:dir()` for `build.cssTarget` browsers into a `:lang()` list,
+     *  which mirrors by UI language instead of the element's direction and breaks LTR islands
+     *  in an RTL page. Tailwind keeps `:dir()` for the same reason; the minifier has to agree. */
+    lightningcss: { exclude: Features.DirSelector },
+  },
   build: {
     sourcemap: buildSourceMap,
     outDir: './dist',
@@ -240,14 +260,78 @@ export default defineConfig(({ command }) => ({
               priority: 1,
             },
             {
+              name: 'utilities',
+              test: /node_modules[\\/]lodash(?:\.[^\\/]+)?[\\/]/,
+              priority: 1,
+            },
+            /**
+             * The data layer imports zod at boot, and the MCP bridge chunk imports it too. Without
+             * this claim the bridge chunk captured zod as a dependency and every page loaded it.
+             */
+            {
+              name: 'validation',
+              test: /node_modules[\\/]zod[\\/]/,
+              priority: 1,
+            },
+            /**
+             * The lazy devtools import the query core and the external-store shim, which every
+             * page uses. Unclaimed, the `query-devtools` group captured them, so the boot chunks
+             * imported it and loaded the devtools and superjson on every visit.
+             */
+            /**
+             * Math and highlighting load on first need (`components/Chat/Messages/Content/rehype`).
+             * The catch-all puts every `rehype-` package in `markdown-processing`, which boot loads,
+             * so without these claims the lazy import resolved to code already downloaded.
+             */
+            /**
+             * The syntax-tree utilities are shared with react-markdown at boot. Left unclaimed,
+             * the groups below captured them as dependencies, and boot then imported (and
+             * downloaded) those chunks for the utilities, KaTeX and highlight.js included.
+             */
+            {
+              name: 'markdown-processing',
+              test: /node_modules[\\/](unist-util-[^\\/]+|hast-util-[^\\/]+|hastscript|property-information|comma-separated-tokens|space-separated-tokens|web-namespaces)[\\/]/,
+              priority: 2,
+            },
+            {
+              name: 'math-katex',
+              test: /node_modules[\\/](katex|rehype-katex)[\\/]/,
+              priority: 1,
+            },
+            {
+              name: 'markdown_highlight',
+              test: /node_modules[\\/](highlight\.js|lowlight|rehype-highlight)[\\/]/,
+              priority: 1,
+            },
+            {
+              name: 'tanstack-vendor',
+              test: /node_modules[\\/](@tanstack[\\/](query-core|react-query)|use-sync-external-store)[\\/]/,
+              priority: 1,
+            },
+            {
               name(id: string) {
-                const normalizedId = id.replace(/\\/g, '/');
-                if (normalizedId.includes('node_modules')) {
+                const fullId = id.replace(/\\/g, '/');
+                const dependencyStart = fullId.indexOf('/node_modules/');
+                /** Rules match package names, never the checkout: a repository under a path that
+                 *  contains `fetch`, `ky` or `zod` would otherwise send every dependency to that
+                 *  rule's chunk. The first `node_modules` stays, so nested dependencies still
+                 *  match their parent package (mermaid's own lodash-es, for one). */
+                const normalizedId =
+                  dependencyStart === -1 ? fullId : fullId.slice(dependencyStart);
+                if (dependencyStart !== -1) {
                   if (normalizedId.includes('/node_modules/regenerator-runtime/')) {
                     return 'polyfills';
                   }
 
-                  if (normalizedId.includes('@hyperdx/')) {
+                  if (
+                    normalizedId.includes('@hyperdx/') ||
+                    normalizedId.includes('@opentelemetry/') ||
+                    /* HyperDX's exception instrumentation; nothing else imports it. */
+                    normalizedId.includes('/@sentry/') ||
+                    /\/node_modules\/(?:rrweb(?:-snapshot)?|@rrweb\/[^/]+|fflate|protobufjs|long)\//.test(
+                      normalizedId,
+                    )
+                  ) {
                     return 'rum';
                   }
 
@@ -346,11 +430,9 @@ export default defineConfig(({ command }) => ({
                   ) {
                     return 'validation';
                   }
-                  if (
-                    normalizedId.includes('axios') ||
-                    normalizedId.includes('ky') ||
-                    normalizedId.includes('fetch')
-                  ) {
+                  /* Package names, not substrings: `fetch` matched Sentry's fetch instrumentation
+                     and put it in this boot chunk. */
+                  if (/\/node_modules\/(?:axios|ky)\//.test(normalizedId)) {
                     return 'http-client';
                   }
                   if (
@@ -406,6 +488,18 @@ export default defineConfig(({ command }) => ({
                     return null;
                   }
 
+                  /** Reached only through `import()`: without a chunk of their own the catch-all
+                   *  below would put them in `vendor`, which every page loads at boot. */
+                  if (normalizedId.includes('/@mcp-ui/')) {
+                    return 'mcp-ui';
+                  }
+                  if (normalizedId.includes('/@modelcontextprotocol/')) {
+                    return 'mcp-apps';
+                  }
+                  if (/\/(?:html-to-image|export-from-json|downloadjs)\//.test(normalizedId)) {
+                    return 'export-tools';
+                  }
+
                   // Everything else falls into a generic vendor chunk.
                   return 'vendor';
                 }
@@ -422,6 +516,19 @@ export default defineConfig(({ command }) => ({
                 // Let Rolldown decide automatically for any other files.
                 return null;
               },
+            },
+            /**
+             * `@librechat/chat` ships one file per module so the message list, which it loads
+             * through `import()`, can stay out of boot. Left alone, Rolldown gives each module
+             * a boot chunk shares with a different set of lazy chunks its own small file; this
+             * folds the ones every page loads back into one. `$initial` is decided on the
+             * import graph before tree-shaking, and the entry files re-export the message list,
+             * so the entries and the list's own modules are left out of the test.
+             */
+            {
+              name: 'chat-boot',
+              test: /packages[\\/]chat[\\/]dist[\\/](?!(?:components|react|index)\.mjs$|components[\\/](?:messages|pane[\\/]messages)[\\/.])/,
+              tags: ['$initial'],
             },
           ],
         },
@@ -454,6 +561,114 @@ export default defineConfig(({ command }) => ({
     },
   },
 }));
+
+/**
+ * Writes the deployment-theme cache version into the boot script's check, the same value
+ * `themeCache.ts` stamps on the entries it stores, so a role added to the registry retires
+ * every entry stored before it without anyone remembering to bump a number. It also emits
+ * the bundled themes resolved for the boot script, which the server embeds in a first visit.
+ */
+export function themeCacheVersion(): Plugin {
+  return {
+    name: 'theme-cache-version',
+    transformIndexHtml: injectThemeCacheVersion,
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: THEME_BOOT_FILE,
+        source: JSON.stringify(bundledThemeBoot()),
+      });
+    },
+  };
+}
+
+/**
+ * The shell's loading indicator announces itself before i18n loads, so the build inlines each
+ * locale's `com_ui_loading` and the boot script picks the one for the language it detected.
+ */
+export function bootLoadingLabels(): Plugin {
+  return {
+    name: 'boot-loading-labels',
+    transformIndexHtml: (html) =>
+      html.replace(
+        "'__BOOT_LOADING_LABELS__'",
+        JSON.stringify(readLoadingLabels()).replace(/</g, '\\u003c'),
+      ),
+  };
+}
+
+function readLoadingLabels(): Record<string, string> {
+  const localesDir = path.join(import.meta.dirname, 'src/locales');
+  const labelOf = (locale: string): string | undefined => {
+    const file = path.join(localesDir, locale, 'translation.json');
+    const label = fs.existsSync(file)
+      ? JSON.parse(fs.readFileSync(file, 'utf8')).com_ui_loading
+      : undefined;
+    return typeof label === 'string' ? label : undefined;
+  };
+  const english = labelOf('en') ?? 'Loading...';
+  /* Every key the app's `resolveLocale` accepts, exact or alias, mapped through it, so the
+     shell announces the locale the app is about to load (`zh-tw` is Traditional, `pt` is
+     European Portuguese). The shell falls back to the base language, then to English. */
+  const labels: Record<string, string> = {};
+  for (const key of [
+    ...supportedLocales.map((locale) => locale.toLowerCase()),
+    ...Object.keys(localeAliases),
+  ]) {
+    labels[key] = labelOf(resolveLocale(key)) ?? english;
+  }
+  return labels;
+}
+
+/**
+ * Libraries the app reaches only through `import()`. A chunk rule that captures one into a boot
+ * chunk, or captures a boot module into a lazy chunk, ships it to every page without any build
+ * error: it happened to the query devtools, KaTeX, highlight.js and Sentry. The guard fails the
+ * build instead.
+ */
+const LAZY_ONLY_PACKAGES =
+  /\/node_modules\/(?:@sentry|@hyperdx|@opentelemetry|katex|rehype-katex|highlight\.js|lowlight|rehype-highlight|mermaid|@codesandbox|@tanstack\/react-query-devtools|superjson|@mcp-ui|html-to-image|heic-to|monaco-editor)\//;
+
+export function lazyChunkGuard(): Plugin {
+  return {
+    name: 'lazy-chunk-guard',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const chunks = new Map<string, Rollup.OutputChunk>();
+      for (const output of Object.values(bundle)) {
+        if (output.type === 'chunk') {
+          chunks.set(output.fileName, output);
+        }
+      }
+      /* Everything an entry loads before any `import()`: its static import closure. */
+      const boot = new Set<string>();
+      const pending = [...chunks.values()].filter((chunk) => chunk.isEntry).map((c) => c.fileName);
+      while (pending.length > 0) {
+        const fileName = pending.pop() as string;
+        if (boot.has(fileName)) {
+          continue;
+        }
+        boot.add(fileName);
+        pending.push(...(chunks.get(fileName)?.imports ?? []));
+      }
+      const leaks: string[] = [];
+      for (const fileName of boot) {
+        for (const id of chunks.get(fileName)?.moduleIds ?? []) {
+          const match = id.replace(/\\/g, '/').match(LAZY_ONLY_PACKAGES);
+          if (match) {
+            leaks.push(`${match[0].slice(14, -1)} in ${fileName}`);
+          }
+        }
+      }
+      if (leaks.length > 0) {
+        this.error(
+          `Lazy-only libraries reached by static imports at boot: ${[...new Set(leaks)].join(', ')}. ` +
+            'A chunk rule in vite.config.ts probably grouped them with code the boot path imports.',
+        );
+      }
+    },
+  };
+}
 
 interface SourcemapExclude {
   excludeNodeModules?: boolean;

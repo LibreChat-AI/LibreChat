@@ -95,6 +95,8 @@ describe('createFileTextDeriver', () => {
         mimetype: XLSX,
         size: fs.statSync(samplePath).size,
       }),
+      /* The request carries the deployment's spreadsheet parsing limits. */
+      req,
     });
     expect(extractors.parseTextNative).not.toHaveBeenCalled();
     expect(tempCopies(file)).toEqual([]);

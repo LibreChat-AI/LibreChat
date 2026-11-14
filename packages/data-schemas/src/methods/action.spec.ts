@@ -37,7 +37,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -121,5 +121,16 @@ describe('action criteria', () => {
     const found = await methods.getActions({ actionId: 'act-1', agentId: undefined }, true);
 
     expect(found.map((a) => a.action_id)).toEqual(['act-1']);
+  });
+});
+
+describe('action indexes', () => {
+  it.each(['agent_id', 'assistant_id'])('loads actions by %s through an index', async (field) => {
+    await Action.syncIndexes();
+    await seed({ action_id: 'act-1', [field]: 'owner-1' });
+
+    const plan = await Action.find({ [field]: 'owner-1' }).explain();
+
+    expect(JSON.stringify(plan)).toContain('"IXSCAN"');
   });
 });

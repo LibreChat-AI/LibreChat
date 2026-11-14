@@ -51,7 +51,7 @@ export function isAgentGenerationStart(response: Response) {
   );
 }
 
-const modelSelectorTrigger = (page: Page) =>
+export const modelSelectorTrigger = (page: Page) =>
   page.getByRole('button', { name: 'Select a model' }).first();
 
 export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -60,12 +60,15 @@ export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]
 export async function selectMockEndpoint(page: Page, endpoint: MockEndpoint) {
   const trigger = modelSelectorTrigger(page);
   await trigger.click();
-  await page.getByRole('option', { name: endpoint.label }).click();
-  const modelOption = page.getByRole('option', { name: endpoint.model, exact: true });
-  if (await modelOption.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await modelOption.click();
+  const option = page.getByRole('option', { name: endpoint.label });
+  await expect(option).toBeVisible();
+  const expands = (await option.getAttribute('aria-expanded')) != null;
+  await option.click();
+  if (expands) {
+    await page.getByRole('option', { name: endpoint.model, exact: true }).click();
   }
-  await expect(trigger).not.toHaveText('Select a model');
+  await expect(trigger).toContainText(expands ? endpoint.model : endpoint.label);
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
 }
 
 /** Open the model selector and choose a configured model spec by label. */
@@ -144,6 +147,8 @@ export async function sendMessage(page: Page, text: string): Promise<Response> {
   const input = page.getByRole('textbox', { name: 'Message input' });
   await input.click();
   await input.fill(text);
+  // A restored chat can accept a draft before its workspace and target reads permit sending.
+  await expect(page.getByTestId('send-button')).toBeEnabled({ timeout: 30000 });
   const [response] = await Promise.all([
     page.waitForResponse(isAgentsStream, { timeout: 30000 }),
     input.press('Enter'),
@@ -420,8 +425,12 @@ export type CodeProvisionRecord = {
 /** One exec the fake code server ran: the files it mounted, and the one an analysis token read. */
 export type CodeExecRecord = {
   lang: string;
+  /** The first 200 characters of the executed code. */
+  code: string;
   fileCount: number;
   files: Array<{ id: string; name: string }>;
+  /** Which mounted files each exec received, so a spec can tell a read from a later call. */
+  fileNames: string[];
   analyzedFileId?: string;
 };
 

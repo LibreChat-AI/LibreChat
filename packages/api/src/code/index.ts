@@ -11,5 +11,7 @@ export * from './decision';
 export * from './inheritance';
 export * from './errors';
 export * from './instructions';
+export * from './attachments';
 export * from './targets';
 export * from './agent';
+export { createCodeSetupRouter } from './setup/router';

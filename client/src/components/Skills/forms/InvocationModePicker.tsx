@@ -41,7 +41,7 @@ export default function InvocationModePicker({ value, onChange }: InvocationMode
         },
         render: (props) => (
           <button {...props}>
-            <div className="flex flex-col items-start gap-0.5 text-left">
+            <div className="flex flex-col items-start gap-0.5 text-start">
               <span className="text-text-primary font-medium">
                 {localize(invocationLabels[mode])}
               </span>

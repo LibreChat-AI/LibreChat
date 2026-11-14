@@ -4,7 +4,11 @@ import { Link2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
 import { Spinner, useToastContext, useMediaQuery } from '@librechat/client';
-import { Constants, supportsConversationTitleOwnership } from 'librechat-data-provider';
+import {
+  Constants,
+  PULL_REQUEST_BATCH_VERSION,
+  supportsConversationTitleOwnership,
+} from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationDragItem } from './dnd';
 import {
@@ -13,6 +17,8 @@ import {
   useUpdateConversationMutation,
 } from '~/data-provider';
 import { cn, logger, setDocumentTitle, isConversationUnseen, hasRealTitle } from '~/utils';
+import { isCodeConversation } from '~/components/Chat/PullRequest/code';
+import PullRequestRowMark from '~/components/Chat/PullRequest/RowMark';
 import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
@@ -70,6 +76,17 @@ function Conversation({
   const sharedLinksEnabled = startupConfig?.sharedLinksEnabled === true;
   const isSharedBadgeVisible = conversation.isShared === true && sharedLinksEnabled;
   const projectLabelId = useId();
+  const pullRequestLabelId = useId();
+  /** The mark owns the description text; the row points at it only while it is in the page. */
+  const [pullRequestDescribed, setPullRequestDescribed] = useState(false);
+  const showPullRequest =
+    startupConfig?.pullRequestsEnabled === true &&
+    startupConfig.pullRequestsBatchVersion === PULL_REQUEST_BATCH_VERSION &&
+    /* A row the listing replica stamped carries its code decision, so only code conversations
+       ask. One without the stamp (an older replica, a row inserted from the cache) cannot be
+       told apart from an ordinary chat and keeps asking, as before. */
+    (conversation.codeDecisionListed !== true || isCodeConversation(conversation)) &&
+    !isGenerating;
   const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
@@ -191,12 +208,11 @@ function Conversation({
    * restarted its hover fill from transparent every time the pointer crossed
    * the row's edge, which reads as a flicker.
    *
-   * The cost is what the row's own lifetime is: the chats list unmounts a row
-   * as it scrolls out, while the Pinned section mounts every pinned row at
-   * once, so there a pointer crossing the list leaves one `ConvoOptions` per
-   * row it touched, standing until the section unmounts. That is bounded by
-   * the pin count the user chose, and a control that unmounts instead is what
-   * this comment's first paragraph describes. */
+   * What stays is the trigger and its menu store. The menu's mutations, route
+   * and chat-context subscriptions mount inside `ConvoOptions` only once the
+   * menu is used, so a pointer sweeping the Pinned section, which mounts every
+   * pinned row at once, leaves a trigger per row it touched rather than a
+   * menu. */
   const handleMouseEnter = useCallback(() => {
     setHasInteracted(true);
   }, []);
@@ -258,7 +274,14 @@ function Conversation({
       return;
     }
 
-    if (currentConvoId === conversationId || isPopoverActive) {
+    if (isPopoverActive) {
+      return;
+    }
+
+    if (isActiveConvo) {
+      if (isSmallScreen) {
+        toggleNav();
+      }
       return;
     }
 
@@ -329,7 +352,7 @@ function Conversation({
       className={cn(
         'group focus-visible:ring-text-primary relative flex h-12 w-full items-center rounded-lg outline-hidden focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:h-9',
         isActiveConvo || isPopoverActive
-          ? 'bg-surface-nav-selected before:bg-text-primary before:absolute before:top-1 before:bottom-1 before:left-0 before:w-0.5 before:rounded-full'
+          ? 'bg-surface-nav-selected before:bg-text-primary before:absolute before:inset-s-0 before:top-1 before:bottom-1 before:w-0.5 before:rounded-full'
           : 'hover:bg-surface-nav-hover',
       )}
       onPointerEnter={(event) => {
@@ -366,6 +389,25 @@ function Conversation({
       style={{ cursor: renaming ? 'default' : 'pointer' }}
       data-testid="convo-item"
     >
+      <span
+        className={cn(
+          'flex shrink-0 items-center',
+          (projectBadgeProjectId || (showPullRequest && pullRequestDescribed)) && 'ps-2',
+        )}
+      >
+        {projectBadgeProjectId && (
+          <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
+        )}
+        {showPullRequest && (
+          <PullRequestRowMark
+            conversationId={conversationId ?? ''}
+            labelId={pullRequestLabelId}
+            onDescribed={setPullRequestDescribed}
+            rowRef={containerRef}
+            selected={isActiveConvo || isPopoverActive}
+          />
+        )}
+      </span>
       {renaming ? (
         <RenameForm
           titleInput={titleInput}
@@ -387,7 +429,14 @@ function Conversation({
           isSmallScreen={isSmallScreen}
           localize={localize}
           keyShortcuts={keyShortcuts}
-          describedBy={projectBadgeProjectId ? projectLabelId : undefined}
+          describedBy={
+            [
+              projectBadgeProjectId ? projectLabelId : null,
+              showPullRequest && pullRequestDescribed ? pullRequestLabelId : null,
+            ]
+              .filter(Boolean)
+              .join(' ') || undefined
+          }
         >
           {/* Status sits on the avatar so the row's trailing edge stays free for its badges
               and menu. The ring is 2.125rem around the 1.25rem icon: offset by half the
@@ -399,7 +448,7 @@ function Conversation({
                 size={34}
                 strokeWidth={1.9}
                 bgOpacity={0.14}
-                className="pointer-events-none absolute -top-[0.4375rem] -left-[0.4375rem] size-[2.125rem]"
+                className="pointer-events-none absolute -inset-s-[0.4375rem] -top-[0.4375rem] size-[2.125rem]"
               />
             )}
             {isUnseen && !isGenerating && (
@@ -407,10 +456,10 @@ function Conversation({
               <span
                 aria-hidden="true"
                 className={cn(
-                  'bg-status-info pointer-events-none absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2',
+                  'bg-status-info pointer-events-none absolute -inset-e-0.5 -bottom-0.5 size-2 rounded-full ring-2',
                   isActiveConvo || isPopoverActive
                     ? 'ring-surface-nav-selected'
-                    : 'ring-surface-primary-alt group-hover:ring-surface-nav-hover',
+                    : 'ring-surface-sidebar group-hover:ring-surface-nav-hover',
                 )}
               />
             )}
@@ -418,15 +467,12 @@ function Conversation({
         </ConvoLink>
       )}
       {isSharedBadgeVisible && (
-        <Link2 className="icon-sm text-text-secondary mr-1 shrink-0" aria-hidden="true" />
-      )}
-      {projectBadgeProjectId && (
-        <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
+        <Link2 className="icon-sm text-text-secondary me-1 shrink-0" aria-hidden="true" />
       )}
       {conversation.pinned === true && (
         <UnpinButton
           testId="convo-unpin-button"
-          className="mr-1"
+          className="me-1"
           keepVisible={isPopoverActive}
           onClick={(e) => {
             e.stopPropagation();
@@ -436,7 +482,7 @@ function Conversation({
       )}
       <div
         className={cn(
-          'mr-1 flex shrink-0 origin-left items-center justify-center',
+          'me-1 flex shrink-0 origin-left items-center justify-center rtl:origin-right',
           actionVisibilityClassName,
           actionWidthClassName,
         )}

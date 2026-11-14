@@ -131,6 +131,7 @@ test.describe('design-system rules', () => {
       'shadcn/no-inline-styles': 2,
       'shadcn/require-static-classes': 2,
       'shadcn/no-unknown-classes': 2,
+      'design/disabled-recipe': 2,
     };
     const library: Record<string, number> = {
       ...caller,
@@ -146,8 +147,13 @@ test.describe('design-system rules', () => {
       ['packages/client/src', library],
     ] as const) {
       for (const directory of sourceDirectories(root)) {
+        /** Tests assert class strings rather than style a control, so the disabled-recipe rule
+         *  is off under a `__tests__` directory; every other rule still holds there. */
+        const profile = /(?:^|\/)__tests__(?:\/|$)/.test(directory)
+          ? { ...expected, 'design/disabled-recipe': 0 }
+          : expected;
         for (const extension of ['ts', 'tsx', 'js', 'jsx']) {
-          probes[`${directory}/__coverage_probe__.${extension}`] = expected;
+          probes[`${directory}/__coverage_probe__.${extension}`] = profile;
         }
       }
     }
@@ -157,8 +163,10 @@ test.describe('design-system rules', () => {
     expect(Object.keys(probes).length, 'the roots hold no source directories').toBeGreaterThan(50);
 
     const resolved = designRuleSeverities(Object.keys(probes));
+    const canonical = (severities: Record<string, number> = {}): string =>
+      JSON.stringify(Object.entries(severities).sort(([a], [b]) => a.localeCompare(b)));
     const outside = Object.entries(probes)
-      .filter(([path, expected]) => JSON.stringify(resolved[path]) !== JSON.stringify(expected))
+      .filter(([path, expected]) => canonical(resolved[path]) !== canonical(expected))
       .map(([path]) => `${path}: ${JSON.stringify(resolved[path])}`);
     expect(outside, 'a path the design rules no longer police as expected').toEqual([]);
   });

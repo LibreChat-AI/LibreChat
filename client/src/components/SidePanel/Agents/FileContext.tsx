@@ -126,10 +126,9 @@ function FileContext({
     />
   ) : (
     <Button
-      variant="ghost"
+      variant="section-add"
       disabled={disabledUploadButton}
       aria-label={addLabel}
-      className={addButtonClassName}
       onClick={handleLocalFileClick}
     >
       <Plus className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
@@ -142,7 +141,7 @@ function FileContext({
       <div className="flex items-center justify-between gap-2">
         {showHeader ? (
           <div className="flex min-w-0 items-center gap-1.5">
-            <span className="text-text-secondary truncate text-[11px] font-medium tracking-wide uppercase">
+            <span className="text-text-secondary text-2xs truncate font-medium tracking-wide uppercase">
               {localize('com_agents_file_context_label')}
             </span>
             <TooltipAnchor
@@ -159,7 +158,7 @@ function FileContext({
               }
             />
             {fileCount > 0 && (
-              <span className="bg-surface-tertiary text-text-secondary inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1.5 text-[10px] font-medium">
+              <span className="bg-surface-tertiary text-text-secondary text-3xs inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1.5 font-medium">
                 {fileCount}
               </span>
             )}
@@ -179,14 +178,14 @@ function FileContext({
         />
       )}
       {!agent_id && (
-        <p className="text-text-secondary text-[11px] leading-snug">
+        <p className="text-text-secondary text-2xs leading-snug">
           {localize('com_agents_file_context_disabled')}
         </p>
       )}
       <input
         multiple={true}
         type="file"
-        style={{ display: 'none' }}
+        className="hidden"
         tabIndex={-1}
         ref={fileInputRef}
         disabled={disabledUploadButton}

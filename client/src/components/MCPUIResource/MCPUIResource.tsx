@@ -26,7 +26,7 @@ export function MCPUIResource(props: MCPUIResourceProps) {
 
   if (!uiResource) {
     return (
-      <span className="inline-flex items-center rounded bg-surface-tertiary px-2 py-1 text-xs font-medium text-text-secondary">
+      <span className="bg-surface-tertiary text-text-secondary inline-flex items-center rounded px-2 py-1 text-xs font-medium">
         {localize('com_ui_ui_resource_not_found', {
           0: resourceId ?? '',
         })}
@@ -53,7 +53,7 @@ export function MCPUIResource(props: MCPUIResourceProps) {
   } catch (error) {
     console.error('Error rendering UI resource:', error);
     return (
-      <span className="inline-flex items-center rounded bg-status-error-subtle px-2 py-1 text-xs font-medium text-status-error">
+      <span className="bg-status-error-subtle text-status-error inline-flex items-center rounded px-2 py-1 text-xs font-medium">
         {localize('com_ui_ui_resource_error', { 0: uiResource.name || resourceId })}
       </span>
     );

@@ -28,6 +28,7 @@ import EnableTwoFactorItem from '../SettingsTabs/Account/TwoFactorAuthentication
 import LangfuseConnection from '../SettingsTabs/Integrations/LangfuseConnection';
 import ClockFormatSelector from '../SettingsTabs/General/ClockFormatSelector';
 import ImportConversations from '../SettingsTabs/Data/ImportConversations';
+import AnalyticsConsentToggle from '../SettingsTabs/Data/AnalyticsConsent';
 import WeekStartSelector from '../SettingsTabs/General/WeekStartSelector';
 import { ArchiveAllChats } from '../SettingsTabs/Data/ArchiveAllChats';
 import { toggleControl, ThemeSetting, LangSetting } from './controls';
@@ -41,6 +42,7 @@ import DuringRunAction from '../SettingsTabs/Chat/DuringRunAction';
 import DeleteAccount from '../SettingsTabs/Account/DeleteAccount';
 import StatefulWorkspaceDefault from './StatefulWorkspaceDefault';
 import { ForkSettings } from '../SettingsTabs/Chat/ForkSettings';
+import LinksSettings from '~/components/Channels/LinksSettings';
 import ChatDirection from '../SettingsTabs/Chat/ChatDirection';
 import { DeleteCache } from '../SettingsTabs/Data/DeleteCache';
 import { ManageFiles } from '../SettingsTabs/Data/ManageFiles';
@@ -52,12 +54,14 @@ import { TokenCredits, AutoRefill } from './BillingControls';
 import AdminPanel from '../SettingsTabs/General/AdminPanel';
 import SharedLinks from '../SettingsTabs/Data/SharedLinks';
 import ImageResize from '../SettingsTabs/Chat/ImageResize';
+import Workspaces from '~/components/Channels/Workspaces';
 import Passkeys from '../SettingsTabs/Account/Passkeys';
 import { showThinkingAtom } from '~/store/showThinking';
 import ProviderKeys from '../SettingsTabs/ProviderKeys';
 import { showLiaAtom } from '~/components/Lia/store';
 import { autoScrollAtom } from '~/store/autoScroll';
 import Avatar from '../SettingsTabs/Account/Avatar';
+import ConnectedAccounts from './ConnectedAccounts';
 import CodeEnvironments from './CodeEnvironments';
 import About from '../SettingsTabs/About/About';
 import ApiKeys from '../SettingsTabs/ApiKeys';
@@ -725,6 +729,15 @@ export const registry: SettingEntry[] = [
     keywords: ['archive', 'chats', 'conversations', 'bulk'],
     Component: ArchiveAllChats,
   },
+  {
+    id: 'analyticsConsent',
+    tab: DATA,
+    section: 'data',
+    labelKey: 'com_ui_analytics_consent_setting',
+    keywords: ['analytics', 'cookies', 'consent', 'tracking', 'privacy', 'google', 'gtm'],
+    show: (ctx) => ctx.analyticsConfigured,
+    Component: AnalyticsConsentToggle,
+  },
   // Data controls · API keys
   {
     id: 'providerApiKeys',
@@ -757,7 +770,7 @@ export const registry: SettingEntry[] = [
     section: 'langfuse',
     labelKey: 'com_ui_langfuse_title',
     keywords: ['langfuse', 'observability', 'tracing', 'telemetry', 'traces'],
-    show: (ctx) => ctx.langfuseConnectionAccess,
+    show: (ctx) => ctx.langfuseConnectionAccess || ctx.langfusePromptSyncAccess === true,
     Component: LangfuseConnection,
   },
   // Data controls · Danger zone
@@ -818,6 +831,32 @@ export const registry: SettingEntry[] = [
     keywords: ['passkey', 'webauthn', 'fido', 'security key', 'passwordless'],
     show: (ctx) => ctx.passkeyLoginEnabled,
     Component: Passkeys,
+  },
+  // Account · Connected accounts
+  {
+    id: 'slackWorkspaces',
+    tab: ACCOUNT,
+    section: 'connections',
+    labelKey: 'com_ui_slack_workspaces_title',
+    keywords: ['slack', 'workspace', 'organization', 'connect', 'disconnect'],
+    Component: Workspaces,
+  },
+  {
+    id: 'channelLinks',
+    tab: ACCOUNT,
+    section: 'connections',
+    labelKey: 'com_ui_channel_link_personal',
+    keywords: ['slack', 'channel', 'identity', 'link', 'revoke'],
+    Component: LinksSettings,
+  },
+  {
+    id: 'pullRequestAccount',
+    tab: ACCOUNT,
+    section: 'connections',
+    labelKey: 'com_ui_settings_label_pull_request_account',
+    keywords: ['github', 'gitlab', 'bitbucket', 'pull request', 'oauth', 'connect'],
+    show: (ctx) => ctx.hasPullRequestConnect,
+    Component: ConnectedAccounts,
   },
   // Account · Billing
   {

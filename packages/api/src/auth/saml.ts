@@ -84,10 +84,11 @@ export async function findSamlUser({
 
 /**
  * Resolves the account a SAML login continues as once the strategy's policy checks pass. A
- * found account claims this login's NameID and profile atomically; without one, the user is
- * created through `createUserOnce`, and an account a concurrent first login created is admitted
- * like a found account and claimed the same way. Returns the account with the config the login
- * continues under.
+ * found account claims this login's NameID and profile atomically and continues under
+ * `appConfig`, its own config; without one, the user is created through `createUserOnce`, which
+ * admits it under the USER role's config, and an account a concurrent first login created is
+ * admitted like a found account and claimed the same way. Returns the account with the config
+ * the login continues under.
  */
 export async function provisionSamlUser({
   user,
@@ -126,7 +127,6 @@ export async function provisionSamlUser({
     const result = await createUserOnce({
       newUser: { provider: 'saml', samlId: nameID, username, email, emailVerified: true, name },
       email,
-      appConfig,
       getAppConfig,
       getBalanceConfig,
       strategyName: 'samlStrategy',

@@ -10,7 +10,9 @@ export default defineConfig({
    * pause/resume and rehydrate paths most of all, since they replay a whole job.
    * The suite is serial (`workers: 1`), so this is per-operation latency rather
    * than contention, and it is why this lane reports flaky runs the memory shards
-   * never produce. Give it a larger default assertion budget and one more retry.
+   * never produce. Give it a larger default assertion budget and one more retry. A
+   * retried pass still fails CI (`failOnFlakyTests` in the mock profile); the extra
+   * attempt only shows how often the failure repeats.
    */
   retries: process.env.CI ? 3 : 0,
   expect: { ...mockConfig.expect, timeout: 20_000 },

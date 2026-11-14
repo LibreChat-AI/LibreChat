@@ -112,7 +112,7 @@ const RevokeKeysButton = ({
       <OGDialog open={open} onOpenChange={setOpen}>
         <OGDialogTrigger asChild>
           <Button
-            variant="destructive"
+            variant="destructive-soft"
             className="flex items-center justify-center duration-200"
             onClick={() => setOpen(true)}
             disabled={disabled}
@@ -125,7 +125,7 @@ const RevokeKeysButton = ({
             <OGDialogTitle>{localize('com_ui_revoke_key_endpoint', { 0: endpoint })}</OGDialogTitle>
           </OGDialogHeader>
           <div className="py-4">
-            <Label className="text-left text-sm font-medium">
+            <Label className="text-start text-sm font-medium">
               {localize('com_ui_revoke_key_confirm')}
             </Label>
           </div>

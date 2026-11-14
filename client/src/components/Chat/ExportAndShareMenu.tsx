@@ -2,7 +2,7 @@ import { useState, useId } from 'react';
 import { Ellipsis } from 'lucide-react';
 import * as Ariakit from '@ariakit/react';
 import { DropdownPopup, TooltipAnchor, useMediaQuery } from '@librechat/client';
-import useChatOptions from '~/hooks/Chat/useChatOptions';
+import useChatOptions from '~/hooks/Sharing/useChatOptions';
 import { useLocalize } from '~/hooks';
 
 export default function ExportAndShareMenu({
@@ -19,6 +19,7 @@ export default function ExportAndShareMenu({
   const { show, items, hasSharedLink, dialogs } = useChatOptions({
     isSharedButtonEnabled,
     readOnly,
+    isMenuOpen: isPopoverActive,
     closeMenu: () => setIsPopoverActive(false),
   });
 
@@ -46,7 +47,7 @@ export default function ExportAndShareMenu({
               <Ariakit.MenuButton
                 id="export-menu-button"
                 aria-label={description}
-                className="border-border-chrome bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary relative inline-flex size-9 shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out disabled:pointer-events-none disabled:opacity-50"
+                className="border-border-light bg-presentation text-text-primary hover:bg-surface-active-alt aria-expanded:bg-surface-active-alt rounded-theme-control relative inline-flex size-9 shrink-0 items-center justify-center border transition-all ease-in-out disabled:pointer-events-none disabled:opacity-50"
               >
                 <Ellipsis
                   className="icon-md text-text-primary"
@@ -55,7 +56,7 @@ export default function ExportAndShareMenu({
                 />
                 {hasSharedLink && (
                   <span
-                    className="bg-status-info ring-presentation absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2"
+                    className="bg-status-info ring-presentation absolute -inset-e-0.5 -top-0.5 size-2 rounded-full ring-2"
                     data-testid="header-shared-link-indicator"
                     aria-hidden="true"
                   />
@@ -65,7 +66,7 @@ export default function ExportAndShareMenu({
           />
         }
         items={items}
-        className={isSmallScreen ? '' : 'absolute top-0 right-0 mt-2'}
+        className={isSmallScreen ? '' : 'absolute inset-e-0 top-0 mt-2'}
       />
       {dialogs}
     </>

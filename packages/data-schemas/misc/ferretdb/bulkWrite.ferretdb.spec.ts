@@ -59,7 +59,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 /**

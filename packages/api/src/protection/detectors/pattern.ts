@@ -7,7 +7,6 @@ import {
   MAX_PII_PATTERN_LABEL_LENGTH,
   MAX_PII_PATTERN_LENGTH,
   MAX_PII_PATTERNS_PER_SOURCE,
-  getPiiRegexProgramSize,
 } from 'librechat-data-provider';
 import type {
   FilterPiiCategory,
@@ -15,6 +14,7 @@ import type {
   FilterPiiCustomPatternConfig,
 } from 'librechat-data-provider';
 import type { ProtectionFinding, TextContentFragment } from '../types';
+import { getPiiRegexProgramSize } from '../programSize';
 
 interface CompiledPattern {
   readonly id: string;
@@ -49,10 +49,6 @@ export class PatternConfigurationError extends Error {
     super(message);
     this.name = 'PatternConfigurationError';
   }
-}
-
-export function isPatternConfigurationError(error: unknown): error is PatternConfigurationError {
-  return error instanceof PatternConfigurationError;
 }
 
 export interface PatternContentInspectorResourceCost {
@@ -360,12 +356,6 @@ export function getPatternContentInspectorPreflightCost(
     regexCharacters: snapshot.regexCharacters,
     regexes: snapshot.regexes,
   };
-}
-
-export function getPatternContentInspectorResourceCost(
-  config: PatternContentInspectorConfig | MessageFilterPiiConfig,
-): PatternContentInspectorResourceCost {
-  return prepareConfig(config).cost;
 }
 
 function findingFor(

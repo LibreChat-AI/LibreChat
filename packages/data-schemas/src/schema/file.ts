@@ -1,6 +1,10 @@
 import mongoose, { Schema } from 'mongoose';
 import { FileContext, FileSources } from 'librechat-data-provider';
-import type { RunFileProvenance, TextDerivation } from 'librechat-data-provider';
+import type {
+  TextDerivation,
+  RunFileProvenance,
+  CodeOutputProvenance,
+} from 'librechat-data-provider';
 import type { IMongoFile } from '~/types';
 import { codeEnvRefMapSchema, codeEnvRefSchema } from './codeEnvRef';
 
@@ -25,6 +29,14 @@ const textDerivationSchema = new Schema<TextDerivation>(
     extractor: { type: String },
     reason: { type: String },
     at: { type: Number },
+  },
+  { _id: false },
+);
+
+const codeOutputProvenanceSchema = new Schema<CodeOutputProvenance>(
+  {
+    messageId: { type: String, required: true },
+    sha256: { type: String, required: true, match: /^[a-f0-9]{64}$/ },
   },
   { _id: false },
 );
@@ -72,6 +84,11 @@ const file: Schema<IMongoFile> = new Schema(
     storageRegion: {
       type: String,
     },
+    storageOperations: {
+      provisioning: { type: [String], default: undefined },
+      deleting: { type: String, default: undefined },
+      deletionPending: { type: Boolean, default: undefined },
+    },
     object: {
       type: String,
       required: true,
@@ -79,6 +96,15 @@ const file: Schema<IMongoFile> = new Schema(
     },
     embedded: {
       type: Boolean,
+    },
+    embeddingOwnersTrackedAt: {
+      type: Date,
+      default: undefined,
+      immutable: true,
+    },
+    embeddingOwnersComplete: {
+      type: Boolean,
+      default: undefined,
     },
     type: {
       type: String,
@@ -145,6 +171,7 @@ const file: Schema<IMongoFile> = new Schema(
     width: Number,
     height: Number,
     metadata: {
+      codeOutput: { type: codeOutputProvenanceSchema, default: undefined },
       runFile: {
         type: runFileProvenanceSchema,
         default: undefined,
@@ -156,6 +183,10 @@ const file: Schema<IMongoFile> = new Schema(
       },
       codeEnvRefs: {
         type: codeEnvRefMapSchema,
+        default: undefined,
+      },
+      codeEnvSource: {
+        type: codeEnvRefSchema,
         default: undefined,
       },
       /** Dispatch-order stamp of the last writer (or claimant, on insert):
@@ -171,6 +202,16 @@ const file: Schema<IMongoFile> = new Schema(
        *  is shared. */
       embeddedEntities: {
         type: [String],
+        default: undefined,
+      },
+      /** Retains the code destination when confirmed deletion clears its pointers. */
+      codeDestination: {
+        type: Boolean,
+        default: undefined,
+      },
+      /** Retains the search destination when confirmed deletion clears its vectors. */
+      searchDestination: {
+        type: Boolean,
         default: undefined,
       },
       /** The user named this file's destination, through the chooser or by requesting a
@@ -192,6 +233,13 @@ const file: Schema<IMongoFile> = new Schema(
        *  time; a failed marker is kept only by a deferred record. */
       textDerivation: {
         type: textDerivationSchema,
+        default: undefined,
+      },
+      /** Copies placed in attached workspaces, keyed by opaque target digests; written only
+       *  through `recordFileWorkspaceImport`. Mixed for the same dotted-key reason as
+       *  `codeEnvRefs`. */
+      workspaceImports: {
+        type: Schema.Types.Mixed,
         default: undefined,
       },
     },
@@ -240,6 +288,13 @@ file.index({ expiredAt: 1 });
 file.index(
   { user: 1, tenantId: 1, context: 1, _id: -1 },
   { name: 'project_file_picker', partialFilterExpression: { embedded: true } },
+);
+file.index(
+  { user: 1, tenantId: 1, context: 1, _id: -1 },
+  {
+    name: 'project_file_picker_search_destination',
+    partialFilterExpression: { 'metadata.searchDestination': true },
+  },
 );
 file.index({ createdAt: 1, updatedAt: 1 });
 file.index(

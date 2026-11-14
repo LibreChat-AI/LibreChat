@@ -41,6 +41,19 @@ describe('PullRequestCard', () => {
     }
   });
 
+  it('gives the GitHub mark a viewBox, so shrinking the icon scales it instead of clipping it', () => {
+    render(<PullRequestCard pullRequest={pr} />);
+    const svg = screen.getByTestId('pull-request-github-link').querySelector('svg');
+    expect(svg).toHaveAttribute('viewBox', '0 0 25 25');
+  });
+
+  it('dims only the GitHub icon on hover, never the background behind it', () => {
+    render(<PullRequestCard pullRequest={pr} />);
+    const link = screen.getByTestId('pull-request-github-link');
+    expect(link).toHaveClass('hover:text-text-primary');
+    expect(link.className).not.toMatch(/hover:bg-/);
+  });
+
   it('puts the GitHub tooltip in the layer the card lives in, not behind it', async () => {
     const layer = document.createElement('div');
     document.body.appendChild(layer);
@@ -49,6 +62,35 @@ describe('PullRequestCard', () => {
     expect(screen.getByTestId('pull-request-github-link')).toHaveFocus();
     expect(await within(layer).findByRole('tooltip')).toHaveTextContent('com_ui_pr_open_in_github');
     layer.remove();
+  });
+
+  it('names a GitLab merge request the way GitLab does and links to GitLab', () => {
+    const mr = {
+      ...pr,
+      provider: 'gitlab' as const,
+      url: 'https://gitlab.com/g/r/-/merge_requests/7',
+    };
+    render(<PullRequestCard pullRequest={mr} />);
+    expect(screen.getByText('com_ui_pr_label_gitlab:7')).toBeInTheDocument();
+    const link = screen.getByTestId('pull-request-github-link');
+    expect(link).toHaveAccessibleName('com_ui_pr_open_in_gitlab');
+    expect(link).toHaveAttribute('href', mr.url);
+    expect(link.querySelector('svg')).toHaveClass('lucide-gitlab');
+  });
+
+  it('links a Bitbucket pull request to Bitbucket', () => {
+    render(<PullRequestCard pullRequest={{ ...pr, provider: 'bitbucket' }} />);
+    expect(screen.getByText('com_ui_pr_label:7')).toBeInTheDocument();
+    expect(screen.getByTestId('pull-request-github-link')).toHaveAccessibleName(
+      'com_ui_pr_open_in_bitbucket',
+    );
+  });
+
+  it('treats a pull request without a provider, from an older server, as GitHub', () => {
+    render(<PullRequestCard pullRequest={pr} />);
+    expect(screen.getByTestId('pull-request-github-link')).toHaveAccessibleName(
+      'com_ui_pr_open_in_github',
+    );
   });
 
   it('colors added lines and removed lines with their own roles and names them for a screen reader', () => {

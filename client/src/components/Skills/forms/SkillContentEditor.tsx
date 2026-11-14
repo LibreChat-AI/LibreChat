@@ -1,35 +1,26 @@
 import { memo } from 'react';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
 import supersub from 'remark-supersub';
 import { Check, SquarePen } from 'lucide';
 import ReactMarkdown from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
-import { Controller, useFormContext } from 'react-hook-form';
+import { Controller, useFormContext, useWatch } from 'react-hook-form';
 import { TextareaAutosize, Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { RegisterOptions } from 'react-hook-form';
 import type { PluggableList } from 'unified';
+import {
+  DETECT_HIGHLIGHT,
+  toRehypePlugins,
+  useRehypeModules,
+} from '~/components/Chat/Messages/Content/rehype';
 import { codeNoExecution } from '~/components/Chat/Messages/Content/MarkdownComponents';
-import { cn, langSubset } from '~/utils';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 const REMARK_PLUGINS: PluggableList = [
   supersub,
   remarkGfm,
   [remarkMath, { singleDollarTextMath: false }],
-];
-
-const REHYPE_PLUGINS: PluggableList = [
-  [rehypeKatex],
-  [
-    rehypeHighlight,
-    {
-      detect: true,
-      ignoreMissing: true,
-      subset: langSubset,
-    },
-  ],
 ];
 
 const MARKDOWN_COMPONENTS = { code: codeNoExecution };
@@ -52,17 +43,19 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
     control,
     formState: { errors },
   } = useFormContext();
+  const value = useWatch({ control, name }) as string | undefined;
+  const rehypePlugins = toRehypePlugins(useRehypeModules(value ?? '', true), DETECT_HIGHLIGHT);
 
   return (
     <div className="flex max-h-[85vh] flex-col sm:max-h-[85vh]">
       <h2 className="sr-only">{localize('com_ui_skill_content')}</h2>
       <div
         className={cn(
-          'border-border-medium relative w-full flex-1 overflow-auto rounded-xl border p-3 text-left transition-all duration-200 sm:p-4',
+          'border-border-medium relative w-full flex-1 overflow-auto rounded-xl border p-3 text-start transition-all duration-200 sm:p-4',
           isEditing ? '' : 'hover:bg-surface-tertiary cursor-pointer',
         )}
       >
-        <div className="absolute top-2 right-2 z-10">
+        <div className="absolute inset-e-2 top-2 z-10">
           <TooltipAnchor
             description={isEditing ? localize('com_ui_save') : localize('com_ui_edit')}
             render={
@@ -75,10 +68,9 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
                 aria-label={isEditing ? localize('com_ui_save') : localize('com_ui_edit')}
                 className="hover:bg-surface-tertiary size-8 p-0"
               >
-                <MorphIcon
-                  icon={isEditing ? Check : SquarePen}
-                  className="text-text-secondary size-4"
-                />
+                <span className="text-text-secondary flex">
+                  <MorphIcon icon={isEditing ? Check : SquarePen} className="size-4" />
+                </span>
               </Button>
             }
           />
@@ -126,7 +118,7 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
                     /** @ts-ignore - PluggableList vs Pluggable[] shape drift */
                     remarkPlugins={REMARK_PLUGINS}
                     /** @ts-ignore - PluggableList vs Pluggable[] shape drift */
-                    rehypePlugins={REHYPE_PLUGINS}
+                    rehypePlugins={rehypePlugins}
                     components={MARKDOWN_COMPONENTS as unknown as Record<string, React.ElementType>}
                     className="markdown prose light text-text-primary w-full break-words"
                   >
@@ -134,8 +126,8 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
                   </ReactMarkdown>
                 )}
                 <div className="pointer-events-none sticky bottom-1/2 z-10 flex translate-y-1/2 items-center justify-center opacity-0 transition-all duration-200 group-hover/preview:opacity-100">
-                  <div className="border-border-light bg-surface-primary flex items-center gap-2 rounded-lg border px-3 py-1.5 shadow-md">
-                    <MorphIcon icon={SquarePen} className="text-text-secondary size-4" />
+                  <div className="border-border-light bg-surface-primary text-text-secondary flex items-center gap-2 rounded-lg border px-3 py-1.5 shadow-md">
+                    <MorphIcon icon={SquarePen} className="size-4" />
                     <span className="text-text-primary text-sm font-medium">
                       {localize('com_ui_click_to_edit')}
                     </span>

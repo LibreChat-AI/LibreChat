@@ -27,16 +27,6 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, values?: Record<string, string | number>) =>
     values == null ? key : `${key}:${Object.values(values).join(',')}`,
 }));
-const mockAgents: { current: Record<string, { name: string; avatar?: { filepath: string } }> } = {
-  current: { 'agent-1': { name: 'Coder' } },
-};
-const mockChat: { current: { conversationId?: string; agent_id?: string } } = {
-  current: { conversationId: 'convo-1', agent_id: 'agent-1' },
-};
-jest.mock('~/Providers', () => ({
-  useAgentsMapContext: () => mockAgents.current,
-  useChatContext: () => ({ conversation: mockChat.current }),
-}));
 
 /**
  * Ariakit opens a hovercard only for a pointer that is really moving, and only accepts a bare
@@ -82,8 +72,6 @@ const renderChip = () => {
 describe('PullRequestChip', () => {
   beforeEach(() => {
     mockGet.mockReset();
-    mockAgents.current = { 'agent-1': { name: 'Coder' } };
-    mockChat.current = { conversationId: 'convo-1', agent_id: 'agent-1' };
   });
 
   it('renders nothing while loading, so the header does not shift', () => {
@@ -127,30 +115,16 @@ describe('PullRequestChip', () => {
     expect(await screen.findByTestId('pull-request-ci-dot')).toHaveClass(dotClass);
   });
 
-  it('puts the dot on the agent picture when the agent has one, and not on the icon', async () => {
-    mockAgents.current = {
-      'agent-1': { name: 'Coder', avatar: { filepath: '/images/coder.png' } },
-    };
+  it('never shows the agent picture, even when the agent has one', async () => {
     mockGet.mockResolvedValue({ pullRequest: pr });
     renderChip();
     const dot = await screen.findByTestId('pull-request-ci-dot');
     expect(screen.getAllByTestId('pull-request-ci-dot')).toHaveLength(1);
-    expect(dot.parentElement?.querySelector('img')).not.toBeNull();
-  });
-
-  it('does not borrow the agent of the previous conversation while the chat state catches up', async () => {
-    mockAgents.current = {
-      'agent-1': { name: 'Coder', avatar: { filepath: '/images/coder.png' } },
-    };
-    mockChat.current = { conversationId: 'previous-convo', agent_id: 'agent-1' };
-    mockGet.mockResolvedValue({ pullRequest: pr });
-    renderChip();
-    const dot = await screen.findByTestId('pull-request-ci-dot');
-    expect(dot.parentElement?.querySelector('img')).toBeNull();
+    expect(screen.getByTestId('header-pull-request-button').querySelector('img')).toBeNull();
     expect(dot.parentElement?.querySelector('svg')).not.toBeNull();
   });
 
-  it('keeps the dot on the pull request icon when the agent has no picture', async () => {
+  it('keeps the dot on the pull request icon', async () => {
     mockGet.mockResolvedValue({ pullRequest: pr });
     renderChip();
     const dot = await screen.findByTestId('pull-request-ci-dot');

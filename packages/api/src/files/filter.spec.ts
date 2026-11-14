@@ -5,7 +5,7 @@ import type { TFileConfig, TurnDeliveryFile, TurnFileConsumers } from 'librechat
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types';
-import { filterFilesByEndpointConfig, filterFilesByEndpointRuntimeConfig } from './filter';
+import { filterFilesByEndpointRuntimeConfig } from './filter';
 
 describe('filterFilesByEndpointRuntimeConfig', () => {
   const sizedFile = (filename: string, bytes: number): IMongoFile =>
@@ -91,7 +91,12 @@ describe('filterFilesByEndpointRuntimeConfig', () => {
   });
 });
 
-describe('filterFilesByEndpointConfig', () => {
+describe('filterFilesByEndpointRuntimeConfig with request config', () => {
+  const filterFilesByEndpointConfig = (
+    req: ServerRequest,
+    params: Parameters<typeof filterFilesByEndpointRuntimeConfig>[1],
+  ) => filterFilesByEndpointRuntimeConfig(req.config, params);
+
   /** Helper to create a mock file */
   const createMockFile = (filename: string): IMongoFile =>
     ({

@@ -12,6 +12,7 @@ import {
   TrashIcon,
   OGDialogTrigger,
   useToastContext,
+  TooltipAnchor,
   OGDialogTemplate,
 } from '@librechat/client';
 import type { ActionAuthForm } from '~/common';
@@ -98,23 +99,27 @@ export default function ActionEditor({
   const deleteButton = action ? (
     <OGDialog>
       <OGDialogTrigger asChild>
-        <Button
-          type="button"
-          variant="destructive"
-          size="icon"
-          disabled={isEphemeralAgent(agentId) || !action.action_id}
-          aria-label={localize('com_ui_delete_action')}
-          title={localize('com_ui_delete_action')}
-        >
-          <TrashIcon className="h-4 w-4" />
-        </Button>
+        <TooltipAnchor
+          description={localize('com_ui_delete_action')}
+          render={
+            <Button
+              type="button"
+              variant="destructive-soft"
+              size="icon"
+              disabled={isEphemeralAgent(agentId) || !action.action_id}
+              aria-label={localize('com_ui_delete_action')}
+            >
+              <TrashIcon className="h-4 w-4" />
+            </Button>
+          }
+        />
       </OGDialogTrigger>
       <OGDialogTemplate
         showCloseButton={false}
         title={localize('com_ui_delete_action')}
         className="max-w-[28.125rem]"
         main={
-          <Label className="text-left text-sm font-medium">
+          <Label className="text-start text-sm font-medium">
             {localize('com_ui_delete_action_confirm')}
           </Label>
         }

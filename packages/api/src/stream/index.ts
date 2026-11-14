@@ -31,6 +31,8 @@ export type {
 export {
   GenerationPublicationFencedError,
   JobPredecessorMismatchError,
+  GenerationAdmissionDeniedError,
+  GenerationAdmissionUnavailableError,
   isPendingActionExpired,
   isPendingActionStale,
 } from './interfaces/IJobStore';
@@ -72,6 +74,18 @@ export type { StreamServicesConfig, StreamServices } from './createStreamService
 export { filterPersistableAbortContent, hasPersistableAbortContent } from './abortContent';
 export { getGenerationElapsedMs } from './elapsed';
 export {
+  SSE_KEEPALIVE_FRAME,
+  startSseKeepalive,
+  loadStreamKeepaliveMs,
+  resolveStreamKeepaliveMs,
+  createStreamKeepaliveLoader,
+} from './keepalive';
+export type {
+  SseKeepaliveResponse,
+  StreamKeepaliveConfig,
+  StreamKeepaliveRequest,
+} from './keepalive';
+export {
   projectTerminalEvent,
   TRANSIENT_MESSAGE_FIELDS,
   TRANSIENT_FILE_FIELDS,
@@ -94,3 +108,5 @@ export { waitForGenerationSettled } from './settled';
 export type { GenerationSettledSource, GenerationSettledWaitOptions } from './settled';
 
 export type { GenerationSettlementState } from './interfaces/IJobStore';
+
+export { buildGenerationStartedResponse } from './metadata';

@@ -3389,6 +3389,22 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(client.resumeCompletion).toHaveBeenCalledWith(expect.objectContaining({ runSteps }));
     });
 
+    it('restores authored skills only from the claimed generation metadata', async () => {
+      const authoredSkills = [
+        { agentId: 'agent-1', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+      ];
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({ metadata: { authoredSkills } }),
+      );
+      await post({ ...approveBody(), authoredSkills: [{ name: 'untrusted' }] });
+      await settled;
+      await flush();
+      const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
+      expect(client.resumeCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({ authoredSkills }),
+      );
+    });
+
     it('reapplies retained ask answers before resuming a later tool approval', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(
         makeToolApprovalJob({
@@ -3662,6 +3678,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         buildTurnReadingContext,
         buildMessageFiles,
         createProvisionFilesCallback,
+        createFileProvisionRecovery,
         FileSearchPreparationError,
       } = jest.requireActual('@librechat/api');
       const file = {
@@ -3715,8 +3732,17 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       const context = { agentId: AGENT_ID, provisionState };
       const provisionFiles = createProvisionFilesCallback({
         req: { user: { id: USER_ID } },
+        fileStorage: {
+          recovery: createFileProvisionRecovery(),
+          acquireFileProvision: jest.fn(async () => true),
+          releaseFileProvision: jest.fn(async () => true),
+          commitFileProvision: jest.fn(async () => true),
+        },
         agentToolContexts: new Map([[AGENT_ID, context]]),
-        provisionToVectorDB: async () => ({ embedded: outcome !== 'failure' }),
+        provisionToVectorDB: async () =>
+          outcome === 'failure'
+            ? { embedded: false, fileUpdate: null }
+            : { embedded: true, fileUpdate: { file_id: file.file_id, embedded: true } },
         provisionToCodeEnv: jest.fn(),
         updateFile: jest.fn(),
         updateCodeEnvRef: jest.fn(),

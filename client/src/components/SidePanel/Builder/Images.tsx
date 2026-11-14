@@ -1,4 +1,4 @@
-import ProgressCircle from '~/components/Chat/Input/Files/ProgressCircle';
+import { ProgressCircle } from '@librechat/chat/components';
 
 export function NoImage() {
   return (
@@ -34,28 +34,18 @@ export const AssistantAvatar = ({
 
   // Calculate the offset based on the loading progress
   const offset = circumference - progress * circumference;
-  const circleCSSProperties = {
-    transition: 'stroke-dashoffset 0.3s linear',
-  };
 
   return (
     <div>
       <div className="relative h-20 w-20 overflow-hidden rounded-full">
         <img
           src={url}
-          className="bg-avatar-placeholder h-full w-full rounded-full object-cover"
+          className={`bg-avatar-placeholder h-full w-full rounded-full object-cover ${progress < 1 ? 'opacity-40' : 'opacity-100'}`}
           alt="GPT"
           width="80"
           height="80"
-          style={{ opacity: progress < 1 ? 0.4 : 1 }}
         />
-        {progress < 1 && (
-          <ProgressCircle
-            circumference={circumference}
-            offset={offset}
-            circleCSSProperties={circleCSSProperties}
-          />
-        )}
+        {progress < 1 && <ProgressCircle circumference={circumference} offset={offset} />}
       </div>
     </div>
   );

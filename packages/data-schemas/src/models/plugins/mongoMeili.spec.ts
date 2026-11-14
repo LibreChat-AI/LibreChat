@@ -146,7 +146,7 @@ describe('Meilisearch Mongoose plugin', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
 
     process.env = OLD_ENV;
   });

@@ -5,28 +5,38 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
-import { render, act } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render, act, waitFor } from '@testing-library/react';
+import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   FileSources,
+  roleDefaults,
+  SystemRoles,
+  QueryKeys,
+  dataService,
   readTwoFactorSetupToken,
   clearTwoFactorSetupToken,
   persistTwoFactorSetupToken,
 } from 'librechat-data-provider';
+import type { TRole, TUser } from 'librechat-data-provider';
 import type { TAuthConfig } from '~/common';
+import {
+  SESSION_KEY,
+  getCachedTTSAudio,
+  setCachedTTSAudio,
+  retainFileDeletion,
+  getTTSCacheGeneration,
+  clearRetainedFileDeletions,
+  takeRetainedFileDeletions,
+} from '~/utils';
 import {
   chatFilterStatusAtom,
   chatFilterTagsAtom,
   chatSortAtom,
   resetChatFilterSessionAtom,
 } from '~/components/Conversations/chatFilters';
-import {
-  SESSION_KEY,
-  retainFileDeletion,
-  clearRetainedFileDeletions,
-  takeRetainedFileDeletions,
-} from '~/utils';
 import { AuthContextProvider, useAuthContext } from '../AuthContext';
+import { useGetRole as useRoleQuery } from '~/data-provider/roles';
+import store from '~/store';
 
 const mockNavigate = jest.fn();
 jest.mock('react-router-dom', () => ({
@@ -39,6 +49,10 @@ const mockApiBaseUrl = jest.fn(() => '');
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
   setTokenHeader: jest.fn(),
+  dataService: {
+    ...jest.requireActual('librechat-data-provider').dataService,
+    getRole: jest.fn(),
+  },
   apiBaseUrl: () => mockApiBaseUrl(),
 }));
 
@@ -52,6 +66,8 @@ let mockCapturedLogoutOptions: {
   onError: (...args: unknown[]) => void;
 };
 
+const mockEndPullRequestSession = jest.fn();
+const mockClearTitleGenerationState = jest.fn();
 const mockRefreshMutate = jest.fn();
 const mockLoginMutate = jest.fn();
 const mockLogoutMutate = jest.fn();
@@ -83,6 +99,9 @@ jest.mock('~/data-provider', () => ({
     error: null,
   })),
   useGetRole: jest.fn(() => ({ data: null })),
+  endPullRequestSession: jest.fn(() => mockEndPullRequestSession()),
+  clearTitleGenerationState: jest.fn(() => mockClearTitleGenerationState()),
+  setPullRequestSessionOwner: jest.fn(),
   useListRoles: jest.fn(() => ({ data: undefined })),
 }));
 
@@ -508,6 +527,39 @@ describe('AuthContextProvider — logout onSuccess/onError handling', () => {
     jotaiStore.set(resetChatFilterSessionAtom);
   });
 
+  it('ends the sidebar pull request queue at the logout session boundary', () => {
+    mockEndPullRequestSession.mockClear();
+    renderProvider();
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    expect(mockEndPullRequestSession).toHaveBeenCalled();
+  });
+
+  it('clears module-level title generation state at the logout session boundary', () => {
+    mockClearTitleGenerationState.mockClear();
+    renderProvider();
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    expect(mockClearTitleGenerationState).toHaveBeenCalled();
+  });
+
+  it('does not end the sidebar pull request queue while a session is being established', () => {
+    mockEndPullRequestSession.mockClear();
+    renderProvider();
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+
+    expect(mockEndPullRequestSession).not.toHaveBeenCalled();
+  });
+
   it('does not call window.location.replace when redirect is absent', async () => {
     const replaceSpy = jest.spyOn(window.location, 'replace').mockImplementation(() => {});
 
@@ -793,6 +845,33 @@ describe('AuthContextProvider — optional authentication', () => {
   });
 });
 
+describe('AuthContextProvider — prerendered page', () => {
+  const setPrerendering = (value: boolean) =>
+    Object.defineProperty(document, 'prerendering', { configurable: true, value });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setPrerendering(true);
+  });
+
+  afterEach(() => {
+    delete (document as Document & { prerendering?: boolean }).prerendering;
+  });
+
+  it('defers the silent refresh until the prerendered page is shown', () => {
+    renderProviderLive();
+
+    expect(mockRefreshMutate).not.toHaveBeenCalled();
+
+    setPrerendering(false);
+    act(() => {
+      document.dispatchEvent(new Event('prerenderingchange'));
+    });
+
+    expect(mockRefreshMutate).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('AuthContextProvider — silentRefresh subdirectory deployment', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -888,7 +967,7 @@ describe('AuthContextProvider — custom role detection and fetching', () => {
   const mockUseGetRole = jest.requireMock('~/data-provider').useGetRole;
   const staffPermissions = {
     name: 'STAFF',
-    permissions: { PROMPTS: { USE: true, CREATE: false } },
+    permissions: { PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false } },
   };
 
   beforeEach(() => {
@@ -1120,5 +1199,360 @@ describe('AuthContextProvider: enrollment hand-off that keeps the document', () 
     dispatchHandoff(true);
 
     expect(readTwoFactorSetupToken()).toBe('setup-token');
+  });
+});
+
+describe('AuthContextProvider: read-aloud cache at every session end', () => {
+  const mockUseGetUserQuery = jest.requireMock('~/data-provider').useGetUserQuery;
+  const cacheAudio = () =>
+    setCachedTTSAudio('departing', new Blob(['audio']), getTTSCacheGeneration());
+  const refreshOptions = () =>
+    mockRefreshMutate.mock.calls[0][1] as {
+      onSuccess: (data: unknown) => void;
+      onError: (error: unknown) => void;
+    };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(window.location, 'replace').mockImplementation(() => {});
+    cacheAudio();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('empties on logout', () => {
+    renderProvider();
+    act(() => mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' }));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties on an IdP logout redirect', () => {
+    renderProvider();
+    act(() =>
+      mockCapturedLogoutOptions.onSuccess({
+        message: 'Logout successful',
+        redirect: 'https://idp.example.com/logout',
+      }),
+    );
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the logout request fails', () => {
+    renderProvider();
+    act(() => mockCapturedLogoutOptions.onError(new Error('network')));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the refresh token is rejected', () => {
+    renderProviderLive();
+    act(() => refreshOptions().onError(new Error('401')));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when a refresh returns no session', () => {
+    renderProviderLive();
+    act(() => refreshOptions().onSuccess({}));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the user query fails', () => {
+    mockUseGetUserQuery.mockReturnValue({
+      data: undefined,
+      isError: true,
+      error: new Error('401'),
+    });
+    renderProvider();
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+    mockUseGetUserQuery.mockReturnValue({ data: undefined, isError: false, error: null });
+  });
+
+  it('empties when a different account signs in without a logout', () => {
+    jest.useFakeTimers();
+    renderProviderLive();
+    act(() => {
+      refreshOptions().onSuccess({ user: { id: 'first', role: 'USER' }, token: 'first-token' });
+      jest.advanceTimersByTime(100);
+    });
+    cacheAudio();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('second-token', { id: 'second' } as never);
+    });
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('keeps the cache when the same account signs in again', () => {
+    renderProvider();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('token', { id: 'same' } as never);
+    });
+    cacheAudio();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('token-2', { id: 'same' } as never);
+    });
+    expect(getCachedTTSAudio('departing')).toBeDefined();
+  });
+});
+
+describe('AuthContextProvider: browser setup destination', () => {
+  const destination = '/code/setup/browser-attempt';
+  const authenticated = { token: 'auth-token', user: { id: 'setup-user', role: 'USER' } };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    sessionStorage.clear();
+    clearTwoFactorSetupToken();
+    capturedAuthContext = undefined;
+    window.history.replaceState({}, '', `/login?redirect_to=${encodeURIComponent(destination)}`);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    sessionStorage.clear();
+    clearTwoFactorSetupToken();
+    mockApiBaseUrl.mockReturnValue('');
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('returns password sign-in to the setup without approving it', () => {
+    renderProvider();
+    act(() => mockCapturedLoginOptions.onSuccess(authenticated));
+    act(() => jest.advanceTimersByTime(100));
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+
+  it('retains the destination through the normal 2FA challenge', () => {
+    renderProvider();
+    act(() => mockCapturedLoginOptions.onSuccess({ twoFAPending: true, tempToken: 'challenge' }));
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
+    window.history.replaceState({}, '', '/login/2fa?tempToken=challenge');
+    act(() =>
+      capturedAuthContext?.completeAuthentication(authenticated.token, authenticated.user as never),
+    );
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+
+  it('retains the destination through mandatory 2FA enrollment and reload', () => {
+    const first = renderProvider();
+    act(() =>
+      mockCapturedLoginOptions.onSuccess({ twoFASetupRequired: true, tempToken: 'enrollment' }),
+    );
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
+    first.unmount();
+    window.history.replaceState({}, '', '/login/2fa/setup');
+    renderProvider();
+    act(() =>
+      capturedAuthContext?.completeAuthentication(authenticated.token, authenticated.user as never),
+    );
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+  });
+
+  it.each(['OAuth', 'OIDC'])('returns %s silent refresh to the stored setup destination', () => {
+    sessionStorage.setItem(SESSION_KEY, destination);
+    window.history.replaceState({}, '', '/');
+    renderProviderLive();
+    const options = mockRefreshMutate.mock.calls[0][1] as { onSuccess: (data: unknown) => void };
+    act(() => options.onSuccess(authenticated));
+    act(() => jest.advanceTimersByTime(100));
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+
+  it('keeps the exact setup destination when refreshing under a basename', () => {
+    mockApiBaseUrl.mockReturnValue('/librechat');
+    window.history.replaceState({}, '', `/librechat${destination}`);
+    renderProviderLive();
+    const options = mockRefreshMutate.mock.calls[0][1] as { onSuccess: (data: unknown) => void };
+    act(() => options.onSuccess(authenticated));
+    act(() => jest.advanceTimersByTime(100));
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+  });
+
+  it('preserves the setup destination through refresh-enforced enrollment under a basename', () => {
+    mockApiBaseUrl.mockReturnValue('/librechat');
+    window.history.replaceState({}, '', `/librechat${destination}`);
+    renderProviderLive();
+    const options = mockRefreshMutate.mock.calls[0][1] as { onSuccess: (data: unknown) => void };
+    act(() => options.onSuccess({ twoFASetupRequired: true, tempToken: 'enrollment' }));
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
+    expect(mockNavigate).toHaveBeenLastCalledWith('/login/2fa/setup', { replace: true });
+  });
+});
+
+describe('AuthContextProvider: role request priority', () => {
+  const mockUseGetRole = jest.requireMock('~/data-provider').useGetRole;
+  let queryClient: QueryClient;
+  let requests: string[];
+  let resolveRoles: Map<string, (role: TRole) => void>;
+
+  const roleData = (name: string): TRole => ({
+    name,
+    permissions: {
+      ...roleDefaults[SystemRoles.USER].permissions,
+      PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false },
+    },
+  });
+
+  function Discovery() {
+    const { isAuthenticated } = useAuthContext();
+    useQuery(
+      ['auth-priority-discovery'],
+      async () => {
+        requests.push('discovery');
+        return [];
+      },
+      { enabled: isAuthenticated },
+    );
+    return <TestConsumer />;
+  }
+
+  function renderPriorityProvider() {
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot>
+          <MemoryRouter>
+            <AuthContextProvider authConfig={authConfig}>
+              <Discovery />
+            </AuthContextProvider>
+          </MemoryRouter>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+  }
+
+  function authenticate(role: string) {
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', {
+        id: 'priority-user',
+        role,
+      } as TUser);
+    });
+  }
+
+  beforeEach(() => {
+    jest.useRealTimers();
+    jest.clearAllMocks();
+    sessionStorage.clear();
+    capturedAuthContext = undefined;
+    requests = [];
+    resolveRoles = new Map();
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: 3, retryDelay: 0 }, mutations: { retry: false } },
+      logger: { log: console.log, warn: console.warn, error: jest.fn() },
+    });
+    mockUseGetRole.mockImplementation(useRoleQuery);
+    jest
+      .mocked(dataService.getRole)
+      .mockReset()
+      .mockImplementation((name) => {
+        requests.push(name);
+        return new Promise<TRole>((resolve) => resolveRoles.set(name, resolve));
+      });
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    mockUseGetRole.mockReturnValue({ data: null });
+    sessionStorage.clear();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it.each([
+    ['USER', ['USER']],
+    ['ADMIN', ['USER', 'ADMIN']],
+    ['STAFF', ['USER', 'STAFF']],
+  ])('starts %s permissions once before descendant discovery', async (role, expectedRoles) => {
+    const { getByTestId } = renderPriorityProvider();
+    authenticate(role);
+
+    expect(requests).toEqual([...expectedRoles, 'discovery']);
+    expect(dataService.getRole).toHaveBeenCalledTimes(expectedRoles.length);
+    expect(JSON.parse(getByTestId('consumer').getAttribute('data-roles') ?? '{}')).toEqual({
+      USER: null,
+      ADMIN: null,
+    });
+
+    await act(async () => {
+      for (const name of expectedRoles) {
+        resolveRoles.get(name)?.(roleData(name));
+      }
+    });
+    await waitFor(() => {
+      expect(JSON.parse(getByTestId('consumer').getAttribute('data-roles') ?? '{}')).toEqual({
+        USER: roleData('USER'),
+        ADMIN: role === 'ADMIN' ? roleData('ADMIN') : null,
+        ...(role === 'STAFF' ? { STAFF: roleData('STAFF') } : {}),
+      });
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(expectedRoles.length);
+    expect(queryClient.getQueryData([QueryKeys.roles, '_'])).toBeUndefined();
+  });
+
+  it('does not fetch roles for an unauthenticated stored user or a user without a role', () => {
+    const { unmount } = renderPriorityProvider();
+    expect(requests).toEqual([]);
+    unmount();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot
+          initializeState={({ set }) => set(store.user, { id: 'stored', role: 'ADMIN' } as TUser)}
+        >
+          <MemoryRouter>
+            <AuthContextProvider authConfig={authConfig}>
+              <Discovery />
+            </AuthContextProvider>
+          </MemoryRouter>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    expect(requests).toEqual([]);
+    authenticate('');
+    expect(requests).toEqual(['discovery']);
+    expect(dataService.getRole).not.toHaveBeenCalled();
+  });
+
+  it('keeps failures permissionless and preserves remount retry and invalidation', async () => {
+    const failure = new Error('role unavailable');
+    jest
+      .mocked(dataService.getRole)
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValue(roleData('USER'));
+    const { getByTestId, rerender } = renderPriorityProvider();
+    authenticate('USER');
+
+    await waitFor(() => {
+      expect(queryClient.getQueryState([QueryKeys.roles, 'USER'])?.status).toBe('error');
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryState([QueryKeys.roles, 'USER'])?.fetchFailureCount).toBe(1);
+    expect(JSON.parse(getByTestId('consumer').getAttribute('data-roles') ?? '{}')).toEqual({
+      USER: null,
+      ADMIN: null,
+    });
+
+    function AnotherRoleObserver() {
+      useRoleQuery('USER');
+      return null;
+    }
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <AnotherRoleObserver />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(queryClient.getQueryState([QueryKeys.roles, 'USER'])?.status).toBe('success');
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await queryClient.invalidateQueries([QueryKeys.roles, 'USER']);
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(3);
+    expect(queryClient.getQueryData([QueryKeys.roles, 'USER'])).toEqual(roleData('USER'));
   });
 });

@@ -191,3 +191,41 @@ describe('i18next translation tests', () => {
     __resetLocaleForTests('sl');
   });
 });
+
+/**
+ * Locize groups keys by their plural suffix and generates every form the target
+ * language needs. A family without both English `_one` and `_other`, or with a
+ * bare base key beside them, leaves translators blank-source rows.
+ */
+describe('English plural key families', () => {
+  const keys = new Set(Object.keys(English));
+  const pluralSuffix = /_(zero|one|two|few|many|other)$/;
+  const bases = [...keys].flatMap((key) => {
+    const match = key.match(pluralSuffix);
+    return match ? [key.slice(0, -match[0].length)] : [];
+  });
+
+  it.each([...new Set(bases)])('%s has _one and _other forms and no bare base key', (base) => {
+    expect(keys.has(`${base}_one`)).toBe(true);
+    expect(keys.has(`${base}_other`)).toBe(true);
+    expect(keys.has(base)).toBe(false);
+  });
+
+  it('resolves the form from the base key and count, keeping older base translations', async () => {
+    await initializeI18n();
+    await changeLanguageSafely('en');
+    expect(i18n.t('com_ui_tools_count', { count: 1 })).toBe('1 tool');
+    expect(i18n.t('com_ui_tools_count', { count: 2 })).toBe('2 tools');
+    expect(i18n.t('com_ui_duration_announced_seconds', { count: 1, value: '1' })).toBe(
+      'took 1 second',
+    );
+    expect(i18n.t('com_ui_duration_announced_seconds', { count: 1.4, value: '1.4' })).toBe(
+      'took 1.4 seconds',
+    );
+
+    /** German still carries the pre-rename base key until Locize fills `_other`. */
+    await changeLanguageSafely('de');
+    expect(i18n.t('com_ui_tools_count', { count: 2 })).toBe('2 Tools');
+    await changeLanguageSafely('en');
+  });
+});

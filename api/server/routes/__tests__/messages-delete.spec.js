@@ -11,6 +11,7 @@ jest.mock('@librechat/agents', () => ({
 jest.mock('@librechat/api', () => ({
   prepareToolCallPreviews: jest.fn(() => (messages) => Promise.resolve(messages)),
   createToolCallPartHandler: jest.fn(() => (_req, res) => res.status(404).end()),
+  createSubagentAttachmentCallsHandler: jest.fn(() => (_req, res) => res.status(404).end()),
   rejectToolCallPreviewWrites: (_req, _res, next) => next(),
   withMessageToolCallPreviews: (_req, message) => message,
   createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
@@ -118,7 +119,7 @@ describe('deleteMessages – model-level IDOR prevention', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {

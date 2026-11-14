@@ -9,6 +9,7 @@ import type {
   TDefaultLLMDeliveryPath,
 } from 'librechat-data-provider';
 import type { ProtectionFinding } from '~/protection/types';
+import type { ServerRequest } from '~/types';
 import {
   extractInspectableFileText,
   getFileExtractionLogDetails,
@@ -16,9 +17,11 @@ import {
 } from '~/files/extract';
 import { hasActiveFileFieldPolicy, UninspectableFileError } from '~/protection/files';
 import { extractFileContent } from '~/protection/adapters/submissions';
+import { SpreadsheetLimitError } from '~/files/documents/workbook';
 import { ZipBombError } from '~/files/documents/zipSafety';
 import { parseDocument } from '~/files/documents/crud';
 import { inspectContent } from '~/protection/runtime';
+import { SpreadsheetBusyError } from './errors';
 import { parseTextNative } from '~/files/text';
 
 export const UPLOAD_FALLBACK_TEXT_PLANS = {
@@ -50,7 +53,10 @@ interface ExtractedText {
 
 /** The built-in readers fallback text comes from. */
 export interface UploadFallbackTextExtractors {
-  parseDocument: (params: { file: Express.Multer.File }) => Promise<ExtractedText>;
+  parseDocument: (params: {
+    file: Express.Multer.File;
+    req?: Pick<ServerRequest, 'config'>;
+  }) => Promise<ExtractedText>;
   parseTextNative: (file: Express.Multer.File) => Promise<ExtractedText>;
 }
 
@@ -95,6 +101,9 @@ export function matchExtractionFailure(error: unknown): ExtractionFailureReason 
   if (error instanceof ZipBombError) {
     return 'expansion_limit';
   }
+  if (error instanceof SpreadsheetLimitError) {
+    return 'too_large';
+  }
   const message = error instanceof Error ? error.message : '';
   return EXTRACTION_FAILURE_MESSAGES.find(([fragment]) => message.includes(fragment))?.[1];
 }
@@ -127,9 +136,13 @@ export function isSystemError(error: unknown): boolean {
 
 /**
  * The stable reason a built-in extractor failed with. A failure the extractor names keeps its
- * reason, a system error is `unavailable`, and anything else unrecognized is a parser error.
+ * reason, a system error or a busy spreadsheet parser is `unavailable`, and anything else
+ * unrecognized is a parser error.
  */
 export function classifyExtractionFailure(error: unknown): ExtractionFailureReason | 'unavailable' {
+  if (error instanceof SpreadsheetBusyError) {
+    return 'unavailable';
+  }
   return matchExtractionFailure(error) ?? (isSystemError(error) ? 'unavailable' : 'parser');
 }
 
@@ -175,11 +188,14 @@ export function getUploadFallbackTextPlan(
  */
 export async function extractBoundedText({
   file,
+  req,
   filters,
   plan,
   extractors = builtInExtractors,
 }: {
   file: Express.Multer.File;
+  /** Carries the deployment's spreadsheet parsing limits to the document parser. */
+  req?: Pick<ServerRequest, 'config'>;
   filters?: FiltersConfig;
   plan: UploadFallbackTextPlan;
   extractors?: UploadFallbackTextExtractors;
@@ -189,7 +205,7 @@ export async function extractBoundedText({
       filters,
       extract: () =>
         plan === UPLOAD_FALLBACK_TEXT_PLANS.documentParser
-          ? extractors.parseDocument({ file })
+          ? extractors.parseDocument({ file, req })
           : extractors.parseTextNative(file),
     });
     const text = result?.text;
@@ -229,12 +245,14 @@ const FALLBACK_SKIP_REASONS: Partial<Record<BoundedTextFailure, string>> = {
 export async function resolveUploadFallbackText({
   file,
   fileId,
+  req,
   filters,
   extractors = builtInExtractors,
   ...route
 }: Omit<UploadFallbackTextRoute, 'mimeType'> & {
   file: Express.Multer.File;
   fileId: string;
+  req?: Pick<ServerRequest, 'config'>;
   filters?: FiltersConfig;
   extractors?: UploadFallbackTextExtractors;
 }): Promise<string | undefined> {
@@ -255,7 +273,7 @@ export async function resolveUploadFallbackText({
     );
     return undefined;
   };
-  const result = await extractBoundedText({ file, filters, plan, extractors });
+  const result = await extractBoundedText({ file, req, filters, plan, extractors });
   if ('text' in result) {
     return result.text;
   }

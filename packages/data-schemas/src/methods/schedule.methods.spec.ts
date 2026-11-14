@@ -44,7 +44,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 }, DB_SETUP_TIMEOUT_MS);
 
 beforeEach(async () => {
@@ -442,7 +442,7 @@ describe('createScheduleWithSlot (atomic per-user cap)', () => {
     const a = (await methods.createScheduleWithSlot(scheduleData({ user }), 2)) as ISchedule;
     await methods.createScheduleWithSlot(scheduleData({ user }), 2);
     expect(await methods.createScheduleWithSlot(scheduleData({ user }), 2)).toBe('limit');
-    await methods.deleteScheduleById(a.id, user);
+    await Schedule.deleteOne({ _id: a._id });
     const c = await methods.createScheduleWithSlot(scheduleData({ user }), 2);
     expect(c).not.toBe('limit');
     expect(await methods.countSchedulesByUser(user)).toBe(2);

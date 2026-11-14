@@ -1,13 +1,14 @@
 import { memo, useId, useMemo, useState } from 'react';
 import { Button, IconButton } from '@librechat/client';
 import { ChevronDown, Download, Files } from 'lucide-react';
+import { useExpandCollapse } from '@librechat/chat/components';
 import type {
   TAttachment,
   TFile,
   WorkspaceChange as WorkspaceChangeMetadata,
 } from 'librechat-data-provider';
-import { useExpandCollapse, useLocalize } from '~/hooks';
 import { useAttachmentLink } from './LogLink';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 type StatefulWorkspaceAttachment = TAttachment & {
@@ -109,7 +110,7 @@ export default function WorkspaceChanges({
         aria-controls={panelId}
         aria-label={`${localize('com_ui_workspace_changes')}: ${countLabel}`}
         onClick={() => setIsExpanded((previous) => !previous)}
-        className="text-text-secondary h-auto max-w-full justify-start py-1 pr-2 pl-0 font-normal"
+        className="text-text-secondary max-w-full py-1 pr-2 font-normal"
       >
         <Files className="size-4 shrink-0" aria-hidden="true" />
         <span className="shrink-0 font-medium">{localize('com_ui_workspace_changes')}</span>
@@ -127,7 +128,7 @@ export default function WorkspaceChanges({
       </Button>
       <div id={panelId} style={style} inert={!isExpanded ? '' : undefined}>
         <div className="overflow-hidden" ref={ref} aria-hidden={!isExpanded}>
-          <div className="flex flex-col gap-2 pt-2">
+          <div className="flex flex-col gap-2 pt-1">
             {attachments.map((attachment) => (
               <WorkspaceChange
                 key={`${attachment.filepath}:${attachment.workspaceChange.path}`}

@@ -46,6 +46,8 @@ export interface ISubagentTaskControlReceipt {
 
 // @ts-ignore
 export interface IMessage extends Document {
+  /** Public content capture version and expected terminal watermark; never a transcript. */
+  subagentContent?: { version: 1; throughSequence?: number; deleted?: boolean };
   messageId: string;
   conversationId: string;
   user: string;
@@ -80,6 +82,7 @@ export interface IMessage extends Document {
     tag: TFeedbackTag | undefined;
     text?: string;
   };
+  langfuseCentralTraceExportEnabled?: boolean;
   langfuseSampled?: boolean;
   langfuseDestinationIds?: string[];
   /** The run whose trace this response reports, when that run's id is not the message's own (a failed turn's error row). */
@@ -106,7 +109,7 @@ export interface IMessage extends Document {
   /** Server-private bounded rendering projection derived once at child settlement. */
   subagentActivityProjection?: {
     taskId: string;
-    version: 1;
+    version: 1 | 2;
     activityJson: string;
     truncated: boolean;
   };

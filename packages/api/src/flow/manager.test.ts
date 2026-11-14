@@ -1608,6 +1608,27 @@ describe('FlowStateManager', () => {
       await second?.release();
     });
 
+    it('renews a held lease and refuses once another owner took it after expiry', async () => {
+      const now = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+      const held = await flowManager.acquireLease('renewed-owner', {
+        advanceGeneration: true,
+        leaseMs: 1_000,
+      });
+
+      clock.mockReturnValue(now + 900);
+      await expect(held?.renew?.()).resolves.toBe(true);
+      clock.mockReturnValue(now + 1_500);
+      await expect(flowManager.acquireLease('renewed-owner', { waitMs: 0 })).resolves.toBeNull();
+
+      clock.mockReturnValue(now + 3_000);
+      const intruder = await flowManager.acquireLease('renewed-owner', { waitMs: 0 });
+      expect(intruder).not.toBeNull();
+      await intruder?.release();
+      await expect(held?.renew?.()).resolves.toBe(false);
+      clock.mockRestore();
+    });
+
     it('expires released in-memory generations after the stale-work horizon', async () => {
       const now = Date.now();
       const clock = jest.spyOn(Date, 'now').mockReturnValue(now);

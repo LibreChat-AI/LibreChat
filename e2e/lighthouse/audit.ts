@@ -1,12 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { promisify } from 'node:util';
-import { execFile } from 'node:child_process';
 import { expect } from '@playwright/test';
 import type Result from 'lighthouse/types/lhr/lhr';
 import type { Cookie } from '@playwright/test';
 
-const exec = promisify(execFile);
+import { runLighthouse } from './process.mts';
+import { sanitizeLighthouseArtifacts } from './artifacts.mts';
 
 /** Median budgets keyed by Lighthouse audit id. */
 export type MedianBudgets = Record<string, number>;
@@ -14,9 +13,6 @@ export type MedianBudgets = Record<string, number>;
 const REPORTS_DIRECTORY = '.lighthouse';
 
 const DEFAULT_RUNS = 3;
-
-/** Attempts per run before a crashed Lighthouse process fails the audit. */
-const RUN_ATTEMPTS = 2;
 
 const DEFAULT_BUDGETS: MedianBudgets = {
   'largest-contentful-paint': 4500,
@@ -77,48 +73,16 @@ export async function auditPage({
     `--extra-headers=${JSON.stringify({ Cookie: cookie })}`,
     '--output=json',
     '--output=html',
+    '--save-assets',
   ];
 
   try {
     for (let run = 1; run <= runs; run++) {
       const output = path.join(directory, `lhr-${run}`);
-      for (let attempt = 1; ; attempt++) {
-        try {
-          const { stdout } = await exec(process.execPath, [
-            cli,
-            ...flags,
-            `--output-path=${output}`,
-          ]);
-          console.log(`Lighthouse run ${run}/${runs} wrote ${output}.report.json`);
-          if (stdout.trim()) {
-            console.log(stdout);
-          }
-          break;
-        } catch (error) {
-          if (attempt >= RUN_ATTEMPTS) {
-            throw error;
-          }
-          /** Lighthouse crashes out of a run it could not trace — NO_NAVSTART is
-           *  the usual one, and its own message is "run Lighthouse again". The
-           *  page is measured `runs` times for exactly this noise, so one lost
-           *  process should cost a repeat, not the lane. A page that is really
-           *  broken fails every attempt and still fails here. */
-          console.log(
-            `Lighthouse run ${run}/${runs} attempt ${attempt} did not complete, retrying: ${
-              error instanceof Error ? error.message.split('\n')[0] : String(error)
-            }`,
-          );
-        }
-      }
+      await runLighthouse({ cli, flags, output, run, runs });
     }
   } finally {
-    // Lighthouse embeds extraHeaders in reports; keep disposable session cookies out of artifacts.
-    for (const file of fs.existsSync(directory) ? fs.readdirSync(directory) : []) {
-      if (!/\.report\.(json|html)$/.test(file)) continue;
-      const filename = path.join(directory, file);
-      const content = fs.readFileSync(filename, 'utf8');
-      fs.writeFileSync(filename, cookie ? content.replaceAll(cookie, '[redacted]') : content);
-    }
+    sanitizeLighthouseArtifacts(directory, cookies);
   }
 
   const reports = fs.readdirSync(directory).filter((file) => /^lhr-.*\.report\.json$/.test(file));

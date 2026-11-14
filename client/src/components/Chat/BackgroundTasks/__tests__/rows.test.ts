@@ -116,6 +116,7 @@ describe('buildTaskRows', () => {
     ]);
     expect(rows[0].subagent).toEqual({ threadId: 'running-child', taskId: 'task' });
     expect(rows[3].subagent).toBeUndefined();
+    expect(rows[3].taskId).toBe('task');
   });
 });
 

@@ -18,6 +18,7 @@ import {
   useMutationState,
   resolveServerContent,
 } from '~/Providers/EditorContext';
+import { normalizeArtifactType } from '~/utils/artifacts';
 import { getResponseStatus } from '~/utils/errors';
 import { useArtifactsContext } from '~/Providers';
 import { useEditArtifact } from '~/data-provider';
@@ -57,11 +58,8 @@ const LANG_MAP: Record<string, string> = {
 
 const TYPE_MAP: Record<string, string> = {
   'text/html': 'html',
-  'application/vnd.code-html': 'html',
   'application/vnd.react': 'typescript',
-  'application/vnd.ant.react': 'typescript',
   'text/markdown': 'markdown',
-  'text/md': 'markdown',
   'text/plain': 'plaintext',
   'application/vnd.mermaid': 'markdown',
 };
@@ -208,7 +206,7 @@ function getMonacoLanguage(type?: string, language?: string): string {
   if (language && LANG_MAP[language]) {
     return LANG_MAP[language];
   }
-  return TYPE_MAP[type ?? ''] ?? 'plaintext';
+  return TYPE_MAP[normalizeArtifactType(type ?? '')] ?? 'plaintext';
 }
 
 function getArtifactEditTarget(artifact: Artifact): ArtifactEditTarget | null {

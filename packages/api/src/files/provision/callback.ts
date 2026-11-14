@@ -1,13 +1,15 @@
 import { Constants } from '@librechat/agents';
 import { logger } from '@librechat/data-schemas';
-import { EToolResources } from 'librechat-data-provider';
+import { EToolResources, mergeCodeEnvRef } from 'librechat-data-provider';
 import type { CodeEnvFile, SubagentExecutionContext } from '@librechat/agents';
 import type { TFile } from 'librechat-data-provider';
 import type { CodeEnvRefUpdate, ProvisionService } from './service';
 import type { ProvisionToolContext } from '../code/queued';
+import type { FileProvisionStorage } from '../operations';
 import type { ServerRequest } from '~/types';
 import { createCodeApiRateLimitBudget, isCodeApiRateLimitError } from '~/utils';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { withFileProvisioning } from '../operations';
 import { planCodeFileUploads } from '../code/queued';
 import { isCodeFileToolName } from '~/agents/tools';
 
@@ -16,25 +18,6 @@ interface FileUpdate {
   file_id: string;
   metadata?: Record<string, unknown>;
   embedded?: boolean;
-}
-
-/** One attempt plus one retry: a transient write failure would otherwise leave the record
- *  unprovisioned while the queue is cleared. */
-async function persistWithRetry(
-  write: () => Promise<unknown>,
-  onFailure: (error: unknown) => void,
-): Promise<boolean> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      await write();
-      return true;
-    } catch (error) {
-      if (attempt === 1) {
-        onFailure(error);
-      }
-    }
-  }
-  return false;
 }
 
 export type { ProvisionToolContext } from '../code/queued';
@@ -57,6 +40,7 @@ export class FileSearchPreparationError extends Error {
 
 export interface ProvisionCallbackDeps {
   req: ServerRequest;
+  fileStorage: FileProvisionStorage;
   agentToolContexts: Map<string, ProvisionToolContext>;
   resolvePrimaryAgentId?: () => string | undefined;
   /** A child routed per call keeps its own context, keyed by its execution. */
@@ -110,14 +94,12 @@ function resolveProvisionContext({
  */
 export function createProvisionFilesCallback({
   req,
+  fileStorage,
   agentToolContexts,
   resolvePrimaryAgentId,
   resolveExecutionContext,
   provisionToCodeEnv,
   provisionToVectorDB,
-  updateFile,
-  updateCodeEnvRef,
-  addEmbeddedEntity,
 }: ProvisionCallbackDeps): (
   toolNames: string[],
   agentId?: string,
@@ -194,6 +176,9 @@ export function createProvisionFilesCallback({
     if (!needsCode && !needsSearch) {
       return [];
     }
+
+    const userId = req.user?.id;
+    if (!userId) throw new Error('File provisioning requires an authenticated user');
 
     /** Chat attachments and generated code outputs stay in the user's sandbox and unscoped
      *  vector index; only this agent's own setup files are scoped to it. Membership decides
@@ -290,44 +275,42 @@ export function createProvisionFilesCallback({
         uploads.map(async ({ file, destination: sandboxFilename }) => {
           const provisioned = await shareProvisioning(
             shareKey(`code:${codeRouteKey}`, file, sandboxFilename),
-            async () => {
-              const {
-                referenceSet: refs,
-                refUpdate,
-                sandboxFilename: storedSandboxFilename,
-              } = await provisionToCodeEnv({
-                req,
+            () =>
+              withFileProvisioning({
                 file,
-                entity_id: entityIdForFile(file),
-                route: ctx.codeExecutionContext,
-                sandboxFilename,
-                signal,
-                rateLimitBudget: codeApiRateLimitBudget,
-              });
-              signal?.throwIfAborted();
-              /* primeCodeFiles re-reads the database and skips files without a stored
-               * reference, so a tool loaded after an unpersisted upload would run against
-               * an attachment it cannot see. Fail instead of answering from missing input. */
-              const persisted = await persistWithRetry(
-                () => updateCodeEnvRef(refUpdate),
-                (error) =>
-                  logger.error(
-                    `[provisionFiles] Failed to persist code environment reference for file ${refUpdate.file_id}`,
-                    error,
-                  ),
-              );
-              if (!persisted) {
-                throw new Error(
-                  `Failed to persist the code environment reference for file ${refUpdate.file_id}`,
-                );
-              }
-              return { refs, sandboxFilename: storedSandboxFilename };
-            },
+                userId,
+                storage: fileStorage,
+                destination: JSON.stringify([
+                  'code',
+                  codeRouteKey,
+                  entityIdForFile(file) ? 'agent' : 'user',
+                  entityIdForFile(file) ?? userId,
+                  null,
+                  sandboxFilename,
+                ]),
+                operation: async (_claim, onUploadStart) => {
+                  const { refUpdate, sandboxFilename: storedSandboxFilename } =
+                    await provisionToCodeEnv({
+                      req,
+                      file,
+                      entity_id: entityIdForFile(file),
+                      route: ctx.codeExecutionContext,
+                      sandboxFilename,
+                      signal,
+                      rateLimitBudget: codeApiRateLimitBudget,
+                      onUploadStart,
+                    });
+                  const ref = { ...refUpdate.ref, sandboxFilename: storedSandboxFilename };
+                  return {
+                    value: ref,
+                    commit: { code: { ...refUpdate, ref } },
+                  };
+                },
+              }),
           );
-          const { refs: referenceSet, sandboxFilename: returnedSandboxFilename } = provisioned;
-          file.metadata = { ...file.metadata, ...referenceSet };
+          file.metadata = { ...file.metadata, ...mergeCodeEnvRef(file.metadata, provisioned) };
           addProvisionedFile(file, EToolResources.execute_code);
-          const ref = referenceSet.codeEnvRefs?.[codeRouteKey];
+          const ref = provisioned;
           if (ref?.storage_session_id && ref.file_id) {
             const codeFile = {
               id: ref.file_id,
@@ -336,7 +319,7 @@ export function createProvisionFilesCallback({
               /* The name the sandbox stored it under: a converted image is renamed on
                * upload, and telling the model the record's name sends it to a path that
                * does not exist. */
-              name: returnedSandboxFilename,
+              name: ref.sandboxFilename ?? file.filename,
               kind: ref.kind,
             } as CodeEnvFile;
             const existingIndex = provisionedCodeFiles.findIndex(
@@ -378,42 +361,32 @@ export function createProvisionFilesCallback({
       }
       const results = await Promise.allSettled(
         queuedVectorFiles.map(async (file) => {
-          await shareProvisioning(shareKey('search', file), async () => {
-            const provisioned = await provisionToVectorDB({
-              req,
+          await shareProvisioning(shareKey('search', file), () =>
+            withFileProvisioning({
               file,
-              entity_id: entityIdForFile(file),
-              signal,
-            });
-            signal?.throwIfAborted();
-            /* A declined embedding must reject the shared work too, so a later tool
-             * call retries it rather than replaying a cached embedded:false result. */
-            if (!provisioned.embedded) {
-              throw new FileSearchPreparationError();
-            }
-            /* The vectors are already stored, so a failed flag write costs a re-embed next
-             * turn rather than this turn's results. Logged, not fatal. */
-            if (provisioned.fileUpdate) {
-              const update = provisioned.fileUpdate;
-              /* Vectors live under the entity that provisioned them, so the namespace is
-               * recorded alongside the flag. Agents sharing a record, as a duplicate does
-               * with its source, each need their own embedding, and an unscoped upload
-               * lands in the user's namespace rather than in none. */
-              const namespace = namespaceForFile(file);
-              await persistWithRetry(
-                () =>
-                  namespace != null
-                    ? addEmbeddedEntity({ file_id: update.file_id, entityId: namespace })
-                    : updateFile(update),
-                (error) =>
-                  logger.error(
-                    `[provisionFiles] Failed to persist embedding state for file ${update.file_id}`,
-                    getSafeErrorMetadata(error),
-                  ),
-              );
-            }
-            return provisioned;
-          });
+              userId,
+              storage: fileStorage,
+              destination: JSON.stringify(['search', namespaceForFile(file)]),
+              operation: async (_claim, onUploadStart) => {
+                const provisioned = await provisionToVectorDB({
+                  req,
+                  file,
+                  entity_id: entityIdForFile(file),
+                  signal,
+                  onUploadStart,
+                });
+                /* A declined embedding must reject the shared work too, so a later tool
+                 * call retries it rather than replaying a cached embedded:false result. */
+                if (!provisioned.embedded || !provisioned.fileUpdate) {
+                  throw new FileSearchPreparationError();
+                }
+                return {
+                  value: provisioned,
+                  commit: { embedded: true, entityId: namespaceForFile(file) },
+                };
+              },
+            }),
+          );
           file.embedded = true;
           const namespace = namespaceForFile(file);
           if (namespace != null) {
@@ -464,7 +437,9 @@ export function createProvisionFilesCallback({
       throw new FileSearchPreparationError();
     }
 
-    if (needsCode) {
+    /* A read_file batch may be a skill reference the host answers without the sandbox, so it
+     * keeps the handoff for the code call that follows instead of claiming it. */
+    if (toolNames.some((name) => name !== Constants.READ_FILE && isCodeFileToolName(name))) {
       ctx.pendingProvisionedCodeFiles = undefined;
     }
     return provisionedCodeFiles;

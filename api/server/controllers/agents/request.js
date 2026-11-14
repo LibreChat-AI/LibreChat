@@ -8,7 +8,6 @@ const {
   isEphemeralAgentId,
 } = require('librechat-data-provider');
 const {
-  toPendingSteer,
   persistedReasoningOverrideFields,
   getViolationInfo,
   applyForcedTemporaryRequest,
@@ -17,6 +16,8 @@ const {
   getReferencedQuotes,
   resolveTitleTiming,
   GenerationJobManager,
+  getTrustedNewConversationId,
+  buildGenerationStartedResponse,
   createConvoPersistenceSignal,
   recoverTurnMessageReference,
   filterPersistableAbortContent,
@@ -60,12 +61,16 @@ const {
   resolveFailedTurnContent,
   savePrivateTextMessage,
   savePrivateTextErrorTurn,
+  getUserFacingGenerationError,
   stampPreliminaryPrivateTextMessage,
   announceReply,
+  announceDisconnectSnapshot,
   announceErrorTurn,
   settleExistingRowsBeforeErrorTurn,
-  resolveDisconnectSnapshotMode,
-  markAbortedCompactionContent,
+  planDisconnectSnapshot,
+  createDisconnectSnapshotQueue,
+  isTemporaryTurn,
+  getPreliminaryResponseMessageId,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -100,7 +105,6 @@ const {
   claimAgentEventActorSuspension,
   settleAgentEventActorSuspension,
   stampConvoLastResponse,
-  isAgentTriggerPrincipalActive,
   isSubagentOwnerAdmissible,
   appendConvoMessageReference,
 } = require('~/models');
@@ -113,6 +117,7 @@ const {
   negotiateNewGenerationProtocol,
   negotiateExistingGenerationProtocol,
 } = require('./protocol');
+const { promoteUnappliedSteers } = require('./promotion');
 
 function sendGenerationJson(res, status, body, generationProtocolVersion) {
   if (typeof res.set === 'function') {
@@ -169,18 +174,6 @@ async function attachConversationCreatedAt(req, conversationId, conversationAnch
   if (resolved.conversation !== undefined) {
     req.resolvedConversation = resolved.conversation ?? null;
   }
-}
-
-function getPreliminaryResponseMessageId({ messageId, responseMessageId }) {
-  if (typeof responseMessageId === 'string' && responseMessageId.length > 0) {
-    return responseMessageId;
-  }
-
-  if (typeof messageId !== 'string' || messageId.length === 0) {
-    return null;
-  }
-
-  return `${messageId.replace(/_+$/, '')}_`;
 }
 
 /**
@@ -421,7 +414,11 @@ async function saveErrorTurn(
       if (liveUserMessage?.messageId == null) {
         return;
       }
-      errorMessageId = getPreliminaryResponseMessageId({ messageId: liveUserMessage.messageId });
+      errorMessageId = getPreliminaryResponseMessageId({
+        compact: true,
+        messageId: liveUserMessage.messageId,
+        liveResponseMessageId,
+      });
       errorParentMessageId = liveUserMessage.messageId;
     } else if (isRegenerate) {
       errorMessageId =
@@ -473,7 +470,7 @@ async function saveErrorTurn(
     /** The existing-row settlement (which row a failed turn settles, and
      *  whether its error row may be written at all) lives in @librechat/api;
      *  this supplies the caller's reads and write. */
-    const coveredByExistingRow = await settleExistingRowsBeforeErrorTurn(req.body, {
+    const settlement = await settleExistingRowsBeforeErrorTurn(req.body, {
       userId,
       conversationId,
       errorMessageId,
@@ -495,9 +492,12 @@ async function saveErrorTurn(
           },
         ),
     });
-    if (coveredByExistingRow) {
+    if (settlement.covered) {
       return;
     }
+    /** The settlement names the error row's id, so an anchor-shaped
+     *  collision can never overwrite the anchor. */
+    errorMessageId = settlement.errorRowMessageId;
 
     const context = 'api/server/controllers/agents/request.js - failed turn';
     const endpoint = endpointOption?.endpoint;
@@ -527,6 +527,7 @@ async function saveErrorTurn(
       messageId: errorMessageId,
       runId: liveResponseMessageId,
       runCreated,
+      isTemporary: isTemporaryTurn(req),
     });
     const savedErrorMessage = await saveMessage(
       reqCtx,
@@ -610,13 +611,6 @@ async function saveErrorTurn(
   }
 }
 
-/**
- * The disconnect save is marker-only while the run is still live; a failed
- * turn is what settles it, so a compaction's partial row is finalized here
- * with the terminal outcome instead of keeping the snapshot's live-run
- * marking. The decision lives in @librechat/api; this is the wiring, reusing
- * the row the caller already loaded.
- */
 function classifyScheduledFailure(error, aborted = false) {
   if (aborted || error?.code === 'SCHEDULE_NO_LONGER_ACTIVE') {
     return { status: 'interrupted', error: error?.message };
@@ -939,10 +933,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     req.body.overrideUserMessageId = `${recoveredSteerId}${Constants.COMMON_DIVIDER}0`;
   }
   const isNewConvo = !reqConversationId || reqConversationId === 'new';
-  const scheduledNewConversationId =
-    isScheduledFire && typeof req.body?.newConversationId === 'string'
-      ? req.body.newConversationId
-      : null;
+  const scheduledNewConversationId = getTrustedNewConversationId({
+    isScheduledFire,
+    isAgentTrigger: req._isAgentTrigger === true,
+    newConversationId: req.body?.newConversationId,
+  });
   let conversationId = reqConversationId;
   if (isNewConvo) {
     conversationId =
@@ -1695,6 +1690,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       }),
       initialMetadata: {
         conversationId,
+        isNewConversation: isNewConvo,
         generationProtocolVersion,
         endpoint: endpointOption.endpoint,
         iconURL: endpointIconURL,
@@ -1759,18 +1755,8 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     req.turnStartedAt = jobCreatedAt;
     providerExecutionId = job.metadata?.providerExecutionId;
 
-    /** Authentication can precede a slow admission path. Recheck the durable
-     * account-deletion fence after the job is committed but before execution
-     * starts. This ordering closes both sides of the race for ordinary and
-     * trigger-scoped sessions: a fence that wins first rejects this run; a
-     * fence that starts after this read must observe the already-created job
-     * in account deletion's active-generation drain. */
-    if (!(await isAgentTriggerPrincipalActive(userId))) {
-      throw Object.assign(new Error('Account deletion is in progress'), {
-        code: 'ACCOUNT_DELETION_IN_PROGRESS',
-        status: 409,
-      });
-    }
+    /** Account-deletion admission is enforced inside `createJob`, after the job is committed, so a
+     * fence that wins first refuses this run and one that starts later finds the job in its drain. */
     if (req._agentEventBindingParentConversationId != null) {
       /** The generation job is the durable marker that a deletion on another replica
        * can abort. Recheck only after that marker exists: either the deletion fence
@@ -1890,7 +1876,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       sendGenerationJson(
         res,
         200,
-        { streamId, conversationId, generationCreatedAt: jobCreatedAt, status: 'started' },
+        buildGenerationStartedResponse({
+          streamId,
+          conversationId,
+          generationCreatedAt: jobCreatedAt,
+          responseMessageId: preallocatedResponseMessageId,
+        }),
         generationProtocolVersion,
       );
     };
@@ -1922,21 +1913,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
      * actual response messageId isn't available yet. The final response save will
      * overwrite this with the complete response using the same messageId pattern.
      */
-    job.emitter.on('allSubscribersLeft', async (aggregatedContent) => {
-      if (partialResponseSaved || !aggregatedContent || aggregatedContent.length === 0) {
-        return;
-      }
-
-      /** The run is still live here: mark what streamed, but leave the outcome
-       *  to whichever path settles the turn (the terminal abort synthesizes
-       *  the typed failure a stopped compaction with no summary needs). */
-      const persistableContent = markAbortedCompactionContent(
-        filterPersistableAbortContent(aggregatedContent),
-        isCompaction,
-        { synthesizeFailure: false },
-      );
-      if (persistableContent.length === 0) {
-        logger.debug('[ResumableAgentController] No persistable content to save partial response');
+    const persistDisconnectSnapshot = async (aggregatedContent) => {
+      /** Empty content is rejected only after the snapshot mode is known: a
+       *  reconciled compaction synthesizes its terminal outcome from nothing,
+       *  while a live run has nothing persistable. Whether an earlier live
+       *  save still allows a write is part of that plan. */
+      if (!aggregatedContent) {
         return;
       }
 
@@ -1949,8 +1931,34 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return;
       }
 
-      partialResponseSaved = true;
+      /** Whether and how this snapshot persists is planned in @librechat/api,
+       *  inside the request's tenant context like the write below. */
+      const responseMessageId =
+        resumeState.responseMessageId || `${resumeState.userMessage.messageId}_`;
       const responseConversationId = resumeState.conversationId || conversationId;
+      const planSnapshot = () =>
+        planDisconnectSnapshot(isCompaction, {
+          content: filterPersistableAbortContent(aggregatedContent),
+          jobRecord,
+          jobCreatedAt,
+          userId,
+          conversationId: responseConversationId,
+          anchorMessageId: resumeState.userMessage.messageId,
+          responseMessageId,
+          liveSaved: partialResponseSaved,
+          getMessages,
+          onReadError: (error) =>
+            logger.error('[ResumableAgentController] Error planning partial response:', error),
+        });
+      const snapshot = tenantId
+        ? await tenantStorage.run({ tenantId, userId }, planSnapshot)
+        : await planSnapshot();
+      if (!snapshot.write) {
+        logger.debug('[ResumableAgentController] No partial response to save on disconnect');
+        return;
+      }
+
+      partialResponseSaved = true;
       /** The run publishes its calibration and fading tiers onto the job; a
        * partial response saved on disconnect must carry them like the Stop and
        * pause paths do, or a turn continued from it re-derives its provider
@@ -1958,20 +1966,16 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        * record is the source, since the client-facing resume snapshot never
        * carries server-private state. */
       const contextMeta = jobRecord?.createdAt === jobCreatedAt ? jobRecord.contextMeta : undefined;
-      if (resolveDisconnectSnapshotMode(jobRecord, jobCreatedAt) === 'skip') {
-        logger.debug('[ResumableAgentController] Skipping partial response save for a settled job');
-        return;
-      }
 
       try {
         const partialMessage = {
-          messageId: resumeState.responseMessageId || `${resumeState.userMessage.messageId}_`,
+          messageId: responseMessageId,
           conversationId: responseConversationId,
           parentMessageId: resumeState.userMessage.messageId,
           sender: client?.sender ?? 'AI',
-          content: persistableContent,
-          unfinished: true,
-          error: false,
+          content: snapshot.content,
+          unfinished: snapshot.unfinished,
+          error: snapshot.error,
           isCreatedByUser: false,
           user: userId,
           endpoint: endpointOption.endpoint,
@@ -1984,14 +1988,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           partialMessage.agent_id = req.body.agent_id;
         }
 
+        const isTemporary =
+          req?._agentEventBindingRetention?.isTemporary ??
+          req?.resolvedConversation?.isTemporary ??
+          req?.body?.isTemporary;
         const savePartialMessage = () =>
           saveMessage(
             {
               userId,
-              isTemporary:
-                req?._agentEventBindingRetention?.isTemporary ??
-                req?.resolvedConversation?.isTemporary ??
-                req?.body?.isTemporary,
+              isTemporary,
               expiredAt:
                 req?._agentEventBindingRetention?.expiredAt ?? req?.resolvedConversation?.expiredAt,
               interfaceConfig: req?.config?.interfaceConfig,
@@ -2009,15 +2014,40 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           throw new Error('Partial response could not be persisted after disconnect');
         }
 
+        const announcePromotion = () =>
+          announceDisconnectSnapshot({ stampConvoLastResponse }, snapshot, {
+            userId,
+            conversationId: responseConversationId,
+            messageId: responseMessageId,
+            isTemporary,
+            context: 'ResumableAgentController - promoted disconnect snapshot',
+          });
+        await (tenantId
+          ? tenantStorage.run({ tenantId, userId }, announcePromotion)
+          : announcePromotion());
+
         logger.debug(
-          `[ResumableAgentController] Saved partial response for ${streamId}, content parts: ${persistableContent.length}`,
+          `[ResumableAgentController] Saved partial response for ${streamId}, content parts: ${snapshot.content.length}`,
         );
       } catch (error) {
         logger.error('[ResumableAgentController] Error saving partial response:', error);
         // Reset flag so we can try again if subscribers reconnect and leave again
         partialResponseSaved = false;
       }
+    };
+    const disconnectSnapshots = createDisconnectSnapshotQueue({
+      isCompaction,
+      persist: persistDisconnectSnapshot,
+      readContent: async () =>
+        (await GenerationJobManager.getJobStore().getContentParts(streamId, jobCreatedAt))
+          ?.content ?? [],
+      onSettleError: (error) =>
+        logger.error(
+          '[ResumableAgentController] Error settling the saved partial response:',
+          error,
+        ),
     });
+    job.emitter.on('allSubscribersLeft', disconnectSnapshots.onDisconnect);
 
     /** @type {{ client: TAgentClient; userMCPAuthMap?: Record<string, Record<string, string>> }} */
     const result = await initializeClient({
@@ -2221,6 +2251,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return;
       }
       try {
+        await disconnectSnapshots.settle();
         await GenerationJobManager.finishTerminalJob(terminalClaim);
       } finally {
         terminalClaimFinished = true;
@@ -2398,15 +2429,8 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 // paused turn's files.
                 ...(Array.isArray(req.body?.files) &&
                   req.body.files.length > 0 && { files: req.body.files }),
-                // Skill selections aren't on `userMsg` yet at onStart (BaseClient adds them
-                // later), so source them from the request — otherwise this update overwrites
-                // the preliminary metadata and a HITL-resumed turn loses its skill pills.
-                ...(Array.isArray(req.body?.manualSkills) &&
-                  req.body.manualSkills.length > 0 && { manualSkills: req.body.manualSkills }),
-                ...(Array.isArray(req.body?.alwaysAppliedSkills) &&
-                  req.body.alwaysAppliedSkills.length > 0 && {
-                    alwaysAppliedSkills: req.body.alwaysAppliedSkills,
-                  }),
+                manualSkills: userMsg.manualSkills,
+                alwaysAppliedSkills: userMsg.alwaysAppliedSkills,
               },
             },
             jobCreatedAt,
@@ -2418,22 +2442,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             streamId,
             {
               created: true,
-              // Skill selections aren't on `userMessage` yet at onStart (BaseClient adds
-              // them later), so attach them from the request — this is the message
-              // `trackUserMessage` persists as the authoritative job.metadata.userMessage,
-              // and it's what the live client renders the user bubble from.
               message: {
                 ...userMessage,
                 // Carry files so trackUserMessage (the authoritative writer) persists them on
                 // job.metadata.userMessage for a HITL resume (see the updateMetadata above).
                 ...(Array.isArray(req.body?.files) &&
                   req.body.files.length > 0 && { files: req.body.files }),
-                ...(Array.isArray(req.body?.manualSkills) &&
-                  req.body.manualSkills.length > 0 && { manualSkills: req.body.manualSkills }),
-                ...(Array.isArray(req.body?.alwaysAppliedSkills) &&
-                  req.body.alwaysAppliedSkills.length > 0 && {
-                    alwaysAppliedSkills: req.body.alwaysAppliedSkills,
-                  }),
               },
               streamId,
             },
@@ -3227,7 +3241,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
         let terminalPublicationStarted = false;
         try {
-          const pendingSteers = terminalClaim.drainedSteers.map(toPendingSteer);
+          const { pendingSteers, promotedSteers } = await promoteUnappliedSteers(req, {
+            claim: terminalClaim,
+            conversationId,
+            responseMessageId: savedResponseMessage.messageId,
+            responseContent: response.content,
+            completed: !responseIsUnfinished,
+          });
           const finalEvent = {
             final: true,
             conversation,
@@ -3241,6 +3261,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
               }),
             },
             ...(pendingSteers.length > 0 && { pendingSteers }),
+            ...(promotedSteers.length > 0 && { promotedSteers }),
           };
 
           logger.debug(
@@ -3341,7 +3362,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           sendGenerationJson(
             res,
             500,
-            { error: error.message || 'Failed to start generation' },
+            {
+              error: getUserFacingGenerationError(error, req.config, 'Failed to start generation'),
+            },
             generationProtocolVersion,
           );
         }
@@ -3399,7 +3422,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           // abortJob already handled emitDone and completeJob
         } else {
           logger.error(`[ResumableAgentController] Generation error for ${streamId}:`, error);
-          const generationError = error.message || 'Generation failed';
+          const generationError = getUserFacingGenerationError(
+            error,
+            req.config,
+            'Generation failed',
+          );
           try {
             // completeJob first wins running -> error and atomically parks
             // steers, then publishes. A competing abort/pause emits nothing.
@@ -3419,6 +3446,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                       initialAgentId: verifiedInitialAgentId,
                     }),
                   ),
+                beforeTerminalCleanup: disconnectSnapshots.settle,
               })) === true;
             /** A true completion means this owner won the terminal CAS and
              * the beforeErrorPublication barrier above finished. Only that
@@ -3472,22 +3500,24 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           sendGenerationJson(
             res,
             500,
-            { error: err.message || 'Failed to start generation' },
+            { error: getUserFacingGenerationError(err, req.config, 'Failed to start generation') },
             generationProtocolVersion,
           );
         }
         let errorFinalized = false;
         if (!pausePersistenceFailed) {
           errorFinalized =
-            (await GenerationJobManager.completeJob(streamId, err.message, jobCreatedAt).catch(
-              (completeErr) => {
-                logger.warn(
-                  '[ResumableAgentController] completeJob failed during background-error cleanup',
-                  completeErr,
-                );
-                return false;
-              },
-            )) === true;
+            (await GenerationJobManager.completeJob(
+              streamId,
+              getUserFacingGenerationError(err, req.config, 'Generation failed'),
+              jobCreatedAt,
+            ).catch((completeErr) => {
+              logger.warn(
+                '[ResumableAgentController] completeJob failed during background-error cleanup',
+                completeErr,
+              );
+              return false;
+            })) === true;
         }
         if (
           (errorFinalized || (pausePersistenceFailed && pausePersistenceFailureFinalized)) &&
@@ -3588,7 +3618,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           sendGenerationJson(
             res,
             500,
-            { error: error.message || 'Failed to start generation' },
+            {
+              error: getUserFacingGenerationError(error, req.config, 'Failed to start generation'),
+            },
             generationProtocolVersion,
           );
         }
@@ -3615,7 +3647,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     if (jobCreatedAt != null) {
       const initializationError = initializationFailure
         ? JSON.stringify(initializationFailure)
-        : error.message || 'Failed to start generation';
+        : getUserFacingGenerationError(error, req.config, 'Failed to start generation');
       const persistInitializationError = shouldPersistCodeWorkspaceInitializationError({
         streamStarted,
         isNewConversation: isNewConvo,

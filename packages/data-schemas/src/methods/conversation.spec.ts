@@ -20,6 +20,8 @@ import type {
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChatProjectMethods } from './chatProject';
+import { createResponseStorage } from './response';
+import { waitForPause } from './test-helpers';
 import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
@@ -82,7 +84,7 @@ afterAll(async () => {
   }
 
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 const saveConvo = (...args: Parameters<ConversationMethods['saveConvo']>) =>
@@ -105,9 +107,6 @@ const getConvosByCursor = (...args: Parameters<ConversationMethods['getConvosByC
   methods.getConvosByCursor(...args);
 const getConvosQueried = (...args: Parameters<ConversationMethods['getConvosQueried']>) =>
   methods.getConvosQueried(...args);
-const deleteNullOrEmptyConversations = (
-  ...args: Parameters<ConversationMethods['deleteNullOrEmptyConversations']>
-) => methods.deleteNullOrEmptyConversations(...args);
 const searchConversation = (...args: Parameters<ConversationMethods['searchConversation']>) =>
   methods.searchConversation(...args);
 
@@ -1144,13 +1143,13 @@ describe('Conversation Operations', () => {
             },
           );
 
+        const archive = saveConvo(
+          { userId: 'user123' },
+          { conversationId, isArchived: true },
+          { preserveUpdatedAt: true, noUpsert: true },
+        );
         try {
-          const archive = saveConvo(
-            { userId: 'user123' },
-            { conversationId, isArchived: true },
-            { preserveUpdatedAt: true, noUpsert: true },
-          );
-          await archiveWriteReached;
+          await waitForPause(archiveWriteReached, archive);
 
           const unarchived = await saveConvo(
             { userId: 'user123' },
@@ -1169,6 +1168,7 @@ describe('Conversation Operations', () => {
         } finally {
           releaseArchiveWrite();
           writeSpy.mockRestore();
+          await Promise.allSettled([archive]);
         }
       });
 
@@ -1492,6 +1492,25 @@ describe('Conversation Operations', () => {
         ).toEqual(codeWorkspaces);
       },
     );
+
+    it('lists the code decision, so a row can tell a code conversation from an ordinary one', async () => {
+      const conversationId = uuidv4();
+      const plainId = uuidv4();
+      const codeWorkspaces = [mac];
+      await saveConvo(
+        { userId },
+        { conversationId, codeEnvironmentMode: 'attached', codeWorkspaces },
+      );
+      await saveConvo({ userId }, { conversationId: plainId });
+      const { conversations } = await getConvosByCursor(userId);
+      expect(conversations.find((row) => row.conversationId === conversationId)).toEqual(
+        expect.objectContaining({ codeEnvironmentMode: 'attached', codeWorkspaces }),
+      );
+      expect(conversations.find((row) => row.conversationId === plainId)).not.toHaveProperty(
+        'codeEnvironmentMode',
+      );
+      expect(conversations.every((row) => row.codeDecisionListed === true)).toBe(true);
+    });
 
     it('preserves explicit agent ownership through save, reload and a stale ordinary save', async () => {
       const conversationId = uuidv4();
@@ -2586,6 +2605,127 @@ describe('Conversation Operations', () => {
       expect(result?.isTemporary).toBe(true);
       expect(result?.expiredAt).toBeDefined();
       expect(result?.expiredAt).not.toBeNull();
+    });
+
+    /** Archive and unarchive are retention-aware saves: the route passes the stored chat type
+     * and deadline through, so a chat that predates the mode is brought under it like any other. */
+    describe('archiving a conversation that predates the retention mode', () => {
+      const anchor = new Date('2026-03-05T22:17:14.997Z');
+      const HOUR = 3600000;
+
+      const seedLegacyConvo = async (isArchived: boolean) => {
+        const conversationId = uuidv4();
+        await Conversation.collection.insertOne({
+          conversationId,
+          user: 'user123',
+          title: 'chat saved before the retention mode',
+          endpoint: EModelEndpoint.openAI,
+          expiredAt: null,
+          isArchived,
+          createdAt: anchor,
+          updatedAt: anchor,
+        });
+        return conversationId;
+      };
+
+      const setArchived = (
+        conversationId: string,
+        isArchived: boolean,
+        interfaceConfig: AppConfig['interfaceConfig'],
+      ) =>
+        saveConvo(
+          { userId: 'user123', interfaceConfig },
+          { conversationId, isArchived },
+          { preserveUpdatedAt: true, noUpsert: true, appendMessageIds: [] },
+        );
+
+      it.each([true, false])(
+        'gives it the general-chat deadline when isArchived is %s under RetentionMode.ALL',
+        async (isArchived) => {
+          const conversationId = await seedLegacyConvo(!isArchived);
+          const before = Date.now();
+
+          await setArchived(conversationId, isArchived, {
+            retentionMode: RetentionMode.ALL,
+            temporaryChatRetention: 1,
+            generalChatRetention: 2160,
+          });
+
+          const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+          expect(stored?.isArchived).toBe(isArchived);
+          expect(stored?.isTemporary).toBe(false);
+          expect(stored?.expiredAt?.getTime()).toBeGreaterThanOrEqual(before + 2160 * HOUR);
+          expect(stored?.expiredAt?.getTime()).toBeLessThan(Date.now() + 2160 * HOUR + 5000);
+          expect(stored?.updatedAt?.toISOString()).toBe(anchor.toISOString());
+        },
+      );
+
+      it.each([true, false])(
+        'converts it to a temporary chat when isArchived is %s under RetentionMode.EPHEMERAL',
+        async (isArchived) => {
+          const conversationId = await seedLegacyConvo(!isArchived);
+          const before = Date.now();
+
+          await setArchived(conversationId, isArchived, {
+            retentionMode: RetentionMode.EPHEMERAL,
+            temporaryChatRetention: 24,
+          });
+
+          const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+          expect(stored?.isArchived).toBe(isArchived);
+          expect(stored?.isTemporary).toBe(true);
+          expect(stored?.expiredAt?.getTime()).toBeGreaterThanOrEqual(before + 24 * HOUR);
+          expect(stored?.expiredAt?.getTime()).toBeLessThan(Date.now() + 24 * HOUR + 5000);
+          expect(stored?.updatedAt?.toISOString()).toBe(anchor.toISOString());
+        },
+      );
+
+      it.each([
+        [
+          'RetentionMode.EPHEMERAL',
+          { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 24 },
+        ],
+        [
+          'RetentionMode.ALL',
+          {
+            retentionMode: RetentionMode.ALL,
+            temporaryChatRetention: 1,
+            generalChatRetention: 2160,
+          },
+        ],
+      ] as Array<[string, AppConfig['interfaceConfig']]>)(
+        'keeps the deadline it already holds under %s',
+        async (_name, interfaceConfig) => {
+          const conversationId = uuidv4();
+          const held = new Date(Date.now() + 2 * HOUR);
+          await Conversation.collection.insertOne({
+            conversationId,
+            user: 'user123',
+            title: 'chat that already holds a deadline',
+            endpoint: EModelEndpoint.openAI,
+            isArchived: false,
+            isTemporary: interfaceConfig?.retentionMode === RetentionMode.EPHEMERAL,
+            expiredAt: held,
+            createdAt: anchor,
+            updatedAt: anchor,
+          });
+
+          await saveConvo(
+            {
+              userId: 'user123',
+              isTemporary: interfaceConfig?.retentionMode === RetentionMode.EPHEMERAL,
+              expiredAt: held,
+              interfaceConfig,
+            },
+            { conversationId, isArchived: true },
+            { preserveUpdatedAt: true, noUpsert: true, appendMessageIds: [] },
+          );
+
+          const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+          expect(stored?.isArchived).toBe(true);
+          expect(stored?.expiredAt).toEqual(held);
+        },
+      );
     });
 
     it('should filter out temporary conversations in getConvosByCursor', async () => {
@@ -3711,6 +3851,183 @@ describe('Conversation Operations', () => {
   });
 
   describe('deleteConvos', () => {
+    describe('stored responses on standalone Mongo', () => {
+      beforeEach(async () => {
+        await runAsSystem(async () => {
+          await mongoose.models.StoredResponse.deleteMany({});
+          await mongoose.models.ResponseScope.deleteMany({});
+        });
+      });
+
+      async function seedResponse(conversationId: string, tenantId?: string) {
+        return runAsSystem(() =>
+          mongoose.models.StoredResponse.create({
+            userId: 'user123',
+            tenantId,
+            conversationId,
+            responseId: uuidv4(),
+            requestKey: uuidv4(),
+            fingerprint: 'request',
+            agentId: 'agent',
+            requestJSON: '{"input":"private"}',
+            responseJSON: '{"output":"private"}',
+            parentMessageId: 'root',
+            status: 'completed',
+          }),
+        );
+      }
+
+      it('rejects background reservation on standalone Mongo before storing private state', async () => {
+        const result = await createResponseStorage(mongoose).reserve({
+          userId: 'user123',
+          responseId: uuidv4(),
+          requestKey: uuidv4(),
+          fingerprint: 'request',
+          agentId: 'agent',
+          requestJSON: '{"input":"private"}',
+          conversationId: uuidv4(),
+          parentMessageId: 'root',
+        });
+        expect(result).toEqual({ ok: false, code: 'response_unavailable' });
+        expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
+        expect(await mongoose.models.ResponseScope.countDocuments({})).toBe(0);
+      });
+
+      it('erases only the selected tenant and keeps ordinary deletion nontransactional', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          tenantId: 'tenant-a',
+          endpoint: EModelEndpoint.agents,
+        });
+        await seedResponse(conversationId, 'tenant-a');
+        await seedResponse(conversationId, 'tenant-b');
+        const session = jest.spyOn(mongoose, 'startSession');
+        await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+          deleteConvos('user123', { conversationId }),
+        );
+        expect(session).not.toHaveBeenCalled();
+        session.mockRestore();
+        await runAsSystem(async () => {
+          expect(
+            await mongoose.models.StoredResponse.countDocuments({ tenantId: 'tenant-a' }),
+          ).toBe(0);
+          expect(
+            await mongoose.models.StoredResponse.countDocuments({ tenantId: 'tenant-b' }),
+          ).toBe(1);
+        });
+      });
+
+      it('retains payloads when an earlier hook fails but keeps deletion intent closed until retry', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          endpoint: EModelEndpoint.agents,
+        });
+        const response = await seedResponse(conversationId);
+        await expect(
+          deleteConvos(
+            'user123',
+            { conversationId },
+            {
+              beforeDelete: async () => {
+                throw new Error('drain failed');
+              },
+            },
+          ),
+        ).rejects.toThrow('drain failed');
+        expect(await Conversation.exists({ conversationId })).not.toBeNull();
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(1);
+        const storage = createResponseStorage(mongoose);
+        expect(await storage.read({ userId: 'user123' }, response.responseId)).toBeNull();
+        const retained = await runAsSystem(() =>
+          mongoose.models.StoredResponse.findOne({
+            userId: 'user123',
+            conversationId,
+            responseId: response.responseId,
+            tenantId: { $exists: false },
+          }).lean(),
+        );
+        expect(retained).toMatchObject({
+          requestJSON: response.requestJSON,
+          responseJSON: response.responseJSON,
+          status: 'completed',
+        });
+        const cleanup = await storage.readCleanupIdentity(
+          { userId: 'user123' },
+          response.responseId,
+        );
+        expect(cleanup).toMatchObject({
+          userId: 'user123',
+          conversationId,
+          responseId: response.responseId,
+          agentId: 'agent',
+          retirement: 'conversation_deleted',
+        });
+        for (const field of [
+          'requestJSON',
+          'responseJSON',
+          'preparedTerminal',
+          'pendingTerminal',
+          'review',
+          'resume',
+        ])
+          expect(cleanup).not.toHaveProperty(field);
+        expect(JSON.stringify(cleanup)).not.toContain('private');
+        await deleteConvos('user123', { conversationId });
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+      });
+
+      it('recovers private response cleanup after the root and its messages are already gone', async () => {
+        const conversationId = uuidv4();
+        await seedResponse(conversationId);
+        const result = await deleteConvos('user123', { conversationId });
+        expect(result.conversationIds).toContain(conversationId);
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+      });
+
+      it('retries irreversible response erasure when the subsequent parent deletion fails', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          endpoint: EModelEndpoint.agents,
+        });
+        await seedResponse(conversationId);
+        const deletion = jest
+          .spyOn(Conversation.collection, 'deleteMany')
+          .mockRejectedValueOnce(new Error('parent delete failed'));
+        await expect(deleteConvos('user123', { conversationId })).rejects.toThrow(
+          'parent delete failed',
+        );
+        deletion.mockRestore();
+        expect(await Conversation.exists({ conversationId })).not.toBeNull();
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+        await deleteConvos('user123', { conversationId });
+        expect(await Conversation.exists({ conversationId })).toBeNull();
+      });
+
+      it('allows concurrent erasers to finish without reopening admission', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          endpoint: EModelEndpoint.agents,
+        });
+        const response = await seedResponse(conversationId);
+        await Promise.all([
+          deleteConvos('user123', { conversationId }, { allowEmpty: true }),
+          deleteConvos('user123', { conversationId }, { allowEmpty: true }),
+        ]);
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+        expect(
+          await createResponseStorage(mongoose).read({ userId: 'user123' }, response.responseId),
+        ).toBeNull();
+      });
+    });
+
     it('retires queued-turn work before each conversation deletion wave', async () => {
       const conversationId = uuidv4();
       await Conversation.create({
@@ -4992,32 +5309,6 @@ describe('Conversation Operations', () => {
     it('returns zero when the user has no conversations', async () => {
       const result = await archiveAllConvos('user123');
       expect(result.archivedCount).toBe(0);
-    });
-  });
-
-  describe('deleteNullOrEmptyConversations', () => {
-    it('should delete conversations with null, empty, or missing conversationIds', async () => {
-      // Since conversationId is required by the schema, we can't create documents with null/missing IDs
-      // This test should verify the function works when such documents exist (e.g., from data corruption)
-
-      // For this test, let's create a valid conversation and verify the function doesn't delete it
-      await Conversation.create({
-        conversationId: mockConversationData.conversationId,
-        user: 'user4',
-        endpoint: EModelEndpoint.openAI,
-      });
-
-      deleteMessages.mockResolvedValue({ deletedCount: 0 });
-
-      const result = await deleteNullOrEmptyConversations();
-
-      expect(result?.conversations.deletedCount).toBe(0); // No invalid conversations to delete
-      expect(result?.messages.deletedCount).toBe(0);
-
-      // Verify valid conversation remains
-      const remainingConvos = await Conversation.find({});
-      expect(remainingConvos).toHaveLength(1);
-      expect(remainingConvos[0].conversationId).toBe(mockConversationData.conversationId);
     });
   });
 
@@ -9440,6 +9731,89 @@ describe('laneGit', () => {
     await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(laneGit);
   });
 
+  describe('linked pull request', () => {
+    const user = 'lane-user';
+    const lane = { branch: 'feat/x', head };
+    const read = (conversationId: string) => methods.getConvoLaneGit(user, conversationId);
+
+    it('stores the link and keeps it through later reports on the same branch', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      const moved = { branch: 'feat/x', head: 'b'.repeat(40) };
+      await expect(record({ user, conversationId, laneGit: moved, repo: 'o/r' })).resolves.toBe(
+        true,
+      );
+      await expect(read(conversationId)).resolves.toEqual({
+        ...moved,
+        repo: 'o/r',
+        pullRequest: 7,
+      });
+    });
+
+    it('returns the link from the batch read too', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await expect(methods.getConvosLaneGit(user, [conversationId])).resolves.toEqual([
+        { conversationId, laneGit: { ...lane, repo: 'o/r', pullRequest: 7 } },
+      ]);
+    });
+
+    it('drops the link when the branch changes', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: { branch: 'dev', head }, repo: 'o/r' });
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+    });
+
+    it('drops the link when the repository changes or is no longer known', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane, repo: 'o/other' });
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane });
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+    });
+
+    it('treats an empty repository like an unknown one when keeping the link', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane, repo: '' });
+      await expect(read(conversationId)).resolves.toEqual({ ...lane, pullRequest: 7 });
+    });
+
+    it('replaces the link with a newer one', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 9 });
+      await expect(read(conversationId)).resolves.toMatchObject({ pullRequest: 9 });
+    });
+
+    it('ignores a link carried by a report with a lower sequence number', async () => {
+      const conversationId = await seed();
+      const first = (await methods.reserveConvoLaneGitSeq(user, conversationId)) as number;
+      const second = (await methods.reserveConvoLaneGitSeq(user, conversationId)) as number;
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', seq: second });
+      await expect(
+        record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7, seq: first }),
+      ).resolves.toBe(false);
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+    });
+
+    it('stores a branch or repository that looks like a field path as plain text', async () => {
+      const conversationId = await seed();
+      const dollar = { branch: '$laneGit.head', head };
+      await record({ user, conversationId, laneGit: dollar, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: dollar, repo: 'o/r' });
+      await expect(read(conversationId)).resolves.toEqual({
+        ...dollar,
+        repo: 'o/r',
+        pullRequest: 7,
+      });
+    });
+  });
+
   it('does not write for another owner or an unknown conversation', async () => {
     const conversationId = await seed();
     const laneGit = { branch: 'main', head };
@@ -10041,6 +10415,23 @@ describe('laneGit review hardening', () => {
       await expect(write(conversationId, 2, mac)).resolves.toBe(true);
     });
 
+    it('returns the epoch with the admitted decision, from the same document read', async () => {
+      const conversationId = await seedAttached([mac]);
+      await expect(
+        methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId),
+      ).resolves.toMatchObject({ codeWorkspaces: [mac], codeAttachmentEpoch: 0 });
+      await move(conversationId, [team]);
+      await expect(
+        methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId),
+      ).resolves.toMatchObject({ codeWorkspaces: [team], codeAttachmentEpoch: 1 });
+      await move(conversationId, [mac]);
+      const admitted = await methods.readAdmittedConvoCodeEnvironmentDecision(
+        'lane-user',
+        conversationId,
+      );
+      expect(admitted).toMatchObject({ codeWorkspaces: [mac], codeAttachmentEpoch: 2 });
+    });
+
     it('is not advanced by admitting a generation', async () => {
       const conversationId = await seedAttached([mac]);
       await methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId);
@@ -10088,6 +10479,101 @@ describe('laneGit review hardening', () => {
       });
     });
 
+    it("does not read another user's conversation as the root", async () => {
+      const rootId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: rootId,
+        user: 'someone-else',
+        title: 'Not yours',
+        endpoint: 'agents',
+        messages: [],
+        codeAttachmentEpoch: 9,
+      });
+      const threadId = await seedThread(rootId);
+      await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
+        codeAttachmentEpoch: 0,
+      });
+    });
+
+    it('does not read an expired root, which the write path treats as gone', async () => {
+      const rootId = await seedAttached([mac]);
+      await move(rootId, [team]);
+      await Conversation.collection.updateOne(
+        { conversationId: rootId },
+        { $set: { expiredAt: new Date(Date.now() - 60_000) } },
+      );
+      const threadId = await seedThread(rootId);
+      await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
+        codeAttachmentEpoch: 0,
+      });
+    });
+
+    it("does not read another tenant's conversation as the root", async () => {
+      const rootId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: rootId,
+        user: 'lane-user',
+        title: 'Other tenant',
+        endpoint: 'agents',
+        messages: [],
+        codeAttachmentEpoch: 7,
+        tenantId: 'tenant-b',
+      });
+      const threadId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: threadId,
+        user: 'lane-user',
+        title: 'Thread',
+        endpoint: 'agents',
+        messages: [],
+        tenantId: 'tenant-a',
+        subagentThread: { rootConversationId: rootId, parentConversationId: rootId },
+      });
+      const context = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.getConvoLaneContext('lane-user', threadId),
+      );
+      expect(context).toMatchObject({ codeAttachmentEpoch: 0 });
+    });
+
+    it('reads a root in the same tenant', async () => {
+      const rootId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: rootId,
+        user: 'lane-user',
+        title: 'Same tenant',
+        endpoint: 'agents',
+        messages: [],
+        codeAttachmentEpoch: 4,
+        tenantId: 'tenant-a',
+      });
+      const threadId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: threadId,
+        user: 'lane-user',
+        title: 'Thread',
+        endpoint: 'agents',
+        messages: [],
+        tenantId: 'tenant-a',
+        subagentThread: { rootConversationId: rootId, parentConversationId: rootId },
+      });
+      const context = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.getConvoLaneContext('lane-user', threadId),
+      );
+      expect(context).toMatchObject({ codeAttachmentEpoch: 4 });
+    });
+
+    it('reads the thread and its root in one database operation', async () => {
+      const rootId = await seedAttached([mac]);
+      const threadId = await seedThread(rootId);
+      const spy = jest.spyOn(Conversation, 'findOne');
+      const aggregate = jest.spyOn(Conversation, 'aggregate');
+      await methods.getConvoLaneContext('lane-user', threadId);
+      expect(spy).not.toHaveBeenCalled();
+      expect(aggregate).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+      aggregate.mockRestore();
+    });
+
     it('reads zero when the root is gone, so the write is refused rather than guessed', async () => {
       const threadId = await seedThread(uuidv4());
       await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
@@ -10107,5 +10593,67 @@ describe('laneGit review hardening', () => {
       );
       await expect(methods.getConvoLaneContext('intruder', conversationId)).resolves.toBeNull();
     });
+  });
+});
+
+describe('getConvosLaneGit', () => {
+  const head = 'a'.repeat(40);
+  const seedLane = async (
+    user: string,
+    laneGit?: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ) => {
+    const conversationId = uuidv4();
+    await Conversation.collection.insertOne({
+      conversationId,
+      user,
+      title: 'Lane',
+      endpoint: 'agents',
+      messages: [],
+      ...(laneGit ? { laneGit: { seq: 3, ...laneGit } } : {}),
+      ...extra,
+    });
+    return conversationId;
+  };
+
+  it("returns the lanes of the owner's conversations in one query, without the sequence number", async () => {
+    const a = await seedLane('bulk-user', { branch: 'feat/a', head, repo: 'o/r' });
+    const b = await seedLane('bulk-user', { branch: 'feat/b', head: null });
+    const found = await methods.getConvosLaneGit('bulk-user', [a, b]);
+    expect(found).toHaveLength(2);
+    expect(found).toEqual(
+      expect.arrayContaining([
+        { conversationId: a, laneGit: { branch: 'feat/a', head, repo: 'o/r' } },
+        { conversationId: b, laneGit: { branch: 'feat/b', head: null } },
+      ]),
+    );
+    expect(JSON.stringify(found)).not.toContain('seq');
+  });
+
+  it("leaves out a conversation with no lane, an unknown id and another owner's conversation alike", async () => {
+    const mine = await seedLane('bulk-user', { branch: 'feat/a', head });
+    const noLane = await seedLane('bulk-user');
+    const theirs = await seedLane('someone-else', { branch: 'secret', head });
+    const found = await methods.getConvosLaneGit('bulk-user', [mine, noLane, theirs, uuidv4()]);
+    expect(found.map((row) => row.conversationId)).toEqual([mine]);
+  });
+
+  it('leaves out an expired temporary chat', async () => {
+    const expired = await seedLane(
+      'bulk-user',
+      { branch: 'feat/x', head },
+      { expiredAt: new Date(Date.now() - 60_000) },
+    );
+    const live = await seedLane(
+      'bulk-user',
+      { branch: 'feat/y', head },
+      { expiredAt: new Date(Date.now() + 3_600_000) },
+    );
+    const found = await methods.getConvosLaneGit('bulk-user', [expired, live]);
+    expect(found.map((row) => row.conversationId)).toEqual([live]);
+  });
+
+  it('asks nothing for an empty list', async () => {
+    await expect(methods.getConvosLaneGit('bulk-user', [])).resolves.toEqual([]);
   });
 });

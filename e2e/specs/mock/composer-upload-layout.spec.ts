@@ -15,6 +15,50 @@ for (const viewport of [
   test.describe(`composer uploads at ${viewport.width}px`, () => {
     test.use({ viewport });
 
+    test('sends a pending long paste inline without waiting for its upload', async ({ page }) => {
+      await page.goto(NEW_CHAT_PATH);
+      await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
+      const input = page.getByRole('textbox', { name: 'Message input' });
+      const paste = 'Preview the exact pasted content.\n'.repeat(100);
+      let releaseUpload = () => {};
+      const gate = new Promise<void>((resolve) => {
+        releaseUpload = resolve;
+      });
+      await page.route('**/api/files', async (route) => {
+        if (route.request().method() === 'POST') {
+          await gate;
+          await route.abort();
+          return;
+        }
+        await route.continue();
+      });
+      try {
+        await input.fill('Use this text');
+        await input.evaluate((element, text) => {
+          const clipboardData = new DataTransfer();
+          clipboardData.setData('text/plain', text);
+          element.dispatchEvent(
+            new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }),
+          );
+        }, paste);
+        const tray = page.getByTestId('composer-tray');
+        await expect(tray).toContainText('Preview the exact pasted content.');
+        await expect(page.getByTestId('send-button')).toBeEnabled();
+        const sent = page.waitForRequest(
+          (request) => request.method() === 'POST' && request.url().includes('/api/agents/chat'),
+        );
+        await input.press('Enter');
+        const payload = (await sent).postDataJSON();
+        expect(payload.text).toContain(`\`\`\`text\n${paste}\n\`\`\``);
+        expect(payload.files ?? []).toHaveLength(0);
+        await expect(tray).toHaveCount(0);
+        releaseUpload();
+        await expect(input).toHaveValue('');
+      } finally {
+        releaseUpload();
+      }
+    });
+
     test('keeps the textarea in place when uploading starts and finishes', async ({
       page,
     }, testInfo) => {

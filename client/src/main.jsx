@@ -7,8 +7,10 @@ import '@librechat/client/style.css';
 import './style.css';
 import './mobile.css';
 import { ApiErrorBoundaryProvider } from './hooks/ApiErrorBoundaryContext';
-import 'katex/dist/katex.min.css';
-import 'katex/dist/contrib/copy-tex.js';
+import { clearTTSCache } from './utils/ttscache';
+
+/** Read-aloud audio lives in memory now; drop what earlier versions persisted to disk. */
+void clearTTSCache();
 
 const container = document.getElementById('root');
 const root = createRoot(container);

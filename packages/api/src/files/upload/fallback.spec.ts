@@ -5,6 +5,7 @@ import { logger } from '@librechat/data-schemas';
 import { excelFileTypes, fullMimeTypesList, selectBuiltInTextPlan } from 'librechat-data-provider';
 import type { FiltersConfig, TextDerivation } from 'librechat-data-provider';
 import type { UploadFallbackTextExtractors } from './fallback';
+import type { ServerRequest } from '~/types';
 import {
   extractBoundedText,
   UPLOAD_FALLBACK_TEXT_PLANS,
@@ -14,8 +15,10 @@ import {
   classifyExtractionFailure,
 } from './fallback';
 import { DOCUMENT_PARSER_MAX_FILE_SIZE, parseDocument } from '~/files/documents/crud';
+import { SpreadsheetLimitError } from '~/files/documents/workbook';
 import { MAX_STORED_EXTRACTED_TEXT_BYTES } from '~/files/extract';
 import { ZipBombError } from '~/files/documents/zipSafety';
+import { SpreadsheetBusyError } from './errors';
 import { parseTextNative } from '~/files/text';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -165,6 +168,29 @@ describe('resolveUploadFallbackText', () => {
     expect(extractors.parseDocument).not.toHaveBeenCalled();
   });
 
+  it('uses the request parser policy for best-effort spreadsheet fallback', async () => {
+    const file = {
+      path: path.join(__dirname, '../documents/sample.xlsx'),
+      originalname: 'sample.xlsx',
+      mimetype: XLSX_MIME,
+    } as Express.Multer.File;
+    const req = { config: { spreadsheetParsing: { maxConcurrent: 0 } } } as Pick<
+      ServerRequest,
+      'config'
+    >;
+    const extractors = spiedExtractors();
+    await expect(
+      resolveUploadFallbackText({
+        ...route,
+        file,
+        req,
+        fileId: 'file-policy',
+        extractors,
+      }),
+    ).resolves.toBeUndefined();
+    expect(extractors.parseDocument).toHaveBeenCalledWith({ file, req });
+  });
+
   it('stores the parsed text of a spreadsheet without decoding its bytes', async () => {
     const extractors = spiedExtractors();
     const file = {
@@ -176,7 +202,7 @@ describe('resolveUploadFallbackText', () => {
     await expect(
       resolveUploadFallbackText({ ...route, file, fileId: 'file-1', extractors }),
     ).resolves.toBe('Sheet One:\nData,on,first,sheet\nSecond Sheet:\nData,On\nSecond,Sheet\n');
-    expect(extractors.parseDocument).toHaveBeenCalledWith({ file });
+    expect(extractors.parseDocument).toHaveBeenCalledWith({ file, req: undefined });
     expect(extractors.parseTextNative).not.toHaveBeenCalled();
   });
 
@@ -325,6 +351,28 @@ describe('extractBoundedText', () => {
   const fixture = (name: string, mimetype: string): Express.Multer.File =>
     ({ originalname: name, path: path.join(documentsDir, name), mimetype }) as Express.Multer.File;
 
+  it('passes the request parser policy to the document parser', async () => {
+    const file = upload('sheet.csv', 'text/csv', 'a,b');
+    const req = { config: { spreadsheetParsing: { maxConcurrent: 1 } } } as Pick<
+      ServerRequest,
+      'config'
+    >;
+    const extractors: UploadFallbackTextExtractors = {
+      parseDocument: jest.fn().mockResolvedValue({ text: 'a,b' }),
+      parseTextNative: jest.fn(),
+    };
+
+    await expect(
+      extractBoundedText({
+        file,
+        req,
+        plan: UPLOAD_FALLBACK_TEXT_PLANS.documentParser,
+        extractors,
+      }),
+    ).resolves.toEqual({ text: 'a,b' });
+    expect(extractors.parseDocument).toHaveBeenCalledWith({ file, req });
+  });
+
   it('returns text within every cap', async () => {
     await expect(
       extractBoundedText({
@@ -432,6 +480,8 @@ describe('classifyExtractionFailure', () => {
     [new Error('File "a.pdf" exceeds the 15MB document parser limit (16MB).'), 'too_large'],
     [new Error('No text found in document'), 'empty'],
     [new Error('Unable to extract text from "a.pdf". It may be image-based.'), 'empty'],
+    [new SpreadsheetLimitError(), 'too_large'],
+    [new SpreadsheetBusyError(), 'unavailable'],
     [new Error('Invalid PDF structure'), 'parser'],
     [Object.assign(new Error('Invalid PDF structure'), { code: 'ERR_OUT_OF_RANGE' }), 'parser'],
     ['not an error', 'parser'],
@@ -457,6 +507,8 @@ describe('classifyExtractionFailure', () => {
 
   it('recognizes only the failures it can name, leaving the rest unclassified', () => {
     expect(matchExtractionFailure(new Error('No text found in document'))).toBe('empty');
+    expect(matchExtractionFailure(new SpreadsheetLimitError())).toBe('too_large');
+    expect(matchExtractionFailure(new SpreadsheetBusyError())).toBeUndefined();
     expect(matchExtractionFailure(new Error('Invalid PDF structure'))).toBeUndefined();
     expect(matchExtractionFailure('not an error')).toBeUndefined();
   });

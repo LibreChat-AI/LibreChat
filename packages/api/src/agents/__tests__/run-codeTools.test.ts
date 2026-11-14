@@ -1,13 +1,15 @@
 import { FileContext } from 'librechat-data-provider';
 import type { AgentInputs, SubagentTaskConfig, SubagentResolveContext } from '@librechat/agents';
+import type { AppConfig, FileProvisionCommit } from '@librechat/data-schemas';
 import type { TFile, FiltersConfig } from 'librechat-data-provider';
-import type { AppConfig } from '@librechat/data-schemas';
+import type { ProvisionCallbackDeps, ProvisionToolContext } from '~/files/provision/callback';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
-import type { ProvisionToolContext } from '~/files/provision/callback';
 import type { ServerRequest } from '~/types';
+import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
+import { createFileProvisionRecovery } from '../../files/operations';
 import { resolveTurnDeliveryRouting } from '~/agents/files/delivery';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
 import { ContentFilterError } from '~/middleware/contentFilter';
@@ -646,14 +648,43 @@ describe('createRun code-tool eager/session wiring', () => {
           };
         },
       );
+      const updateFile = jest.fn(
+        async (_update: Parameters<ProvisionCallbackDeps['updateFile']>[0]): Promise<unknown> =>
+          undefined,
+      );
+      const updateCodeEnvRef = jest.fn(
+        async (
+          _update: Parameters<ProvisionCallbackDeps['updateCodeEnvRef']>[0],
+        ): Promise<unknown> => undefined,
+      );
+      const addEmbeddedEntity = jest.fn(
+        async (
+          _update: Parameters<ProvisionCallbackDeps['addEmbeddedEntity']>[0],
+        ): Promise<unknown> => undefined,
+      );
       const provision = createProvisionFilesCallback({
         req: { user: { id: 'user-1' } } as ServerRequest,
         agentToolContexts: contexts,
+        fileStorage: {
+          recovery: createFileProvisionRecovery(),
+          acquireFileProvision: jest.fn(async () => true),
+          releaseFileProvision: jest.fn(async () => true),
+          commitFileProvision: jest.fn(
+            async ({ claim, code, entityId, embedded }: FileProvisionCommit) => {
+              let result: unknown;
+              if (code) result = await updateCodeEnvRef({ file_id: claim.file_id, ...code });
+              else if (entityId != null)
+                result = await addEmbeddedEntity({ file_id: claim.file_id, entityId });
+              else result = await updateFile({ file_id: claim.file_id, embedded });
+              return result !== null && result !== false;
+            },
+          ),
+        },
         provisionToCodeEnv,
         provisionToVectorDB: jest.fn(),
-        updateFile: jest.fn(),
-        updateCodeEnvRef: jest.fn(),
-        addEmbeddedEntity: jest.fn(),
+        updateFile,
+        updateCodeEnvRef,
+        addEmbeddedEntity,
       });
       for (const child of children) {
         contexts.set(child.id, child);
@@ -700,6 +731,11 @@ describe('createRun code-tool eager/session wiring', () => {
     expect(runConfig.codeSessionToolNames).toEqual(
       expect.arrayContaining(['create_file', 'edit_file', 'read_file']),
     );
+  });
+
+  it('reports why a subagent could not start instead of leaving the SDK to guess', async () => {
+    const runConfig = await captureRunConfig();
+    expect(runConfig.onSubagentResolutionFailure).toBe(reportSubagentResolutionFailure);
   });
 
   it('passes the trusted per-agent code-session partition to the SDK', async () => {

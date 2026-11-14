@@ -1,6 +1,7 @@
 import type { ClientOptions, OpenAIClientOptions } from '@librechat/agents';
 import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { TConfig } from 'librechat-data-provider';
+import type { ReasoningCapabilityDeps } from './reasoning';
 import type { RequestBody, ServerRequest } from './http';
 import type { EndpointTokenConfig } from './tokens';
 import type { AzureOptions } from './azure';
@@ -54,8 +55,15 @@ interface InitializeParamsBase {
   endpoint: string;
   /** Model parameters from the request (includes model, temperature, topP, etc.) */
   model_parameters?: Record<string, unknown>;
+  /** Validated extra inference wire fields, separate from SDK constructor options. */
+  inferenceParameters?: Record<string, unknown>;
   /** Database methods for user key operations */
   db: EndpointDbMethods;
+  /**
+   * Catalog client and cache for checking a stored reasoning effort against the selected
+   * OpenRouter model. Omitted, no check is made and the stored effort is sent as saved.
+   */
+  reasoningCapabilityDeps?: ReasoningCapabilityDeps;
 }
 
 /** Request-backed compatibility contract retained for existing endpoint callers. */

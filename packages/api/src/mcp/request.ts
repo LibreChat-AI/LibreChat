@@ -2,8 +2,17 @@ import { logger } from '@librechat/data-schemas';
 import { Constants } from 'librechat-data-provider';
 
 import type { MCPRuntimeRequestBody, RequestScopedMCPConnectionStore } from './types';
+import type { RequestBody } from '~/types';
 
 export type { MCPRuntimeRequestBody } from './types';
+
+/** Bind MCP templates to the agent that owns the tool, without mutating shared request data. */
+export function withMCPAgentContext(body: RequestBody | undefined, agentId?: string): RequestBody {
+  return {
+    ...body,
+    agentId: agentId && /^agent_[A-Za-z0-9_-]+$/.test(agentId) ? agentId : undefined,
+  };
+}
 
 /**
  * Builds the complete request context that runtime MCP placeholders may resolve.
@@ -58,6 +67,10 @@ interface Disconnectable {
 }
 
 const contexts = new WeakMap<object, MCPRequestContext>();
+const contextRetentions = new WeakMap<
+  RequestScopedMCPConnectionStore,
+  { holds: number; cleanupRequested: boolean }
+>();
 const cleanupFlights = new WeakMap<RequestScopedMCPConnectionStore, Promise<void>>();
 const requestControllers = new WeakMap<RequestScopedMCPConnectionStore, AbortController>();
 
@@ -92,6 +105,30 @@ export function createMCPRequestContext(): MCPRequestContext {
     cleanupStarted: false,
     cleanupOnResponse: true,
     responseCleanupAttached: false,
+  };
+}
+
+/** Keeps normal cleanup deferred while an admitted child task owns the context. */
+export function retainMCPRequestContext(context: RequestScopedMCPConnectionStore): () => void {
+  let retention = contextRetentions.get(context);
+  if (
+    context.cleanupStarted ||
+    context.quiesceStarted ||
+    (retention?.cleanupRequested && retention.holds === 0)
+  ) {
+    throw new MCPRequestQuiescedError();
+  }
+  if (!retention) {
+    retention = { holds: 0, cleanupRequested: false };
+    contextRetentions.set(context, retention);
+  }
+  retention.holds++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    retention.holds--;
+    if (retention.holds === 0 && retention.cleanupRequested) runCleanup(context);
   };
 }
 
@@ -157,8 +194,15 @@ async function disposeContext(
   }
 }
 
-export async function cleanupMCPRequestContext(context?: MCPRequestContext): Promise<void> {
+export async function cleanupMCPRequestContext(
+  context?: RequestScopedMCPConnectionStore,
+): Promise<void> {
   if (!context) return;
+  const retention = contextRetentions.get(context);
+  if (retention) {
+    retention.cleanupRequested = true;
+    if (retention.holds > 0 && !context.cleanupStarted && !context.quiesceStarted) return;
+  }
   let flight = cleanupFlights.get(context);
   if (!flight) {
     if (context.cleanupStarted) {
@@ -179,7 +223,7 @@ function isResponseFinished(res?: MCPResponseLike): boolean {
   return Boolean(res?.writableEnded || res?.finished || res?.destroyed);
 }
 
-function runCleanup(context: MCPRequestContext): void {
+function runCleanup(context: RequestScopedMCPConnectionStore): void {
   cleanupMCPRequestContext(context).catch(() => {
     logger.warn('[MCP Request Context] Cleanup failed');
   });
@@ -252,6 +296,7 @@ export async function cleanupMCPRequestContextForReq(req?: object): Promise<void
   try {
     await cleanupMCPRequestContext(context);
   } finally {
-    contexts.delete(req);
+    // Retained request closures must keep their original scope, including its final cutoff.
+    if (!contextRetentions.has(context)) contexts.delete(req);
   }
 }

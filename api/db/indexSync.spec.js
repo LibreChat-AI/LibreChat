@@ -35,6 +35,7 @@ const originalConversationModel = mongoose.models.Conversation;
 // Mock external modules
 jest.mock('@librechat/data-schemas', () => ({
   logger: mockLogger,
+  runAsSystem: (fn) => fn(),
 }));
 
 jest.mock('meilisearch', () => ({

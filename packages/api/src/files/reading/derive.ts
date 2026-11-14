@@ -217,7 +217,7 @@ export function createFileTextDeriver({
         mimetype: file.type ?? '',
         size,
       } as Express.Multer.File;
-      const result = await extractBoundedText({ file: upload, filters, plan, extractors });
+      const result = await extractBoundedText({ file: upload, req, filters, plan, extractors });
       if (signal?.aborted) {
         return skipped('aborted');
       }

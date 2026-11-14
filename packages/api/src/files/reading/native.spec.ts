@@ -676,3 +676,35 @@ describe('native attachment fallback', () => {
     },
   );
 });
+
+describe('prepareMessageAttachments missing-file handler', () => {
+  const file = { file_id: 'gone', filename: 'gone.pdf', type: 'application/pdf', bytes: 1 };
+
+  const fakeClient = () => ({
+    options: {},
+    processAttachments: jest.fn(async () => [file]),
+    prepareTurnAttachments: jest.fn(async (files: (typeof file)[]) => files),
+    addFileContextToMessage: jest.fn(async () => undefined),
+  });
+
+  it('hands a replay handler to the encoders and keeps the call shape without one', async () => {
+    const onMissingFile = jest.fn();
+    const withHandler = fakeClient();
+    await prepareMessageAttachments({
+      client: withHandler,
+      message: {},
+      files: [file],
+      onMissingFile,
+    });
+    expect(withHandler.processAttachments).toHaveBeenCalledWith(
+      {},
+      [file],
+      undefined,
+      onMissingFile,
+    );
+
+    const without = fakeClient();
+    await prepareMessageAttachments({ client: without, message: {}, files: [file] });
+    expect(without.processAttachments).toHaveBeenCalledWith({}, [file]);
+  });
+});

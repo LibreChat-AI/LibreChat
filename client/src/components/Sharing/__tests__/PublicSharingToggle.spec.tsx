@@ -41,7 +41,7 @@ describe('PublicSharingToggle', () => {
     expect(permissionLabel.closest('.grid')).toHaveClass('grid-rows-[1fr]');
   });
 
-  it('does not clip the open permission row, so the inline role menu can escape the box', () => {
+  it('keeps the permission row clipped while open, so its reveal never overflows a scroll area', () => {
     render(
       <PublicSharingToggle
         isPublic={true}
@@ -51,7 +51,7 @@ describe('PublicSharingToggle', () => {
     );
 
     const permissionLabel = screen.getByText('com_ui_everyone_permission_level');
-    expect(permissionLabel.closest('.overflow-hidden')).toBeNull();
-    expect(permissionLabel.closest('.overflow-visible')).toBeInTheDocument();
+    expect(permissionLabel.closest('.overflow-hidden')).toBeInTheDocument();
+    expect(permissionLabel.closest('.overflow-visible')).toBeNull();
   });
 });

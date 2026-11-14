@@ -10,12 +10,15 @@ import type {
 import type { IUser, AppConfig, IConversation } from '@librechat/data-schemas';
 import type { Request } from 'express';
 import type { ResolvedChatProjectContext } from '../projects/context';
+import type { BranchLinks } from '../messages/history';
 
 /**
  * LibreChat-specific request body type that extends Express Request body
  * (have to use type alias because you can't extend indexed access types like Request['body'])
  */
 export type RequestBody = {
+  /** Server-assigned MCP tool owner; overwrite browser input at tool construction and invocation. */
+  agentId?: string;
   messageId?: string;
   fileTokenLimit?: number;
   conversationId?: string;
@@ -45,6 +48,9 @@ export type ServerRequest = Request<unknown, unknown, RequestBody> & {
   /** Conversation read by request middleware (`null` = looked up, absent), reused by the
    *  subagent guard, agent initialization, and the first save instead of re-reading it. */
   resolvedConversation?: Partial<IConversation> | null;
+  /** Link rows of the conversation, read to resolve an inherited reasoning level. The turn's
+   *  history read consumes and clears them to fetch only the active branch. */
+  branchLinks?: BranchLinks;
   /** Authoritative server-only project context for the current turn. */
   chatProjectContext?: ResolvedChatProjectContext | null;
   /** Metadata-only project files hydrated once per request. */

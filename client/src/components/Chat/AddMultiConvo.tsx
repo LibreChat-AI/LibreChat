@@ -1,6 +1,6 @@
 import { PlusCircle } from 'lucide-react';
 import { Button, TooltipAnchor } from '@librechat/client';
-import useMultiConvo from '~/hooks/Chat/useMultiConvo';
+import useMultiConvo from '~/hooks/Conversations/useMultiConvo';
 import { useLocalize } from '~/hooks';
 
 function AddMultiConvo() {

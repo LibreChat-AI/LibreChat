@@ -4,9 +4,13 @@ import type { TFile } from './types/files';
 import type { TMessage } from './types';
 import {
   buildTree,
+  mergeMessageFile,
   findMessageById,
-  hydrateMessageFile,
   isCompactedLeaf,
+  isFileAttachment,
+  isFileContentPart,
+  messageCarriesFiles,
+  hasContentPartFiles,
   isUserInitiatedCompaction,
 } from './messages';
 import { ContentTypes } from './types/runs';
@@ -227,17 +231,14 @@ describe('buildTree', () => {
   });
 });
 
-describe('hydrateMessageFile', () => {
+describe('mergeMessageFile delivery path', () => {
   const stored = { file_id: 'file', filename: 'report.pdf', llmDeliveryPath: 'provider' } as TFile;
 
   it('returns the stored record when the message copy names no path or the same path', () => {
-    expect(hydrateMessageFile({ file_id: stored.file_id }, { file: stored })).toBe(stored);
-    expect(
-      hydrateMessageFile(
-        { file_id: stored.file_id, llmDeliveryPath: 'provider' },
-        { file: stored },
-      ),
-    ).toBe(stored);
+    expect(mergeMessageFile({ file_id: stored.file_id }, stored)).toBe(stored);
+    expect(mergeMessageFile({ file_id: stored.file_id, llmDeliveryPath: 'provider' }, stored)).toBe(
+      stored,
+    );
   });
 
   it("carries the message copy's differing delivery path onto the stored record", () => {
@@ -246,7 +247,7 @@ describe('hydrateMessageFile', () => {
       filename: 'stub.pdf',
       llmDeliveryPath: 'text' as const,
     };
-    expect(hydrateMessageFile(copy, { file: stored })).toEqual({
+    expect(mergeMessageFile(copy, stored)).toEqual({
       ...stored,
       llmDeliveryPath: 'text',
     });
@@ -255,7 +256,7 @@ describe('hydrateMessageFile', () => {
 
   it('returns the message copy itself when no stored record backs it', () => {
     const copy = { file_id: 'missing', llmDeliveryPath: 'text' as const };
-    expect(hydrateMessageFile(copy, { file: stored })).toBe(copy);
+    expect(mergeMessageFile(copy, undefined)).toBe(copy);
   });
 });
 
@@ -345,5 +346,93 @@ describe('isUserInitiatedCompaction', () => {
     ['no content', undefined],
   ])('is false for %s', (_label, content) => {
     expect(isUserInitiatedCompaction({ content } as TMessage)).toBe(false);
+  });
+});
+
+type Content = NonNullable<TMessage['content']>;
+
+describe('messageCarriesFiles', () => {
+  it('finds uploads, file-backed attachments and file references in content', () => {
+    expect(messageCarriesFiles({ files: [{ file_id: 'upload' }] })).toBe(true);
+    expect(
+      messageCarriesFiles({
+        attachments: [{ file_id: 'chart', toolCallId: 't' }] as TMessage['attachments'],
+      }),
+    ).toBe(true);
+    expect(
+      messageCarriesFiles({
+        content: [
+          { type: ContentTypes.STEER, steer: 'use this', files: [{ file_id: 'steered' }] },
+        ] as Content,
+      }),
+    ).toBe(true);
+    expect(
+      messageCarriesFiles({
+        content: [{ type: ContentTypes.IMAGE_FILE, image_file: { file_id: 'img' } }] as Content,
+      }),
+    ).toBe(true);
+  });
+
+  it('ignores empty lists, search sources and plain content', () => {
+    expect(messageCarriesFiles({ files: [] })).toBe(false);
+    expect(
+      messageCarriesFiles({
+        attachments: [{ type: 'web_search', toolCallId: 't' }] as TMessage['attachments'],
+      }),
+    ).toBe(false);
+    expect(
+      messageCarriesFiles({
+        content: [
+          { type: ContentTypes.TEXT, text: 'hello' },
+          { type: ContentTypes.STEER, steer: 'and this', files: [] },
+        ] as Content,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('file reference predicates', () => {
+  it('recognizes each locator shape replay reads', () => {
+    /** Provider-native locators that persisted rows carry outside the typed content union. */
+    expect(isFileContentPart({ file: { file_id: 'f' } })).toBe(true);
+    expect(isFileContentPart({ file_id: 'f' })).toBe(true);
+    expect(isFileContentPart({ type: ContentTypes.TEXT, text: 'x' } as Content[number])).toBe(
+      false,
+    );
+    expect(isFileContentPart(undefined)).toBe(false);
+    expect(hasContentPartFiles(null)).toBe(false);
+    expect(isFileAttachment(undefined)).toBe(false);
+  });
+});
+
+describe('mergeMessageFile', () => {
+  it('preserves persisted display metadata when the library omits it', () => {
+    const file = {
+      file_id: 'paste',
+      textPreview: 'persisted excerpt',
+      llmDeliveryPath: 'text' as const,
+    };
+    const stored = {
+      file_id: 'paste',
+      filename: 'pasted-text.txt',
+      type: 'text/plain',
+      llmDeliveryPath: 'none',
+    } as TFile;
+    expect(mergeMessageFile(file, stored)).toMatchObject({
+      filename: 'pasted-text.txt',
+      textPreview: 'persisted excerpt',
+      llmDeliveryPath: 'text',
+    });
+    expect(stored).not.toHaveProperty('textPreview');
+  });
+
+  it('reuses the stored object when the message adds no display metadata', () => {
+    const stored = { file_id: 'paste', textPreview: 'stored excerpt' } as TFile;
+    expect(mergeMessageFile({ file_id: 'paste' }, stored)).toBe(stored);
+  });
+
+  it('keeps the message ref when no owner record exists', () => {
+    const file = { file_id: 'paste', textPreview: 'persisted excerpt' };
+    expect(mergeMessageFile(file)).toBe(file);
   });
 });

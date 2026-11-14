@@ -22,7 +22,7 @@ jest.mock('~/app/clients/tools', () => ({
   toolkits: [],
 }));
 
-const { getAvailableTools, getAvailablePluginsController } = require('./PluginController');
+const { getAvailableTools } = require('./PluginController');
 
 describe('PluginController', () => {
   let mockReq, mockRes;
@@ -47,120 +47,6 @@ describe('PluginController', () => {
     getAppConfig.mockResolvedValue({
       filteredTools: [],
       includedTools: [],
-    });
-  });
-
-  describe('getAvailablePluginsController', () => {
-    it('should use filterUniquePlugins to remove duplicate plugins', async () => {
-      const mockPlugins = [
-        { name: 'Plugin1', pluginKey: 'key1', description: 'First' },
-        { name: 'Plugin1', pluginKey: 'key1', description: 'First duplicate' },
-        { name: 'Plugin2', pluginKey: 'key2', description: 'Second' },
-      ];
-
-      require('~/app/clients/tools').availableTools.push(...mockPlugins);
-
-      getAppConfig.mockResolvedValueOnce({
-        filteredTools: [],
-        includedTools: [],
-      });
-
-      await getAvailablePluginsController(mockReq, mockRes);
-
-      expect(mockRes.status).toHaveBeenCalledWith(200);
-      const responseData = mockRes.json.mock.calls[0][0];
-      expect(responseData).toHaveLength(2);
-      expect(responseData[0].pluginKey).toBe('key1');
-      expect(responseData[1].pluginKey).toBe('key2');
-    });
-
-    it('should use checkPluginAuth to verify plugin authentication', async () => {
-      const mockPlugin = { name: 'Plugin1', pluginKey: 'key1', description: 'First' };
-
-      require('~/app/clients/tools').availableTools.push(mockPlugin);
-
-      getAppConfig.mockResolvedValueOnce({
-        filteredTools: [],
-        includedTools: [],
-      });
-
-      await getAvailablePluginsController(mockReq, mockRes);
-
-      const responseData = mockRes.json.mock.calls[0][0];
-      expect(responseData[0].authenticated).toBeUndefined();
-    });
-
-    it('excludes agentsOnly plugins from the legacy plugins endpoint (no run to pause)', async () => {
-      require('~/app/clients/tools').availableTools.push(
-        { name: 'Ask User', pluginKey: 'ask_user_question', description: 'q', agentsOnly: true },
-        { name: 'Plugin2', pluginKey: 'key2', description: 'Second' },
-      );
-
-      await getAvailablePluginsController(mockReq, mockRes);
-
-      const responseData = mockRes.json.mock.calls[0][0];
-      expect(responseData.map((p) => p.pluginKey)).toEqual(['key2']);
-    });
-
-    it('should filter plugins based on includedTools', async () => {
-      const mockPlugins = [
-        { name: 'Plugin1', pluginKey: 'key1', description: 'First' },
-        { name: 'Plugin2', pluginKey: 'key2', description: 'Second' },
-      ];
-
-      require('~/app/clients/tools').availableTools.push(...mockPlugins);
-
-      mockReq.config = {
-        filteredTools: [],
-        includedTools: ['key1'],
-      };
-
-      await getAvailablePluginsController(mockReq, mockRes);
-
-      const responseData = mockRes.json.mock.calls[0][0];
-      expect(responseData).toHaveLength(1);
-      expect(responseData[0].pluginKey).toBe('key1');
-    });
-
-    it('should exclude plugins in filteredTools', async () => {
-      const mockPlugins = [
-        { name: 'Plugin1', pluginKey: 'key1', description: 'First' },
-        { name: 'Plugin2', pluginKey: 'key2', description: 'Second' },
-      ];
-
-      require('~/app/clients/tools').availableTools.push(...mockPlugins);
-
-      mockReq.config = {
-        filteredTools: ['key2'],
-        includedTools: [],
-      };
-
-      await getAvailablePluginsController(mockReq, mockRes);
-
-      const responseData = mockRes.json.mock.calls[0][0];
-      expect(responseData).toHaveLength(1);
-      expect(responseData[0].pluginKey).toBe('key1');
-    });
-
-    it('should ignore filteredTools when includedTools is set', async () => {
-      const mockPlugins = [
-        { name: 'Plugin1', pluginKey: 'key1', description: 'First' },
-        { name: 'Plugin2', pluginKey: 'key2', description: 'Second' },
-        { name: 'Plugin3', pluginKey: 'key3', description: 'Third' },
-      ];
-
-      require('~/app/clients/tools').availableTools.push(...mockPlugins);
-
-      mockReq.config = {
-        includedTools: ['key1', 'key2'],
-        filteredTools: ['key2'],
-      };
-
-      await getAvailablePluginsController(mockReq, mockRes);
-
-      const responseData = mockRes.json.mock.calls[0][0];
-      expect(responseData).toHaveLength(2);
-      expect(responseData.map((p) => p.pluginKey)).toEqual(['key1', 'key2']);
     });
   });
 
@@ -387,17 +273,6 @@ describe('PluginController', () => {
 
       await getAvailableTools(mockReq, mockRes);
 
-      expect(mockRes.json).toHaveBeenCalledWith([]);
-    });
-
-    it('should handle undefined filteredTools and includedTools', async () => {
-      mockReq.config = {};
-
-      getAppConfig.mockResolvedValueOnce({});
-
-      await getAvailablePluginsController(mockReq, mockRes);
-
-      expect(mockRes.status).toHaveBeenCalledWith(200);
       expect(mockRes.json).toHaveBeenCalledWith([]);
     });
 

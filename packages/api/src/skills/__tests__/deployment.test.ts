@@ -8,6 +8,7 @@ import type { DeploymentSkillBaseMethods } from '../deployment';
 import {
   DEPLOYMENT_SKILLS_DIR_ENV,
   createDeploymentSkillMethods,
+  getDeploymentSkillDownloadStream,
   getDeploymentSkillIds,
   initializeDeploymentSkills,
   loadDeploymentSkillsFromDirectory,
@@ -99,6 +100,67 @@ describe('resolveDeploymentSkillDirectory', () => {
       directory: path.join(root, 'config', 'skills'),
       explicitlyConfigured: true,
     });
+  });
+});
+
+describe('getDeploymentSkillDownloadStream', () => {
+  async function loadGuide(): Promise<string> {
+    const root = await makeTempRoot();
+    const skillDir = await writeDeploymentSkill(root);
+    await initializeDeploymentSkills({ projectRoot: root, env: {} });
+    return path.join(skillDir, 'references', 'guide.txt');
+  }
+
+  it('streams a registered file that still exists', async () => {
+    const guide = await loadGuide();
+
+    const stream = await getDeploymentSkillDownloadStream(guide);
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.from(chunk));
+    }
+    expect(Buffer.concat(chunks).toString('utf8')).toBe('reference notes');
+  });
+
+  it('rejects when a registered file was deleted after the registry loaded', async () => {
+    const guide = await loadGuide();
+    await fs.promises.rm(guide);
+
+    await expect(getDeploymentSkillDownloadStream(guide)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('rejects a path the registry does not know', async () => {
+    const guide = await loadGuide();
+
+    await expect(getDeploymentSkillDownloadStream(`${guide}.unregistered`)).rejects.toThrow(
+      'Deployment skill file is not registered',
+    );
+  });
+
+  it('keeps serving a file deleted after its stream was opened', async () => {
+    const guide = await loadGuide();
+
+    const stream = await getDeploymentSkillDownloadStream(guide);
+    await fs.promises.rm(guide);
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.from(chunk));
+    }
+    expect(Buffer.concat(chunks).toString('utf8')).toBe('reference notes');
+  });
+
+  it('closes the file when the stream is destroyed before it is read', async () => {
+    const guide = await loadGuide();
+
+    const stream = (await getDeploymentSkillDownloadStream(guide)) as fs.ReadStream;
+    const closed = new Promise<void>((resolve) => stream.once('close', () => resolve()));
+    stream.destroy();
+
+    await expect(closed).resolves.toBeUndefined();
   });
 });
 

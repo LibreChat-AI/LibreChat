@@ -94,8 +94,8 @@ const CreatePromptForm = ({
   const promptText = watch('prompt');
   const isCreating = createPromptMutation.isLoading;
   const isBlocked = !isDirty || isSubmitting || !isValid || isCreating;
-  /** Floating labels notch out the surface behind them: the dialog sits on `surface-primary`, the page on `presentation` */
-  const labelBgClassName = isDialog ? 'bg-surface-primary' : 'bg-surface-primary-alt';
+  /** Floating labels notch out the surface behind them: the dialog sits on `surface-dialog`, the page on `presentation` */
+  const labelBgClassName = isDialog ? 'bg-surface-dialog' : 'bg-surface-primary-alt';
 
   const onSubmit = (data: CreateFormValues) => {
     const { name, category, oneliner, command, ...rest } = data;
@@ -126,7 +126,7 @@ const CreatePromptForm = ({
         {isSmallScreen ? (
           <div className="mb-2 flex items-center justify-between gap-2">
             {!isDialog && <OpenSidebar />}
-            <CategorySelector portal={!isDialog} />
+            <CategorySelector portal={!isDialog} className="border-border-inset-medium" />
           </div>
         ) : null}
         <div className="mb-1 flex flex-col items-center justify-between font-bold sm:text-xl md:mb-0 md:text-2xl">
@@ -141,7 +141,7 @@ const CreatePromptForm = ({
                     {...field}
                     id="prompt-name"
                     type="text"
-                    className="peer border-border-medium text-text-primary mr-2 w-full border p-2 text-2xl"
+                    className="peer text-text-primary me-2 w-full p-2 text-2xl"
                     placeholder=" "
                     tabIndex={0}
                     aria-label={localize('com_ui_prompt_name')}
@@ -150,8 +150,9 @@ const CreatePromptForm = ({
                   <label
                     htmlFor="prompt-name"
                     className={cn(
-                      'text-text-secondary peer-focus:text-text-primary pointer-events-none absolute -top-1 left-3 origin-[0] translate-y-3 scale-100 rounded px-1 text-base transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75',
+                      'text-text-secondary peer-focus:text-text-primary pointer-events-none absolute inset-s-3 -top-1 origin-[0] translate-y-3 scale-100 rounded px-1 text-base transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75 rtl:origin-right',
                       labelBgClassName,
+                      'theme-field-fill:bg-field-fill',
                     )}
                   >
                     {localize('com_ui_prompt_name')}*
@@ -169,15 +170,15 @@ const CreatePromptForm = ({
             />
             {!isSmallScreen && (
               <div>
-                <CategorySelector portal={!isDialog} />
+                <CategorySelector portal={!isDialog} className="border-border-inset-medium" />
               </div>
             )}
           </div>
         </div>
         <div className="flex w-full flex-col gap-4 md:mt-[1.075rem]">
           <div className="flex flex-col">
-            <header className="border-border-medium flex items-center justify-between rounded-t-xl border bg-transparent p-2">
-              <div className="ml-1 flex items-center gap-2">
+            <header className="border-border-inset-medium flex items-center justify-between rounded-t-xl border bg-transparent p-2">
+              <div className="ms-1 flex items-center gap-2">
                 <FileText className="text-text-secondary size-4" aria-hidden="true" />
                 <h2 className="text-text-primary text-sm font-semibold">
                   {localize('com_ui_prompt_text')}*
@@ -187,7 +188,7 @@ const CreatePromptForm = ({
                 <VariablesDropdown fieldName="prompt" portal={!isDialog} />
               </div>
             </header>
-            <div className="border-border-medium min-h-32 rounded-b-xl border border-t-0 p-3 sm:p-4">
+            <div className="border-border-inset-medium min-h-32 rounded-b-xl border border-t-0 p-3 sm:p-4">
               <Controller
                 name="prompt"
                 control={control}

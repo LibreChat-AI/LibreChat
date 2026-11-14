@@ -1,8 +1,18 @@
 import React from 'react';
-import { RecoilRoot } from 'recoil';
+import { RecoilRoot, useRecoilValue } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
-import { Tools, EToolResources, EModelEndpoint } from 'librechat-data-provider';
+import {
+  Tools,
+  Permissions,
+  roleDefaults,
+  PermissionTypes,
+  EToolResources,
+  EModelEndpoint,
+} from 'librechat-data-provider';
 import type { TConversation, EndpointFileConfig } from 'librechat-data-provider';
+import type { TAuthContext } from '~/common';
+import { AuthContext } from '~/hooks/AuthContext';
+import { ephemeralAgentByConvoId } from '~/store';
 import useAttachItems from '../useAttachItems';
 
 /**
@@ -13,10 +23,16 @@ import useAttachItems from '../useAttachItems';
  */
 
 jest.mock('~/hooks', () => ({
+  useHasAccess: jest.fn(jest.requireActual('~/hooks/Roles/useHasAccess').default),
   useAgentToolPermissions: jest.fn(),
   useAgentCapabilities: jest.fn(),
   useGetAgentsConfig: jest.fn(),
 }));
+
+jest.mock('~/hooks/AuthContext', () => {
+  const { createContext } = jest.requireActual('react');
+  return { AuthContext: createContext(undefined) };
+});
 
 jest.mock('~/hooks/useLocalize', () => ({
   __esModule: true,
@@ -31,11 +47,11 @@ jest.mock('~/hooks/Files', () => ({
 jest.mock('~/hooks/Files/useSharePointFileHandling', () => ({
   __esModule: true,
   default: jest.fn(),
-  useSharePointFileHandlingNoChatContext: () => ({
-    handleSharePointFiles: jest.fn(),
+  useSharePointFileHandlingNoChatContext: jest.fn(() => ({
+    handleSharePointFiles: jest.fn().mockResolvedValue(undefined),
     isProcessing: false,
     downloadProgress: undefined,
-  }),
+  })),
 }));
 
 jest.mock('~/data-provider', () => ({
@@ -62,7 +78,50 @@ interface Options {
   fileSearchEnabled?: boolean;
   codeEnabled?: boolean;
   sharePointEnabled?: boolean;
+  codeEnvironmentId?: string;
+  statefulCodeSessionsAllowedByAgent?: boolean;
+  authContext?: TAuthContext;
+  initialFileSearch?: boolean;
 }
+
+function accessContext(canUseFileSearch?: boolean): TAuthContext {
+  return {
+    user: {
+      id: 'user-1',
+      username: 'reader',
+      email: 'reader@example.com',
+      name: 'Reader',
+      avatar: '',
+      role: 'reader',
+      provider: 'local',
+      createdAt: '2026-10-18T00:00:00Z',
+      updatedAt: '2026-10-18T00:00:00Z',
+    },
+    roles:
+      canUseFileSearch === undefined
+        ? undefined
+        : {
+            reader: {
+              ...roleDefaults.USER,
+              name: 'reader',
+              permissions: {
+                ...roleDefaults.USER.permissions,
+                [PermissionTypes.FILE_SEARCH]: { [Permissions.USE]: canUseFileSearch },
+              },
+            },
+          },
+    token: undefined,
+    isAuthenticated: true,
+    isAuthReady: true,
+    error: undefined,
+    login: jest.fn(),
+    logout: jest.fn(),
+    completeAuthentication: jest.fn(),
+    setError: jest.fn(),
+  };
+}
+
+const allowedAccess = accessContext(true);
 
 /** Row ids, which are what the palette keys and folds on. */
 function renderEntries(options: Options = {}): string[] {
@@ -104,7 +163,11 @@ function renderEntries(options: Options = {}): string[] {
         setFilesLoading: jest.fn(),
       }),
     {
-      wrapper: ({ children }: { children: React.ReactNode }) => <RecoilRoot>{children}</RecoilRoot>,
+      wrapper: ({ children }: { children: React.ReactNode }) => (
+        <AuthContext.Provider value={options.authContext ?? allowedAccess}>
+          <RecoilRoot>{children}</RecoilRoot>
+        </AuthContext.Provider>
+      ),
     },
   );
 
@@ -115,18 +178,25 @@ const allCapabilities = { contextEnabled: true, fileSearchEnabled: true, codeEna
 
 /** The hook, not just its entry labels, so a destination can be chosen. */
 function renderAttach(options: Options = {}) {
-  mockUseAgentToolPermissions.mockReturnValue({ tools: options.tools, provider: options.provider });
+  mockUseAgentToolPermissions.mockReturnValue({
+    tools: options.tools,
+    provider: options.provider,
+    codeEnvironmentId: options.codeEnvironmentId,
+    statefulCodeSessionsAllowedByAgent: options.statefulCodeSessionsAllowedByAgent,
+  });
   mockUseAgentCapabilities.mockReturnValue({
     contextEnabled: options.contextEnabled ?? true,
     fileSearchEnabled: options.fileSearchEnabled ?? true,
     codeEnabled: options.codeEnabled ?? true,
   });
   mockUseGetAgentsConfig.mockReturnValue({ agentsConfig: { capabilities: [] } });
-  mockUseGetStartupConfig.mockReturnValue({ data: { sharePointFilePickerEnabled: false } });
+  mockUseGetStartupConfig.mockReturnValue({
+    data: { sharePointFilePickerEnabled: options.sharePointEnabled ?? false },
+  });
 
   return renderHook(
-    () =>
-      useAttachItems({
+    () => {
+      const attach = useAttachItems({
         agentId: options.agentId ?? null,
         endpoint: options.endpoint ?? null,
         endpointType: options.endpointType,
@@ -138,9 +208,24 @@ function renderAttach(options: Options = {}) {
         files: new Map(),
         setFiles: jest.fn(),
         setFilesLoading: jest.fn(),
-      }),
+      });
+      const ephemeralAgent = useRecoilValue(ephemeralAgentByConvoId('convo-1'));
+      return { ...attach, ephemeralAgent };
+    },
     {
-      wrapper: ({ children }: { children: React.ReactNode }) => <RecoilRoot>{children}</RecoilRoot>,
+      wrapper: ({ children }: { children: React.ReactNode }) => (
+        <AuthContext.Provider value={options.authContext ?? allowedAccess}>
+          <RecoilRoot
+            initializeState={({ set }) => {
+              if (options.initialFileSearch) {
+                set(ephemeralAgentByConvoId('convo-1'), { file_search: true });
+              }
+            }}
+          >
+            {children}
+          </RecoilRoot>
+        </AuthContext.Provider>
+      ),
     },
   );
 }
@@ -213,7 +298,7 @@ describe('useAttachItems', () => {
     it('reads a provider whatever its casing, which OpenRouter arrives in', () => {
       expect(renderEntries({ provider: 'OpenRouter' })).toContain('local:provider');
     });
-    it('offers local and SharePoint sources without destination choices in unified mode', () => {
+    it('keeps implicit upload first and restores only explicit File Search in unified mode', () => {
       expect(
         renderEntries({
           isUnifiedMode: true,
@@ -222,7 +307,196 @@ describe('useAttachItems', () => {
           fileSearchEnabled: true,
           codeEnabled: true,
         }),
+      ).toEqual([
+        'local:unified',
+        'local:file_search',
+        'sharepoint:unified',
+        'sharepoint:file_search',
+      ]);
+    });
+  });
+
+  describe.each([false, true])('File Search role access (unified=%s)', (isUnifiedMode) => {
+    it.each([null, SAVED_AGENT])(
+      'fails closed while roles load and respects permission changes (agent=%s)',
+      (agentId) => {
+        const options: Options = {
+          ...allCapabilities,
+          isUnifiedMode,
+          agentId,
+          tools: [Tools.file_search, Tools.execute_code],
+          sharePointEnabled: true,
+          authContext: accessContext(),
+        };
+        const { result, rerender } = renderAttach(options);
+        const ids = () => result.current.entries.map((entry) => entry.id);
+        const fileSearchIds = ['local:file_search', 'sharepoint:file_search'];
+
+        for (const id of fileSearchIds) {
+          expect(ids()).not.toContain(id);
+        }
+
+        options.authContext = accessContext(true);
+        rerender();
+        expect(ids()).toEqual(expect.arrayContaining(fileSearchIds));
+
+        options.authContext = accessContext(false);
+        rerender();
+        for (const id of fileSearchIds) {
+          expect(ids()).not.toContain(id);
+        }
+        expect(ids()).toEqual(
+          expect.arrayContaining([
+            `local:${isUnifiedMode ? 'unified' : 'image'}`,
+            `sharepoint:${isUnifiedMode ? 'unified' : 'image'}`,
+          ]),
+        );
+        expect(ids().includes('local:execute_code')).toBe(!isUnifiedMode);
+        expect(ids().includes('sharepoint:execute_code')).toBe(!isUnifiedMode);
+      },
+    );
+  });
+
+  describe.each([false, true])('cancelled File Search selection (preenabled=%s)', (enabled) => {
+    it.each(['local', 'sharepoint'])('preserves the prior tool state for %s', (source) => {
+      const { result } = renderAttach({
+        isUnifiedMode: true,
+        sharePointEnabled: true,
+        initialFileSearch: enabled,
+      });
+      act(() => {
+        result.current.entries.find((entry) => entry.id === `${source}:file_search`)?.onSelect();
+      });
+      if (source === 'sharepoint') {
+        act(() => result.current.setIsSharePointDialogOpen(false));
+      }
+      expect(result.current.ephemeralAgent?.file_search ?? false).toBe(enabled);
+      expect(mockHandleFileChange).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('unified destinations', () => {
+    it('keeps both sources implicit when File Search is disabled, even with code enabled', () => {
+      expect(
+        renderEntries({ isUnifiedMode: true, sharePointEnabled: true, codeEnabled: true }),
       ).toEqual(['local:unified', 'sharepoint:unified']);
+    });
+
+    it('offers File Search only when a saved agent allows it', () => {
+      expect(
+        renderEntries({
+          ...allCapabilities,
+          isUnifiedMode: true,
+          agentId: SAVED_AGENT,
+          tools: [Tools.file_search],
+        }),
+      ).toEqual(['local:unified', 'local:file_search']);
+    });
+
+    it('does not offer explicit destinations for an agent with only code enabled', () => {
+      expect(
+        renderEntries({
+          ...allCapabilities,
+          isUnifiedMode: true,
+          sharePointEnabled: true,
+          agentId: SAVED_AGENT,
+          tools: [Tools.execute_code],
+        }),
+      ).toEqual(['local:unified', 'sharepoint:unified']);
+    });
+
+    it('keeps both sources implicit for the selected stateful code environment', () => {
+      const { result } = renderAttach({
+        isUnifiedMode: true,
+        sharePointEnabled: true,
+        agentId: SAVED_AGENT,
+        tools: [Tools.file_search, Tools.execute_code],
+        codeEnvironmentId: 'stateful-only',
+        statefulCodeSessionsAllowedByAgent: true,
+      });
+      expect(result.current.entries.map((entry) => entry.id)).toEqual([
+        'local:unified',
+        'local:file_search',
+        'sharepoint:unified',
+        'sharepoint:file_search',
+      ]);
+      const input = document.createElement('input');
+      Object.defineProperty(result.current.inputRef, 'current', { value: input, writable: true });
+
+      act(() => {
+        result.current.entries.find((entry) => entry.id === 'local:unified')?.onSelect();
+      });
+      act(() => pickFile(input, result.current.onFileChange));
+      expect(mockHandleFileChange).toHaveBeenLastCalledWith(expect.anything(), undefined);
+
+      act(() => {
+        result.current.entries.find((entry) => entry.id === 'sharepoint:unified')?.onSelect();
+      });
+      const sharePoint = jest.requireMock('~/hooks/Files/useSharePointFileHandling');
+      expect(result.current.isSharePointDialogOpen).toBe(true);
+      expect(sharePoint.useSharePointFileHandlingNoChatContext).toHaveBeenLastCalledWith(
+        { toolResource: undefined },
+        expect.anything(),
+      );
+    });
+
+    it.each([EModelEndpoint.assistants, EModelEndpoint.azureAssistants])(
+      'keeps unified %s uploads on their existing source rows',
+      (endpoint) => {
+        expect(
+          renderEntries({
+            ...allCapabilities,
+            isUnifiedMode: true,
+            sharePointEnabled: true,
+            endpoint,
+          }),
+        ).toEqual(['local:unified', 'sharepoint:unified']);
+      },
+    );
+
+    it('labels and folds SharePoint tool destinations separately from local uploads', () => {
+      const { result } = renderAttach({ isUnifiedMode: true, sharePointEnabled: true });
+      expect(
+        result.current.entries.filter((entry) => entry.primary).map((entry) => entry.id),
+      ).toEqual(['local:unified', 'sharepoint:unified']);
+      expect(
+        result.current.entries.find((entry) => entry.id === 'sharepoint:file_search'),
+      ).toMatchObject({ label: 'com_ui_upload_file_search (com_files_upload_sharepoint)' });
+    });
+
+    it('carries File Search through the picker without enabling it and resets the next upload', () => {
+      const { result } = renderAttach({ isUnifiedMode: true });
+      const input = document.createElement('input');
+      Object.defineProperty(result.current.inputRef, 'current', { value: input, writable: true });
+
+      act(() => {
+        result.current.entries.find((entry) => entry.id === 'local:file_search')?.onSelect();
+      });
+      act(() => pickFile(input, result.current.onFileChange));
+      expect(mockHandleFileChange).toHaveBeenLastCalledWith(
+        expect.anything(),
+        EToolResources.file_search,
+      );
+      expect(result.current.ephemeralAgent?.[EToolResources.file_search]).not.toBe(true);
+
+      act(() => {
+        result.current.entries.find((entry) => entry.id === 'local:unified')?.onSelect();
+      });
+      act(() => pickFile(input, result.current.onFileChange));
+      expect(mockHandleFileChange).toHaveBeenLastCalledWith(expect.anything(), undefined);
+    });
+
+    it('passes a SharePoint File Search choice to its upload handler', () => {
+      const { result } = renderAttach({ isUnifiedMode: true, sharePointEnabled: true });
+      const sharePoint = jest.requireMock('~/hooks/Files/useSharePointFileHandling');
+      act(() => {
+        result.current.entries.find((entry) => entry.id === 'sharepoint:file_search')?.onSelect();
+      });
+      expect(result.current.isSharePointDialogOpen).toBe(true);
+      expect(sharePoint.useSharePointFileHandlingNoChatContext).toHaveBeenLastCalledWith(
+        { toolResource: EToolResources.file_search },
+        expect.anything(),
+      );
     });
   });
 
@@ -286,6 +560,49 @@ describe('useAttachItems', () => {
     });
   });
 
+  describe('legacy code destinations', () => {
+    it('keeps explicit local and SharePoint code uploads in nonunified mode', () => {
+      const { result } = renderAttach({ isUnifiedMode: false, sharePointEnabled: true });
+      expect(result.current.entries.map((entry) => entry.id)).toEqual(
+        expect.arrayContaining(['local:execute_code', 'sharepoint:execute_code']),
+      );
+      const input = document.createElement('input');
+      Object.defineProperty(result.current.inputRef, 'current', { value: input, writable: true });
+
+      act(() => {
+        result.current.entries.find((entry) => entry.id === 'local:execute_code')?.onSelect();
+      });
+      act(() => pickFile(input, result.current.onFileChange));
+      expect(mockHandleFileChange).toHaveBeenLastCalledWith(
+        expect.anything(),
+        EToolResources.execute_code,
+      );
+
+      act(() => {
+        result.current.entries.find((entry) => entry.id === 'sharepoint:execute_code')?.onSelect();
+      });
+      const sharePoint = jest.requireMock('~/hooks/Files/useSharePointFileHandling');
+      expect(sharePoint.useSharePointFileHandlingNoChatContext).toHaveBeenLastCalledWith(
+        { toolResource: EToolResources.execute_code },
+        expect.anything(),
+      );
+    });
+
+    it.each([
+      { codeEnabled: false, tools: [Tools.execute_code] },
+      { codeEnabled: true, tools: [Tools.file_search] },
+    ])('keeps legacy code capability and agent gates (%j)', (options) => {
+      const ids = renderEntries({
+        ...options,
+        isUnifiedMode: false,
+        sharePointEnabled: true,
+        agentId: SAVED_AGENT,
+      });
+      expect(ids).not.toContain('local:execute_code');
+      expect(ids).not.toContain('sharepoint:execute_code');
+    });
+  });
+
   describe('SharePoint', () => {
     it('mirrors every local destination when it is enabled', () => {
       expect(renderEntries({ ...allCapabilities, sharePointEnabled: true })).toEqual([
@@ -330,7 +647,9 @@ describe('useAttachItems', () => {
           }),
         {
           wrapper: ({ children }: { children: React.ReactNode }) => (
-            <RecoilRoot>{children}</RecoilRoot>
+            <AuthContext.Provider value={allowedAccess}>
+              <RecoilRoot>{children}</RecoilRoot>
+            </AuthContext.Provider>
           ),
         },
       );

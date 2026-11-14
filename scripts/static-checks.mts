@@ -35,7 +35,7 @@
  *
  * Flags: --staged, --full, --fast, --only <ids>, --skip <ids>, --verbose,
  * --list. Check ids: eslint, prettier, imports, eslint-config, json,
- * suppressions, circular-deps, typecheck, config-tests, i18n, depcheck.
+ * suppressions, css-colors, circular-deps, typecheck, config-tests, i18n, depcheck.
  */
 
 import { fileURLToPath } from 'node:url';
@@ -57,7 +57,11 @@ import {
 } from 'node:fs';
 
 import type { Dirent } from 'node:fs';
+import type { LintReport, SuppressionsFile } from './diagnostics.mts';
 import { isTranslationReferenced } from './i18n.mts';
+import { introducedViolations, isDesignRule } from './diagnostics.mts';
+import { resolveTypecheck } from './typecheck.mts';
+import { importedPackages } from './imports.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -78,7 +82,7 @@ const FILTERS = {
     '.github/workflows/static-checks.yml',
     '!**.md',
   ],
-  eslint_config: ['eslint.config.mjs', '.github/workflows/static-checks.yml'],
+  eslint_config: ['eslint.config.mjs', 'scripts/eslint/**', '.github/workflows/static-checks.yml'],
   // The design-rule backlog is data the lint reads, so a diff that only edits it
   // reaches no lintable file and would otherwise be checked by nothing.
   // Deleting or renaming a recorded file has to reach this group too: the entry
@@ -91,6 +95,7 @@ const FILTERS = {
     '**/eslint-suppressions.json',
     'client/src/**',
     'packages/client/src/**',
+    'packages/chat/src/**',
     /** The bundle the rules resolve primitives through is named by the library's
      *  manifest, produced by its build config and shaped by its compiler
      *  options. */
@@ -98,6 +103,8 @@ const FILTERS = {
     'packages/client/tsdown.config.mjs',
     'packages/client/tsconfig.json',
     'eslint.config.mjs',
+    /** The local design rules: a change to what one reports changes every count it owns. */
+    'scripts/eslint/**',
     /** The plugin is a dependency: a bump changes what the rules classify, and a
      *  removal takes the rules with it, neither of which touches a source file. */
     'package.json',
@@ -105,16 +112,42 @@ const FILTERS = {
     /** This runner is the gate: `validateSuppressions` is what a recorded count
      *  is measured against, so a change to it has to run against the record. */
     'scripts/static-checks.mts',
+    'scripts/diagnostics*.mts',
     '.github/workflows/static-checks.yml',
     '!**.md',
   ],
-  config: ['api/**', 'config/**', 'packages/**', '.github/workflows/static-checks.yml', '!**.md'],
+  // Stylesheets are outside the design lint, which reads JSX.
+  css_colors: [
+    'client/src/*.css',
+    'packages/client/src/*.css',
+    'packages/chat/src/*.css',
+    'client/src/**/*.css',
+    'packages/client/src/**/*.css',
+    'packages/chat/src/**/*.css',
+    'packages/client/src/theme/allowlist.md',
+    /** The scanner parses with postcss: an upgrade changes what it reads. */
+    'package.json',
+    'package-lock.json',
+    'scripts/css-colors.test.mts',
+    'scripts/css-colors.mts',
+    'scripts/static-checks.mts',
+    '.github/workflows/static-checks.yml',
+  ],
+  config: [
+    'api/**',
+    'config/**',
+    'packages/**',
+    '.github/workflows/static-checks.yml',
+    '.github/actions/mongodb-binary/**',
+    '!**.md',
+  ],
   i18n: [
     'scripts/i18n*.mts',
     'scripts/static-checks.mts',
     'api/**',
     'client/src/**',
     'packages/client/**',
+    'packages/chat/src/**',
     'packages/data-provider/src/**',
     'packages/data-schemas/src/**',
     '.github/workflows/static-checks.yml',
@@ -126,6 +159,7 @@ const FILTERS = {
     'packages/**',
     'package.json',
     'package-lock.json',
+    '.bun-version',
     'config/circular-deps.mjs',
     '.github/workflows/backend-review.yml',
     '!**.md',
@@ -135,6 +169,8 @@ const FILTERS = {
   typecheck: [
     'client/**',
     'packages/**',
+    'scripts/typecheck.mts',
+    '.bun-version',
     'package.json',
     'package-lock.json',
     '.github/workflows/backend-review.yml',
@@ -146,6 +182,7 @@ const FILTERS = {
     'client/**',
     'packages/api/**',
     'packages/client/**',
+    'packages/chat/**',
     // Every workspace manifest PACKAGE_JSON_FILES validates, plus the ones
     // whose dependencies feed the unused-package calculation through
     // api/package.json's @librechat/data-schemas entry.
@@ -153,6 +190,7 @@ const FILTERS = {
     'packages/data-schemas/package.json',
     'package.json',
     'package-lock.json',
+    'scripts/imports*.mts',
     '.github/workflows/static-checks.yml',
     '!**.md',
   ],
@@ -176,6 +214,7 @@ const PACKAGE_JSON_FILES = [
   'api/package.json',
   'packages/api/package.json',
   'packages/client/package.json',
+  'packages/chat/package.json',
   'packages/data-provider/package.json',
   'packages/data-schemas/package.json',
 ];
@@ -204,6 +243,10 @@ const DESIGN_TEST_SOURCE = /\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/;
  *  what every recorded count stands for, without touching a source file. */
 const DESIGN_INPUTS = ['eslint.config.mjs', 'package.json', 'package-lock.json'];
 
+/** The local design rules (`design/*`): a change to one moves what it reports in files the
+ *  diff never touches, as a config change does. */
+const DESIGN_RULES_ROOT = 'scripts/eslint/';
+
 /** Where the rules read component metadata from: the published library and the
  *  app-local path `componentImports` marks as a component source. A change in
  *  either moves what the caller rules report in files the diff never touches. */
@@ -221,8 +264,8 @@ const DESIGN_METADATA_FILES = [
   'packages/client/tsconfig.json',
 ];
 
-/** The two trees the design rules police, and what `lint:design:record` records. */
-const DESIGN_ROOTS = ['client/src', 'packages/client/src'];
+/** The trees the design rules police, and what `lint:design:record` records. */
+const DESIGN_ROOTS = ['client/src', 'packages/client/src', 'packages/chat/src'];
 
 /**
  * This runner is the gate the record is measured against: `unusedCapacity` and
@@ -232,29 +275,6 @@ const DESIGN_ROOTS = ['client/src', 'packages/client/src'];
  * record — the only way the change is exercised at all.
  */
 const GATE_SOURCE = 'scripts/static-checks.mts';
-
-/**
- * ESLint's on-disk suppressions shape, which the recorded baseline claims to be:
- * a count per file, per rule. `validateSuppressions` is what checks the claim, so
- * the leaf stays `unknown` — a string or a float there is one of the failures.
- */
-type SuppressionsFile = Record<string, Record<string, { count?: unknown }>>;
-
-/**
- * One file's entry in ESLint's JSON report, as the checks here read it. A
- * suppressed message carries its text too: the swap check compares messages,
- * and what the baseline silences is exactly what it has to see.
- */
-type LintReport = {
-  filePath: string;
-  /** `message` also carries ESLint's unused-directive text, where `ruleId` is null. */
-  messages: { ruleId: string | null; message?: string }[];
-  suppressedMessages?: {
-    ruleId: string | null;
-    message?: string;
-    suppressions?: { kind: string; justification?: string }[];
-  }[];
-};
 
 /** A path in ESLint's report, as the repository names it. */
 const reportedPath = (filePath: string): string =>
@@ -267,6 +287,8 @@ const reportedPath = (filePath: string): string =>
 
 /** `@shadcn/lint`'s rule map, the authority on which recorded rule names exist. */
 type SuppressionsPlugin = { plugin: { rules: Record<string, unknown> } };
+/** The local `design` plugin's rule map, recorded beside `@shadcn/lint`'s. */
+type DesignPlugin = { default: { rules: Record<string, unknown> } };
 
 const I18N_FILE = 'client/src/locales/en/translation.json';
 const I18N_SOURCE_DIRS = [
@@ -274,11 +296,11 @@ const I18N_SOURCE_DIRS = [
   'api',
   'packages/data-provider/src',
   'packages/client',
+  'packages/chat/src',
   'packages/data-schemas/src',
 ];
 
 const SOURCE_EXTENSIONS = ['.js', '.jsx', '.ts', '.tsx'];
-const IMPORT_EXTENSIONS = [...SOURCE_EXTENSIONS, '.mjs', '.cjs', '.mts', '.cts'];
 const SKIP_DIR_NAMES = new Set(['node_modules', 'dist', 'coverage']);
 
 /**
@@ -767,7 +789,23 @@ function validateEslintConfig(): CheckOutcome {
   const eslint = resolveBin('eslint');
   if (!eslint) return missingBin('eslint');
   const result = runCommand(eslint, ['--config', 'eslint.config.mjs', ...CONFIG_SMOKE_FILES]);
-  return { ok: result.status === 0, output: result.output };
+  const ruleTests = runCommand(
+    {
+      command: process.execPath,
+      args: [
+        '--test',
+        resolve(ROOT, 'scripts/eslint/design.test.mjs'),
+        resolve(ROOT, 'scripts/eslint/chat.test.mjs'),
+      ],
+    },
+    [],
+  );
+  return {
+    ok: result.status === 0 && ruleTests.status === 0,
+    output: [result.output, ruleTests.status === 0 ? '' : ruleTests.output]
+      .filter(Boolean)
+      .join('\n'),
+  };
 }
 
 async function validatePackageJson(): Promise<CheckOutcome> {
@@ -823,14 +861,25 @@ async function validateSuppressions(context: CheckContext): Promise<CheckOutcome
   const targets = [SUPPRESSIONS_FILE, ...named];
 
   const problems: string[] = [];
+  /** The swap comparison is specified on its own: a regression in it lets a
+   *  violation through, which reads here as a pass. */
+  const comparison = runCommand(
+    { command: process.execPath, args: ['--test', resolve(ROOT, 'scripts/diagnostics.test.mts')] },
+    [],
+  );
+  if (comparison.status !== 0) problems.push(comparison.output);
   // Read the rule names from the plugin rather than listing them here, so a rule
   // this stack has not enabled yet is still a valid key and a renamed one is not.
   let known: Set<string>;
   try {
     const { plugin } = (await import('@shadcn/lint')) as SuppressionsPlugin;
-    known = new Set(Object.keys(plugin.rules).map((rule) => `shadcn/${rule}`));
+    const { default: design } = (await import('./eslint/design.mjs')) as DesignPlugin;
+    known = new Set([
+      ...Object.keys(plugin.rules).map((rule) => `shadcn/${rule}`),
+      ...Object.keys(design.rules).map((rule) => `design/${rule}`),
+    ]);
   } catch (error) {
-    return { ok: false, output: `@shadcn/lint did not load: ${(error as Error).message}` };
+    return { ok: false, output: `the design rules did not load: ${(error as Error).message}` };
   }
 
   /** Every lint below classifies against the primitives' `cva` variants, which
@@ -1005,7 +1054,7 @@ async function inlineDirectives(context: CheckContext): Promise<string[]> {
           : true,
       );
       for (const message of [...file.messages, ...suppressed]) {
-        if (!message.ruleId?.startsWith('shadcn/')) continue;
+        if (!isDesignRule(message.ruleId)) continue;
         const key = `${relative}\u0000${message.ruleId}`;
         counts.set(key, (counts.get(key) ?? 0) + 1);
       }
@@ -1078,7 +1127,7 @@ async function directiveComments(files: string[]): Promise<string[]> {
             `${file}: a blanket \`${body}\` covers the design rules too, now or the first time this file violates one; record what is owed in ${SUPPRESSIONS_FILE} instead`,
           );
         }
-        for (const rule of named.filter((rule) => rule.startsWith('shadcn/'))) {
+        for (const rule of named.filter(isDesignRule)) {
           problems.push(
             `${file}: ${rule} is disabled by an inline comment; record it in ${SUPPRESSIONS_FILE} instead, where the count is reviewable and \`npm run lint:design:prune\` can retire it`,
           );
@@ -1100,7 +1149,7 @@ async function directiveComments(files: string[]): Promise<string[]> {
         /(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([A-Za-z@][\w@\-./]*))\s*:/g,
       )) {
         const rule = decodeRuleKey(doubled ?? singled ?? bare ?? '');
-        if (!rule.startsWith('shadcn/')) continue;
+        if (!isDesignRule(rule)) continue;
         problems.push(
           `${file}: ${rule} is configured by an inline comment; the record is where a design rule is answered, not the file that owes it`,
         );
@@ -1153,7 +1202,9 @@ async function suppressionProblems(target: string, known: Set<string>): Promise<
     }
     for (const [rule, entry] of Object.entries(rules)) {
       if (!known.has(rule)) {
-        problems.push(`${where}: ${rule} is not a rule @shadcn/lint defines`);
+        problems.push(
+          `${where}: ${rule} is not a rule @shadcn/lint defines, nor one the design plugin does`,
+        );
       }
       const count = typeof entry === 'object' && entry !== null ? entry.count : undefined;
       if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
@@ -1217,6 +1268,7 @@ async function unusedCapacity(target: string, context: CheckContext): Promise<st
     (file) =>
       file === GATE_SOURCE ||
       DESIGN_INPUTS.includes(file) ||
+      file.startsWith(DESIGN_RULES_ROOT) ||
       DESIGN_METADATA_FILES.includes(file) ||
       (DESIGN_SOURCE.test(file) &&
         !DESIGN_TEST_SOURCE.test(file) &&
@@ -1309,7 +1361,7 @@ async function unusedCapacity(target: string, context: CheckContext): Promise<st
     const relative = reportedPath(file.filePath);
     const actual = new Map<string, number>();
     for (const message of [...file.messages, ...(file.suppressedMessages ?? [])]) {
-      if (message.ruleId?.startsWith('shadcn/')) {
+      if (isDesignRule(message.ruleId)) {
         actual.set(message.ruleId, (actual.get(message.ruleId) ?? 0) + 1);
       }
     }
@@ -1427,12 +1479,6 @@ async function introducedWithinAllowance(
     return [`the base versions could not be linted: ${(error as Error).message}`];
   }
 
-  const signatures = (reports: LintReport[]): string[] =>
-    reports
-      .flatMap((file) => [...file.messages, ...(file.suppressedMessages ?? [])])
-      .filter((message) => message.ruleId?.startsWith('shadcn/'))
-      .map((message) => `${message.ruleId}: ${message.message ?? ''}`);
-
   /** The record as the base held it: how much an entry grew between there and
    *  here is what this change may add. A count that goes up is a line in the
    *  diff and the recipe CLAUDE.md documents; a count that stands still is the
@@ -1447,59 +1493,21 @@ async function introducedWithinAllowance(
       recordedBefore = {};
     }
   }
-  const countOf = (record: SuppressionsFile, file: string, rule: string): number => {
-    const entry = record[file]?.[rule]?.count;
-    return typeof entry === 'number' ? entry : 0;
-  };
-
   const problems: string[] = [];
   for (const file of subjects) {
-    const relative = reportedPath(file.filePath);
-    const inheritedFrom = before.get(relative);
-    /** A file the change adds owes everything in it: the record may not grow to
-     *  cover a violation written in the same commit as its entry, or the rules
-     *  would police nothing but the tree they landed on. A file that existed at
-     *  the base — renamed or not — brings its allowance and may grow it, and a
-     *  rename's allowance is the one recorded under the name it had. */
-    const inherited = inheritedFrom !== undefined;
-    const had = new Map<string, number>();
-    if (inheritedFrom !== undefined) {
-      /** Linted as the path it had, not the one it has: moving a component out
-       *  of the library and into the app enters a stricter scope, and reading
-       *  the old contents under the new path would let the destination's own
-       *  diagnostics appear on both sides and pass as inherited. */
-      const was = resolve(ROOT, inheritedFrom.path);
-      for (const signature of signatures(await lintText(inheritedFrom.source, { filePath: was }))) {
-        had.set(signature, (had.get(signature) ?? 0) + 1);
-      }
-    }
-    const allowed = new Map<string, number>();
-    for (const signature of signatures([file])) {
-      const remaining = had.get(signature) ?? 0;
-      if (remaining > 0) {
-        had.set(signature, remaining - 1);
-        continue;
-      }
-      /** Beyond what the base held: chargeable to this change unless the entry
-       *  grew for that rule, and only as far as it grew. A renamed file's
-       *  allowance is the one recorded under the name it had, or the move
-       *  itself would read as room to spend. */
-      const rule = signature.slice(0, signature.indexOf(':'));
-      const grew =
-        countOf(recorded, relative, rule) -
-        countOf(recordedBefore, inheritedFrom?.path ?? relative, rule);
-      const key = `${relative}\u0000${rule}`;
-      const spent = allowed.get(key) ?? 0;
-      if (inherited && spent < grew) {
-        allowed.set(key, spent + 1);
-        continue;
-      }
-      problems.push(
-        inherited
-          ? `${relative}: ${signature} is new here and the record did not grow to cover it; fix it, or record what this change owes with \`npm run lint:design:suppress\` so the count says so`
-          : `${relative}: ${signature} is in a file this change adds; the backlog records what the tree owed when the rules landed, not what a new file brings, so fix it`,
-      );
-    }
+    const path = reportedPath(file.filePath);
+    const inheritedFrom = before.get(path);
+    /** Linted as the path it had, not the one it has: moving a component out
+     *  of the library and into the app enters a stricter scope, and reading
+     *  the old contents under the new path would let the destination's own
+     *  diagnostics appear on both sides and pass as inherited. */
+    const base = inheritedFrom && {
+      path: inheritedFrom.path,
+      reports: await lintText(inheritedFrom.source, {
+        filePath: resolve(ROOT, inheritedFrom.path),
+      }),
+    };
+    problems.push(...introducedViolations({ path, head: file, base }, recorded, recordedBefore));
   }
   return problems;
 }
@@ -1715,6 +1723,7 @@ const BUILD_ORDER = [
   'build:data-schemas',
   'build:api',
   'build:client-package',
+  'build:chat',
 ];
 
 /** Returns the failing build's outcome, or null when every build succeeded. */
@@ -1813,6 +1822,26 @@ async function findUnusedI18nKeys(): Promise<CheckOutcome> {
   };
 }
 
+// --------------------------------------------------------------- CSS colours
+
+function checkCssColors(): CheckOutcome {
+  const script = resolve(ROOT, 'scripts/css-colors.mts');
+  if (!existsSync(script)) {
+    return { ok: false, output: 'scripts/css-colors.mts is missing' };
+  }
+  const scan = runCommand({ command: process.execPath, args: [script] }, []);
+  const scannerTests = runCommand(
+    { command: process.execPath, args: ['--test', resolve(ROOT, 'scripts/css-colors.test.mts')] },
+    [],
+  );
+  return {
+    ok: scan.status === 0 && scannerTests.status === 0,
+    output: [scan.output, scannerTests.status === 0 ? '' : scannerTests.output]
+      .filter(Boolean)
+      .join('\n'),
+  };
+}
+
 // --------------------------------------------------------------- circular dependencies
 
 function findCircularDependencies(): CheckOutcome {
@@ -1827,21 +1856,44 @@ function findCircularDependencies(): CheckOutcome {
 // --------------------------------------------------------------- TypeScript
 
 /**
- * One entry per `tsc --noEmit` the review workflows run. `paths` includes each
- * project's upstream packages, so an edit to data-provider still typechecks the
- * projects that consume it; `requires` lists the builds its imports resolve
- * through, mirroring those jobs' dependency on the build artifacts.
+ * One entry per type check the review workflows run (`bun check`, or `tsc`
+ * without Bun). `paths` includes each project's upstream packages, so an edit
+ * to data-provider still typechecks the projects that consume it; `requires`
+ * lists the builds its imports resolve through, mirroring those jobs'
+ * dependency on the build artifacts.
  */
 const ROOT_MANIFESTS = ['package.json', 'package-lock.json'];
+
+/** The checker every project runs through, so a change to it rechecks them all. */
+const TYPECHECK_SCRIPT = 'scripts/typecheck.mts';
+const BUN_VERSION_FILE = '.bun-version';
 
 /** Each imported gate reruns in CI when its owning workflow changes. */
 const BACKEND_REVIEW = '.github/workflows/backend-review.yml';
 const FRONTEND_REVIEW = '.github/workflows/frontend-review.yml';
 
+const CHAT_TYPECHECK_PATHS = [
+  'packages/data-provider/**',
+  'packages/client/**',
+  'packages/chat/**',
+  ...ROOT_MANIFESTS,
+  TYPECHECK_SCRIPT,
+  BUN_VERSION_FILE,
+  FRONTEND_REVIEW,
+  '!**.md',
+];
+
 const TYPECHECK_PROJECTS = [
   {
     project: 'packages/data-provider/tsconfig.json',
-    paths: ['packages/data-provider/**', ...ROOT_MANIFESTS, BACKEND_REVIEW, '!**.md'],
+    paths: [
+      'packages/data-provider/**',
+      ...ROOT_MANIFESTS,
+      TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
+      BACKEND_REVIEW,
+      '!**.md',
+    ],
     requires: [],
   },
   {
@@ -1850,6 +1902,8 @@ const TYPECHECK_PROJECTS = [
       'packages/data-provider/**',
       'packages/data-schemas/**',
       ...ROOT_MANIFESTS,
+      TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
       BACKEND_REVIEW,
       '!**.md',
     ],
@@ -1862,6 +1916,8 @@ const TYPECHECK_PROJECTS = [
       'packages/data-schemas/**',
       'packages/api/**',
       ...ROOT_MANIFESTS,
+      TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
       BACKEND_REVIEW,
       '!**.md',
     ],
@@ -1873,10 +1929,24 @@ const TYPECHECK_PROJECTS = [
       'packages/data-provider/**',
       'packages/client/**',
       ...ROOT_MANIFESTS,
+      TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
       BACKEND_REVIEW,
       '!**.md',
     ],
     requires: ['build:data-provider'],
+  },
+  {
+    project: 'packages/chat/tsconfig.json',
+    paths: CHAT_TYPECHECK_PATHS,
+    requires: ['build:data-provider', 'build:client-package'],
+  },
+  // The workspace's `npm run typecheck`, which CI runs, checks its consumer
+  // specs under a second config that maps @librechat/chat to the sources.
+  {
+    project: 'packages/chat/test/tsconfig.json',
+    paths: CHAT_TYPECHECK_PATHS,
+    requires: ['build:data-provider', 'build:client-package'],
   },
   {
     project: 'client/tsconfig.json',
@@ -1884,11 +1954,14 @@ const TYPECHECK_PROJECTS = [
       'client/**',
       'packages/data-provider/**',
       'packages/client/**',
+      'packages/chat/**',
       ...ROOT_MANIFESTS,
+      TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
       FRONTEND_REVIEW,
       '!**.md',
     ],
-    requires: ['build:data-provider', 'build:client-package'],
+    requires: ['build:data-provider', 'build:client-package', 'build:chat'],
   },
 ];
 
@@ -1898,15 +1971,15 @@ function runTypecheck(context: CheckContext): CheckOutcome {
     return { ok: true, skipped: 'no changed TypeScript project' };
   }
 
-  const tsc = resolveBin('typescript', 'tsc');
-  if (!tsc) return missingBin('typescript');
+  const typecheck = resolveTypecheck(ROOT);
+  if (!typecheck) return missingBin('typescript');
 
   const buildFailure = buildWorkspaces([...new Set(selected.flatMap((entry) => entry.requires))]);
   if (buildFailure) return buildFailure;
 
   const failures: string[] = [];
   for (const entry of selected) {
-    const result = runCommand(tsc, ['--noEmit', '-p', entry.project]);
+    const result = runCommand(typecheck, ['-p', entry.project]);
     if (result.status !== 0) {
       failures.push(`${entry.project}:\n${result.output.trim()}`);
     }
@@ -1923,35 +1996,6 @@ function runTypecheck(context: CheckContext): CheckOutcome {
 }
 
 // --------------------------------------------------------------- unused npm packages
-
-const IMPORT_PATTERNS = [
-  /require\(\s*['"]([a-zA-Z0-9@/._-]+)['"]\s*\)/g,
-  /\bimport\b[^\n]*?\bfrom\s*['"]([a-zA-Z0-9@/._-]+)['"]/g,
-  /\bexport\b[^\n]*?\bfrom\s*['"]([a-zA-Z0-9@/._-]+)['"]/g,
-  /\bimport\s*['"]([a-zA-Z0-9@/._-]+)['"]/g,
-];
-
-/** `@scope/pkg/sub` -> `@scope/pkg`, `pkg/sub` -> `pkg`, relative -> null. */
-function packageName(specifier: string): string | null {
-  if (specifier.startsWith('.')) return null;
-  if (!specifier.startsWith('@')) return specifier.split('/')[0];
-  const [scope, name] = specifier.split('/');
-  return name ? `${scope}/${name}` : null;
-}
-
-async function importedPackages(dir: string): Promise<Set<string>> {
-  const packages = new Set<string>();
-  for (const file of await collectFiles([dir], IMPORT_EXTENSIONS)) {
-    const content = await readFile(file, 'utf8');
-    for (const pattern of IMPORT_PATTERNS) {
-      for (const match of content.matchAll(pattern)) {
-        const name = packageName(match[1]);
-        if (name) packages.add(name);
-      }
-    }
-  }
-  return packages;
-}
 
 interface Manifest {
   scripts?: Record<string, string>;
@@ -2021,34 +2065,53 @@ function unusedDependencies(depcheck: Executable, cwd: string): string[] | null 
 }
 
 async function findUnusedPackages(): Promise<CheckOutcome> {
+  const extractorTests = runCommand(
+    { command: process.execPath, args: ['--test', resolve(ROOT, 'scripts/imports.test.mts')] },
+    [],
+  );
+  if (extractorTests.status !== 0) return { ok: false, output: extractorTests.output };
+
   const depcheck = resolveDepcheck();
   const probe = runCommand(depcheck, ['--version']);
   if (probe.status !== 0) {
     return { ok: true, skipped: 'depcheck is not installed — npm install -g depcheck' };
   }
 
-  const [rootManifest, clientManifest, apiManifest, packagesClientManifest, packagesApiManifest] =
-    await Promise.all([
-      readManifest('package.json'),
-      readManifest('client/package.json'),
-      readManifest('api/package.json'),
-      readManifest('packages/client/package.json'),
-      readManifest('packages/api/package.json'),
-    ]);
-
-  const [rootCode, clientCode, apiCode, packagesClientCode, packagesApiCode] = await Promise.all([
-    importedPackages('.'),
-    importedPackages('client'),
-    importedPackages('api'),
-    importedPackages('packages/client'),
-    importedPackages('packages/api'),
+  const [
+    rootManifest,
+    clientManifest,
+    apiManifest,
+    packagesClientManifest,
+    packagesApiManifest,
+    packagesChatManifest,
+  ] = await Promise.all([
+    readManifest('package.json'),
+    readManifest('client/package.json'),
+    readManifest('api/package.json'),
+    readManifest('packages/client/package.json'),
+    readManifest('packages/api/package.json'),
+    readManifest('packages/chat/package.json'),
   ]);
+
+  const code = await importedPackages(ROOT, [
+    '.',
+    'client',
+    'api',
+    'packages/client',
+    'packages/api',
+    'packages/chat',
+  ]);
+  const imported = (dir: string) => code.get(dir) ?? new Set<string>();
 
   const targets = [
     {
       name: 'Root',
       dir: ROOT,
-      allowed: [scriptWords(rootManifest), rootCode, await workspaceDependencies(rootManifest)],
+      allowed: [
+        scriptWords(rootManifest),
+        imported('.'),
+        await workspaceDependencies(rootManifest),
+      ],
       ignored: new Set<string>(),
     },
     {
@@ -2056,9 +2119,9 @@ async function findUnusedPackages(): Promise<CheckOutcome> {
       dir: resolve(ROOT, 'client'),
       allowed: [
         scriptWords(clientManifest),
-        clientCode,
+        imported('client'),
         await workspaceDependencies(clientManifest),
-        packagesClientCode,
+        imported('packages/client'),
         manifestDependencies(packagesClientManifest),
       ],
       // Consumed through a bundler alias, so depcheck cannot see the import.
@@ -2069,11 +2132,17 @@ async function findUnusedPackages(): Promise<CheckOutcome> {
       dir: resolve(ROOT, 'api'),
       allowed: [
         scriptWords(apiManifest),
-        apiCode,
+        imported('api'),
         await workspaceDependencies(apiManifest),
-        packagesApiCode,
+        imported('packages/api'),
         manifestDependencies(packagesApiManifest),
       ],
+      ignored: new Set<string>(),
+    },
+    {
+      name: 'Chat',
+      dir: resolve(ROOT, 'packages/chat'),
+      allowed: [scriptWords(packagesChatManifest), imported('packages/chat')],
       ignored: new Set<string>(),
     },
   ];
@@ -2095,14 +2164,7 @@ async function findUnusedPackages(): Promise<CheckOutcome> {
     }
   }
 
-  return {
-    ok: findings.length === 0,
-    output: findings.join('\n'),
-    // CI scans node_modules too, so it treats a few more packages as used.
-    hints: [
-      'CI also counts imports found under node_modules — confirm before removing a dependency.',
-    ],
-  };
+  return { ok: findings.length === 0, output: findings.join('\n') };
 }
 
 // --------------------------------------------------------------- runner
@@ -2131,6 +2193,13 @@ const CHECKS: Check[] = [
     tier: 'fast',
     group: 'suppressions',
     run: validateSuppressions,
+  },
+  {
+    id: 'css-colors',
+    title: 'CSS colour literals',
+    tier: 'fast',
+    group: 'css_colors',
+    run: checkCssColors,
   },
   {
     id: 'circular-deps',

@@ -4,7 +4,6 @@ import {
   VerifyEmail,
   Registration,
   ResetPassword,
-  ApiErrorWatcher,
   TwoFactorScreen,
   TwoFactorSetupScreen,
   RequestPasswordReset,
@@ -13,14 +12,14 @@ import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { importWithRecovery } from '~/lib/assets/lazy';
 import RouteErrorBoundary from './RouteErrorBoundary';
+import ChannelLinkRoute from './ChannelLinkRoute';
 import StartupLayout from './Layouts/Startup';
-import MarketplaceRoute from './Marketplace';
+import { codeSetupRoute } from './CodeSetup';
 import LoginLayout from './Layouts/Login';
 import dashboardRoutes from './Dashboard';
 import WithRum from '~/lib/rum/WithRum';
-import ShareRoute from './ShareRoute';
+import ShareEntry from './ShareEntry';
 import ChatRoute from './ChatRoute';
-import Search from './Search';
 import Root from './Root';
 
 const AuthLayout = () => (
@@ -28,7 +27,6 @@ const AuthLayout = () => (
     <WithRum>
       <Outlet />
     </WithRum>
-    <ApiErrorWatcher />
   </AuthContextProvider>
 );
 
@@ -57,14 +55,38 @@ const loadProjectWorkspace = () =>
     Component: m.ProjectWorkspace,
   }));
 
+/** These render messages (search results and reviewed conversations) or the agent marketplace,
+ *  none of which a fresh chat shows, so they load when first visited; `ShareEntry` does the
+ *  same for shared links. */
+const loadResponseReview = () =>
+  importWithRecovery(() => import('./ResponseReviewRoute')).then((m) => ({
+    Component: m.default,
+  }));
+
+const loadSearch = () =>
+  importWithRecovery(() => import('./Search')).then((m) => ({ Component: m.default }));
+
+const loadMarketplace = () =>
+  importWithRecovery(() => import('./Marketplace')).then((m) => ({ Component: m.default }));
+
 const baseEl = document.querySelector('base');
 const baseHref = baseEl?.getAttribute('href') || '/';
 
 export const router = createBrowserRouter(
   [
     {
+      path: 'responses/:responseId/review',
+      lazy: loadResponseReview,
+      errorElement: <RouteErrorBoundary />,
+    },
+    {
+      path: 'channels/link',
+      element: <ChannelLinkRoute />,
+      errorElement: <RouteErrorBoundary />,
+    },
+    {
       path: 'share/:shareId',
-      element: <ShareRoute />,
+      element: <ShareEntry />,
       errorElement: <RouteErrorBoundary />,
     },
     {
@@ -131,6 +153,7 @@ export const router = createBrowserRouter(
               ],
             },
             dashboardRoutes,
+            codeSetupRoute,
             {
               path: '/',
               element: <Root />,
@@ -145,7 +168,7 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'search',
-                  element: <Search />,
+                  lazy: loadSearch,
                 },
                 {
                   path: 'prompts',
@@ -190,11 +213,11 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'agents',
-                  element: <MarketplaceRoute />,
+                  lazy: loadMarketplace,
                 },
                 {
                   path: 'agents/:category',
-                  element: <MarketplaceRoute />,
+                  lazy: loadMarketplace,
                 },
               ],
             },

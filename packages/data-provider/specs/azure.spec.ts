@@ -1,5 +1,5 @@
 import type { TAzureGroups } from '../src/config';
-import { validateAzureGroups, mapModelToAzureConfig, mapGroupToAzureConfig } from '../src/azure';
+import { validateAzureGroups, mapModelToAzureConfig } from '../src/azure';
 
 describe('validateAzureGroups', () => {
   it('should validate a correct configuration', () => {
@@ -789,56 +789,32 @@ describe('validateAzureGroups with modelGroupMap and groupMap', () => {
   });
 });
 
-describe('mapGroupToAzureConfig', () => {
-  // Test setup for a basic config with 2 groups
-  const groupMap = {
-    group1: {
-      apiKey: 'key-for-group1',
-      instanceName: 'instance-group1',
-      models: {
-        model1: { deploymentName: 'deployment1', version: '1.0' },
+describe('validateAzureGroups with declared reasoning efforts', () => {
+  const groupWith = (reasoningEfforts: unknown) =>
+    [
+      {
+        group: 'group',
+        apiKey: 'key',
+        instanceName: 'instance',
+        version: '2024-12-01-preview',
+        deploymentName: 'deployment',
+        models: { 'production-west': { reasoningEfforts } },
       },
-    },
-    group2: {
-      apiKey: 'key-for-group2',
-      instanceName: 'instance-group2',
-      serverless: true,
-      baseURL: 'https://group2.example.com',
-      models: {
-        model2: true, // demonstrating a boolean style model configuration
-      },
-    },
-  };
+    ] as unknown as TAzureGroups;
 
-  it('should successfully map non-serverless group configuration', () => {
-    const groupName = 'group1';
-    const result = mapGroupToAzureConfig({ groupName, groupMap });
-    expect(result).toEqual({
-      azureOptions: expect.objectContaining({
-        azureOpenAIApiKey: 'key-for-group1',
-        azureOpenAIApiInstanceName: 'instance-group1',
-        azureOpenAIApiDeploymentName: expect.any(String),
-        azureOpenAIApiVersion: expect.any(String),
-      }),
+  it('keeps the declared efforts on the group map', () => {
+    const { isValid, groupMap } = validateAzureGroups(groupWith(['low', 'high']));
+    expect(isValid).toBe(true);
+    expect(groupMap.group.models['production-west']).toMatchObject({
+      reasoningEfforts: ['low', 'high'],
     });
   });
 
-  it('should successfully map serverless group configuration', () => {
-    const groupName = 'group2';
-    const result = mapGroupToAzureConfig({ groupName, groupMap });
-    expect(result).toEqual({
-      azureOptions: expect.objectContaining({
-        azureOpenAIApiKey: 'key-for-group2',
-      }),
-      baseURL: 'https://group2.example.com',
-      serverless: true,
-    });
+  it('rejects an effort the override schema could never submit', () => {
+    expect(validateAzureGroups(groupWith(['ultra'])).isValid).toBe(false);
   });
 
-  it('should throw error for nonexistent group name', () => {
-    const groupName = 'nonexistent-group';
-    expect(() => {
-      mapGroupToAzureConfig({ groupName, groupMap });
-    }).toThrow(`Group named "${groupName}" not found in configuration.`);
+  it('rejects an empty declaration', () => {
+    expect(validateAzureGroups(groupWith([])).isValid).toBe(false);
   });
 });

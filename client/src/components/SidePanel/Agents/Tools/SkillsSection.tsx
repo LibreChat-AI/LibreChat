@@ -69,6 +69,10 @@ function SkillIcon({ item }: { item: AgentItem }) {
  * height. Measuring the content and driving an explicit height makes every
  * change a single tween, including a mode swap and the available-skills expand.
  */
+/** `offsetHeight` rounds to a whole pixel, and rounding down clips the content's last pixel, such
+ *  as a bottom border, under the clipping box. The fractional height rounds up instead. */
+const measure = (el: HTMLElement): number => Math.ceil(el.getBoundingClientRect().height);
+
 function MorphHeight({ open, children }: { open: boolean; children: ReactNode }) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [height, setHeight] = useState(0);
@@ -81,12 +85,12 @@ function MorphHeight({ open, children }: { open: boolean; children: ReactNode })
     if (el == null) {
       return;
     }
-    setHeight(el.offsetHeight);
+    setHeight(measure(el));
     const frame = requestAnimationFrame(() => setAnimate(true));
     if (typeof ResizeObserver === 'undefined') {
       return () => cancelAnimationFrame(frame);
     }
-    const observer = new ResizeObserver(() => setHeight(el.offsetHeight));
+    const observer = new ResizeObserver(() => setHeight(measure(el)));
     observer.observe(el);
     return () => {
       cancelAnimationFrame(frame);
@@ -331,13 +335,13 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
               aria-controls="skills-all-list"
               className={cn(
                 ROW,
-                'hover:bg-surface-secondary focus-visible:ring-ring-primary w-full text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+                'hover:bg-surface-secondary focus-visible:ring-ring-primary w-full text-start transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
               )}
             >
               <ChevronRight
                 className={cn(
-                  'text-text-secondary size-4 shrink-0 transition-transform',
-                  allExpanded && 'rotate-90',
+                  'text-text-secondary size-4 shrink-0 transition-transform rtl:-scale-x-100',
+                  allExpanded && 'rotate-90 rtl:-rotate-90',
                 )}
                 aria-hidden="true"
               />
@@ -359,7 +363,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
                         ROW,
                         // `transition-none` beats the global `all` transition, so
                         // the highlight lands on the frame the pointer enters.
-                        'hover:bg-surface-secondary focus-visible:ring-ring-primary w-full text-left transition-none focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+                        'hover:bg-surface-secondary focus-visible:ring-ring-primary w-full text-start transition-none focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
                       )}
                     >
                       <SkillIcon item={item} />
@@ -388,7 +392,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
                       onClick={() => onInfo(item)}
                       className={cn(
                         ROW,
-                        'focus-visible:ring-ring-primary min-w-0 flex-1 text-left focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+                        'focus-visible:ring-ring-primary min-w-0 flex-1 text-start focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
                       )}
                     >
                       <SkillIcon item={item} />
@@ -399,7 +403,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
                       data-skill-remove=""
                       onClick={() => onRemove(item)}
                       aria-label={localize('com_ui_skills_remove', { name: item.name })}
-                      className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-ring-primary mr-2 flex size-6 shrink-0 items-center justify-center rounded-md transition-colors focus:outline-hidden focus-visible:ring-2"
+                      className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-ring-primary me-2 flex size-6 shrink-0 items-center justify-center rounded-md transition-colors focus:outline-hidden focus-visible:ring-2"
                     >
                       <X className="size-3.5" aria-hidden="true" />
                     </button>
@@ -417,7 +421,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
                 <span className="text-xs">{localize('com_ui_skills_add_row')}</span>
-                <span className="text-text-secondary text-[11px]">
+                <span className="text-text-secondary text-2xs">
                   {localize('com_ui_skills_empty_hint')}
                 </span>
               </button>

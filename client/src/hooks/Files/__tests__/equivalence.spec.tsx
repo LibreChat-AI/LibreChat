@@ -115,6 +115,8 @@ jest.mock('~/hooks/Agents', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
+  /** Grants File Search; these specs vary capabilities and endpoints, not roles. */
+  useHasAccess: () => true,
   useLocalize:
     jest.requireActual<typeof import('~/hooks/useLocalize')>('~/hooks/useLocalize').default,
   useAgentCapabilities: jest.requireActual<typeof import('~/hooks/Agents/useAgentCapabilities')>(
@@ -168,7 +170,7 @@ const report = () => new File(['%PDF-'], 'report.pdf', { type: 'application/pdf'
 const REFUSED_TYPE_TOAST = {
   message: 'Unsupported file type: application/pdf',
   status: 'error',
-  duration: 5000,
+  duration: Infinity,
 };
 
 type Toast = { status?: string };
