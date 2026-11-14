@@ -24,7 +24,7 @@
     "client/src/__tests__/hosts.test.tsx": [
       "client/src/App.jsx",
       "client/src/components/Chat/Messages/hosts.ts",
-      "client/src/components/Chat/Messages/slots.tsx",
+      "client/src/components/Chat/Messages/load.tsx",
       "client/src/components/Chat/Presentation.tsx",
       "client/src/routes/ShareRoute.tsx",
       "client/src/routes/Search.tsx"
