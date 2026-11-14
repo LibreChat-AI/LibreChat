@@ -29,6 +29,11 @@ export type TUseGenerations = {
 export type Generations = {
   forkingSupported: boolean;
   continueSupported: boolean;
+  /** The row has a rerun to offer at all, whether or not one can start right now. A run in
+   *  flight withholds every row's rerun at once, so a toolbar keeps the control mounted on this
+   *  and conceals it on `regenerateEnabled`, instead of adding and removing a button on every
+   *  row of the thread each time a run starts or ends. */
+  regenerateOffered: boolean;
   regenerateEnabled: boolean;
   isActiveStreamingMessage: boolean;
   isEditableEndpoint: boolean;
@@ -97,13 +102,9 @@ export default function useGenerationsByLatest({
     ].find((e) => e === endpoint),
   );
 
-  const regenerateEnabled =
-    !isCreatedByUser &&
-    !searchResult &&
-    !isEditing &&
-    !isSubmitting &&
-    !hasNoTurnToReplay &&
-    branchingSupported;
+  const regenerateOffered =
+    !isCreatedByUser && !searchResult && !isEditing && !hasNoTurnToReplay && branchingSupported;
+  const regenerateEnabled = regenerateOffered && !isSubmitting;
 
   const isActiveStreamingMessage =
     isSubmitting && (latestMessageId == null || messageId === latestMessageId);
@@ -126,6 +127,7 @@ export default function useGenerationsByLatest({
   return {
     forkingSupported,
     continueSupported,
+    regenerateOffered,
     regenerateEnabled,
     isActiveStreamingMessage,
     isEditableEndpoint,

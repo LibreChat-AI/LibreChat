@@ -49,7 +49,25 @@ type HoverButtonProps = {
   reveal?: boolean;
   dataTestId?: string;
   disabled?: boolean;
+  /** Kept in the row but out of sight and out of reach: no ink, no focus, no click. Where the
+   *  toolbar is centered the control also gives up its box, so the rest stay centered. */
+  concealed?: boolean;
 };
+
+/**
+ * Invisible rather than removed where the toolbar starts at the row's edge, so concealing the
+ * trailing control moves nothing: a run starting or ending conceals one on every row of the
+ * thread at once. Below `lg` the toolbar is centered and an invisible box would pull the others
+ * off center, so there it leaves the flow.
+ *
+ * Visibility does the whole job: a hidden control takes no focus, no pointer and no place in
+ * the accessibility tree. It is deliberately NOT also `disabled`. The stylesheet holds
+ * `:has(:disabled)` rules and a message row is a `:has()` anchor, so a `disabled` flip inside a
+ * row re-styles that row's entire subtree; flipped on every row at once that is the whole
+ * transcript, 90 ms of it in a 250-message thread against 9 ms for the class alone. Mounting and
+ * unmounting the button invalidates the same way.
+ */
+const CONCEALED = 'max-lg:hidden lg:invisible';
 
 const HoverButton = memo(
   ({
@@ -62,6 +80,7 @@ const HoverButton = memo(
     reveal = !isLast,
     dataTestId,
     disabled = false,
+    concealed = false,
   }: HoverButtonProps) => {
     return (
       <TooltipAnchor
@@ -73,8 +92,10 @@ const HoverButton = memo(
             data-testid={dataTestId}
             data-hover-active={isActive || undefined}
             aria-label={title}
-            onClick={onClick}
+            aria-hidden={concealed || undefined}
+            onClick={concealed ? undefined : onClick}
             disabled={disabled}
+            className={concealed ? CONCEALED : undefined}
           >
             {icon}
           </Button>
@@ -182,6 +203,7 @@ const HoverButtons = ({
 
   const {
     hideEditButton,
+    regenerateOffered,
     regenerateEnabled,
     continueSupported,
     forkingSupported,
@@ -282,13 +304,18 @@ const HoverButtons = ({
         <Feedback handleFeedback={handleFeedback} feedback={message.feedback} isLast={isLast} />
       )}
 
-      {/* Regenerate Button */}
-      {!isSubagentThreadReadOnly && regenerateEnabled && (
+      {/* Regenerate Button: mounted for as long as the row has a rerun to offer, and concealed
+          while a run is in flight. Every row loses and regains its rerun together when a run
+          starts and ends; unmounting and remounting a button on each of them is a layout of the
+          whole thread at exactly the two moments the reader is waiting on. The reply being
+          written is the one row that offers nothing at all, so it mounts none. */}
+      {!isSubagentThreadReadOnly && regenerateOffered && !isActiveStreamingMessage && (
         <HoverButton
           onClick={regenerate}
           title={localize('com_ui_regenerate')}
           icon={icons.regenerate}
           isLast={isLast}
+          concealed={!regenerateEnabled}
           dataTestId={isLast ? 'regenerate-generation-button' : undefined}
         />
       )}

@@ -598,6 +598,7 @@ describe('HoverButtons submission state', () => {
 
   it('withholds and restores rerun on a settled row as a send starts and ends', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const regenerate = jest.fn();
     const buttons = (
       <HoverButtons
         index={0}
@@ -606,7 +607,7 @@ describe('HoverButtons submission state', () => {
         message={assistantMessage}
         conversation={conversation}
         enterEdit={jest.fn()}
-        regenerate={jest.fn()}
+        regenerate={regenerate}
         handleContinue={jest.fn()}
         copyToClipboard={jest.fn()}
         getCanCopy={() => true}
@@ -631,13 +632,28 @@ describe('HoverButtons submission state', () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByTestId('regenerate-generation-button')).toBeInTheDocument();
+    const rerun = screen.getByTestId('regenerate-generation-button');
+    expect(rerun).not.toHaveAttribute('aria-hidden');
+    fireEvent.click(rerun);
+    expect(regenerate).toHaveBeenCalledTimes(1);
 
+    /** Withheld without leaving the row: the same button, out of sight and out of reach. A
+     *  run starts and ends on every row of the thread at once, and removing a button from each,
+     *  or disabling it, re-styles the whole thread both times. */
     act(() => setSubmitting(true));
-    expect(screen.queryByTestId('regenerate-generation-button')).toBeNull();
+    expect(screen.getByTestId('regenerate-generation-button')).toBe(rerun);
+    expect(rerun).toHaveAttribute('aria-hidden', 'true');
+    expect(rerun).toHaveClass('lg:invisible', 'max-lg:hidden');
+    expect(rerun).not.toBeDisabled();
+    fireEvent.click(rerun);
+    expect(regenerate).toHaveBeenCalledTimes(1);
 
     act(() => setSubmitting(false));
-    expect(screen.getByTestId('regenerate-generation-button')).toBeInTheDocument();
+    expect(screen.getByTestId('regenerate-generation-button')).toBe(rerun);
+    expect(rerun).not.toHaveAttribute('aria-hidden');
+    expect(rerun).not.toHaveClass('lg:invisible');
+    fireEvent.click(rerun);
+    expect(regenerate).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -45,6 +45,7 @@ by side.
 | `FADE_PERF_SKIP_LIVE`    | `1` stops the frame spec after the idle and label traces.            |
 | `FADE_PERF_PROFILE`      | `1` samples the page's JavaScript: a second live run, or the replay. |
 | `FADE_PERF_DUMP`         | A directory that receives raw traces, profiles and replay windows.   |
+| `FADE_PERF_CATEGORIES`   | More trace categories for a dump, comma-separated.                   |
 | `FADE_PERF_REPLAY_INDEX` | Which message to replay (position in the flattened export).          |
 | `FADE_PERF_REPLAY_PARTS` | Replays only the first N content parts.                              |
 | `FADE_PERF_GAP_MS`       | Pause after each replayed frame; 150 by default.                     |
@@ -75,6 +76,13 @@ selects, a context it reads, or only its parent). It runs on the production
 bundle and names components by the source map when the build wrote one, else
 by where the function sits in its chunk. A component that renders once per
 event with nothing to show for it is the thing to look for.
+
+When a window shows a long layout or style pass with almost nothing dirty, dump
+the trace with `FADE_PERF_CATEGORIES=disabled-by-default-devtools.timeline.invalidationTracking`
+and read the `StyleInvalidatorInvalidationTracking` events before it: they name
+the nodes whose subtrees were invalidated and the selector feature that did it.
+That is how a `disabled` flip on one button per row turned out to re-style every
+row of the thread, through the stylesheet's `:has(:disabled)` rules.
 
 Role locators are kept out of the measured windows: Playwright computes
 accessible names across the whole transcript on each poll, which a trace
