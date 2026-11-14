@@ -38,7 +38,12 @@ import type {
   ConversationMethods,
   SubagentTaskResultClaim,
 } from '@librechat/data-schemas';
-import type { TSubagentActivityConfig, TSteerAppliedEvent, Agents } from 'librechat-data-provider';
+import type {
+  TSubagentActivityConfig,
+  TMessageContentParts,
+  TSteerAppliedEvent,
+  Agents,
+} from 'librechat-data-provider';
 import type { BaseMessage, StoredMessage } from '@librechat/agents/langchain/messages';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type {
@@ -1914,6 +1919,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
               lease.settling = true;
               await this.closeContent(lease);
               await this.settleGeneration(lease, false, async () => {
+                const content = this.generationContent(lease);
                 await this.persistResult(
                   scope,
                   request,
@@ -1924,9 +1930,11 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                   lease.content?.throughSequence,
                   appliedSteers,
                   publicRecorder.snapshot(),
+                  content,
                 );
-                return this.generationFinal(request, runtime.taskId, preparedThread, lease, {
+                return this.generationFinal(request, runtime.taskId, preparedThread, {
                   text: result.content,
+                  content,
                 });
               });
               activityTerminal = 'completed';
@@ -1946,6 +1954,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                 await this.settleGeneration(lease, true, async () => {
                   if (!mayPersist) return null;
                   try {
+                    const content = this.generationContent(lease);
                     const written = await this.persistCancellation(
                       scope,
                       threadId,
@@ -1954,10 +1963,12 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                       detachedUsage,
                       lease.content?.throughSequence,
                       publicRecorder.snapshot(),
+                      content,
                     );
                     return written
-                      ? this.generationFinal(request, runtime.taskId, prepared, lease, {
+                      ? this.generationFinal(request, runtime.taskId, prepared, {
                           text: CANCELLED_TASK_TEXT,
+                          content,
                         })
                       : null;
                   } catch (persistError) {
@@ -1983,6 +1994,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
               await this.settleGeneration(lease, false, async () => {
                 if (!mayPersist) return null;
                 try {
+                  const content = this.generationContent(lease);
                   const written = await this.persistFailure(
                     scope,
                     threadId,
@@ -1992,11 +2004,13 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                     detachedUsage,
                     lease.content?.throughSequence,
                     publicRecorder.snapshot(),
+                    content,
                   );
                   return written
-                    ? this.generationFinal(request, runtime.taskId, prepared, lease, {
+                    ? this.generationFinal(request, runtime.taskId, prepared, {
                         text: safeErrorMessage(error),
                         failed: true,
+                        content,
                       })
                     : null;
                 } catch (persistError) {
@@ -2130,13 +2144,28 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     await lease.generation.settle(aborted, persist);
   }
 
+  /**
+   * What the child streamed, in the shape every agent message stores, so its result row reads
+   * like one. Left off when there was no stream, nothing was streamed, or it would outgrow the
+   * row's budget: the row then keeps only its text and projection, as before.
+   */
+  private generationContent(lease: TaskThreadLease): TMessageContentParts[] | undefined {
+    const limit = this.activityOptions.generationContentBytes;
+    const parts = lease.generation?.content().filter((part) => part != null);
+    if (parts == null || parts.length === 0 || limit === 0) return undefined;
+    try {
+      return Buffer.byteLength(JSON.stringify(parts), 'utf8') <= limit ? parts : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** The rows this task just wrote, as the stream's final event names them. */
   private generationFinal(
     request: SubagentTaskStartRequest,
     taskId: string,
     prepared: PreparedThread | undefined,
-    lease: TaskThreadLease,
-    response: { text: string; failed?: boolean },
+    response: { text: string; failed?: boolean; content?: TMessageContentParts[] },
   ): ChildGenerationFinal | null {
     if (prepared == null) return null;
     const threadId = prepared.conversation.conversationId;
@@ -2156,7 +2185,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
         conversationId: threadId,
         sender: request.subagentType,
         text: response.text,
-        content: lease.generation?.content() ?? [],
+        content: response.content ?? [],
         endpoint: EModelEndpoint.agents,
         isCreatedByUser: false,
         unfinished: false,
@@ -3815,6 +3844,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     contentThroughSequence?: number,
     appliedSteers?: readonly AppliedSubagentSteer[],
     observedActivity?: ReturnType<SubagentPublicRecorder['snapshot']>,
+    content?: TMessageContentParts[],
   ): Promise<void> {
     if (prepared.userMessageId == null) {
       throw new Error('The child-thread input was not prepared.');
@@ -3872,6 +3902,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
         parentMessageId: prepared.userMessageId,
         sender: request.subagentType,
         text: result.content,
+        ...(content == null ? {} : { content }),
         endpoint: EModelEndpoint.agents,
         isCreatedByUser: false,
         unfinished: false,
@@ -3910,6 +3941,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     detachedUsage: UsageMetadata[],
     contentThroughSequence?: number,
     observedActivity?: ReturnType<SubagentPublicRecorder['snapshot']>,
+    content?: TMessageContentParts[],
   ): Promise<boolean> {
     await this.flushControlReceiptsForSettlement(request.scopeId, taskId);
     const conversation = await this.currentConversation(scope, request, threadId);
@@ -3925,6 +3957,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
         parentMessageId: `${taskId}:user`,
         sender: request.subagentType,
         text: safeErrorMessage(error),
+        ...(content == null ? {} : { content }),
         endpoint: EModelEndpoint.agents,
         isCreatedByUser: false,
         unfinished: false,
@@ -4000,6 +4033,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     detachedUsage: UsageMetadata[],
     contentThroughSequence?: number,
     observedActivity?: ReturnType<SubagentPublicRecorder['snapshot']>,
+    content?: TMessageContentParts[],
   ): Promise<boolean> {
     await this.flushControlReceiptsForSettlement(request.scopeId, taskId);
     const conversation = await this.currentConversation(scope, request, threadId);
@@ -4015,6 +4049,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
         parentMessageId: `${taskId}:user`,
         sender: request.subagentType,
         text: CANCELLED_TASK_TEXT,
+        ...(content == null ? {} : { content }),
         endpoint: EModelEndpoint.agents,
         isCreatedByUser: false,
         unfinished: false,

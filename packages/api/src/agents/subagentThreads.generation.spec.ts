@@ -120,7 +120,7 @@ async function waitUntil(condition: () => boolean | Promise<boolean>, what: stri
   throw new Error(`Timed out waiting for ${what}.`);
 }
 
-async function setup(activity?: { generationJobs: boolean }) {
+async function setup(activity?: { generationJobs?: boolean; generationContentBytes?: number }) {
   const parentConversationId = randomUUID();
   await methods.saveConvo(
     { userId },
@@ -381,6 +381,83 @@ describe('a background child as a generation job', () => {
     release();
     await waitUntil(() => store.get(scopeId, taskId)?.status === 'completed', 'the task');
     expect((await assistantRow(threadId, taskId))?.subagentTask?.status).toBe('completed');
+  });
+
+  describe('the stored result row', () => {
+    const textOf = (content: unknown): string =>
+      (content as Array<{ type?: string; text?: string }> | undefined)
+        ?.filter((part) => part?.type === 'text')
+        .map((part) => part.text ?? '')
+        .join('') ?? '';
+
+    it('carries what a completed child streamed as standard content, beside its text', async () => {
+      const { store, scopeId } = await setup();
+      const { run, release } = gatedRun();
+      const { threadId, taskId } = threadOf(store.start(taskRequest(scopeId, { run })));
+      await waitUntil(async () => (await manager.getJob(threadId)) != null, 'the child job');
+
+      release();
+      await waitUntil(() => store.get(scopeId, taskId)?.status === 'completed', 'the task');
+
+      const row = await assistantRow(threadId, taskId);
+      expect(row?.text).toBe('Looking into it.');
+      expect(textOf(row?.content)).toBe('Looking into it.');
+      expect(row?.subagentTask?.status).toBe('completed');
+    });
+
+    it('keeps what a cancelled child had streamed', async () => {
+      const { store, scopeId } = await setup();
+      const { threadId, taskId } = threadOf(store.start(taskRequest(scopeId, {})));
+      await waitUntil(
+        async () =>
+          textOf((await manager.getResumeState(threadId))?.aggregatedContent) ===
+          'Looking into it.',
+        'streamed content',
+      );
+
+      store.control(scopeId, taskId, { action: 'cancel' });
+      await waitUntil(
+        async () => (await assistantRow(threadId, taskId))?.subagentTask?.status === 'cancelled',
+        'the cancelled row',
+      );
+
+      const row = await assistantRow(threadId, taskId);
+      expect(row?.text).toBe('Subagent task was cancelled.');
+      expect(textOf(row?.content)).toBe('Looking into it.');
+    });
+
+    it('keeps what a failed child had streamed, with the error flag', async () => {
+      const { store, scopeId } = await setup();
+      const { run, release } = gatedRun('fail');
+      const { threadId, taskId } = threadOf(store.start(taskRequest(scopeId, { run })));
+      await waitUntil(async () => (await manager.getJob(threadId)) != null, 'the child job');
+
+      release();
+      await waitUntil(async () => (await assistantRow(threadId, taskId)) != null, 'the error row');
+
+      const row = await assistantRow(threadId, taskId);
+      expect(row?.error).toBe(true);
+      expect(textOf(row?.content)).toBe('Looking into it.');
+      expect(JSON.stringify(row)).not.toContain('sk-secret');
+    });
+
+    it.each([
+      { name: 'the stream is off', activity: { generationJobs: false } },
+      { name: 'the content is over its budget', activity: { generationContentBytes: 16 } },
+      { name: 'the budget is zero', activity: { generationContentBytes: 0 } },
+    ])('stores text only when $name', async ({ activity }) => {
+      const { store, scopeId } = await setup(activity);
+      const { run, release } = gatedRun();
+      const { threadId, taskId } = threadOf(store.start(taskRequest(scopeId, { run })));
+
+      release();
+      await waitUntil(() => store.get(scopeId, taskId)?.status === 'completed', 'the task');
+
+      const row = await assistantRow(threadId, taskId);
+      expect(row?.text).toBe('Looking into it.');
+      expect(row?.content).toBeUndefined();
+      expect(row?.subagentTask?.status).toBe('completed');
+    });
   });
 
   it('still completes and persists the child when the stream cannot be opened', async () => {
