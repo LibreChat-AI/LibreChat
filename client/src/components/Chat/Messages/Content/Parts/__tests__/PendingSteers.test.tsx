@@ -6,7 +6,7 @@ import { pendingSteersByConvoId } from '@librechat/chat/react';
 import { hasLiveRunPause, applyPendingAction } from '@librechat/chat';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
 import type { PendingSteer } from '@librechat/chat';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
@@ -148,6 +148,55 @@ describe('PendingSteers', () => {
     if (receiptState !== 'sending') {
       expect(screen.queryByText('com_ui_steer_sending')).not.toBeInTheDocument();
     }
+  });
+
+  it.each(['sending', 'pending', 'failed'] as const)(
+    'renders quoted excerpts in the %s bubble',
+    (status) => {
+      renderPending([
+        pending({ status, quotes: ['first excerpt\nwith a second line', 'second excerpt'] }),
+      ]);
+
+      const bubble = within(screen.getByTestId('steer-part'));
+      const quotes = bubble.getByRole('list', { name: 'com_ui_referenced_quotes' });
+      const excerpts = within(quotes).getAllByRole('listitem');
+      expect(excerpts).toHaveLength(2);
+      expect(excerpts[0]).toHaveTextContent('first excerpt with a second line');
+      expect(excerpts[0].textContent).toBe('first excerpt\nwith a second line');
+      expect(excerpts[1]).toHaveTextContent('second excerpt');
+      expect(bubble.getByText('change of plan')).toBeInTheDocument();
+    },
+  );
+
+  it('keeps each waiting message paired with its own quotes', () => {
+    renderPending([
+      pending({ status: 'pending', text: 'close them please', quotes: ['first reference'] }),
+      pending({
+        steerId: 's2',
+        status: 'pending',
+        text: 'explain this in more detail',
+        quotes: ['second reference'],
+      }),
+    ]);
+
+    const bubbles = screen.getAllByTestId('steer-part');
+    expect(within(bubbles[0]).getByText('first reference')).toBeInTheDocument();
+    expect(within(bubbles[0]).queryByText('second reference')).not.toBeInTheDocument();
+    expect(within(bubbles[1]).getByText('second reference')).toBeInTheDocument();
+    expect(within(bubbles[1]).queryByText('first reference')).not.toBeInTheDocument();
+    for (const bubble of bubbles) {
+      expect(within(bubble).getByTestId('steer-receipt')).toHaveAttribute(
+        'data-receipt-state',
+        'delivered',
+      );
+    }
+  });
+
+  it.each([undefined, []])('omits quote blocks when quotes are %p', (quotes) => {
+    renderPending([pending({ status: 'pending', quotes })]);
+
+    expect(screen.queryByTestId('message-quotes')).not.toBeInTheDocument();
+    expect(screen.getByText('change of plan')).toBeInTheDocument();
   });
 
   it('renders queue as an icon-only message action', () => {

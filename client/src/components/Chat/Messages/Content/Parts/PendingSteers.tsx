@@ -152,6 +152,7 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
             <SteerPart
               steer={steer.text}
               files={steer.files}
+              quotes={steer.quotes}
               steerId={steer.steerId}
               createdAt={steer.createdAt}
               receiptState={steer.status === 'failed' ? null : receiptState}
