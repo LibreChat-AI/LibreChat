@@ -9,32 +9,32 @@ import React, {
 } from 'react';
 import { useSetAtom } from 'jotai';
 import * as Ariakit from '@ariakit/react';
-import { isMacPlatform } from '@librechat/chat';
-import { AutoSizer, List } from 'react-virtualized';
 import { Star, Plus, Search, ChevronDown } from 'lucide-react';
-import { FilePreview, getFileType } from '@librechat/chat/components';
-import { composerLiftFamily, useReducedMotion, useElementSize } from '@librechat/chat/react';
-import { Button, FileUpload, IconButton, TooltipAnchor, useMediaQuery } from '@librechat/client';
+import {
+  Button,
+  cn,
+  FileUpload,
+  IconButton,
+  TooltipAnchor,
+  useMediaQuery,
+} from '@librechat/client';
+import type { EndpointFileConfig, TConversation, TFile } from 'librechat-data-provider';
 import type {
-  TFile,
-  TConversation,
-  EModelEndpoint,
-  EndpointFileConfig,
-} from 'librechat-data-provider';
-import type { PaletteEntry, PaletteSection } from '~/hooks/Input/usePaletteEntries';
-import type { AttachEntry } from '~/hooks/Input/useAttachItems';
-import type { ExtendedFile, FileSetter } from '~/common';
-import type { CatalogSection } from './Catalog';
-import type { TranslationKeys } from '~/hooks';
-import { SharePointPickerDialog } from '~/components/SharePoint';
-import useToolFavorites from '~/hooks/Input/useToolFavorites';
-import useRecentFiles from '~/hooks/Input/useRecentFiles';
-import useAttachItems from '~/hooks/Input/useAttachItems';
-import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
-import { isUnifiedUploadMode, cn } from '~/utils';
-import { useBadgeRowContext } from '~/Providers';
-import { useLocalize } from '~/hooks';
-import Catalog from './Catalog';
+  PaletteAttachView,
+  PaletteCatalogSection,
+  PaletteEntryView,
+  PaletteListHandle,
+  PaletteSection,
+} from '../../react/palette';
+import type { ExtendedFile } from '../../core/files';
+import { emptyPaletteSources } from '../../react/palette';
+import { composerLiftFamily } from '../../react/lift';
+import { isMacPlatform } from '../../core/shortcuts';
+import { useComposerHost } from '../../react/input';
+import useReducedMotion from '../../react/motion';
+import useElementSize from '../../react/size';
+import FilePreview from './files/FilePreview';
+import { getFileType } from './files/kinds';
 
 const HEADER_HEIGHT = 26;
 /** A header carrying its section's "Show all" button, which is taller than the
@@ -89,18 +89,18 @@ const rowElementId = (index: number, key: string) => {
   return `palette-row-${index}-${encodedKey}`;
 };
 
-const SECTION_LABEL: Record<PaletteSection, TranslationKeys> = {
+const SECTION_LABEL: Record<PaletteSection, string> = {
   tool: 'com_ui_composer_tools',
   skill: 'com_ui_skills',
   mcp: 'com_ui_composer_mcp',
 };
 
 type PaletteRow =
-  | { type: 'header'; key: string; label: string; showAll?: CatalogSection }
-  | { type: 'attach'; key: string; entry: AttachEntry }
+  | { type: 'header'; key: string; label: string; showAll?: PaletteCatalogSection }
+  | { type: 'attach'; key: string; entry: PaletteAttachView }
   | { type: 'more'; key: string; label: string }
   | { type: 'file'; key: string; file: TFile }
-  | { type: 'entry'; key: string; entry: PaletteEntry; isFavorite: boolean };
+  | { type: 'entry'; key: string; entry: PaletteEntryView; isFavorite: boolean };
 
 const isSelectable = (row: PaletteRow) => row.type !== 'header' || row.showAll != null;
 
@@ -145,7 +145,7 @@ function rowHeight(row: PaletteRow): number {
   return ROW_HEIGHT;
 }
 
-interface PaletteProps {
+export interface ComposerPaletteProps {
   /** Composer index, so a split view lifts only the side that opened a popup. */
   index: number;
   disabled?: boolean;
@@ -158,21 +158,21 @@ interface PaletteProps {
   onCancel?: () => void;
   agentId?: string | null;
   endpoint?: string | null;
-  endpointType?: EModelEndpoint | string;
+  endpointType?: string;
   endpointFileConfig?: EndpointFileConfig;
   useResponsesApi?: boolean;
   conversationId: string;
   conversation: TConversation | null;
   files: Map<string, ExtendedFile>;
-  setFiles: FileSetter;
+  setFiles: (update: React.SetStateAction<Map<string, ExtendedFile>>) => void;
   setFilesLoading: React.Dispatch<React.SetStateAction<boolean>>;
   /** Attach destinations are hidden when the endpoint cannot take uploads. */
   canAttach: boolean;
   /** Owned by `Bar`, which also renders the active ones as chips (derived once
    *  there so the skills catalog is not walked twice per render). */
-  entries: PaletteEntry[];
+  entries: readonly PaletteEntryView[];
   /** The composer box the popover anchors to, so it matches its width. */
-  anchorRef: React.RefObject<HTMLElement>;
+  anchorRef: React.RefObject<HTMLElement | null>;
 }
 
 /**
@@ -209,8 +209,8 @@ function Palette({
   canAttach,
   entries,
   anchorRef,
-}: PaletteProps) {
-  const localize = useLocalize();
+}: ComposerPaletteProps): React.JSX.Element {
+  const { renderPaletteList, usePaletteSources } = useComposerHost();
   /* Ariakit owns the open state rather than a controlled `open`/`setOpen` pair:
      with the controlled form, hide-on-interact-outside fired on mousedown and
      the disclosure's own click re-opened it, so clicking `+` while the palette
@@ -220,9 +220,6 @@ function Palette({
   const opensUp = useMediaQuery('(max-width: 767px)');
   const popover = Ariakit.usePopoverStore({ placement: opensUp ? 'top-start' : 'bottom-start' });
   const open = popover.useState('open');
-  const context = useBadgeRowContext();
-  const mcpManager = context?.mcpServerManager;
-  const configDialogOpen = mcpManager?.getConfigDialogProps()?.isOpen === true;
   useEffect(() => {
     if (open) {
       onOpened?.();
@@ -235,18 +232,42 @@ function Palette({
      hiding it. */
   const [showAllAttach, setShowAllAttach] = useState(false);
   /** The section whose "Show all" dialog is open, if any. */
-  const [catalog, setCatalog] = useState<CatalogSection | null>(null);
+  const [catalog, setCatalog] = useState<PaletteCatalogSection | null>(null);
   /** Set while the palette closes to hand over to a dialog, so its close does
    *  not pull focus back into the composer from under the dialog. */
   const openingCatalogRef = useRef(false);
   /** Where focus lands when a "Show all" dialog closes. */
   const catalogReturnRef = useRef<HTMLElement | null>(null);
-  /* The MCP catalog shows the same live statuses as the palette rows, so it
-     keeps the refresh running after the palette hands over to it. */
-  useMCPRefresh({
-    enabled:
-      (open || configDialogOpen || catalog === 'mcp') &&
-      (mcpManager?.availableMCPServers.length ?? 0) > 0,
+  const {
+    localize,
+    favoriteKeys,
+    toggleFavorite,
+    attachEntries,
+    fileInputRef,
+    onFileChange,
+    recentFiles,
+    attachFile,
+    overlays,
+  } = (usePaletteSources ?? emptyPaletteSources)({
+    index,
+    mounted,
+    open,
+    search,
+    canAttach,
+    catalog,
+    closeCatalog: () => setCatalog(null),
+    catalogReturnRef,
+    agentId,
+    endpoint,
+    endpointType,
+    endpointFileConfig,
+    useResponsesApi,
+    conversationId,
+    conversation,
+    files,
+    setFiles,
+    setFilesLoading,
+    entries,
   });
   /* Closing runs in two beats, so the rows below never slide up through a hole
      where the folded destinations used to be: they fade where they stand, and
@@ -264,7 +285,7 @@ function Palette({
      rows under a resting pointer. */
   const [scrollToActive, setScrollToActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<List>(null);
+  const listRef = useRef<PaletteListHandle | null>(null);
   const listBodyRef = useRef<HTMLDivElement>(null);
   const disclosureRef = useRef<HTMLButtonElement>(null);
   /** Whether the latest interaction with the palette was a touch or pen press,
@@ -391,35 +412,7 @@ function Palette({
     };
   }, [mounted, updateLift, anchorRef]);
 
-  const favorites = useToolFavorites();
   const query = search.trim().toLowerCase();
-  const recent = useRecentFiles(
-    mounted && canAttach,
-    {
-      files,
-      setFiles,
-      conversation,
-      endpoint,
-      endpointType,
-      endpointFileConfig,
-    },
-    search,
-  );
-  const isUnifiedMode = isUnifiedUploadMode(endpointFileConfig, canAttach);
-  const attach = useAttachItems({
-    index,
-    agentId,
-    endpoint,
-    endpointType,
-    endpointFileConfig,
-    useResponsesApi,
-    conversationId,
-    conversation,
-    files,
-    setFiles,
-    setFilesLoading,
-    isUnifiedMode,
-  });
 
   /** One pass over each source: filter by query, split favourites out, then
    *  flatten to the row model the virtualized list renders from. */
@@ -431,14 +424,14 @@ function Palette({
     if (!mounted) {
       return NO_ROWS;
     }
-    const favoriteMatches: PaletteEntry[] = [];
-    const buckets: Record<PaletteSection, PaletteEntry[]> = { tool: [], skill: [], mcp: [] };
+    const favoriteMatches: PaletteEntryView[] = [];
+    const buckets: Record<PaletteSection, PaletteEntryView[]> = { tool: [], skill: [], mcp: [] };
 
     for (const entry of entries) {
       if (query !== '' && scoreEntry(entry.label, entry.description, query) < 0) {
         continue;
       }
-      if (entry.favoritable !== false && favorites.keys.has(entry.key)) {
+      if (entry.favoritable !== false && favoriteKeys.has(entry.key)) {
         favoriteMatches.push(entry);
         continue;
       }
@@ -446,8 +439,8 @@ function Palette({
     }
 
     if (query !== '') {
-      const rank = (entry: PaletteEntry) => scoreEntry(entry.label, entry.description, query);
-      const byRank = (a: PaletteEntry, b: PaletteEntry) => rank(a) - rank(b);
+      const rank = (entry: PaletteEntryView) => scoreEntry(entry.label, entry.description, query);
+      const byRank = (a: PaletteEntryView, b: PaletteEntryView) => rank(a) - rank(b);
       favoriteMatches.sort(byRank);
       buckets.tool.sort(byRank);
       buckets.skill.sort(byRank);
@@ -472,9 +465,9 @@ function Palette({
          resting list short, not to make a row unfindable by name. */
       const matched =
         query === ''
-          ? attach.entries.filter((item) => showAllAttach || item.primary === true)
-          : attach.entries.filter((item) => item.label.toLowerCase().includes(query));
-      const folded = query === '' && attach.entries.some((item) => item.primary !== true);
+          ? attachEntries.filter((item) => showAllAttach || item.primary === true)
+          : attachEntries.filter((item) => item.label.toLowerCase().includes(query));
+      const folded = query === '' && attachEntries.some((item) => item.primary !== true);
       if (matched.length > 0 || folded) {
         next.push({ type: 'header', key: 'h:attach', label: localize('com_ui_composer_attach') });
         for (const entry of matched) {
@@ -520,14 +513,14 @@ function Palette({
     pushSection('skill');
     pushSection('mcp');
 
-    if (canAttach && recent.files.length > 0) {
+    if (canAttach && recentFiles.length > 0) {
       next.push({
         type: 'header',
         key: 'h:files',
         label: localize('com_ui_composer_files'),
         showAll: 'files',
       });
-      for (const file of recent.files.slice(0, SECTION_LIMIT)) {
+      for (const file of recentFiles.slice(0, SECTION_LIMIT)) {
         next.push({ type: 'file', key: `file:${file.file_id}`, file });
       }
     }
@@ -536,12 +529,12 @@ function Palette({
   }, [
     mounted,
     entries,
-    favorites.keys,
+    favoriteKeys,
     query,
-    attach.entries,
+    attachEntries,
     showAllAttach,
     expanded,
-    recent.files,
+    recentFiles,
     canAttach,
     localize,
   ]);
@@ -757,7 +750,7 @@ function Palette({
          the open palette is covering. */
       if (row.type === 'file') {
         popover.hide();
-        recent.attach(row.file);
+        attachFile(row.file);
         return;
       }
       /* Every catalog row is a toggle, so the palette stays open and several can
@@ -765,7 +758,7 @@ function Palette({
          a file picker, dismisses it. */
       row.entry.onSelect();
     },
-    [rows, popover, recent, showAllAttach, anchorRef],
+    [rows, popover, attachFile, showAllAttach, anchorRef],
   );
 
   /**
@@ -794,9 +787,9 @@ function Palette({
       if (!row || row.type !== 'entry' || row.entry.favoritable === false) {
         return;
       }
-      favorites.toggleFavorite(row.entry.itemType, row.entry.itemId);
+      toggleFavorite(row.entry.itemType, row.entry.itemId);
     },
-    [rows, favorites],
+    [rows, toggleFavorite],
   );
 
   const handleKeyDown = useCallback(
@@ -843,7 +836,7 @@ function Palette({
   const helpId = `composer-palette-help-${index}`;
 
   const rowRenderer = useCallback(
-    ({ index, style }: { index: number; style: React.CSSProperties }) => {
+    ({ index, style }: { index: number; key: string; style: React.CSSProperties }) => {
       const row = rows[index];
       /* A row that had no neighbour to arrive from (a section header the
          starred entry brought with it, the destinations behind the fold)
@@ -869,6 +862,7 @@ function Palette({
               <div
                 id={paletteRowId(row.key)}
                 role="gridcell"
+                tabIndex={-1}
                 aria-selected={index === activeIndex}
                 onMouseEnter={() => {
                   setActiveKey(row.key);
@@ -904,6 +898,7 @@ function Palette({
             data-row-key={row.key}
             style={style}
             role="row"
+            tabIndex={-1}
             aria-rowindex={index + 1}
             onClick={(event) => handleRowClick(event, index)}
             onMouseEnter={() => {
@@ -942,6 +937,7 @@ function Palette({
             data-row-key={row.key}
             style={style}
             role="row"
+            tabIndex={-1}
             aria-rowindex={index + 1}
             onClick={(event) => handleRowClick(event, index)}
             onMouseEnter={() => {
@@ -1021,6 +1017,7 @@ function Palette({
           data-row-key={row.key}
           style={style}
           role="row"
+          tabIndex={-1}
           aria-rowindex={index + 1}
           onClick={(event) => handleRowClick(event, index)}
           onMouseEnter={() => {
@@ -1133,7 +1130,7 @@ function Palette({
                   aria-pressed={favorited}
                   onClick={(event) => {
                     event.stopPropagation();
-                    favorites.toggleFavorite(row.entry.itemType, row.entry.itemId);
+                    toggleFavorite(row.entry.itemType, row.entry.itemId);
                   }}
                   className="group"
                 >
@@ -1158,7 +1155,7 @@ function Palette({
       rows,
       activeIndex,
       handleRowClick,
-      favorites,
+      toggleFavorite,
       localize,
       expanded,
       entering,
@@ -1173,7 +1170,7 @@ function Palette({
 
   return (
     <>
-      <FileUpload ref={attach.inputRef} handleFileChange={attach.onFileChange}>
+      <FileUpload ref={fileInputRef} handleFileChange={onFileChange}>
         {/* Opens downward like the thinking popup on wider screens, and above
             on a phone; Ariakit flips a downward one above on its own once the
             composer sits too low for it to fit below. */}
@@ -1356,61 +1353,52 @@ function Palette({
                 instant && 'composer-palette-instant',
               )}
             >
-              <AutoSizer disableHeight>
-                {({ width }) => (
-                  <List
-                    ref={listRef}
-                    width={width}
-                    overscanRowCount={8}
-                    rowCount={rows.length}
-                    /* The virtualized scroller is the grid itself, so its rows
-                       are owned by it directly. A presentational scroller
-                       between a wrapper grid and the rows cannot be made
-                       transparent: it always renders `aria-label` and
-                       `aria-readonly`, which only a grid may carry. */
-                    id={listId}
-                    role="grid"
-                    aria-label={localize('com_ui_composer_palette')}
-                    containerRole="rowgroup"
-                    /* Only the rows in view are mounted, so the grid states
-                       the total and each row its position within it. */
-                    containerProps={{ 'aria-rowcount': rows.length }}
-                    tabIndex={-1}
-                    scrollToIndex={scrollToActive ? activeIndex : undefined}
-                    rowRenderer={rowRenderer}
-                    rowHeight={measureRow}
-                    height={Math.min(layout.height, LIST_MAX_HEIGHT)}
-                    className={cn(
-                      'focus:outline-hidden',
-                      layout.height > LIST_MAX_HEIGHT && 'composer-palette-scroll',
+              {renderPaletteList != null ? (
+                renderPaletteList({
+                  listRef,
+                  rowCount: rows.length,
+                  rowHeight: measureRow,
+                  rowRenderer,
+                  height: Math.min(layout.height, LIST_MAX_HEIGHT),
+                  scrollToIndex: scrollToActive ? activeIndex : undefined,
+                  id: listId,
+                  ariaLabel: localize('com_ui_composer_palette'),
+                  className: cn(
+                    'focus:outline-hidden',
+                    layout.height > LIST_MAX_HEIGHT && 'composer-palette-scroll',
+                  ),
+                })
+              ) : (
+                /* The same grid the windowed list draws, with every row mounted. A presentational
+                   scroller between the grid and its rows cannot be made transparent: it always
+                   renders `aria-label` and `aria-readonly`, which only a grid may carry. */
+                <div
+                  id={listId}
+                  role="grid"
+                  aria-label={localize('com_ui_composer_palette')}
+                  aria-rowcount={rows.length}
+                  tabIndex={-1}
+                  className={cn(
+                    'focus:outline-hidden',
+                    layout.height > LIST_MAX_HEIGHT && 'composer-palette-scroll',
+                  )}
+                >
+                  <div role="rowgroup">
+                    {rows.map((row, index) =>
+                      rowRenderer({ index, key: row.key, style: { height: rowHeight(row) } }),
                     )}
-                  />
-                )}
-              </AutoSizer>
+                  </div>
+                </div>
+              )}
             </div>
           </Ariakit.Popover>
         </Ariakit.PopoverProvider>
       </FileUpload>
-      <SharePointPickerDialog
-        isOpen={attach.isSharePointDialogOpen}
-        onOpenChange={attach.setIsSharePointDialogOpen}
-        onFilesSelected={attach.onSharePointFilesSelected}
-        isDownloading={attach.isProcessing}
-        downloadProgress={attach.downloadProgress}
-        maxSelectionCount={attach.maxSelectionCount}
-      />
-      <Catalog
-        section={catalog}
-        onClose={() => setCatalog(null)}
-        entries={entries}
-        returnFocusRef={catalogReturnRef}
-        onAttach={(file) => {
-          setCatalog(null);
-          recent.attach(file);
-        }}
-      />
+      {overlays}
     </>
   );
 }
 
-export default memo(Palette);
+const ComposerPalette: React.NamedExoticComponent<ComposerPaletteProps> = memo(Palette);
+
+export default ComposerPalette;

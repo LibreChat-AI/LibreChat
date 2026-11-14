@@ -7,7 +7,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import type { TConversation } from 'librechat-data-provider';
 import type { PaletteEntry } from '~/hooks/Input/usePaletteEntries';
 import type { AttachEntry } from '~/hooks/Input/useAttachItems';
-import Palette from '../Palette';
+import Palette from '../../Palette';
 
 /**
  * The palette's row model: what the list is made of, in what order, and what a
@@ -25,11 +25,6 @@ jest.mock('react-virtualized', () => {
       children({ width: 640 }),
   };
 });
-
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useElementSize: () => ({ ref: { current: null }, height: mockPopupHeight, width: 0 }),
-}));
 
 jest.mock('~/components/SharePoint', () => ({ SharePointPickerDialog: () => null }));
 
@@ -236,6 +231,9 @@ describe('Palette', () => {
   it('recalculates the landing lift when the visual viewport changes', () => {
     jest.spyOn(window, 'requestAnimationFrame').mockReturnValue(0);
     mockPopupHeight = 100;
+    jest
+      .spyOn(HTMLElement.prototype, 'offsetHeight', 'get')
+      .mockImplementation(() => mockPopupHeight);
     let viewportHeight = 700;
     const resizeListeners: EventListener[] = [];
     const viewport = {
@@ -258,7 +256,9 @@ describe('Palette', () => {
     expect(liftStore.get(composerLiftFamily(0))).toBe(70);
 
     viewportHeight = 600;
-    const updateLift = resizeListeners[0];
+    /* The first listener is registered before the popup has a height, and it
+       returns without measuring. The one left in place is the latest. */
+    const updateLift = resizeListeners[resizeListeners.length - 1];
     expect(updateLift).toBeDefined();
     act(() => updateLift?.(new Event('resize')));
 
@@ -267,6 +267,9 @@ describe('Palette', () => {
 
   it('rebases the lift when the window layout moves the composer', () => {
     jest.spyOn(window, 'requestAnimationFrame').mockReturnValue(0);
+    jest
+      .spyOn(HTMLElement.prototype, 'offsetHeight', 'get')
+      .mockImplementation(() => mockPopupHeight);
     const resizeListeners: EventListener[] = [];
     const addEventListener = window.addEventListener.bind(window);
     jest.spyOn(window, 'addEventListener').mockImplementation((type, listener, options) => {
@@ -286,9 +289,11 @@ describe('Palette', () => {
     expect(liftStore.get(composerLiftFamily(0))).toBe(70);
 
     anchorBottom = 600;
-    const handleLayoutResize = resizeListeners.find((listener) =>
-      listener.toString().includes('baselineRef'),
-    );
+    /* An earlier registration closes over a popup height of zero. The source
+       text is the same, so the one still attached is the last. */
+    const handleLayoutResize = [...resizeListeners]
+      .reverse()
+      .find((listener) => listener.toString().includes('baselineRef'));
     expect(handleLayoutResize).toBeDefined();
     act(() => handleLayoutResize?.(new Event('resize')));
 
