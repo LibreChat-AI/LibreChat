@@ -24,7 +24,7 @@ describe('CLI Mongo favorite snapshots', () => {
     await database.disconnect();
   });
   afterAll(async () => {
-    await server.stop();
+    await server?.stop();
   });
   it('reads missing collections without DDL, model registration, or inherited schema options', async () => {
     const previous = {
