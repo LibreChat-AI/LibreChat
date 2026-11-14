@@ -170,17 +170,16 @@ describe('TokenUsage gauge', () => {
       </Provider>,
     );
     await openCard();
-    expect(screen.getByTestId('token-usage-card')).toHaveClass(
-      'w-[min(44rem,calc(100vw-2.5rem))]',
-      'max-w-full',
-    );
+    /** The popover's frame carries the width; the card fills it. */
+    const frame = () => screen.getByTestId('token-usage-card').parentElement;
+    expect(frame()).toHaveClass('w-(--usage-card-wide)', 'max-w-full');
     mockTokenUsage.mockReturnValue(usage(0));
     rerender(
       <Provider store={store}>
         <TokenUsage index={0} conversation={{ ...conversation }} isSubmitting={false} />
       </Provider>,
     );
-    expect(screen.getByTestId('token-usage-card')).toHaveClass('w-72');
+    expect(frame()).toHaveClass('w-72');
   });
 
   it('keeps the expanded breakdown choice across remounts', async () => {

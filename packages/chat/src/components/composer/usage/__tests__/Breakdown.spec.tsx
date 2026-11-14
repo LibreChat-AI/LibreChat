@@ -136,6 +136,26 @@ describe('TokenUsage Breakdown', () => {
       expect(screen.getByTestId('token-usage-totals')).toBeInTheDocument();
     });
 
+    it('holds the details at the wide width only for a roll that resizes the card', async () => {
+      const HOLD = 'group-data-[state=open]/details:animate-hold-width';
+      const details = () => screen.getByTestId('context-details');
+
+      /** Opened already expanded: nothing resizes, so nothing is held. */
+      const first = renderBreakdown({ initialExpanded: true });
+      expect(details()).not.toHaveClass(HOLD);
+
+      /** Collapsed and reopened: keyed to the open state, so every opening,
+       *  including one that reverses a collapse midway, restarts the hold. */
+      await userEvent.click(toggle());
+      await userEvent.click(toggle());
+      expect(details()).toHaveClass(HOLD, 'group-data-[state=closed]/details:w-(--hold-width)');
+      first.unmount();
+
+      renderBreakdown();
+      await userEvent.click(toggle());
+      expect(details()).toHaveClass(HOLD);
+    });
+
     it('reports the expanded choice to the host', async () => {
       const onExpandedChange = jest.fn();
       renderBreakdown({ onExpandedChange });

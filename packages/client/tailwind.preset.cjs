@@ -159,6 +159,11 @@ module.exports = {
           from: { height: 'var(--radix-collapsible-content-height)', opacity: 1 },
           to: { height: 0, opacity: 0 },
         },
+        /** Pins a panel at `--hold-width` while its container resizes around it, then
+         *  releases it to the container. Lasts as long as `collapsible-down`. */
+        'hold-width': {
+          'from, to': { width: 'var(--hold-width)' },
+        },
       },
       animation: {
         'loading-dot': 'loading-dot 1.2s ease-in-out var(--loading-dot-delay, 0ms) infinite',
@@ -166,8 +171,13 @@ module.exports = {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
         'caret-blink': 'caret-blink 1.25s ease-out infinite',
-        'collapsible-down': 'collapsible-down 0.3s cubic-bezier(0, 0, 0.2, 1)',
-        'collapsible-up': 'collapsible-up 0.2s cubic-bezier(0.4, 0, 1, 1)',
+        /** Two panels trading places set one `--collapsible-duration` and `--collapsible-ease`
+         *  for both rolls; paced apart, their combined height overshoots. */
+        'collapsible-down':
+          'collapsible-down var(--collapsible-duration, 0.3s) var(--collapsible-ease, cubic-bezier(0, 0, 0.2, 1))',
+        'collapsible-up':
+          'collapsible-up var(--collapsible-duration, 0.2s) var(--collapsible-ease, cubic-bezier(0.4, 0, 1, 1))',
+        'hold-width': 'hold-width 0.3s',
       },
       /**
        * `rounded-sm` through `rounded-3xl` are not restated here: `@librechat/client/theme.css`
@@ -213,6 +223,8 @@ module.exports = {
         'max-width': 'max-width',
         /** A progress ring filling as its dash offset falls. */
         'stroke-dashoffset': 'stroke-dashoffset',
+        /** A card that widens or narrows as a panel inside it opens or closes. */
+        width: 'width',
       },
       blur: {
         /** The soft blur a crossfading label passes through on its way out or in. */
