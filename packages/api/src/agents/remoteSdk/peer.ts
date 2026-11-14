@@ -83,6 +83,7 @@ export function createSdkPeer(
   socket.on('close', close);
   socket.on('error', close);
   socket.on('message', (raw) => {
+    if (closed) return;
     const bytes = Buffer.byteLength(raw.toString());
     if (bytes > options.maxFrameBytes) {
       socket.close(1009);
@@ -117,20 +118,28 @@ export function createSdkPeer(
         socket.close(1009);
         return;
       }
-      void options
-        .onCall(frame.method, frame.data)
-        .then(
-          (data) => send({ type: 'result', id: frame.id, data }),
-          (error) => {
-            report(error);
-            send({ type: 'result', id: frame.id, failed: true, data: null });
-          },
-        )
-        .catch(() => socket.close(1011))
-        .finally(() => {
-          incoming.delete(frame.id);
-          queuedBytes -= bytes;
-        });
+      const dispatch = () =>
+        Promise.resolve()
+          .then(() => {
+            if (closed) throw failure();
+            return options.onCall(frame.method, frame.data);
+          })
+          .then(
+            (data) => send({ type: 'result', id: frame.id, data }),
+            (error) => {
+              report(error);
+              send({ type: 'result', id: frame.id, failed: true, data: null });
+            },
+          )
+          .catch(() => socket.close(1011))
+          .finally(() => {
+            incoming.delete(frame.id);
+            queuedBytes -= bytes;
+          });
+      // Hooks observe all earlier events and can reserve content slots for later ones.
+      // Ordinary RPCs stay reentrant; replies above always bypass this barrier.
+      if (frame.method === 'hook') queue = queue.then(dispatch);
+      else void dispatch();
       return;
     }
     queuedBytes += bytes;
