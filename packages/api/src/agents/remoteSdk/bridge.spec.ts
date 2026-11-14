@@ -15,6 +15,7 @@ import {
 } from '@librechat/agents';
 import type { RunConfig } from '@librechat/agents';
 import type { AddressInfo } from 'node:net';
+import type { RemoteSdkServerOptions } from './server';
 import type { RemoteSdkFactoryInput } from './types';
 import { createRemoteSdkServer } from './server';
 import { createRemoteSdkRun } from './client';
@@ -77,12 +78,13 @@ async function factory(input: RemoteSdkFactoryInput) {
   });
   return run;
 }
-async function fixture(createRun = factory) {
+async function fixture(createRun = factory, overrides: Partial<RemoteSdkServerOptions> = {}) {
   const runtime = createRemoteSdkServer({
     runtimeId: identity.runtimeId,
     secret,
     authorize: (principal) => principal.agentId === identity.agentId,
     createRun,
+    ...overrides,
   });
   await new Promise<void>((resolve) => runtime.server.listen(0, '127.0.0.1', resolve));
   const url = `ws://127.0.0.1:${(runtime.server.address() as AddressInfo).port}/sdk`;
@@ -110,6 +112,70 @@ async function connect(url: string, token: string): Promise<WebSocket> {
   });
 }
 describe('remote SDK runtime bridge', () => {
+  it('bounds pending authorization and releases a disconnected admission without executing it', async () => {
+    let release!: (allowed: boolean) => void;
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const createRun = jest.fn(factory);
+    const authorize = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        entered();
+        return new Promise<boolean>((resolve) => {
+          release = resolve;
+        });
+      })
+      .mockReturnValue(true);
+    const runtime = await fixture(createRun, { maxConcurrentRuns: 1, authorize });
+    try {
+      const first = new WebSocket(runtime.remote.url, {
+        headers: { Authorization: `Bearer ${signedToken()}` },
+      });
+      first.on('error', () => undefined);
+      await ready;
+      await expect(connect(runtime.remote.url, signedToken())).rejects.toThrow();
+      expect(authorize).toHaveBeenCalledTimes(1);
+      const closed = new Promise<void>((resolve) => first.once('close', () => resolve()));
+      first.terminate();
+      await closed;
+      release(true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const next = await connect(runtime.remote.url, signedToken());
+      next.close();
+      expect(createRun).not.toHaveBeenCalled();
+    } finally {
+      release(true);
+      await runtime.close();
+    }
+  });
+  it('aborts and closes pending authorization during server shutdown', async () => {
+    let release!: (allowed: boolean) => void;
+    let entered!: () => void;
+    let signal: AbortSignal | undefined;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const runtime = await fixture(factory, {
+      authorize: (_identity, admissionSignal) => {
+        signal = admissionSignal;
+        entered();
+        return new Promise<boolean>((resolve) => {
+          release = resolve;
+        });
+      },
+    });
+    const socket = new WebSocket(runtime.remote.url, {
+      headers: { Authorization: `Bearer ${signedToken()}` },
+    });
+    socket.on('error', () => undefined);
+    await ready;
+    await runtime.close();
+    expect(signal?.aborted).toBe(true);
+    release(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
   it('rejects replayed invocation credentials before execution', async () => {
     const createRun = jest.fn(factory);
     const runtime = await fixture(createRun);

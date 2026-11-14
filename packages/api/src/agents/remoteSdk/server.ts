@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import WebSocket, { WebSocketServer } from 'ws';
 import { Run, HookRegistry, HOOK_EVENTS, GraphEvents } from '@librechat/agents';
 import type { EventHandler, AggregatedHookResult, HookOutput } from '@librechat/agents';
+import type { Duplex } from 'node:stream';
 import type { Server } from 'node:http';
 import type { RemoteSdkFactoryInput, RemoteSdkLimits, RemoteSdkStart, SdkRun } from './types';
 import type { SdkAgentIdentity } from './identity';
@@ -63,7 +64,10 @@ export interface RemoteSdkServerOptions extends Partial<RemoteSdkLimits> {
   runtimeId: string;
   secret: string;
   /** Authorize the signed saved-agent identity against this worker's deployment policy. */
-  authorize: (identity: Readonly<SdkAgentIdentity>) => boolean | Promise<boolean>;
+  authorize: (
+    identity: Readonly<SdkAgentIdentity>,
+    signal: AbortSignal,
+  ) => boolean | Promise<boolean>;
   createRun: (input: RemoteSdkFactoryInput) => Promise<SdkRun>;
   maxConcurrentRuns?: number;
   maxReplayEntries?: number;
@@ -101,10 +105,26 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
   });
   const seen = new Map<string, number>();
   const active = new Set<AbortController>();
+  const admitting = new Map<Duplex, AbortController>();
+  let closing = false;
   server.on('upgrade', (req, socket, head) => {
+    if (closing || active.size + admitting.size >= (options.maxConcurrentRuns ?? 32)) {
+      socket.destroy();
+      return;
+    }
+    const admission = new AbortController();
+    admitting.set(socket, admission);
+    const abortAdmission = () => admission.abort();
+    socket.once('close', abortAdmission);
+    const deadline = setTimeout(() => {
+      admission.abort();
+      socket.destroy();
+    }, limits.connectTimeoutMs);
+    deadline.unref();
     void (async () => {
       const deny = () => {
-        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        if (!socket.destroyed)
+          socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
       };
       if (req.url !== '/sdk' || active.size >= (options.maxConcurrentRuns ?? 32)) {
@@ -128,7 +148,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         );
         if (
           claim.identity.runtimeId !== options.runtimeId ||
-          !(await options.authorize(Object.freeze(claim.identity)))
+          !(await options.authorize(Object.freeze(claim.identity), admission.signal))
         ) {
           deny();
           return;
@@ -140,6 +160,10 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
       const now = Date.now();
       for (const [id, expiry] of seen) if (expiry <= now) seen.delete(id);
       if (
+        closing ||
+        claim.exp * 1000 <= now ||
+        admission.signal.aborted ||
+        socket.destroyed ||
         seen.has(claim.invocationId) ||
         seen.size >= (options.maxReplayEntries ?? 10_000) ||
         active.size >= (options.maxConcurrentRuns ?? 32)
@@ -150,7 +174,15 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
       seen.set(claim.invocationId, now + 61_000);
       const controller = new AbortController();
       active.add(controller);
+      let upgraded = false;
+      socket.once('close', () => {
+        if (!upgraded) {
+          controller.abort();
+          active.delete(controller);
+        }
+      });
       sockets.handleUpgrade(req, socket, head, (ws) => {
+        upgraded = true;
         let started = false;
         let running = false;
         const timer = setTimeout(() => {
@@ -315,11 +347,22 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
           },
         });
       });
-    })().catch(() => socket.destroy());
+    })()
+      .catch(() => socket.destroy())
+      .finally(() => {
+        clearTimeout(deadline);
+        socket.removeListener('close', abortAdmission);
+        admitting.delete(socket);
+      });
   });
   return {
     server,
     close: async () => {
+      closing = true;
+      for (const [socket, admission] of admitting) {
+        admission.abort();
+        socket.destroy();
+      }
       for (const controller of active) controller.abort();
       for (const socket of sockets.clients) socket.terminate();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));

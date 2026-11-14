@@ -131,7 +131,10 @@ instead of silently losing state.
 Transport limits on each `remote` registration are `connectTimeoutMs` (10000), `rpcTimeoutMs`
 (60000), `maxRunMs` (600000), `maxFrameBytes` (1048576), and `maxBufferedBytes` (4194304).
 Oversized events/checkpoints/results fail closed; raise limits explicitly for larger workloads.
-Worker admission limits are configurable through `createRemoteSdkServer` options. Invocation replay
+Worker admission limits are configurable through `createRemoteSdkServer` options. Authorization
+receives an abort signal; pending authorizations count against admission until they settle, even
+after disconnect, and shutdown aborts/closes pending handshakes. Honor that signal in async policy
+lookups. `connectTimeoutMs` also bounds the worker authorization handshake. Invocation replay
 tracking is process-local; deployments requiring replay exclusion across worker replicas must supply
 that admission guarantee at their deployment boundary. This is not remote worker enrollment or a
 replacement for domain-specific authorization inside tools.
