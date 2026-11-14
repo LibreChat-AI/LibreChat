@@ -1,6 +1,7 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type {
   TEndpoint,
+  TGoogleEndpoint,
   TCustomConfig,
   TAgentsEndpoint,
   TAnthropicEndpoint,
@@ -27,7 +28,7 @@ export const loadEndpoints = (
   allowedAddresses?: string[];
   catalogModelsTtlMs?: number;
   openAI?: Partial<import('librechat-data-provider').TEndpoint>;
-  google?: Partial<import('librechat-data-provider').TEndpoint>;
+  google?: Partial<TGoogleEndpoint>;
   bedrock?: Partial<import('librechat-data-provider').TEndpoint>;
   anthropic?: Partial<TAnthropicEndpoint> & {
     vertexConfig?: import('librechat-data-provider').TVertexAIConfig;

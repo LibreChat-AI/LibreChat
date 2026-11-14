@@ -7,6 +7,7 @@ import type { EndpointTokenConfig, ServerRequest } from '~/types';
 import type { RequestModelsConfigResult } from './config/service';
 import type { TokenomicsDeps } from '~/endpoints/pricing';
 import { getTokenConfigKey } from '~/endpoints/custom/initialize';
+import { getGoogleTokenConfig } from '~/endpoints/google/pricing';
 import { buildTokenConfigMap } from '~/endpoints/pricing';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { tokenConfigCache } from '~/cache';
@@ -34,6 +35,15 @@ export async function resolveTokenConfigMap(
   const customEndpoints = (appConfig?.endpoints?.[EModelEndpoint.custom] ?? []) as TEndpoint[];
   const cache = tokenConfigCache();
   const endpointTokenConfigs: Record<string, EndpointTokenConfig | undefined> = {};
+
+  const googleRates: EndpointTokenConfig = {};
+  for (const model of modelsConfig[EModelEndpoint.google] ?? []) {
+    const rates = getGoogleTokenConfig(model, appConfig?.endpoints?.google?.tokenConfig);
+    if (rates) {
+      googleRates[model] = rates;
+    }
+  }
+  endpointTokenConfigs[EModelEndpoint.google] = googleRates;
 
   for (const endpointConfig of customEndpoints) {
     /** Models config and the token-config cache key by the normalized name */

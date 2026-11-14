@@ -1170,6 +1170,10 @@ endpoints:
   #   headers:
   #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
   # google:
+  #   # (optional) Override USD rates per million tokens for your billing tier.
+  #   # Set all three rates to 0 for the Gemini Developer API free tier.
+  #   tokenConfig:
+  #     gemini-2.5-flash: { prompt: 0, completion: 0, cacheRead: 0 }
   #   headers:
   #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
 

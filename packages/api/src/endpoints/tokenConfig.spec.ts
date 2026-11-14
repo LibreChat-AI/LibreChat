@@ -30,6 +30,45 @@ function appConfigWith(custom: unknown[], contextCost = true): AppConfig {
 describe('resolveTokenConfigMap', () => {
   beforeEach(() => mockCacheGet.mockReset().mockResolvedValue(null));
 
+  it('shows native Google rate overrides without replacing the model context window', async () => {
+    const appConfig = appConfigWith([]);
+    appConfig.endpoints = {
+      google: {
+        tokenConfig: {
+          'gemini-2.5-flash': { prompt: 0, completion: 0, cacheRead: 0 },
+        },
+      },
+    };
+    const model = 'models/gemini-2.5-flash';
+    const map = await resolveTokenConfigMap(
+      { appConfig, modelsConfig: { google: [model] }, userId: 'user-1' },
+      deps,
+    );
+    expect(map.google[model]).toEqual({
+      context: 1000000,
+      prompt: 0,
+      completion: 0,
+      cacheRead: 0,
+    });
+  });
+
+  it('keeps unconfigured Google models on their default rates and hides prices when disabled', async () => {
+    const appConfig = appConfigWith([]);
+    appConfig.endpoints = {
+      google: { tokenConfig: { 'gemini-2.5-flash': { prompt: 0, completion: 0, cacheRead: 0 } } },
+    };
+    const params = {
+      appConfig,
+      modelsConfig: { google: ['gemini-2.5-flash', 'gemini-2.5-pro'] },
+      userId: 'user-1',
+    };
+    const map = await resolveTokenConfigMap(params, deps);
+    expect(map.google['gemini-2.5-pro']).toMatchObject({ prompt: 5, completion: 15 });
+    appConfig.interfaceConfig = { ...appConfig.interfaceConfig, contextCost: false };
+    const hidden = await resolveTokenConfigMap(params, deps);
+    expect(hidden.google['gemini-2.5-flash']).toEqual({ context: 1000000 });
+  });
+
   it('uses a static tokenConfig override without consulting the cache', async () => {
     const appConfig = appConfigWith([
       {
