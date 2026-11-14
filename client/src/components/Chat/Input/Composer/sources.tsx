@@ -68,6 +68,7 @@ export function usePaletteSources(input: PaletteSourcesInput): PaletteSources {
   });
 
   return {
+    favorites: true,
     favoriteKeys: favorites.keys,
     toggleFavorite: toggle,
     attachEntries: attach.entries,

@@ -255,6 +255,7 @@ function Palette({
   /** Where focus lands when a "Show all" dialog closes. */
   const catalogReturnRef = useRef<HTMLElement | null>(null);
   const {
+    favorites: favoritesEnabled,
     favoriteKeys,
     toggleFavorite,
     attachEntries,
@@ -803,12 +804,12 @@ function Palette({
   const toggleFavoriteAt = useCallback(
     (index: number) => {
       const row = rows[index];
-      if (!row || row.type !== 'entry' || row.entry.favoritable === false) {
+      if (!favoritesEnabled || !row || row.type !== 'entry' || row.entry.favoritable === false) {
         return;
       }
       toggleFavorite(row.entry.itemType, row.entry.itemId);
     },
-    [rows, toggleFavorite],
+    [rows, favoritesEnabled, toggleFavorite],
   );
 
   const handleKeyDown = useCallback(
@@ -1044,7 +1045,7 @@ function Palette({
       const status = isEntry ? row.entry.status : undefined;
       const checked = isEntry ? row.entry.active : false;
       const favorited = isEntry && row.isFavorite;
-      const canFavorite = isEntry && row.entry.favoritable !== false;
+      const canFavorite = favoritesEnabled && isEntry && row.entry.favoritable !== false;
       const modes = isEntry ? row.entry.modes : undefined;
 
       return (
@@ -1191,6 +1192,7 @@ function Palette({
       rows,
       activeIndex,
       handleRowClick,
+      favoritesEnabled,
       toggleFavorite,
       localize,
       expanded,

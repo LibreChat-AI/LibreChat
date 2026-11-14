@@ -221,6 +221,30 @@ describe('ComposerPalette', () => {
       expect(screen.queryByRole('button', { name: /show_all/ })).not.toBeInTheDocument();
     });
 
+    it('draws no favorite control and ignores the shortcut where the host stores none', () => {
+      const toggleFavorite = jest.fn();
+      renderPalette(
+        { canAttach: false },
+        hostWith({ ...sources, favorites: false, toggleFavorite }),
+      );
+      fireEvent.keyDown(screen.getByTestId('composer-palette-search'), { key: 'd', ctrlKey: true });
+
+      expect(screen.queryByRole('button', { name: 'com_ui_favorite' })).not.toBeInTheDocument();
+      expect(toggleFavorite).not.toHaveBeenCalled();
+    });
+
+    it('draws the star and takes the shortcut where the host stores favorites', () => {
+      const toggleFavorite = jest.fn();
+      renderPalette(
+        { canAttach: false },
+        hostWith({ ...sources, favorites: true, toggleFavorite }),
+      );
+      fireEvent.keyDown(screen.getByTestId('composer-palette-search'), { key: 'd', ctrlKey: true });
+
+      expect(screen.getByRole('button', { name: 'com_ui_favorite' })).toBeInTheDocument();
+      expect(toggleFavorite).toHaveBeenCalledTimes(1);
+    });
+
     it('keeps the cap and the Show all button where the host has the dialog', () => {
       const skills = Array.from({ length: 8 }, (_, i) =>
         entry({ key: `skill-${i}`, label: `Skill ${i}`, section: 'skill' }),

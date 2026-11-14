@@ -87,6 +87,9 @@ export interface PaletteSourcesInput {
 
 /** Data and dialogs the palette cannot load itself. */
 export interface PaletteSources {
+  /** Whether the host stores favorites. Without it the palette draws no star and ignores the
+   *  favorite shortcut, rather than offering a control that changes nothing. */
+  favorites: boolean;
   favoriteKeys: ReadonlySet<string>;
   toggleFavorite(itemType: string, itemId: string): void;
   attachEntries: readonly PaletteAttachView[];
@@ -124,6 +127,7 @@ const NO_FAVORITES: ReadonlySet<string> = new Set();
 const EMPTY_FILE_INPUT: RefObject<HTMLInputElement> = { current: null };
 
 const EMPTY_PALETTE_SOURCES: PaletteSources = {
+  favorites: false,
   favoriteKeys: NO_FAVORITES,
   toggleFavorite: () => undefined,
   attachEntries: [],
