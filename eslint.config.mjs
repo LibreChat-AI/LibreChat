@@ -372,6 +372,8 @@ export default [
             'shimmer-clip',
             'shimmer-band',
             'shimmer-copy',
+            'attachment-settle',
+            'part-fold',
             'tool-status-text',
             'message-render',
             'message-timestamp',

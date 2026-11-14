@@ -280,6 +280,19 @@ export {
 export { default as CopyButton } from './components/parts/CopyButton';
 export { default as ActionButton } from './components/parts/ActionButton';
 export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';
+export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';
+export { default as RetrievalCall } from './components/parts/Retrieval';
+export type { RetrievalCallProps, RetrievalProgress } from './components/parts/Retrieval';
+export {
+  bySalience,
+  byEntrySalience,
+  displayFilename,
+  attachmentSalience,
+  isTextAttachment,
+  isImageAttachment,
+  renderAttachmentKey,
+  isInternalSandboxArtifact,
+} from './components/parts/attachmentTypes';
 
 /** Tool approval: the shared decision state and the composer's review panel. */
 export {

@@ -1,16 +1,37 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { FilesHostProvider } from '@librechat/chat/react';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import type { TAttachment } from 'librechat-data-provider';
-import '~/Providers/MessagePartsHostContext';
+import type { FilesHost, MessagePartsFilePreviewProps } from '@librechat/chat/react';
+import type { TAttachment, TFile } from 'librechat-data-provider';
+import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import RetrievalCall from '../RetrievalCall';
+
+const knownFiles: { current: TFile[] } = { current: [] };
+
+const filesHost: FilesHost = {
+  renderEndpointIcon: () => null,
+  useDeleteFile: () => () => undefined,
+  getPreviewUrl: () => undefined,
+  useKnownFiles: () => knownFiles.current,
+};
+
+const partsHost = {
+  ...appMessagePartsHost,
+  renderFilePreview: ({ open, fileId, fileName, fileSource }: MessagePartsFilePreviewProps) =>
+    open ? (
+      <div data-testid="file-preview-dialog" data-file-id={fileId} data-file-source={fileSource}>
+        {fileName}
+      </div>
+    ) : null,
+};
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => {
     const translations: Record<string, string> = {
-      com_ui_searching_files: 'Searching files...',
-      com_ui_retrieved_files: 'Retrieved files',
+      com_ui_searching_files: 'Searching your files',
+      com_ui_retrieved_files: 'Searched your files',
       com_ui_retrieval_failed: 'failed',
       com_ui_tool_failed: 'failed',
       com_ui_preview: 'Preview',
@@ -87,10 +108,6 @@ jest.mock('~/utils', () => ({
   logger: { error: jest.fn(), debug: jest.fn() },
 }));
 
-jest.mock('~/data-provider', () => ({
-  useGetFiles: jest.fn(() => ({ data: [] })),
-}));
-
 jest.mock('../FilePreviewDialog', () => ({
   __esModule: true,
   default: ({
@@ -120,15 +137,17 @@ const renderRetrievalCall = (
   props: Partial<typeof defaultProps & { output?: string; attachments?: TAttachment[] }> = {},
 ) =>
   render(
-    <RecoilRoot>
-      <RetrievalCall {...defaultProps} {...props} />
-    </RecoilRoot>,
+    <MessagePartsHostProvider host={partsHost}>
+      <FilesHostProvider host={filesHost}>
+        <RecoilRoot>
+          <RetrievalCall {...defaultProps} {...props} />
+        </RecoilRoot>
+      </FilesHostProvider>
+    </MessagePartsHostProvider>,
   );
 
-const mockedUseGetFiles = jest.requireMock('~/data-provider').useGetFiles as jest.Mock;
-
 beforeEach(() => {
-  mockedUseGetFiles.mockReturnValue({ data: [] });
+  knownFiles.current = [];
 });
 
 describe('RetrievalCall - LGCY-02: Modern visual patterns', () => {
@@ -226,12 +245,12 @@ describe('RetrievalCall - LGCY-02: Collapsible output panel', () => {
 
   it('does not show panel when output contains error', () => {
     renderRetrievalCall({
-      output: 'error processing tool',
+      output: 'Error processing tool',
       initialProgress: 1,
       isSubmitting: false,
     });
 
-    expect(screen.queryByText('error processing tool')).not.toBeInTheDocument();
+    expect(screen.queryByText('Error processing tool')).not.toBeInTheDocument();
   });
 });
 
@@ -240,14 +259,14 @@ describe('RetrievalCall - LGCY-03: Localization', () => {
     renderRetrievalCall({ initialProgress: 0.5, isSubmitting: true });
 
     const progressText = screen.getByTestId('progress-text');
-    expect(progressText).toHaveAttribute('data-in-progress', 'Searching files...');
+    expect(progressText).toHaveAttribute('data-in-progress', 'Searching your files');
   });
 
   it('uses localized finished text', () => {
     renderRetrievalCall({ initialProgress: 1, isSubmitting: false });
 
     const progressText = screen.getByTestId('progress-text');
-    expect(progressText).toHaveAttribute('data-finished', 'Retrieved files');
+    expect(progressText).toHaveAttribute('data-finished', 'Searched your files');
   });
 
   it('does not contain hardcoded "Searching my knowledge" text', () => {
@@ -279,17 +298,15 @@ describe('RetrievalCall - A11Y-04: screen reader status announcements', () => {
 
 describe('RetrievalCall - file preview resolution', () => {
   it('resolves parsed filenames against known files and opens preview', () => {
-    mockedUseGetFiles.mockReturnValue({
-      data: [
-        {
-          file_id: 'file-123',
-          filename: 'Tutorial Imazing.pdf',
-          bytes: 2048,
-          type: 'application/pdf',
-          source: 'text',
-        },
-      ],
-    });
+    knownFiles.current = [
+      {
+        file_id: 'file-123',
+        filename: 'Tutorial Imazing.pdf',
+        bytes: 2048,
+        type: 'application/pdf',
+        source: 'text',
+      } as TFile,
+    ];
 
     renderRetrievalCall({
       initialProgress: 1,
@@ -345,15 +362,19 @@ describe('RetrievalCall - file preview resolution', () => {
 
 it('shows file search results directly beneath a generated single-tool title', () => {
   render(
-    <RecoilRoot>
-      <GeneratedToolLabelContext.Provider value>
-        <RetrievalCall
-          initialProgress={1}
-          isSubmitting={false}
-          output="File: notes.txt\nRelevance: 0.8\nContent: file results here"
-        />
-      </GeneratedToolLabelContext.Provider>
-    </RecoilRoot>,
+    <MessagePartsHostProvider host={partsHost}>
+      <FilesHostProvider host={filesHost}>
+        <RecoilRoot>
+          <GeneratedToolLabelContext.Provider value>
+            <RetrievalCall
+              initialProgress={1}
+              isSubmitting={false}
+              output="File: notes.txt\nRelevance: 0.8\nContent: file results here"
+            />
+          </GeneratedToolLabelContext.Provider>
+        </RecoilRoot>
+      </FilesHostProvider>
+    </MessagePartsHostProvider>,
   );
   expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
 });

@@ -170,6 +170,44 @@
   line-height: inherit;
 }
 
+/**
+ * Entrance of a message attachment. `will-change` has no static utility that
+ * names both opacity and transform, and an inline style for it is rejected
+ * on package components.
+ */
+.attachment-settle {
+  transform-origin: center top;
+  will-change: opacity, transform;
+}
+
+/**
+ * Disclosure grid shared by message part rows. The open and closed sizes are
+ * animated numbers, and `prefers-reduced-motion` has to shorten that
+ * transition without dropping it: a closed panel waits on `transitionend`
+ * before it unmounts, and `transition: none` never fires.
+ */
+.part-fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.part-fold[data-open='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .part-fold {
+    transition:
+      grid-template-rows 0.01ms linear,
+      opacity 0.01ms linear;
+  }
+}
+
 .progress-text-wrapper button {
   font-size: inherit;
   line-height: inherit;

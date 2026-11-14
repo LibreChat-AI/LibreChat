@@ -94,6 +94,10 @@ export type MessagePartsFilePreviewProps = {
   fileSource?: string;
   fileSize?: number;
   deliveryPath?: TFile['llmDeliveryPath'];
+  /** Retrieval hits carry these so the preview can order pages by relevance. */
+  relevance?: number;
+  pages?: number[];
+  pageRelevance?: Record<number, number>;
 };
 
 /** What a part asks the host's markdown renderer to draw. */
