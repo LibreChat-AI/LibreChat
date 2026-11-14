@@ -357,9 +357,7 @@ describe('Palette', () => {
     it('opens the section dialog, whose cards toggle the same entries', async () => {
       const servers = many('mcp', 7);
       renderPalette({ entries: servers });
-      fireEvent.click(
-        screen.getByRole('button', { name: 'com_ui_composer_show_all_label:com_ui_composer_mcp' }),
-      );
+      fireEvent.click(screen.getByRole('button', { name: 'Show all MCP Servers' }));
       const dialog = await screen.findByRole('dialog');
       expect(dialog).toHaveTextContent('com_ui_mcp_servers');
       fireEvent.click(screen.getByRole('button', { name: /item6/ }));
@@ -390,9 +388,7 @@ describe('Palette', () => {
           expect.stringContaining('Auth serverNeeds Auth'),
         ]),
       );
-      fireEvent.click(
-        screen.getByRole('button', { name: 'com_ui_composer_show_all_label:com_ui_composer_mcp' }),
-      );
+      fireEvent.click(screen.getByRole('button', { name: 'Show all MCP Servers' }));
       const dialog = await screen.findByRole('dialog');
       const cards = Array.from(dialog.querySelectorAll('li')).map((card) => card.textContent);
       expect(cards).toEqual([
@@ -404,9 +400,7 @@ describe('Palette', () => {
     it('narrows the dialog to servers the user made', async () => {
       const servers = many('mcp', 7).map((server, i) => ({ ...server, ownedByUser: i < 2 }));
       renderPalette({ entries: servers });
-      fireEvent.click(
-        screen.getByRole('button', { name: 'com_ui_composer_show_all_label:com_ui_composer_mcp' }),
-      );
+      fireEvent.click(screen.getByRole('button', { name: 'Show all MCP Servers' }));
       const dialog = await screen.findByRole('dialog');
       const cards = () =>
         Array.from(dialog.querySelectorAll('li > div > button[aria-pressed]')).map(
@@ -424,20 +418,14 @@ describe('Palette', () => {
     it('reads attach, tools, skills, servers, files', () => {
       mockRecentFiles = [{ file_id: 'f1', filename: 'notes.pdf', type: 'application/pdf' }];
       renderPalette();
-      expect(headers()).toEqual([
-        'com_ui_composer_attach',
-        'com_ui_composer_tools',
-        'com_ui_skills',
-        'com_ui_composer_mcp',
-        'com_ui_composer_files',
-      ]);
+      expect(headers()).toEqual(['Attach', 'Tools', 'Skills', 'MCP Servers', 'Your files']);
     });
 
     it('puts favourites above everything, out of their own sections', () => {
       mockFavoriteKeys = ['mcp:github'];
       renderPalette();
       const listed = rows();
-      expect(listed[0]).toBe('com_ui_tools_view_favorites');
+      expect(listed[0]).toBe('Favorites');
       expect(listed[1]).toBe('Github');
       /* And not left behind in the section it came from. */
       expect(listed.filter((row) => row === 'Github')).toHaveLength(1);
@@ -446,12 +434,12 @@ describe('Palette', () => {
     it('drops a section whose only member was starred', () => {
       mockFavoriteKeys = ['mcp:github'];
       renderPalette();
-      expect(rows()).not.toContain('com_ui_composer_mcp');
+      expect(rows()).not.toContain('MCP Servers');
     });
 
     it('offers no upload destinations when the endpoint cannot take them', () => {
       renderPalette({ canAttach: false });
-      expect(rows()).not.toContain('com_ui_composer_attach');
+      expect(rows()).not.toContain('Attach');
       expect(rows()).not.toContain('Upload to Provider');
     });
   });
@@ -461,17 +449,17 @@ describe('Palette', () => {
       renderPalette();
       const listed = rows();
       expect(listed).toContain('Upload to Provider');
-      expect(listed).toContain('com_ui_composer_attach_more');
+      expect(listed).toContain('More upload options');
       expect(listed).not.toContain('Upload to Code Environment');
     });
 
     it('reveals them in place, and folds them back', async () => {
       renderPalette();
-      fireEvent.click(screen.getByText('com_ui_composer_attach_more'));
+      fireEvent.click(screen.getByText('More upload options'));
       expect(rows()).toContain('Upload to Code Environment');
-      expect(rows()).toContain('com_ui_composer_attach_less');
+      expect(rows()).toContain('Fewer upload options');
 
-      fireEvent.click(screen.getByText('com_ui_composer_attach_less'));
+      fireEvent.click(screen.getByText('Fewer upload options'));
       /* Closing waits for the rows to fade before taking their space back, so
          the list still holds them for the length of that fade. */
       expect(rows()).toContain('Upload to Code Environment');
@@ -482,7 +470,7 @@ describe('Palette', () => {
       mockAttachEntries = [attachEntry('local:provider', 'Upload to Provider', true)];
       renderPalette();
       expect(rows()).toContain('Upload to Provider');
-      expect(rows()).not.toContain('com_ui_composer_attach_more');
+      expect(rows()).not.toContain('More upload options');
     });
   });
 
@@ -655,7 +643,7 @@ describe('Palette', () => {
       expect(listed).toContain('Upload to Code Environment');
       /* The disclosure is there to keep the resting list short, not to make a
          row unfindable, so it steps out of the way of a search. */
-      expect(listed).not.toContain('com_ui_composer_attach_more');
+      expect(listed).not.toContain('More upload options');
     });
 
     it('drops sections with nothing left in them', () => {
@@ -679,7 +667,7 @@ describe('Palette', () => {
     it('says so when nothing matches, out loud as well as on screen', () => {
       renderPalette();
       search('nothing matches this');
-      const empty = screen.getByText('com_ui_composer_no_results');
+      const empty = screen.getByText('No matches');
       expect(empty).toBeInTheDocument();
       expect(empty).toHaveAttribute('role', 'status');
       /* The widget stays expanded and keeps controlling its (now empty)
@@ -800,7 +788,7 @@ describe('Palette', () => {
       renderPalette();
       const list = document.querySelector('.ReactVirtualized__Grid');
       expect(list?.getAttribute('tabindex')).toBe('-1');
-      expect(list).toBe(screen.getByRole('grid', { name: 'com_ui_composer_palette' }));
+      expect(list).toBe(screen.getByRole('grid', { name: 'Attach and tools' }));
       expect(screen.getByTestId('composer-palette-search').getAttribute('aria-controls')).toBe(
         list?.id,
       );
@@ -818,7 +806,7 @@ describe('Palette', () => {
 
       expect(active()).toBe('Upload to Provider');
       fireEvent.keyDown(input, { key: 'ArrowDown' });
-      expect(active()).toBe('com_ui_composer_attach_more');
+      expect(active()).toBe('More upload options');
       fireEvent.keyDown(input, { key: 'ArrowDown' });
       /* The tools header sits between them and is skipped. */
       expect(active()).toBe('Web Search');
@@ -860,7 +848,7 @@ describe('Palette', () => {
       fireEvent.keyDown(input, { key: 'd', metaKey: true });
 
       expect(mockToggleFavorite).not.toHaveBeenCalled();
-      expect(screen.queryByRole('button', { name: 'com_ui_favorite' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Add to favorites' })).not.toBeInTheDocument();
     });
 
     it('exposes named keyboard controls for secondary row actions', async () => {
@@ -912,7 +900,7 @@ describe('Palette', () => {
       });
 
       expect(screen.getByRole('grid')).toBeVisible();
-      const favorite = screen.getByRole('button', { name: 'com_ui_favorite' });
+      const favorite = screen.getByRole('button', { name: 'Add to favorites' });
       expect(favorite).toHaveAttribute('aria-pressed', 'false');
       expect(favorite.parentElement).toHaveClass(
         'transition-none',

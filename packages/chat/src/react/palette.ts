@@ -87,8 +87,6 @@ export interface PaletteSourcesInput {
 
 /** Data and dialogs the palette cannot load itself. */
 export interface PaletteSources {
-  /** Translates a key. A method so a host's narrower key union still fits. */
-  localize(phraseKey: string, options?: { 0?: string | number }): string;
   favoriteKeys: ReadonlySet<string>;
   toggleFavorite(itemType: string, itemId: string): void;
   attachEntries: readonly PaletteAttachView[];
@@ -126,8 +124,6 @@ const NO_FAVORITES: ReadonlySet<string> = new Set();
 const EMPTY_FILE_INPUT: RefObject<HTMLInputElement> = { current: null };
 
 const EMPTY_PALETTE_SOURCES: PaletteSources = {
-  localize: (phraseKey, options) =>
-    options?.['0'] != null ? `${phraseKey}:${options['0']}` : phraseKey,
   favoriteKeys: NO_FAVORITES,
   toggleFavorite: () => undefined,
   attachEntries: [],

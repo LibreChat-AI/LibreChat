@@ -30,8 +30,6 @@ const entry = (
 
 const sources: PaletteSources = {
   ...emptyPaletteSources(),
-  localize: (phraseKey, options) =>
-    options?.['0'] != null ? `${phraseKey}:${options['0']}` : phraseKey,
   attachEntries: [
     {
       id: 'local:provider',
@@ -234,7 +232,7 @@ describe('ComposerPalette', () => {
 
       expect(document.querySelectorAll('[data-row-key^="skill-"]')).toHaveLength(5);
       expect(
-        screen.getByRole('button', { name: 'com_ui_composer_show_all_label:com_ui_skills' }),
+        screen.getByRole('button', { name: 'com_ui_composer_show_all_label' }),
       ).toBeInTheDocument();
     });
   });

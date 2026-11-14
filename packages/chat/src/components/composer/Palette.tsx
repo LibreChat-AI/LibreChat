@@ -15,6 +15,7 @@ import {
   cn,
   FileUpload,
   IconButton,
+  useLocalize,
   TooltipAnchor,
   useMediaQuery,
 } from '@librechat/client';
@@ -224,6 +225,7 @@ function Palette({
   entries,
   anchorRef,
 }: ComposerPaletteProps): React.JSX.Element {
+  const localize = useLocalize();
   const { renderPaletteList, usePaletteSources } = useComposerHost();
   /* Ariakit owns the open state rather than a controlled `open`/`setOpen` pair:
      with the controlled form, hide-on-interact-outside fired on mousedown and
@@ -253,7 +255,6 @@ function Palette({
   /** Where focus lands when a "Show all" dialog closes. */
   const catalogReturnRef = useRef<HTMLElement | null>(null);
   const {
-    localize,
     favoriteKeys,
     toggleFavorite,
     attachEntries,

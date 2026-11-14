@@ -6,7 +6,6 @@ import type {
 } from '@librechat/chat/react';
 import type { TToolFavoriteType } from 'librechat-data-provider';
 import type { PaletteEntry } from '~/hooks/Input/usePaletteEntries';
-import type { TranslationKeys } from '~/hooks';
 import { SharePointPickerDialog } from '~/components/SharePoint';
 import useToolFavorites from '~/hooks/Input/useToolFavorites';
 import useRecentFiles from '~/hooks/Input/useRecentFiles';
@@ -14,7 +13,6 @@ import useAttachItems from '~/hooks/Input/useAttachItems';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
 import { useBadgeRowContext } from '~/Providers';
 import { isUnifiedUploadMode } from '~/utils';
-import { useLocalize } from '~/hooks';
 import Catalog from './Catalog';
 
 /** The sections `Catalog` lists in full behind their "Show all" button. */
@@ -26,7 +24,6 @@ const CATALOGS: readonly PaletteCatalogSection[] = ['skill', 'mcp', 'files'];
  * permissions and file pickers.
  */
 export function usePaletteSources(input: PaletteSourcesInput): PaletteSources {
-  const localize = useLocalize();
   const context = useBadgeRowContext();
   const mcpManager = context?.mcpServerManager;
   const configDialogOpen = mcpManager?.getConfigDialogProps()?.isOpen === true;
@@ -50,11 +47,6 @@ export function usePaletteSources(input: PaletteSourcesInput): PaletteSources {
     },
     input.search,
   );
-  const translate = useCallback(
-    (phraseKey: string, options?: { 0?: string | number }) =>
-      localize(phraseKey as TranslationKeys, options),
-    [localize],
-  );
   const toggle = useCallback(
     (itemType: string, itemId: string) =>
       favorites.toggleFavorite(itemType as TToolFavoriteType, itemId),
@@ -76,7 +68,6 @@ export function usePaletteSources(input: PaletteSourcesInput): PaletteSources {
   });
 
   return {
-    localize: translate,
     favoriteKeys: favorites.keys,
     toggleFavorite: toggle,
     attachEntries: attach.entries,
