@@ -36,6 +36,8 @@ export interface RuntimeJournalPage {
  * create another execution. Store durability depends on the deployment persistence policy.
  */
 export interface RuntimeJournal {
+  readonly leaseMs: number;
+  readonly maxBatchFrames: number;
   /** Privileged lifecycle cleanup; callers must authenticate deletion authority before storage access. */
   purge(session: RuntimeJournalSession): Promise<RuntimeJournalResult<null>>;
   create(
@@ -59,6 +61,7 @@ export interface RuntimeJournal {
     lease: RuntimeJournalLease,
     batchId: string,
     payloads: readonly string[],
+    terminal?: Exclude<RuntimeJournalState, 'open'>,
   ): Promise<RuntimeJournalResult<{ first: number; last: number }>>;
   acknowledge(
     session: RuntimeJournalSession,

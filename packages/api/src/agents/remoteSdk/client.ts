@@ -22,6 +22,7 @@ import type {
 } from './types';
 import type { SdkAgentIdentity } from './identity';
 import { hydrateResumeRunSteps, createContentIndexOffsetHandlers } from '../hitl/resume';
+import { connectRecoveringSdkSocket } from './recovery/client';
 import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { createSdkPeer } from './peer';
 
@@ -117,41 +118,60 @@ export async function createRemoteSdkRun({
       ...options.configurable,
       thread_id: threadId,
     };
-    const token = jwt.sign(
-      { protocolVersion: 1, identity, threadId, invocationId: randomUUID() },
-      remote.secret,
-      {
-        algorithm: 'HS256',
-        audience: identity.runtimeId,
-        issuer: 'librechat-sdk',
-        expiresIn: '60s',
-      },
-    );
-    const socket = new WebSocket(remote.url, {
-      headers: { Authorization: `Bearer ${token}` },
-      handshakeTimeout: limits.connectTimeoutMs,
-      maxPayload: limits.maxFrameBytes,
-      followRedirects: false,
-    });
-    await new Promise<void>((resolve, reject) => {
-      const abort = () => {
-        socket.terminate();
-        reject(
-          Object.assign(new Error('SDK runtime connection cancelled'), { name: 'AbortError' }),
-        );
-      };
-      const cleanup = () => options.signal?.removeEventListener('abort', abort);
-      socket.once('open', () => {
-        cleanup();
-        resolve();
+    const makeToken = (recovery?: import('./recovery/server').RecoveryClaim) =>
+      jwt.sign(
+        { protocolVersion: 1, identity, threadId, invocationId: randomUUID(), recovery },
+        remote.secret,
+        {
+          algorithm: 'HS256',
+          audience: identity.runtimeId,
+          issuer: 'librechat-sdk',
+          expiresIn: '60s',
+        },
+      );
+    const legacy = async () => {
+      const socket = new WebSocket(remote.url, {
+        headers: { Authorization: `Bearer ${makeToken()}` },
+        handshakeTimeout: limits.connectTimeoutMs,
+        maxPayload: limits.maxFrameBytes,
+        followRedirects: false,
       });
-      socket.once('error', () => {
-        cleanup();
-        reject(new Error('SDK runtime connection failed'));
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => {
+          socket.terminate();
+          reject(
+            Object.assign(new Error('SDK runtime connection cancelled'), { name: 'AbortError' }),
+          );
+        };
+        const cleanup = () => options.signal?.removeEventListener('abort', abort);
+        socket.once('open', () => {
+          cleanup();
+          resolve();
+        });
+        socket.once('error', () => {
+          cleanup();
+          reject(new Error('SDK runtime connection failed'));
+        });
+        options.signal?.addEventListener('abort', abort, { once: true });
+        if (options.signal?.aborted) abort();
       });
-      options.signal?.addEventListener('abort', abort, { once: true });
-      if (options.signal?.aborted) abort();
-    });
+
+      return socket;
+    };
+    const socket = remote.recovery
+      ? await connectRecoveringSdkSocket({
+          url: remote.url,
+          token: makeToken,
+          generation:
+            typeof boundConfigurable.__librechat_checkpoint_ns === 'string'
+              ? boundConfigurable.__librechat_checkpoint_ns
+              : undefined,
+          limits,
+          recovery: remote.recovery,
+          signal: options.signal,
+          onError: remote.onError,
+        })
+      : await legacy();
     const execution = new AbortController();
     snapshot = undefined;
     let settled = false;
@@ -341,6 +361,19 @@ export async function createRemoteSdkRun({
       return snapshot.content?.filter((part) => part != null);
     } finally {
       socket.close(1000);
+      if ('waitForClose' in socket) {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          socket.waitForClose(),
+          new Promise<void>((resolve) => {
+            timeout = setTimeout(() => {
+              socket.terminate();
+              resolve();
+            }, remote.recovery!.maxDisconnectMs);
+          }),
+        ]);
+        clearTimeout(timeout);
+      }
       if (snapshot?.interrupt == null) config.hooks?.clearSession(identity.runId);
     }
   };

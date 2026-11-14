@@ -1904,13 +1904,34 @@ export const agentsEndpointSchema = baseEndpointSchema
                       .url()
                       .regex(/^wss?:\/\//),
                     secret: z.string().min(1),
+                    recovery: z
+                      .object({
+                        maxDisconnectMs: z.number().int().min(100).max(120000).default(15000),
+                        retryDelayMs: z.number().int().min(10).max(10000).default(250),
+                        maxJournalBytes: z
+                          .number()
+                          .int()
+                          .min(1024)
+                          .max(268435456)
+                          .default(67108864),
+                      })
+                      .strict()
+                      .optional(),
                     connectTimeoutMs: z.number().int().min(100).max(120_000).default(10_000),
                     rpcTimeoutMs: z.number().int().min(100).max(600_000).default(60_000),
                     maxFrameBytes: z.number().int().min(1024).max(16_777_216).default(1_048_576),
                     maxBufferedBytes: z.number().int().min(1024).max(67_108_864).default(4_194_304),
                     maxRunMs: z.number().int().min(1000).max(86_400_000).default(600_000),
                   })
-                  .strict(),
+                  .strict()
+                  .refine(
+                    (remote) =>
+                      !remote.recovery || remote.recovery.maxDisconnectMs < remote.rpcTimeoutMs,
+                    {
+                      message: 'SDK recovery window must be shorter than the RPC timeout',
+                      path: ['recovery', 'maxDisconnectMs'],
+                    },
+                  ),
                 roles: z.array(z.string().min(1)).min(1).default(['ADMIN']),
               })
               .strict(),

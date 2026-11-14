@@ -46,6 +46,17 @@ if op == 'read' then
   local frames = redis.call('LRANGE', KEYS[2], after, after + count - 1)
   return {1, state, redis.call('HGET', KEYS[1], 'started'), head, ack, frames}
 end
+-- A lost reply to a terminal append must remain retryable, but only by its original owner.
+if op == 'append' then
+  local receipt = redis.call('HGET', KEYS[3], ARGV[10])
+  if receipt then
+    if redis.call('HGET', KEYS[1], 'owner') ~= owner or
+       tonumber(redis.call('HGET', KEYS[1], 'epoch')) ~= tonumber(ARGV[4]) then return fail('fenced') end
+    local decoded = cjson.decode(receipt)
+    if decoded[3] ~= ARGV[11] then return fail('batch_conflict') end
+    return {1, decoded[1], decoded[2]}
+  end
+end
 if state ~= 'open' then return fail('closed') end
 local currentOwner = redis.call('HGET', KEYS[1], 'owner')
 local epoch = tonumber(redis.call('HGET', KEYS[1], 'epoch'))
@@ -75,12 +86,6 @@ if op == 'start' then
 end
 if op == 'append' then
   local batch, digest = ARGV[10], ARGV[11]
-  local receipt = redis.call('HGET', KEYS[3], batch)
-  if receipt then
-    local decoded = cjson.decode(receipt)
-    if decoded[3] ~= digest then return fail('batch_conflict') end
-    return {1, decoded[1], decoded[2]}
-  end
   local count, bytes = #ARGV - 11, 0
   for i = 12, #ARGV do bytes = bytes + #ARGV[i] end
   if head + count > tonumber(ARGV[7]) or
@@ -91,6 +96,7 @@ if op == 'append' then
   redis.call('HSET', KEYS[1], 'head', head)
   redis.call('HINCRBY', KEYS[1], 'bytes', bytes)
   redis.call('HSET', KEYS[3], batch, cjson.encode({first, head, digest}))
+  if ARGV[9] ~= '0' then redis.call('HSET', KEYS[1], 'state', ARGV[9], 'until', 0) end
   touch()
   return {1, first, head}
 end
@@ -154,6 +160,7 @@ export function createRedisRuntimeJournal(
     epoch: number,
     args: Array<string | number>,
     map: (data: unknown[]) => T,
+    terminal?: Exclude<RuntimeJournalState, 'open'>,
   ): Promise<RuntimeJournalResult<T>> => {
     id(session.sessionId);
     if (!/^[a-f0-9]{64}$/.test(session.scope)) throw new Error('Invalid runtime journal scope');
@@ -173,7 +180,7 @@ export function createRedisRuntimeJournal(
       limits.leaseMs,
       limits.maxFrames,
       limits.maxBytes,
-      0,
+      terminal ?? 0,
       ...args,
     );
     if (!Array.isArray(raw)) throw new Error('Invalid runtime journal response');
@@ -182,6 +189,8 @@ export function createRedisRuntimeJournal(
     return { ok: true, value: map(raw) };
   };
   return {
+    leaseMs: limits.leaseMs,
+    maxBatchFrames: limits.maxBatchFrames,
     purge: (session) => invoke('purge', session, '', 0, [], () => null),
     create: (session, owner) =>
       invoke('create', session, owner, 0, [], (r) => ({ owner, epoch: integer(r[1]) })),
@@ -194,7 +203,7 @@ export function createRedisRuntimeJournal(
     renew: (session, lease) => invoke('renew', session, lease.owner, lease.epoch, [], () => null),
     markStarted: (session, lease) =>
       invoke('start', session, lease.owner, lease.epoch, [], (r) => ({ first: r[1] === 1 })),
-    append: async (session, lease, batchId, payloads) => {
+    append: async (session, lease, batchId, payloads, terminal) => {
       id(batchId);
       if (
         !payloads.length ||
@@ -204,7 +213,11 @@ export function createRedisRuntimeJournal(
       ) {
         return { ok: false, error: { code: 'limit' } };
       }
-      const digest = createHash('sha256').update(JSON.stringify(payloads)).digest('hex');
+      if (terminal != null && !['completed', 'failed', 'cancelled', 'paused'].includes(terminal))
+        throw new Error('Invalid runtime journal terminal state');
+      const digest = createHash('sha256')
+        .update(JSON.stringify([terminal ?? null, payloads]))
+        .digest('hex');
       return invoke(
         'append',
         session,
@@ -212,6 +225,7 @@ export function createRedisRuntimeJournal(
         lease.epoch,
         [batchId, digest, ...payloads],
         (r) => ({ first: integer(r[1]), last: integer(r[2]) }),
+        terminal,
       );
     },
     acknowledge: (session, lease, sequence) =>

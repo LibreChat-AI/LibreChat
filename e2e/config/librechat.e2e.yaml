@@ -186,6 +186,12 @@ endpoints:
           url: ws://127.0.0.1:8804/sdk
           secret: e2e-remote-sdk-fixture-secret-not-a-production-key
         roles: [ADMIN, USER]
+      remote-recovery:
+        remote:
+          url: ws://127.0.0.1:8806/sdk
+          secret: e2e-remote-sdk-fixture-secret-not-a-production-key
+          recovery: {}
+        roles: [ADMIN, USER]
       e2e-sdk:
         module: ./e2e/setup/sdk-runtime.cjs
         roles: [ADMIN]

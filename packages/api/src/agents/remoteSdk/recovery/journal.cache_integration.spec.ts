@@ -25,7 +25,7 @@ const limits = {
 const session = () => ({ sessionId: randomUUID(), scope: 'a'.repeat(64) });
 let redis: RedisTestClient;
 beforeAll(async () => {
-  redis = createRedisTestClient('');
+  redis = createRedisTestClient(prefix);
   await redis.ping();
 });
 afterAll(async () => {
@@ -188,5 +188,22 @@ describe('persistent runtime journal', () => {
       head: 1,
       frames: [{ sequence: 1, payload: 'done' }],
     });
+  });
+  it('atomically seals terminal frames and deduplicates a lost append reply', async () => {
+    const journal = createRedisRuntimeJournal(redis, limits);
+    const id = session();
+    const lease = value(await journal.create(id, randomUUID()));
+    const batch = randomUUID();
+    const append = () => journal.append(id, lease, batch, ['terminal'], 'completed');
+    expect(value(await append())).toEqual({ first: 1, last: 1 });
+    expect(value(await append())).toEqual({ first: 1, last: 1 });
+    expect(await journal.append(id, lease, batch, ['terminal'], 'failed')).toEqual({
+      ok: false,
+      error: { code: 'batch_conflict' },
+    });
+    expect(
+      await journal.append(id, { ...lease, owner: randomUUID() }, batch, ['terminal'], 'completed'),
+    ).toEqual({ ok: false, error: { code: 'fenced' } });
+    expect(value(await journal.read(id, 0, 10))).toMatchObject({ state: 'completed', head: 1 });
   });
 });

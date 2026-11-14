@@ -39,6 +39,9 @@ async function measure(remote) {
         remote: {
           url: process.env.SDK_RUNTIME_URL || 'ws://127.0.0.1:8804/sdk',
           secret: process.env.SDK_RUNTIME_SECRET || '',
+          ...(process.env.SDK_RUNTIME_RECOVERY === 'true' && {
+            recovery: { maxDisconnectMs: 15000, retryDelayMs: 250, maxJournalBytes: 67108864 },
+          }),
         },
       })
     : await createExampleRun({

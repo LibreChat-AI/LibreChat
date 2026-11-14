@@ -1,7 +1,13 @@
 import type { Run, RunConfig, EventHandler, IState, HookEvent } from '@librechat/agents';
 import type { SdkAgentIdentity } from './identity';
 
+export interface RemoteSdkRecoveryOptions {
+  maxDisconnectMs: number;
+  retryDelayMs: number;
+  maxJournalBytes: number;
+}
 export interface RemoteSdkOptions {
+  recovery?: RemoteSdkRecoveryOptions;
   url: string;
   secret: string;
   connectTimeoutMs?: number;

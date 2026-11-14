@@ -3,6 +3,17 @@ import WebSocket from 'ws';
 import { randomUUID } from 'node:crypto';
 import { encodeSdkValue, decodeSdkValue } from './wire';
 
+/** Logical connections may survive replacement of their underlying WebSocket. */
+export interface SdkSocket {
+  readonly readyState: number;
+  readonly bufferedAmount: number;
+  send(data: string): void;
+  close(code?: number): void;
+  on(event: 'message', listener: (data: WebSocket.RawData) => void): this;
+  on(event: 'close' | 'error', listener: () => void): this;
+  once(event: 'close' | 'error', listener: () => void): this;
+}
+
 export type SdkRpc = (method: string, data: unknown) => Promise<unknown>;
 export type SdkFrame =
   | { type: 'call'; id: string; method: string; data: unknown }
@@ -36,7 +47,7 @@ const frameSchema = z.discriminatedUnion('type', [
 
 /** Ordered dispatch and bounded RPC lifetime. Errors on this boundary never disclose upstream text. */
 export function createSdkPeer(
-  socket: WebSocket,
+  socket: SdkSocket,
   options: {
     maxFrameBytes: number;
     maxBufferedBytes: number;
