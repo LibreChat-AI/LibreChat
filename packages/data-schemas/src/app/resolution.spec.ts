@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   OptionTypes,
+  PrincipalType,
   PermissionTypes,
   SearchProviders,
   AgentCapabilities,
@@ -4592,6 +4593,35 @@ describe('deployment-only paths in the merge', () => {
     }
     node[keys[keys.length - 1]] = value;
   }
+
+  it.each([undefined, false, true])(
+    'keeps deployment tracking policy %p against Base and user overrides',
+    (enabled) => {
+      const telemetry = enabled === undefined ? {} : { productTracking: { enabled } };
+      const base = { ...baseConfig, config: { telemetry }, telemetry };
+      const merged = mergeConfigOverrides(base, [
+        fakeConfig(
+          { telemetry: { productTracking: { enabled: true } } },
+          0,
+          undefined,
+          BASE_CONFIG_PRINCIPAL_ID,
+        ),
+        {
+          ...fakeConfig(
+            { telemetry: { productTracking: { enabled: false } } },
+            10,
+            ['telemetry'],
+            'editor',
+          ),
+          principalType: PrincipalType.USER,
+        },
+      ]);
+      expect(merged.config.telemetry?.productTracking).toEqual(telemetry.productTracking);
+      expect(at(merged as unknown as Record<string, unknown>, 'telemetry.productTracking')).toEqual(
+        telemetry.productTracking,
+      );
+    },
+  );
 
   it('keeps librechat.yaml’s value at every deployment-only path, whatever a layer stores', () => {
     const base: Record<string, unknown> = { config: {} };

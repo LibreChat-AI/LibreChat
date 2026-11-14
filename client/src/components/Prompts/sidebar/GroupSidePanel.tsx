@@ -4,6 +4,7 @@ import { useLocation } from 'react-router-dom';
 import { Button, Sidebar, Spinner, TooltipAnchor } from '@librechat/client';
 import type { PromptGroupListResponse } from 'librechat-data-provider';
 import { useLocalize, useNavScrolling, activateCatalog } from '~/hooks';
+import { useFeatureObservation } from '~/hooks/useProductObservation';
 import PromptGroupSkeleton from '../lists/PromptGroupSkeleton';
 import { usePromptGroupsContext } from '~/Providers';
 import { PanelContent } from '~/components/ui';
@@ -38,6 +39,7 @@ export default function GroupSidePanel({
   /** Mirrors UnifiedSidebar's panelExpanded: the insights route collapses the
    * panel while the atom stays true, so visibility is atom AND route */
   const panelVisible = sidebarExpanded && !location.pathname.startsWith('/insights');
+  useFeatureObservation('prompts', 'sidebar', panelVisible);
 
   /** The panel stays mounted while hidden, so only a visible panel releases
    * its catalog ahead of the background warmup schedule */

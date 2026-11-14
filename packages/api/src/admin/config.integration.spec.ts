@@ -38,6 +38,7 @@ let mergeConfigOverrides: DataSchemas['mergeConfigOverrides'];
 
 function mockReq(overrides: Record<string, unknown> = {}): ServerRequest {
   return {
+    productTracking: { enabled: true },
     user: { id: 'u1', role: 'ADMIN', _id: { toString: () => 'u1' } },
     params: {},
     body: {},
@@ -128,6 +129,150 @@ afterAll(async () => {
 }, LIFECYCLE_TIMEOUT_MS);
 
 describe('admin config writes against a real Config collection', () => {
+  describe('Langfuse state changed by the Base document lifecycle', () => {
+    const connection = {
+      enabled: true,
+      publicKey: 'private-public-key',
+      secretKey: 'private-secret-key',
+      destination: 'private-destination',
+      promptSync: { enabled: true },
+    };
+    const params = { principalType: ROLE, principalId: '__base__' };
+    const disabledFacts = [
+      [{ name: 'librechat.langfuse.connection.changed', configured: false, enabled: false }],
+      [{ name: 'librechat.langfuse.promptSync.changed', enabled: false }],
+    ];
+
+    async function storeConnection(principalId = '__base__', isActive = true) {
+      await mongoose.models.Config.create({
+        principalType: ROLE,
+        principalId,
+        principalModel: PrincipalModel.ROLE,
+        priority: 0,
+        isActive,
+        overrides: { langfuse: connection },
+      });
+    }
+
+    it('records Base deactivation and reactivation once without exposing connection values', async () => {
+      await storeConnection();
+      const productTracker = jest.fn();
+      const handlers = handlersFor(async () => true, { isLangfusePromptSyncAvailable: () => true });
+      const res = mockRes();
+      await handlers.toggleConfig(
+        mockReq({ params, body: { isActive: false }, productTracker }),
+        res,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(await methods.findConfigByPrincipal(ROLE, '__base__')).toBeNull();
+      expect(productTracker.mock.calls).toEqual(disabledFacts);
+
+      await handlers.toggleConfig(
+        mockReq({ params, body: { isActive: false }, productTracker }),
+        mockRes(),
+      );
+      expect(productTracker).toHaveBeenCalledTimes(2);
+      productTracker.mockClear();
+      await handlers.toggleConfig(
+        mockReq({ params, body: { isActive: true }, productTracker }),
+        mockRes(),
+      );
+      expect(productTracker.mock.calls).toEqual([
+        [{ name: 'librechat.langfuse.connection.changed', configured: true, enabled: true }],
+        [{ name: 'librechat.langfuse.promptSync.changed', enabled: true }],
+      ]);
+      expect(JSON.stringify(productTracker.mock.calls)).not.toContain('private-');
+    });
+
+    it.each([true, false])('records only active Base deletion (active: %s)', async (isActive) => {
+      await storeConnection('__base__', isActive);
+      const productTracker = jest.fn();
+      const res = mockRes();
+      await handlersFor(async () => true, {
+        isLangfusePromptSyncAvailable: () => true,
+      }).deleteConfigOverrides(mockReq({ params, productTracker }), res);
+      expect(res.statusCode).toBe(200);
+      expect(
+        await methods.findConfigByPrincipal(ROLE, '__base__', { includeInactive: true }),
+      ).toBeNull();
+      expect(productTracker.mock.calls).toEqual(isActive ? disabledFacts : []);
+    });
+
+    it.each([false, undefined])(
+      'does not report prompt-sync transitions with availability %s',
+      async (available) => {
+        await storeConnection();
+        const productTracker = jest.fn();
+        const handlers = handlersFor(async () => true, {
+          isLangfusePromptSyncAvailable: available === undefined ? undefined : () => available,
+        });
+        await handlers.toggleConfig(
+          mockReq({ params, body: { isActive: false }, productTracker }),
+          mockRes(),
+        );
+        await handlers.toggleConfig(
+          mockReq({ params, body: { isActive: true }, productTracker }),
+          mockRes(),
+        );
+        await handlers.deleteConfigOverrides(mockReq({ params, productTracker }), mockRes());
+        expect(productTracker.mock.calls).toEqual([
+          [{ name: 'librechat.langfuse.connection.changed', configured: false, enabled: false }],
+          [{ name: 'librechat.langfuse.connection.changed', configured: true, enabled: true }],
+          [{ name: 'librechat.langfuse.connection.changed', configured: false, enabled: false }],
+        ]);
+      },
+    );
+
+    it('reads availability when the request changes Base', async () => {
+      await storeConnection();
+      const productTracker = jest.fn();
+      const isLangfusePromptSyncAvailable = jest.fn(() => false);
+      const handlers = handlersFor(async () => true, { isLangfusePromptSyncAvailable });
+      expect(isLangfusePromptSyncAvailable).not.toHaveBeenCalled();
+      await handlers.toggleConfig(
+        mockReq({ params, body: { isActive: false }, productTracker }),
+        mockRes(),
+      );
+      expect(productTracker.mock.calls).toEqual([disabledFacts[0]]);
+      productTracker.mockClear();
+      isLangfusePromptSyncAvailable.mockReturnValue(true);
+      await handlers.toggleConfig(
+        mockReq({ params, body: { isActive: true }, productTracker }),
+        mockRes(),
+      );
+      expect(productTracker.mock.calls).toEqual([
+        [{ name: 'librechat.langfuse.connection.changed', configured: true, enabled: true }],
+        [{ name: 'librechat.langfuse.promptSync.changed', enabled: true }],
+      ]);
+      expect(isLangfusePromptSyncAvailable).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not report unrelated profiles, rejected requests, or missing Base documents', async () => {
+      await storeConnection('editors');
+      const productTracker = jest.fn();
+      const handlers = handlersFor(async () => true, { isLangfusePromptSyncAvailable: () => true });
+      const unrelated = { principalType: ROLE, principalId: 'editors' };
+      await handlers.toggleConfig(
+        mockReq({ params: unrelated, body: { isActive: false }, productTracker }),
+        mockRes(),
+      );
+      await handlers.deleteConfigOverrides(
+        mockReq({ params: unrelated, productTracker }),
+        mockRes(),
+      );
+      const missing = mockRes();
+      await handlers.deleteConfigOverrides(mockReq({ params, productTracker }), missing);
+      expect(missing.statusCode).toBe(404);
+      await storeConnection();
+      const denied = mockRes();
+      await handlersFor(async () => false, {
+        isLangfusePromptSyncAvailable: () => true,
+      }).toggleConfig(mockReq({ params, body: { isActive: false }, productTracker }), denied);
+      expect(denied.statusCode).toBe(403);
+      expect(productTracker).not.toHaveBeenCalled();
+    });
+  });
+
   describe('top-level sections outside configSchema', () => {
     it('stores nothing from a whole-document write that holds runtime state', async () => {
       const handlers = handlersFor(async () => true);

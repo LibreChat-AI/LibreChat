@@ -177,6 +177,8 @@ import {
 import { getConfigPartition, getActivePartition, runInPartition } from './partition';
 import { buildAdminConfigMeta, getCatalogModelsTtlMs } from './meta';
 import { createAdminAuditEmitter, configTarget } from './audit';
+import { trackRequestProductFact } from '~/tracking/request';
+import { readStoredLangfuse } from '~/langfuse/promptSync';
 import { DEFAULT_OVERRIDE_CACHE_TTL } from '~/app/service';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { mergeOverrideLayers } from '~/app/overrides';
@@ -886,6 +888,8 @@ interface ConfigLifecycleOptions extends ConfigWriteOptions {
 }
 
 export interface AdminConfigDeps {
+  /** Whether prompt sync is available when a Base change is tracked. Defaults to false. */
+  isLangfusePromptSyncAvailable?: () => boolean;
   listAllConfigs: (filter?: { isActive?: boolean }, session?: NoSession) => Promise<ConfigRecord[]>;
   findConfigByPrincipal: (
     principalType: PrincipalType,
@@ -2608,6 +2612,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
     overrideCacheTtlMs = DEFAULT_OVERRIDE_CACHE_TTL,
     overrideEnvAllowlist,
     rederiveEndpoints = false,
+    isLangfusePromptSyncAvailable = () => false,
   } = deps;
 
   const envAllowlist = parseEnvAllowlist(overrideEnvAllowlist);
@@ -4789,6 +4794,36 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
     }
   }
 
+  /** A Base toggle or deletion can remove active Langfuse settings without using its settings page. */
+  function trackLangfuseConfigChange(
+    req: ServerRequest,
+    previous: ConfigRecord | null,
+    current: ConfigRecord | null,
+  ): void {
+    const before = previous?.isActive === false ? undefined : readStoredLangfuse(previous);
+    const after = current?.isActive === false ? undefined : readStoredLangfuse(current);
+    const wasConfigured = Boolean(before?.publicKey && before?.secretKey);
+    const configured = Boolean(after?.publicKey && after?.secretKey);
+    const wasEnabled = wasConfigured && before?.enabled === true;
+    const enabled = configured && after?.enabled === true;
+    if (wasConfigured !== configured || wasEnabled !== enabled) {
+      trackRequestProductFact(req, {
+        name: 'librechat.langfuse.connection.changed',
+        configured,
+        enabled,
+      });
+    }
+    const promptSyncAvailable = isLangfusePromptSyncAvailable();
+    const wasPromptSyncEnabled = promptSyncAvailable && before?.promptSync?.enabled === true;
+    const promptSyncEnabled = promptSyncAvailable && after?.promptSync?.enabled === true;
+    if (wasPromptSyncEnabled !== promptSyncEnabled) {
+      trackRequestProductFact(req, {
+        name: 'librechat.langfuse.promptSync.changed',
+        enabled: promptSyncEnabled,
+      });
+    }
+  }
+
   /**
    * DELETE /:principalType/:principalId — Delete an entire config override.
    */
@@ -4853,6 +4888,9 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         severity: 'warning',
         target: configTarget(principalType, principalId),
       });
+      if (isBaseConfigPrincipal({ principalType, principalId })) {
+        trackLangfuseConfigChange(req, config, null);
+      }
       return res.status(200).json({ success: true });
     } catch (error) {
       logger.error('[adminConfig] deleteConfigOverrides error:', getSafeErrorMetadata(error));
@@ -5078,6 +5116,9 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
           target: configTarget(principalType, principalId),
           metadata: { isActive },
         });
+        if (isBaseConfigPrincipal({ principalType, principalId })) {
+          trackLangfuseConfigChange(req, { ...config, isActive: !isActive }, config);
+        }
       }
       return sendWrittenConfig(
         res,

@@ -183,3 +183,4 @@ export * from './channels/artifacts';
 export * from './channels/artifactStorage';
 export * from './channels/cleanup';
 export * from './channels/summary';
+export * from './tracking/request';

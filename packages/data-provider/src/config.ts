@@ -182,6 +182,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   persistence: 'operator',
   'telemetry.stackTraceLimit': 'operator',
   'telemetry.rum': 'operator',
+  'telemetry.productTracking': 'operator',
   clientLimits: 'operator',
   rateLimits: 'operator',
   cloudfront: 'operator',
@@ -3757,8 +3758,15 @@ export type TTurnstileConfig = z.infer<typeof turnstileSchema>;
 /** Distinguishes collector acceptance from the proxy's silent 204 authentication drop. */
 export const RUM_COLLECTOR_ACK_HEADER = 'x-librechat-rum-accepted';
 
+export const productTrackingConfigSchema = z
+  .object({ enabled: z.boolean().default(false) })
+  .strict();
+
+export type TProductTrackingConfig = z.infer<typeof productTrackingConfigSchema>;
+
 export const telemetrySchema = z
   .object({
+    productTracking: productTrackingConfigSchema.optional(),
     /**
      * Frames V8 records per error stack (`Error.stackTraceLimit`), applied when librechat.yaml
      * loads. Unset keeps the process default: 10, or `--stack-trace-limit` from NODE_OPTIONS.
@@ -3996,6 +4004,7 @@ export type TStartupConfig = {
    * `final` = fetch only after the stream completes (legacy). */
   titleGenerationTiming?: 'immediate' | 'final';
   analyticsGtmId?: string;
+  productTracking?: TProductTrackingConfig;
   rum?: TRumConfig;
   clientLimits?: TClientLimits;
   bundlerURL?: string;
