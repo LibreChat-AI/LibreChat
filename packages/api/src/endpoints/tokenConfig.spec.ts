@@ -30,6 +30,33 @@ function appConfigWith(custom: unknown[], contextCost = true): AppConfig {
 describe('resolveTokenConfigMap', () => {
   beforeEach(() => mockCacheGet.mockReset().mockResolvedValue(null));
 
+  it.each([false, true])(
+    'keeps Developer and Cloud estimates distinct with googleUsesVertex=%s',
+    async (googleUsesVertex) => {
+      const model = 'gemini-4-hydrogen';
+      const map = await resolveTokenConfigMap(
+        {
+          appConfig: appConfigWith([]),
+          modelsConfig: { google: [model] },
+          userId: 'user-1',
+          googleUsesVertex,
+          googleLocation: 'eu',
+        },
+        deps,
+      );
+      expect(map.google[model]).toMatchObject({
+        prompt: googleUsesVertex ? 1.65 : 1.5,
+        completion: googleUsesVertex ? 8.25 : 7.5,
+        cacheRead: googleUsesVertex ? 0.0825 : 0.075,
+      });
+      expect(map.vertexai[model]).toMatchObject({
+        prompt: 1.65,
+        completion: 8.25,
+        cacheRead: 0.0825,
+      });
+    },
+  );
+
   it('shows native Google rate overrides without replacing the model context window', async () => {
     const appConfig = appConfigWith([]);
     appConfig.endpoints = {
@@ -237,6 +264,50 @@ describe('scoped token config controller', () => {
       loadAsyncEndpoints,
     };
   }
+
+  it('discovers native Vertex models through Google while preserving its pricing identity', async () => {
+    const test = setup('vertexai');
+    test.loadAsyncEndpoints.mockResolvedValue({ google: { userProvide: false } });
+    const originalLocation = process.env.GOOGLE_LOC;
+    const originalKey = process.env.GOOGLE_KEY;
+    process.env.GOOGLE_LOC = 'eu';
+    process.env.GOOGLE_KEY = 'developer-key';
+    try {
+      await test.controller(test.req, test.http);
+      expect(test.res.status).not.toHaveBeenCalled();
+      expect(test.res.json).toHaveBeenCalledWith({
+        vertexai: expect.objectContaining({
+          'gemini-4-hydrogen': expect.objectContaining({
+            prompt: 1.65,
+            completion: 8.25,
+            cacheRead: 0.0825,
+          }),
+        }),
+      });
+      expect(test.req.query.endpoint).toBe('vertexai');
+    } finally {
+      if (originalLocation == null) delete process.env.GOOGLE_LOC;
+      else process.env.GOOGLE_LOC = originalLocation;
+      if (originalKey == null) delete process.env.GOOGLE_KEY;
+      else process.env.GOOGLE_KEY = originalKey;
+    }
+  });
+
+  it('keeps an exact custom Vertex name on its own model catalog and rates', async () => {
+    const test = setup('vertexai');
+    test.req.config?.endpoints?.custom?.push({
+      name: 'vertexai',
+      apiKey: 'custom-key',
+      baseURL: 'https://custom.example/v1',
+      models: { fetch: false, default: ['custom-model'] },
+      tokenConfig: { 'custom-model': { prompt: 3, completion: 6, context: 32000 } },
+    });
+    await test.controller(test.req, test.http);
+    expect(test.res.json).toHaveBeenCalledWith({
+      vertexai: { 'custom-model': { prompt: 3, completion: 6, context: 32000 } },
+    });
+    expect(test.loadAsyncEndpoints).not.toHaveBeenCalled();
+  });
 
   it('discovers only the selected endpoint and skips unrelated token-cache and credential reads', async () => {
     const test = setup('Selected');
