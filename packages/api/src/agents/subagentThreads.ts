@@ -47,6 +47,11 @@ import type {
   SubagentActivitySubscription,
   SubagentActivityTerminalStatus,
 } from './subagentActivity';
+import type {
+  ChildGeneration,
+  ChildGenerationFinal,
+  ChildGenerationHost,
+} from './subagentGeneration';
 import type { SubagentTaskControlTransport } from './subagentTaskRouting';
 import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
@@ -72,7 +77,7 @@ import { ActivityRecorder, activityTreeFromProjection } from './digest';
 import { runWithDetachedSubagentUsage } from './subagentTaskContext';
 import { SUBAGENT_COMPLETION_DELIVERY } from './subagentDelivery';
 import { createConcurrencyLimiter } from '~/utils/promise';
-import { SubagentContentJournal } from './subagentContent';
+import { SubagentContentJournal, subagentContentFrame } from './subagentContent';
 import { retainMCPRequestContext } from '~/mcp/request';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { InMemoryEventTransport } from '~/stream';
@@ -80,6 +85,7 @@ import { aggregateEmittedUsage } from './usage';
 
 const SCOPE_VERSION = 1;
 const DEFAULT_MAX_THREAD_DEPTH = 1;
+const CANCELLED_TASK_TEXT = 'Subagent task was cancelled.';
 const DEFAULT_LEASE_TTL_MS = 30_000;
 const DEFAULT_LEASE_HEARTBEAT_MS = 10_000;
 const DEFAULT_OWNER_DRAIN_TIMEOUT_MS = 45_000;
@@ -165,6 +171,8 @@ interface PreparedThread {
   /** Stable source-occurrence time shared by first delivery and every replay. */
   taskCreatedAt: number;
   userMessageId?: string;
+  /** The message the task's input row hangs under: the thread's latest result, or the root. */
+  userParentMessageId?: string;
   replay?: {
     status: 'completed' | 'error' | 'cancelled';
     content: string;
@@ -234,6 +242,8 @@ interface TaskThreadLease {
   /** Resolves only after child persistence and lease cleanup finish. */
   execution?: Promise<void>;
   content?: SubagentContentJournal;
+  /** The child's resumable stream, when one could be opened. */
+  generation?: ChildGeneration;
   publishAppliedSteer?: (data: Omit<TSteerAppliedEvent, 'index'>, timestamp: string) => void;
   /** Ordered observational tail; canonical child settlement never awaits it. */
   activityTail?: Promise<void>;
@@ -284,6 +294,9 @@ async function settleActivityWithin(operation: Promise<void>, timeoutMs: number)
 
 export interface SubagentThreadTaskStoreOptions extends InMemorySubagentTaskStoreOptions {
   activity?: Partial<TSubagentActivityConfig>;
+  /** Opens a resumable generation job for each child run. Without it, or with
+   * `activity.generationJobs` off, a child has only its activity feed. */
+  childGenerations?: ChildGenerationHost;
   maxThreadDepth?: number;
   leaseTtlMs?: number;
   leaseHeartbeatMs?: number;
@@ -753,6 +766,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
   private readonly cancelUnroutedTask?: SubagentThreadTaskStoreOptions['cancelUnroutedTask'];
   private readonly onTaskPrepared?: SubagentThreadTaskStoreOptions['onTaskPrepared'];
   private readonly onTaskSettled?: SubagentThreadTaskStoreOptions['onTaskSettled'];
+  private readonly childGenerations?: ChildGenerationHost;
   /** Tasks whose completion wake-up was registered; only they announce settlement. */
   private readonly wakeupTaskIds = new Set<string>();
   private taskControlTransport?: SubagentTaskControlTransport;
@@ -804,6 +818,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     this.cancelUnroutedTask = options.cancelUnroutedTask;
     this.onTaskPrepared = options.onTaskPrepared;
     this.onTaskSettled = options.onTaskSettled;
+    this.childGenerations = options.childGenerations;
   }
 
   /** Receives payload-free authoritative transitions from the SDK task store. */
@@ -1690,6 +1705,12 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                 );
               }
               const preparedThread = prepared;
+              lease.generation = await this.openGeneration(
+                scope,
+                request,
+                runtime.taskId,
+                preparedThread,
+              );
               const recorder = this.trackActivity(request.scopeId, runtime.taskId);
               let activitySequence = 0;
               const append = this.methods.appendSubagentContentBatch;
@@ -1764,6 +1785,8 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                 forwardProgress(activityEvent);
                 const sequence = activityEvent.activitySequence;
                 lease.content?.record(activityEvent, sequence);
+                const frame = subagentContentFrame(activityEvent);
+                if (frame != null) lease.generation?.emit(frame);
                 if (activityEvent.phase === 'steer_applied') {
                   publicRecorder.steer(activityEvent.data as TSteerAppliedEvent);
                 } else {
@@ -1890,17 +1913,22 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
               }
               lease.settling = true;
               await this.closeContent(lease);
-              await this.persistResult(
-                scope,
-                request,
-                runtime.taskId,
-                prepared,
-                result,
-                detachedUsage,
-                lease.content?.throughSequence,
-                appliedSteers,
-                publicRecorder.snapshot(),
-              );
+              await this.settleGeneration(lease, false, async () => {
+                await this.persistResult(
+                  scope,
+                  request,
+                  runtime.taskId,
+                  preparedThread,
+                  result,
+                  detachedUsage,
+                  lease.content?.throughSequence,
+                  appliedSteers,
+                  publicRecorder.snapshot(),
+                );
+                return this.generationFinal(request, runtime.taskId, preparedThread, lease, {
+                  text: result.content,
+                });
+              });
               activityTerminal = 'completed';
               return result;
             } catch (error) {
@@ -1915,22 +1943,31 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
               const terminalTask = this.get(request.scopeId, runtime.taskId);
               if (runtime.signal.aborted && terminalTask?.status === 'cancelled') {
                 activityTerminal = 'cancelled';
-                if (mayPersist) {
-                  await this.persistCancellation(
-                    scope,
-                    threadId,
-                    request,
-                    runtime.taskId,
-                    detachedUsage,
-                    lease.content?.throughSequence,
-                    publicRecorder.snapshot(),
-                  ).catch((persistError) => {
+                await this.settleGeneration(lease, true, async () => {
+                  if (!mayPersist) return null;
+                  try {
+                    const written = await this.persistCancellation(
+                      scope,
+                      threadId,
+                      request,
+                      runtime.taskId,
+                      detachedUsage,
+                      lease.content?.throughSequence,
+                      publicRecorder.snapshot(),
+                    );
+                    return written
+                      ? this.generationFinal(request, runtime.taskId, prepared, lease, {
+                          text: CANCELLED_TASK_TEXT,
+                        })
+                      : null;
+                  } catch (persistError) {
                     logger.error(
                       '[subagentThreads] Failed to persist child-thread cancellation',
                       persistError,
                     );
-                  });
-                }
+                    return null;
+                  }
+                });
                 throw error;
               }
               logger.error('[subagentThreads] Child-thread execution failed', {
@@ -1943,23 +1980,33 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                 causes: describeErrorCauses(error),
                 frames: describeStackFrames(error),
               });
-              if (mayPersist) {
-                await this.persistFailure(
-                  scope,
-                  threadId,
-                  request,
-                  runtime.taskId,
-                  error,
-                  detachedUsage,
-                  lease.content?.throughSequence,
-                  publicRecorder.snapshot(),
-                ).catch((persistError) => {
+              await this.settleGeneration(lease, false, async () => {
+                if (!mayPersist) return null;
+                try {
+                  const written = await this.persistFailure(
+                    scope,
+                    threadId,
+                    request,
+                    runtime.taskId,
+                    error,
+                    detachedUsage,
+                    lease.content?.throughSequence,
+                    publicRecorder.snapshot(),
+                  );
+                  return written
+                    ? this.generationFinal(request, runtime.taskId, prepared, lease, {
+                        text: safeErrorMessage(error),
+                        failed: true,
+                      })
+                    : null;
+                } catch (persistError) {
                   logger.error(
                     '[subagentThreads] Failed to persist child-thread failure',
                     persistError,
                   );
-                });
-              }
+                  return null;
+                }
+              });
               throw new Error(publicFailureDetail(error));
             } finally {
               if (prepared != null) {
@@ -1975,6 +2022,10 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                 );
               }
               lease.publishAppliedSteer = undefined;
+              /** A job no path above ended is ended here, before the released lease lets a
+               * continuation open the thread's next one. Ending it twice is harmless. */
+              await lease.generation?.settle(true, async () => null).catch(() => undefined);
+              lease.generation = undefined;
               await this.stopAndReleaseSharedLease(scope, threadId, lease);
               if (this.activeThreads.get(lockKey) === lease) {
                 this.activeThreads.delete(lockKey);
@@ -2022,6 +2073,98 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
    * Reconstruct only the trusted owner identity carried by the opaque task scope
    * so tenant-isolated database reads and lazy child initialization do not depend
    * on request AsyncLocalStorage remaining alive after the parent turn returns. */
+  /** Opens the child's resumable stream once its thread and input row are durable. A stream
+   * that cannot be opened is not an error: the child runs and persists without one. */
+  private async openGeneration(
+    scope: SubagentThreadScope,
+    request: SubagentTaskStartRequest,
+    taskId: string,
+    prepared: PreparedThread,
+  ): Promise<ChildGeneration | undefined> {
+    if (
+      this.childGenerations == null ||
+      !this.activityOptions.generationJobs ||
+      prepared.userMessageId == null
+    ) {
+      return undefined;
+    }
+    try {
+      const generation = await this.childGenerations.open({
+        userId: scope.userId,
+        threadId: prepared.conversation.conversationId,
+        taskId,
+        parentConversationId: scope.parentConversationId,
+        ...(prepared.conversation.agent_id == null
+          ? {}
+          : { agentId: prepared.conversation.agent_id }),
+        sender: request.subagentType,
+        userMessage: {
+          messageId: prepared.userMessageId,
+          parentMessageId: prepared.userParentMessageId ?? Constants.NO_PARENT,
+          text: request.input,
+        },
+        /** A deletion drain or an operator stop ended the job; the child must stop too. */
+        onAbort: () => {
+          if (this.get(request.scopeId, taskId)?.status === 'running') {
+            super.control(request.scopeId, taskId, { action: 'cancel' });
+          }
+        },
+      });
+      return generation ?? undefined;
+    } catch (error) {
+      logger.warn('[subagentThreads] Failed to open the child stream', error);
+      return undefined;
+    }
+  }
+
+  /** Runs the task's own persistence, inside the stream's terminal claim when it has one. */
+  private async settleGeneration(
+    lease: TaskThreadLease,
+    aborted: boolean,
+    persist: () => Promise<ChildGenerationFinal | null>,
+  ): Promise<void> {
+    if (lease.generation == null) {
+      await persist();
+      return;
+    }
+    await lease.generation.settle(aborted, persist);
+  }
+
+  /** The rows this task just wrote, as the stream's final event names them. */
+  private generationFinal(
+    request: SubagentTaskStartRequest,
+    taskId: string,
+    prepared: PreparedThread | undefined,
+    lease: TaskThreadLease,
+    response: { text: string; failed?: boolean },
+  ): ChildGenerationFinal | null {
+    if (prepared == null) return null;
+    const threadId = prepared.conversation.conversationId;
+    const userMessageId = `${taskId}:user`;
+    return {
+      requestMessage: {
+        messageId: userMessageId,
+        parentMessageId: prepared.userParentMessageId ?? Constants.NO_PARENT,
+        conversationId: threadId,
+        text: request.input,
+        sender: 'User',
+        isCreatedByUser: true,
+      },
+      responseMessage: {
+        messageId: `${taskId}:assistant`,
+        parentMessageId: userMessageId,
+        conversationId: threadId,
+        sender: request.subagentType,
+        text: response.text,
+        content: lease.generation?.content() ?? [],
+        endpoint: EModelEndpoint.agents,
+        isCreatedByUser: false,
+        unfinished: false,
+        ...(response.failed === true ? { error: true } : {}),
+      },
+    };
+  }
+
   private runWithOwnerContext<T>(scope: SubagentThreadScope, run: () => Promise<T>): Promise<T> {
     return tenantStorage.run(
       {
@@ -3193,7 +3336,11 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
           if (task?.status === 'running') {
             super.control(scopeId, lease.taskId, { action: 'cancel' });
           }
+          return;
         }
+        /** The lease proves the child is alive; its stream's idle clock would otherwise
+         * advance through a long silent tool call. */
+        void lease.generation?.touch();
       })().finally(() => {
         if (shared.heartbeatInFlight === renewal) {
           shared.heartbeatInFlight = undefined;
@@ -3596,6 +3743,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
           'The child-thread input has no durable occurrence time.',
         ),
         userMessageId,
+        userParentMessageId: parentMessageId,
       };
     } catch (error) {
       if (sharedLeaseAcquired) {
@@ -3762,11 +3910,11 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     detachedUsage: UsageMetadata[],
     contentThroughSequence?: number,
     observedActivity?: ReturnType<SubagentPublicRecorder['snapshot']>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     await this.flushControlReceiptsForSettlement(request.scopeId, taskId);
     const conversation = await this.currentConversation(scope, request, threadId);
     if (conversation == null || !(await this.taskInputExists(scope, threadId, taskId))) {
-      return;
+      return false;
     }
     const usage = this.aggregateDetachedUsage(detachedUsage);
     const savedFailure = await this.methods.saveMessage(
@@ -3812,6 +3960,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
       throw new Error('Unable to persist the child-thread failure.');
     }
     await this.touchAfterMessage(scope, threadId, taskId, 'failed');
+    return true;
   }
 
   private async registerTaskWakeup(
@@ -3851,11 +4000,11 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     detachedUsage: UsageMetadata[],
     contentThroughSequence?: number,
     observedActivity?: ReturnType<SubagentPublicRecorder['snapshot']>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     await this.flushControlReceiptsForSettlement(request.scopeId, taskId);
     const conversation = await this.currentConversation(scope, request, threadId);
     if (conversation == null || !(await this.taskInputExists(scope, threadId, taskId))) {
-      return;
+      return false;
     }
     const usage = this.aggregateDetachedUsage(detachedUsage);
     const savedCancellation = await this.methods.saveMessage(
@@ -3865,7 +4014,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
         conversationId: threadId,
         parentMessageId: `${taskId}:user`,
         sender: request.subagentType,
-        text: 'Subagent task was cancelled.',
+        text: CANCELLED_TASK_TEXT,
         endpoint: EModelEndpoint.agents,
         isCreatedByUser: false,
         unfinished: false,
@@ -3900,6 +4049,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
       throw new Error('Unable to persist the child-thread cancellation.');
     }
     await this.touchAfterMessage(scope, threadId, taskId, 'cancelled');
+    return true;
   }
 
   private async currentConversation(

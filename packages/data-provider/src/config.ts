@@ -1861,6 +1861,9 @@ export type HostFileEditLimits = z.infer<typeof hostFileEditLimitsSchema>;
 
 /** Server-side resource and recovery policy for ephemeral child activity. */
 export const subagentActivityConfigSchema = z.object({
+  /** Run each background child as a resumable generation job keyed by its thread id, so its
+   *  thread streams and resumes the way a chat does. Off leaves only the activity feed. */
+  generationJobs: z.boolean().default(true),
   contentRecoveryEnabled: z.boolean().default(false),
   /** Batch public content writes independently of the lossy live activity projection. */
   contentPageBytes: z.number().int().min(1024).max(4_194_304).default(262_144),

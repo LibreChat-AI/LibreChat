@@ -231,6 +231,23 @@ describe('child generation host', () => {
     expect(JSON.stringify(done)).not.toContain('secret detail');
   });
 
+  it('tells a reader to refetch when the caller had nothing to persist', async () => {
+    const generation = await createChildGenerationHost(manager).open(input());
+    let done: ServerSentEvent | undefined;
+    await manager.subscribe(
+      threadId,
+      () => undefined,
+      (event) => {
+        done = event;
+      },
+    );
+
+    await expect(generation?.settle(true, async () => null)).resolves.toBeUndefined();
+
+    expect(done).toMatchObject({ final: true, reconcile: true });
+    expect((await manager.getJob(threadId))?.status).toBe('aborted');
+  });
+
   it('reports an abort from outside and still lets the caller persist', async () => {
     const generation = await createChildGenerationHost(manager).open(input());
     await manager.abortJob(threadId, { expectedCreatedAt: generation?.createdAt });

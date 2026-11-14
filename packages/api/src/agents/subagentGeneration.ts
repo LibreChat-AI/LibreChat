@@ -53,9 +53,10 @@ export interface ChildGeneration {
   /**
    * Ends the stream around the caller's own persistence: the terminal state is claimed
    * first, `persist` writes the child's rows, and the final event is published only after
-   * they exist. `persist` always runs, and its failure is rethrown.
+   * they exist. `persist` always runs and its failure is rethrown. When it writes nothing
+   * and returns null, or throws, readers are told to refetch instead of being handed a final.
    */
-  settle(aborted: boolean, persist: () => Promise<ChildGenerationFinal>): Promise<void>;
+  settle(aborted: boolean, persist: () => Promise<ChildGenerationFinal | null>): Promise<void>;
 }
 
 export interface ChildGenerationHost {
@@ -178,26 +179,33 @@ class ManagedChildGeneration implements ChildGeneration {
     return this.fold.aggregator.contentParts as Agents.MessageContentComplex[];
   }
 
-  async settle(aborted: boolean, persist: () => Promise<ChildGenerationFinal>): Promise<void> {
+  async settle(
+    aborted: boolean,
+    persist: () => Promise<ChildGenerationFinal | null>,
+  ): Promise<void> {
     this.settling = true;
     await this.drainWithin(this.settleTimeoutMs);
     const claim = this.detached ? null : await this.claim(aborted);
-    let final: ChildGenerationFinal;
+    let final: ChildGenerationFinal | null;
     try {
       final = await persist();
     } catch (error) {
-      /** The rows are not there, so tell any reader to refetch instead of trusting a final. */
       if (claim != null) await this.publish(claim, null);
       throw error;
     }
     if (claim == null) return;
-    await this.publish(claim, {
-      final: true,
-      conversation: { conversationId: this.input.threadId },
-      requestMessage: final.requestMessage,
-      responseMessage: final.responseMessage,
-      ...(aborted ? { aborted: true } : {}),
-    });
+    await this.publish(
+      claim,
+      final == null
+        ? null
+        : {
+            final: true,
+            conversation: { conversationId: this.input.threadId },
+            requestMessage: final.requestMessage,
+            responseMessage: final.responseMessage,
+            ...(aborted ? { aborted: true } : {}),
+          },
+    );
   }
 
   private toEvent(frame: SubagentContentFrame): ServerSentEvent {
