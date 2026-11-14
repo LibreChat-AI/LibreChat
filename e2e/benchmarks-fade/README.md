@@ -18,6 +18,12 @@ transcript, from a Chromium trace of the built client:
   no event arriving, whatever the main thread does there it does for the run's
   animations.
 
+- **`restyle.perf.spec.ts`**: the cost of one small change in every row at once, which is
+  what a run starting or ending is. It flips a class, flips `disabled` and mounts a button on
+  each row by hand and times the style and layout pass that follows. With a stylesheet whose
+  `:has()` rules name their subjects these are a few milliseconds per hundred rows; a single
+  rule that does not multiplies them by ten.
+
 The transcript is yours. Nothing synthetic stands in for it, because the point
 is a conversation of the size and shape a reader actually has: export one from
 the chat's Export action as JSON and pass its path.
@@ -45,10 +51,13 @@ by side.
 | `FADE_PERF_SKIP_LIVE`    | `1` stops the frame spec after the idle and label traces.            |
 | `FADE_PERF_PROFILE`      | `1` samples the page's JavaScript: a second live run, or the replay. |
 | `FADE_PERF_DUMP`         | A directory that receives raw traces, profiles and replay windows.   |
+| `FADE_PERF_CATEGORIES`   | More trace categories for a dump, comma-separated.                   |
 | `FADE_PERF_REPLAY_INDEX` | Which message to replay (position in the flattened export).          |
 | `FADE_PERF_REPLAY_PARTS` | Replays only the first N content parts.                              |
 | `FADE_PERF_GAP_MS`       | Pause after each replayed frame; 150 by default.                     |
 | `FADE_PERF_ANIMATIONS`   | `1` lists what is animating during the replay, and which properties. |
+| `FADE_PERF_WHY`          | `1` counts component renders across the replay, with their causes.   |
+| `FADE_PERF_WHY_LIMIT`    | How many components that count lists; 80 by default.                 |
 
 ## Reading the output
 
@@ -60,6 +69,26 @@ In the replay tables every column is the median over that kind's windows, in
 milliseconds of main-thread time per window, split by self time: a layout
 forced from script counts as layout. `worst` is the longest single task seen
 for the kind. Subtract the `idle` row to get what an event adds.
+
+The replay also times the turn's two ends as windows of their own: `send` is
+the keypress that publishes the turn, `created` the frame that confirms it, and
+`final` the frame that closes the run. Each of those changes every row's
+toolbar, so they are where a long thread shows its long tasks.
+
+`FADE_PERF_WHY=1` swaps the trace for a render count: for the send, the events
+and the final frame, each component that rendered, how many times, and why (a
+prop that changed identity, a state or store hook of its own, query data it
+selects, a context it reads, or only its parent). It runs on the production
+bundle and names components by the source map when the build wrote one, else
+by where the function sits in its chunk. A component that renders once per
+event with nothing to show for it is the thing to look for.
+
+When a window shows a long layout or style pass with almost nothing dirty, dump
+the trace with `FADE_PERF_CATEGORIES=disabled-by-default-devtools.timeline.invalidationTracking`
+and read the `StyleInvalidatorInvalidationTracking` events before it: they name
+the nodes whose subtrees were invalidated and the selector feature that did it.
+That is how a `disabled` flip on one button per row turned out to re-style every
+row of the thread, through the stylesheet's `:has(:disabled)` rules.
 
 Role locators are kept out of the measured windows: Playwright computes
 accessible names across the whole transcript on each poll, which a trace

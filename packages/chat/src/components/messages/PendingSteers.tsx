@@ -75,8 +75,6 @@ function PendingSteers({
     paneConversationId,
     paneConversationId ? conversationId : null,
   );
-  const cachedMessages = cached ?? [];
-  const fallbackPaused = cached == null ? undefined : hasLiveRunPause(cached);
   /** Arming removes the control that was activated, so the row's Cancel button
    *  (which survives the `preempt` flip) is where keyboard focus goes next. */
   const cancelButtonRefs = useRef(new Map<string, HTMLButtonElement | null>());
@@ -88,6 +86,11 @@ function PendingSteers({
   if (steers.length === 0) {
     return null;
   }
+  /** Read only with a steer to show. This row follows the conversation's messages, so it
+   *  renders for every streamed delta, and the pause check walks every part of every message:
+   *  with nothing pending that walk would run for each delta of each run, for no row. */
+  const cachedMessages = cached ?? [];
+  const fallbackPaused = cached == null ? undefined : hasLiveRunPause(cached);
   const paused = resolvePaused(
     cachedMessages,
     paneConversationId,

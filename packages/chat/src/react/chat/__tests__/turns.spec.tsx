@@ -113,7 +113,7 @@ function setup({
     setMessages: (next) => written.push(next),
     isSubmitting,
     conversation,
-    latestMessage,
+    getLatestMessage: () => latestMessage,
     setSubmission: (next) => {
       submission = typeof next === 'function' ? next(submission) : next;
     },
