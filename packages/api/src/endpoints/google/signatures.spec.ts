@@ -134,6 +134,42 @@ describe.each([Providers.GOOGLE, Providers.VERTEXAI])('persisted %s signatures',
     },
   );
 
+  it('restores a call-only invocation beside native turns without falling back for edited native calls', () => {
+    const collected: GoogleThoughtSignatures = {};
+    const nativeCall = { id: 'native', name: 'lookup', args: {} };
+    const native = new AIMessage({ content: 'Original', tool_calls: [nativeCall] });
+    captureGeminiReplayParts(native, [
+      { text: 'Original' },
+      { functionCall: nativeCall, thoughtSignature: 'native-signature' },
+    ]);
+    collectGoogleThoughtSignatures(collected, native);
+    const legacyCall = { id: 'legacy', name: 'lookup', args: {} };
+    collectGoogleThoughtSignatures(collected, {
+      tool_calls: [legacyCall],
+      additional_kwargs: {
+        __gemini_function_call_thought_signatures__: { legacy: 'legacy-signature' },
+      },
+    });
+    const edited = new AIMessage({
+      content: 'Edited',
+      tool_calls: [nativeCall],
+      additional_kwargs: { sourceMessageId },
+    });
+    const legacy = new AIMessage({
+      content: '',
+      tool_calls: [legacyCall],
+      additional_kwargs: { sourceMessageId },
+    });
+    restoreGoogleThoughtSignatures([edited, legacy], [row(collected)], [{ provider }]);
+    expect(edited.additional_kwargs).not.toHaveProperty(GEMINI_PARTS);
+    expect(edited.additional_kwargs).not.toHaveProperty(
+      '__gemini_function_call_thought_signatures__',
+    );
+    expect(legacy.additional_kwargs.__gemini_function_call_thought_signatures__).toEqual({
+      legacy: 'legacy-signature',
+    });
+  });
+
   it('restores legacy maps by call id and preserves unsigned parallel slots', () => {
     const message = new AIMessage({
       content: '',
