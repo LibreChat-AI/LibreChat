@@ -16,6 +16,10 @@ import './Field.css';
 /** A rounded editor box of its own, such as a prompt or message editor. */
 const framed = `${FIELD_OWN_FOCUS} rounded-xl border border-border-medium bg-transparent text-text-primary placeholder:text-text-secondary focus-visible:ring-2 focus-visible:ring-focus-control`;
 
+/** A compact filled field inside a card: light border, chat surface, small type. */
+const filled =
+  'rounded-lg border border-border-light bg-surface-chat px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus-visible:ring-2 focus-visible:ring-text-primary';
+
 /** The chat composer's draft: no frame of its own (the composer surface draws it), the composer
  *  type scale, and a max height that eases as the draft collapses. `data-listening` hides the
  *  caret and placeholder while dictation stands in for them; `data-locked` stops selection. */
@@ -27,12 +31,13 @@ const composer =
  *  editor box, `flush` draws no border or ring because the surrounding frame owns the indicator,
  *  `embedded` fills a list or popover row edge to edge, and `composer` is the chat draft. */
 const AUTOSIZE_VARIANTS: Record<
-  'default' | 'field' | 'framed' | 'flush' | 'embedded' | 'composer',
+  'default' | 'field' | 'framed' | 'filled' | 'flush' | 'embedded' | 'composer',
   string
 > = {
   default: '',
   field: fieldBase,
   framed,
+  filled,
   flush: `${FIELD_OWN_FOCUS} ${fieldFlush}`,
   embedded: fieldEmbedded,
   composer,

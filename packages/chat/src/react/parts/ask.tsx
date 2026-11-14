@@ -38,20 +38,51 @@ export const askSubmitStatusAtom: PrimitiveAtom<Record<string, AskAnswerStatus>>
   Record<string, AskAnswerStatus>
 >({});
 
+/** Live ask pauses already on screen, keyed the way the progress card matches a call. */
+export type LiveAskPauses = {
+  ids: string[];
+  hasUnattributed: boolean;
+};
+
+/** What a card submits, and the free-form draft it restores after a remount. */
+export type AskAnswerSubmit = (
+  actionId: string,
+  resolution: string | Record<string, string>,
+  opts?: { onSuccess?: () => void },
+) => void;
+
 const AskAnswerHostContext = createContext(false);
+
+/** No live pause. A card outside the host stays visible rather than hiding itself. */
+const LiveAskPausesContext = createContext<LiveAskPauses | null>(null);
 
 export function AskAnswerHostProvider({
   saveDrafts,
+  liveAskPauses = null,
   children,
 }: {
   saveDrafts: boolean;
+  /**
+   * Which ask calls already have an interactive pause. The host owns the subscription;
+   * absent data leaves the in-progress card visible.
+   */
+  liveAskPauses?: LiveAskPauses | null;
   children?: ReactNode;
 }): ReactNode {
   return (
-    <AskAnswerHostContext.Provider value={saveDrafts}>{children}</AskAnswerHostContext.Provider>
+    <AskAnswerHostContext.Provider value={saveDrafts}>
+      <LiveAskPausesContext.Provider value={liveAskPauses}>
+        {children}
+      </LiveAskPausesContext.Provider>
+    </AskAnswerHostContext.Provider>
   );
 }
 
 export function useAskAnswerHost(): boolean {
   return useContext(AskAnswerHostContext);
+}
+
+/** The host's live pauses, or none outside a provider. */
+export function useLiveAskPauses(): LiveAskPauses | null {
+  return useContext(LiveAskPausesContext);
 }

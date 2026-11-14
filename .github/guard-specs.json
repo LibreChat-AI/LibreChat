@@ -83,6 +83,11 @@
       "package-lock.json"
     ],
     "packages/client/src/components/__tests__/radixLayers.spec.ts": ["package-lock.json"],
+    "packages/client/src/theme/askParts.spec.ts": [
+      "packages/client/src/theme/parts.css",
+      "client/src/style.css",
+      "client/src/main.jsx"
+    ],
     "packages/client/src/theme/defaults.spec.ts": ["packages/client/src/theme/defaults.css"],
     "packages/client/src/theme/parts.spec.ts": [
       "client/src/style.css",

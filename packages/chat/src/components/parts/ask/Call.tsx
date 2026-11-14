@@ -1,31 +1,35 @@
-import { useCallback } from 'react';
-import { MessageCircleQuestion, TriangleAlert } from 'lucide-react';
-import { toolPanelSpacingClassName, useToolExpansion } from '@librechat/chat/react';
+import { useCallback, useRef } from 'react';
+import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
+import { cn, Button, disclosureChevronVariants, useLocalize } from '@librechat/client';
+import type { Agents, PartMetadata } from 'librechat-data-provider';
+import type { CSSProperties, ReactNode } from 'react';
 import {
-  EmptyText,
+  DISCLOSURE_COLLAPSE,
+  PROGRESS_TEXT_CONTENT,
+  PROGRESS_TEXT_WRAPPER,
+  ROW_GLYPH_SLOT,
   TOOL_ROW_CLASSES,
-  Container,
-  useExpandCollapse,
-} from '@librechat/chat/components';
+} from '../rows';
 import {
   getSubmittedAskAnswer,
   parseAskUserQuestionArgs,
   parseAskUserQuestionsArgs,
-} from '@librechat/chat';
-import type { Agents, PartMetadata } from 'librechat-data-provider';
-import AskUserQuestionProgress from './AskUserQuestionProgress';
-import ProgressText from './ProgressText';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+} from '../../../core/parts/questions';
+import { toolPanelSpacingClassName, useToolExpansion } from '../../../react/parts/disclosure';
+import useExpandCollapse from '../useExpandCollapse';
+import AskUserQuestionProgress from './Progress';
+import { useFailedReveal } from '../reveal';
+import EmptyText from '../../EmptyText';
+import Container from '../Container';
 
 /**
- * Static rendering of a COMPLETED (or abandoned) `ask_user_question` tool call —
+ * Static rendering of a COMPLETED (or abandoned) `ask_user_question` tool call,
  * the durable record of the Q&A after the pause resolves. The generic tool card
  * is wrong here: it labels a no-output call "cancelled" and shows raw JSON args.
  * The interactive card ({@link AskUserQuestion}) renders only while the pause is
  * live; this component owns the part everywhere else (history, reload, exports).
  *
- * Settled, it is history — so it reads as one collapsed tool-call line (status
+ * Settled, it is history, so it reads as one collapsed tool-call line (status
  * label plus the question itself) and opens on demand, under the same
  * `autoExpandTools` preference every other tool card follows. Answers are
  * frequently long, multi-paragraph text; left expanded they buried the reply
@@ -49,7 +53,7 @@ export default function AskUserQuestionCall({
   failed?: boolean;
   showCursor?: boolean;
   onExpand?: () => void;
-}) {
+}): ReactNode {
   const localize = useLocalize();
   const [expanded, setExpanded] = useToolExpansion(true);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(expanded);
@@ -66,7 +70,7 @@ export default function AskUserQuestionCall({
   /**
    * The part's own output arrives from the server only at finalize, and the
    * streaming handler's message copy can overwrite the optimistic store stamp
-   * mid-stream — fall back to the locally-recorded submitted answer so the
+   * mid-stream. Fall back to the locally-recorded submitted answer so the
    * Q&A record never blinks out while the resumed segment streams.
    */
   const effectiveOutput = output.length > 0 ? output : (getSubmittedAskAnswer(toolCallId) ?? '');
@@ -92,7 +96,7 @@ export default function AskUserQuestionCall({
 
   /**
    * While the turn is live and unanswered, the INTERACTIVE card (rendered from
-   * the pendingAction's synthetic part) owns the question UI — rendering the
+   * the pendingAction's synthetic part) owns the question UI. Rendering the
    * durable record too would duplicate it with a misleading "no answer" line.
    * Until that pause actually starts (args still streaming, interrupt not yet
    * delivered) the progress card fills the gap. Once the user answers, the
@@ -107,7 +111,7 @@ export default function AskUserQuestionCall({
   /**
    * The run resumes the moment the pause resolves (an answer submits, or a
    * schema-rejected call auto-retries), but its first token takes a beat to
-   * arrive — hold the streaming cursor under the settled card so the turn
+   * arrive. Hold the streaming cursor under the settled card so the turn
    * never looks stalled between the answer and the resumed text.
    */
   const resumingCursor =
@@ -120,7 +124,7 @@ export default function AskUserQuestionCall({
   const count = batch?.questions.length ?? 1;
   /**
    * Past tense unconditionally: a live, unanswered pause returns above, so
-   * every state that reaches this header is settled — answered, abandoned
+   * every state that reaches this header is settled: answered, abandoned
    * (the run stopped before an answer), or rejected. An abandoned pause was
    * still ASKED; it explains itself with "no answer" inside the panel, and a
    * present-tense summary would strand it as permanently in-flight now that
@@ -142,35 +146,33 @@ export default function AskUserQuestionCall({
   return (
     <>
       <div className={TOOL_ROW_CLASSES} data-testid="ask-user-question-call">
-        <ProgressText
-          phase={terminalFailure ? 'failed' : 'completed'}
-          onClick={toggleExpanded}
-          inProgressText={statusLabel}
-          finishedText={statusLabel}
+        <AskCallHeader
+          failed={terminalFailure}
+          expanded={expanded}
+          label={statusLabel}
           subtitle={summary}
-          icon={
-            terminalFailure ? (
-              <TriangleAlert className="text-text-warning size-4 shrink-0" aria-hidden="true" />
-            ) : (
-              <MessageCircleQuestion
-                className="text-text-secondary size-4 shrink-0"
-                aria-hidden="true"
-              />
-            )
-          }
-          isExpanded={expanded}
+          onClick={toggleExpanded}
         />
       </div>
       {/* A rejected call is the one state the reader did not ask for and
           cannot see coming. The explanation lives in the panel, which starts
-          closed and is `inert` while it is — so the announcement has to sit
+          closed and is `inert` while it is, so the announcement has to sit
           outside the disclosure to reach the accessibility tree at all. */}
       {terminalFailure && (
         <span className="sr-only" role="status">
           {`${statusLabel}. ${localize('com_ui_question_failed_description')}`}
         </span>
       )}
-      <div style={expandStyle}>
+      <div
+        className={DISCLOSURE_COLLAPSE}
+        style={
+          {
+            '--expand-rows': String(expandStyle.gridTemplateRows),
+            '--expand-opacity': String(expandStyle.opacity),
+            '--expand-transition': String(expandStyle.transition),
+          } as CSSProperties
+        }
+      >
         <div className="overflow-hidden" ref={expandRef}>
           <div
             className={cn(
@@ -221,8 +223,103 @@ export default function AskUserQuestionCall({
 }
 
 /**
- * One question and its answer. Every text slot here is authored — by the model
- * or by the user — so line breaks are content, not whitespace: `pre-wrap`
+ * The settled row. Same disclosure, failure reveal, and line as the other tool
+ * cards: a failed call opens and takes focus when a parent fold asks.
+ */
+function AskCallHeader({
+  failed,
+  expanded,
+  label,
+  subtitle,
+  onClick,
+}: {
+  failed: boolean;
+  expanded: boolean;
+  label: string;
+  subtitle?: string;
+  onClick: () => void;
+}) {
+  const localize = useLocalize();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const revealFailure = useCallback(
+    (claimFocus: () => boolean) => {
+      if (!expanded) {
+        onClick();
+      }
+      if (!claimFocus()) {
+        return;
+      }
+      const button = rootRef.current?.querySelector('button');
+      if (button == null) {
+        return;
+      }
+      if (typeof button.scrollIntoView === 'function') {
+        button.scrollIntoView({ block: 'nearest' });
+      }
+      button.focus({ preventScroll: true });
+    },
+    [expanded, onClick],
+  );
+  useFailedReveal(failed, revealFailure);
+  return (
+    <div className={PROGRESS_TEXT_WRAPPER} ref={rootRef}>
+      <div className={PROGRESS_TEXT_CONTENT}>
+        <Button
+          type="button"
+          variant="disclosure"
+          className="group/disclosure"
+          onClick={onClick}
+          aria-expanded={expanded}
+        >
+          <span className={ROW_GLYPH_SLOT} aria-hidden="true">
+            {failed ? (
+              <TriangleAlert className="text-text-warning size-4 shrink-0" aria-hidden="true" />
+            ) : (
+              <MessageCircleQuestion
+                className="text-text-secondary size-4 shrink-0"
+                aria-hidden="true"
+              />
+            )}
+          </span>
+          <span className="flex min-w-0 items-center gap-2">
+            <span
+              className={cn(
+                'max-w-full min-w-0 truncate font-medium',
+                subtitle != null && 'shrink-0',
+              )}
+            >
+              {label}
+            </span>
+            {subtitle != null && (
+              <span className="text-text-secondary min-w-0 shrink truncate font-normal">
+                {subtitle}
+              </span>
+            )}
+          </span>
+          {failed && (
+            <span className="text-status-error shrink-0 font-normal">
+              {'· '}
+              {localize('com_ui_tool_failed')}
+            </span>
+          )}
+          <span className="ms-auto flex shrink-0 items-center gap-2">
+            <ChevronDown
+              className={cn(
+                disclosureChevronVariants({ expanded }),
+                'size-4 shrink-0 translate-y-[0.0625rem]',
+              )}
+              aria-hidden="true"
+            />
+          </span>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One question and its answer. Every text slot here is authored, by the model
+ * or by the user, so line breaks are content, not whitespace: `pre-wrap`
  * keeps a numbered or paragraphed answer legible instead of collapsing it into
  * one wall of text. The answer sits under its own label behind a rule rather
  * than running on from it, so the eye can find where the reply starts.
@@ -276,7 +373,7 @@ function QuestionBody({
 
 /**
  * Prefer the picked option's label over its wire value when they differ.
- * Multi-select answers are option values joined by ", " — map the segments
+ * Multi-select answers are option values joined by ", ". Map the segments
  * back to labels only when EVERY segment matches an option: values may
  * legally contain ", " themselves, and a partial mapping could mis-split
  * such a value into fragments that relabel as options the user never

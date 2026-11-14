@@ -1,41 +1,61 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { ToolPreparation } from '@librechat/chat/components';
-import AskUserQuestionProgress from '../AskUserQuestionProgress';
+import type { LiveAskPauses } from '../../../../react/parts/ask';
+import { AskAnswerHostProvider } from '../../../../react/parts/ask';
+import { ToolPreparation } from '../../preparation';
+import AskUserQuestionProgress from '../Progress';
 
 const translations: Record<string, string> = {
   com_ui_asking: 'Asking',
   com_ui_tool_name_ask_user_question: 'Question',
 };
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string, values?: Record<string, string>) =>
     key === 'com_ui_tool_preparing' ? `Preparing ${values?.[0]}` : (translations[key] ?? key),
 }));
 
-jest.mock('~/Providers/ChatContext', () => {
-  const { createContext } = jest.requireActual<typeof React>('react');
-  return {
-    ChatContext: createContext({ conversation: { conversationId: 'convo-1' } }),
-  };
-});
-
-let mockLivePauses: { ids: string[]; hasUnattributed: boolean } = {
+let mockLivePauses: LiveAskPauses = {
   ids: [],
   hasUnattributed: false,
 };
 
-jest.mock('~/data-provider', () => ({
-  useCachedMessages: () => ({ data: mockLivePauses }),
-}));
+const renderProgress = (ui: React.ReactElement) =>
+  render(
+    <AskAnswerHostProvider saveDrafts={false} liveAskPauses={mockLivePauses}>
+      {ui}
+    </AskAnswerHostProvider>,
+  );
 
 describe('AskUserQuestionProgress', () => {
   beforeEach(() => {
     mockLivePauses = { ids: [], hasUnattributed: false };
   });
 
+  test('updates live pause data without changing consumer hooks and defaults to visible', () => {
+    const card = <AskUserQuestionProgress args='{"question":"Ready?"}' toolCallId="call_1" />;
+    const hosted = (liveAskPauses?: LiveAskPauses | null) => (
+      <AskAnswerHostProvider saveDrafts={false} liveAskPauses={liveAskPauses}>
+        {card}
+      </AskAnswerHostProvider>
+    );
+    const { rerender, unmount } = render(hosted());
+    expect(screen.getByText('Ready?')).toBeInTheDocument();
+    expect(() => rerender(hosted({ ids: ['call_1'], hasUnattributed: false }))).not.toThrow();
+    expect(screen.queryByText('Ready?')).not.toBeInTheDocument();
+    expect(() => rerender(hosted(null))).not.toThrow();
+    expect(screen.getByText('Ready?')).toBeInTheDocument();
+    unmount();
+    render(card);
+    expect(screen.getByText('Ready?')).toBeInTheDocument();
+  });
+
   test('streams the question text from partial args', () => {
-    render(
+    renderProgress(
       <AskUserQuestionProgress
         args={'{"question":"Which environment should I dep'}
         toolCallId="call_1"
@@ -47,7 +67,7 @@ describe('AskUserQuestionProgress', () => {
   });
 
   test('decodes JSON escapes in the streaming question', () => {
-    render(
+    renderProgress(
       <AskUserQuestionProgress args={'{"question":"Caf\\u00e9 or \\"bar\\"'} toolCallId="call_1" />,
     );
 
@@ -55,7 +75,7 @@ describe('AskUserQuestionProgress', () => {
   });
 
   test('streams the first question from partial batched args', () => {
-    render(
+    renderProgress(
       <AskUserQuestionProgress
         args={'{"questions":[{"id":"environment","question":"Which environ'}
         toolCallId="call_1"
@@ -66,7 +86,7 @@ describe('AskUserQuestionProgress', () => {
   });
 
   test('reads the first question from settled batched args', () => {
-    render(
+    renderProgress(
       <AskUserQuestionProgress
         args={{ questions: [{ id: 'environment', question: 'Which environment?' }] }}
         toolCallId="call_1"
@@ -77,7 +97,7 @@ describe('AskUserQuestionProgress', () => {
   });
 
   test('renders a skeleton line before any question text streams', () => {
-    render(<AskUserQuestionProgress args="" toolCallId="call_1" />);
+    renderProgress(<AskUserQuestionProgress args="" toolCallId="call_1" />);
 
     expect(screen.getByText('Asking')).toBeInTheDocument();
     expect(screen.getByRole('status')).toBeInTheDocument();
@@ -86,7 +106,7 @@ describe('AskUserQuestionProgress', () => {
   test('hides once the interactive pause for this call is live', () => {
     mockLivePauses = { ids: ['call_1'], hasUnattributed: false };
 
-    const { container } = render(
+    const { container } = renderProgress(
       <AskUserQuestionProgress args={'{"question":"Ready?"}'} toolCallId="call_1" />,
     );
 
@@ -96,7 +116,7 @@ describe('AskUserQuestionProgress', () => {
   test('hides for an unattributed live pause (no tool_call_id on the payload)', () => {
     mockLivePauses = { ids: [], hasUnattributed: true };
 
-    const { container } = render(
+    const { container } = renderProgress(
       <AskUserQuestionProgress args={'{"question":"Ready?"}'} toolCallId="call_1" />,
     );
 
@@ -106,7 +126,7 @@ describe('AskUserQuestionProgress', () => {
   test("stays visible while a DIFFERENT call's pause is interactive", () => {
     mockLivePauses = { ids: ['call_1'], hasUnattributed: false };
 
-    render(
+    renderProgress(
       <AskUserQuestionProgress args={'{"question":"Second question?"}'} toolCallId="call_2" />,
     );
 
@@ -116,7 +136,7 @@ describe('AskUserQuestionProgress', () => {
   test('hides when its own pause is live alongside a newer sibling pause', () => {
     mockLivePauses = { ids: ['call_1', 'call_2'], hasUnattributed: false };
 
-    const { container } = render(
+    const { container } = renderProgress(
       <AskUserQuestionProgress args={'{"question":"First question?"}'} toolCallId="call_1" />,
     );
 
@@ -135,15 +155,20 @@ describe('question preparation transitions', () => {
         <AskUserQuestionProgress args={args} toolCallId="call_1" />
       </ToolPreparation>
     );
-    const { rerender } = render(frame('{"question":"Which environment'));
+    const hosted = (node: React.ReactElement) => (
+      <AskAnswerHostProvider saveDrafts={false} liveAskPauses={mockLivePauses}>
+        {node}
+      </AskAnswerHostProvider>
+    );
+    const { rerender } = render(hosted(frame('{"question":"Which environment')));
     expect(screen.getByRole('status')).toHaveTextContent('Preparing Question');
     expect(screen.getByText('Which environment')).toBeInTheDocument();
-    rerender(frame('{"question":"Which environment?"}'));
+    rerender(hosted(frame('{"question":"Which environment?"}')));
     expect(screen.getByRole('status')).toHaveTextContent('Preparing Question');
-    rerender(frame('{"question":"Which environment?"}', 100));
+    rerender(hosted(frame('{"question":"Which environment?"}', 100)));
     expect(screen.getByRole('status')).toHaveTextContent('Asking');
     mockLivePauses = { ids: ['call_1'], hasUnattributed: false };
-    rerender(frame('{"question":"Which environment?"}', 100));
+    rerender(hosted(frame('{"question":"Which environment?"}', 100)));
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 });

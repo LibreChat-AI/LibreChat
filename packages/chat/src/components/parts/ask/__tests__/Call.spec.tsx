@@ -1,10 +1,12 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen } from '@testing-library/react';
-import '~/Providers/MessagePartsHostContext';
-import { FailedRevealContext } from '@librechat/chat/components';
-import AskUserQuestionCall from '../AskUserQuestionCall';
-import store from '~/store';
+import type { MessagePartsHost } from '../../../../react/host';
+import { emptyToolCallChrome, MessagePartsHostProvider } from '../../../../react/host';
+import { FailedRevealContext } from '../../reveal';
+import AskUserQuestionCall from '../Call';
 
 const translations: Record<string, string> = {
   com_ui_asked: 'Asked',
@@ -18,7 +20,8 @@ const translations: Record<string, string> = {
   com_ui_asking_n_questions: 'Asking {{0}} questions',
 };
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string, values?: Record<string, string>) => {
     const template = translations[key] ?? key;
     return values == null
@@ -27,43 +30,41 @@ jest.mock('~/hooks', () => ({
   },
 }));
 
-jest.mock('@librechat/chat', () => ({
-  ...jest.requireActual('@librechat/chat'),
-  getSubmittedAskAnswer: () => undefined,
-  parseAskUserQuestionArgs: (args: string | Record<string, unknown> | undefined) => {
-    if (typeof args === 'string') {
-      return JSON.parse(args) as Record<string, unknown>;
-    }
-    return args ?? null;
-  },
-  parseAskUserQuestionsArgs: (args: string | Record<string, unknown> | undefined) => {
-    const parsed = typeof args === 'string' ? JSON.parse(args) : args;
-    return Array.isArray(parsed?.questions) ? parsed : null;
-  },
-}));
+const createHost = (autoExpand: boolean): MessagePartsHost => ({
+  useMessage: () => ({ messageId: 'msg-1', isSubmitting: false, isLatestMessage: true }),
+  renderMarkdown: () => null,
+  useSmoothStreaming: () => false,
+  useAgent: () => undefined,
+  renderAgentIcon: () => null,
+  renderAgentAvatar: () => null,
+  renderContentParts: () => null,
+  renderImage: () => null,
+  renderFilePreview: () => null,
+  useFontSize: () => 'text-base',
+  useShowThinking: () => false,
+  useAutoExpandTools: () => autoExpand,
+  useLaTeXParsing: () => false,
+  useChatDirection: () => 'ltr',
+  useUserTextPreferences: () => ({
+    usernameDisplay: false,
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+  }),
+  useUser: () => undefined,
+  useFileMap: () => undefined,
+  useToast: () => jest.fn(),
+  useSandboxStarting: () => false,
+  useToolArtifactClaim: () => [null, jest.fn()],
+  useSteerEscalating: () => false,
+  usePaneConversationId: () => null,
+  useLiveAppliedSteer: () => [false, jest.fn()],
+  useToolCallChrome: emptyToolCallChrome,
+  useShare: () => ({}),
+});
 
-jest.mock('../AskUserQuestionProgress', () => ({
-  __esModule: true,
-  default: () => {
-    const { createElement } = jest.requireActual<typeof React>('react');
-    return createElement('div', { 'data-testid': 'ask-progress' });
-  },
-}));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  Container: ({ children }: { children: React.ReactNode }) => {
-    const { createElement } = jest.requireActual<typeof React>('react');
-    return createElement('div', null, children);
-  },
-}));
 /** Settled records mount collapsed, exactly like every other tool card. */
 const renderCall = (ui: React.ReactElement, autoExpand = false) =>
-  render(
-    <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, autoExpand)}>
-      {ui}
-    </RecoilRoot>,
-  );
+  render(<MessagePartsHostProvider host={createHost(autoExpand)}>{ui}</MessagePartsHostProvider>);
 
 describe('AskUserQuestionCall', () => {
   const args = JSON.stringify({
@@ -74,7 +75,7 @@ describe('AskUserQuestionCall', () => {
   test('renders the progress card while the call is live and unanswered', () => {
     renderCall(<AskUserQuestionCall args={args} output="" toolCallId="call_1" isSubmitting />);
 
-    expect(screen.getByTestId('ask-progress')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Asking');
     expect(screen.queryByText('You answered:')).not.toBeInTheDocument();
   });
 
@@ -91,7 +92,7 @@ describe('AskUserQuestionCall', () => {
         />,
       );
 
-      expect(screen.queryByTestId('ask-progress')).not.toBeInTheDocument();
+      expect(screen.queryByText('Asking')).not.toBeInTheDocument();
       expect(screen.getByTestId('ask-user-question-call')).toBeInTheDocument();
     },
   );
@@ -116,11 +117,11 @@ describe('AskUserQuestionCall', () => {
   ])('reveals a terminal question failure from its parent fold (%p)', (failure) => {
     const call = <AskUserQuestionCall args={args} output="" {...failure} />;
     const tree = (tick: number) => (
-      <RecoilRoot>
+      <MessagePartsHostProvider host={createHost(false)}>
         <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
           {call}
         </FailedRevealContext.Provider>
-      </RecoilRoot>
+      </MessagePartsHostProvider>
     );
     const { rerender } = render(tree(0));
     const button = screen.getByRole('button', { name: /Question wasn't shown/ });
@@ -171,7 +172,7 @@ describe('AskUserQuestionCall', () => {
 
     const header = screen.getByRole('button');
     /** The pause ended; only its panel says the answer never came, and that
-     *  panel starts closed — a present-tense summary would strand the record
+     *  panel starts closed: a present-tense summary would strand the record
      *  as permanently in flight. */
     expect(header).toHaveTextContent('Asked');
     expect(header).not.toHaveTextContent('Asking');

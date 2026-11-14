@@ -137,12 +137,20 @@ export {
   TOOL_ROW_CLASSES,
   FOLD_RAIL_CLASSES,
   FOLD_GLYPH_SELECTOR,
+  PROGRESS_TEXT_CONTENT,
+  PROGRESS_TEXT_WRAPPER,
   ARTIFACT_ROW_NAV_SPACING,
 } from './components/parts/rows';
 export { default as AskOptions } from './components/parts/AskOptions';
 export { default as AskPopover } from './components/composer/ask/Popover';
 export type { LiveAsk, AskAnswerView, AskPopoverProps } from './components/composer/ask/Popover';
 export type { AskOption } from './components/parts/AskOptions';
+export { default as AutoHeight } from './components/parts/AutoHeight';
+export { default as AskUserQuestion } from './components/parts/ask/Question';
+export { default as AskUserQuestions } from './components/parts/ask/Questions';
+export { default as AskUserQuestionCall } from './components/parts/ask/Call';
+export { default as AskUserQuestionProgress } from './components/parts/ask/Progress';
+export type { AskCardMode } from './components/parts/ask/Question';
 export { default as SkillPills } from './components/parts/SkillPills';
 export type { SkillPillsSource } from './components/parts/SkillPills';
 export { default as MessageQuotes } from './components/parts/MessageQuotes';

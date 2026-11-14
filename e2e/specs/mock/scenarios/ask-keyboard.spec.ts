@@ -10,6 +10,7 @@ import {
   messagesView,
   requestJson,
   sendMessage,
+  mockReply,
 } from '../helpers';
 
 /**
@@ -233,6 +234,59 @@ test.describe('ask question keyboard control', () => {
         notes: DECLINED,
       });
       expect(resumes).toHaveLength(1);
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
+  });
+
+  test('a settled batch is one record line whose answers open on demand @scenario:ask-settled-record-opens-on-demand', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const label = uniqueLabel();
+    let agentId: string | undefined;
+
+    try {
+      const agent = await createAgent(page);
+      agentId = agent.id;
+      const chat = await openBatch(page, agent, label);
+      const field = answerField(chat, questionsFor(label).environment);
+      await expect(field).toBeVisible();
+      await Promise.all([page.waitForRequest(isResumeRequest), field.press('Escape')]);
+
+      /* The resumed turn regroups the message's parts as it streams, so a click before it ends
+         can land on a card that is then replaced. Open the record once the turn is over. */
+      await expect(mockReply(page)).toBeVisible({ timeout: 30000 });
+      await expect(page.getByTestId('stop-generation-button')).toBeHidden({ timeout: 30000 });
+
+      const record = chat.getByTestId('ask-user-question-call');
+      const toggle = record.getByRole('button');
+      await expect(toggle).toBeVisible();
+
+      /* The collapse rule lives in the shared stylesheet, which the app's own sheet follows in
+         the bundle. Read what the cascade resolved rather than which rule was authored. */
+      const panel = chat.locator('.disclosure-collapse');
+      const resolved = () =>
+        panel.evaluate((node) => {
+          const style = getComputedStyle(node);
+          return { display: style.display, opacity: style.opacity, rows: style.gridTemplateRows };
+        });
+
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await expect.poll(resolved).toEqual({ display: 'grid', opacity: '0', rows: '0px' });
+
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      await expect
+        .poll(async () => {
+          const { display, opacity, rows } = await resolved();
+          return { display, opacity, open: rows !== '0px' && rows !== 'none' };
+        })
+        .toEqual({ display: 'grid', opacity: '1', open: true });
+
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await expect.poll(resolved).toEqual({ display: 'grid', opacity: '0', rows: '0px' });
     } finally {
       await cleanupAgent(page, agentId);
     }

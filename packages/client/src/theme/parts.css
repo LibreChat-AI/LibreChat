@@ -347,3 +347,16 @@
     transform: none;
   }
 }
+
+/**
+ * The grid collapse `useExpandCollapse` measures. Rows, opacity and the
+ * transition are custom properties so a reduced-motion reader still gets the
+ * 0.01ms transition that fires `transitionend`. Inline style cannot say that
+ * in the chat package.
+ */
+.disclosure-collapse {
+  display: grid;
+  grid-template-rows: var(--expand-rows, 1fr);
+  opacity: var(--expand-opacity, 1);
+  transition: var(--expand-transition);
+}

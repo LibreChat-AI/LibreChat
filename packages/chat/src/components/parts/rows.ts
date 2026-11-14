@@ -7,6 +7,21 @@
  */
 export const TOOL_ROW_CLASSES = 'relative my-1.5 flex h-5 shrink-0 items-center gap-2.5';
 
+/** The absolutely positioned line inside a tool row, shared by every progress header. */
+export const PROGRESS_TEXT_WRAPPER =
+  'progress-text-wrapper text-text-secondary relative -mt-[0.046875rem] h-5 w-full leading-5';
+
+/** Caps that line at the message column while leaving the focus ring visible. */
+export const PROGRESS_TEXT_CONTENT =
+  'progress-text-content absolute top-0 right-0 left-0 max-w-full overflow-visible whitespace-nowrap';
+
+/**
+ * Grid collapse for a disclosure panel. The rules live in `parts.css`; the
+ * rows, opacity and transition are the `--expand-*` custom properties
+ * `useExpandCollapse` already computes.
+ */
+export const DISCLOSURE_COLLAPSE = 'disclosure-collapse';
+
 /** Leave an 8px gap beside MessageNav's hit area in full-width chat. */
 export const ARTIFACT_ROW_NAV_SPACING = 'pe-3 md:pe-17';
 

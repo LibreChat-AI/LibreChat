@@ -23,6 +23,7 @@ jest.mock('~/hooks/Chat/target', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
+  useCachedMessages: () => ({ data: null }),
   useProjectQuery: () => ({ data: undefined }),
 }));
 

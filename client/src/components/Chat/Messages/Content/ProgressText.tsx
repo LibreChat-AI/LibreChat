@@ -10,21 +10,21 @@ import {
   ElapsedTimer,
   CancelledIcon,
   ROW_GLYPH_SLOT,
-  useToolPreparation,
   useFailedReveal,
+  useToolPreparation,
+  PROGRESS_TEXT_CONTENT,
+  PROGRESS_TEXT_WRAPPER,
 } from '@librechat/chat/components';
 import type { ToolCallPhase } from '@librechat/chat';
 import { cn, getRunStepDurationLabels } from '~/utils';
 import { useLocalize } from '~/hooks';
 
-const wrapperClass =
-  'progress-text-wrapper text-text-secondary relative -mt-[0.046875rem] h-5 w-full leading-5';
+const wrapperClass = PROGRESS_TEXT_WRAPPER;
 
 /** `right-0` and `max-w-full` cap the absolutely-positioned line at the message
  *  column; the label span truncates itself, so overflow stays visible for the
  *  button's focus ring. */
-const contentClass =
-  'progress-text-content absolute left-0 right-0 top-0 max-w-full overflow-visible whitespace-nowrap';
+const contentClass = PROGRESS_TEXT_CONTENT;
 
 const Wrapper = ({
   popover,

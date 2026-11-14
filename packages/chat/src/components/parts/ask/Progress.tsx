@@ -1,15 +1,9 @@
-import { useContext } from 'react';
-import { Shimmer } from '@librechat/client';
 import { MessageCircleQuestion } from 'lucide-react';
-import { useToolPreparation } from '@librechat/chat/components';
-import {
-  parseJsonField,
-  parseJsonFieldOccurrences,
-  collectLiveAskToolCallIds,
-} from '@librechat/chat';
-import { ChatContext } from '~/Providers/ChatContext';
-import { useCachedMessages } from '~/data-provider';
-import { useLocalize } from '~/hooks';
+import { Shimmer, useLocalize } from '@librechat/client';
+import type { ReactNode } from 'react';
+import { parseJsonField, parseJsonFieldOccurrences } from '../../../core/parts/parseJsonField';
+import { useLiveAskPauses } from '../../../react/parts/ask';
+import { useToolPreparation } from '../preparation';
 
 /**
  * Interim card for an `ask_user_question` call whose pause hasn't gone
@@ -21,9 +15,8 @@ import { useLocalize } from '~/hooks';
  * The first question text streams in live from either the legacy top-level
  * field or the first item in the batched `questions` array.
  *
- * Mounted only for a live, unanswered call ({@link AskUserQuestionCall}
- * gates on `isSubmitting`), so the live-ask subscription below never runs
- * for the settled cards in history.
+ * Mounted only for a live, unanswered call (the settled record gates on
+ * `isSubmitting`). The host supplies the conversation's live pauses.
  */
 export default function AskUserQuestionProgress({
   args,
@@ -31,15 +24,10 @@ export default function AskUserQuestionProgress({
 }: {
   args: string | Record<string, unknown> | undefined;
   toolCallId?: string;
-}) {
+}): ReactNode {
   const localize = useLocalize();
   const preparationText = useToolPreparation();
-  const conversationId = useContext(ChatContext)?.conversation?.conversationId;
-  const enabled = conversationId != null && conversationId !== 'new';
-  const { data: livePauses } = useCachedMessages(
-    enabled ? conversationId : '',
-    collectLiveAskToolCallIds,
-  );
+  const livePauses = useLiveAskPauses();
   const legacyQuestion = parseJsonField(args, 'question');
   const batchQuestion = (() => {
     if (typeof args === 'string') {
