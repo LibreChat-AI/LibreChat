@@ -37,6 +37,38 @@ import {
   isSafeLinkUrl,
 } from './config';
 
+describe('local configuration cache limits', () => {
+  it('defaults an explicit block and keeps the policy deployment-only', () => {
+    expect(configSchema.parse({ version: '1.3.18' }).configCache).toBeUndefined();
+    expect(configSchema.parse({ version: '1.3.18', configCache: {} }).configCache).toEqual({
+      maxBytes: 16 * 1024 * 1024,
+      maxEntries: 1000,
+    });
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS.configCache).toBe('operator');
+  });
+
+  it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1, '100'])(
+    'rejects invalid bounds %p',
+    (value) => {
+      for (const field of ['maxBytes', 'maxEntries']) {
+        expect(
+          configSchema.safeParse({ version: '1.3.18', configCache: { [field]: value } }).success,
+        ).toBe(false);
+      }
+    },
+  );
+
+  it('accepts explicit positive bounds and rejects unknown settings', () => {
+    expect(
+      configSchema.parse({ version: '1.3.18', configCache: { maxBytes: 4096, maxEntries: 2 } })
+        .configCache,
+    ).toEqual({ maxBytes: 4096, maxEntries: 2 });
+    expect(configSchema.safeParse({ version: '1.3.18', configCache: { maxSize: 1 } }).success).toBe(
+      false,
+    );
+  });
+});
+
 describe('independent browser replay opt-in', () => {
   it('preserves absent configuration for existing environment-based RUM deployments', () => {
     expect(configSchema.parse({ version: '1.3.17' }).telemetry).toBeUndefined();

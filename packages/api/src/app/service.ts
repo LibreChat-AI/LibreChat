@@ -478,6 +478,8 @@ interface CacheStore {
   opts?: {
     store?: {
       keys?: () => IterableIterator<string>;
+      /** Local retention policy; Redis and custom stores keep their existing behavior. */
+      configure?: (limits?: TCustomConfig['configCache']) => void;
     };
   };
 }
@@ -889,6 +891,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     if (generation !== baseGeneration) {
       return baseConfig;
     }
+    cache.opts?.store?.configure?.(baseConfig.config?.configCache);
     if ((await cache.set(BASE_CONFIG_KEY, baseConfig)) === false) {
       throw new Error('Base cache refused configuration publication.');
     }
