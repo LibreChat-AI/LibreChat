@@ -91,6 +91,29 @@ import { aggregateEmittedUsage } from './usage';
 const SCOPE_VERSION = 1;
 const DEFAULT_MAX_THREAD_DEPTH = 1;
 const CANCELLED_TASK_TEXT = 'Subagent task was cancelled.';
+/** MongoDB refuses a document over 16 MiB. A result row's large fields are budgeted against
+ *  this, leaving room for the rest of the document. */
+const MAX_RESULT_DOCUMENT_BYTES = 15 * 1024 * 1024;
+
+/** What a child streamed, with its serialized size measured once. */
+type StreamedContent = { parts: TMessageContentParts[]; bytes: number };
+
+/**
+ * The streamed content, when the row can hold it beside the fields it must carry. The content
+ * is the optional one: a row that would outgrow the document keeps its text, transcript and
+ * projection and leaves the content off, so a large child never loses its result to it.
+ */
+function contentWithinDocument(
+  content: StreamedContent | undefined,
+  ...siblings: Array<string | undefined>
+): TMessageContentParts[] | undefined {
+  if (content == null) return undefined;
+  let used = content.bytes;
+  for (const sibling of siblings) {
+    if (sibling != null) used += Buffer.byteLength(sibling, 'utf8');
+  }
+  return used <= MAX_RESULT_DOCUMENT_BYTES ? content.parts : undefined;
+}
 const DEFAULT_LEASE_TTL_MS = 30_000;
 const DEFAULT_LEASE_HEARTBEAT_MS = 10_000;
 const DEFAULT_OWNER_DRAIN_TIMEOUT_MS = 45_000;
@@ -1919,8 +1942,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
               lease.settling = true;
               await this.closeContent(lease);
               await this.settleGeneration(lease, false, async () => {
-                const content = this.generationContent(lease);
-                await this.persistResult(
+                const content = await this.persistResult(
                   scope,
                   request,
                   runtime.taskId,
@@ -1930,7 +1952,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                   lease.content?.throughSequence,
                   appliedSteers,
                   publicRecorder.snapshot(),
-                  content,
+                  this.generationContent(lease),
                 );
                 return this.generationFinal(request, runtime.taskId, preparedThread, {
                   text: result.content,
@@ -1954,7 +1976,6 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                 await this.settleGeneration(lease, true, async () => {
                   if (!mayPersist) return null;
                   try {
-                    const content = this.generationContent(lease);
                     const written = await this.persistCancellation(
                       scope,
                       threadId,
@@ -1963,14 +1984,14 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                       detachedUsage,
                       lease.content?.throughSequence,
                       publicRecorder.snapshot(),
-                      content,
+                      this.generationContent(lease),
                     );
-                    return written
-                      ? this.generationFinal(request, runtime.taskId, prepared, {
+                    return written == null
+                      ? null
+                      : this.generationFinal(request, runtime.taskId, prepared, {
                           text: CANCELLED_TASK_TEXT,
-                          content,
-                        })
-                      : null;
+                          content: written.content,
+                        });
                   } catch (persistError) {
                     logger.error(
                       '[subagentThreads] Failed to persist child-thread cancellation',
@@ -1994,7 +2015,6 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
               await this.settleGeneration(lease, false, async () => {
                 if (!mayPersist) return null;
                 try {
-                  const content = this.generationContent(lease);
                   const written = await this.persistFailure(
                     scope,
                     threadId,
@@ -2004,15 +2024,15 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                     detachedUsage,
                     lease.content?.throughSequence,
                     publicRecorder.snapshot(),
-                    content,
+                    this.generationContent(lease),
                   );
-                  return written
-                    ? this.generationFinal(request, runtime.taskId, prepared, {
+                  return written == null
+                    ? null
+                    : this.generationFinal(request, runtime.taskId, prepared, {
                         text: safeErrorMessage(error),
                         failed: true,
-                        content,
-                      })
-                    : null;
+                        content: written.content,
+                      });
                 } catch (persistError) {
                   logger.error(
                     '[subagentThreads] Failed to persist child-thread failure',
@@ -2143,12 +2163,13 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
    * like one. Left off when there was no stream, nothing was streamed, or it would outgrow the
    * row's budget: the row then keeps only its text and projection, as before.
    */
-  private generationContent(lease: TaskThreadLease): TMessageContentParts[] | undefined {
+  private generationContent(lease: TaskThreadLease): StreamedContent | undefined {
     const limit = this.activityOptions.generationContentBytes;
     const parts = lease.generation?.content().filter((part) => part != null);
     if (parts == null || parts.length === 0 || limit === 0) return undefined;
     try {
-      return Buffer.byteLength(JSON.stringify(parts), 'utf8') <= limit ? parts : undefined;
+      const bytes = Buffer.byteLength(JSON.stringify(parts), 'utf8');
+      return bytes <= limit ? { parts, bytes } : undefined;
     } catch {
       return undefined;
     }
@@ -3838,8 +3859,8 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     contentThroughSequence?: number,
     appliedSteers?: readonly AppliedSubagentSteer[],
     observedActivity?: ReturnType<SubagentPublicRecorder['snapshot']>,
-    content?: TMessageContentParts[],
-  ): Promise<void> {
+    streamed?: StreamedContent,
+  ): Promise<TMessageContentParts[] | undefined> {
     if (prepared.userMessageId == null) {
       throw new Error('The child-thread input was not prepared.');
     }
@@ -3882,6 +3903,12 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
               activityProjection.truncated ||
               (!sourceTrusted && activityProjection.activity.length === 0),
           };
+    const content = contentWithinDocument(
+      streamed,
+      result.content,
+      subagentTranscript?.messagesJson,
+      subagentActivityProjection?.activityJson,
+    );
     const conversation = await this.requireCurrentConversation(
       scope,
       request,
@@ -3924,6 +3951,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
       throw new Error('Unable to persist the child-thread result.');
     }
     await this.touchAfterMessage(scope, conversation.conversationId, taskId, 'completed');
+    return content;
   }
 
   private async persistFailure(
@@ -3935,13 +3963,16 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     detachedUsage: UsageMetadata[],
     contentThroughSequence?: number,
     observedActivity?: ReturnType<SubagentPublicRecorder['snapshot']>,
-    content?: TMessageContentParts[],
-  ): Promise<boolean> {
+    streamed?: StreamedContent,
+  ): Promise<{ content?: TMessageContentParts[] } | null> {
     await this.flushControlReceiptsForSettlement(request.scopeId, taskId);
     const conversation = await this.currentConversation(scope, request, threadId);
     if (conversation == null || !(await this.taskInputExists(scope, threadId, taskId))) {
-      return false;
+      return null;
     }
+    const activityJson = JSON.stringify(observedActivity?.activity ?? []);
+    const text = safeErrorMessage(error);
+    const content = contentWithinDocument(streamed, text, activityJson);
     const usage = this.aggregateDetachedUsage(detachedUsage);
     const savedFailure = await this.methods.saveMessage(
       { userId: scope.userId, ...retentionContext(conversation) },
@@ -3950,7 +3981,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
         conversationId: threadId,
         parentMessageId: `${taskId}:user`,
         sender: request.subagentType,
-        text: safeErrorMessage(error),
+        text,
         ...(content == null ? {} : { content }),
         endpoint: EModelEndpoint.agents,
         isCreatedByUser: false,
@@ -3964,7 +3995,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
         subagentActivityProjection: {
           taskId,
           version: 2 as const,
-          activityJson: JSON.stringify(observedActivity?.activity ?? []),
+          activityJson,
           truncated:
             observedActivity == null ||
             observedActivity.truncated ||
@@ -3987,7 +4018,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
       throw new Error('Unable to persist the child-thread failure.');
     }
     await this.touchAfterMessage(scope, threadId, taskId, 'failed');
-    return true;
+    return { ...(content == null ? {} : { content }) };
   }
 
   private async registerTaskWakeup(
@@ -4027,13 +4058,15 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     detachedUsage: UsageMetadata[],
     contentThroughSequence?: number,
     observedActivity?: ReturnType<SubagentPublicRecorder['snapshot']>,
-    content?: TMessageContentParts[],
-  ): Promise<boolean> {
+    streamed?: StreamedContent,
+  ): Promise<{ content?: TMessageContentParts[] } | null> {
     await this.flushControlReceiptsForSettlement(request.scopeId, taskId);
     const conversation = await this.currentConversation(scope, request, threadId);
     if (conversation == null || !(await this.taskInputExists(scope, threadId, taskId))) {
-      return false;
+      return null;
     }
+    const activityJson = JSON.stringify(observedActivity?.activity ?? []);
+    const content = contentWithinDocument(streamed, CANCELLED_TASK_TEXT, activityJson);
     const usage = this.aggregateDetachedUsage(detachedUsage);
     const savedCancellation = await this.methods.saveMessage(
       { userId: scope.userId, ...retentionContext(conversation) },
@@ -4055,7 +4088,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
         subagentActivityProjection: {
           taskId,
           version: 2 as const,
-          activityJson: JSON.stringify(observedActivity?.activity ?? []),
+          activityJson,
           truncated:
             observedActivity == null ||
             observedActivity.truncated ||
@@ -4078,7 +4111,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
       throw new Error('Unable to persist the child-thread cancellation.');
     }
     await this.touchAfterMessage(scope, threadId, taskId, 'cancelled');
-    return true;
+    return { ...(content == null ? {} : { content }) };
   }
 
   private async currentConversation(

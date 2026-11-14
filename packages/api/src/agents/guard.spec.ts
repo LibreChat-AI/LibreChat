@@ -436,15 +436,21 @@ describe('background child abort guard', () => {
     expect(getJob).not.toHaveBeenCalled();
   });
 
-  it('leaves a job store failure to the route', async () => {
-    const response = await request(
-      abortApp(async () => {
-        throw new Error('store down');
-      }),
-    )
-      .post('/abort')
-      .send({ streamId: 'thread-1' });
+  it('fails closed, without reaching the route, when the job lookup fails', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation();
+    try {
+      const response = await request(
+        abortApp(async () => {
+          throw new Error('store down');
+        }),
+      )
+        .post('/abort')
+        .send({ streamId: 'thread-1' });
 
-    expect(response.body).toEqual({ reached: 'route' });
+      expect(response.status).toBe(500);
+      expect(response.body).not.toEqual({ reached: 'route' });
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

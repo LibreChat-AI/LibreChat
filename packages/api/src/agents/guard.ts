@@ -50,7 +50,8 @@ function abortTargetId(body: unknown): string | null {
 /**
  * Runs ahead of the chat abort route and answers for a background child's job, so the
  * route's chat-shaped abort never reaches it. Every other request falls through untouched,
- * including one for a job the caller does not own, which the route refuses itself.
+ * including one for a job the caller does not own, which the route refuses itself. A job
+ * lookup that fails ends the request at the error boundary.
  */
 export function createBackgroundChildAbortGuard(deps: {
   getJob: (streamId: string) => Promise<AbortGuardJob | null | undefined>;
@@ -65,9 +66,10 @@ export function createBackgroundChildAbortGuard(deps: {
     let job: AbortGuardJob | null | undefined;
     try {
       job = await deps.getJob(streamId);
-    } catch {
-      /** The route reads the same job and owns the answer for a store failure. */
-      next();
+    } catch (error) {
+      /** Fail closed: the route reads the job again, and a read that then succeeds would
+       *  run its chat-shaped abort on a child this guard never got to see. */
+      next(error);
       return;
     }
     const metadata = job?.metadata;

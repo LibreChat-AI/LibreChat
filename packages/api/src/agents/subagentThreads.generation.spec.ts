@@ -443,6 +443,37 @@ describe('a background child as a generation job', () => {
       expect(JSON.stringify(row)).not.toContain('sk-secret');
     });
 
+    it('leaves the content off when the whole row would outgrow the document', async () => {
+      const { store, scopeId } = await setup({ generationContentBytes: 8_388_608 });
+      /** Stored three times over (text, transcript, content), this passes each field's own
+       *  limit and would exceed MongoDB's 16 MiB document. */
+      const big = 'a'.repeat(6 * 1024 * 1024);
+      const run: SubagentTaskStartRequest['run'] = async (runtime, initialMessages = []) => {
+        runtime.reportProgress(step());
+        runtime.reportProgress(words(big));
+        return {
+          content: big,
+          messages: [
+            ...initialMessages,
+            new HumanMessage('Investigate the issue.'),
+            new AIMessage(big),
+          ],
+        };
+      };
+      const { threadId, taskId } = threadOf(store.start(taskRequest(scopeId, { run })));
+
+      for (let attempt = 0; attempt < 3000; attempt += 1) {
+        if (store.get(scopeId, taskId)?.status !== 'running') break;
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(store.get(scopeId, taskId)?.status).toBe('completed');
+      const row = await assistantRow(threadId, taskId);
+      expect(row?.subagentTask?.status).toBe('completed');
+      expect(row?.text).toHaveLength(big.length);
+      expect(row?.content).toBeUndefined();
+    }, 60_000);
+
     it.each([
       { name: 'the stream is off', activity: { generationJobs: false } },
       { name: 'the content is over its budget', activity: { generationContentBytes: 16 } },
