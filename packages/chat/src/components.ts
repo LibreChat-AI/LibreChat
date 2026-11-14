@@ -75,6 +75,13 @@ export { getFileType } from './components/composer/files/kinds';
 export type { FileKind } from './components/composer/files/kinds';
 export type { SubtitleAction } from './components/composer/files/FileContainer';
 export type { PastedTextEdit } from './components/composer/files/PastedTextDialog';
+export { default as CodeWorkspaceMenu } from './components/composer/Workspace';
+export type {
+  WorkspaceLocalize,
+  WorkspaceMachineQuery,
+  CodeWorkspaceMenuProps,
+  CodeWorkspaceMenuWorkspace,
+} from './components/composer/Workspace';
 
 /** Message list building blocks: rows, headers, sibling navigation and the streaming timer. */
 export { default as SubRow } from './components/messages/SubRow';

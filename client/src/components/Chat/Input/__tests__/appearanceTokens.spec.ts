@@ -21,7 +21,7 @@ const themedControls = [
   /** The context rail's pills share one recipe built on the composer control classes. */
   ['chip.ts', ['composerControlClasses()']],
   ['CodeApprovalMenu.tsx', ['chipClasses']],
-  ['CodeWorkspaceMenu.tsx', ['chipClasses', 'infoChipClasses']],
+  ['Workspace.tsx', ['chipClasses', 'infoChipClasses']],
   /** The dictation mic and its send share the submit slot's corner. */
   ['Composer/Bar.tsx', ['shape="composer"']],
 ] as const;
