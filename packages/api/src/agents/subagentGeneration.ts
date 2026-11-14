@@ -160,6 +160,8 @@ class ManagedChildGeneration implements ChildGeneration {
   /** The stream is no longer written; frames are still folded so `content` stays whole. */
   private detached = false;
   private settling = false;
+  /** This stream claimed its job's terminal state; a later settlement only persists. */
+  private ended = false;
 
   constructor(
     private readonly manager: ChildGenerationManager,
@@ -184,6 +186,8 @@ class ManagedChildGeneration implements ChildGeneration {
         event: frame.event,
       });
       this.detach();
+      /** Folding reads the frame now, so the content stays whole without a copy to send. */
+      this.apply(frame);
       return;
     }
     if (this.detached) {
@@ -229,10 +233,15 @@ class ManagedChildGeneration implements ChildGeneration {
     persist: () => Promise<ChildGenerationFinal | null>,
   ): Promise<void> {
     this.settling = true;
+    if (this.ended) {
+      await persist();
+      return;
+    }
     await this.drainWithin(this.settleTimeoutMs);
     /** A detached stream is claimed too. Its final event carries the whole response, and a
      *  job left running would read as a live child long after this one ended. */
     const claim = await this.claimWithin(aborted);
+    this.ended = claim != null;
     let final: ChildGenerationFinal | null;
     try {
       final = await persist();

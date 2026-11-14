@@ -191,6 +191,27 @@ describe('child generation host', () => {
     });
   });
 
+  it('claims and publishes once when the caller settles again', async () => {
+    const generation = await createChildGenerationHost(manager).open(input());
+    const finals: ServerSentEvent[] = [];
+    await manager.subscribe(
+      threadId,
+      () => undefined,
+      (event) => finals.push(event),
+    );
+    const claim = jest.spyOn(manager, 'claimTerminalJob');
+
+    await generation?.settle(false, async () => final);
+    const again = jest.fn(async () => null);
+    await generation?.settle(true, again);
+
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(again).toHaveBeenCalledTimes(1);
+    expect(finals).toHaveLength(1);
+    expect(finals[0]).toMatchObject({ final: true, responseMessage: { text: 'Done' } });
+    expect((await manager.getJob(threadId))?.status).toBe('complete');
+  });
+
   it('marks a cancelled child aborted in its final event', async () => {
     const generation = await createChildGenerationHost(manager).open(input());
     let done: ServerSentEvent | undefined;
@@ -370,8 +391,8 @@ describe('child generation host', () => {
       data: { result: { id: 's1', callback: () => undefined, big: BigInt(1) } },
     } as unknown as SubagentContentFrame;
 
-    expect(() => generation?.emit(uncopyable)).not.toThrow();
     generation?.emit(runStep('s1', 0));
+    expect(() => generation?.emit(uncopyable)).not.toThrow();
     generation?.emit(text('s1', 'still folding'));
 
     expect(JSON.stringify(generation?.content())).toContain('still folding');
