@@ -10,7 +10,7 @@ import type { SubscriptionHost, SubscriptionTarget } from './host';
 import type { GenerationProtocolVersion } from '../protocol';
 import type { StepEvent } from '../reducer';
 import type { ResumableRun } from './run';
-import { GENERATION_PROTOCOL_VERSION, generationProtocolHeaders } from '../protocol';
+import { generationProtocolHeaders, generationStreamUrl } from '../protocol';
 
 /** What a subscription does with the events its connection reports. */
 export interface SubscriptionHandlers {
@@ -141,17 +141,11 @@ export class ResumableSubscription {
 
   /** The stream route, with the resume cursor and generation fence in its query. */
   url(): string {
-    const baseUrl = `${apiBaseUrl()}/api/agents/chat/stream/${encodeURIComponent(this.streamId)}`;
-    const query = new URLSearchParams();
-    if (this.isResume) {
-      query.set('resume', 'true');
-    }
-    if (this.generationCreatedAt != null) {
-      query.set('generationCreatedAt', String(this.generationCreatedAt));
-    }
-    query.set('generationProtocolVersion', String(GENERATION_PROTOCOL_VERSION));
-    const queryString = query.toString();
-    return queryString ? `${baseUrl}?${queryString}` : baseUrl;
+    return generationStreamUrl(apiBaseUrl(), {
+      streamId: this.streamId,
+      resume: this.isResume,
+      generationCreatedAt: this.generationCreatedAt,
+    });
   }
 
   /** Makes this the pane's live attachment, superseding any earlier one. */
