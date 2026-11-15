@@ -1,3 +1,4 @@
+import { DEFAULT_DISCORD_RATE_POLICY, DiscordRateCoordinator } from './rates';
 import { DiscordClient, DiscordWriteError, discordNonce } from './client';
 
 const options = { botToken: 'secret-token', timeoutMs: 1000, maxResponseBytes: 2048 };
@@ -133,5 +134,117 @@ describe('Discord REST writes', () => {
     expect(
       () => new DiscordClient({ ...options, apiBase: 'https://user:secret@discord.com/api' }),
     ).toThrow();
+  });
+});
+
+describe('shared Discord client rate admission', () => {
+  beforeEach(() => jest.useFakeTimers({ now: 1_700_000_000_000 }));
+  afterEach(() => jest.useRealTimers());
+  test('separate clients share the bot global budget', async () => {
+    const rates = new DiscordRateCoordinator({
+      ...DEFAULT_DISCORD_RATE_POLICY,
+      globalRequestsPerSecond: 1,
+    });
+    const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async (url) => {
+      const channel_id = new URL(String(url)).pathname.split('/')[4];
+      return Response.json({ id: '456', channel_id });
+    });
+    const first = new DiscordClient(options, transport, rates);
+    const second = new DiscordClient(options, transport, rates);
+    await first.createMessage('123', { content: 'one' }, 'one');
+    const waiting = second.createMessage('789', { content: 'two' }, 'two');
+    await jest.advanceTimersByTimeAsync(999);
+    expect(transport).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    await expect(waiting).resolves.toMatchObject({ channelId: '789' });
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+  test('bucket admission spans clients and message IDs while other channels remain available', async () => {
+    const rates = new DiscordRateCoordinator();
+    let calls = 0;
+    const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async (url) => {
+      const channel_id = new URL(String(url)).pathname.split('/')[4];
+      return Response.json(
+        { id: '456', channel_id },
+        {
+          headers: {
+            'x-ratelimit-bucket': 'messages',
+            'x-ratelimit-remaining': ++calls === 2 ? '0' : '2',
+            'x-ratelimit-reset-after': '2',
+          },
+        },
+      );
+    });
+    const first = new DiscordClient(options, transport, rates);
+    const second = new DiscordClient(options, transport, rates);
+    await first.createMessage('123', { content: 'one' }, 'one');
+    await second.editMessage('123', '456', { content: 'two' });
+    const waiting = first.editMessage('123', '789', { content: 'three' });
+    await second.createMessage('987', { content: 'independent' }, 'independent');
+    await jest.advanceTimersByTimeAsync(1999);
+    expect(transport).toHaveBeenCalledTimes(3);
+    await jest.advanceTimersByTimeAsync(1);
+    await waiting;
+    expect(transport).toHaveBeenCalledTimes(4);
+  });
+  test('a malformed global 429 pauses other clients without replaying the rejected write', async () => {
+    const rates = new DiscordRateCoordinator();
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValueOnce(
+        new Response('{', {
+          status: 429,
+          headers: { 'retry-after': '2', 'x-ratelimit-scope': 'global' },
+        }),
+      )
+      .mockResolvedValueOnce(Response.json({ id: '456', channel_id: '789' }));
+    const first = new DiscordClient(options, transport, rates);
+    const second = new DiscordClient(options, transport, rates);
+    await expect(first.createMessage('123', { content: 'one' }, 'one')).rejects.toMatchObject({
+      outcome: 'retryable',
+      retryAfterMs: 2000,
+    });
+    const waiting = second.createMessage('789', { content: 'two' }, 'two');
+    await jest.advanceTimersByTimeAsync(1999);
+    expect(transport).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    await waiting;
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+  test('aborted and timed-out queued requests never reach the network', async () => {
+    const rates = new DiscordRateCoordinator({
+      ...DEFAULT_DISCORD_RATE_POLICY,
+      globalRequestsPerSecond: 1,
+      maxQueueWaitMs: 100,
+    });
+    const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () =>
+      Response.json({ id: '456', channel_id: '123' }),
+    );
+    const client = new DiscordClient(options, transport, rates);
+    await client.createMessage('123', { content: 'one' }, 'one');
+    const controller = new AbortController();
+    const aborted = client
+      .createMessage('123', { content: 'two' }, 'two', controller.signal)
+      .catch((error: unknown) => error);
+    controller.abort();
+    await expect(aborted).resolves.toMatchObject({ outcome: 'retryable' });
+    const expired = client
+      .createMessage('123', { content: 'three' }, 'three')
+      .catch((error: unknown) => error);
+    await jest.advanceTimersByTimeAsync(100);
+    await expect(expired).resolves.toMatchObject({ outcome: 'retryable' });
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+  test('an uncertain write is never replayed by the coordinator', async () => {
+    const rates = new DiscordRateCoordinator();
+    const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () => {
+      throw new DOMException('connection lost', 'TimeoutError');
+    });
+    const client = new DiscordClient(options, transport, rates);
+    await expect(client.createMessage('123', { content: 'one' }, 'one')).rejects.toMatchObject({
+      outcome: 'unknown',
+    });
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(transport).toHaveBeenCalledTimes(1);
   });
 });
