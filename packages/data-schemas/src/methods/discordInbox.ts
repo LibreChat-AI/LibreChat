@@ -94,7 +94,13 @@ const failure = (code: DiscordInboxError): { ok: false; error: { code: DiscordIn
   error: { code },
 });
 const privateFields = '+action +encryptedToken +encryptedReply';
-const erase = { action: '', encryptedToken: '', encryptedReply: '', leaseOwner: '' };
+const erase = {
+  action: '',
+  encryptedToken: '',
+  encryptedReply: '',
+  commandResult: '',
+  leaseOwner: '',
+};
 const pending = ['queued', 'processing', 'reply'];
 
 /** Persist before acknowledging Discord. Claim/reply writes are fenced and safely reclaimable. */

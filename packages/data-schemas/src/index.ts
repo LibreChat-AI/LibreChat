@@ -254,3 +254,10 @@ export type {
 export type { DiscordInboxRecord } from './models/discordInbox';
 
 export type { DiscordIdentityWrite } from './methods/channelIdentity';
+
+export { createDiscordCommandStorage } from './methods/discordCommands';
+export type {
+  DiscordCommandStorage,
+  DiscordCommandScope,
+  DiscordCommandRun,
+} from './methods/discordCommands';

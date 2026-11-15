@@ -266,3 +266,31 @@ it('uses a fresh verification key on every request and exposes bounded health en
   expect(lookups).toBe(2);
   expect((await send(event, { path: '/discord/invalid/interactions' })).status).toBe(404);
 });
+
+it('normalizes versioned controls while preserving the source message for run actions', async () => {
+  await start();
+  const runId = '12345678-1234-4123-8123-123456789012';
+  const messageId = '890123456789012345';
+  const click = {
+    ...event,
+    type: 3,
+    message: { id: messageId },
+    data: { custom_id: `lc1:x:${runId}`, component_type: 2 },
+  };
+  expect((await send(click)).status).toBe(200);
+  expect(received[0].action).toEqual({ kind: 'cancel', reference: runId, messageId });
+  expect((await send({ ...click, message: undefined })).status).toBe(400);
+  expect((await send({ ...click, data: { ...click.data, component_type: 3 } })).status).toBe(400);
+  expect(
+    (
+      await send({
+        ...click,
+        data: { custom_id: `lc1:c:${'a'.repeat(43)}${'b'.repeat(43)}`, component_type: 2 },
+      })
+    ).status,
+  ).toBe(200);
+  expect(received[1].action).toEqual({
+    kind: 'confirm',
+    reference: 'a'.repeat(43) + 'b'.repeat(43),
+  });
+});
