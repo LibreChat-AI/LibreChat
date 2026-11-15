@@ -5,6 +5,7 @@ import {
 } from './channelFeedback';
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
 import { createDiscordThreadRouteModel, createDiscordThreadPinModel } from './discordThread';
+import { createDiscordDmCodeModel, createDiscordDmSelectionModel } from './discordDm';
 import { createDiscordApplicationModel, createDiscordGuildModel } from './discord';
 import { createChannelRunModel, createChannelLaneModel } from './channelRun';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
@@ -94,6 +95,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AgentChannel: ReturnType<typeof createAgentChannelModel>;
   DiscordApplication: ReturnType<typeof createDiscordApplicationModel>;
   DiscordGuild: ReturnType<typeof createDiscordGuildModel>;
+  DiscordDmCode: ReturnType<typeof createDiscordDmCodeModel>;
+  DiscordDmSelection: ReturnType<typeof createDiscordDmSelectionModel>;
   DiscordRoute: ReturnType<typeof createDiscordRouteModel>;
   DiscordInbox: ReturnType<typeof createDiscordInboxModel>;
   DiscordReservation: ReturnType<typeof createDiscordReservationModel>;
@@ -170,6 +173,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AgentChannel: createAgentChannelModel(mongoose),
     DiscordApplication: createDiscordApplicationModel(mongoose),
     DiscordGuild: createDiscordGuildModel(mongoose),
+    DiscordDmCode: createDiscordDmCodeModel(mongoose),
+    DiscordDmSelection: createDiscordDmSelectionModel(mongoose),
     DiscordRoute: createDiscordRouteModel(mongoose),
     DiscordInbox: createDiscordInboxModel(mongoose),
     DiscordReservation: createDiscordReservationModel(mongoose),

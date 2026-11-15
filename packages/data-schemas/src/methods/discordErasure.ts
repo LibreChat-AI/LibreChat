@@ -15,6 +15,7 @@ import { createResourceLockModel } from '~/models/resourceLock';
 import { createDiscordRouteModel } from '~/models/discordRoute';
 import { retireDiscordReservation } from './discordReservation';
 import { withRequiredTransaction } from '~/utils/transactions';
+import { eraseDiscordDmPersistence } from './discordDmErasure';
 import { createDiscordInboxErasure } from './discordReceipt';
 import { createChannelRunModel } from '~/models/channelRun';
 import { createAgentChannelModel } from '~/models/channel';
@@ -127,6 +128,11 @@ export async function eraseDiscordPersistenceForUser(
 
   async function purgeGuild(guild: DiscordGuild): Promise<void> {
     await retireChannels(guild);
+    await eraseDiscordDmPersistence(mongoose, {
+      tenantId,
+      applicationId: guild.applicationId,
+      guildId: guild.guildId,
+    });
     await erasure.erase(
       { kind: 'guild', tenantId, applicationId: guild.applicationId, guildId: guild.guildId },
       options.erasureBatchSize,
@@ -203,6 +209,10 @@ export async function eraseDiscordPersistenceForUser(
       await installs.deleteMany({ tenantId: partition, applicationId: application.applicationId });
       await eraseDiscordThreadRoutes(mongoose, {
         kind: 'application',
+        tenantId,
+        applicationId: application.applicationId,
+      });
+      await eraseDiscordDmPersistence(mongoose, {
         tenantId,
         applicationId: application.applicationId,
       });

@@ -272,6 +272,12 @@ export { createDiscordRuntimeStorage } from './methods/discordRuntime';
 export type { DiscordRuntimeStorage } from './methods/discordRuntime';
 
 export { createDiscordMessageStorage } from './methods/discordMessage';
+export {
+  createDiscordDmStorage,
+  touchDiscordDmSelection,
+  hashDiscordDmCode,
+} from './methods/discordDm';
+export type { DiscordDmStorage } from './methods/discordDm';
 export type {
   DiscordMessageStorage,
   DiscordMessageOccurrence,

@@ -9,6 +9,7 @@ import { eraseDiscordThreadRoutes } from './discordThreadErasure';
 import { createDiscordApplicationModel } from '~/models/discord';
 import { createChannelScopeModel } from '~/models/channelScope';
 import { createDiscordRouteModel } from '~/models/discordRoute';
+import { eraseDiscordDmPersistence } from './discordDmErasure';
 import { createDiscordInboxErasure } from './discordReceipt';
 import { touchChannelOwnerAdmission } from './channelOwner';
 import { touchSlackWorkspace } from './slackWorkspaceScope';
@@ -349,6 +350,8 @@ export async function retireAgentChannel(
       return record;
     });
     if (!deleting) return null;
+    if (deleting.type === 'discord')
+      await eraseDiscordDmPersistence(mongoose, { tenantId, channelId });
     if (deleting.type === 'discord')
       await createDiscordInboxErasure(mongoose, async (scope, transaction) => {
         await lockExistingChannelScope(mongoose, scope.tenantId, scope.channelId, transaction);

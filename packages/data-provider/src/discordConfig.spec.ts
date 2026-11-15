@@ -1,5 +1,24 @@
 import { channelConfigSchema, discordChannelConfigSchema } from './config';
 
+it('keeps DM selection opt-in with bounded code/session lifetimes and application capacities', () => {
+  expect(discordChannelConfigSchema.parse({}).dm).toEqual({
+    enabled: false,
+    codeTtlMs: 600000,
+    selectionTtlMs: 86400000,
+    maxPendingPerApplication: 1000,
+    maxSelectionsPerApplication: 10000,
+  });
+  for (const dm of [
+    { codeTtlMs: 900001 },
+    { codeTtlMs: 0 },
+    { selectionTtlMs: 604800001 },
+    { maxPendingPerApplication: 0 },
+    { maxSelectionsPerApplication: 0 },
+    { unknown: true },
+  ])
+    expect(discordChannelConfigSchema.safeParse({ dm }).success).toBe(false);
+});
+
 it('keeps Discord disabled unless explicitly enabled and preserves Slack defaults', () => {
   expect(channelConfigSchema.parse({}).discord).toBeUndefined();
   expect(discordChannelConfigSchema.parse({}).enabled).toBe(false);

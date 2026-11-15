@@ -128,6 +128,7 @@ export * from './types/discordIngress';
 export * from './types/discordInbox';
 
 export * from './types/discordGateway';
+export * from './types/discordDm';
 export * from './types/discordRuntime';
 export * from './types/discordMessage';
 export * from './types/discordThread';
