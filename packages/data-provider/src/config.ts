@@ -1322,7 +1322,20 @@ export const discordChannelConfigSchema = z
       .strict()
       .prefault({}),
     enabled: z.boolean().default(false),
-    gateway: sharedSlackGatewayPolicySchema.prefault({}),
+    gateway: sharedSlackGatewayPolicySchema
+      .extend({
+        enabled: z.boolean().default(false),
+        shardCount: z.number().int().min(1).max(128).default(1),
+        messageContent: z.boolean().default(false),
+        ownershipLeaseMs: z.number().int().min(5000).max(120_000).default(30_000),
+        handshakeTimeoutMs: z.number().int().min(1000).max(30_000).default(10_000),
+        readyTimeoutMs: z.number().int().min(1000).max(60_000).default(15_000),
+        checkpointIntervalMs: z.number().int().min(100).max(60_000).default(1000),
+        maxQueuedEvents: z.number().int().min(1).max(10_000).default(100),
+        maxMessageCharacters: z.number().int().min(1).max(6000).default(6000),
+      })
+      .strict()
+      .prefault({}),
     flowLifetimeMs: z.number().int().min(60_000).max(3_600_000).default(600_000),
     requestTimeoutMs: z.number().int().min(1000).max(30_000).default(10_000),
     maxResponseBytes: z.number().int().min(1024).max(262_144).default(65_536),

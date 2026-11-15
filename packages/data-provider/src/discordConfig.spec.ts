@@ -48,3 +48,23 @@ it('bounds durable interaction backlog, leases and deduplication retention', () 
   ])
     expect(discordChannelConfigSchema.safeParse({ inbox }).success).toBe(false);
 });
+
+it('keeps Gateway sessions opt-in with bounded non-privileged defaults', () => {
+  expect(discordChannelConfigSchema.parse({ enabled: true }).gateway).toMatchObject({
+    enabled: false,
+    shardCount: 1,
+    messageContent: false,
+    ownershipLeaseMs: 30000,
+    checkpointIntervalMs: 1000,
+    maxQueuedEvents: 100,
+  });
+});
+it.each([
+  { shardCount: 129 },
+  { ownershipLeaseMs: 0 },
+  { checkpointIntervalMs: 0 },
+  { maxQueuedEvents: 0 },
+  { maxMessageCharacters: 6001 },
+])('rejects invalid Gateway policy %j', (gateway) => {
+  expect(discordChannelConfigSchema.safeParse({ gateway }).success).toBe(false);
+});
