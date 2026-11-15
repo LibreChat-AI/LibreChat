@@ -4,6 +4,7 @@ import {
   createChannelFeedbackModel,
 } from './channelFeedback';
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
+import { createDiscordThreadRouteModel, createDiscordThreadPinModel } from './discordThread';
 import { createDiscordApplicationModel, createDiscordGuildModel } from './discord';
 import { createChannelRunModel, createChannelLaneModel } from './channelRun';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
@@ -98,6 +99,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
   DiscordReservation: ReturnType<typeof createDiscordReservationModel>;
   DiscordReceipt: ReturnType<typeof createDiscordReceiptModel>;
   DiscordMessageReceipt: ReturnType<typeof createDiscordMessageReceiptModel>;
+  DiscordThreadRoute: ReturnType<typeof createDiscordThreadRouteModel>;
+  DiscordThreadPin: ReturnType<typeof createDiscordThreadPinModel>;
   DiscordGatewayCheckpoint: ReturnType<typeof createDiscordGatewayCheckpointModel>;
   DiscordInstall: ReturnType<typeof createDiscordInstallModel>;
   ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
@@ -172,6 +175,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
     DiscordReservation: createDiscordReservationModel(mongoose),
     DiscordReceipt: createDiscordReceiptModel(mongoose),
     DiscordMessageReceipt: createDiscordMessageReceiptModel(mongoose),
+    DiscordThreadRoute: createDiscordThreadRouteModel(mongoose),
+    DiscordThreadPin: createDiscordThreadPinModel(mongoose),
     DiscordGatewayCheckpoint: createDiscordGatewayCheckpointModel(mongoose),
     DiscordInstall: createDiscordInstallModel(mongoose),
     ChannelIdentity: createChannelIdentityModel(mongoose),

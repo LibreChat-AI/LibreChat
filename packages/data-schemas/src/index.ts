@@ -277,3 +277,10 @@ export type {
   DiscordMessageOccurrence,
   DiscordMessageRoute,
 } from './methods/discordMessage';
+
+export { createDiscordThreadStorage, touchDiscordThreadRoute } from './methods/discordThread';
+export type {
+  DiscordThreadStorage,
+  DiscordThreadAuthority,
+  DiscordThreadResult,
+} from './methods/discordThread';
