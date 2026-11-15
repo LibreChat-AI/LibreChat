@@ -114,7 +114,12 @@ function fixture() {
   };
   const calls: { path: string; body: Mutation; headers: Headers }[] = [];
   const writes: { method: string; path: string; body: Write; headers: Headers }[] = [];
-  const hooks: { begin?: () => void; commit?: () => Response } = {};
+  const hooks: {
+    begin?: () => void;
+    commit?: () => Response;
+    read?: (path: string) => Response | undefined;
+    write?: () => Response;
+  } = {};
   const backend = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
     async (input, init) => {
       const path = new URL(String(input)).pathname;
@@ -203,7 +208,15 @@ function fixture() {
       const path = new URL(String(input)).pathname;
       const body: Write = init?.body ? JSON.parse(String(init.body)) : {};
       const method = init?.method ?? 'GET';
+      if (method === 'GET') {
+        const response = hooks.read?.(path);
+        if (response) return response;
+        if (path.includes('/permissions/member/'))
+          return json({ permissions: path.endsWith('/333') ? '1024' : '68608' });
+        return json({ id: '111', guild_id: '456', type: 0 });
+      }
       writes.push({ path, body, method, headers: new Headers(init?.headers) });
+      if (hooks.write) return hooks.write();
       if (method === 'DELETE') return new Response(null, { status: 204 });
       if (calls.at(-1)?.path.endsWith('/delivery/begin'))
         expect(state.receipts.some((item) => item.outcome === 'inflight')).toBe(true);
@@ -281,6 +294,102 @@ function fixture() {
 }
 
 describe('Discord durable worker delivery', () => {
+  test.each(['0', '2048'])(
+    'refuses a saved answer when actor visibility becomes %s after begin',
+    async (permissions) => {
+      const f = fixture();
+      f.savedPlan();
+      f.hooks.begin = () => {
+        f.hooks.read = (path) => (path.endsWith('/333') ? json({ permissions }) : undefined);
+      };
+      await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+      expect(f.writes).toEqual([]);
+      expect(f.state.receipts[0]).toMatchObject({ outcome: 'permanent_failure' });
+    },
+  );
+
+  test.each([403, 404])(
+    'does not send when Discord reports the actor unavailable with %s',
+    async (status) => {
+      const f = fixture();
+      f.savedPlan();
+      f.hooks.read = (path) =>
+        path.endsWith('/333') ? json({ message: 'private details' }, status) : undefined;
+      await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+      expect(f.writes).toEqual([]);
+      expect(f.state.receipts[0].outcome).toBe('permanent_failure');
+    },
+  );
+
+  test('retries failed permission reads without claiming an uncertain message write', async () => {
+    const f = fixture();
+    f.savedPlan();
+    f.hooks.read = (path) => (path.endsWith('/333') ? json({}, 503) : undefined);
+    await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+    expect(f.writes).toEqual([]);
+    expect(f.state.receipts[0]).toMatchObject({
+      outcome: 'retryable',
+      errorCode: 'transport_retryable',
+    });
+  });
+
+  test.each(['1024', '8'])(
+    'allows a currently visible read-only or administrator actor (%s)',
+    async (permissions) => {
+      const f = fixture();
+      f.savedPlan();
+      f.hooks.read = (path) => (path.endsWith('/333') ? json({ permissions }) : undefined);
+      await f.execute();
+      expect(f.writes).toHaveLength(1);
+      expect(f.state.state).toBe('delivered');
+    },
+  );
+
+  test.each([undefined, '111:777'])(
+    'blocks progress creation or editing after actor access is lost (%s)',
+    async (externalMessageKey) => {
+      const f = fixture();
+      f.state.progress = {
+        revision: 1,
+        rendererVersion: 'discord-progress-v1',
+        text: 'Working...',
+        outcome: 'inflight',
+        attempts: 1,
+        externalMessageKey,
+      };
+      f.hooks.read = (path) => (path.endsWith('/333') ? json({ permissions: '0' }) : undefined);
+      await expect(
+        f.provider.writeProgress(f.state, f.bundle, f.controller.signal),
+      ).rejects.toMatchObject({ outcome: 'permanent' });
+      expect(f.writes).toEqual([]);
+    },
+  );
+
+  test('still removes stale progress after the actor loses channel access', async () => {
+    const f = fixture();
+    f.state.progress = {
+      revision: 1,
+      rendererVersion: 'discord-progress-v1',
+      text: 'Working...',
+      outcome: 'confirmed',
+      attempts: 1,
+      externalMessageKey: '111:777',
+    };
+    f.hooks.read = () => json({}, 403);
+    await f.provider.deleteProgress(f.state, f.bundle, f.controller.signal);
+    expect(f.writes.map((write) => write.method)).toEqual(['DELETE']);
+  });
+
+  test('refuses a channel that changed to an unsupported destination before delivery', async () => {
+    const f = fixture();
+    f.savedPlan();
+    f.hooks.read = (path) =>
+      path.endsWith('/channels/111') ? json({ id: '111', guild_id: '456', type: 11 }) : undefined;
+    await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+    expect(f.writes).toEqual([]);
+    expect(f.state.receipts[0].outcome).toBe('permanent_failure');
+  });
+
   test('uses the shared Responses flow and persists progress and answer receipts before writes', async () => {
     const f = fixture();
     await f.execute();
@@ -318,16 +427,17 @@ describe('Discord durable worker delivery', () => {
   test('an uncertain final write is held on recovery without replaying Responses or delivery', async () => {
     const f = fixture();
     f.savedPlan();
-    f.transport.mockRejectedValueOnce(
-      new DOMException('sensitive transport detail', 'TimeoutError'),
-    );
+    f.hooks.write = () => {
+      throw new DOMException('sensitive transport detail', 'TimeoutError');
+    };
     await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
     expect(f.state.receipts[0]).toMatchObject({
       outcome: 'unknown',
       errorCode: 'transport_uncertain',
     });
     await expect(f.execute()).rejects.toThrow('reconciliation');
-    expect(f.transport).toHaveBeenCalledTimes(1);
+    expect(f.writes).toHaveLength(1);
+    expect(f.transport).toHaveBeenCalledTimes(4);
     expect(f.calls.some((call) => /response\/prepare|\/advance$/.test(call.path))).toBe(false);
   });
 
@@ -339,13 +449,14 @@ describe('Discord durable worker delivery', () => {
     f.hooks.commit = undefined;
     await f.execute();
     expect(f.state.state).toBe('delivered');
-    expect(f.transport).toHaveBeenCalledTimes(1);
+    expect(f.writes).toHaveLength(1);
+    expect(f.transport).toHaveBeenCalledTimes(4);
   });
 
   test('safe rate-limit rejections remain retryable without immediate replay', async () => {
     const f = fixture();
     f.savedPlan();
-    f.transport.mockResolvedValueOnce(json({ retry_after: 2 }, 429));
+    f.hooks.write = () => json({ retry_after: 2 }, 429);
     await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
     expect(f.state.receipts[0]).toMatchObject({
       outcome: 'retryable',
@@ -353,7 +464,8 @@ describe('Discord durable worker delivery', () => {
     });
     expect(f.state.receipts[0].retryAt).toBeGreaterThan(Date.now());
     await expect(f.execute()).rejects.toThrow('reconciliation');
-    expect(f.transport).toHaveBeenCalledTimes(1);
+    expect(f.writes).toHaveLength(1);
+    expect(f.transport).toHaveBeenCalledTimes(4);
   });
 
   test('each new worker turn uses refreshed credentials and the same rate coordinator', async () => {
@@ -679,7 +791,8 @@ describe('Discord durable worker delivery', () => {
     await expect(f.execute()).rejects.toThrow('HTTP 503');
     f.hooks.commit = undefined;
     await f.restartExecute();
-    expect(f.transport).toHaveBeenCalledTimes(1);
+    expect(f.transport).toHaveBeenCalledTimes(4);
+    expect(f.writes).toHaveLength(1);
     expect(f.writes[0].body.components?.[0].components).toHaveLength(2);
     expect(f.state.plan).toEqual(plan);
     expect(f.calls.filter((call) => call.path.endsWith('/plan'))).toHaveLength(0);
