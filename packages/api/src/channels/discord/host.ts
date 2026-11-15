@@ -11,6 +11,8 @@ import type {
   DiscordInstallationStorage,
   DiscordRouteStorage,
   DiscordInboxStorage,
+  DiscordGatewayStorage,
+  DiscordGatewayStoragePolicy,
   DiscordCommandStorage,
 } from '@librechat/data-schemas';
 import type { DiscordChannelConfig } from 'librechat-data-provider';
@@ -23,9 +25,11 @@ import type { SafeErrorMetadata } from '~/utils/errors';
 import { createDiscordBindingHandlers, createDiscordRouteHandlers } from './bindingHttp';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceAdminGuard } from '../workspaceRuntime';
+import { createDiscordGatewayHandlers } from './gatewayHttp';
 import { createDiscordCommandExecutor } from './commands';
 import { createDiscordBindingService } from './bindings';
 import { createDiscordInboxHandlers } from './inboxHttp';
+import { createDiscordGatewayService } from './gateway';
 import { createDiscordProviderClient } from './client';
 import { createDiscordRouteResolver } from './routes';
 import { createDiscordInboxService } from './inbox';
@@ -35,11 +39,13 @@ import { DISCORD_CALLBACK_PATH } from './http';
 export interface DiscordPolicyReader {
   read(): Promise<DiscordChannelConfig>;
   inbox(): Promise<DiscordChannelConfig['inbox']>;
+  ownership(): Promise<DiscordGatewayStoragePolicy | null>;
 }
 export interface DiscordChannelRuntime {
   bindings: ReturnType<typeof createDiscordBindingHandlers>;
   routes: ReturnType<typeof createDiscordRouteHandlers>;
   inbox: ReturnType<typeof createDiscordInboxHandlers>;
+  gateway: ReturnType<typeof createDiscordGatewayHandlers>;
 }
 
 /** Read the canonical tenant policy on each authorization boundary, including disabled teardown. */
@@ -52,7 +58,19 @@ export function createDiscordPolicyReader(
     const discord = discordChannelConfigSchema.parse(channels.discord ?? {});
     return { ...discord, enabled: channels.enabled && discord.enabled };
   };
-  return { read, inbox: async () => (await read()).inbox };
+  return {
+    read,
+    inbox: async () => (await read()).inbox,
+    ownership: async () => {
+      const policy = await read();
+      return policy.enabled
+        ? {
+            ownershipLeaseMs: policy.gateway.ownershipLeaseMs,
+            shardCount: policy.gateway.shardCount,
+          }
+        : null;
+    },
+  };
 }
 
 /** Compose existing services around the same authority used by channel workers and account links. */
@@ -62,6 +80,7 @@ export function createDiscordChannelRuntime(
     installations: DiscordInstallationStorage;
     routes: DiscordRouteStorage;
     inbox: DiscordInboxStorage;
+    gateway: DiscordGatewayStorage;
     commands: DiscordCommandStorage;
     application: Pick<ChannelApplicationAuthority, 'authority' | 'storage'>;
     access: ChannelApplicationAuthorityDependencies['access'];
@@ -135,6 +154,19 @@ export function createDiscordChannelRuntime(
     retryDelayMs: async () => (await deps.policy.read()).inbox.retryDelayMs,
   });
   return {
+    gateway: createDiscordGatewayHandlers({
+      serviceToken: deps.serviceToken,
+      service: createDiscordGatewayService({
+        storage: deps.gateway,
+        installations: deps.installations,
+        settings: async () => {
+          const policy = await deps.policy.read();
+          return policy.enabled ? policy : null;
+        },
+        encrypt: encryptCredential,
+        decrypt: decryptCredential,
+      }),
+    }),
     bindings: createDiscordBindingHandlers(binding),
     routes: createDiscordRouteHandlers({ resolver, serviceToken: deps.serviceToken }),
     inbox: createDiscordInboxHandlers({ service: inbox, serviceToken: deps.serviceToken }),

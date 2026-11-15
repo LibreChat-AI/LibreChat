@@ -11,6 +11,7 @@ import {
   createDiscordRouteStorage,
   createDiscordInboxStorage,
   createDiscordCommandStorage,
+  createDiscordGatewayStorage,
   createChannelIdentityStorage,
   createChannelRunStorage,
   tenantStorage,
@@ -459,6 +460,7 @@ it('composes binding permissions, protected routing, and policy changes around t
     routes,
     inbox: createDiscordInboxStorage(db, policy.inbox),
     commands: createDiscordCommandStorage(db),
+    gateway: createDiscordGatewayStorage(db, policy.ownership),
     application: { authority, storage: createChannelRunStorage(db) },
     policy,
     access,
@@ -475,6 +477,8 @@ it('composes binding permissions, protected routing, and policy changes around t
   app.delete('/host/:agentId/binding', runtime.bindings.remove);
   app.get('/host/security/:applicationId', runtime.routes.security);
   app.post('/host/inbox/claim', runtime.inbox.claim);
+  app.post('/host/gateway/acquire', runtime.gateway.acquire);
+  app.post('/host/gateway/bootstrap', runtime.gateway.bootstrap);
   const { agentId, ...target } = input();
   const url = `/host/${agentId}/binding`;
   await request(app).put(url).send(target).expect(403);
@@ -496,6 +500,28 @@ it('composes binding permissions, protected routing, and policy changes around t
     .set('Authorization', `Bearer ${serviceToken}`)
     .expect(200);
   await request(app).post('/host/inbox/claim').send({ applicationId, owner: 'worker' }).expect(401);
+  const gatewayOwner = { applicationId, applicationRevision, ownerId: 'a'.repeat(32) };
+  await request(app)
+    .post('/host/gateway/acquire')
+    .send({ owner: gatewayOwner, leaseMs: 30000 })
+    .expect(401);
+  await request(app)
+    .post('/host/gateway/bootstrap')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .send({ owner: gatewayOwner })
+    .expect(409);
+  await request(app)
+    .post('/host/gateway/acquire')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .send({ owner: gatewayOwner, leaseMs: 30000 })
+    .expect(204);
+  const bootstrap = await request(app)
+    .post('/host/gateway/bootstrap')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .send({ owner: gatewayOwner })
+    .expect(200);
+  expect(bootstrap.body.botToken).toBe(token);
+  expect(bootstrap.body.policy.enabled).toBe(false);
   enabled = false;
   await request(app)
     .get(`/host/security/${applicationId}`)
