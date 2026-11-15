@@ -98,6 +98,7 @@ const select = (code: string) => ({
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await db.connect(mongo.getUri());
+  await runAsSystem(() => Promise.all(Object.values(db.models).map((model) => model.init())));
 }, 60000);
 afterAll(async () => {
   await db.disconnect();
