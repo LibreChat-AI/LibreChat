@@ -7,6 +7,7 @@ import {
   replyPrompt,
   replyText,
   thinkPrompt,
+  messagesView,
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
@@ -141,7 +142,7 @@ async function reply(page: Page, reasoning = false) {
   );
   const { conversationId } = (await response.json()) as { conversationId: string };
   createdConversationIds.push(conversationId);
-  await expect(page.getByText(replyText(label), { exact: true })).toBeVisible();
+  await expect(messagesView(page).getByText(replyText(label), { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
   return replyText(label);
 }
