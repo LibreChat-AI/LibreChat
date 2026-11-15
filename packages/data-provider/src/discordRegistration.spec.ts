@@ -11,7 +11,7 @@ it('requires explicit current manifest and application authority without browser
     { applicationId: '0' },
     { expectedRevision: '' },
     { expectedRevision: '$ne' },
-    { manifestVersion: '2' },
+    { manifestVersion: '1' },
     { manifestVersion: undefined },
     { botToken: 'private-token' },
     { clientSecret: 'private-secret' },

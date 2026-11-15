@@ -1,7 +1,8 @@
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { generateKeyPairSync, createHash, sign } from 'node:crypto';
 import type { DiscordApplicationSecurity, DiscordInboxSubmission } from 'librechat-data-provider';
+import type { DiscordDmConsume } from 'librechat-data-provider';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import type { DiscordWebhookDependencies } from './http';
@@ -113,6 +114,107 @@ afterEach(async () => {
   await new Promise<void>((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve())),
   );
+});
+const dmCode = 'a'.repeat(43);
+const dmEvent = () => ({
+  ...event,
+  guild_id: undefined,
+  member: undefined,
+  context: 1,
+  user: { id: event.member.user.id },
+  authorizing_integration_owners: { '0': '0' },
+  channel: { id: event.channel_id, type: 1 },
+  data: {
+    ...event.data,
+    options: [{ name: 'select', type: 1, options: [{ name: 'code', type: 3, value: dmCode }] }],
+  },
+});
+it('hashes only a verified BOT_DM selection and acknowledges durable metadata without using the inbox', async () => {
+  const selected: DiscordDmConsume[] = [];
+  await start({
+    select: async (input) => {
+      selected.push(input);
+      return 'accepted';
+    },
+  });
+  expect((await send(dmEvent(), { signature: '0'.repeat(128) })).status).toBe(401);
+  expect(selected).toEqual([]);
+  const response = await send(dmEvent());
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    type: 4,
+    data: { flags: 64, allowed_mentions: { parse: [] } },
+  });
+  expect(selected).toEqual([
+    {
+      applicationId,
+      applicationRevision: 'revision',
+      externalUserId: event.member.user.id,
+      dmChannelId: event.channel_id,
+      confirmationEventId: event.id,
+      codeHash: createHash('sha256').update(dmCode).digest('hex'),
+    },
+  ]);
+  expect(JSON.stringify(selected)).not.toContain(dmCode);
+  expect(received).toEqual([]);
+});
+it.each([
+  { context: 2 },
+  { guild_id: guildId },
+  { member: event.member },
+  { user: { id: event.member.user.id, bot: true } },
+  { authorizing_integration_owners: { '0': guildId } },
+  { authorizing_integration_owners: { '0': '0', '1': event.member.user.id } },
+  { channel: { id: event.channel_id, type: 3 } },
+  { channel: { id: '999', type: 1 } },
+  { user: { id: '0' } },
+])('rejects unsupported or mixed DM context %j before metadata writes', async (change) => {
+  const select = jest.fn(async () => 'accepted' as const);
+  await start({ select });
+  expect((await send({ ...dmEvent(), ...change })).status).toBe(400);
+  expect(select).not.toHaveBeenCalled();
+  expect(received).toEqual([]);
+});
+it('accepts Discord omission of the optional partial channel object without inferring a guild', async () => {
+  const select = jest.fn(async () => 'accepted' as const);
+  await start({ select });
+  expect((await send({ ...dmEvent(), channel: undefined })).status).toBe(200);
+  expect(select).toHaveBeenCalledWith(
+    expect.objectContaining({
+      dmChannelId: event.channel_id,
+      externalUserId: event.member.user.id,
+    }),
+    expect.any(AbortSignal),
+  );
+  expect(received).toEqual([]);
+});
+it.each(['ask', 'link', 'status', 'cancel'])(
+  'keeps DM %s execution disabled after public manifest expansion',
+  async (name) => {
+    const select = jest.fn(async () => 'accepted' as const);
+    await start({ select });
+    expect(
+      (await send({ ...dmEvent(), data: { ...event.data, options: [{ name, type: 1 }] } })).status,
+    ).toBe(400);
+    expect(select).not.toHaveBeenCalled();
+    expect(received).toEqual([]);
+  },
+);
+it('does not acknowledge an operational selection failure and gives safe expired-code feedback', async () => {
+  let unavailable = true;
+  await start({
+    select: async () => {
+      if (unavailable) throw new Error('private database/code data');
+      return 'conflict';
+    },
+  });
+  expect((await send(dmEvent())).status).toBe(503);
+  unavailable = false;
+  const response = await send(dmEvent());
+  expect(await response.json()).toMatchObject({
+    type: 4,
+    data: { content: 'That selection code is unavailable. Generate a new code in LibreChat.' },
+  });
 });
 
 it('verifies raw signatures before PING acknowledgement or command admission', async () => {

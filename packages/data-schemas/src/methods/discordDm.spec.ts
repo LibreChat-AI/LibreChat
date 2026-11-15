@@ -203,6 +203,29 @@ it('issues only for an owned active source link and persists a hidden hash, neve
     });
     expect(await models.ChannelRun.countDocuments()).toBe(0);
   }));
+it('pages owner selections without hashes, including disabled cleanup and unavailable source records', () =>
+  scope(async () => {
+    const issued = await issue();
+    const selected = value(await consume(issued.code));
+    await selections.insertMany(
+      Array.from({ length: 101 }, (_, index) => ({
+        ...selected,
+        selectionId: `page-${String(index).padStart(3, '0')}`,
+        dmChannelId: String(9000 + index),
+        state: 'active',
+        purgeAt: new Date(selected.expiresAtMs),
+      })),
+    );
+    policy = {};
+    const first = await store.list(user);
+    expect(first.selections).toHaveLength(100);
+    expect(first.next).toBeDefined();
+    const second = await store.list(user, first.next);
+    expect(second.selections).toHaveLength(2);
+    expect(second.next).toBeUndefined();
+    expect(await store.list(outsider)).toEqual({ selections: [] });
+    expect(JSON.stringify(first)).not.toContain('codeHash');
+  }));
 it('reissues one pending code per application actor and rejects expired rows before TTL cleanup', () =>
   scope(async () => {
     const old = await issue();

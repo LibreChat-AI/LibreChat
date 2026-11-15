@@ -37,6 +37,14 @@ import { touchChannelAuthority } from './channelScope';
 import { createUserModel } from '~/models/user';
 
 export interface DiscordDmStorage {
+  /** Owner cleanup remains available while disabled; callers project current eligibility. */
+  list(
+    userId: string,
+    cursor?: string,
+  ): Promise<{
+    selections: (DiscordDmSelection & { state: 'active' | 'revoked' })[];
+    next?: string;
+  }>;
   issue(
     userId: string,
     input: DiscordDmIssue,
@@ -213,6 +221,35 @@ export function createDiscordDmStorage(
   const transact = <T>(work: (session: ClientSession) => Promise<T>) =>
     withRequiredTransaction(mongoose, work, indexes);
   return {
+    async list(userId, cursor) {
+      if (typeof userId !== 'string' || !mongoose.isValidObjectId(userId))
+        throw new TypeError('Invalid Discord DM owner');
+      if (cursor !== undefined) discordDmFenceSchema.shape.selectionId.parse(cursor);
+      const rows = await selections
+        .find({
+          tenantId: tenant() ?? null,
+          'source.userId': userId,
+          selectionId: {
+            $type: 'string',
+            $regex: '^[\\w-]{1,128}$',
+            ...(cursor ? { $gt: cursor } : {}),
+          },
+        })
+        .sort({ selectionId: 1 })
+        .limit(101)
+        .read('primary')
+        .lean();
+      const page = rows.slice(0, 100);
+      return {
+        selections: page.flatMap((record) => {
+          const selected = view(record);
+          return selected && (record.state === 'active' || record.state === 'revoked')
+            ? [{ ...selected, state: record.state }]
+            : [];
+        }),
+        ...(rows.length > 100 ? { next: page[page.length - 1].selectionId } : {}),
+      };
+    },
     async issue(userId, input, now) {
       const parsed = discordDmIssueSchema.parse(input);
       clock(now);

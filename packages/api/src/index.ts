@@ -202,3 +202,5 @@ export * from './channels/discord/discoveryHttp';
 export * from './channels/discord/host';
 export * from './channels/discord/messages';
 export * from './channels/discord/messageHttp';
+export * from './channels/discord/dm';
+export * from './channels/discord/dmHttp';

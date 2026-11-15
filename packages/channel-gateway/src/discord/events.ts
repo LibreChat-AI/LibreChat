@@ -28,6 +28,8 @@ const common = {
     .strict()
     .optional(),
   channel_id: snowflake.optional(),
+  channel: z.object({ id: snowflake.optional(), type: z.number().int().optional() }).optional(),
+  guild: z.object({ id: snowflake.optional() }).optional(),
   member: z.object({ user }).optional(),
   user: user.optional(),
 };

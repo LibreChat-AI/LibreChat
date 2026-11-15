@@ -101,7 +101,7 @@ export interface DiscordResolvedRoute extends DiscordApplicationSecurity {
   agentId: string;
 }
 
-export const DISCORD_COMMAND_MANIFEST_VERSION = '1' as const;
+export const DISCORD_COMMAND_MANIFEST_VERSION = '2' as const;
 export const registerDiscordCommandsSchema = z
   .object({
     applicationId: channelSnowflakeSchema,

@@ -71,7 +71,7 @@ it('upserts only the versioned guild-only LibreChat command and preserves unrela
       type: 1,
       name: 'librechat',
       integration_types: [0],
-      contexts: [0],
+      contexts: [0, 1],
       default_member_permissions: null,
     });
     expect(body).not.toHaveProperty('version');
@@ -80,6 +80,7 @@ it('upserts only the versioned guild-only LibreChat command and preserves unrela
       'link',
       'status',
       'cancel',
+      'select',
     ]);
     expect(body.options[0].options).toEqual([
       expect.objectContaining({
@@ -98,7 +99,7 @@ it('upserts only the versioned guild-only LibreChat command and preserves unrela
   });
   const expected = {
     ok: true,
-    value: { applicationId, commandId, providerVersion, manifestVersion: '1' },
+    value: { applicationId, commandId, providerVersion, manifestVersion: '2' },
   };
   expect(await register()).toEqual(expected);
   expect(await register()).toEqual(expected);
@@ -138,7 +139,8 @@ it.each([
   { version: 123 },
   { type: 2 },
   { name: 'other' },
-  { contexts: [0, 1] },
+  { contexts: [0] },
+  { contexts: [0, 1, 2] },
   { integration_types: [0, 1] },
   { guild_id: '999' },
   { options: [] },
@@ -146,6 +148,10 @@ it.each([
 ])('rejects an unconfirmed registration shape: %j', async (change) => {
   payloads[path] = { ...commandPayload(), ...change };
   expect(await register()).toMatchObject({ ok: false });
+});
+it('accepts the same registered guild and bot-DM contexts in either provider order', async () => {
+  payloads[path] = { ...commandPayload(), contexts: [1, 0] };
+  expect(await register()).toMatchObject({ ok: true });
 });
 
 it.each([429, 500, 403])('sanitizes registration refusal %s', async (status) => {
