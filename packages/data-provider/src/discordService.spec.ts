@@ -74,3 +74,52 @@ test.each(['application_changed', 'unapproved-private-error'])(
     expect((caught as Error).message).toBe('Discord operation was not confirmed');
   },
 );
+
+test('encodes binding targets, unwraps responses, and keeps revision bodies exact', async () => {
+  const status = { occupied: true, assignedToThisAgent: true, canReplace: true, revision: 'r1' };
+  const get = jest.spyOn(request, 'get').mockResolvedValue({ ok: true, value: status });
+  const put = jest
+    .spyOn(request, 'put')
+    .mockResolvedValue({ ok: true, value: { routeRevision: 'r2' } });
+  const remove = jest
+    .spyOn(request, 'deleteWithOptions')
+    .mockResolvedValue({ ok: true, value: null });
+  const target = {
+    agentId: 'agent/a?b',
+    installationId: 'install/a?b',
+    externalChannelId: '123456789012345678',
+  };
+  expect(await service.getDiscordBinding(target)).toEqual(status);
+  await service.bindDiscordChannel({ ...target, expectedRevision: 'r1' });
+  expect(await service.removeDiscordBinding({ ...target, expectedRevision: 'r1' })).toBeNull();
+  expect(get).toHaveBeenCalledWith(
+    `${root}/agents/agent%2Fa%3Fb/binding?installationId=install%2Fa%3Fb&externalChannelId=123456789012345678`,
+  );
+  const body = {
+    installationId: target.installationId,
+    externalChannelId: target.externalChannelId,
+    expectedRevision: 'r1',
+  };
+  expect(put).toHaveBeenCalledWith(`${root}/agents/agent%2Fa%3Fb/binding`, body);
+  expect(remove).toHaveBeenCalledWith(`${root}/agents/agent%2Fa%3Fb/binding`, { data: body });
+});
+
+test('preserves the safe uncertain-binding code without provider diagnostics', async () => {
+  const config = { headers: new AxiosHeaders(), data: 'private' };
+  jest.spyOn(request, 'put').mockRejectedValue(
+    new AxiosError('private provider detail', undefined, config, undefined, {
+      status: 503,
+      statusText: 'Unavailable',
+      headers: {},
+      config,
+      data: { ok: false, error: { code: 'binding_uncertain', message: 'private' } },
+    }),
+  );
+  await expect(
+    service.bindDiscordChannel({
+      agentId: 'agent',
+      installationId: 'install',
+      externalChannelId: '123456789012345678',
+    }),
+  ).rejects.toMatchObject({ code: 'binding_uncertain', status: 503 });
+});

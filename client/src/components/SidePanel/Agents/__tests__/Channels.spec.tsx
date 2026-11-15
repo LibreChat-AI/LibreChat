@@ -2135,3 +2135,110 @@ describe('organization workspace connections', () => {
     expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeEnabled();
   });
 });
+
+test('opens real Discord binding setup while Slack readiness is unavailable', async () => {
+  jest.mocked(dataService.getSlackWorkspaces).mockReturnValue(new Promise(() => {}));
+  jest.spyOn(dataService, 'getDiscordGuilds').mockResolvedValue({ guilds: [] });
+  const { submit } = renderChannels({ wrapInForm: true });
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'com_ui_channels_add' }));
+  await user.click(await screen.findByRole('button', { name: /com_ui_discord_title/ }));
+  expect(await screen.findByText('com_ui_discord_binding_empty')).toBeVisible();
+  expect(screen.getByLabelText('com_ui_discord_binding_channel')).toBeVisible();
+  expect(dataService.createAgentChannel).not.toHaveBeenCalled();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+test('allows authorized Discord management across binding creators without generic active deletion', async () => {
+  const channel = {
+    channelId: pending.channelId,
+    agentId: pending.agentId,
+    revision: pending.revision,
+    type: 'discord' as const,
+    credentialMode: 'per_user' as const,
+    status: 'active' as const,
+    createdBy: 'other-admin',
+    installationId: 'installation-1',
+    installationRevision: 'guild-r1',
+    discord: {
+      applicationId: '123456789012345678',
+      guildId: '223456789012345678',
+      botUserId: '423456789012345678',
+      externalChannelId: '323456789012345678',
+    },
+  };
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([channel]);
+  jest.spyOn(dataService, 'getDiscordGuilds').mockResolvedValue({
+    guilds: [
+      {
+        installationId: 'installation-1',
+        applicationId: channel.discord.applicationId,
+        guildId: channel.discord.guildId,
+        guildName: 'Engineering',
+        revision: 'guild-r1',
+        createdBy: 'admin-1',
+        authorityWrites: 0,
+        status: 'active',
+      },
+    ],
+  });
+  jest.spyOn(dataService, 'getDiscordBinding').mockResolvedValue({
+    occupied: true,
+    assignedToThisAgent: true,
+    canReplace: false,
+    revision: 'route-r1',
+  });
+  const user = userEvent.setup();
+  renderChannels();
+  const manage = await screen.findByRole('button', { name: 'com_ui_channels_manage' });
+  expect(manage).toBeEnabled();
+  expect(screen.queryByRole('button', { name: 'com_ui_channels_delete_connection' })).toBeNull();
+  await user.click(manage);
+  expect(await screen.findByText('com_ui_discord_binding_assigned')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_binding_remove' })).toBeEnabled();
+});
+
+test('selects a Discord server with the keyboard without submitting the builder', async () => {
+  jest.spyOn(dataService, 'getDiscordGuilds').mockResolvedValue({
+    guilds: [
+      {
+        installationId: 'installation-1',
+        applicationId: '123456789012345678',
+        guildId: '223456789012345678',
+        guildName: 'Engineering',
+        revision: 'guild-r1',
+        createdBy: 'admin-1',
+        authorityWrites: 0,
+        status: 'active',
+      },
+    ],
+  });
+  jest
+    .spyOn(dataService, 'getDiscordBinding')
+    .mockResolvedValue({ occupied: false, assignedToThisAgent: false, canReplace: true });
+  const { submit } = renderChannels({ wrapInForm: true });
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'com_ui_channels_add' }));
+  await user.click(await screen.findByRole('button', { name: /com_ui_discord_title/ }));
+  const server = await screen.findByRole('combobox', { name: 'com_ui_discord_binding_server' });
+  await waitFor(() => expect(server).toBeEnabled());
+  await user.click(server);
+  const search = await screen.findByRole('combobox', { name: 'com_ui_search' });
+  await user.click(search);
+  await user.keyboard('{ArrowDown}');
+  await waitFor(() => expect(search).toHaveAttribute('aria-activedescendant'));
+  await user.keyboard('{Enter}');
+  await waitFor(() => expect(server).toHaveTextContent('com_ui_discord_binding_server_named'));
+  await user.type(
+    screen.getByLabelText('com_ui_discord_binding_channel'),
+    '323456789012345678{Enter}',
+  );
+  await waitFor(() =>
+    expect(dataService.getDiscordBinding).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      installationId: 'installation-1',
+      externalChannelId: '323456789012345678',
+    }),
+  );
+  expect(submit).not.toHaveBeenCalled();
+});

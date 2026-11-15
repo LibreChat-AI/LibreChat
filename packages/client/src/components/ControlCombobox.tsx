@@ -298,6 +298,7 @@ function ControlCombobox({
               store={combobox}
               autoSelect
               placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder || ariaLabel}
               className="bg-surface-secondary text-text-primary w-full rounded-md py-2 ps-9 pe-3 text-sm focus:outline-hidden"
             />
           </div>

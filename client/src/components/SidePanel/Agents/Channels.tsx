@@ -26,8 +26,8 @@ import { channelErrorLabel } from '~/utils/channelErrors';
 import DeleteChannelDialog from './DeleteChannelDialog';
 import { ChannelHeaderIcon } from './ChannelDetails';
 import Loading from '~/components/Channels/Loading';
-import Discord from '~/components/Channels/Discord';
 import WorkspaceChannel from './WorkspaceChannel';
+import DiscordBinding from './DiscordBinding';
 import ChannelsDialog from './ChannelsDialog';
 import ChannelUsage from './ChannelUsage';
 import { useLocalize } from '~/hooks';
@@ -579,7 +579,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
       : 'com_ui_channels_manage';
   let dialogTitle: TranslationKeys = connectionTitle;
   if (dialog === 'add') dialogTitle = 'com_ui_channels_add_slack';
-  if (dialog === 'discord') dialogTitle = 'com_ui_discord_title';
+  if (dialog === 'discord' || selected?.type === 'discord') dialogTitle = 'com_ui_discord_title';
   return (
     <section aria-labelledby={`${id}-heading`} className="mb-3 flex flex-col gap-2">
       <div className="flex items-center justify-between gap-2">
@@ -653,6 +653,11 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                 <span className="text-text-primary truncate text-sm font-medium">
                   {localize(rowLabels[channel.type])}
                 </span>
+                {channel.type === 'discord' && (
+                  <span className="text-text-secondary truncate text-xs">
+                    {channel.discord.externalChannelId}
+                  </span>
+                )}
                 {channel.type === 'unavailable' && (
                   <span className="text-text-secondary text-xs">
                     {localize('com_ui_channels_unavailable_description')}
@@ -675,18 +680,18 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                     <RowAction
                       label={
                         channel.type === 'discord'
-                          ? 'com_ui_discord_setup'
+                          ? 'com_ui_channels_manage'
                           : channelActionLabel(channel, userId)
                       }
                       disabled={
                         channels.isError ||
                         channel.status === 'deleting' ||
-                        channel.createdBy !== userId
+                        (channel.type !== 'discord' && channel.createdBy !== userId)
                       }
                       onOpen={(button) => {
                         triggerRef.current = button;
                         setNewWorkspaceConnection(null);
-                        setDialog(channel.type === 'discord' ? 'discord' : channel.channelId);
+                        setDialog(channel.channelId);
                       }}
                     />
                   </div>
@@ -914,12 +919,21 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                   </div>
                 </div>
               )}
-              {dialog === 'discord' && (
+              {agentId && (dialog === 'discord' || selected?.type === 'discord') && (
                 <div className="overflow-y-auto px-6 pb-6">
-                  <Discord userId={userId} tenantId={tenantId} />
+                  <DiscordBinding
+                    portalElement={contentElement}
+                    agentId={agentId}
+                    userId={userId}
+                    tenantId={tenantId}
+                    channel={selected?.type === 'discord' ? selected : undefined}
+                    enabled={channels.isSuccess && !channels.isFetching}
+                    onClose={() => setDialog(null)}
+                  />
                 </div>
               )}
               {managed &&
+                managed.type !== 'discord' &&
                 managed.createdBy === userId &&
                 agentId &&
                 (managed.workspaceId ? (
