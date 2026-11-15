@@ -1,4 +1,10 @@
-import { discordRendererVersion, renderDiscordPlan, sanitizeDiscordMentions } from './render';
+import {
+  discordRendererVersion,
+  renderDiscordPlan,
+  sanitizeDiscordMentions,
+  discordPlanRevision,
+  readDiscordFeedbackPresentation,
+} from './render';
 
 describe('Discord answer rendering', () => {
   test('splits Unicode without breaking surrogate pairs and preserves all text', () => {
@@ -46,4 +52,22 @@ describe('Discord answer rendering', () => {
     );
     expect(() => renderDiscordPlan({ runId: 'run', text: '' }, 1)).toThrow();
   });
+  test('includes canonical first-part feedback presentation in the deterministic revision', () => {
+    const input = { runId: 'run-1', text: 'Answer '.repeat(400) };
+    const plain = renderDiscordPlan(input, 3);
+    const controls = renderDiscordPlan(input, 3, { feedback: true });
+    expect(controls.rendererVersion).toBe('discord-text-v2');
+    expect(controls.revision).not.toBe(plain.revision);
+    expect(controls.revision).toBe(discordPlanRevision(controls));
+    expect(renderDiscordPlan(input, 3, { feedback: true })).toEqual(controls);
+    expect(readDiscordFeedbackPresentation(controls.parts[0])).toBe('run-1');
+    expect(controls.parts.slice(1).every((part) => part.presentation === undefined)).toBe(true);
+    expect(controls.parts.map((part) => part.text)).toEqual(plain.parts.map((part) => part.text));
+  });
+  test.each(['bad:run', 'x'.repeat(81)])(
+    'rejects unsupported feedback run identity %s',
+    (runId) => {
+      expect(() => renderDiscordPlan({ runId, text: 'Answer' }, 1, { feedback: true })).toThrow();
+    },
+  );
 });

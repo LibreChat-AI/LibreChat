@@ -16,6 +16,8 @@ import type { ChannelBundle } from '../types';
 import type { DiscordClient } from './client';
 import {
   discordRendererVersion,
+  discordLegacyRendererVersion,
+  readDiscordFeedbackPresentation,
   renderDiscordPlan,
   discordPlanRevision,
   sanitizeDiscordMentions,
@@ -54,15 +56,20 @@ function validateAddress(run: ChannelRunView): void {
 }
 
 const traceText = (url: string) => `[View session](<${url}>)`;
-function validatePart(part: ChannelDeliveryPart): void {
+function validatePart(part: ChannelDeliveryPart, renderer: string): void {
   if (
     part.kind !== 'message' ||
-    part.presentation !== undefined ||
+    (part.presentation !== undefined && renderer !== discordRendererVersion) ||
     part.artifactId !== undefined ||
     !part.text ||
     part.text.length > 2000
   )
     throw new Error('Unsupported Discord delivery part');
+  if (part.presentation) {
+    readDiscordFeedbackPresentation(part);
+    if (!part.required || part.traceUrl !== undefined)
+      throw new Error('Invalid Discord feedback placement');
+  }
   if (part.traceUrl !== undefined) {
     if (
       part.required ||
@@ -92,12 +99,21 @@ function assertBinding(
   )
     throw new Error('Discord run binding changed');
   if (run.plan) {
-    if (run.plan.rendererVersion !== discordRendererVersion)
+    if (![discordRendererVersion, discordLegacyRendererVersion].includes(run.plan.rendererVersion))
       throw new Error('Unsupported Discord renderer');
     for (const part of run.plan.parts) {
-      validatePart(part);
+      validatePart(part, run.plan.rendererVersion);
       if (!part.operationId.startsWith(`${run.runId}:`))
         throw new Error('Discord operation identity changed');
+      const feedbackRun = readDiscordFeedbackPresentation(part);
+      if (
+        feedbackRun !== undefined &&
+        (feedbackRun !== run.runId ||
+          part.operationId !== `${run.runId}:discord:0` ||
+          run.plan.parts.find((item) => item.required && !item.traceUrl)?.operationId !==
+            part.operationId)
+      )
+        throw new Error('Invalid Discord feedback source');
     }
   }
 }
@@ -129,7 +145,8 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
     validateAddress,
     assertBinding,
     progressText: discordProgressText,
-    supportsRenderer: (version) => version === discordRendererVersion,
+    supportsRenderer: (version) =>
+      [discordRendererVersion, discordLegacyRendererVersion].includes(version),
     makePlan(run, bundle) {
       assertBinding(run, bundle);
       if (run.plan) throw new Error('Existing delivery plans must not be regenerated');
@@ -149,6 +166,10 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
         text += '\n\nAttachments are unavailable in Discord. The text answer is preserved.';
       const plan = renderDiscordPlan({ runId: run.runId, text }, bundle.delivery.maxDeliveryParts, {
         shorten: true,
+        feedback:
+          snapshot.status === 'completed' &&
+          !run.cancellationRequested &&
+          run.feedbackEnabled === true,
       });
       const summary = snapshot.summary;
       const url = validSummary(summary, run.sequence) ? summary.session?.url : undefined;
@@ -170,15 +191,57 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
     },
     preparePart(part, renderer, bundle) {
       discordBundle(bundle);
-      if (renderer !== discordRendererVersion) throw new Error('Unsupported Discord renderer');
-      validatePart(part);
+      if (![discordRendererVersion, discordLegacyRendererVersion].includes(renderer))
+        throw new Error('Unsupported Discord renderer');
+      validatePart(part, renderer);
       return async (run, signal) => {
         assertBinding(run, bundle);
         if (!part.operationId.startsWith(`${run.runId}:`))
           throw new Error('Discord operation identity changed');
+        const current = run.plan?.parts.find((item) => item.operationId === part.operationId);
+        if (
+          run.plan?.rendererVersion !== renderer ||
+          !current ||
+          current.kind !== part.kind ||
+          current.required !== part.required ||
+          current.text !== part.text ||
+          current.artifactId !== part.artifactId ||
+          current.traceUrl !== part.traceUrl ||
+          current.presentation?.format !== part.presentation?.format ||
+          current.presentation?.payload !== part.presentation?.payload
+        )
+          throw new Error('Discord delivery source changed');
+        const feedbackRun = readDiscordFeedbackPresentation(part);
+        const components: APIActionRowComponent<APIButtonComponent>[] | undefined =
+          feedbackRun !== undefined &&
+          run.feedbackEnabled === true &&
+          run.snapshot?.status === 'completed' &&
+          !run.cancellationRequested
+            ? [
+                {
+                  type: ComponentType.ActionRow,
+                  components: [
+                    {
+                      type: ComponentType.Button,
+                      style: ButtonStyle.Secondary,
+                      label: 'Thumbs up',
+                      emoji: { name: '👍' },
+                      custom_id: discordRunControl('thumbsUp', feedbackRun),
+                    },
+                    {
+                      type: ComponentType.Button,
+                      style: ButtonStyle.Secondary,
+                      label: 'Thumbs down',
+                      emoji: { name: '👎' },
+                      custom_id: discordRunControl('thumbsDown', feedbackRun),
+                    },
+                  ],
+                },
+              ]
+            : undefined;
         return client(bundle).createMessage(
           run.admission.externalChannelId,
-          { content: part.text },
+          { content: part.text, ...(components ? { components } : {}) },
           part.operationId,
           signal,
         );
