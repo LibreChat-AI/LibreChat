@@ -160,3 +160,25 @@ it('uses the canonical channel revision and never accepts a foreign tenant or ac
     );
     expect(await authority.resolvePrincipal(channel, actor)).toBeNull();
   }));
+
+it('rejects another provider despite matching retained Slack metadata', async () =>
+  scope(async () => {
+    const { identity } = await linked();
+    await mongoose.models.AgentChannel.collection.updateOne(
+      { channelId: channel.channelId },
+      { $set: { type: 'discord' } },
+    );
+    const changed = await db.getAgentChannel(channel.channelId);
+    if (!changed) throw new Error('Missing channel fixture');
+    expect(await authority.resolvePrincipal(changed, actor)).toBeNull();
+    expect(await authority.resolvePrincipal(channel, actor)).toBeNull();
+    expect(await authority.identity.resolve(identity)).toMatchObject({ ok: false });
+    expect(() => channelExternalIdentity(changed, actor.externalUserId)).toThrow(TypeError);
+
+    await mongoose.models.AgentChannel.collection.updateOne(
+      { channelId: channel.channelId },
+      { $set: { type: 'slack' } },
+    );
+    expect(await authority.resolvePrincipal(changed, actor)).toBeNull();
+    expect(await authority.resolvePrincipal(channel, actor)).not.toBeNull();
+  }));

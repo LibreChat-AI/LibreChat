@@ -190,20 +190,40 @@ export const sharedSlackRouteLookupSchema = z
   );
 export type SharedSlackRouteLookup = z.infer<typeof sharedSlackRouteLookupSchema>;
 
-export interface AgentChannel {
+interface AgentChannelBase {
   channelId: string;
   tenantId?: string;
   agentId: string;
   createdBy: string;
-  type: 'slack';
   status: 'pending_install' | 'active' | 'disabled' | 'deleting';
   credentialMode: 'shared' | 'per_user';
   /** Changes whenever existing identity/execution consent must be re-established. */
   revision: string;
+}
+
+export interface SlackAgentChannel extends AgentChannelBase {
+  type: 'slack';
+  discord?: never;
+  installationId?: never;
   /** Shared app installation; credentials remain owned by the workspace. */
   workspaceId?: string;
   slack?: { teamId: string; appId: string; botUserId: string };
 }
+
+/** Guild-installed Discord contract; not yet accepted by channel creation or storage. */
+export interface DiscordAgentChannel extends AgentChannelBase {
+  type: 'discord';
+  credentialMode: 'per_user';
+  installationId?: string;
+  discord?: { applicationId: string; guildId: string; botUserId: string };
+  workspaceId?: never;
+  slack?: never;
+}
+
+export type ProviderAgentChannel = SlackAgentChannel | DiscordAgentChannel;
+
+/** Existing runtime and wire contracts remain Slack-only until provider dispatch is installed. */
+export type AgentChannel = SlackAgentChannel;
 
 export interface ActivateAgentChannel {
   slack: {
@@ -231,8 +251,8 @@ export interface SlackChannelManifest {
 }
 
 /** Private service projection; transport policy is authoritative, not independently inferred by replicas. */
-export interface ChannelServiceBundle {
-  channel: AgentChannel & {
+export interface SlackChannelServiceBundle {
+  channel: SlackAgentChannel & {
     revision: string;
     slack: { teamId: string; appId: string; botUserId: string };
   };
@@ -241,3 +261,5 @@ export interface ChannelServiceBundle {
   gateway: ChannelGatewayWirePolicy;
   delivery: Pick<ChannelStorageConfig, 'maxDeliveryParts'>;
 }
+
+export type ChannelServiceBundle = SlackChannelServiceBundle;

@@ -64,6 +64,7 @@ beforeEach(async () => {
   app.post('/ui/:agentId/channels', handlers.create);
   app.patch('/ui/:agentId/channels/:channelId', handlers.update);
   app.delete('/ui/:agentId/channels/:channelId', handlers.remove);
+  app.get('/ui/:agentId/channels/:channelId/manifest', handlers.manifest);
   app.get('/service/slack/:tenantId/:channelId', handlers.bundle);
   app.put('/service/:channelId/threads/:externalThreadKey', handlers.putThread);
   app.get('/service/:channelId/threads/:externalThreadKey', handlers.getThread);
@@ -114,6 +115,30 @@ it('persists encrypted credentials and returns them only through the authenticat
   expect(bundle.body.credentials.botToken).toBe('xoxb-local-test');
   expect(bundle.body.credentials).not.toHaveProperty('sharedApiKey');
   expect(bundle.headers['cache-control']).toBe('no-store');
+});
+
+it('keeps unsupported providers out of Slack service and setup endpoints', async () => {
+  const id = await createChannel();
+  await activation(id).expect(200);
+  await mongoose.models.AgentChannel.collection.updateOne(
+    { channelId: id },
+    { $set: { type: 'discord' } },
+  );
+  await request(app)
+    .get(`/service/slack/${tenantId}/${id}`)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(404, { error: 'channel_not_found' });
+  await request(app)
+    .get(`/service/${id}/threads/CTEST:123.456`)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .set('x-tenant-id', tenantId)
+    .expect(404, { error: 'channel_not_found' });
+  await request(app)
+    .get(`/ui/agent-test/channels/${id}/manifest`)
+    .expect(404, { error: 'channel_not_found' });
+  await activation(id).expect(404, { error: 'channel_not_found' });
+  await request(app).delete(`/ui/agent-test/channels/${id}`).expect(204);
+  expect(await tenantStorage.run({ tenantId }, () => db.getAgentChannel(id))).toBeNull();
 });
 
 it('rejects creator changes and unsupported credential modes before activation', async () => {

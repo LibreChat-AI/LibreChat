@@ -78,6 +78,7 @@ function channel(tenantId) {
     agentId: 'agent',
     createdBy: 'owner',
     status: 'active',
+    type: 'slack',
     revision: 'v1',
     slack: { teamId: 'T1' },
   };

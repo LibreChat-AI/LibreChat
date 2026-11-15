@@ -130,7 +130,7 @@ it('rejects delayed events, duplicate events and full identity writes at an obso
     ).toBe(true);
   }));
 
-it.each(['disabled', 'missing', 'team', 'app', 'agent'] as const)(
+it.each(['disabled', 'missing', 'team', 'app', 'agent', 'provider'] as const)(
   'rejects %s canonical channel authority',
   (kind) =>
     scope(async () => {
@@ -139,6 +139,11 @@ it.each(['disabled', 'missing', 'team', 'app', 'agent'] as const)(
         await channels().updateAgentChannel('channel', creatorId, { status: 'disabled' });
       else if (kind === 'missing')
         await mongoose.models.AgentChannel.deleteOne({ channelId: 'channel' });
+      else if (kind === 'provider')
+        await mongoose.models.AgentChannel.collection.updateOne(
+          { channelId: 'channel' },
+          { $set: { type: 'discord' } },
+        );
       else if (kind === 'team') input.admission.actor.teamId = 'wrong';
       else if (kind === 'app') input.admission.actor.appId = 'wrong';
       else input.agentId = 'wrong';
@@ -148,6 +153,21 @@ it.each(['disabled', 'missing', 'team', 'app', 'agent'] as const)(
       expect(await mongoose.models.ChannelRun.countDocuments({})).toBe(0);
     }),
 );
+
+it('rejects identity writes and linked runs when the canonical provider changes', () =>
+  scope(async () => {
+    expect(await identities().saveChannelIdentity(link(), null)).toBe(true);
+    await mongoose.models.AgentChannel.collection.updateOne(
+      { channelId: 'channel' },
+      { $set: { type: 'discord' } },
+    );
+    expect(await identities().saveChannelIdentity({ ...link(), revision: 'two' }, 'link-one')).toBe(
+      false,
+    );
+    await expect(runs().admit(linkedEvent(), Date.now())).rejects.toMatchObject({
+      code: 'invalid_transition',
+    });
+  }));
 
 it('blocks other principals as soon as channel-owner account admission closes', () =>
   scope(async () => {

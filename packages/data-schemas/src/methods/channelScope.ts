@@ -101,6 +101,7 @@ export async function touchChannelAuthority(
           ? { $in: [null, ''] }
           : authority.tenantId,
       channelId: authority.channelId,
+      type: 'slack',
       agentId: authority.agentId,
       revision:
         authority.channelRevision === authority.channelId

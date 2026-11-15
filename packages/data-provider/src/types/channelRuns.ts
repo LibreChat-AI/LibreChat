@@ -10,11 +10,14 @@ export const CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES = 64_000;
 export const CHANNEL_RUN_MAX_JSON_BYTES = 128 * 1024 * 1024;
 
 /** Verified transport identities are supplied by the gateway, never by Agent output. */
-export interface ChannelRunActor {
+export interface SlackChannelRunActor {
   teamId: string;
   appId: string;
   externalUserId: string;
 }
+
+/** Admission remains Slack-only until provider-specific actor validation is installed. */
+export type ChannelRunActor = SlackChannelRunActor;
 
 export interface ChannelRunPrincipal {
   userId: string;
