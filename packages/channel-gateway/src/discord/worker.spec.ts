@@ -12,9 +12,15 @@ import type {
 } from 'librechat-data-provider';
 import type { APIActionRowComponent, APIButtonComponent } from 'discord-api-types/v10';
 import type { Lease, Logger } from '../types';
+import {
+  renderDiscordPlan,
+  discordRendererVersion,
+  discordLegacyRendererVersion,
+  discordPlanRevision,
+  discordFeedbackPresentation,
+} from './render';
 import { createDiscordWorkerProvider, discordProgressText } from './worker';
 import { DiscordClient, DiscordWriteError, discordNonce } from './client';
-import { renderDiscordPlan, discordRendererVersion } from './render';
 import { DiscordRateCoordinator } from './rates';
 import { ChannelWorker } from '../worker';
 import { ChannelClient } from '../client';
@@ -260,6 +266,16 @@ function fixture() {
     controller,
     worker,
     execute,
+    restartExecute: () =>
+      new ChannelWorker(
+        config,
+        new ChannelClient(config, backend, { type: 'discord' }),
+        createDiscordWorkerProvider({
+          rates: new DiscordRateCoordinator(bundle.discord.rateLimits),
+          createClient,
+        }),
+        log,
+      ).process({ ...lease, run: structuredClone(state) }, controller.signal),
     savedPlan,
   };
 }
@@ -405,7 +421,11 @@ describe('Discord durable worker delivery', () => {
         f.state.plan!.parts[0].kind = 'artifact';
         f.state.plan!.parts[0].artifactId = 'private-file';
       } else f.state.plan!.parts[0].presentation = { format: 'untrusted', payload: '{}' };
-      await expect(f.execute()).rejects.toThrow('Unsupported Discord delivery part');
+      await expect(f.execute()).rejects.toThrow(
+        variant === 'artifact'
+          ? 'Unsupported Discord delivery part'
+          : 'Invalid Discord feedback presentation',
+      );
       expect(f.calls.some((call) => call.path.endsWith('/delivery/begin'))).toBe(false);
       expect(f.transport).not.toHaveBeenCalled();
     },
@@ -551,5 +571,192 @@ describe('Discord durable worker delivery', () => {
       outcome: 'permanent',
       retryAfterMs: 0,
     });
+  });
+
+  test('renders two fixed feedback controls on only the first completed answer part', async () => {
+    const f = fixture();
+    f.state.feedbackEnabled = true;
+    f.savedPlan('Answer '.repeat(800), summary('https://chat.company.com/trace/session'));
+    expect(f.state.plan?.rendererVersion).toBe('discord-text-v2');
+    expect(f.state.plan?.parts.filter((part) => part.presentation)).toHaveLength(1);
+    expect(f.state.plan?.parts[0].presentation).toEqual({
+      format: 'discord-feedback-v1',
+      payload: '{"runId":"run-1"}',
+    });
+    await f.execute();
+    expect(f.writes[0].body.components).toEqual([
+      {
+        type: 1,
+        components: [
+          {
+            type: 2,
+            style: 2,
+            label: 'Thumbs up',
+            emoji: { name: '👍' },
+            custom_id: 'lc1:u:run-1',
+          },
+          {
+            type: 2,
+            style: 2,
+            label: 'Thumbs down',
+            emoji: { name: '👎' },
+            custom_id: 'lc1:d:run-1',
+          },
+        ],
+      },
+    ]);
+    expect(f.writes.slice(1).every((write) => write.body.components === undefined)).toBe(true);
+    expect(f.writes.at(-1)?.body.content).toContain('View session');
+    expect(f.state.state).toBe('delivered');
+  });
+
+  test.each(['failed', 'cancelled'] as const)(
+    'never adds feedback controls to %s output',
+    async (status) => {
+      const f = fixture();
+      f.state.feedbackEnabled = true;
+      f.state.state = 'delivering';
+      f.state.snapshot = { status, text: 'private diagnostic', elapsedMs: 1 };
+      f.state.plan = f.provider.makePlan(f.state, f.bundle);
+      f.state.receipts = f.state.plan.parts.map((part) => ({
+        operationId: part.operationId,
+        outcome: 'planned',
+        attempts: 0,
+      }));
+      await f.execute();
+      expect(f.state.plan.parts.every((part) => part.presentation === undefined)).toBe(true);
+      expect(f.writes.every((write) => write.body.components === undefined)).toBe(true);
+    },
+  );
+
+  test('keeps feedback controls on a shortened first part without consuming text budget', async () => {
+    const f = fixture();
+    f.state.feedbackEnabled = true;
+    f.bundle.delivery.maxDeliveryParts = 1;
+    f.savedPlan('😀'.repeat(2500));
+    await f.execute();
+    expect(f.writes).toHaveLength(1);
+    expect(f.writes[0].body.content?.length).toBeLessThanOrEqual(2000);
+    expect(f.writes[0].body.content).toContain('Reply shortened');
+    expect(f.writes[0].body.components?.[0].components).toHaveLength(2);
+  });
+
+  test('strips controls after fresh policy revocation without changing or losing the frozen answer', async () => {
+    const f = fixture();
+    f.state.feedbackEnabled = true;
+    f.savedPlan();
+    const plan = structuredClone(f.state.plan);
+    f.hooks.begin = () => {
+      f.state.feedbackEnabled = false;
+    };
+    await f.execute();
+    expect(f.writes).toHaveLength(1);
+    expect(f.writes[0].body).toMatchObject({ content: 'Saved final answer' });
+    expect(f.writes[0].body.components).toBeUndefined();
+    expect(f.state.plan).toEqual(plan);
+    expect(f.state.state).toBe('delivered');
+  });
+
+  test('a plan created ineligible never gains controls on a later eligible retry', async () => {
+    const f = fixture();
+    f.state.feedbackEnabled = false;
+    f.savedPlan();
+    const plan = structuredClone(f.state.plan);
+    f.hooks.begin = () => {
+      f.state.feedbackEnabled = true;
+    };
+    await f.execute();
+    expect(f.writes[0].body.components).toBeUndefined();
+    expect(f.state.plan).toEqual(plan);
+  });
+
+  test('recovers saved feedback presentation without regeneration or replaying a confirmed answer', async () => {
+    const f = fixture();
+    f.state.feedbackEnabled = true;
+    f.savedPlan();
+    const plan = structuredClone(f.state.plan);
+    f.hooks.commit = () => json({ error: 'unavailable' }, 503);
+    await expect(f.execute()).rejects.toThrow('HTTP 503');
+    f.hooks.commit = undefined;
+    await f.restartExecute();
+    expect(f.transport).toHaveBeenCalledTimes(1);
+    expect(f.writes[0].body.components?.[0].components).toHaveLength(2);
+    expect(f.state.plan).toEqual(plan);
+    expect(f.calls.filter((call) => call.path.endsWith('/plan'))).toHaveLength(0);
+  });
+
+  test('reads an old v1 saved answer unchanged and never retrofits controls', async () => {
+    const f = fixture();
+    f.savedPlan();
+    f.state.feedbackEnabled = true;
+    f.state.plan!.rendererVersion = discordLegacyRendererVersion;
+    f.state.plan!.revision = discordPlanRevision(f.state.plan!);
+    const plan = structuredClone(f.state.plan);
+    await f.execute();
+    expect(f.writes[0].body.components).toBeUndefined();
+    expect(f.state.plan).toEqual(plan);
+    expect(f.provider.supportsRenderer(discordLegacyRendererVersion)).toBe(true);
+  });
+
+  test('v1 still rejects every persisted presentation before beginning delivery', async () => {
+    const f = fixture();
+    f.state.feedbackEnabled = true;
+    f.savedPlan();
+    f.state.plan!.rendererVersion = discordLegacyRendererVersion;
+    await expect(f.execute()).rejects.toThrow('Unsupported Discord delivery part');
+    expect(f.calls.some((call) => call.path.endsWith('/delivery/begin'))).toBe(false);
+    expect(f.transport).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    'foreign_run',
+    'wrong_format',
+    'malformed_json',
+    'extra_field',
+    'noncanonical',
+    'oversized',
+    'wrapper_extra',
+    'duplicate_key',
+    'optional',
+    'trace',
+    'later_part',
+  ])('rejects persisted feedback presentation variant %s before any write', async (variant) => {
+    const f = fixture();
+    f.state.feedbackEnabled = true;
+    f.savedPlan('Answer '.repeat(400), summary('https://chat.company.com/trace/session'));
+    const part = f.state.plan!.parts[0];
+    if (variant === 'foreign_run') part.presentation = discordFeedbackPresentation('foreign-run');
+    if (variant === 'wrong_format') part.presentation!.format = 'untrusted';
+    if (variant === 'malformed_json') part.presentation!.payload = '{';
+    if (variant === 'extra_field') part.presentation!.payload = '{"runId":"run-1","components":[]}';
+    if (variant === 'noncanonical') part.presentation!.payload = '{ "runId": "run-1" }';
+    if (variant === 'oversized') part.presentation!.payload = 'x'.repeat(129);
+    if (variant === 'wrapper_extra') Object.assign(part.presentation!, { components: [] });
+    if (variant === 'duplicate_key')
+      part.presentation!.payload = '{"runId":"run-1","runId":"run-1"}';
+    if (variant === 'optional') part.required = false;
+    if (variant === 'trace') {
+      part.required = false;
+      part.traceUrl = 'https://chat.company.com/trace/session';
+    }
+    if (variant === 'later_part') {
+      f.state.plan!.parts[1].presentation = part.presentation;
+      part.presentation = undefined;
+    }
+    await expect(f.execute()).rejects.toThrow();
+    expect(f.calls.some((call) => call.path.endsWith('/delivery/begin'))).toBe(false);
+    expect(f.transport).not.toHaveBeenCalled();
+  });
+
+  test('rejects a changed immutable source returned after delivery/begin before provider effects', async () => {
+    const f = fixture();
+    f.state.feedbackEnabled = true;
+    f.savedPlan();
+    f.hooks.begin = () => {
+      f.state.plan!.parts[0].presentation = discordFeedbackPresentation('foreign-run');
+    };
+    await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+    expect(f.transport).not.toHaveBeenCalled();
+    expect(f.state.receipts[0].outcome).toBe('unknown');
   });
 });
