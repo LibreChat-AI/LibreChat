@@ -25,6 +25,18 @@ let revision: string;
 let settings: { ownershipLeaseMs: number; shardCount: number } | null;
 const storage = createDiscordGatewayStorage(db, async () => settings);
 const installs = createDiscordInstallationStorage(db);
+const guildId = '345678901234567890';
+async function installation(actorId = userId) {
+  const result = await installs.connectGuild({
+    actorId,
+    applicationId,
+    applicationRevision: revision,
+    guildId,
+    guildName: 'Test guild',
+  });
+  if (!result.ok) throw new Error(result.error.code);
+  return result.value;
+}
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await db.connect(mongo.getUri());
@@ -59,6 +71,142 @@ beforeEach(async () => {
     revision = result.value.revision;
   });
 });
+it('prepares the exact live installation and disconnects once without a fabricated installer', () =>
+  scoped(async () => {
+    const guild = await installation();
+    const current = owner(revision);
+    expect(await storage.prepareGuildRemoval(current, guildId)).toBeNull();
+    await storage.acquire(current, 30000);
+    const prepared = await storage.prepareGuildRemoval(current, guildId);
+    expect(prepared).toEqual({
+      target: {
+        guildId,
+        installationId: guild.installationId,
+        installationRevision: guild.revision,
+      },
+    });
+    if (!prepared?.target) throw new Error('Missing fixture target');
+    expect(await storage.removeGuild(current, prepared.target)).toBe(true);
+    expect(await installs.readGuild(guild.installationId)).toMatchObject({
+      status: 'disconnected',
+      revision: expect.not.stringMatching(`^${guild.revision}$`),
+    });
+    expect(await storage.removeGuild(current, prepared.target)).toBe(false);
+    expect(await storage.prepareGuildRemoval(current, guildId)).toEqual({ target: null });
+    expect(await storage.prepareGuildRemoval(current, '999')).toEqual({ target: null });
+  }));
+it('fences reconnect between prepare and removal, including a concurrent transaction race', () =>
+  scoped(async () => {
+    const guild = await installation();
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    const prepared = await storage.prepareGuildRemoval(current, guildId);
+    if (!prepared?.target) throw new Error('Missing fixture target');
+    const reconnect = () =>
+      installs.connectGuild({
+        actorId: userId,
+        applicationId,
+        applicationRevision: revision,
+        guildId,
+        guildName: 'Reinstalled',
+        installationId: guild.installationId,
+        expectedRevision: guild.revision,
+      });
+    const changed = await reconnect();
+    expect(changed.ok).toBe(true);
+    expect(await storage.removeGuild(current, prepared.target)).toBe(false);
+    expect(await installs.readGuild(guild.installationId)).toMatchObject({ status: 'active' });
+    const next = await storage.prepareGuildRemoval(current, guildId);
+    if (!next?.target) throw new Error('Missing fixture target');
+    const [removed, reconnected] = await Promise.all([
+      storage.removeGuild(current, next.target),
+      installs.connectGuild({
+        actorId: userId,
+        applicationId,
+        applicationRevision: revision,
+        guildId,
+        guildName: 'Concurrent',
+        installationId: next.target.installationId,
+        expectedRevision: next.target.installationRevision,
+      }),
+    ]);
+    expect(Number(removed) + Number(reconnected.ok)).toBe(1);
+  }));
+it('rejects foreign scope and stale application, lease, installation and guild tuples', () =>
+  scoped(async () => {
+    const guild = await installation();
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    const prepared = await storage.prepareGuildRemoval(current, guildId);
+    if (!prepared?.target) throw new Error('Missing fixture target');
+    const target = prepared.target;
+    await scoped(async () => {
+      expect(await storage.prepareGuildRemoval(current, guildId)).toBeNull();
+      expect(await storage.removeGuild(current, target)).toBe(false);
+    }, 'foreign');
+    for (const change of [
+      { installationId: 'wrong' },
+      { guildId: '999' },
+      { installationRevision: 'wrong' },
+    ])
+      expect(await storage.removeGuild(current, { ...target, ...change })).toBe(false);
+    expect(await storage.removeGuild({ ...current, ownerId: 'b'.repeat(32) }, target)).toBe(false);
+    await storage.release(current);
+    await storage.acquire(owner(revision, 'b'), 30000);
+    expect(await storage.removeGuild(current, target)).toBe(false);
+    const rotated = await installs.configureApplication({
+      actorId: userId,
+      applicationId,
+      botUserId,
+      publicKey: 'b'.repeat(64),
+      expectedRevision: revision,
+    });
+    expect(rotated.ok).toBe(true);
+    expect(await storage.removeGuild(owner(revision, 'b'), target)).toBe(false);
+    expect(await installs.readGuild(guild.installationId)).toMatchObject({
+      status: 'active',
+      revision: guild.revision,
+    });
+  }));
+it.each(['application', 'installer'])(
+  'blocks erasure of the %s owner between preparation and removal',
+  (which) =>
+    scoped(async () => {
+      const installer = '000000000000000000000002';
+      await createUserModel(db).create({
+        _id: installer,
+        tenantId,
+        role: 'USER',
+        email: 'installer@example.test',
+        provider: 'local',
+      });
+      const guild = await installation(installer);
+      const current = owner(revision);
+      await storage.acquire(current, 30000);
+      const prepared = await storage.prepareGuildRemoval(current, guildId);
+      if (!prepared?.target) throw new Error('Missing fixture target');
+      await createUserModel(db).updateOne(
+        { _id: which === 'application' ? userId : installer },
+        { $set: { agentTriggerDeletionStartedAt: new Date() } },
+      );
+      expect(await storage.removeGuild(current, prepared.target)).toBe(false);
+      expect(await installs.readGuild(guild.installationId)).toMatchObject({ status: 'active' });
+    }),
+);
+it('rejects expiry between preparation and removal without extending the lease', () =>
+  scoped(async () => {
+    await installation();
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    const prepared = await storage.prepareGuildRemoval(current, guildId);
+    if (!prepared?.target) throw new Error('Missing fixture target');
+    await createResourceLockModel(db).updateOne(
+      { key: `discord:gateway:${applicationId}` },
+      { $set: { expiresAt: new Date(Date.now() - 1000) } },
+    );
+    expect(await storage.removeGuild(current, prepared.target)).toBe(false);
+    expect(await storage.prepareGuildRemoval(current, guildId)).toBeNull();
+  }));
 it('elects one application owner under concurrent acquisition and scopes every operation to its tenant', () =>
   scoped(async () => {
     const candidates = [owner(revision, 'a'), owner(revision, 'b'), owner(revision, 'c')];

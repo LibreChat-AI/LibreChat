@@ -102,7 +102,16 @@ beforeEach(async () => {
 });
 it('requires bearer authentication on every endpoint and rejects caller-selected tenant, clock and lease expiry', async () => {
   const app = server();
-  for (const path of ['acquire', 'renew', 'release', 'bootstrap', 'load', 'save']) {
+  for (const path of [
+    'acquire',
+    'renew',
+    'release',
+    'bootstrap',
+    'load',
+    'save',
+    'prepareGuildRemoval',
+    'removeGuild',
+  ]) {
     const denied = await request(app).post(`/${path}`).send({ owner: current(), batch: batch() });
     expect(denied.status).toBe(401);
     expect(denied.headers['cache-control']).toBe('no-store');
@@ -130,6 +139,86 @@ it('requires bearer authentication on every endpoint and rejects caller-selected
         .send({ owner: current(), tenantId: 'foreign' })
     ).status,
   ).toBe(400);
+});
+it('derives guild removal scope from the application and fences the exact prepared installation', async () => {
+  const guildId = '345678901234567890';
+  await scoped(async () => {
+    const result = await installs.connectGuild({
+      actorId: userId,
+      applicationId,
+      applicationRevision: revision,
+      guildId,
+      guildName: 'Test',
+    });
+    if (!result.ok) throw new Error(result.error.code);
+  });
+  const app = server();
+  const post = (path: string, body: object) =>
+    request(app).post(`/${path}`).auth('private-service-'.repeat(3), { type: 'bearer' }).send(body);
+  const input = { owner: current(), guildId };
+  expect((await post('prepareGuildRemoval', input)).status).toBe(409);
+  expect((await post('acquire', { owner: current(), leaseMs: 30000 })).status).toBe(204);
+  const prepared = await post('prepareGuildRemoval', input);
+  expect(prepared.status).toBe(200);
+  expect(Object.keys(prepared.body.target).sort()).toEqual([
+    'guildId',
+    'installationId',
+    'installationRevision',
+  ]);
+  expect((await post('prepareGuildRemoval', { ...input, tenantId: 'foreign' })).status).toBe(400);
+  expect(
+    (
+      await post('removeGuild', {
+        owner: current(),
+        target: { ...prepared.body.target, actorId: userId },
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await post('removeGuild', {
+        owner: { ...current(), ownerId: 'b'.repeat(32) },
+        target: prepared.body.target,
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (await post('removeGuild', { owner: current(), target: prepared.body.target })).status,
+  ).toBe(204);
+  expect((await post('prepareGuildRemoval', input)).body).toEqual({ target: null });
+  expect(
+    (await post('removeGuild', { owner: current(), target: prepared.body.target })).status,
+  ).toBe(409);
+});
+it('redacts unexpected preparation/removal failures as HTTP 503', async () => {
+  const app = server({
+    ...service,
+    prepareGuildRemoval: async () => {
+      throw new Error('private query and credentials');
+    },
+    removeGuild: async () => {
+      throw new Error('private query and credentials');
+    },
+  });
+  for (const path of ['prepareGuildRemoval', 'removeGuild']) {
+    const response = await request(app)
+      .post(`/${path}`)
+      .auth('private-service-'.repeat(3), { type: 'bearer' })
+      .send({
+        owner: current(),
+        ...(path === 'prepareGuildRemoval'
+          ? { guildId: '345678901234567890' }
+          : {
+              target: {
+                guildId: '345678901234567890',
+                installationId: 'installation',
+                installationRevision: 'revision',
+              },
+            }),
+      });
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'discord_gateway_unavailable' });
+  }
 });
 it('reveals credentials and decrypted checkpoints only to a current owner and persists capabilities encrypted', async () => {
   const app = server();

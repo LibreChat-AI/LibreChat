@@ -1,17 +1,27 @@
 import { z } from 'zod';
-import { discordGatewayOwnerSchema } from 'librechat-data-provider';
-import type { DiscordGatewayOwner } from 'librechat-data-provider';
+import { nanoid } from 'nanoid';
+import {
+  discordGatewayOwnerSchema,
+  discordGuildRemovalTargetSchema,
+  channelSnowflakeSchema,
+} from 'librechat-data-provider';
+import type {
+  DiscordGatewayOwner,
+  DiscordGuildRemovalTarget,
+  DiscordGuildRemovalPreparation,
+} from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { DiscordGatewayCheckpointRecord } from '~/models/discordGateway';
 import type { DiscordApplicationRecord } from '~/models/discord';
+import { createDiscordApplicationModel, createDiscordGuildModel } from '~/models/discord';
 import { createDiscordGatewayCheckpointModel } from '~/models/discordGateway';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createResponseScopeModel } from '~/models/responseScope';
-import { createDiscordApplicationModel } from '~/models/discord';
 import { createResourceLockModel } from '~/models/resourceLock';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { touchChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
+import { touchDiscordInstallation } from './discord';
 import { createUserModel } from '~/models/user';
 
 export interface DiscordGatewayScope extends DiscordGatewayOwner {
@@ -29,6 +39,11 @@ export interface DiscordGatewayPrivateState {
   checkpoints: DiscordGatewayCheckpointRecord[];
 }
 export interface DiscordGatewayStorage {
+  prepareGuildRemoval(
+    owner: DiscordGatewayOwner,
+    guildId: string,
+  ): Promise<DiscordGuildRemovalPreparation | null>;
+  removeGuild(owner: DiscordGatewayOwner, target: DiscordGuildRemovalTarget): Promise<boolean>;
   acquire(owner: DiscordGatewayOwner, leaseMs: number): Promise<boolean>;
   renew(owner: DiscordGatewayOwner, leaseMs: number): Promise<boolean>;
   release(owner: DiscordGatewayOwner): Promise<boolean>;
@@ -129,10 +144,12 @@ export function createDiscordGatewayStorage(
   const locks = createResourceLockModel(mongoose);
   const checkpoints = createDiscordGatewayCheckpointModel(mongoose);
   const applications = createDiscordApplicationModel(mongoose);
+  const guilds = createDiscordGuildModel(mongoose);
   const indexes = createChannelIndexGate(() => [
     locks,
     checkpoints,
     applications,
+    guilds,
     createUserModel(mongoose),
     createResponseScopeModel(mongoose),
   ]);
@@ -167,6 +184,80 @@ export function createDiscordGatewayStorage(
     expiresAt: { $gt: new Date() },
   });
   return {
+    prepareGuildRemoval: (owner, guildId) => {
+      channelSnowflakeSchema.parse(guildId);
+      return operation<DiscordGuildRemovalPreparation | null>(
+        owner,
+        null,
+        async (scope, _policy, session) => {
+          if (!(await touchLease(mongoose, scope, session))) return null;
+          const guild = await guilds
+            .findOne({
+              tenantId: tenant() ?? null,
+              applicationId: owner.applicationId,
+              guildId,
+              status: 'active',
+            })
+            .session(session)
+            .lean();
+          if (!guild) return { target: null };
+          if (
+            !(await touchDiscordInstallation(
+              mongoose,
+              {
+                ...scope,
+                installationId: guild.installationId,
+                guildId,
+                expectedRevision: guild.revision,
+                expectedApplicationRevision: owner.applicationRevision,
+              },
+              session,
+            ))
+          )
+            return null;
+          return {
+            target: {
+              guildId,
+              installationId: guild.installationId,
+              installationRevision: guild.revision,
+            },
+          };
+        },
+      );
+    },
+    removeGuild: (owner, target) => {
+      const parsed = discordGuildRemovalTargetSchema.parse(target);
+      return operation(owner, false, async (scope, _policy, session) => {
+        if (
+          !(await touchLease(mongoose, scope, session)) ||
+          !(await touchDiscordInstallation(
+            mongoose,
+            {
+              ...scope,
+              installationId: parsed.installationId,
+              guildId: parsed.guildId,
+              expectedRevision: parsed.installationRevision,
+              expectedApplicationRevision: owner.applicationRevision,
+            },
+            session,
+          ))
+        )
+          return false;
+        const result = await guilds.updateOne(
+          {
+            tenantId: tenant() ?? null,
+            applicationId: owner.applicationId,
+            guildId: parsed.guildId,
+            installationId: parsed.installationId,
+            revision: parsed.installationRevision,
+            status: 'active',
+          },
+          { $set: { status: 'disconnected', revision: nanoid() }, $inc: { authorityWrites: 1 } },
+          { session },
+        );
+        return result.matchedCount === 1;
+      });
+    },
     acquire: (owner, leaseMs) =>
       operation(owner, false, async (_scope, policy, session) => {
         if (leaseMs !== policy.ownershipLeaseMs) return false;
