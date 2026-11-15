@@ -297,28 +297,20 @@ export function createDiscordInboxStorage(
               leaseExpiresAt: { $lte: now },
               eventId: { $nin: skipped },
             };
-            // Reclaim unfinished effects before starting later events after a worker crash.
-            const reclaimed = await inbox
-              .findOne({ ...filter, state: 'processing' })
+            // Due effects retain receive order, including recovery of unfinished processing.
+            const candidate = await inbox
+              .findOne(filter)
               .sort({ receivedAt: 1, eventId: 1 })
               .select(privateFields)
               .session(session)
               .lean();
-            const candidate =
-              reclaimed ??
-              (await inbox
-                .findOne(filter)
-                .sort({ receivedAt: 1, eventId: 1 })
-                .select(privateFields)
-                .session(session)
-                .lean());
             if (!candidate) return null;
             if (!(await current(candidate, session))) {
               await expire(candidate, 'authority_changed', session);
               continue;
             }
-            // current() joins the application fence before reading another worker's lease.
-            // A prepared reply has committed its effects and does not serialize later commands.
+            // current() joins the application fence before checking earlier unfinished effects.
+            // Retry backoff keeps its FIFO position; prepared replies have committed their effects.
             if (
               candidate.state !== 'reply' &&
               (await inbox
@@ -329,9 +321,13 @@ export function createDiscordInboxStorage(
                   externalChannelId: candidate.externalChannelId,
                   externalUserId: candidate.externalUserId,
                   eventId: { $ne: candidate.eventId },
-                  state: 'processing',
-                  leaseExpiresAt: { $gt: now },
+                  state: { $in: ['queued', 'processing'] },
                   expiresAt: { $gt: now },
+                  $or: [
+                    { state: 'processing', leaseExpiresAt: { $gt: now } },
+                    { receivedAt: { $lt: candidate.receivedAt } },
+                    { receivedAt: candidate.receivedAt, eventId: { $lt: candidate.eventId } },
+                  ],
                 })
                 .session(session))
             ) {
