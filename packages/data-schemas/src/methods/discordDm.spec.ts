@@ -490,6 +490,37 @@ it('retains disabled defaults without persisting private data', () =>
     expect(await current()).toBeNull();
     expect(await codes.countDocuments()).toBe(0);
   }));
+it('keeps exact existing selection metadata available while disabled without creating new authority', () =>
+  scope(async () => {
+    const issued = await issue();
+    const selected = value(await consume(issued.code));
+    const reference = {
+      applicationId,
+      externalUserId,
+      dmChannelId,
+      selectionId: selected.selectionId,
+      revision: selected.revision,
+    };
+    policy = {};
+    expect(await current()).toBeNull();
+    expect(await store.reference(reference, now)).toEqual(selected);
+    expect(await store.reference({ ...reference, revision: 'other' }, now)).toBeNull();
+    expect(await store.reference(reference, selected.expiresAtMs)).toBeNull();
+    await models.DiscordApplication.collection.updateOne(
+      { applicationId },
+      { $set: { revision: '' } },
+    );
+    expect(await store.reference(reference, now)).toBeNull();
+    await models.DiscordApplication.collection.updateOne(
+      { applicationId },
+      { $set: { revision: applicationRevision } },
+    );
+    await models.ChannelIdentity.updateOne(
+      { linkId: selected.source.linkId },
+      { state: 'revoked' },
+    );
+    expect(await store.reference(reference, now)).toBeNull();
+  }));
 it('erases account-owned DM rows after admission closure and keeps unrelated account data', () =>
   scope(async () => {
     const issued = await issue();

@@ -256,10 +256,11 @@ it('runs enabled Gateway messages through the same application owner and protect
   expect(destroy).toHaveBeenCalledTimes(1);
 });
 
-it.each(['visible', 'denied', 'outage'] as const)(
+it.each(['visible', 'denied', 'outage', 'thread'] as const)(
   'preflights signed text prompts through the owned rate-coordinated actor inspector (%s)',
   async (state) => {
-    const visible = state === 'visible';
+    const thread = state === 'thread';
+    const visible = state === 'visible' || thread;
     const outage = state === 'outage';
     let complete!: () => void;
     const finished = new Promise<void>((resolve) => {
@@ -285,7 +286,11 @@ it.each(['visible', 'denied', 'outage'] as const)(
           );
           observed.push(path);
           if (path.endsWith('/permissions/member/456'))
-            return Response.json({ permissions: '68608' });
+            return Response.json({
+              permissions: thread
+                ? String(BigInt(1024 | 65536) | (BigInt(1) << BigInt(38)))
+                : '68608',
+            });
           if (path.endsWith('/permissions/member/600'))
             return outage
               ? Response.json({ message: 'Private actor REST diagnostic' }, { status: 503 })
@@ -293,7 +298,15 @@ it.each(['visible', 'denied', 'outage'] as const)(
           if (path.endsWith('/guilds/900/members/600'))
             return Response.json({ user: { id: '600' } });
           expect(path).toBe('/api/v10/channels/800');
-          return Response.json({ id: '800', guild_id: '900', type: 0 });
+          return thread
+            ? Response.json({
+                id: '800',
+                guild_id: '900',
+                parent_id: '700',
+                type: 11,
+                thread_metadata: { archived: false, locked: false },
+              })
+            : Response.json({ id: '800', guild_id: '900', type: 0 });
         }
         expect(path).toBe(
           `/api/v10/webhooks/${applicationId}/interaction-token/messages/@original`,
@@ -341,23 +354,31 @@ it.each(['visible', 'denied', 'outage'] as const)(
       if (path.endsWith('/inbox/resolve')) {
         resolutions++;
         expect(outage).toBe(false);
-        expect(observed).toHaveLength(4);
+        expect(observed).toHaveLength(state === 'visible' ? 4 : 7);
         expect(body.owner).toEqual({ applicationId, applicationRevision, ownerId });
-        expect(body.source).toEqual(
-          visible
-            ? {
-                kind: 'guild_text',
-                applicationId,
-                botUserId: '456',
-                guildId: '900',
-                channelId: '800',
-                permissions: '68608',
-                authorId: '600',
-                authorMember: true,
-                authorPermissions: '1024',
-              }
-            : null,
-        );
+        if (thread)
+          expect(body.source).toMatchObject({
+            kind: 'guild_thread',
+            threadChannelId: '800',
+            parentChannelId: '700',
+            authorId: '600',
+          });
+        else
+          expect(body.source).toEqual(
+            visible
+              ? {
+                  kind: 'guild_text',
+                  applicationId,
+                  botUserId: '456',
+                  guildId: '900',
+                  channelId: '800',
+                  permissions: '68608',
+                  authorId: '600',
+                  authorMember: true,
+                  authorPermissions: '1024',
+                }
+              : null,
+          );
         return Response.json({
           fence: body.fence,
           applicationRevision,
@@ -393,5 +414,6 @@ it.each(['visible', 'denied', 'outage'] as const)(
     expect(resolutions).toBe(outage ? 0 : 1);
     expect(writes).toBe(outage ? 0 : 1);
     expect(deferrals).toBe(outage ? 1 : 0);
+    if (outage) expect(observed).toHaveLength(4);
   },
 );

@@ -36,6 +36,7 @@ import type { DiscordDmSelectionRecord } from '~/models/discordDm';
 import { createDiscordDmCodeModel, createDiscordDmSelectionModel } from '~/models/discordDm';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
+import { createDiscordApplicationModel } from '~/models/discord';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { touchChannelOwnerAdmission } from './channelOwner';
 import { touchDiscordGatewayOwner } from './discordGateway';
@@ -63,6 +64,11 @@ export interface DiscordDmStorage {
   consume(input: DiscordDmConsume, now: number): Promise<DiscordDmResult<DiscordDmSelection>>;
   /** Null means no currently authorized, unexpired selection. Query failures propagate. */
   current(input: DiscordDmCurrent, now: number): Promise<DiscordDmSelection | null>;
+  /** Exact canonical metadata for existing runs, including while DM execution is disabled. */
+  reference(
+    input: Omit<DiscordDmFence, 'applicationRevision'>,
+    now: number,
+  ): Promise<DiscordDmSelection | null>;
   revoke(userId: string, selectionId: string, revision: string): Promise<boolean>;
 }
 function tenant(): string | undefined {
@@ -370,6 +376,26 @@ export function createDiscordDmStorage(
   const policy = async () => discordChannelConfigSchema.shape.dm.parse(await readPolicy());
   const transact = <T>(work: (session: ClientSession) => Promise<T>) =>
     withRequiredTransaction(mongoose, work, indexes);
+  const current = (input: DiscordDmCurrent | DiscordDmFence, now: number) =>
+    transact(async (session) => {
+      const record = await selections
+        .findOne({
+          ...slot(input),
+          ...('selectionId' in input
+            ? { selectionId: input.selectionId, revision: input.revision }
+            : {}),
+          state: 'active',
+          expiresAtMs: { $gt: now },
+        })
+        .session(session)
+        .lean();
+      const selected = record && view(record);
+      return selected &&
+        record &&
+        (await touchLoadedSelection(mongoose, record, input.applicationRevision, now, session))
+        ? selected
+        : null;
+    });
   return {
     async list(userId, cursor) {
       if (typeof userId !== 'string' || !mongoose.isValidObjectId(userId))
@@ -647,18 +673,20 @@ export function createDiscordDmStorage(
       const parsed = discordDmCurrentSchema.parse(input);
       clock(now);
       if (!(await policy()).enabled) return null;
-      return transact(async (session) => {
-        const record = await selections
-          .findOne({ ...slot(parsed), state: 'active', expiresAtMs: { $gt: now } })
-          .session(session)
-          .lean();
-        const selected = record && view(record);
-        return selected &&
-          record &&
-          (await touchLoadedSelection(mongoose, record, parsed.applicationRevision, now, session))
-          ? selected
-          : null;
-      });
+      return current(parsed, now);
+    },
+    async reference(input, now) {
+      const parsed = discordDmFenceSchema.omit({ applicationRevision: true }).parse(input);
+      clock(now);
+      const application = await createDiscordApplicationModel(mongoose)
+        .findOne({ applicationId: parsed.applicationId, tenantId: tenant() ?? null })
+        .select('revision')
+        .read('primary')
+        .lean();
+      const fence =
+        application &&
+        discordDmFenceSchema.safeParse({ ...parsed, applicationRevision: application.revision });
+      return fence?.success ? current(fence.data, now) : null;
     },
     async revoke(userId, selectionId, revision) {
       if (typeof userId !== 'string' || !mongoose.isValidObjectId(userId)) return false;

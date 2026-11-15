@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import type { DiscordChannelConfig } from 'librechat-data-provider';
+import type { DiscordChannelConfig, DiscordInboxResolution } from 'librechat-data-provider';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { DiscordGatewayOwner, DiscordGatewayDependencies } from './gateway';
 import type { SharedGatewayConfig } from '../config';
@@ -185,16 +185,28 @@ export class DiscordGatewayApp {
                       this.transport,
                       context.rates,
                     );
-                    const source = await current.inspectGuildTextActorSource(
-                      {
-                        applicationId: context.owner.applicationId,
-                        botUserId: application.botUserId,
-                        guildId: job.inspection.guildId,
-                        channelId: job.inspection.externalChannelId,
-                        authorId: job.inspection.externalUserId,
-                      },
-                      inspectionSignal,
-                    );
+                    let source: DiscordInboxResolution['source'] =
+                      await current.inspectGuildTextActorSource(
+                        {
+                          applicationId: context.owner.applicationId,
+                          botUserId: application.botUserId,
+                          guildId: job.inspection.guildId,
+                          channelId: job.inspection.externalChannelId,
+                          authorId: job.inspection.externalUserId,
+                        },
+                        inspectionSignal,
+                      );
+                    if (!source)
+                      source = await current.inspectGuildThreadSource(
+                        {
+                          applicationId: context.owner.applicationId,
+                          botUserId: application.botUserId,
+                          guildId: job.inspection.guildId,
+                          threadChannelId: job.inspection.externalChannelId,
+                          authorId: job.inspection.externalUserId,
+                        },
+                        inspectionSignal,
+                      );
                     return this.control.resolve(
                       { fence: job.fence, owner: context.owner, source },
                       inspectionSignal,

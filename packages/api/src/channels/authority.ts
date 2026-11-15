@@ -5,6 +5,9 @@ import {
   channelConfigSchema,
   channelActorMatchesChannel,
   sameChannelExternalIdentity,
+  sameChannelRunActor,
+  channelRunAdmissionSchema,
+  channelSnowflakeSchema,
 } from 'librechat-data-provider';
 import type {
   ChannelExternalIdentity,
@@ -17,6 +20,7 @@ import type {
   IRole,
   AgentChannelMethods,
   ChannelIdentityStorage,
+  DiscordDmStorage,
 } from '@librechat/data-schemas';
 import type { AgentChannelRecord } from '@librechat/data-schemas';
 import type { ChannelIdentityDependencies } from './identity';
@@ -28,6 +32,7 @@ export interface ChannelAuthorityDependencies {
   getConfig: (user: IUser) => Promise<Pick<ChannelConfig, 'enabled'>>;
   enrollmentRequired?: typeof isTwoFactorEnrollmentRequired;
   identityStorage: ChannelIdentityStorage;
+  discordDm?: Pick<DiscordDmStorage, 'reference'>;
   /** Canonical native reference check, separate from fresh external source grants. */
   authorizeDestination?: (
     channel: AgentChannelRecord,
@@ -137,6 +142,57 @@ export function createChannelAuthority(deps: ChannelAuthorityDependencies): Chan
     actor: ChannelRunAdmission['actor'],
     admission?: ChannelRunAdmission,
   ): Promise<ChannelRunPrincipal | null> {
+    if (actor.provider === 'discord' && actor.scope === 'dm') {
+      if (
+        !admission ||
+        !channelRunAdmissionSchema.safeParse(admission).success ||
+        !channelSnowflakeSchema.safeParse(admission.externalChannelId).success ||
+        !sameChannelRunActor(actor, admission.actor) ||
+        admission.discordDestination?.kind !== 'dm' ||
+        !deps.discordDm ||
+        !deps.authorizeDestination ||
+        channel.type !== 'discord' ||
+        channel.status !== 'active' ||
+        actor.applicationId !== channel.discord.applicationId
+      )
+        return null;
+      const selected = await deps.discordDm.reference(
+        {
+          applicationId: actor.applicationId,
+          externalUserId: actor.externalUserId,
+          dmChannelId: admission.externalChannelId,
+          selectionId: actor.selectionId,
+          revision: actor.selectionRevision,
+        },
+        Date.now(),
+      );
+      if (
+        !selected ||
+        selected.source.channelId !== channel.channelId ||
+        selected.source.channelRevision !== channel.revision ||
+        selected.source.agentId !== channel.agentId ||
+        selected.source.guildId !== channel.discord.guildId ||
+        selected.source.externalChannelId !== channel.discord.externalChannelId
+      )
+        return null;
+      const linked = await identity.resolve(
+        channelExternalIdentity(channel, actor.externalUserId),
+        selected.source.linkRevision,
+      );
+      if (
+        !linked.ok ||
+        linked.value.linkId !== selected.source.linkId ||
+        linked.value.userId !== selected.source.userId
+      )
+        return null;
+      const principal: ChannelRunPrincipal = {
+        userId: linked.value.userId,
+        channelRevision: channel.revision,
+        linkId: linked.value.linkId,
+        linkRevision: linked.value.revision,
+      };
+      return (await deps.authorizeDestination(channel, admission, principal)) ? principal : null;
+    }
     if (!channelActorMatchesChannel(channel, actor)) return null;
     const linked = await identity.resolve(channelExternalIdentity(channel, actor.externalUserId));
     if (!linked.ok) return null;

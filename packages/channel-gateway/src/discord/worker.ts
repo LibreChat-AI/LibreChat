@@ -2,6 +2,7 @@ import { ButtonStyle, ComponentType } from 'discord-api-types/v10';
 import {
   channelSnowflakeSchema,
   channelRunActorSchema,
+  channelRunAdmissionSchema,
   discordRunControl,
   discordGatewayOwnerSchema,
   discordGuildThreadDestinationSchema,
@@ -14,6 +15,7 @@ import type {
   DiscordChannelServiceBundle,
   DiscordGatewayOwner,
   ChannelRunEffectContext,
+  DiscordNativeAuthority,
 } from 'librechat-data-provider';
 import type { APIActionRowComponent, APIButtonComponent } from 'discord-api-types/v10';
 import type { DiscordRateCoordinator } from './rates';
@@ -109,15 +111,20 @@ function assertBinding(
     run.revision !== bundle.channel.revision ||
     !channelRunActorSchema.safeParse(actor).success ||
     actor.provider !== 'discord' ||
-    actor.scope !== undefined ||
     actor.applicationId !== bundle.channel.discord.applicationId ||
-    actor.guildId !== bundle.channel.discord.guildId ||
-    (run.admission.discordDestination
-      ? !discordGuildThreadDestinationSchema.safeParse(run.admission.discordDestination).success ||
+    (actor.scope === 'dm'
+      ? !channelRunAdmissionSchema.safeParse(run.admission).success ||
+        run.admission.discordDestination?.kind !== 'dm' ||
         run.admission.discordDestination.parentChannelId !==
-          bundle.channel.discord.externalChannelId ||
-        run.admission.externalChannelId === bundle.channel.discord.externalChannelId
-      : run.admission.externalChannelId !== bundle.channel.discord.externalChannelId)
+          bundle.channel.discord.externalChannelId
+      : actor.guildId !== bundle.channel.discord.guildId ||
+        (run.admission.discordDestination
+          ? !discordGuildThreadDestinationSchema.safeParse(run.admission.discordDestination)
+              .success ||
+            run.admission.discordDestination.parentChannelId !==
+              bundle.channel.discord.externalChannelId ||
+            run.admission.externalChannelId === bundle.channel.discord.externalChannelId
+          : run.admission.externalChannelId !== bundle.channel.discord.externalChannelId))
   )
     throw new Error('Discord run binding changed');
   if (run.plan) {
@@ -168,18 +175,22 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
     signal: AbortSignal,
   ) {
     const actor = run.admission.actor;
-    if (actor.provider !== 'discord' || actor.scope === 'dm')
-      throw new Error('Unsupported Discord actor');
+    if (actor.provider !== 'discord') throw new Error('Unsupported Discord actor');
+    if (actor.scope === 'dm' && !bundle.discord.dm.enabled)
+      throw new DiscordWriteError('permanent', 0, 403);
     const current = client(bundle);
     try {
       const destination = run.admission.discordDestination;
+      const guildId = actor.scope === 'dm' ? bundle.channel.discord.guildId : actor.guildId;
+      const channelId =
+        destination?.kind === 'dm' ? destination.parentChannelId : run.admission.externalChannelId;
       const source =
         destination?.kind === 'guild_thread'
           ? await current.inspectGuildThreadSource(
               {
                 applicationId: actor.applicationId,
                 botUserId: bundle.channel.discord.botUserId,
-                guildId: actor.guildId,
+                guildId,
                 threadChannelId: run.admission.externalChannelId,
                 authorId: actor.externalUserId,
               },
@@ -189,8 +200,8 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
               {
                 applicationId: actor.applicationId,
                 botUserId: bundle.channel.discord.botUserId,
-                guildId: actor.guildId,
-                channelId: run.admission.externalChannelId,
+                guildId,
+                channelId,
                 authorId: actor.externalUserId,
               },
               signal,
@@ -201,10 +212,10 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
         (source.kind === 'guild_thread'
           ? !discordThreadUsable(source)
           : !discordGuildTextActorUsable(source)) ||
-        (source.kind === 'guild_text' && source.channelId !== run.admission.externalChannelId) ||
+        (source.kind === 'guild_text' && source.channelId !== channelId) ||
         source.applicationId !== actor.applicationId ||
         source.botUserId !== bundle.channel.discord.botUserId ||
-        source.guildId !== actor.guildId ||
+        source.guildId !== guildId ||
         source.authorId !== actor.externalUserId ||
         (source.kind === 'guild_thread' &&
           (source.threadChannelId !== run.admission.externalChannelId ||
@@ -239,19 +250,19 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
             const actor = run.admission.actor;
             if (
               actor.provider !== 'discord' ||
-              actor.scope === 'dm' ||
               owner.applicationId !== actor.applicationId ||
               owner.applicationRevision !== bundle.applicationRevision
             )
               throw new DiscordWriteError('permanent', 0, 403);
             const { source } = await sourceForEffect(run, bundle, signal);
+            let native: DiscordNativeAuthority;
+            if (source.kind === 'guild_thread') native = { kind: 'guild_thread', owner, source };
+            else if (actor.scope === 'dm') native = { kind: 'dm', owner, source };
+            else native = { kind: 'guild_text', owner, source };
             return {
               discordAuthority: {
                 applicationRevision: bundle.applicationRevision,
-                native:
-                  source.kind === 'guild_thread'
-                    ? { kind: 'guild_thread', owner, source }
-                    : { kind: 'guild_text', owner, source },
+                native,
               },
             };
           },
