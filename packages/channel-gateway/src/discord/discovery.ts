@@ -14,6 +14,7 @@ import type {
   DiscordGatewayOwner,
   DiscordGatewayMessage,
   DiscordGuildTextActorSource,
+  DiscordGuildThreadSource,
   DiscordMessageResult,
   DiscordRuntimeChannels,
   DiscordRuntimeBootstrap,
@@ -54,7 +55,7 @@ export class DiscordRuntimeClient extends ServiceClient {
   async message(
     owner: DiscordGatewayOwner,
     event: DiscordGatewayMessage,
-    source: DiscordGuildTextActorSource | null,
+    source: DiscordGuildTextActorSource | DiscordGuildThreadSource | null,
     signal?: AbortSignal,
   ): Promise<DiscordMessageResult> {
     const input = discordMessageSubmissionSchema.parse({ owner, event, source });
