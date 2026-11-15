@@ -3637,6 +3637,69 @@ describe('RedisJobStore Integration Tests', () => {
     });
   });
 
+  describe('touchJob', () => {
+    test('should refresh the idle clock and lifetimes of a silent running job', async () => {
+      if (!ioredisClient) {
+        return;
+      }
+
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const store = new RedisJobStore(ioredisClient, { runningTtl: 120 });
+      await store.initialize();
+
+      const streamId = `touch-refresh-${Date.now()}`;
+      const jobKey = `stream:{${streamId}}:job`;
+      const chunkKey = `stream:{${streamId}}:chunks`;
+      try {
+        const job = await store.createJob(streamId, 'user-1', streamId);
+        await store.appendChunk(streamId, {
+          event: 'on_message_delta',
+          data: { id: 'step-1', type: 'text', text: 'first' },
+        });
+        const staleAt = Date.now() - 600_000;
+        await ioredisClient.hset(jobKey, 'lastActiveAt', String(staleAt));
+        await ioredisClient.expire(jobKey, 5);
+        await ioredisClient.expire(chunkKey, 5);
+
+        await expect(store.touchJob(streamId, job.createdAt)).resolves.toBe(true);
+
+        expect((await store.getJob(streamId))?.lastActiveAt).toBeGreaterThan(staleAt);
+        expect(await ioredisClient.ttl(jobKey)).toBeGreaterThan(300);
+        expect(await ioredisClient.ttl(chunkKey)).toBeGreaterThan(300);
+        expect(await store.cleanup()).toBe(0);
+        expect(await store.hasJob(streamId)).toBe(true);
+      } finally {
+        await store.destroy();
+      }
+    });
+
+    test('should refuse another generation and a finished job', async () => {
+      if (!ioredisClient) {
+        return;
+      }
+
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const store = new RedisJobStore(ioredisClient, { runningTtl: 120 });
+      await store.initialize();
+
+      const streamId = `touch-fenced-${Date.now()}`;
+      const jobKey = `stream:{${streamId}}:job`;
+      try {
+        const job = await store.createJob(streamId, 'user-1', streamId);
+        const before = await ioredisClient.hget(jobKey, 'lastActiveAt');
+
+        await expect(store.touchJob(streamId, job.createdAt - 1)).resolves.toBe(false);
+        expect(await ioredisClient.hget(jobKey, 'lastActiveAt')).toBe(before);
+
+        await store.updateJob(streamId, { status: 'complete', completedAt: Date.now() });
+        await expect(store.touchJob(streamId, job.createdAt)).resolves.toBe(false);
+        await expect(store.touchJob(`missing-${Date.now()}`, job.createdAt)).resolves.toBe(false);
+      } finally {
+        await store.destroy();
+      }
+    });
+  });
+
   describe('appendChunk TTL Refresh', () => {
     test('should set TTL on the chunk stream', async () => {
       if (!ioredisClient) {

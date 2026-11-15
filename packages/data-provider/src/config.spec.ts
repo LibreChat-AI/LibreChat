@@ -3117,6 +3117,8 @@ describe('subagent activity policy', () => {
       endpoints: { agents: { subagentActivity: {} } },
     });
     expect(parsed.endpoints?.agents?.subagentActivity).toEqual({
+      generationJobs: true,
+      generationContentBytes: 4_194_304,
       contentRecoveryEnabled: false,
       contentPageBytes: 262_144,
       contentFlushMs: 250,

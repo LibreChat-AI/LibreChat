@@ -13,17 +13,29 @@ export function parseTerminalPersistenceOwner(value: unknown): 'external' | unde
   return value;
 }
 
+type ChildThreadMarkers = Pick<SerializableJobData, 'agentEventBindingId' | 'subagentTaskId'>;
+
 /**
- * A job whose stream is a subagent child thread. An event binding always targets a reserved
- * child thread, so its id on the job marks the stream as one. Child threads are not listed
- * conversations: a client has no row to mark for them and no record to load.
+ * A job the subagent task store runs for a background child. The store owns its terminal
+ * state, so a route that would end or steer the job hands off to the store instead.
  */
-export function isChildThreadJob(job: Pick<SerializableJobData, 'agentEventBindingId'>): boolean {
-  return job.agentEventBindingId != null && job.agentEventBindingId !== '';
+export function isBackgroundChildJob(job: Pick<SerializableJobData, 'subagentTaskId'>): boolean {
+  return job.subagentTaskId != null && job.subagentTaskId !== '';
+}
+
+/**
+ * A job whose stream is a subagent child thread: a background child's, or an event-bound
+ * child's, since an event binding always targets a reserved child thread. Child threads are
+ * not listed conversations: a client has no row to mark for them and no record to load.
+ */
+export function isChildThreadJob(job: ChildThreadMarkers): boolean {
+  return (
+    isBackgroundChildJob(job) || (job.agentEventBindingId != null && job.agentEventBindingId !== '')
+  );
 }
 
 /** A job a client can show as a running chat. */
-export function isListedChatJob(job: Pick<SerializableJobData, 'agentEventBindingId'>): boolean {
+export function isListedChatJob(job: ChildThreadMarkers): boolean {
   return !isChildThreadJob(job);
 }
 
@@ -106,6 +118,12 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   }
   if (metadata.agentEventBindingId) {
     patch.agentEventBindingId = metadata.agentEventBindingId;
+  }
+  if (metadata.subagentTaskId) {
+    patch.subagentTaskId = metadata.subagentTaskId;
+  }
+  if (metadata.subagentParentConversationId) {
+    patch.subagentParentConversationId = metadata.subagentParentConversationId;
   }
   if (metadata.agentEventExpectedAction) {
     patch.agentEventExpectedAction = metadata.agentEventExpectedAction;
