@@ -73,7 +73,49 @@ export const discordDmFenceSchema = discordDmCurrentSchema.extend({
   revision: reference,
 });
 export type DiscordDmFence = z.infer<typeof discordDmFenceSchema>;
-export type DiscordDmError = 'disabled' | 'unavailable' | 'invalid_code' | 'changed' | 'capacity';
+export type DiscordDmError =
+  | 'disabled'
+  | 'unavailable'
+  | 'invalid_code'
+  | 'changed'
+  | 'capacity'
+  | 'forbidden';
 export type DiscordDmResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: { code: DiscordDmError } };
+
+/** Browser metadata contains neither selection codes nor their hashes. */
+export interface DiscordDmSelectionView {
+  selectionId: string;
+  revision: string;
+  linkId: string;
+  agentId: string;
+  applicationId: string;
+  dmChannelId: string;
+  expiresAtMs: number;
+  state: 'active' | 'revoked' | 'expired' | 'unavailable';
+}
+export interface DiscordDmSelectionPage {
+  enabled: boolean;
+  selections: DiscordDmSelectionView[];
+  next?: string;
+}
+export interface DiscordDmIssuedCode {
+  code: string;
+  expiresAtMs: number;
+}
+export const discordDmRevokeSchema = z
+  .object({ selectionId: reference, revision: reference })
+  .strict();
+export type DiscordDmRevoke = z.infer<typeof discordDmRevokeSchema>;
+/** Direct signed metadata acknowledgement, deliberately separate from run admission. */
+export const discordDmAcknowledgementSchema = z
+  .object({
+    applicationId: channelSnowflakeSchema,
+    externalUserId: channelSnowflakeSchema,
+    dmChannelId: channelSnowflakeSchema,
+    selectionId: reference,
+    expiresAtMs: z.number().int().positive(),
+  })
+  .strict();
+export type DiscordDmAcknowledgement = z.infer<typeof discordDmAcknowledgementSchema>;

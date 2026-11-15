@@ -499,7 +499,7 @@ it('preserves admin discovery and teardown while Discord is disabled', async () 
 it('exposes an explicit authenticated same-origin command registration operation', async () => {
   const configured = await register();
   const path = `${base}/apps/${applicationId}/commands`;
-  const input = { applicationId, expectedRevision: configured.body.revision, manifestVersion: '1' };
+  const input = { applicationId, expectedRevision: configured.body.revision, manifestVersion: '2' };
   payloads[`/applications/${applicationId}/commands`] = {
     ...discordCommandManifest,
     id: '234567890123456789',
@@ -515,7 +515,7 @@ it('exposes an explicit authenticated same-origin command registration operation
     .send(input)
     .expect(403);
   await authorize(path)
-    .send({ ...input, manifestVersion: '2' })
+    .send({ ...input, manifestVersion: '1' })
     .expect(400);
   await authorize(path)
     .send({ ...input, applicationId: '999' })
@@ -529,7 +529,7 @@ it('exposes an explicit authenticated same-origin command registration operation
     applicationId,
     commandId: '234567890123456789',
     providerVersion: '345678901234567890',
-    manifestVersion: '1',
+    manifestVersion: '2',
   });
   expect(JSON.stringify(result.body)).not.toMatch(/private|encrypted/);
   await authorize(path)

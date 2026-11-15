@@ -1,13 +1,17 @@
+import { createHash } from 'node:crypto';
 import {
   channelSnowflakeSchema,
   discordChannelConfigSchema,
   parseDiscordControl,
+  discordDmCodeSchema,
+  discordDmConsumeSchema,
 } from 'librechat-data-provider';
 import type {
   DiscordApplicationSecurity,
   DiscordInboxSubmission,
   DiscordIngressAction,
   DiscordChannelConfig,
+  DiscordDmConsume,
 } from 'librechat-data-provider';
 import type { DiscordInteraction } from './events';
 import type { WebhookReply } from '../http';
@@ -15,7 +19,7 @@ import type { Logger } from '../types';
 import { parseDiscordInteraction, verifyDiscordSignature } from './events';
 import { WebhookHTTPServer } from '../http';
 
-/** Namespaced command v1; rejects malformed options instead of silently discarding them. */
+/** Guild commands remain separate from the metadata-only BOT_DM selection path. */
 export function discordInteractionAction(event: DiscordInteraction): DiscordIngressAction | null {
   if (event.type !== 2 || event.data.name !== 'librechat') return null;
   const options = event.data.options ?? [];
@@ -52,6 +56,10 @@ export interface DiscordWebhookDependencies {
   ) => Promise<DiscordApplicationSecurity | null>;
   submit: (
     input: DiscordInboxSubmission,
+    signal: AbortSignal,
+  ) => Promise<'accepted' | 'conflict' | 'capacity'>;
+  select?: (
+    input: DiscordDmConsume,
     signal: AbortSignal,
   ) => Promise<'accepted' | 'conflict' | 'capacity'>;
   log: Logger;
@@ -109,6 +117,67 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
         return event.application_id && event.application_id !== applicationId
           ? { status: 400, body: { error: 'application_mismatch' } }
           : { status: 200, body: { type: 1 } };
+      if (event.context === 1) {
+        if (
+          !deps.select ||
+          event.type !== 2 ||
+          event.application_id !== applicationId ||
+          event.guild_id ||
+          event.guild ||
+          event.member ||
+          !event.user ||
+          event.user.bot ||
+          !event.channel_id ||
+          (event.channel?.id !== undefined && event.channel.id !== event.channel_id) ||
+          (event.channel?.type !== undefined && event.channel.type !== 1) ||
+          event.authorizing_integration_owners?.['0'] !== '0' ||
+          event.authorizing_integration_owners?.['1'] !== undefined ||
+          event.data.name !== 'librechat'
+        )
+          return { status: 400, body: { error: 'invalid_context' } };
+        const options = event.data.options ?? [];
+        const command = options[0];
+        const argument = command?.options?.[0];
+        const code = discordDmCodeSchema.safeParse(argument?.value);
+        if (
+          options.length !== 1 ||
+          command.name !== 'select' ||
+          command.type !== 1 ||
+          command.value !== undefined ||
+          command.options?.length !== 1 ||
+          argument?.name !== 'code' ||
+          argument.type !== 3 ||
+          !code.success
+        )
+          return { status: 400, body: { error: 'unsupported_interaction' } };
+        const input = discordDmConsumeSchema.safeParse({
+          applicationId,
+          applicationRevision: app.applicationRevision,
+          externalUserId: event.user.id,
+          dmChannelId: event.channel_id,
+          confirmationEventId: event.id,
+          codeHash: createHash('sha256').update(code.data).digest('hex'),
+        });
+        if (!input.success) return { status: 400, body: { error: 'invalid_payload' } };
+        const result = await deps.select(input.data, signal);
+        signal.throwIfAborted();
+        const messages = {
+          accepted: 'Your private agent selection is saved. Manage or revoke it in LibreChat.',
+          capacity: 'Private selection is temporarily unavailable. Try again later.',
+          conflict: 'That selection code is unavailable. Generate a new code in LibreChat.',
+        };
+        return {
+          status: 200,
+          body: {
+            type: 4,
+            data: {
+              flags: 64,
+              content: messages[result],
+              allowed_mentions: { parse: [] },
+            },
+          },
+        };
+      }
       if (
         event.application_id !== applicationId ||
         !event.guild_id ||

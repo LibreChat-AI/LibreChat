@@ -37,6 +37,38 @@ beforeEach(() => {
     transport,
   );
 });
+it('acknowledges only matching direct DM metadata and preserves operational failure semantics', async () => {
+  const input = {
+    applicationId,
+    applicationRevision: 'revision',
+    externalUserId: '678901234567890123',
+    dmChannelId: '789012345678901234',
+    confirmationEventId: eventId,
+    codeHash: 'b'.repeat(64),
+  };
+  const value = {
+    applicationId,
+    externalUserId: input.externalUserId,
+    dmChannelId: input.dmChannelId,
+    selectionId: 'selection',
+    expiresAtMs: Date.now() + 60000,
+  };
+  response = Response.json({ ok: true, value });
+  expect(await client.select(input)).toBe('accepted');
+  expect(transport.mock.calls[0][0]).toBe(
+    'http://internal/prefix/api/channels/discord/service/dm/select',
+  );
+  expect(transport.mock.calls[0][1].headers).not.toHaveProperty('X-Tenant-Id');
+  expect(JSON.parse(transport.mock.calls[0][1].body)).toEqual(input);
+  response = Response.json({ ok: true, value: { ...value, dmChannelId: '999' } });
+  await expect(client.select(input)).rejects.toThrow('not confirmed');
+  response = new Response(null, { status: 409 });
+  expect(await client.select(input)).toBe('conflict');
+  response = new Response(null, { status: 429 });
+  expect(await client.select(input)).toBe('capacity');
+  response = new Response('private query', { status: 503 });
+  await expect(client.select(input)).rejects.toThrow('HTTP 503');
+});
 
 it('uses protected prefixed discovery without a caller tenant header', async () => {
   expect(await client.security(applicationId)).toEqual(app);

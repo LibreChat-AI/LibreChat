@@ -46,6 +46,12 @@ import type {
   TTraceRecordDetail,
 } from './types/traces';
 import type {
+  DiscordDmIssue,
+  DiscordDmIssuedCode,
+  DiscordDmSelectionPage,
+  DiscordDmRevoke,
+} from './types/discordDm';
+import type {
   ChannelIdentityClient,
   ChannelIdentityResult,
   ChannelLinkView,
@@ -107,6 +113,10 @@ function discordError(code: string | undefined, status?: number): never {
     'timeout',
     'provider_unavailable',
     'invalid_input',
+    'disabled',
+    'invalid_code',
+    'changed',
+    'capacity',
   ]);
   throw Object.assign(new Error('Discord operation was not confirmed'), {
     code: code && allowed.has(code) ? code : 'unavailable',
@@ -122,6 +132,28 @@ type DiscordWireResult<T> = { ok: true; value: T } | { ok: false; error: { code:
 function discordValue<T>(result: DiscordWireResult<T>): T {
   if (!result.ok) return discordError(result.error.code);
   return result.value;
+}
+export function listDiscordDmSelections(cursor?: string): Promise<DiscordDmSelectionPage> {
+  return request
+    .get<DiscordWireResult<DiscordDmSelectionPage>>(
+      `${endpoints.discordDmSelections()}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+    )
+    .catch(discordFailure)
+    .then(discordValue);
+}
+export function issueDiscordDmCode(input: DiscordDmIssue): Promise<DiscordDmIssuedCode> {
+  return request
+    .post(endpoints.discordDmCodes(), input)
+    .catch(discordFailure)
+    .then((result: DiscordWireResult<DiscordDmIssuedCode>) => discordValue(result));
+}
+export function revokeDiscordDmSelection(input: DiscordDmRevoke): Promise<null> {
+  return request
+    .deleteWithOptions<DiscordWireResult<null>>(endpoints.discordDmSelections(input.selectionId), {
+      data: { revision: input.revision },
+    })
+    .catch(discordFailure)
+    .then(discordValue);
 }
 export function getDiscordBinding(input: DiscordBindingTarget): Promise<DiscordBindingStatus> {
   return request

@@ -388,7 +388,7 @@ it('registers commands explicitly with server-only credentials and returns safe 
     const result = await service.register(principal, {
       applicationId,
       expectedRevision: app.revision,
-      manifestVersion: '1',
+      manifestVersion: '2',
     });
     expect(result).toEqual({
       ok: true,
@@ -396,7 +396,7 @@ it('registers commands explicitly with server-only credentials and returns safe 
         applicationId,
         commandId: '234567890123456789',
         providerVersion: '345678901234567890',
-        manifestVersion: '1',
+        manifestVersion: '2',
       },
     });
     expect(JSON.stringify(result)).not.toMatch(/private|encrypted/);
@@ -437,7 +437,7 @@ it.each(['role', 'deleted', 'disabled', 'revision', 'owner_fence'] as const)(
       const result = await service.register(principal, {
         applicationId,
         expectedRevision: app.revision,
-        manifestVersion: '1',
+        manifestVersion: '2',
       });
       expect(result).toMatchObject({
         ok: false,
@@ -463,13 +463,13 @@ it('rejects stale, foreign and closed account authority before registration HTTP
       await service.register(principal, {
         applicationId,
         expectedRevision: 'old',
-        manifestVersion: '1',
+        manifestVersion: '2',
       }),
     ).toMatchObject({ ok: false, error: { code: 'application_changed' } });
     expect(
       await service.register(
         { ...principal, tenantId: 'foreign' },
-        { applicationId, expectedRevision: app.revision, manifestVersion: '1' },
+        { applicationId, expectedRevision: app.revision, manifestVersion: '2' },
       ),
     ).toMatchObject({ ok: false, error: { code: 'forbidden' } });
     await db.models.ResponseScope.updateMany({}, { $set: { closed: true } });
@@ -477,7 +477,7 @@ it('rejects stale, foreign and closed account authority before registration HTTP
       await service.register(principal, {
         applicationId,
         expectedRevision: app.revision,
-        manifestVersion: '1',
+        manifestVersion: '2',
       }),
     ).toMatchObject({ ok: false, error: { code: 'principal_unavailable' } });
     expect(fetchProvider).not.toHaveBeenCalled();

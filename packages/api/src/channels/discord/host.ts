@@ -16,6 +16,8 @@ import type {
   DiscordMessageStorage,
   DiscordGatewayStoragePolicy,
   DiscordCommandStorage,
+  DiscordDmStorage,
+  ChannelIdentityStorage,
 } from '@librechat/data-schemas';
 import type { DiscordChannelConfig } from 'librechat-data-provider';
 import type { ChannelApplicationAuthorityDependencies } from '../applicationAuthority';
@@ -41,12 +43,15 @@ import { createDiscordGatewayService } from './gateway';
 import { createDiscordProviderClient } from './client';
 import { createDiscordRouteResolver } from './routes';
 import { createDiscordInboxService } from './inbox';
+import { createDiscordDmHandlers } from './dmHttp';
 import { getOAuthCallbackUrl } from '~/oauth/url';
 import { DISCORD_CALLBACK_PATH } from './http';
+import { createDiscordDmService } from './dm';
 
 export interface DiscordPolicyReader {
   read(): Promise<DiscordChannelConfig>;
   inbox(): Promise<DiscordChannelConfig['inbox']>;
+  dm(): Promise<DiscordChannelConfig['dm']>;
   ownership(): Promise<DiscordGatewayStoragePolicy | null>;
 }
 export interface DiscordChannelRuntime {
@@ -56,6 +61,7 @@ export interface DiscordChannelRuntime {
   gateway: ReturnType<typeof createDiscordGatewayHandlers>;
   discovery: ReturnType<typeof createDiscordRuntimeHandlers>;
   messages: ReturnType<typeof createDiscordMessageHandlers>;
+  dm: ReturnType<typeof createDiscordDmHandlers>;
 }
 
 /** Read the canonical tenant policy on each authorization boundary, including disabled teardown. */
@@ -71,6 +77,10 @@ export function createDiscordPolicyReader(
   return {
     read,
     inbox: async () => (await read()).inbox,
+    dm: async () => {
+      const policy = await read();
+      return { ...policy.dm, enabled: policy.enabled && policy.dm.enabled };
+    },
     ownership: async () => {
       const policy = await read();
       return policy.enabled
@@ -94,6 +104,8 @@ export function createDiscordChannelRuntime(
     discovery: DiscordRuntimeStorage;
     messages: DiscordMessageStorage;
     commands: DiscordCommandStorage;
+    dm: DiscordDmStorage;
+    identities: Pick<ChannelIdentityStorage, 'readChannelLink'>;
     feedback: Pick<ChannelFeedbackRuntime, 'recordDiscordFeedback'>;
     application: Pick<ChannelApplicationAuthority, 'authority' | 'storage'>;
     access: ChannelApplicationAuthorityDependencies['access'];
@@ -168,6 +180,22 @@ export function createDiscordChannelRuntime(
     retryDelayMs: async () => (await deps.policy.read()).inbox.retryDelayMs,
   });
   return {
+    dm: createDiscordDmHandlers({
+      serviceToken: deps.serviceToken,
+      service: createDiscordDmService({
+        ...deps,
+        storage: deps.dm,
+        authority: deps.application.authority,
+        settings: deps.policy.dm,
+        principalAllowed: async (principal) => {
+          const [user, active] = await Promise.all([
+            deps.findUser(principal.id),
+            deps.isPrincipalActive(principal.id),
+          ]);
+          return Boolean(user && active && (user.tenantId || undefined) === principal.tenantId);
+        },
+      }),
+    }),
     messages: createDiscordMessageHandlers({
       serviceToken: deps.serviceToken,
       service: createDiscordMessageService({
