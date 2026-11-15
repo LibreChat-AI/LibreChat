@@ -4,23 +4,23 @@ Status: implementation in progress, authorized on 2026-11-15. The provider is be
 
 Current implementation and verification:
 
-| Area                                                                                     | State                                                                                                                                        |
-| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Provider contracts, organization applications, guild installations and explicit bindings | Implemented with focused compatibility and authority tests                                                                                   |
-| Signed HTTP commands, account consent, durable execution and text delivery               | Implemented with signature, replay, transaction, recovery and built-process tests                                                            |
-| Optional Gateway mentions, resumable sessions and guild removal                          | Queued mention output validated for text and native threads, with actor-scoped mixed-ingress continuity                                      |
-| Account and organization settings                                                        | Seven prior browser cases remain unchanged; four Discord scenario tags are now literal and discoverable                                      |
-| Feedback                                                                                 | Storage, API policy projection and immutable native button plans implemented and tested                                                      |
-| Native threads                                                                           | Signed commands and Gateway mention execution validated; application-fallback companion remains in the DM output candidate                   |
-| Direct messages                                                                          | Six queued/restored output integration cases pass in an unreleased candidate; signed controls, feedback and production mounts remain pending |
-| Consent and destination access                                                           | New prompts require native confirmation predating the event; current bot and actor access is checked before text output                      |
-| Deployment                                                                               | Compose and Helm configuration validated; a built Node process smoke passes; local Docker execution remains unverified                       |
-| Startup performance                                                                      | Lighthouse passes with 250 ms per-query latency: median LCP 2.12 s, CLS 0.013 and TBT 196 ms                                                 |
-| Release gates                                                                            | Final integrated precheck, production composition, live Discord verification and published-head review/closeout remain open                  |
+| Area                                                                                     | State                                                                                                                                       |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider contracts, organization applications, guild installations and explicit bindings | Implemented with focused compatibility and authority tests                                                                                  |
+| Signed HTTP commands, account consent, durable execution and text delivery               | Implemented with signature, replay, transaction, recovery and built-process tests                                                           |
+| Optional Gateway mentions, resumable sessions and guild removal                          | Queued mention output validated for text and native threads, with actor-scoped mixed-ingress continuity                                     |
+| Account and organization settings                                                        | Seven prior browser cases remain unchanged; four Discord scenario tags are now literal and discoverable                                     |
+| Feedback                                                                                 | Guild, thread and DM receipt-bound feedback implemented; DM review and final release checks pending                                         |
+| Native threads                                                                           | Signed commands and Gateway mentions share stable actor-scoped thread lanes; fresh parent and membership checks validated                   |
+| Direct messages                                                                          | Queued output, signed controls and feedback pass 29 integration cases; private routes composed and backend acceptance expansion in progress |
+| Consent and destination access                                                           | New prompts require native confirmation predating the event; current bot and actor access is checked before text output                     |
+| Deployment                                                                               | Compose and Helm configuration validated; a built Node process smoke passes; local Docker execution remains unverified                      |
+| Startup performance                                                                      | Lighthouse passes with 250 ms per-query latency: median LCP 2.12 s, CLS 0.013 and TBT 196 ms                                                |
+| Release gates                                                                            | Final integrated precheck, expanded backend acceptance, live Discord verification and published-head review/closeout remain open            |
 
-Independent reviews of the native thread and Gateway mention integration are clean. Precheck at `75732872ff` completed static checks and all seven workspace lanes except two stale fixtures, corrected with focused passing checks at `81c7f169b5`. The final integrated precheck remains open; the installed precheck has no Gateway lane.
+Independent reviews of native threads, Gateway mentions, DM output and DM controls are clean. The two real backend browser scenarios pass after integration with DM controls (45.5 seconds). Final route composition passes 12 API tests, 48 Gateway tests, a Gateway typecheck and a built-process smoke. DM feedback is awaiting independent review; these checks do not establish live Discord readiness. Precheck at `75732872ff` completed static checks and all seven workspace lanes except two stale fixtures, corrected with focused passing checks at `81c7f169b5`. The final integrated precheck remains open; the installed precheck has no Gateway lane.
 
-The original worktree's unrelated lockfile change remains outside the feature. See [the operator guide](discord-channels.md) for configuration and deployment. An editable private credentials file exists outside Git; credential provisioning and live test application/guild setup await user confirmation. Current runtime verification needs an isolated Mongo replica set: the shared/lab Mongo instance is standalone, and a local Docker daemon is unavailable. Never put a bot token in this document, chat, screenshots or test output.
+The original worktree's unrelated lockfile change remains outside the feature. See [the operator guide](discord-channels.md) for configuration and deployment. An editable private credentials file exists outside Git; credential provisioning and live test application/guild setup await user confirmation. Runtime verification uses a temporary local Mongo replica set and a unique Redis namespace. The shared/lab Mongo instance is standalone and is left untouched. The local Docker daemon is stopped, so container execution remains unverified. Never put a bot token in this document, chat, screenshots or test output.
 
 ## 1. Recommendation and scope
 
@@ -275,7 +275,7 @@ Resolve these product choices before their dependent implementation, using the r
 4. Should users work only in explicitly bound channels, or should a guild-wide agent selector/default exist? Explicit binding is the safer first scope.
 5. Are buttons and web review sufficient, or are reactions, native modals, and files launch requirements? Each adds a distinct platform contract.
 
-The next implementation gate is signed DM controls and feedback, followed by production composition of the validated thread, mention and candidate DM output paths. The final integrated checks and live Discord verification remain release gates. The completed foundation remains protected by the existing Slack regression suites.
+The next gate is backend acceptance through the composed production DM routes, followed by final integrated checks, live Discord verification and published-head review/closeout. The completed foundation remains protected by the existing Slack regression suites.
 
 ## 15. Sources and planning validation
 

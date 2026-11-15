@@ -22,8 +22,9 @@ gateway process for each provider, alongside the API. Discord does not require S
   Binding additionally requires permission to share the selected agent. Users need Agents
   and Remote Agents use permissions, current agent access, and personal consent.
 
-Initial bindings support regular server text channels only. Threads, direct messages,
-forum channels and other channel types cannot be bound. One application/server/channel
+Bindings support regular server text channels only. Threads and direct messages use the
+existing binding and cannot be bound separately. Forum channels and other parent channel
+types are unsupported. One application/server/channel
 destination has one active agent binding. Replacing a binding closes the previous binding
 and requires new personal consent. Reconnecting a disconnected server also requires new
 bindings and consent.
@@ -71,7 +72,9 @@ Set `gateway.messageContent: true` only when you intentionally want that privile
 and enable or obtain approval for it in the Discord Developer Portal as required by Discord.
 Without Message Content intent, Discord can still include content for messages mentioning
 the bot. This integration admits supported mentions in bound text channels; it does not
-forward every server message to an agent.
+forward every server message to an agent. Supported native threads inherit their parent
+text-channel binding. Private threads also require current membership; archived or locked
+threads cannot receive new agent work.
 
 `publicUrl` is the public HTTPS base of the Discord gateway, independent of the LibreChat
 website and Slack gateway. The server builds each application's interactions endpoint as
@@ -225,9 +228,15 @@ the intended LibreChat account and review the requested agent consent. Complete 
 confirmation step when prompted. Each person must do this independently.
 
 Use `/librechat ask prompt: ...` to start an agent run, `/librechat status` to inspect the
-current run, and `/librechat cancel` to request cancellation. These execution commands
-currently require a supported server destination. Bot mentions use the optional Gateway message path described above. Unsupported
-events, bot-authored messages, unbound channels and missing consent do not grant execution.
+current run, and `/librechat cancel` to request cancellation. These commands work in a bound
+text channel, a supported thread beneath it, or an explicitly selected bot DM. Bot mentions
+use the optional Gateway message path described above. Unsupported events, bot-authored
+messages, unbound channels and missing consent do not grant execution.
+
+Repeated prompts in the same native thread share the invoking person's conversation lane,
+including when switching between slash commands and mentions. Another person has a separate
+lane. Replies stay in the thread; a failed thread permission check never redirects output
+to its parent channel.
 
 Bindings use per-user conversation isolation. This does not make Discord channel messages
 private: other people who can read that Discord channel can read messages posted there.
@@ -235,9 +244,11 @@ Choose an appropriate channel and do not send secrets in prompts.
 
 ### Select an Agent for Direct Messages
 
-DM selection metadata is available; DM execution remains disabled until the runtime
-integration and its release checks are complete. Enabling `discord.dm.enabled` alone
-does not make unfinished DM execution available.
+Direct messages are disabled by default. Set
+`endpoints.agents.channels.discord.dm.enabled: true` to allow selection codes and new DM
+execution. Signed DM slash commands do not require `discord.gateway.enabled`. Ordinary DM
+messages require both switches. Deploy matching API and gateway versions before enabling
+either path.
 
 After confirming a server account link, open **Settings > Account > Discord Direct Messages**.
 Choose **Use in Direct Messages** beside the intended agent, Discord account, server and
@@ -257,6 +268,18 @@ history and retry for failed loads. **Revoke DM Selection** requires confirmatio
 remains available when the source is unavailable or new DM selections are disabled.
 Revoking a DM selection leaves its server account link intact. Disconnecting that account
 link makes dependent selections unavailable.
+
+After selection, use `/librechat ask` in that bot DM, or send a normal DM when Gateway
+message ingestion is enabled. Answers are delivered to that DM channel. Status, Cancel,
+Stop, review links and answer feedback remain bound to the requesting account and current
+selection. Changing the selected agent does not transfer old runs or answer controls to
+the replacement selection. A prompt sent before selection confirmation cannot start work.
+
+Turning off `discord.dm.enabled` blocks new DM execution. Existing response metadata can
+still settle, and authorized status, cancellation, review and feedback remain available;
+new output still requires current source permissions and selection authority. Revoking,
+replacing or expiring the selection prevents queued prompts from obtaining execution
+credentials. To resume, make a new selection and send a fresh prompt.
 
 ## Rotation, Disconnect and Recovery
 
@@ -304,6 +327,14 @@ cannot prove real Discord OAuth, command propagation or public proxy configurati
 - Replace a binding, remove it, disconnect and reconnect the server, and rotate test
   credentials. Confirm old destinations and old consent cannot regain authority. Refresh
   after conflicts and confirm no secret appears in UI responses or diagnostic output.
+- In a native thread, mix slash asks and mentions and verify continuity for one actor and
+  isolation for another. Remove private-thread membership or archive the thread and verify
+  that output cannot move into the parent channel.
+- Generate a DM code in account settings, consume it from the intended bot DM, then test
+  ask, status, cancellation and feedback. Reject a different actor, an expired code and a
+  code replay after replacement. Revoke the selection and verify a fresh prompt cannot
+  execute. Check signed DM commands with Gateway ingestion disabled, and ordinary DMs
+  with both policy switches enabled.
 - If opting into Gateway messages, test mentions with its policy disabled and enabled.
   Test Message Content intent separately, then restart the gateway and confirm ownership
   recovery does not duplicate runs. Keep these tests separate from HTTP slash-command
