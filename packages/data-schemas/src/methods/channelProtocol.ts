@@ -17,6 +17,8 @@ export interface ChannelLaneScope {
 }
 
 export interface ChannelRunEnrollment extends ChannelLaneScope {
+  /** Verified application revision is a fence, never part of actor identity or payload hashes. */
+  applicationRevision?: string;
   workspaceId?: string;
   admission: ChannelRunAdmission;
 }

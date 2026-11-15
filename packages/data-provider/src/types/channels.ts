@@ -205,25 +205,26 @@ export interface SlackAgentChannel extends AgentChannelBase {
   type: 'slack';
   discord?: never;
   installationId?: never;
+  installationRevision?: never;
   /** Shared app installation; credentials remain owned by the workspace. */
   workspaceId?: string;
   slack?: { teamId: string; appId: string; botUserId: string };
 }
 
-/** Guild-installed Discord contract; not yet accepted by channel creation or storage. */
+/** Guild installation identity is immutable for the lifetime of a channel. */
 export interface DiscordAgentChannel extends AgentChannelBase {
   type: 'discord';
   credentialMode: 'per_user';
-  installationId?: string;
-  discord?: { applicationId: string; guildId: string; botUserId: string };
+  installationId: string;
+  installationRevision: string;
+  discord: { applicationId: string; guildId: string; botUserId: string; externalChannelId: string };
   workspaceId?: never;
   slack?: never;
 }
 
 export type ProviderAgentChannel = SlackAgentChannel | DiscordAgentChannel;
 
-/** Existing runtime and wire contracts remain Slack-only until provider dispatch is installed. */
-export type AgentChannel = SlackAgentChannel;
+export type AgentChannel = ProviderAgentChannel;
 
 export interface ActivateAgentChannel {
   slack: {

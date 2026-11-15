@@ -33,6 +33,7 @@ export interface ChannelIdentityStorage {
   saveChannelIdentity(
     record: ChannelIdentityRecord,
     expectedRevision: string | null,
+    applicationRevision?: string,
   ): Promise<boolean>;
   /** Owner-only authority reduction remains available after the channel closes. */
   revokeChannelIdentity(
@@ -118,7 +119,7 @@ export function createChannelIdentityStorage(
         { $unset: { slackReply: '' } },
       );
     },
-    async saveChannelIdentity(record, expectedRevision) {
+    async saveChannelIdentity(record, expectedRevision, applicationRevision) {
       assertChannelTenant(record.tenantId);
       channelExternalIdentitySchema.parse(record.identity);
       if (record.tenantId !== record.identity.tenantId)
@@ -197,6 +198,7 @@ export function createChannelIdentityStorage(
                   channelRevision: record.identity.channelRevision,
                   provider: record.identity.provider,
                   applicationId: record.identity.applicationId,
+                  applicationRevision,
                   guildId: record.identity.guildId,
                   teamId: record.identity.teamId,
                 },
