@@ -6,6 +6,7 @@ import { discordChannelConfigSchema } from 'librechat-data-provider';
 import {
   createModels,
   createDiscordInstallationStorage,
+  createDiscordRouteStorage,
   createMethods,
   tenantStorage,
   runAsSystem,
@@ -504,7 +505,7 @@ async function createDiscordChannel() {
       agentId: 'agent-test',
       createdBy: owner,
       type: 'discord',
-      status: 'active',
+      status: 'pending_install',
       credentialMode: 'per_user',
       revision: 'channel-revision',
       installationId: guild.value.installationId,
@@ -512,6 +513,16 @@ async function createDiscordChannel() {
       applicationRevision: application.value.revision,
       discord: { applicationId, guildId, botUserId, externalChannelId: '456789012345678901' },
     });
+    const assigned = await createDiscordRouteStorage(mongoose).assign({
+      actorId: owner,
+      installationId: guild.value.installationId,
+      installationRevision: guild.value.revision,
+      applicationRevision: application.value.revision,
+      externalChannelId: '456789012345678901',
+      channelId: 'discord-channel',
+      channelRevision: 'channel-revision',
+    });
+    if (!assigned.ok) throw new Error(assigned.error.code);
     return application.value.revision;
   });
 }
