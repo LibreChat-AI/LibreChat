@@ -699,3 +699,25 @@ it('records feedback for the exact immutable native thread mapping and rejects a
       ok: false,
     });
   }));
+
+it('validates a DM mapping separately from legacy guild sources and rejects mixed or partial restored scopes', async () => {
+  const dm = {
+    ...mapping,
+    guildId: undefined,
+    scope: 'dm',
+    selectionId: 'selection',
+    selectionRevision: 'generation',
+    sourceGuildId: guildId,
+    parentChannelId: externalChannelId,
+    confirmationEventId: '700000000000000000',
+  };
+  await expect(new db.models.ChannelReply(dm).validate()).resolves.toBeUndefined();
+  for (const patch of [
+    { guildId },
+    { scope: 'future' },
+    { sourceGuildId: undefined },
+    { confirmationEventId: undefined },
+    { parentChannelId: 'invalid' },
+  ])
+    await expect(new db.models.ChannelReply({ ...dm, ...patch }).validate()).rejects.toThrow();
+});

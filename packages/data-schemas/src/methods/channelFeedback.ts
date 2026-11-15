@@ -1,3 +1,4 @@
+import { channelRunAdmissionSchema } from 'librechat-data-provider';
 import type {
   ChannelReplyMapping,
   ChannelFeedbackActor,
@@ -27,6 +28,7 @@ import { channelFeedbackProviderFilter } from './channelFeedbackProtocol';
 import { readChannelFeedbackReplySource } from './channelFeedbackSource';
 import { createDiscordFeedbackRecorder } from './discordFeedback';
 import { createChannelIndexGate } from './channelIndexes';
+import { channelRunActorScope } from './channelProvider';
 import { assertChannelTenant } from './channelScope';
 export type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
 export type { ChannelFeedbackReplySource } from './channelFeedbackSource';
@@ -159,7 +161,7 @@ export function createChannelFeedbackStorage(
         const actor = run.admission.actor;
         if (
           actor.provider !== 'discord' ||
-          actor.scope !== undefined ||
+          !channelRunAdmissionSchema.safeParse(run.admission).success ||
           !run.principal.linkId ||
           !run.principal.linkRevision ||
           run.snapshot?.status !== 'completed' ||
@@ -180,16 +182,11 @@ export function createChannelFeedbackStorage(
           'principal.channelRevision': run.principal.channelRevision,
           'principal.linkId': run.principal.linkId,
           'principal.linkRevision': run.principal.linkRevision,
-          ...channelFeedbackProviderFilter(
-            {
-              ...actor,
-              tenantId: run.tenantId,
-              channelId: run.channelId,
-              channelRevision: run.principal.channelRevision,
-              agentId: run.agentId,
-            },
-            'admission.actor.',
-          ),
+          ...channelRunActorScope(actor),
+          ...(run.admission.discordDestination
+            ? { 'admission.discordDestination': run.admission.discordDestination }
+            : { 'admission.discordDestination': { $exists: false } }),
+          'admission.externalThreadKey': run.admission.externalThreadKey,
           'admission.actor.externalUserId': actor.externalUserId,
           'admission.externalChannelId': run.admission.externalChannelId,
           'snapshot.status': 'completed',

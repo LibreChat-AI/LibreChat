@@ -44,6 +44,24 @@ export function channelFeedbackProviderFilter(
   actor: ChannelFeedbackActor,
   prefix = '',
 ): Record<string, string | { $exists: false }> {
+  if (actor.provider === 'discord' && actor.scope === 'dm')
+    return {
+      [`${prefix}provider`]: 'discord',
+      [`${prefix}scope`]: 'dm',
+      [`${prefix}selectionId`]: actor.selectionId,
+      [`${prefix}selectionRevision`]: actor.selectionRevision,
+      [`${prefix}applicationId`]: actor.applicationId,
+      [`${prefix}externalUserId`]: actor.externalUserId,
+      [`${prefix}guildId`]: { $exists: false },
+      [`${prefix}teamId`]: { $exists: false },
+      ...(prefix
+        ? { [`${prefix}appId`]: { $exists: false as const } }
+        : {
+            sourceGuildId: actor.sourceGuildId,
+            parentChannelId: actor.parentChannelId,
+            confirmationEventId: actor.confirmationEventId,
+          }),
+    };
   const runScope = prefix
     ? {
         [`${prefix}scope`]: { $exists: false as const },

@@ -1,3 +1,4 @@
+import { isDiscordFeedbackScope } from 'librechat-data-provider';
 import type {
   ChannelFeedbackActor,
   ChannelReplyMapping,
@@ -7,16 +8,74 @@ import type {
 import type { ClientSession, FilterQuery } from 'mongoose';
 import type { ChannelRunRecord } from '~/models/channelRun';
 import { channelFeedbackProviderFilter } from './channelFeedbackProtocol';
+import { createDiscordDmSelectionModel } from '~/models/discordDm';
 import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { assertChannelTenant } from './channelScope';
 
-type ReplySource<T extends ChannelReplyMapping> = Omit<
-  T,
-  'traceId' | 'centralTraceExportEnabled'
-> & { langfuseRunId?: string; centralTraceExportEnabled?: boolean };
+type ReplySource<T extends ChannelReplyMapping> = T extends ChannelReplyMapping
+  ? Omit<T, 'traceId' | 'centralTraceExportEnabled'> & {
+      langfuseRunId?: string;
+      centralTraceExportEnabled?: boolean;
+    }
+  : never;
 export type ChannelFeedbackReplySource =
   | ReplySource<SlackChannelReplyMapping>
   | ReplySource<DiscordChannelReplyMapping>;
+
+/** A source guild is selected metadata, never a guild field on the physical DM run actor. */
+export async function discordFeedbackDmCurrent(
+  mongoose: typeof import('mongoose'),
+  actor: Extract<ChannelFeedbackActor, { scope: 'dm' }>,
+  session?: ClientSession,
+): Promise<boolean> {
+  assertChannelTenant(actor.tenantId);
+  if (!isDiscordFeedbackScope(actor)) return false;
+  return Boolean(
+    await createDiscordDmSelectionModel(mongoose)
+      .exists({
+        tenantId: actor.tenantId === '_' ? null : actor.tenantId,
+        applicationId: actor.applicationId,
+        externalUserId: actor.externalUserId,
+        dmChannelId: actor.externalChannelId,
+        selectionId: actor.selectionId,
+        revision: actor.selectionRevision,
+        confirmationEventId: actor.confirmationEventId,
+        scope: 'dm',
+        state: 'active',
+        expiresAtMs: { $gt: Date.now() },
+        'source.applicationId': actor.applicationId,
+        'source.externalUserId': actor.externalUserId,
+        'source.guildId': actor.sourceGuildId,
+        'source.externalChannelId': actor.parentChannelId,
+        'source.channelId': actor.channelId,
+        'source.channelRevision': actor.channelRevision,
+        'source.agentId': actor.agentId,
+        'source.userId': actor.principalId,
+        'source.linkId': actor.linkId,
+        'source.linkRevision': actor.linkRevision,
+      })
+      .session(session ?? null),
+  );
+}
+export function discordFeedbackDestinationFilter(
+  actor: ChannelFeedbackActor,
+): FilterQuery<ChannelRunRecord> {
+  return actor.provider === 'discord' && actor.scope === 'dm'
+    ? {
+        'principal.userId': actor.principalId,
+        'principal.linkId': actor.linkId,
+        'principal.linkRevision': actor.linkRevision,
+        'admission.externalChannelId': actor.externalChannelId,
+        'admission.externalThreadKey': `${actor.externalChannelId}:${actor.confirmationEventId}`,
+        'admission.discordDestination': {
+          kind: 'dm',
+          parentChannelId: actor.parentChannelId,
+          selectionId: actor.selectionId,
+          selectionRevision: actor.selectionRevision,
+        },
+      }
+    : {};
+}
 
 /** Match a confirmed receipt to its immutable required answer part, excluding progress and diagnostics. */
 export function discordFeedbackDeliveryFilter(
@@ -70,6 +129,12 @@ export async function readChannelFeedbackReplySource(
   session?: ClientSession,
 ): Promise<ChannelFeedbackReplySource | null> {
   assertChannelTenant(actor.tenantId);
+  if (
+    actor.provider === 'discord' &&
+    actor.scope === 'dm' &&
+    !(await discordFeedbackDmCurrent(mongoose, actor, session))
+  )
+    return null;
   const query = mongoose.model('ChannelRun').aggregate<ChannelFeedbackReplySource>([
     {
       $match: {
@@ -79,6 +144,7 @@ export async function readChannelFeedbackReplySource(
         state: 'delivered',
         'principal.channelRevision': actor.channelRevision,
         ...channelFeedbackProviderFilter(actor, 'admission.actor.'),
+        ...discordFeedbackDestinationFilter(actor),
         ...(actor.provider === 'discord'
           ? {
               'principal.linkId': { $type: 'string', $ne: '' },
@@ -149,7 +215,16 @@ export async function readChannelFeedbackReplySource(
           ? {
               provider: { $literal: 'discord' },
               applicationId: '$admission.actor.applicationId',
-              guildId: '$admission.actor.guildId',
+              ...(actor.scope === 'dm'
+                ? {
+                    scope: { $literal: 'dm' },
+                    selectionId: '$admission.actor.selectionId',
+                    selectionRevision: '$admission.actor.selectionRevision',
+                    parentChannelId: '$admission.discordDestination.parentChannelId',
+                    sourceGuildId: { $literal: actor.sourceGuildId },
+                    confirmationEventId: { $literal: actor.confirmationEventId },
+                  }
+                : { guildId: '$admission.actor.guildId' }),
               externalChannelId: '$admission.externalChannelId',
               externalUserId: '$admission.actor.externalUserId',
               linkId: '$principal.linkId',
