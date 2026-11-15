@@ -45,5 +45,23 @@ export function toAggregateInsightsResponse(
       feedback: toAggregateFeedback(day.feedback),
       spendUSD: day.spendUSD,
     })),
+    models: insights.models.map((model) => ({
+      model: model.model,
+      responses: model.responses,
+      completedResponses: model.completedResponses,
+      failedResponses: model.failedResponses,
+      interruptedResponses: model.interruptedResponses,
+      thumbsUp: model.thumbsUp,
+      thumbsDown: model.thumbsDown,
+      usageTokens: model.usageTokens,
+      spendUSD: model.spendUSD,
+    })),
+    ...(insights.agentVersions !== undefined && {
+      agentVersions: insights.agentVersions.map(({ agentId, version, savedAt }) => ({
+        agentId,
+        version,
+        savedAt,
+      })),
+    }),
   };
 }

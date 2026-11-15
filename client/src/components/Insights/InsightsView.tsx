@@ -11,8 +11,11 @@ import {
 } from 'librechat-data-provider';
 import type {
   InsightsRange,
+  TInsightsAgent,
+  TInsightsAgentVersion,
   TInsightsChurnedUser,
   TInsightsConversation,
+  TInsightsModel,
   TInsightsParams,
   TInsightsUser,
 } from 'librechat-data-provider';
@@ -354,6 +357,148 @@ function TopUsersTable({
                   </td>
                   <td className="px-2 py-3 text-end tabular-nums">
                     {formatExactValue(entry.conversations, locale)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </TablePanel>
+  );
+}
+
+const modelColumns: Array<{
+  labelKey: TranslationKeys;
+  value: (row: TInsightsModel, locale: string) => string;
+}> = [
+  { labelKey: 'com_insights_responses', value: (row, l) => formatExactValue(row.responses, l) },
+  {
+    labelKey: 'com_insights_completed',
+    value: (row, l) => formatExactValue(row.completedResponses, l),
+  },
+  { labelKey: 'com_insights_failed', value: (row, l) => formatExactValue(row.failedResponses, l) },
+  {
+    labelKey: 'com_insights_interrupted',
+    value: (row, l) => formatExactValue(row.interruptedResponses, l),
+  },
+  { labelKey: 'com_insights_thumbs_up', value: (row, l) => formatExactValue(row.thumbsUp, l) },
+  { labelKey: 'com_insights_thumbs_down', value: (row, l) => formatExactValue(row.thumbsDown, l) },
+  {
+    labelKey: 'com_insights_usage_tokens',
+    value: (row, l) => formatExactValue(row.usageTokens, l),
+  },
+  { labelKey: 'com_insights_spend', value: (row, l) => formatSpend(row.spendUSD ?? 0, l) },
+];
+
+function ModelsTable({
+  rows,
+  localize,
+  locale,
+}: {
+  rows: TInsightsModel[];
+  localize: Localize;
+  locale: string;
+}) {
+  return (
+    <TablePanel title={localize('com_insights_models')}>
+      <p className="text-text-secondary -mt-1 mb-3 text-sm">
+        {localize('com_insights_models_definition')}
+      </p>
+      {rows.length === 0 ? (
+        <EmptyState message={localize('com_insights_no_data')} />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[50rem] text-left text-sm">
+            <thead className="border-border-medium text-text-secondary border-b text-xs">
+              <tr>
+                <th className="px-2 py-2 font-medium">{localize('com_insights_model')}</th>
+                {modelColumns.map(({ labelKey }) => (
+                  <th key={labelKey} className="px-2 py-2 text-right font-medium">
+                    {localize(labelKey)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-border-light divide-y">
+              {rows.map((row, index) => (
+                <tr key={row.model ?? `unknown-${index}`} className="hover:bg-surface-hover">
+                  <td className="max-w-[16rem] truncate px-2 py-3" title={row.model ?? undefined}>
+                    {row.model ?? (
+                      <span className="text-text-secondary">
+                        {localize('com_insights_unknown_model')}
+                      </span>
+                    )}
+                  </td>
+                  {modelColumns.map(({ labelKey, value }) => (
+                    <td key={labelKey} className="px-2 py-3 text-right tabular-nums">
+                      {value(row, locale)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </TablePanel>
+  );
+}
+
+function AgentVersionsTable({
+  agents,
+  rows,
+  localize,
+  locale,
+  timeZone,
+}: {
+  agents: TInsightsAgent[];
+  rows: TInsightsAgentVersion[];
+  localize: Localize;
+  locale: string;
+  timeZone: string;
+}) {
+  const names = new Map(agents.map(({ id, name }) => [id, name]));
+  return (
+    <TablePanel title={localize('com_insights_agent_versions')}>
+      <p className="text-text-secondary -mt-1 mb-3 text-sm">
+        {localize('com_insights_agent_versions_definition')}
+      </p>
+      {rows.length === 0 ? (
+        <EmptyState message={localize('com_insights_no_agent_versions')} />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="border-border-medium text-text-secondary border-b text-xs">
+              <tr>
+                <th scope="col" className="px-2 py-2 font-medium">
+                  {localize('com_insights_agent')}
+                </th>
+                <th scope="col" className="px-2 py-2 font-medium">
+                  {localize('com_insights_version')}
+                </th>
+                <th scope="col" className="px-2 py-2 font-medium">
+                  {localize('com_insights_version_saved')}
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-border-light divide-y">
+              {rows.map(({ agentId, version, savedAt }) => (
+                <tr key={`${agentId}:${version}`} className="hover:bg-surface-hover">
+                  <td className="px-2 py-3">{names.get(agentId) ?? agentId}</td>
+                  <td className="px-2 py-3 tabular-nums">{formatExactValue(version, locale)}</td>
+                  <td className="px-2 py-3">
+                    {savedAt == null ? (
+                      localize('com_insights_version_date_unavailable')
+                    ) : (
+                      <time dateTime={savedAt}>
+                        {new Intl.DateTimeFormat(locale, {
+                          dateStyle: 'medium',
+                          timeStyle: 'short',
+                          timeZone,
+                        }).format(new Date(savedAt))}
+                      </time>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1033,6 +1178,16 @@ export default function InsightsView() {
                   )}
                 </Panel>
               </section>
+              <ModelsTable rows={data.models} localize={localize} locale={locale} />
+              {data.agentVersions !== undefined && (
+                <AgentVersionsTable
+                  agents={data.agents}
+                  rows={data.agentVersions}
+                  localize={localize}
+                  locale={locale}
+                  timeZone={timeZone}
+                />
+              )}
               {(data.topUsers || data.churnedUsers) && (
                 <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,36.25rem),1fr))] gap-3">
                   {data.topUsers && (

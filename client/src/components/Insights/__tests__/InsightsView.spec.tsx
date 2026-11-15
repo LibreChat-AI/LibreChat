@@ -34,13 +34,24 @@ const insightsData: TInsightsResponse = {
     },
   },
   daily: [],
+  models: [],
   latest: { conversations: [], page: 1, pageSize: 10, pages: 1 },
   topUsers: [],
   churnedUsers: [],
 };
 
 const mockUseInsightsQuery = jest.fn(
-  (params: TInsightsParams, _options?: { enabled?: boolean; retry?: boolean }) => ({
+  (
+    params: TInsightsParams,
+    _options?: { enabled?: boolean; retry?: boolean },
+  ): {
+    data?: TInsightsResponse;
+    isLoading: boolean;
+    isFetching: boolean;
+    isError?: boolean;
+    error: Error | null;
+    params: TInsightsParams;
+  } => ({
     data: insightsData,
     isLoading: false,
     isFetching: false,
@@ -89,9 +100,9 @@ function lastQueryParams(): TInsightsParams {
   return mockUseInsightsQuery.mock.calls[mockUseInsightsQuery.mock.calls.length - 1][0];
 }
 
-function renderView() {
+function renderView(path = '/insights') {
   return render(
-    <MemoryRouter initialEntries={['/insights']}>
+    <MemoryRouter initialEntries={[path]}>
       <InsightsView />
     </MemoryRouter>,
   );
@@ -161,6 +172,7 @@ describe('InsightsView agent selection', () => {
         agents: insightsData.agents,
         summary: insightsData.summary,
         daily: insightsData.daily,
+        models: insightsData.models,
       },
       isLoading: false,
       isFetching: false,
@@ -197,6 +209,7 @@ describe('InsightsView agent selection', () => {
           },
         },
         daily: [dailyPoint('2026-10-01', null), dailyPoint('2026-10-02', null)],
+        models: [],
       },
       isLoading: false,
       isFetching: false,
@@ -265,6 +278,177 @@ describe('InsightsView agent selection', () => {
     expect(metricCard('com_insights_thumbs_up').getByText('0')).toBeInTheDocument();
     expect(metricCard('com_insights_thumbs_down').getByText('0')).toBeInTheDocument();
   });
+
+  it('lists recorded models, an unknown-model row and missing spend as zero', () => {
+    const counts = {
+      completedResponses: 0,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      thumbsUp: 0,
+      thumbsDown: 0,
+    };
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: {
+        ...insightsData,
+        models: [
+          {
+            ...counts,
+            model: 'gpt-4.1',
+            responses: 3,
+            completedResponses: 2,
+            failedResponses: 1,
+            thumbsUp: 1,
+            usageTokens: 1234,
+            spendUSD: 0.5,
+          },
+          { ...counts, model: 'title-model', responses: 0, usageTokens: 20, spendUSD: 0.01 },
+          {
+            ...counts,
+            model: null,
+            responses: 1,
+            interruptedResponses: 1,
+            thumbsDown: 1,
+            usageTokens: 0,
+            spendUSD: null,
+          },
+        ],
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+
+    renderView();
+
+    const panel = metricCard('com_insights_models');
+    expect(panel.getByText('com_insights_models_definition')).toBeInTheDocument();
+    expect(panel.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'com_insights_model',
+      'com_insights_responses',
+      'com_insights_completed',
+      'com_insights_failed',
+      'com_insights_interrupted',
+      'com_insights_thumbs_up',
+      'com_insights_thumbs_down',
+      'com_insights_usage_tokens',
+      'com_insights_spend',
+    ]);
+    const rows = panel
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) =>
+        within(row)
+          .getAllByRole('cell')
+          .map((cell) => cell.textContent),
+      );
+    expect(rows).toEqual([
+      ['gpt-4.1', '3', '2', '1', '0', '1', '0', '1,234', '$0.50'],
+      ['title-model', '0', '0', '0', '0', '0', '0', '20', '$0.01'],
+      ['com_insights_unknown_model', '1', '0', '0', '1', '0', '1', '0', '$0.00'],
+    ]);
+  });
+
+  it('shows an empty models panel when no usage or responses were recorded', () => {
+    renderView();
+
+    const panel = metricCard('com_insights_models');
+    expect(panel.getByText('com_insights_no_data')).toBeInTheDocument();
+    expect(panel.queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  it('shows saved versions and timestamps for one selected agent in aggregate-only mode', () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: {
+        agents: insightsData.agents,
+        summary: insightsData.summary,
+        daily: [],
+        models: [],
+        agentVersions: [
+          { agentId: 'agent-1', version: 1, savedAt: '2026-09-01T12:00:00.000Z' },
+          { agentId: 'agent-1', version: 2, savedAt: null },
+          { agentId: 'agent-1', version: 3, savedAt: '2026-10-03T12:00:00.000Z' },
+        ],
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+    renderView('/insights?agentIds=agent-1');
+    const panel = metricCard('com_insights_agent_versions');
+    expect(panel.getByText('com_insights_agent_versions_definition')).toBeInTheDocument();
+    expect(
+      panel
+        .getAllByRole('row')
+        .slice(1)
+        .map((row) => within(row).getAllByRole('cell')[1].textContent),
+    ).toEqual(['1', '2', '3']);
+    expect(panel.getByText('com_insights_version_date_unavailable')).toBeInTheDocument();
+    expect(panel.getByRole('table').querySelectorAll('time')[0]).toHaveAttribute(
+      'datetime',
+      '2026-09-01T12:00:00.000Z',
+    );
+  });
+
+  it('shows the empty history state for a single legacy agent', () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: { ...insightsData, agentVersions: [] },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+    renderView('/insights?agentIds=agent-1');
+    const panel = metricCard('com_insights_agent_versions');
+    expect(panel.getByText('com_insights_no_agent_versions')).toBeInTheDocument();
+    expect(panel.queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  it.each(['/insights', '/insights?agentIds=agent-1&agentIds=agent-2'])(
+    'shows versions with agent names when several agents are selected: %s',
+    (path) => {
+      mockUseInsightsQuery.mockImplementation((params) => ({
+        data: {
+          ...insightsData,
+          agentVersions: [
+            { agentId: 'agent-1', version: 1, savedAt: '2026-09-01T12:00:00.000Z' },
+            { agentId: 'agent-2', version: 1, savedAt: '2026-10-01T12:00:00.000Z' },
+          ],
+        },
+        isLoading: false,
+        isFetching: false,
+        error: null,
+        params,
+      }));
+      renderView(path);
+      const panel = metricCard('com_insights_agent_versions');
+      expect(panel.getByText('Alpha')).toBeInTheDocument();
+      expect(panel.getByText('Beta')).toBeInTheDocument();
+      expect(panel.getAllByRole('row')).toHaveLength(3);
+    },
+  );
+
+  it.each([false, true])(
+    'keeps version history inside the dashboard loading/error flow: error=%s',
+    (isError) => {
+      mockUseInsightsQuery.mockImplementation((params) => ({
+        data: undefined,
+        isLoading: !isError,
+        isFetching: !isError,
+        isError,
+        error: isError ? new Error('request failed') : null,
+        params,
+      }));
+      renderView('/insights?agentIds=agent-1');
+      expect(
+        screen.getByText(isError ? 'com_insights_load_error' : 'com_insights_loading'),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole('heading', { name: 'com_insights_agent_versions' }),
+      ).not.toBeInTheDocument();
+    },
+  );
 
   it('plots missing daily spend as zero in the line and tooltip', () => {
     const spend = [0.0001, 0.0002, null, 0.0003, 0, null];

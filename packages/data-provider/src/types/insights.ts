@@ -22,6 +22,13 @@ export type TInsightsAgent = {
   name: string;
 };
 
+/** Existing saved version metadata, without configuration snapshots or editor identities. */
+export type TInsightsAgentVersion = {
+  agentId: string;
+  version: number;
+  savedAt: string | null;
+};
+
 export type TInsightsResponseOutcomes = {
   completedResponses: number;
   failedResponses: number;
@@ -86,10 +93,27 @@ export type TInsightsSummary = TInsightsResponseOutcomes & {
   spendUSD: number | null;
 };
 
+/** Activity of the selected agents by the LLM model recorded on usage transactions. */
+export type TInsightsModel = TInsightsResponseOutcomes & {
+  /** Model name from usage transactions; null for replies or usage without a known model. */
+  model: string | null;
+  /** Replies counted once, under the model of their last completion usage row. */
+  responses: number;
+  thumbsUp: number;
+  thumbsDown: number;
+  /** Prompt (including cached prompt) and completion tokens recorded on usage transactions. */
+  usageTokens: number;
+  /** Recorded usage spend; null when no eligible usage transactions exist for the model. */
+  spendUSD: number | null;
+};
+
 export type TInsightsAggregateResponse = {
   agents: TInsightsAgent[];
   summary: TInsightsSummary;
   daily: TInsightsDailyPoint[];
+  models: TInsightsModel[];
+  /** Saved version history of the selected agents. */
+  agentVersions?: TInsightsAgentVersion[];
 };
 
 export type TInsightsDetailSections = {

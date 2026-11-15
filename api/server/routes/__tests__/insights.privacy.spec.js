@@ -81,6 +81,19 @@ const detailed = {
       spendUSD: 0.25,
     },
   ],
+  models: [
+    {
+      model: 'model-x',
+      responses: 3,
+      completedResponses: 1,
+      failedResponses: 1,
+      interruptedResponses: 1,
+      thumbsUp: 0,
+      thumbsDown: 0,
+      usageTokens: 8,
+      spendUSD: 0.25,
+    },
+  ],
   topUsers: [{ userId: privateValue, name: privateValue, email: privateValue }],
   churnedUsers: [],
   latest: {
@@ -141,7 +154,12 @@ describe('Insights API privacy', () => {
         tenantId: 'forged-tenant',
       });
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({ agents, summary: detailed.summary, daily: detailed.daily });
+      expect(response.body).toEqual({
+        agents,
+        summary: detailed.summary,
+        daily: detailed.daily,
+        models: detailed.models,
+      });
       expect(response.text).not.toContain(privateValue);
       expect(mockGetInsights).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -248,7 +266,12 @@ describe('Insights API privacy', () => {
         pageSize: 50,
       });
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({ agents, summary: detailed.summary, daily: detailed.daily });
+      expect(response.body).toEqual({
+        agents,
+        summary: detailed.summary,
+        daily: detailed.daily,
+        models: detailed.models,
+      });
       expect(response.text).not.toContain(privateValue);
       expect(mockGetInsights).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -316,7 +339,7 @@ describe('Insights API privacy', () => {
     );
     expect(Object.hasOwn(response.body, 'latest')).toBe(expectedDetail);
     if (!expectedDetail) {
-      expect(Object.keys(response.body).sort()).toEqual(['agents', 'daily', 'summary']);
+      expect(Object.keys(response.body).sort()).toEqual(['agents', 'daily', 'models', 'summary']);
       expect(response.text).not.toContain(privateValue);
     }
     expect(response.body).not.toHaveProperty('detailAgentIds');

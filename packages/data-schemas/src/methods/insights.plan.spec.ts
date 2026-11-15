@@ -9,6 +9,7 @@ import { createTransactionModel } from '../models/transaction';
 import { createConversationModel } from '../models/convo';
 import { createMessageModel } from '../models/message';
 import { createInsightsMethods } from './insights';
+import { createAgentModel } from '../models/agent';
 import { createUserModel } from '../models/user';
 
 const reportPath = process.env.INSIGHTS_PLAN_REPORT;
@@ -69,6 +70,7 @@ planSuite('Insights query plans (opt in with INSIGHTS_PLAN_REPORT)', () => {
       createMessageModel(mongoose).init(),
       createTransactionModel(mongoose).init(),
       createUserModel(mongoose).init(),
+      createAgentModel(mongoose).init(),
     ]);
   });
 
@@ -196,7 +198,13 @@ planSuite('Insights query plans (opt in with INSIGHTS_PLAN_REPORT)', () => {
         expect(result.summary.totalUsers).toBe(users);
         expect(result.summary.spendUSD).toBeCloseTo(messages / 1_000, 8);
         expect(result.summary.lastUsed).toBe(activeAt.toISOString());
-        expect(Object.keys(result).sort()).toEqual(['agents', 'daily', 'summary']);
+        expect(Object.keys(result).sort()).toEqual([
+          'agentVersions',
+          'agents',
+          'daily',
+          'models',
+          'summary',
+        ]);
       }
       captured = [
         ...conversationSpy.mock.calls.flatMap(([pipeline]) =>

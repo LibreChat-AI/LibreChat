@@ -8,11 +8,13 @@ import {
 import type {
   TInsightsAggregateResponse,
   TInsightsAgent,
+  TInsightsAgentVersion,
   TInsightsChurnedUser,
   TInsightsConversation,
   TInsightsDailyPoint,
   TInsightsDetailedResponse,
   TInsightsFeedback,
+  TInsightsModel,
   TInsightsParams,
   TInsightsResponse,
   TInsightsResponseOutcomes,
@@ -20,7 +22,7 @@ import type {
   TInsightsUser,
 } from 'librechat-data-provider';
 import type { Model, PipelineStage } from 'mongoose';
-import type { IConversation, IUser } from '~/types';
+import type { IAgent, IConversation, IUser } from '~/types';
 
 export type InsightsOptions = TInsightsParams & {
   tenantId?: string;
@@ -42,7 +44,13 @@ export type InsightsMethods = {
 
 type CountResult = { total: number };
 type ConversationDay = { date: string; conversations: number };
-type SpendDay = { date: string; spendUSD: number };
+type ModelSpend = { date: string; model: unknown; credits: number; usageTokens: number };
+type ModelReplies = TInsightsResponseOutcomes & {
+  _id: unknown;
+  responses: number;
+  thumbsUp: number;
+  thumbsDown: number;
+};
 type DailyUsers = { date: string; users: number };
 type UserMessageTotals = { messages: number };
 type RecentConversation = { conversationId: string; agentId: string; date: Date; userId: string };
@@ -80,6 +88,38 @@ const defaultRange = '7d';
 const churnedUserWindowDays = 28;
 const churnedUserLimit = 8;
 const dayMs = 24 * 60 * 60 * 1000;
+/** A reply's usage rows are recorded around its own creation time; looking this far past
+ * the period edges keeps replies near a boundary attributed to their model. */
+const replyUsageWindowMs = dayMs;
+/** Usage recorded for the reply's own run. Title, summarization, memory and sub-agent usage
+ * also carries the reply's messageId but comes from other models, so it only counts as spend. */
+const replyUsageContexts = ['message', 'abort', 'incomplete', 'reasoning', null];
+
+const responseRating = { $cond: [{ $eq: ['$isCreatedByUser', false] }, '$feedback.rating', null] };
+const responseOutcome = {
+  $cond: [
+    { $eq: ['$isCreatedByUser', false] },
+    {
+      $cond: [
+        {
+          // Provider failures mid-answer are saved as an error content block with error: false.
+          $or: [{ $eq: ['$error', true] }, { $in: ['error', { $ifNull: ['$content.type', []] }] }],
+        },
+        'failed',
+        {
+          $cond: [{ $eq: ['$unfinished', true] }, 'interrupted', 'completed'],
+        },
+      ],
+    },
+    null,
+  ],
+};
+const outcomeCount = (outcome: string) => ({
+  $sum: { $cond: [{ $eq: ['$insightsOutcome', outcome] }, 1, 0] },
+});
+const ratingCount = (rating: string) => ({
+  $sum: { $cond: [{ $eq: ['$insightsFeedbackRating', rating] }, 1, 0] },
+});
 
 function tenantMatch(tenantId?: string, prefix = '') {
   const field = `${prefix}tenantId`;
@@ -269,6 +309,108 @@ function messageScope(
   ];
 }
 
+/** Usage transactions of eligible conversations, owned by the conversation owner. */
+function transactionScope(
+  agentIds: string[],
+  tenantId: string | undefined,
+  createdAt: { $gte: Date; $lte: Date },
+  match: Record<string, unknown> = {},
+): PipelineStage[] {
+  return [
+    ...conversationScope(agentIds, tenantId),
+    {
+      $lookup: {
+        from: 'transactions',
+        localField: 'conversationId',
+        foreignField: 'conversationId',
+        as: 'insightsTransaction',
+      },
+    },
+    { $unwind: '$insightsTransaction' },
+    {
+      $match: {
+        ...tenantMatch(tenantId, 'insightsTransaction.'),
+        'insightsTransaction.createdAt': createdAt,
+        ...match,
+      },
+    },
+    {
+      $addFields: {
+        insightsTransactionOwnerMatches: {
+          $eq: [
+            '$user',
+            {
+              $convert: {
+                input: '$insightsTransaction.user',
+                to: 'string',
+                onError: null,
+                onNull: null,
+              },
+            },
+          ],
+        },
+        insightsTransactionIsUsage: {
+          $and: [
+            {
+              $or: [
+                { $eq: ['$insightsTransaction.tokenType', 'prompt'] },
+                { $eq: ['$insightsTransaction.tokenType', 'completion'] },
+              ],
+            },
+            { $gte: ['$insightsTransaction.tokenValue', -Number.MAX_VALUE] },
+            { $lte: ['$insightsTransaction.tokenValue', 0] },
+          ],
+        },
+      },
+    },
+    {
+      $match: {
+        insightsTransactionOwnerMatches: true,
+        insightsTransactionIsUsage: true,
+      },
+    },
+  ];
+}
+
+const modelKey = (model: unknown): string | null =>
+  typeof model === 'string' && model.trim() !== '' ? model : null;
+
+const emptyModel = (model: string | null): TInsightsModel => ({
+  model,
+  responses: 0,
+  completedResponses: 0,
+  failedResponses: 0,
+  interruptedResponses: 0,
+  thumbsUp: 0,
+  thumbsDown: 0,
+  usageTokens: 0,
+  spendUSD: null,
+});
+
+async function getSavedVersions(
+  mongoose: typeof import('mongoose'),
+  agentIds: string[],
+  tenantId?: string,
+): Promise<TInsightsAgentVersion[]> {
+  const Agent = mongoose.models.Agent as Model<IAgent>;
+  const agents = await Agent.find(
+    { id: { $in: agentIds }, ...tenantMatch(tenantId) },
+    { id: 1, 'versions.updatedAt': 1, _id: 0 },
+  )
+    .sort({ id: 1 })
+    .lean<Array<{ id: string; versions?: Array<{ updatedAt?: Date | string | null }> }>>();
+  return agents.flatMap((agent) =>
+    (agent.versions ?? []).map((snapshot, index) => {
+      const date = snapshot?.updatedAt == null ? null : new Date(snapshot.updatedAt);
+      return {
+        agentId: agent.id,
+        version: index + 1,
+        savedAt: date != null && !Number.isNaN(date.getTime()) ? date.toISOString() : null,
+      };
+    }),
+  );
+}
+
 const emptyFeedback = (): TInsightsFeedback => ({
   thumbsUp: 0,
   thumbsDown: 0,
@@ -395,7 +537,9 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       dailyUsers,
       topMessageUsers,
       churnedUserRows,
-      spendDays,
+      spendRows,
+      modelReplyRows,
+      agentVersions,
     ] = await Promise.all([
       Conversation.aggregate<ConversationDay>([
         ...conversationPipeline,
@@ -435,31 +579,9 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         ...messagePipeline,
         {
           $addFields: {
-            insightsFeedbackRating: {
-              $cond: [{ $eq: ['$isCreatedByUser', false] }, '$feedback.rating', null],
-            },
+            insightsFeedbackRating: responseRating,
             insightsFeedbackTag: { $ifNull: ['$feedback.tag.key', '$feedback.tag'] },
-            insightsOutcome: {
-              $cond: [
-                { $eq: ['$isCreatedByUser', false] },
-                {
-                  $cond: [
-                    {
-                      // Provider failures mid-answer are saved as an error content block with error: false.
-                      $or: [
-                        { $eq: ['$error', true] },
-                        { $in: ['error', { $ifNull: ['$content.type', []] }] },
-                      ],
-                    },
-                    'failed',
-                    {
-                      $cond: [{ $eq: ['$unfinished', true] }, 'interrupted', 'completed'],
-                    },
-                  ],
-                },
-                null,
-              ],
-            },
+            insightsOutcome: responseOutcome,
           },
         },
         {
@@ -468,22 +590,12 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             messages: { $sum: 1 },
             totalTokens: { $sum: { $ifNull: ['$tokenCount', 0] } },
             responses: { $sum: { $cond: [{ $ne: ['$insightsOutcome', null] }, 1, 0] } },
-            completedResponses: {
-              $sum: { $cond: [{ $eq: ['$insightsOutcome', 'completed'] }, 1, 0] },
-            },
-            failedResponses: {
-              $sum: { $cond: [{ $eq: ['$insightsOutcome', 'failed'] }, 1, 0] },
-            },
-            interruptedResponses: {
-              $sum: { $cond: [{ $eq: ['$insightsOutcome', 'interrupted'] }, 1, 0] },
-            },
+            completedResponses: outcomeCount('completed'),
+            failedResponses: outcomeCount('failed'),
+            interruptedResponses: outcomeCount('interrupted'),
             lastUsed: { $max: '$createdAt' },
-            feedbackThumbsUp: {
-              $sum: { $cond: [{ $eq: ['$insightsFeedbackRating', 'thumbsUp'] }, 1, 0] },
-            },
-            feedbackThumbsDown: {
-              $sum: { $cond: [{ $eq: ['$insightsFeedbackRating', 'thumbsDown'] }, 1, 0] },
-            },
+            feedbackThumbsUp: ratingCount('thumbsUp'),
+            feedbackThumbsDown: ratingCount('thumbsDown'),
             ...Object.fromEntries(
               FEEDBACK_TAGS.map(({ key, direction }) => [
                 `feedback_${key}`,
@@ -573,77 +685,132 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             { $limit: churnedUserLimit },
           ])
         : Promise.resolve([] as ChurnedUserActivity[]),
-      Conversation.aggregate<SpendDay>([
-        ...conversationScope(agentIds, options.tenantId),
-        {
-          $lookup: {
-            from: 'transactions',
-            localField: 'conversationId',
-            foreignField: 'conversationId',
-            as: 'insightsTransaction',
-          },
-        },
-        { $unwind: '$insightsTransaction' },
-        {
-          $match: {
-            ...tenantMatch(options.tenantId, 'insightsTransaction.'),
-            'insightsTransaction.createdAt': { $gte: from, $lte: to },
-          },
-        },
-        {
-          $addFields: {
-            insightsTransactionOwnerMatches: {
-              $eq: [
-                '$user',
-                {
-                  $convert: {
-                    input: '$insightsTransaction.user',
-                    to: 'string',
-                    onError: null,
-                    onNull: null,
-                  },
-                },
-              ],
-            },
-            insightsTransactionIsUsage: {
-              $and: [
-                {
-                  $or: [
-                    { $eq: ['$insightsTransaction.tokenType', 'prompt'] },
-                    { $eq: ['$insightsTransaction.tokenType', 'completion'] },
-                  ],
-                },
-                { $gte: ['$insightsTransaction.tokenValue', -Number.MAX_VALUE] },
-                { $lte: ['$insightsTransaction.tokenValue', 0] },
-              ],
-            },
-          },
-        },
-        {
-          $match: {
-            insightsTransactionOwnerMatches: true,
-            insightsTransactionIsUsage: true,
-          },
-        },
+      Conversation.aggregate<ModelSpend>([
+        ...transactionScope(agentIds, options.tenantId, { $gte: from, $lte: to }),
         // Deduplicate ledger rows before daily totals, independently of conversation joins.
         {
           $group: {
             _id: '$insightsTransaction._id',
             createdAt: { $max: '$insightsTransaction.createdAt' },
             tokenValue: { $min: '$insightsTransaction.tokenValue' },
+            rawAmount: { $min: '$insightsTransaction.rawAmount' },
+            model: { $max: '$insightsTransaction.model' },
           },
         },
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone } },
+            _id: {
+              date: {
+                $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone },
+              },
+              model: { $ifNull: ['$model', null] },
+            },
             credits: { $sum: { $multiply: ['$tokenValue', -1] } },
+            // Structured prompt rows already store input + cache write + cache read here.
+            usageTokens: { $sum: { $abs: { $ifNull: ['$rawAmount', 0] } } },
           },
         },
         {
-          $project: { _id: 0, date: '$_id', spendUSD: { $divide: ['$credits', CREDITS_PER_USD] } },
+          $project: {
+            _id: 0,
+            date: '$_id.date',
+            model: '$_id.model',
+            credits: 1,
+            usageTokens: 1,
+          },
         },
-        { $sort: { date: 1 } },
+        { $sort: { date: 1, model: 1 } },
       ]),
+      // Each reply counts once, under the model of its own run's last completion usage row.
+      Conversation.aggregate<ModelReplies>([
+        ...transactionScope(
+          agentIds,
+          options.tenantId,
+          {
+            $gte: new Date(from.getTime() - replyUsageWindowMs),
+            $lte: new Date(to.getTime() + replyUsageWindowMs),
+          },
+          {
+            'insightsTransaction.tokenType': 'completion',
+            'insightsTransaction.context': { $in: replyUsageContexts },
+            'insightsTransaction.messageId': { $exists: true, $nin: [null, ''] },
+          },
+        ),
+        {
+          $project: {
+            _id: 0,
+            conversationId: 1,
+            user: 1,
+            transactionId: '$insightsTransaction._id',
+            createdAt: '$insightsTransaction.createdAt',
+            messageId: '$insightsTransaction.messageId',
+            model: '$insightsTransaction.model',
+          },
+        },
+        { $sort: { createdAt: 1, transactionId: 1 } },
+        {
+          $group: {
+            _id: { conversationId: '$conversationId', user: '$user', messageId: '$messageId' },
+            model: { $last: '$model' },
+          },
+        },
+        {
+          $lookup: {
+            from: 'messages',
+            localField: '_id.messageId',
+            foreignField: 'messageId',
+            as: 'insightsMessage',
+          },
+        },
+        { $unwind: '$insightsMessage' },
+        {
+          $match: {
+            ...Object.fromEntries(
+              Object.entries(messageMatch).map(([field, value]) => [
+                `insightsMessage.${field}`,
+                value,
+              ]),
+            ),
+            'insightsMessage.isCreatedByUser': false,
+          },
+        },
+        {
+          $addFields: {
+            insightsReplyMatches: {
+              $and: [
+                { $eq: ['$insightsMessage.conversationId', '$_id.conversationId'] },
+                { $eq: ['$insightsMessage.user', '$_id.user'] },
+              ],
+            },
+          },
+        },
+        { $match: { insightsReplyMatches: true } },
+        {
+          $replaceRoot: {
+            newRoot: { $mergeObjects: ['$insightsMessage', { insightsModel: '$model' }] },
+          },
+        },
+        {
+          $addFields: {
+            insightsFeedbackRating: responseRating,
+            insightsOutcome: responseOutcome,
+          },
+        },
+        {
+          $group: {
+            _id: '$insightsModel',
+            responses: { $sum: 1 },
+            completedResponses: outcomeCount('completed'),
+            failedResponses: outcomeCount('failed'),
+            interruptedResponses: outcomeCount('interrupted'),
+            thumbsUp: ratingCount('thumbsUp'),
+            thumbsDown: ratingCount('thumbsDown'),
+          },
+        },
+      ]),
+      agentIds.length > 0
+        ? getSavedVersions(mongoose, agentIds, options.tenantId)
+        : Promise.resolve(undefined),
     ]);
 
     const days = new Map<string, TInsightsDailyPoint>();
@@ -690,9 +857,68 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       if (lastUsed == null || row.lastUsed > lastUsed) lastUsed = row.lastUsed;
     }
     summary.lastUsed = lastUsed?.toISOString() ?? null;
-    for (const row of spendDays) {
-      addDay(days, row.date).spendUSD = row.spendUSD;
-      summary.spendUSD = (summary.spendUSD ?? 0) + row.spendUSD;
+    const creditsByDay = new Map<string, number>();
+    const models = new Map<string | null, TInsightsModel>();
+    const creditsByModel = new Map<string | null, number>();
+    const modelRow = (model: unknown) => {
+      const key = modelKey(model);
+      const current = models.get(key) ?? emptyModel(key);
+      models.set(key, current);
+      return current;
+    };
+    for (const row of spendRows) {
+      creditsByDay.set(row.date, (creditsByDay.get(row.date) ?? 0) + row.credits);
+      const model = modelRow(row.model);
+      model.usageTokens += row.usageTokens;
+      creditsByModel.set(model.model, (creditsByModel.get(model.model) ?? 0) + row.credits);
+    }
+    for (const [date, credits] of [...creditsByDay].sort(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
+      const spendUSD = credits / CREDITS_PER_USD;
+      addDay(days, date).spendUSD = spendUSD;
+      summary.spendUSD = (summary.spendUSD ?? 0) + spendUSD;
+    }
+    for (const [key, credits] of creditsByModel) {
+      const model = models.get(key);
+      if (model) model.spendUSD = credits / CREDITS_PER_USD;
+    }
+    const assigned = emptyModel(null);
+    for (const row of modelReplyRows) {
+      const model = modelRow(row._id);
+      model.responses += row.responses;
+      model.completedResponses += row.completedResponses;
+      model.failedResponses += row.failedResponses;
+      model.interruptedResponses += row.interruptedResponses;
+      model.thumbsUp += row.thumbsUp;
+      model.thumbsDown += row.thumbsDown;
+      assigned.responses += row.responses;
+      assigned.completedResponses += row.completedResponses;
+      assigned.failedResponses += row.failedResponses;
+      assigned.interruptedResponses += row.interruptedResponses;
+      assigned.thumbsUp += row.thumbsUp;
+      assigned.thumbsDown += row.thumbsDown;
+    }
+    /** Replies without a completion usage row stay countable, so models add up to the totals. */
+    const unassigned = {
+      responses: Math.max(0, summary.totalResponses - assigned.responses),
+      completedResponses: Math.max(0, summary.completedResponses - assigned.completedResponses),
+      failedResponses: Math.max(0, summary.failedResponses - assigned.failedResponses),
+      interruptedResponses: Math.max(
+        0,
+        summary.interruptedResponses - assigned.interruptedResponses,
+      ),
+      thumbsUp: Math.max(0, summary.feedback.thumbsUp - assigned.thumbsUp),
+      thumbsDown: Math.max(0, summary.feedback.thumbsDown - assigned.thumbsDown),
+    };
+    if (Object.values(unassigned).some((count) => count > 0)) {
+      const unknown = modelRow(null);
+      unknown.responses += unassigned.responses;
+      unknown.completedResponses += unassigned.completedResponses;
+      unknown.failedResponses += unassigned.failedResponses;
+      unknown.interruptedResponses += unassigned.interruptedResponses;
+      unknown.thumbsUp += unassigned.thumbsUp;
+      unknown.thumbsDown += unassigned.thumbsDown;
     }
     for (const row of dailyUsers) addDay(days, row.date).users = row.users;
     const totalConversations = summary.totalConversations;
@@ -700,6 +926,14 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       agents: options.agents ?? [],
       summary,
       daily: [...days.values()].sort((left, right) => left.date.localeCompare(right.date)),
+      ...(agentVersions !== undefined && { agentVersions }),
+      models: [...models.values()].sort(
+        (left, right) =>
+          Number(left.model == null) - Number(right.model == null) ||
+          right.responses - left.responses ||
+          (right.spendUSD ?? 0) - (left.spendUSD ?? 0) ||
+          (left.model ?? '').localeCompare(right.model ?? ''),
+      ),
     };
     if (!showDetails) {
       return aggregate;

@@ -32,6 +32,7 @@ const emptyInsights: TInsightsResponse = {
     },
   },
   daily: [],
+  models: [],
   topUsers: [],
   churnedUsers: [],
   latest: { conversations: [], page: 1, pageSize: 10, pages: 1 },
@@ -298,7 +299,31 @@ describe('Insights handlers', () => {
             transactions: [{ conversationId: privateValue, messageId: privateValue }],
           },
         ],
+        models: [
+          {
+            model: 'model-x',
+            responses: 3,
+            completedResponses: 1,
+            failedResponses: 1,
+            interruptedResponses: 1,
+            thumbsUp: 1,
+            thumbsDown: 0,
+            usageTokens: 7,
+            spendUSD: 1.25,
+            userId: privateValue,
+            messageIds: [privateValue],
+          },
+        ],
         topUsers: [{ name: privateValue }],
+        agentVersions: [
+          {
+            agentId: 'agent-a',
+            version: 2,
+            savedAt: '2026-10-01T12:00:00.000Z',
+            instructions: privateValue,
+            updatedBy: privateValue,
+          },
+        ],
         churnedUsers: [{ email: privateValue }],
         latest: { conversations: [{ firstMessage: privateValue, conversationId: privateValue }] },
         feedbackText: privateValue,
@@ -323,6 +348,7 @@ describe('Insights handlers', () => {
       );
       expect(json).toHaveBeenCalledWith({
         agents: [{ id: 'agent-a', name: 'Alpha' }],
+        agentVersions: [{ agentId: 'agent-a', version: 2, savedAt: '2026-10-01T12:00:00.000Z' }],
         summary,
         daily: [
           {
@@ -336,6 +362,19 @@ describe('Insights handlers', () => {
             failedResponses: 1,
             interruptedResponses: 1,
             feedback,
+            spendUSD: 1.25,
+          },
+        ],
+        models: [
+          {
+            model: 'model-x',
+            responses: 3,
+            completedResponses: 1,
+            failedResponses: 1,
+            interruptedResponses: 1,
+            thumbsUp: 1,
+            thumbsDown: 0,
+            usageTokens: 7,
             spendUSD: 1.25,
           },
         ],
@@ -400,6 +439,7 @@ describe('Insights handlers', () => {
             agents,
             summary: emptyInsights.summary,
             daily: emptyInsights.daily,
+            models: emptyInsights.models,
           },
     );
     expect(getInsightsAccess).toHaveBeenCalledTimes(1);
