@@ -303,9 +303,12 @@ function writeRuntimeMockConfig() {
           }
         : {}),
     };
+    const remoteApi = discordAcceptance
+      ? `    remoteApi: ${JSON.stringify({ background: { enabled: true } })}\n`
+      : '';
     config = config.replace(
       '  agents:\n',
-      `  agents:\n    channels: ${JSON.stringify(channels)}\n`,
+      `  agents:\n    channels: ${JSON.stringify(channels)}\n${remoteApi}`,
     );
   }
   config = config.replace(

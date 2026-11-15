@@ -176,8 +176,8 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
           applicationId,
           botUserId,
           publicKey,
-          encryptedBotToken: `v3:${encryptV3(botToken)}`,
-          encryptedClientSecret: `v3:${encryptV3('fixture-oauth-secret')}`,
+          encryptedBotToken: encryptV3(botToken),
+          encryptedClientSecret: encryptV3('fixture-oauth-secret'),
         }),
       );
       const guild = result(
@@ -297,13 +297,19 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
     expect(settings.discord.enabled).toBe(true);
     expect(settings.discord.gateway.enabled).toBe(false);
     const transport: typeof fetch = Object.assign(
-      (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         const url = new URL(String(input));
-        if (url.origin === 'https://discord.com')
-          return fetch(externalBase + url.pathname + url.search, init);
-        if (url.origin !== new URL(baseURL).origin)
+        if (url.origin !== 'https://discord.com' && url.origin !== new URL(baseURL).origin)
           throw new Error('Unexpected Discord fixture egress');
-        return fetch(input, init);
+        const response = await fetch(
+          url.origin === 'https://discord.com' ? externalBase + url.pathname + url.search : input,
+          init,
+        );
+        const route = url.pathname.startsWith('/api/v10/webhooks/')
+          ? '/api/v10/webhooks/:application/:token/messages/@original'
+          : url.pathname.replace(/\d{17,20}/g, ':id');
+        if (!response.ok) logs.push(`HTTP ${route}: ${response.status}`);
+        return response;
       },
       fetch,
     );
@@ -399,7 +405,19 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
       });
     }
     async function reply(input: NativeEvent): Promise<DiscordPrivateReply> {
-      await expect.poll(() => privateReplies.has(input.token), { timeout: 20000 }).toBe(true);
+      try {
+        await expect.poll(() => privateReplies.has(input.token), { timeout: 20000 }).toBe(true);
+      } catch (cause) {
+        const inbox = await scoped(() =>
+          models.DiscordInbox.find({ applicationId, eventId: input.id })
+            .select('state result leaseEpoch inspectionEpoch -_id')
+            .lean(),
+        );
+        throw new Error(
+          `Discord private reply missing: ${JSON.stringify({ events: logs.slice(-12), inbox })}`,
+          { cause },
+        );
+      }
       return privateReplies.get(input.token)!;
     }
     async function command(
