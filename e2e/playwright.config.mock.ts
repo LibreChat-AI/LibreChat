@@ -217,6 +217,12 @@ const baseEnv = {
   ...(discordAcceptance
     ? {
         E2E_DISCORD_SERVICE_TOKEN: channelServiceToken,
+        /** Answer feedback controls need one configured score destination. The loopback port is
+         *  closed, so eligibility is real while nothing is ever exported. */
+        LANGFUSE_PUBLIC_KEY: 'e2e-discord-public',
+        LANGFUSE_SECRET_KEY: 'e2e-discord-secret',
+        LANGFUSE_PROJECT_ID: 'e2e-discord-project',
+        LANGFUSE_BASE_URL: 'http://127.0.0.1:1',
       }
     : {}),
   CONFIG_PATH: configPath,
@@ -299,7 +305,11 @@ function writeRuntimeMockConfig() {
         : {}),
       ...(discordAcceptance
         ? {
-            discord: { enabled: true, gateway: { enabled: false, pollIntervalMs: 100 } },
+            discord: {
+              enabled: true,
+              dm: { enabled: true },
+              gateway: { enabled: false, pollIntervalMs: 100 },
+            },
           }
         : {}),
     };
