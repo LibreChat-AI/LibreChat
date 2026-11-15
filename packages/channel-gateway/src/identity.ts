@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { channelLinkMessage, isSlackReplyURL } from 'librechat-data-provider';
 import type { ChannelLinkView, ChannelLinkTicket } from 'librechat-data-provider';
+import type { SlackChannelBundle as ChannelBundle } from './types';
 import type { SlackClient, SlackBlocks } from './slack';
 import type { ChannelClient } from './client';
-import type { ChannelBundle } from './types';
 import { expectedServiceFailure } from './transport';
 
 const confirmationSchema = z

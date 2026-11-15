@@ -3,7 +3,7 @@ import { SocketModeClient } from '@slack/socket-mode';
 import { createServer, request as httpRequest } from 'node:http';
 import { DEFAULT_CHANNEL_GATEWAY_POLICY } from 'librechat-data-provider';
 import type { AddressInfo } from 'node:net';
-import type { ChannelBundle } from './types';
+import type { SlackChannelBundle as ChannelBundle } from './types';
 import { loadConfig, resolveGatewayConfig } from './config';
 import { ChannelClient } from './client';
 import { connectSocket } from './socket';

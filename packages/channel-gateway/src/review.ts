@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import type { Agents, ChannelRunActor, ResponseReviewDecision } from 'librechat-data-provider';
 import type { PlainTextElement, ModalView, InputBlock, Button } from '@slack/types';
+import type { SlackChannelBundle as ChannelBundle, Review } from './types';
 import type { SlackClient, SlackBlocks } from './slack';
-import type { ChannelBundle, Review } from './types';
 import type { ChannelClient } from './client';
 import { ServiceError, expectedServiceFailure as expectedFailure } from './transport';
 import { IdentityFlow, safePrivateURL } from './identity';

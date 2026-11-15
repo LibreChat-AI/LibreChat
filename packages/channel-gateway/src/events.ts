@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { ChannelRunAdmission, ChannelReactionEvent } from 'librechat-data-provider';
-import type { ChannelBundle } from './types';
+import type { SlackChannelBundle as ChannelBundle } from './types';
 
 const address = z
   .string()

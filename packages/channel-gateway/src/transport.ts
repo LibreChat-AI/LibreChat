@@ -50,6 +50,11 @@ export class ServiceClient {
     this.base = connection.LIBRECHAT_INTERNAL_URL.replace(/\/$/, '');
   }
 
+  protected serviceHeaders(path: string): Record<string, string> {
+    void path;
+    return {};
+  }
+
   protected async raw(
     path: string,
     body: object | undefined,
@@ -61,6 +66,7 @@ export class ServiceClient {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json',
+      ...(key === this.connection.CHANNEL_SERVICE_TOKEN ? this.serviceHeaders(path) : {}),
     };
     if (this.connection.CHANNEL_TENANT_ID && this.connection.CHANNEL_TENANT_ID !== '_')
       headers['X-Tenant-Id'] = this.connection.CHANNEL_TENANT_ID;

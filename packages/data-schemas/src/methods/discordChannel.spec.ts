@@ -104,6 +104,7 @@ beforeEach(async () => {
       'ChannelLane',
       'ChannelScope',
       'ResponseScope',
+      'StoredResponse',
     ])
       await db.models[name].deleteMany({});
   });
@@ -377,3 +378,112 @@ it('batches installation and owner reads across a page of Discord channels', () 
       routes.mockRestore();
     }
   }));
+
+it.each(['execution', 'progress', 'delivery'] as const)(
+  'fences %s effects at their transaction and permits receipt settlement after rotation',
+  (effect) =>
+    scope(async () => {
+      await create();
+      expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+      const now = Date.now();
+      const admitted = await runs.admit(event(), now);
+      const claimed = await runs.claim(tenantId, channel.channelId, 'worker', now, 60000);
+      if (!claimed) throw new Error('Run not claimed');
+      const fence = { runId: admitted.run.runId, owner: 'worker', epoch: claimed.leaseEpoch };
+      if (effect === 'progress')
+        await runs.planProgress(
+          tenantId,
+          fence,
+          { revision: 1, rendererVersion: 'discord-progress-v1', text: 'Working' },
+          now,
+        );
+      if (effect === 'delivery') {
+        await runs.prepareExecution(tenantId, fence, now, applicationRevision);
+        await db.models.StoredResponse.create({
+          tenantId,
+          userId: user,
+          responseId: 'response',
+          requestKey: `channel:${claimed.runId}`,
+          fingerprint: 'request',
+          agentId: channel.agentId,
+          requestJSON: JSON.stringify({
+            model: channel.agentId,
+            input: event().admission.input,
+            background: true,
+            store: true,
+          }),
+          conversationId: 'conversation',
+          parentMessageId: 'parent',
+          status: 'queued',
+          revision: 0,
+        });
+        await runs.bindResponse(tenantId, fence, 'response', now);
+        await runs.saveSnapshot(
+          tenantId,
+          fence,
+          { status: 'completed', text: 'Answer', responseId: 'response', elapsedMs: 1 },
+          now,
+        );
+        await runs.savePlan(
+          tenantId,
+          fence,
+          {
+            revision: 'plan',
+            rendererVersion: 'discord-text-v1',
+            parts: [{ operationId: 'answer', kind: 'message', required: true, text: 'Answer' }],
+          },
+          now,
+        );
+      }
+      const begin = (revision?: string) => {
+        if (effect === 'execution') return runs.prepareExecution(tenantId, fence, now, revision);
+        if (effect === 'progress') return runs.beginProgress(tenantId, fence, 1, now, revision);
+        return runs.beginDelivery(tenantId, fence, 'answer', now, revision);
+      };
+      const rotated = await installations.configureApplication({
+        actorId: owner,
+        applicationId,
+        botUserId,
+        publicKey: 'b'.repeat(64),
+        encryptedBotToken: 'rotated',
+        expectedRevision: applicationRevision,
+      });
+      if (!rotated.ok) throw new Error(rotated.error.code);
+      await expect(begin()).rejects.toMatchObject({ code: 'invalid_transition' });
+      await expect(begin(applicationRevision)).rejects.toMatchObject({
+        code: 'invalid_transition',
+      });
+      const begun = await begin(rotated.value.revision);
+      if (effect === 'execution') {
+        expect(begun.execution?.requestId).toBeTruthy();
+        return;
+      }
+      const again = await installations.configureApplication({
+        actorId: owner,
+        applicationId,
+        botUserId,
+        publicKey: 'c'.repeat(64),
+        encryptedBotToken: 'rotated-again',
+        expectedRevision: rotated.value.revision,
+      });
+      expect(again.ok).toBe(true);
+      const externalMessageKey = `${event().admission.externalChannelId}:789012345678901234`;
+      const settled =
+        effect === 'progress'
+          ? await runs.settleProgress(
+              tenantId,
+              fence,
+              { revision: 1, outcome: 'confirmed', attempts: 1, externalMessageKey },
+              now,
+            )
+          : await runs.settleDelivery(
+              tenantId,
+              fence,
+              { operationId: 'answer', outcome: 'confirmed', attempts: 1, externalMessageKey },
+              now,
+            );
+      expect(effect === 'progress' ? settled.progress?.outcome : settled.receipts[0].outcome).toBe(
+        'confirmed',
+      );
+    }),
+);
