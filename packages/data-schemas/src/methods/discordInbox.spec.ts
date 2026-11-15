@@ -609,3 +609,44 @@ it('bounds pending work by physical Discord destination across different actors'
       ),
     ).toMatchObject({ ok: false, error: { code: 'capacity' } });
   }));
+
+it('serializes processing effects per actor and destination while other actors progress', () =>
+  scope(async () => {
+    const second = '567890123456789013';
+    const other = '567890123456789014';
+    await storage.submit(input(), now);
+    await storage.submit(input({ eventId: second }), now + 1);
+    await storage.submit(input({ eventId: other, externalUserId: '456789012345678902' }), now + 2);
+    const claims = await Promise.all([
+      storage.claim(applicationId, 'worker1', now + 2),
+      storage.claim(applicationId, 'worker2', now + 2),
+    ]);
+    expect(claims.map((row) => row?.eventId).sort()).toEqual([eventId, other]);
+    expect(await storage.claim(applicationId, 'worker3', now + 3)).toBeNull();
+    const first = claims.find((row) => row?.eventId === eventId)!;
+    expect(
+      await storage.prepareReply(
+        { applicationId, eventId, owner: first.leaseOwner!, epoch: first.leaseEpoch },
+        'reply',
+        now + 3,
+      ),
+    ).toMatchObject({ ok: true });
+    expect(await storage.claim(applicationId, 'worker3', now + 3)).toMatchObject({
+      eventId: second,
+    });
+  }));
+
+it('reclaims expired processing before starting a later event for that actor', () =>
+  scope(async () => {
+    await storage.submit(input(), now);
+    const first = await storage.claim(applicationId, 'lost-worker', now);
+    if (!first) throw new Error('Missing first claim');
+    await storage.submit(input({ eventId: '567890123456789013' }), now + 1);
+    const recovered = await storage.claim(
+      applicationId,
+      'replacement-worker',
+      first.leaseExpiresAt,
+    );
+    expect(recovered).toMatchObject({ eventId, leaseEpoch: first.leaseEpoch + 1 });
+    expect(await storage.claim(applicationId, 'later-worker', first.leaseExpiresAt)).toBeNull();
+  }));
