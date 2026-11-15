@@ -558,6 +558,11 @@ export function useMCPServerManager({
             status: 'success',
           });
 
+          // TEMPORARY Jest-only diagnostic. Remove before merge.
+          if (typeof jest !== 'undefined' && process.env.JEST_WORKER_ID) {
+            const host = globalThis as { __mcpToastProbe?: (fn: object) => void };
+            host.__mcpToastProbe?.(showToast);
+          }
           selectInitializedMCPServer(mcpValuesRef, setMCPValues, serverName);
         }
         return response;

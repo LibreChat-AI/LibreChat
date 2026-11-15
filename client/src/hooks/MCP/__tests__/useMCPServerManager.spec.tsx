@@ -10,6 +10,28 @@ const mockOpenInNewTab = jest.fn();
 jest.mock('~/utils', () => ({ openInNewTab: (...args: unknown[]) => mockOpenInNewTab(...args) }));
 
 const mockShowToast = jest.fn();
+const mockProbeHost = globalThis as typeof globalThis & {
+  __mcpToastProbe?: (fn: object) => void;
+};
+const mockToastIds = new Map<object, number>();
+function mockToastRecord(phase: string, fn: object = mockShowToast) {
+  const id = (value: object) => {
+    if (!mockToastIds.has(value)) mockToastIds.set(value, mockToastIds.size + 1);
+    return mockToastIds.get(value);
+  };
+  const history = jest.isMockFunction(fn) ? fn.mock : undefined;
+  process.stdout.write(
+    `MCP_TOAST_PROBE ${JSON.stringify({
+      phase,
+      same: fn === mockShowToast,
+      type: typeof fn,
+      fn: id(fn),
+      history: history ? id(history) : null,
+      calls: history ? id(history.calls) : null,
+      count: history?.calls.length ?? null,
+    })}\n`,
+  );
+}
 const mockSetMCPValues = jest.fn();
 const mockReinitialize = jest.fn();
 const mockUseMCPToolsQuery = jest.fn((_options?: unknown): { data?: MCPServersResponse } => ({
@@ -53,6 +75,17 @@ function deferred<T>() {
 }
 
 describe('useMCPServerManager initialization', () => {
+  beforeAll(() => {
+    mockProbeHost.__mcpToastProbe = (fn) => mockToastRecord('hook-after-success', fn);
+    for (const name of ['jest', 'babel-jest', '@babel/core']) {
+      const path = require.resolve(`${name}/package.json`);
+      const { version } = jest.requireActual<{ version: string }>(path);
+      process.stdout.write(`MCP_TOAST_MODULE ${JSON.stringify({ name, path, version })}\n`);
+    }
+  });
+  afterAll(() => {
+    delete mockProbeHost.__mcpToastProbe;
+  });
   it.each(['response', 'http'] as const)(
     'clears the spinner after a transient %s failure and lets retry succeed without OAuth',
     async (failure) => {
@@ -158,6 +191,7 @@ describe('useMCPServerManager initialization', () => {
       const initialized = jest.fn();
 
       try {
+        mockToastRecord('fixture-before-initialize');
         act(() => {
           void result.current.initializeServer('test-server').then(initialized);
         });
@@ -173,6 +207,7 @@ describe('useMCPServerManager initialization', () => {
         expect(result.current.isInitializing('test-server')).toBe(false);
         expect(initialized).toHaveBeenCalledWith(response);
         expect(mockSetMCPValues).toHaveBeenCalledWith(['test-server']);
+        mockToastRecord('fixture-before-assertion');
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'com_ui_mcp_initialized_success',
           status: 'success',
