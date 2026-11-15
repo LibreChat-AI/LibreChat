@@ -5,8 +5,11 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { MessagePartsHost } from '../../../../react/host';
 import { emptyToolCallChrome, MessagePartsHostProvider } from '../../../../react/host';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import { FailedRevealContext } from '../../reveal';
 import AskUserQuestionCall from '../Call';
+
+beforeAll(initEnglish);
 
 const translations: Record<string, string> = {
   com_ui_asked: 'Asked',
@@ -96,6 +99,58 @@ describe('AskUserQuestionCall', () => {
       expect(screen.getByTestId('ask-user-question-call')).toBeInTheDocument();
     },
   );
+
+  test('keeps the question glyph, subtitle shrink, and a settled header with no timer', () => {
+    renderCall(<AskUserQuestionCall args={args} output="public" />);
+
+    const header = screen.getByRole('button');
+    expect(header).toHaveClass('group/disclosure');
+    expect(header).not.toBeDisabled();
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(header.querySelector('.shimmer')).toBeNull();
+    expect(screen.queryByTestId('stream-elapsed')).toBeNull();
+    expect(header.querySelector('.fold-glyph svg')).toHaveClass('text-text-secondary');
+    expect(header.querySelector('.font-medium')).toHaveClass('shrink-0', 'truncate');
+    expect(header.querySelector('.font-normal')).toHaveTextContent(
+      'How would you like me to get the data?',
+    );
+    expect(header.querySelector('.font-normal')).toHaveClass('shrink', 'min-w-0', 'truncate');
+    const icons = header.querySelectorAll('svg');
+    expect(icons[icons.length - 1]).toHaveClass('transition-transform');
+  });
+
+  test('keeps the subtitle slot for a blank question, as the settled header always drew it', () => {
+    renderCall(<AskUserQuestionCall args={JSON.stringify({ question: '' })} output="done" />);
+
+    const header = screen.getByRole('button');
+    expect(header.querySelector('.font-medium')).toHaveClass('shrink-0');
+    expect(header.querySelector('.font-normal')).toBeEmptyDOMElement();
+  });
+
+  test('summarizes a batch by its count, so the header has no subtitle slot', () => {
+    const batch = JSON.stringify({
+      questions: [
+        { id: 'first', question: 'First?' },
+        { id: 'second', question: 'Second?' },
+      ],
+    });
+    renderCall(<AskUserQuestionCall args={batch} output="" />);
+
+    const header = screen.getByRole('button');
+    expect(header).toHaveTextContent('Asked 2 questions');
+    expect(header.querySelector('.font-medium')).not.toHaveClass('shrink-0');
+    expect(header.querySelector('.font-normal')).toBeNull();
+  });
+
+  test('keeps the warning glyph and failure suffix on a rejected question', () => {
+    renderCall(<AskUserQuestionCall args={args} output="" failed />);
+
+    const header = screen.getByRole('button');
+    expect(header.querySelector('.fold-glyph svg')).toHaveClass('text-text-warning');
+    expect(header).toHaveTextContent('com_ui_tool_failed');
+    expect(header.querySelector('.shimmer')).toBeNull();
+    expect(screen.queryByTestId('stream-elapsed')).toBeNull();
+  });
 
   test('mounts collapsed and opens on click, like any other tool card', () => {
     renderCall(<AskUserQuestionCall args={args} output="public" />);

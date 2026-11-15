@@ -1,39 +1,31 @@
-import React from 'react';
+/**
+ * @jest-environment jsdom
+ */
+import i18next from 'i18next';
 import { createStore, Provider } from 'jotai';
-import { phaseReceipts } from '@librechat/chat/react';
-import { FailedRevealContext } from '@librechat/chat/components';
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { ComponentProps } from 'react';
+import { phaseReceipts } from '../../../react/stream/receipt';
+import { initEnglish } from '../../../__fixtures__/i18n';
+import { FailedRevealContext } from '../reveal';
 import ProgressText from '../ProgressText';
 
-function mockLocalize(key: string, values?: Record<string, string | number>): string {
-  const translations: Record<string, string> = {
-    com_ui_duration_seconds: `${values?.[0]}s`,
-    com_ui_tool_preparation_time: 'Preparation',
-    com_ui_tool_call_time: 'Tool call',
-    com_ui_duration_prepared_in: `(prepared in ${values?.[0]})`,
-    com_ui_tool_total_time: 'Total elapsed',
-    com_ui_duration_minutes: `${values?.[0]}m ${values?.[1]}s`,
-    com_ui_duration_announced_seconds: `took ${values?.value} ${values?.count === 1 ? 'second' : 'seconds'}`,
-    com_ui_duration_announced_minutes: `took ${values?.value} ${values?.count === 1 ? 'minute' : 'minutes'}`,
-  };
-  return translations[key] ?? key;
-}
+beforeAll(async () => {
+  await initEnglish();
+  i18next.addResourceBundle(
+    'de',
+    'translation',
+    i18next.getResourceBundle('en', 'translation'),
+    true,
+    true,
+  );
+});
 
-jest.mock('~/hooks', () => ({ useLocalize: () => mockLocalize }));
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => mockLocalize,
-}));
-
-jest.mock('react-i18next', () => ({
-  useTranslation: () => ({ i18n: { language: 'en' } }),
-}));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  CancelledIcon: () => <span data-testid="cancelled-icon" />,
-}));
+afterEach(async () => {
+  if (i18next.language !== 'en') {
+    await i18next.changeLanguage('en');
+  }
+});
 
 const defaults = {
   phase: 'completed' as const,
@@ -42,7 +34,7 @@ const defaults = {
   phaseStepId: 'timer-step',
 };
 
-const renderProgressText = (props: Partial<React.ComponentProps<typeof ProgressText>> = {}) =>
+const renderProgressText = (props: Partial<ComponentProps<typeof ProgressText>> = {}) =>
   render(<ProgressText {...defaults} {...props} />);
 
 describe('ProgressText duration', () => {
@@ -89,7 +81,7 @@ describe('ProgressText duration', () => {
     });
     expect(screen.getByText('(prepared in 4m 2s)')).toBeInTheDocument();
     expect(screen.getByText('5.7s')).toBeInTheDocument();
-    expect(screen.queryByText(/Total elapsed/)).not.toBeInTheDocument();
+    expect(screen.queryByText('4m 8s')).not.toBeInTheDocument();
   });
 
   it('shows a few-hundred-millisecond tool call beside minutes of preparation', () => {
@@ -100,7 +92,7 @@ describe('ProgressText duration', () => {
     });
     expect(screen.getByText('(prepared in 4m 7s)')).toBeInTheDocument();
     expect(screen.getByText('0.3s')).toBeInTheDocument();
-    expect(screen.queryByText(/Total elapsed/)).not.toBeInTheDocument();
+    expect(screen.queryByText('4m 7s')).not.toBeInTheDocument();
   });
 
   it('does not show a measured call too short to format as a nonzero interval', () => {
@@ -111,6 +103,12 @@ describe('ProgressText duration', () => {
   it('formats durations of a minute or more as minutes and seconds', () => {
     renderProgressText({ durationMs: 65_000 });
     expect(screen.getByText('1m 5s')).toBeInTheDocument();
+  });
+
+  it('formats a short duration with the active locale decimal mark', async () => {
+    await i18next.changeLanguage('de');
+    renderProgressText({ durationMs: 1400 });
+    expect(screen.getByText('1,4s')).toBeInTheDocument();
   });
 
   /**
@@ -229,12 +227,33 @@ describe('ProgressText subtitle', () => {
     renderProgressText();
     expect(screen.getByText('Completed foo')).not.toHaveClass('shrink-0');
   });
+
+  it('treats an empty subtitle as no subtitle', () => {
+    renderProgressText({ subtitle: '' });
+    const label = screen.getByText('Completed foo');
+    expect(label).not.toHaveClass('shrink-0');
+    expect(label.nextElementSibling).toBeNull();
+  });
+
+  it('keeps an empty subtitle when the caller keeps the slot', () => {
+    renderProgressText({ subtitle: '', keepEmptySubtitle: true });
+    const label = screen.getByText('Completed foo');
+    expect(label).toHaveClass('shrink-0');
+    expect(label.nextElementSibling).toBeEmptyDOMElement();
+  });
+
+  it('adds no subtitle slot without a subtitle, even when the caller keeps empty ones', () => {
+    renderProgressText({ keepEmptySubtitle: true });
+    const label = screen.getByText('Completed foo');
+    expect(label).not.toHaveClass('shrink-0');
+    expect(label.nextElementSibling).toBeNull();
+  });
 });
 
 describe('ProgressText failure', () => {
   it('keeps the verdict word on a failed row, open or not', () => {
     renderProgressText({ phase: 'failed', hasInput: true, isExpanded: true });
-    expect(screen.getByText('· com_ui_tool_failed')).toBeInTheDocument();
+    expect(screen.getByText('· failed')).toBeInTheDocument();
   });
 
   it('does not add a failure stripe to a tool row', () => {
@@ -319,7 +338,7 @@ describe('ProgressText verdict', () => {
 
   it('states the reason in place of the generic failure word', () => {
     renderProgressText({ phase: 'failed', verdict: 'timed out' });
-    expect(screen.queryByText(/com_ui_tool_failed/)).not.toBeInTheDocument();
+    expect(screen.queryByText('· failed')).not.toBeInTheDocument();
   });
 
   it('keeps the failure verdict but hides preparation, call, total, and live timers', () => {
@@ -332,7 +351,7 @@ describe('ProgressText verdict', () => {
       phaseStartAt: 1_000,
     });
     expect(screen.getByRole('button')).toHaveTextContent('exit code 2');
-    expect(screen.queryByText(/Preparation|Tool call|Total elapsed|took/)).toBeNull();
+    expect(screen.queryByText(/Preparation|Tool call|took/)).toBeNull();
     expect(screen.queryByTestId('stream-elapsed')).toBeNull();
   });
 

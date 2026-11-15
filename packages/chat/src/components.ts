@@ -172,6 +172,8 @@ export { default as PendingSkillCall } from './components/parts/PendingSkillCall
 export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
 export { default as ToolCall } from './components/parts/ToolCall';
 export type { ToolCallProps } from './components/parts/ToolCall';
+export { default as ProgressText } from './components/parts/ProgressText';
+export type { ProgressTextProps } from './components/parts/ProgressText';
 export { default as ResumeAuthorHeader } from './components/parts/ResumeAuthorHeader';
 export { ToolAuthWarning, ToolAuthWarningContext } from './components/parts/auth';
 export { ToolPreparation, useToolPreparation } from './components/parts/preparation';
