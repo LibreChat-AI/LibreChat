@@ -7,6 +7,7 @@ import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:
 import {
   createModels,
   createDiscordInstallationStorage,
+  createDiscordRouteStorage,
   createMethods,
   createChannelIdentityStorage,
   createChannelRunStorage,
@@ -1856,13 +1857,23 @@ it(
       createdBy: users[0].id,
       type: 'discord',
       credentialMode: 'per_user',
-      status: 'active',
+      status: 'pending_install',
       revision: 'discord-revision',
       installationId: guild.value.installationId,
       installationRevision: guild.value.revision,
       applicationRevision: configured.value.revision,
       discord: { applicationId, guildId, botUserId, externalChannelId },
     });
+    const assigned = await createDiscordRouteStorage(mongoose).assign({
+      actorId: users[0].id,
+      installationId: guild.value.installationId,
+      installationRevision: guild.value.revision,
+      applicationRevision: configured.value.revision,
+      externalChannelId,
+      channelId: 'discord-channel',
+      channelRevision: 'discord-revision',
+    });
+    if (!assigned.ok) throw new Error(assigned.error.code);
     await link(externalUserId, users[0], 'discord-channel');
     const call = (suffix: string, revision = configured.value.revision) =>
       request(app)
