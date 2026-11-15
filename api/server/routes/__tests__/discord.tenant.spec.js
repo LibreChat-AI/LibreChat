@@ -36,10 +36,16 @@ jest.mock('~/server/services/DiscordChannels', () => ({
     ]),
   ),
   gateway: Object.fromEntries(
-    ['acquire', 'renew', 'release', 'bootstrap', 'load', 'save'].map((name) => [
-      name,
-      (_req, res) => res.sendStatus(401),
-    ]),
+    [
+      'acquire',
+      'renew',
+      'release',
+      'bootstrap',
+      'load',
+      'save',
+      'prepareGuildRemoval',
+      'removeGuild',
+    ].map((name) => [name, (_req, res) => res.sendStatus(401)]),
   ),
   bindings: {
     status: (_req, res) => res.sendStatus(204),
