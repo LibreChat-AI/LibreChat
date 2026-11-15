@@ -202,6 +202,75 @@ projects:
 # Custom interface configuration
 interface:
   customWelcome: 'Salut ! Moi, c’est NOVA AI. Qu’est-ce qu’on construit ensemble aujourd’hui ?'
+  # NOVA AI premium palette: warm ivory/gold in light mode, graphite/gold/platinum in dark mode.
+  # This is an inline ThemeDefinition supported by interface.theme.
+  theme:
+    version: 1
+    name: nova
+    modes:
+      light:
+        colors:
+          rgb-text-primary: '26 26 28'
+          rgb-text-secondary: '91 91 96'
+          rgb-text-tertiary: '125 125 130'
+          rgb-accent-primary: '166 130 61'
+          rgb-accent-primary-hover: '138 105 45'
+          rgb-link: '138 105 45'
+          rgb-link-hover: '112 83 34'
+          rgb-ring-primary: '166 130 61'
+          rgb-focus-outline: '166 130 61'
+          rgb-surface-primary: '248 247 244'
+          rgb-surface-primary-alt: '255 255 255'
+          rgb-surface-secondary: '239 237 231'
+          rgb-surface-tertiary: '232 229 221'
+          rgb-surface-submit: '166 130 61'
+          rgb-surface-submit-hover: '138 105 45'
+          rgb-text-on-status: '255 255 255'
+          rgb-surface-chat: '248 247 244'
+          rgb-surface-sidebar: '242 240 234'
+          rgb-surface-composer: '255 255 255'
+          rgb-border-light: '224 220 211'
+        appearance:
+          controlRadius: '0.625rem'
+          roundControlRadius: '9999px'
+          surfaceRadius: '0.875rem'
+          largeSurfaceRadius: '1.125rem'
+      dark:
+        colors:
+          rgb-text-primary: '244 241 234'
+          rgb-text-secondary: '199 205 212'
+          rgb-text-tertiary: '165 169 176'
+          rgb-accent-primary: '214 184 117'
+          rgb-accent-primary-hover: '231 207 152'
+          rgb-link: '214 184 117'
+          rgb-link-hover: '241 217 154'
+          rgb-ring-primary: '214 184 117'
+          rgb-focus-outline: '214 184 117'
+          rgb-surface-primary: '11 13 16'
+          rgb-surface-primary-alt: '15 18 23'
+          rgb-surface-secondary: '20 23 28'
+          rgb-surface-tertiary: '27 32 39'
+          rgb-surface-submit: '214 184 117'
+          rgb-surface-submit-hover: '231 207 152'
+          rgb-text-on-status: '11 13 16'
+          rgb-surface-chat: '11 13 16'
+          rgb-surface-sidebar: '15 18 23'
+          rgb-surface-composer: '20 23 28'
+          rgb-surface-user-message: '27 32 39'
+          rgb-surface-card: '20 23 28'
+          rgb-surface-card-hover: '27 32 39'
+          rgb-surface-nav-hover: '27 32 39'
+          rgb-surface-nav-selected: '37 33 25'
+          rgb-surface-menu: '20 23 28'
+          rgb-surface-popover: '20 23 28'
+          rgb-surface-search: '20 23 28'
+          rgb-border-light: '43 48 56'
+          rgb-border-menu: '58 54 44'
+        appearance:
+          controlRadius: '0.625rem'
+          roundControlRadius: '9999px'
+          surfaceRadius: '0.875rem'
+          largeSurfaceRadius: '1.125rem'
   # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).
   # 'entity' shows its name; 'greeting' shows the time-of-day greeting (or customWelcome) with the
   # user's name, for deployments where the header selector already names the agent.
