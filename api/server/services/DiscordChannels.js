@@ -18,6 +18,7 @@ const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { getEffectivePermissions } = require('./PermissionService');
 const { getAppConfig } = require('./Config');
 const application = require('./ChannelAuthority');
+const { recordDiscordFeedback } = require('./Channels');
 const db = require('~/models');
 
 const policy = createDiscordPolicyReader(getAppConfig);
@@ -27,6 +28,7 @@ module.exports = createDiscordChannelRuntime({
   routes: createDiscordRouteStorage(mongoose),
   inbox: createDiscordInboxStorage(mongoose, policy.inbox),
   commands: createDiscordCommandStorage(mongoose),
+  feedback: { recordDiscordFeedback },
   gateway: createDiscordGatewayStorage(mongoose, policy.ownership),
   discovery: createDiscordRuntimeStorage(mongoose),
   messages: createDiscordMessageStorage(mongoose),
