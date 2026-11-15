@@ -8,7 +8,6 @@ import type {
   ChannelDeliveryPlan,
   ChannelDeliveryReceipt,
 } from 'librechat-data-provider';
-import type { DiscordMessageOccurrence } from './discordMessage';
 import type { ChannelRunRecord } from '~/models/channelRun';
 
 export interface ChannelLaneScope {
@@ -19,6 +18,12 @@ export interface ChannelLaneScope {
   admission: Pick<ChannelRunAdmission, 'actor' | 'externalChannelId' | 'externalThreadKey'>;
 }
 
+export interface DiscordMessageOccurrence {
+  applicationId: string;
+  messageId: string;
+  fingerprint: string;
+  purgeAt: number;
+}
 export interface ChannelRunEnrollment extends ChannelLaneScope {
   /** Verified application revision is a fence, never part of actor identity or payload hashes. */
   applicationRevision?: string;

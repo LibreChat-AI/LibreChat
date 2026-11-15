@@ -43,7 +43,6 @@
   "com_ui_discord_binding_remove_help": "Remove this channel binding? It will stop accepting new requests for this agent.",
   "com_ui_discord_binding_replace_help": "Replace this channel binding with this agent? The previous binding will stop accepting new requests. Everyone must grant personal consent again.",
   "com_ui_discord_title": "Discord",
-  "com_ui_discord_setup": "Set up Discord",
   "com_ui_discord_description": "Manage organization-owned Discord applications and server installations.",
   "com_ui_discord_admin": "Only organization administrators can manage Discord applications and servers.",
   "com_ui_discord_disabled": "Discord setup is unavailable. Ask your administrator to enable it.",
