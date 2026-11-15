@@ -339,6 +339,36 @@ describe('SubagentCall', () => {
     expect(screen.getByRole('button')).toHaveAttribute('data-running', running);
   });
 
+  it.each([
+    {
+      child: 'streams with no saved agent',
+      state: { initialProgress: 0.1, toolArgs: { subagent_type: 'self' } },
+      pulses: true,
+    },
+    {
+      child: 'streams as a saved agent',
+      state: {
+        initialProgress: 0.1,
+        toolArgs: { subagent_type: 'agent-1' },
+        subagentIdentity: { subagentKind: 'agent' as const, subagentAgentId: 'agent-1' },
+      },
+      pulses: false,
+    },
+    {
+      child: 'has a result',
+      state: { initialProgress: 1, toolArgs: { subagent_type: 'self' } },
+      pulses: false,
+    },
+  ])(
+    'pulses the glyph of an unnamed agent only while its child $child, and stops under reduced motion',
+    ({ state, pulses }) => {
+      renderWithState({ toolCallId: 'glyph-pulse', isSubmitting: true, ...state });
+      const glyph = screen.getByRole('button').querySelector<HTMLElement>(FOLD_GLYPH_SELECTOR);
+      expect(glyph?.classList.contains('animate-pulse')).toBe(pulses);
+      expect(glyph?.classList.contains('motion-reduce:animate-none')).toBe(pulses);
+    },
+  );
+
   it('keeps the configured name and avatar after live progress is cleared', () => {
     const { setProgress } = renderWithState({
       toolCallId: 'identity',

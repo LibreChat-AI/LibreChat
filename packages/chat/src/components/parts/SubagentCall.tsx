@@ -438,7 +438,9 @@ export default function SubagentCall({
             className={cn(
               FOLD_GLYPH_CLASS,
               'flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full',
-              running && !subagentAgent && 'text-text-primary animate-pulse',
+              running &&
+                !subagentAgent &&
+                'text-text-primary animate-pulse motion-reduce:animate-none',
             )}
             aria-hidden="true"
           >
