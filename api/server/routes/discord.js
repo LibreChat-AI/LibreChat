@@ -4,8 +4,23 @@ const { requireJwtAuth, requireSameOrigin } = require('~/server/middleware');
 const { markOAuthNavigation } = require('~/server/middleware/oauthNavigation');
 const { loginLimiter } = require('~/server/middleware/limiters');
 const handlers = require('~/server/services/DiscordManagement');
+const channels = require('~/server/services/DiscordChannels');
 
 const router = express.Router();
+router.get('/service/security/:applicationId', channels.routes.security);
+router.post('/service/resolve', channels.routes.resolve);
+router.post('/service/inbox/submit', channels.inbox.submit);
+router.post('/service/inbox/claim', channels.inbox.claim);
+router.post('/service/inbox/finish', channels.inbox.finish);
+router.post('/service/inbox/defer', channels.inbox.defer);
+router.get('/agents/:agentId/binding', requireJwtAuth, channels.bindings.status);
+router.put('/agents/:agentId/binding', requireJwtAuth, requireSameOrigin, channels.bindings.bind);
+router.delete(
+  '/agents/:agentId/binding',
+  requireJwtAuth,
+  requireSameOrigin,
+  channels.bindings.remove,
+);
 router.get(
   '/oauth/callback',
   preAuthTenantMiddleware,
