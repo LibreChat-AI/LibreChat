@@ -225,13 +225,38 @@ the intended LibreChat account and review the requested agent consent. Complete 
 confirmation step when prompted. Each person must do this independently.
 
 Use `/librechat ask prompt: ...` to start an agent run, `/librechat status` to inspect the
-current run, and `/librechat cancel` to request cancellation. Commands do not run in direct
-messages. Bot mentions use the optional Gateway message path described above. Unsupported
+current run, and `/librechat cancel` to request cancellation. These execution commands
+currently require a supported server destination. Bot mentions use the optional Gateway message path described above. Unsupported
 events, bot-authored messages, unbound channels and missing consent do not grant execution.
 
 Bindings use per-user conversation isolation. This does not make Discord channel messages
 private: other people who can read that Discord channel can read messages posted there.
 Choose an appropriate channel and do not send secrets in prompts.
+
+### Select an Agent for Direct Messages
+
+DM selection metadata is available; DM execution remains disabled until the runtime
+integration and its release checks are complete. Enabling `discord.dm.enabled` alone
+does not make unfinished DM execution available.
+
+After confirming a server account link, open **Settings > Account > Discord Direct Messages**.
+Choose **Use in Direct Messages** beside the intended agent, Discord account, server and
+application. Choose **Generate Code**, then run `/librechat select` in a direct message with
+that Discord app and paste the value into its `code` option. Generating a code does not
+select an agent until the same Discord account confirms it in the bot DM.
+
+Keep the code private. It expires at the displayed time, and closing its dialog removes
+it from the browser UI. Generating another code for the same account and application
+invalidates the previous unused code. Replaying a used code cannot extend the selection
+or replace a newer selection. The browser does not store the code in query caches,
+mutation history, local storage or session storage.
+
+Each selection keeps its original server-channel authority and account consent; a DM is
+not a way around server access. Settings lists selection status and expiry, with paginated
+history and retry for failed loads. **Revoke DM Selection** requires confirmation and
+remains available when the source is unavailable or new DM selections are disabled.
+Revoking a DM selection leaves its server account link intact. Disconnecting that account
+link makes dependent selections unavailable.
 
 ## Rotation, Disconnect and Recovery
 
