@@ -62,10 +62,12 @@ beforeEach(async () => {
 it('elects one application owner under concurrent acquisition and scopes every operation to its tenant', () =>
   scoped(async () => {
     const candidates = [owner(revision, 'a'), owner(revision, 'b'), owner(revision, 'c')];
-    const results = await Promise.all(candidates.map((candidate) => storage.acquire(candidate)));
+    const results = await Promise.all(
+      candidates.map((candidate) => storage.acquire(candidate, 30000)),
+    );
     expect(results.filter(Boolean)).toHaveLength(1);
     const winner = candidates[results.indexOf(true)];
-    expect(await storage.acquire(winner)).toBe(true);
+    expect(await storage.acquire(winner, 30000)).toBe(true);
     expect(await storage.load(winner)).toMatchObject({
       applicationId,
       applicationRevision: revision,
@@ -75,18 +77,18 @@ it('elects one application owner under concurrent acquisition and scopes every o
     });
     await scoped(async () => {
       expect(await storage.load(winner)).toBeNull();
-      expect(await storage.renew(winner)).toBe(false);
+      expect(await storage.renew(winner, 30000)).toBe(false);
       expect(await storage.release(winner)).toBe(false);
     }, 'foreign');
     expect(await storage.release(candidates.find((candidate) => candidate !== winner)!)).toBe(
       false,
     );
-    expect(await storage.renew(winner)).toBe(true);
+    expect(await storage.renew(winner, 30000)).toBe(true);
   }));
 it('retains the same application lock across credential rotations and permits only old-owner cleanup', () =>
   scoped(async () => {
     const original = owner(revision);
-    expect(await storage.acquire(original)).toBe(true);
+    expect(await storage.acquire(original, 30000)).toBe(true);
     await storage.save(original, botUserId, [{ shardId: 0, encryptedSession: 'old-session' }]);
     const rotated = await installs.configureApplication({
       actorId: userId,
@@ -98,12 +100,12 @@ it('retains the same application lock across credential rotations and permits on
     });
     if (!rotated.ok) throw new Error('Rotation unavailable');
     const replacement = owner(rotated.value.revision, 'b');
-    expect(await storage.acquire(replacement)).toBe(false);
-    expect(await storage.renew(original)).toBe(false);
+    expect(await storage.acquire(replacement, 30000)).toBe(false);
+    expect(await storage.renew(original, 30000)).toBe(false);
     expect(await storage.load(original)).toBeNull();
     expect(await storage.save(original, botUserId, [])).toBe(false);
     expect(await storage.release(original)).toBe(true);
-    expect(await storage.acquire(replacement)).toBe(true);
+    expect(await storage.acquire(replacement, 30000)).toBe(true);
     expect(await storage.release(original)).toBe(false);
     expect(await storage.load(replacement)).toMatchObject({
       encryptedBotToken: 'rotated',
@@ -113,7 +115,7 @@ it('retains the same application lock across credential rotations and permits on
 it('rejects expired leases and fences takeover without letting authority touches extend expiry', () =>
   scoped(async () => {
     const first = owner(revision);
-    expect(await storage.acquire(first)).toBe(true);
+    expect(await storage.acquire(first, 30000)).toBe(true);
     const locks = createResourceLockModel(db);
     const before = await locks.findOne({ key: `discord:gateway:${applicationId}` }).lean();
     expect(
@@ -128,11 +130,11 @@ it('rejects expired leases and fences takeover without letting authority touches
       { key: `discord:gateway:${applicationId}` },
       { $set: { expiresAt: new Date(Date.now() - 1000) } },
     );
-    expect(await storage.renew(first)).toBe(false);
+    expect(await storage.renew(first, 30000)).toBe(false);
     expect(await storage.load(first)).toBeNull();
     expect(await storage.save(first, botUserId, [])).toBe(false);
     const second = owner(revision, 'b');
-    expect(await storage.acquire(second)).toBe(true);
+    expect(await storage.acquire(second, 30000)).toBe(true);
     expect(
       await withRequiredTransaction(db, (session) =>
         touchDiscordGatewayOwner(db, { ...first, tenantId }, session),
@@ -144,7 +146,7 @@ it('rejects expired leases and fences takeover without letting authority touches
 it('merges simultaneous shard checkpoints atomically, bounds shards and supports null invalidation', () =>
   scoped(async () => {
     const current = owner(revision);
-    await storage.acquire(current);
+    await storage.acquire(current, 30000);
     expect(
       await Promise.all([
         storage.save(current, botUserId, [{ shardId: 0, encryptedSession: 'encrypted-zero' }]),
@@ -183,9 +185,9 @@ it('merges simultaneous shard checkpoints atomically, bounds shards and supports
 it('fails closed when Gateway is disabled or the owning account is being erased', () =>
   scoped(async () => {
     const current = owner(revision);
-    await storage.acquire(current);
+    await storage.acquire(current, 30000);
     settings = null;
-    expect(await storage.renew(current)).toBe(false);
+    expect(await storage.renew(current, 30000)).toBe(false);
     expect(await storage.load(current)).toBeNull();
     expect(await storage.save(current, botUserId, [])).toBe(false);
     settings = { ownershipLeaseMs: 30000, shardCount: 2 };
@@ -193,7 +195,25 @@ it('fails closed when Gateway is disabled or the owning account is being erased'
       { _id: userId },
       { $set: { agentTriggerDeletionStartedAt: new Date() } },
     );
-    expect(await storage.renew(current)).toBe(false);
+    expect(await storage.renew(current, 30000)).toBe(false);
     expect(await storage.load(current)).toBeNull();
-    expect(await storage.acquire(owner(revision, 'b'))).toBe(false);
+    expect(await storage.acquire(owner(revision, 'b'), 30000)).toBe(false);
+  }));
+it('grants exactly the requested current duration and refreshes idempotent acquisition before reporting success', () =>
+  scoped(async () => {
+    const current = owner(revision);
+    expect(await storage.acquire(current, 30000)).toBe(true);
+    const locks = createResourceLockModel(db);
+    const filter = { key: `discord:gateway:${applicationId}` };
+    await locks.updateOne(filter, { $set: { expiresAt: new Date(Date.now() + 1000) } });
+    const started = Date.now();
+    expect(await storage.acquire(current, 30000)).toBe(true);
+    expect((await locks.findOne(filter).lean())!.expiresAt.getTime()).toBeGreaterThanOrEqual(
+      started + 30000,
+    );
+    settings = { ownershipLeaseMs: 5000, shardCount: 2 };
+    expect(await storage.acquire(current, 30000)).toBe(false);
+    expect(await storage.renew(current, 30000)).toBe(false);
+    expect(await storage.renew(current, 5000)).toBe(true);
+    expect(await storage.acquire(current, 5000)).toBe(true);
   }));

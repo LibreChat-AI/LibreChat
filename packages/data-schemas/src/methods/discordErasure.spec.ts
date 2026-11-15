@@ -9,6 +9,7 @@ import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { createDiscordInstallStorage } from './discordInstall';
 import { withRequiredTransaction } from '~/utils/transactions';
+import { createDiscordGatewayStorage } from './discordGateway';
 import { createDiscordInstallationStorage } from './discord';
 import { createDiscordInboxStorage } from './discordInbox';
 import { createDiscordRouteStorage } from './discordRoute';
@@ -169,6 +170,8 @@ beforeEach(async () => {
       'DiscordInbox',
       'DiscordReceipt',
       'DiscordReservation',
+      'DiscordGatewayCheckpoint',
+      'ResourceLock',
       'DiscordInstall',
       'ChannelScope',
       'ChannelIdentity',
@@ -620,3 +623,50 @@ it('erases tenantless Discord setup without affecting an organization installati
     });
   });
 });
+
+it('retires encrypted Gateway sessions and locks before removing their application, with retry after failure', () =>
+  scope(async () => {
+    const gateway = createDiscordGatewayStorage(db, async () => ({
+      ownershipLeaseMs: 30000,
+      shardCount: 1,
+    }));
+    const original = { applicationId, applicationRevision: app.revision, ownerId: 'a'.repeat(32) };
+    expect(await gateway.acquire(original, 30000)).toBe(true);
+    expect(
+      await gateway.save(original, botUserId, [
+        { shardId: 0, encryptedSession: 'private-session' },
+      ]),
+    ).toBe(true);
+    const otherId = '123456789012345679';
+    const other = value(
+      await installations.configureApplication({ ...configuration(admin), applicationId: otherId }),
+    );
+    const replacement = {
+      applicationId: otherId,
+      applicationRevision: other.revision,
+      ownerId: 'b'.repeat(32),
+    };
+    await gateway.acquire(replacement, 30000);
+    await gateway.save(replacement, botUserId, [
+      { shardId: 0, encryptedSession: 'other-private-session' },
+    ]);
+    const failure = jest
+      .spyOn(db.models.DiscordGatewayCheckpoint.collection, 'deleteMany')
+      .mockRejectedValueOnce(new Error('checkpoint unavailable'));
+    await expect(users.deleteUserById(installer)).rejects.toThrow('checkpoint unavailable');
+    failure.mockRestore();
+    expect(await db.models.DiscordApplication.exists({ applicationId })).not.toBeNull();
+    expect(await db.models.DiscordGatewayCheckpoint.countDocuments({ applicationId })).toBe(1);
+    expect(
+      await db.models.ResourceLock.exists({ key: `discord:gateway:${applicationId}` }),
+    ).not.toBeNull();
+    expect((await users.deleteUserById(installer)).deletedCount).toBe(1);
+    expect(await db.models.DiscordApplication.exists({ applicationId })).toBeNull();
+    expect(await db.models.DiscordGatewayCheckpoint.countDocuments({ applicationId })).toBe(0);
+    expect(
+      await db.models.ResourceLock.exists({ key: `discord:gateway:${applicationId}` }),
+    ).toBeNull();
+    expect((await gateway.load(replacement))?.checkpoints).toMatchObject([
+      { encryptedSession: 'other-private-session' },
+    ]);
+  }));
