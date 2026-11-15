@@ -201,7 +201,7 @@ projects:
 
 # Custom interface configuration
 interface:
-  customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  customWelcome: 'Salut ! Moi, c’est NOVA AI. Qu’est-ce qu’on construit ensemble aujourd’hui ?'
   # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).
   # 'entity' shows its name; 'greeting' shows the time-of-day greeting (or customWelcome) with the
   # user's name, for deployments where the header selector already names the agent.
