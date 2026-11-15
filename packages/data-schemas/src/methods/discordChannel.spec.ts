@@ -50,6 +50,21 @@ function link(): ChannelIdentityRecord {
     expiresAtMs: Date.now() + 60000,
   };
 }
+async function confirmedLink(revision?: string) {
+  const saved = await identities.saveChannelIdentity(link(), null, revision);
+  if (saved)
+    await db.models.ChannelIdentity.updateOne(
+      { linkId: 'link' },
+      {
+        $set: {
+          discordActivatedAtMs:
+            Number(BigInt(event().admission.eventId) >> BigInt(22)) + 1420070400000 - 1,
+        },
+      },
+    );
+  return saved;
+}
+
 function event() {
   return {
     tenantId,
@@ -186,7 +201,7 @@ it('keeps credentials application-owned and returns authority only in private se
 it('admits only a current linked Discord actor and keeps Slack authority separate', () =>
   scope(async () => {
     await create();
-    expect(await identities.saveChannelIdentity(link(), null, applicationRevision)).toBe(true);
+    expect(await confirmedLink(applicationRevision)).toBe(true);
     expect(await identities.readChannelIdentity(identity())).toMatchObject({ linkId: 'link' });
     const admitted = await runs.admit(event(), Date.now());
     expect(admitted.duplicate).toBe(false);
@@ -252,7 +267,7 @@ it('prevents provider and installation reassignment through generic updates', ()
 it('fences credential rotation without changing consent identity', () =>
   scope(async () => {
     await create();
-    expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+    expect(await confirmedLink()).toBe(true);
     const rotated = await installations.configureApplication({
       actorId: owner,
       applicationId,
@@ -285,7 +300,7 @@ it('fences credential rotation without changing consent identity', () =>
 it('disconnect disables admission and reconnect cannot revive old bindings', () =>
   scope(async () => {
     await create();
-    expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+    expect(await confirmedLink()).toBe(true);
     const disconnected = await installations.disconnectGuild({
       actorId: owner,
       installationId: channel.installationId,
@@ -314,7 +329,7 @@ it('disconnect disables admission and reconnect cannot revive old bindings', () 
 it('blocks an erased owner and retires Discord links through existing cleanup', () =>
   scope(async () => {
     await create();
-    expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+    expect(await confirmedLink()).toBe(true);
     await db.models.User.updateOne(
       { _id: owner },
       { $set: { agentTriggerDeletionStartedAt: new Date() } },
@@ -333,7 +348,7 @@ it('blocks an erased owner and retires Discord links through existing cleanup', 
 it('rejects delivery destinations outside the immutable channel binding', () =>
   scope(async () => {
     await create();
-    expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+    expect(await confirmedLink()).toBe(true);
     await expect(
       runs.admit(
         {
@@ -384,7 +399,7 @@ it.each(['execution', 'progress', 'delivery'] as const)(
   (effect) =>
     scope(async () => {
       await create();
-      expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+      expect(await confirmedLink()).toBe(true);
       const now = Date.now();
       const admitted = await runs.admit(event(), now);
       const claimed = await runs.claim(tenantId, channel.channelId, 'worker', now, 60000);

@@ -56,9 +56,9 @@ let sequence: number;
 let enabled: boolean;
 let allowed: boolean;
 let now: number;
-const eventId = () => String(BigInt('700000000000000000') + BigInt(++sequence));
-async function claim(action: DiscordIngressAction, actor = externalUserId) {
-  const id = eventId();
+const eventId = () =>
+  String((BigInt(Date.now() + 2 - 1420070400000) << BigInt(22)) + BigInt(++sequence));
+async function claim(action: DiscordIngressAction, actor = externalUserId, id = eventId()) {
   unwrap(
     await inbox.submit(
       {
@@ -406,8 +406,28 @@ it('fails closed on revoked permissions, stale application authority and stale c
         expectedRevision: applicationRevision,
       }),
     );
-    await expect(execute(denied.record, fresh)).rejects.toMatchObject({
-      code: 'invalid_transition',
+    expect((await execute(denied.record, fresh)).content).toContain('no longer authorized');
+    expect(await inbox.prepareReply(fresh, 'reply', now)).toMatchObject({
+      ok: false,
+      error: { code: 'authority_changed' },
     });
     expect(await allRuns()).toHaveLength(0);
+  }));
+
+it('refuses a signed ask created before confirmation even when first received afterward', () =>
+  scope(async () => {
+    const delayedId = eventId();
+    await linked();
+    const delayed = await claim(
+      { kind: 'ask', prompt: 'Before consent' },
+      externalUserId,
+      delayedId,
+    );
+    const reply = await execute(delayed.record, delayed.fence);
+    expect(reply.content).toContain('new /librechat ask');
+    expect(await allRuns()).toHaveLength(0);
+    unwrap(await inbox.prepareReply(delayed.fence, 'reply', now));
+    await inbox.finish(delayed.fence, 'completed', now);
+    expect((await invoke({ kind: 'ask', prompt: 'Fresh prompt' })).content).toContain('queued');
+    expect(await allRuns()).toHaveLength(1);
   }));

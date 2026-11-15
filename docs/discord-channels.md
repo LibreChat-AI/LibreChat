@@ -28,6 +28,11 @@ destination has one active agent binding. Replacing a binding closes the previou
 and requires new personal consent. Reconnecting a disconnected server also requires new
 bindings and consent.
 
+Discord links restored without a recorded native confirmation time are treated as expired.
+Run `/librechat link`, choose the LibreChat account in the browser and confirm that account
+in Discord again. Then send a fresh prompt. Messages and slash prompts created before the
+current confirmation cannot start new runs; already authorized runs retain their normal lifecycle.
+
 Never paste bot tokens, OAuth client secrets, service tokens or encryption keys into a chat,
 issue, screenshot or log. Application credentials belong in the authenticated setup form.
 They are encrypted in organization storage and never returned by the setup API. The public

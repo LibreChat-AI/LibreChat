@@ -1,3 +1,4 @@
+import { ChannelRunConflict } from '@librechat/data-schemas';
 import { discordConfirmationControl, discordConfirmationParts } from 'librechat-data-provider';
 import type {
   DiscordInboxFence,
@@ -123,25 +124,34 @@ export function createDiscordCommandExecutor(deps: {
     if (!principal) return link(identity, record, fence);
     if (!(await deps.enabled())) return unavailable();
     if (action.kind === 'ask') {
-      await deps.runs.admit(
-        {
-          tenantId: record.tenantId || '_',
-          channelId: channel.channelId,
-          agentId: channel.agentId,
-          applicationRevision: record.applicationRevision,
-          discordInbox: fence,
-          principal,
-          admission: {
-            actor,
-            eventId: record.eventId,
-            input: action.prompt,
-            externalChannelId: record.externalChannelId,
-            externalThreadKey: `${record.externalChannelId}:${record.eventId}`,
-            externalMessageKey: `${record.externalChannelId}:${record.eventId}`,
+      try {
+        await deps.runs.admit(
+          {
+            tenantId: record.tenantId || '_',
+            channelId: channel.channelId,
+            agentId: channel.agentId,
+            applicationRevision: record.applicationRevision,
+            discordInbox: fence,
+            principal,
+            admission: {
+              actor,
+              eventId: record.eventId,
+              input: action.prompt,
+              externalChannelId: record.externalChannelId,
+              externalThreadKey: `${record.externalChannelId}:${record.eventId}`,
+              externalMessageKey: `${record.externalChannelId}:${record.eventId}`,
+            },
           },
-        },
-        now(),
-      );
+          now(),
+        );
+      } catch (error) {
+        if (error instanceof ChannelRunConflict && error.code === 'invalid_transition')
+          return {
+            content:
+              'This prompt is no longer authorized. Run /librechat link to confirm your account, then send a new /librechat ask.',
+          };
+        throw error;
+      }
       return {
         content: `Your prompt is queued. ${disclosure} Use /librechat status to check progress or /librechat cancel to stop the current run.`,
       };

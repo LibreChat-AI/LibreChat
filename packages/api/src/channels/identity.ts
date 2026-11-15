@@ -55,13 +55,25 @@ export function sameChannelActor(a: ChannelExternalIdentity, b: ChannelExternalI
   return sameChannelExternalIdentity(a, b);
 }
 
+function needsDiscordConfirmation(record: ChannelIdentityRecord): boolean {
+  return (
+    record.identity.provider === 'discord' &&
+    record.state === 'active' &&
+    (!Number.isSafeInteger(record.discordActivatedAtMs) ||
+      !((record.discordActivatedAtMs ?? 0) > 0))
+  );
+}
+
 function view(record: ChannelIdentityRecord, now: number): ChannelLinkView {
   const expiry = record.state === 'active' ? record.expiresAtMs : record.ticketExpiresAtMs;
   return {
     identity: record.identity,
     linkId: record.linkId,
     revision: record.revision,
-    state: record.state !== 'revoked' && expiry <= now ? 'expired' : record.state,
+    state:
+      needsDiscordConfirmation(record) || (record.state !== 'revoked' && expiry <= now)
+        ? 'expired'
+        : record.state,
     expiresAtMs: expiry,
     ...(record.accountLabel ? { accountLabel: record.accountLabel } : {}),
   };
@@ -221,6 +233,7 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
       if (
         existing &&
         ['active', 'accepted'].includes(existing.state) &&
+        !needsDiscordConfirmation(existing) &&
         (existing.state === 'active' ? existing.expiresAtMs : existing.ticketExpiresAtMs) > now() &&
         sameChannelActor(identity, existing.identity) &&
         existing.userId != null &&

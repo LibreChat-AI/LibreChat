@@ -11,6 +11,7 @@ import {
   withRequiredTransaction,
   touchDiscordInstallation,
   createDiscordRouteStorage,
+  createDiscordInboxStorage,
   createChannelIdentityStorage,
   createDiscordInstallationStorage,
 } from '@librechat/data-schemas';
@@ -121,6 +122,7 @@ async function open() {
     identities: createChannelIdentityStorage(mongo),
     runs: createChannelRunStorage(mongo),
     routes: createDiscordRouteStorage(mongo),
+    inbox: createDiscordInboxStorage(mongo),
     channel(tenantId: string): string {
       const channelId = `discord-e2e-${randomUUID()}`;
       made.channels.push({ tenantId, channelId });
@@ -171,6 +173,8 @@ async function open() {
             .digest('hex');
           await db.collection<{ _id: string }>('channelscopes').deleteOne({ _id });
         }
+        for (const name of ['discordinboxes', 'discordreceipts'])
+          await db.collection(name).deleteMany({ applicationId: { $in: made.apps } });
         await db.collection(GUILDS).deleteMany({ applicationId: { $in: made.apps } });
         await db.collection(APPS).deleteMany({ applicationId: { $in: made.apps } });
         const ids = made.users.map((id) => new ObjectId(id));
