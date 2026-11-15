@@ -234,6 +234,51 @@ describe('useFollowChat', () => {
     expect(textOf(result.current.messages)).toEqual(['New run']);
   });
 
+  it('reads the stored messages again when the caller sees the run end with no stream', async () => {
+    const { transport, streams } = createTransport(idle);
+    const { result, rerender, loadMessages } = setup({ transport, live: true });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await settle();
+    expect(streams).toHaveLength(0);
+    const reads = loadMessages.mock.calls.length;
+
+    loadMessages.mockResolvedValue([brief, answer('Finished elsewhere')]);
+    rerender({ id: 'thread-1', transport, loadMessages, live: false });
+
+    await waitFor(() => expect(loadMessages).toHaveBeenCalledTimes(reads + 1));
+    await waitFor(() => expect(textOf(result.current.messages)).toEqual(['Finished elsewhere']));
+  });
+
+  it('says whether there is a generation to follow', async () => {
+    const { transport, streams, setStatus } = createTransport(running);
+    const { result } = setup({ transport, live: true });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    expect(result.current.isFollowing).toBe(true);
+
+    setStatus(idle);
+    act(() => streams[0].push(final('Done')));
+    await waitFor(() => expect(result.current.isFollowing).toBe(false));
+
+    const nothing = createTransport(idle);
+    const quiet = setup({ transport: nothing.transport, live: true });
+    await waitFor(() => expect(quiet.result.current.isLoading).toBe(false));
+    await settle();
+    expect(quiet.result.current.isFollowing).toBe(false);
+  });
+
+  it('follows nothing while disabled, and starts when enabled', async () => {
+    const { transport, streams } = createTransport(running);
+    const { result, rerender, loadMessages } = setup({ transport, enabled: false });
+    await settle();
+
+    expect(loadMessages).not.toHaveBeenCalled();
+    expect(transport.getStatus).not.toHaveBeenCalled();
+    expect(result.current).toMatchObject({ chat: undefined, isLoading: false, messages: [] });
+
+    rerender({ id: 'thread-1', transport, loadMessages, enabled: true });
+    await waitFor(() => expect(streams).toHaveLength(1));
+  });
+
   it('does not attach on a live signal before the stored messages are in', async () => {
     const { transport, streams } = createTransport(running);
     let release: (messages: TMessage[]) => void = () => undefined;

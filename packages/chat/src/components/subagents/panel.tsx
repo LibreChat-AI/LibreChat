@@ -64,6 +64,7 @@ import { useSubagentsHost } from '../../react/subagents/host';
 import { subagentProgressKey } from '../../core/stream/state';
 import { useMessagePartsHost } from '../../react/host';
 import SubagentConversation from './conversation';
+import FollowedChildThread from './followed';
 
 const EVENT_TASK_PAGE_SIZE = 3;
 const TERMINAL_CONTROL_REASONS = new Set([
@@ -294,9 +295,47 @@ export default function SubagentThreadPanel({
       taskView?.status === 'interrupted' ||
       taskView?.status === 'cancelled');
   const priorTerminalRef = useRef(false);
+  /** A background child's thread is a conversation of its own, so it is followed like one: its
+   *  stored messages and the generation running under it, drawn by main chat's list. Event
+   *  threads and foreground children keep the durable view. */
+  const followable =
+    host.useThreadChat != null &&
+    selection.host === 'conversation' &&
+    selection.durable != null &&
+    selection.event == null &&
+    threadId !== '';
+  const followLive = followable && taskView?.status === 'running';
+  const followed = host.useThreadChat?.(selection.parentConversationId, threadId, {
+    live: followLive,
+    enabled: followable,
+  });
+  /** The durable view stays the reader in two cases: the thread's messages could not be read (a
+   *  server without the route), and a running task with no generation to attach to (a server
+   *  that gives children no generation job). */
+  const unfollowable =
+    followed != null &&
+    (followed.isLoadError || (followLive && !followed.isLoading && !followed.isFollowing));
+  const isFollowing = followed?.isFollowing === true;
+  /** Decided once per thread, so the body does not swap when a followed run ends or when a run
+   *  the durable view was drawing ends. */
+  const [followMode, setFollowMode] = useState<{
+    threadId: string;
+    value: 'followed' | 'durable';
+  }>();
+  useEffect(() => {
+    if (!followable || !(isFollowing || unfollowable)) return;
+    const value = isFollowing ? 'followed' : 'durable';
+    setFollowMode((current) => (current?.threadId === threadId ? current : { threadId, value }));
+  }, [followable, isFollowing, threadId, unfollowable]);
+  const decidedFollow = followMode?.threadId === threadId ? followMode.value : undefined;
+  const follows =
+    followable &&
+    followed != null &&
+    decidedFollow !== 'durable' &&
+    (decidedFollow === 'followed' || !unfollowable);
   const contentStream = panelStore.useActivityStream(
     selection,
-    !durableTerminal || eventTaskRunning,
+    !follows && (!durableTerminal || eventTaskRunning),
   );
 
   useEffect(() => {
@@ -1695,7 +1734,15 @@ export default function SubagentThreadPanel({
         scopeKey: `${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`,
         children: (
           <TaskContentScopeContext.Provider value={receiptScope}>
-            {activityPanel}
+            {follows && followed != null ? (
+              <FollowedChildThread
+                threadId={threadId}
+                followed={followed}
+                agentId={taskView?.agentId ?? foregroundAgentId}
+              />
+            ) : (
+              activityPanel
+            )}
           </TaskContentScopeContext.Provider>
         ),
       })}

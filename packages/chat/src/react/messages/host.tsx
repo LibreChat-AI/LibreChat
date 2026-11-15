@@ -266,7 +266,8 @@ const fallbackForkPreferences: ForkPreferences = {
 };
 
 /** Read state with nothing behind it: no conversation is ever unseen, so nothing is written. */
-const inertSeenSource: ConversationSeenSource = {
+/** A seen source that records nothing, for a list whose conversation has no read state. */
+export const inertSeenSource: ConversationSeenSource = {
   readReply: () => undefined,
   hasReplyProof: () => false,
   markSeen: noop,

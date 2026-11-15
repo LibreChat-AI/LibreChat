@@ -1,11 +1,13 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { CSSTransition } from 'react-transition-group';
-import { setDefaultSubagentsHost } from '@librechat/chat/react';
+import { createGenerationTransport } from '@librechat/chat';
 import { SteerPart, ScrollToBottom } from '@librechat/chat/components';
 import { ForkOptions, QueryKeys, dataService } from 'librechat-data-provider';
+import { useFollowChat, setDefaultSubagentsHost } from '@librechat/chat/react';
 import type {
+  FollowedChat,
   SubagentsHost,
   MessagePartsHost,
   TaskContentScope,
@@ -20,10 +22,12 @@ import type {
 } from '@librechat/chat/react';
 import type { ToolCallPartParams } from 'librechat-data-provider';
 import {
+  fetchStreamStatus,
   useToolCallPartQuery,
   useForkConvoMutation,
   useSubagentThreadQuery,
   useSubagentControlMutation,
+  useSubagentThreadToolCallPartQuery,
 } from '~/data-provider';
 import {
   useSubagentTaskContentQuery,
@@ -34,7 +38,9 @@ import useNavigateToConvo from '~/hooks/Conversations/useNavigateToConvo';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
+import { useChatTransport } from './ChatTransportContext';
 import { useAgentsMapContext } from './AgentsMapContext';
+import { useChatSettings } from './ChatSettingsContext';
 
 /** Reads a shortened guidance message's full receipt, once the reader asks for it. */
 function useRetainedControl(
@@ -112,6 +118,35 @@ function useThread(
     isReadinessPending: query.isReadinessPending,
     refetch: query.refetch,
   };
+}
+
+/**
+ * Follows a child thread as a conversation: its messages through the parent-scoped route, and
+ * the generation job that streams a background child, over the transport main chat streams on.
+ */
+function useThreadChat(
+  parentConversationId: string,
+  threadId: string,
+  { live, enabled }: { live: boolean; enabled: boolean },
+): FollowedChat {
+  const { token } = useChatSettings().auth;
+  const transport = useChatTransport();
+  const generation = useMemo(
+    () =>
+      createGenerationTransport({
+        wire: () => transport.stream({ token }),
+        getStatus: fetchStreamStatus,
+      }),
+    [transport, token],
+  );
+  const loadMessages = useCallback(
+    () =>
+      dataService.getSubagentThreadMessages(parentConversationId, threadId, {
+        toolPreviews: true,
+      }),
+    [parentConversationId, threadId],
+  );
+  return useFollowChat({ id: threadId, transport: generation, loadMessages, live, enabled });
 }
 
 function useControl(
@@ -199,6 +234,8 @@ export const appSubagentsHost: SubagentsHost = {
   useToolContent: useSubagentToolContentQuery,
   useAgentsMap: useAgentsMapContext,
   useChildPartsHost,
+  useThreadChat,
+  useThreadToolContent: useSubagentThreadToolCallPartQuery,
   useThread,
   loadThread: (...args) => dataService.getSubagentThread(...args),
   useControl,
