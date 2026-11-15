@@ -5,18 +5,6 @@ import { Readable } from 'node:stream';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import {
-  createModels,
-  createDiscordInstallationStorage,
-  createDiscordRouteStorage,
-  createMethods,
-  createChannelIdentityStorage,
-  createChannelRunStorage,
-  createResponseStorage,
-  hashToken,
-  tenantStorage,
-  runAsSystem,
-} from '@librechat/data-schemas';
-import {
   PermissionBits,
   Permissions,
   PermissionTypes,
@@ -27,8 +15,22 @@ import {
   CHANNEL_DELIVERY_TEXT_MAX_CHARS,
   CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
 } from 'librechat-data-provider';
+import {
+  createModels,
+  createDiscordInstallationStorage,
+  createDiscordRouteStorage,
+  createDiscordInboxStorage,
+  createMethods,
+  createChannelIdentityStorage,
+  createChannelRunStorage,
+  createResponseStorage,
+  hashToken,
+  tenantStorage,
+  runAsSystem,
+} from '@librechat/data-schemas';
 import type {
   ChannelRunAdmission,
+  DiscordIngressAction,
   ChannelIdentityResult,
   ChannelRunSnapshot,
   ChannelRunSummary,
@@ -100,6 +102,7 @@ beforeEach(async () => {
       models.User.deleteMany({}),
       models.DiscordApplication.deleteMany({}),
       models.DiscordGuild.deleteMany({}),
+      models.DiscordInbox.deleteMany({}),
       models.Role.deleteMany({}),
       models.File.deleteMany({}),
       models.Message.deleteMany({}),
@@ -1874,25 +1877,62 @@ it(
       channelRevision: 'discord-revision',
     });
     if (!assigned.ok) throw new Error(assigned.error.code);
-    // Discord consent needs signed ingress, which a later slice adds; seed the active link directly.
-    const discordChannel = (await db.getAgentChannel('discord-channel'))!;
-    const linked = await createChannelIdentityStorage(mongoose).saveChannelIdentity(
-      {
-        tenantId,
-        linkId: 'discord-link',
-        ticketHash: 'd'.repeat(64),
-        revision: 'discord-link-revision',
-        identity: channelExternalIdentity(discordChannel, externalUserId),
-        state: 'active',
-        userId: users[0].id,
-        accountLabel: users[0].name!,
-        ticketExpiresAtMs: Date.now() + 60000,
-        expiresAtMs: Date.now() + 60000,
-      },
-      null,
-      configured.value.revision,
+    const inbox = createDiscordInboxStorage(mongoose);
+    const current = await db.getAgentChannelMetadata('discord-channel');
+    if (!current || current.type !== 'discord') throw new Error('Missing Discord fixture');
+    const identity = channelExternalIdentity(current, externalUserId);
+    expect(await authority.identity.issue(identity)).toEqual({
+      ok: false,
+      error: { code: 'changed' },
+    });
+    const interaction = async (eventId: string, action: DiscordIngressAction) => {
+      const at = Date.now();
+      const submitted = await inbox.submit(
+        {
+          eventId,
+          applicationId,
+          applicationRevision: configured.value.revision,
+          guildId,
+          channelId: current.channelId,
+          channelRevision: current.revision,
+          agentId: current.agentId,
+          externalChannelId,
+          externalUserId,
+          action,
+          encryptedToken: 'sealed',
+          tokenHash: 'a'.repeat(64),
+          expiresAt: at + 900000,
+        },
+        at,
+      );
+      if (!submitted.ok) throw new Error(submitted.error.code);
+      const record = await inbox.claim(applicationId, 'consent-worker', at);
+      if (!record) throw new Error('Missing Discord consent interaction');
+      return {
+        applicationRevision: configured.value.revision,
+        fence: { applicationId, eventId, owner: 'consent-worker', epoch: record.leaseEpoch },
+      };
+    };
+    const settleInteraction = async (ingress: Awaited<ReturnType<typeof interaction>>) => {
+      const prepared = await inbox.prepareReply(ingress.fence, 'sealed-reply', Date.now());
+      if (!prepared.ok) throw new Error(prepared.error.code);
+      expect(await inbox.finish(ingress.fence, 'completed', Date.now())).toBe(true);
+    };
+    const issuedInteraction = await interaction('600000000000000001', { kind: 'link' });
+    const issued = value(await authority.identity.issue(identity, issuedInteraction));
+    await settleInteraction(issuedInteraction);
+    const ticket = new URL(issued.url).hash.slice(1);
+    const principal = { tenantId, userId: users[0].id, accountLabel: users[0].name! };
+    const preview = value(await authority.identity.preview(principal, ticket));
+    const accepted = value(await authority.identity.accept(principal, ticket, preview.revision));
+    const confirmation = await interaction('600000000000000002', {
+      kind: 'confirm',
+      reference: accepted.linkId + accepted.revision,
+    });
+    value(
+      await authority.identity.confirm(identity, accepted.linkId, accepted.revision, confirmation),
     );
-    expect(linked).toBe(true);
+    await settleInteraction(confirmation);
     const call = (suffix: string, revision = configured.value.revision) =>
       request(app)
         .post(`/service/discord-channel/${suffix}`)
