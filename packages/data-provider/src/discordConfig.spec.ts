@@ -55,6 +55,7 @@ it('bounds durable interaction backlog, leases and deduplication retention', () 
 it('keeps Gateway sessions opt-in with bounded non-privileged defaults', () => {
   expect(discordChannelConfigSchema.parse({ enabled: true }).gateway).toMatchObject({
     enabled: false,
+    maxApplications: 32,
     shardCount: 1,
     messageContent: false,
     ownershipLeaseMs: 30000,
@@ -64,6 +65,8 @@ it('keeps Gateway sessions opt-in with bounded non-privileged defaults', () => {
 });
 it.each([
   { shardCount: 129 },
+  { maxApplications: 0 },
+  { maxApplications: 1001 },
   { ownershipLeaseMs: 0 },
   { checkpointIntervalMs: 0 },
   { maxQueuedEvents: 0 },
