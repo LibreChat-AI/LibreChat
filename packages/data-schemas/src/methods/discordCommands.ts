@@ -6,13 +6,13 @@ import type {
 import type { ClientSession } from 'mongoose';
 import type { DiscordInboxRecord, DiscordCancelResult } from '~/models/discordInbox';
 import type { ChannelRunRecord } from '~/models/channelRun';
+import { touchChannelDestinationBinding } from './channelDestination';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createChannelRunModel } from '~/models/channelRun';
 import { touchChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { touchDiscordInbox } from './discordInboxScope';
-import { touchChannelAuthority } from './channelScope';
 
 export interface DiscordCommandScope {
   record: DiscordInboxRecord;
@@ -45,6 +45,43 @@ export interface DiscordCommandStorage {
   ): Promise<DiscordCommandResult<DiscordCancelResult>>;
 }
 
+/** Controls retain the real physical destination and rejoin its immutable native mapping. */
+export async function touchDiscordCommandAuthority(
+  mongoose: typeof import('mongoose'),
+  { record, principal }: DiscordCommandScope,
+  now: number,
+  session: ClientSession,
+): Promise<boolean> {
+  return touchChannelDestinationBinding(
+    mongoose,
+    {
+      tenantId: record.tenantId || undefined,
+      channelId: record.channelId,
+      agentId: record.agentId,
+      applicationRevision: record.applicationRevision,
+      principal,
+      admission: {
+        actor: {
+          provider: 'discord',
+          applicationId: record.applicationId,
+          guildId: record.guildId,
+          externalUserId: record.externalUserId,
+        },
+        eventId: record.eventId,
+        input: 'control',
+        externalChannelId: record.externalChannelId,
+        externalThreadKey: `${record.externalChannelId}:${record.eventId}`,
+        externalMessageKey: `${record.externalChannelId}:${record.eventId}`,
+        ...(record.thread
+          ? { discordDestination: { kind: 'guild_thread', ...record.thread } }
+          : {}),
+      },
+    },
+    now,
+    session,
+  );
+}
+
 /** Cancellation freezes its target and result in the same transaction as the run mutation. */
 export function createDiscordCommandStorage(
   mongoose: typeof import('mongoose'),
@@ -74,11 +111,7 @@ export function createDiscordCommandStorage(
         session,
       )) &&
       (await touchDiscordInbox(mongoose, record, fence, now, session)) &&
-      (await touchChannelAuthority(
-        mongoose,
-        { ...record, provider: 'discord', principal, now },
-        session,
-      ))
+      (await touchDiscordCommandAuthority(mongoose, scope, now, session))
     );
   }
   function filter({ record, principal }: DiscordCommandScope) {
@@ -95,6 +128,9 @@ export function createDiscordCommandStorage(
       'admission.actor.guildId': record.guildId,
       'admission.actor.externalUserId': record.externalUserId,
       'admission.externalChannelId': record.externalChannelId,
+      ...(record.thread
+        ? { 'admission.discordDestination': { kind: 'guild_thread', ...record.thread } }
+        : { 'admission.discordDestination': { $exists: false } }),
     };
   }
   const project = (run: ChannelRunRecord): DiscordCommandRun => ({

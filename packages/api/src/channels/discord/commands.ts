@@ -3,6 +3,7 @@ import {
   discordConfirmationControl,
   discordConfirmationParts,
   discordGuildTextActorUsable,
+  discordThreadUsable,
 } from 'librechat-data-provider';
 import type {
   DiscordInboxFence,
@@ -94,7 +95,8 @@ export function createDiscordCommandExecutor(deps: {
       channel.agentId !== record.agentId ||
       channel.discord.applicationId !== record.applicationId ||
       channel.discord.guildId !== record.guildId ||
-      channel.discord.externalChannelId !== record.externalChannelId
+      channel.discord.externalChannelId !==
+        (record.thread?.parentChannelId ?? record.externalChannelId)
     )
       return unavailable();
     const identity = channelExternalIdentity(channel, record.externalUserId);
@@ -133,17 +135,28 @@ export function createDiscordCommandExecutor(deps: {
     if (!principal) return link(identity, record, fence);
     if (!(await deps.enabled())) return unavailable();
     if (action.kind === 'ask') {
+      let usable = false;
+      if (native?.kind === 'guild_text')
+        usable =
+          !record.thread &&
+          native.source.channelId === record.externalChannelId &&
+          discordGuildTextActorUsable(native.source);
+      if (native?.kind === 'guild_thread')
+        usable = Boolean(
+          record.thread &&
+            native.source.threadChannelId === record.externalChannelId &&
+            native.source.parentChannelId === record.thread.parentChannelId &&
+            discordThreadUsable(native.source),
+        );
       if (
         !native ||
-        native.kind !== 'guild_text' ||
+        !usable ||
         native.owner.applicationId !== record.applicationId ||
         native.owner.applicationRevision !== record.applicationRevision ||
         native.source.applicationId !== record.applicationId ||
         native.source.botUserId !== channel.discord.botUserId ||
         native.source.guildId !== record.guildId ||
-        native.source.channelId !== record.externalChannelId ||
-        native.source.authorId !== record.externalUserId ||
-        !discordGuildTextActorUsable(native.source)
+        native.source.authorId !== record.externalUserId
       )
         return unavailable();
       try {
@@ -160,6 +173,9 @@ export function createDiscordCommandExecutor(deps: {
               actor,
               eventId: record.eventId,
               input: action.prompt,
+              ...(record.thread
+                ? { discordDestination: { kind: 'guild_thread' as const, ...record.thread } }
+                : {}),
               externalChannelId: record.externalChannelId,
               externalThreadKey: `${record.externalChannelId}:${record.eventId}`,
               externalMessageKey: `${record.externalChannelId}:${record.eventId}`,

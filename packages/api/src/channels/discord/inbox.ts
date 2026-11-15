@@ -91,26 +91,38 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
     async submit(input: DiscordInboxSubmission): ReturnType<DiscordInboxStorage['submit']> {
       const parsed = discordInboxSubmissionSchema.parse(input);
       const route = await deps.resolver.resolve(parsed);
-      if (!route) return { ok: false as const, error: { code: 'authority_changed' as const } };
+      const inspection =
+        !route && deps.inspection?.threads ? await deps.resolver.inspect?.(parsed) : null;
+      const authority = route ?? inspection;
+      if (!authority) return { ok: false as const, error: { code: 'authority_changed' as const } };
+      const binding = route
+        ? {
+            channelId: route.channelId,
+            channelRevision: route.channelRevision,
+            agentId: route.agentId,
+          }
+        : {
+            routing: 'inspection' as const,
+            installationId: authority.installationId,
+            installationRevision: authority.installationRevision,
+          };
       const expiresAt = discordInteractionExpiry(parsed.eventId);
       const timestamp = now();
       if (expiresAt <= timestamp || expiresAt > timestamp + 900000)
         return { ok: false as const, error: { code: 'expired' as const } };
       const encryptedToken = await deps.encrypt(parsed.token);
       return tenantStorage.run(
-        { tenantId: route.tenantId === '_' ? undefined : route.tenantId },
+        { tenantId: authority.tenantId === '_' ? undefined : authority.tenantId },
         async () =>
           deps.storage.submit(
             {
               eventId: parsed.eventId,
-              applicationId: route.applicationId,
-              applicationRevision: route.applicationRevision,
-              guildId: route.guildId,
-              externalChannelId: route.externalChannelId,
+              applicationId: authority.applicationId,
+              applicationRevision: authority.applicationRevision,
+              guildId: parsed.guildId,
+              externalChannelId: parsed.externalChannelId,
               externalUserId: parsed.externalUserId,
-              channelId: route.channelId,
-              channelRevision: route.channelRevision,
-              agentId: route.agentId,
+              ...binding,
               action: parsed.action,
               encryptedToken,
               tokenHash: createHash('sha256').update(parsed.token).digest('hex'),
