@@ -196,19 +196,28 @@ if (!externalCodeBaseUrl) {
   codeApiKeyEnv.LIBRECHAT_CODE_API_KEY = process.env.E2E_CODE_API_KEY;
 }
 
-/** Opt-in: the Slack channel scenarios call the real service routes, which need a service token
- *  that `neutralizeCredentialEnv` would otherwise blank, and channels enabled in the generated
- *  deployment config (`slackApp` is operator-only). Without the flag, the environment and the
- *  generated config are identical to a run that never heard of channels. */
+/** Keep each provider opt-in independent while sharing the service credential. */
 const channelAcceptance = process.env.E2E_CHANNELS === 'true';
-const channelServiceToken = channelAcceptance
-  ? process.env.E2E_CHANNEL_SERVICE_TOKEN || randomBytes(32).toString('hex')
+const discordAcceptance = process.env.E2E_DISCORD_CHANNELS === 'true';
+const channelsAcceptance = channelAcceptance || discordAcceptance;
+const channelServiceToken = channelsAcceptance
+  ? process.env.E2E_CHANNEL_SERVICE_TOKEN ||
+    (discordAcceptance ? process.env.E2E_DISCORD_SERVICE_TOKEN : undefined) ||
+    randomBytes(32).toString('hex')
   : undefined;
 
 const baseEnv = {
   ...getLocalE2EEnv(),
   ...(channelServiceToken
-    ? { E2E_CHANNEL_SERVICE_TOKEN: channelServiceToken, CHANNEL_SERVICE_TOKEN: channelServiceToken }
+    ? {
+        E2E_CHANNEL_SERVICE_TOKEN: channelServiceToken,
+        CHANNEL_SERVICE_TOKEN: channelServiceToken,
+      }
+    : {}),
+  ...(discordAcceptance
+    ? {
+        E2E_DISCORD_SERVICE_TOKEN: channelServiceToken,
+      }
     : {}),
   CONFIG_PATH: configPath,
   DEPLOYMENT_SKILLS_DIR: deploymentSkillsPath,
@@ -277,18 +286,26 @@ function writeRuntimeMockConfig() {
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
-  if (channelAcceptance) {
+  if (channelsAcceptance) {
     config = config.replace('\ninterface:\n', '\ninterface:\n  remoteAgents:\n    use: true\n');
-    /** The webhook transport is what shared workspace routing requires; its manifest URLs must be
-     *  HTTPS, and nothing contacts this host. */
+    const channels = {
+      enabled: true,
+      ...(channelAcceptance
+        ? {
+            transport: 'webhook',
+            gatewayUrl: 'https://gateway.e2e.test',
+            slackApp: { enabled: true },
+          }
+        : {}),
+      ...(discordAcceptance
+        ? {
+            discord: { enabled: true, gateway: { enabled: false, pollIntervalMs: 100 } },
+          }
+        : {}),
+    };
     config = config.replace(
       '  agents:\n',
-      `  agents:\n    channels: ${JSON.stringify({
-        enabled: true,
-        transport: 'webhook',
-        gatewayUrl: 'https://gateway.e2e.test',
-        slackApp: { enabled: true },
-      })}\n`,
+      `  agents:\n    channels: ${JSON.stringify(channels)}\n`,
     );
   }
   config = config.replace(
