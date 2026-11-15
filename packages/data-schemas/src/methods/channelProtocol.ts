@@ -3,6 +3,7 @@ import type {
   ChannelRunAdmission,
   DiscordInboxFence,
   DiscordGatewayOwner,
+  DiscordNativeAuthority,
   ChannelRunPrincipal,
   ChannelRunSnapshot,
   ChannelDeliveryPlan,
@@ -27,6 +28,8 @@ export interface DiscordMessageOccurrence {
 export interface ChannelRunEnrollment extends ChannelLaneScope {
   /** Verified application revision is a fence, never part of actor identity or payload hashes. */
   applicationRevision?: string;
+  /** Fresh provider observations are transient and never enter persisted run fingerprints. */
+  discordAuthority?: DiscordNativeAuthority;
   discordInbox?: DiscordInboxFence;
   discordGateway?: { owner: DiscordGatewayOwner; occurrence: DiscordMessageOccurrence };
   workspaceId?: string;

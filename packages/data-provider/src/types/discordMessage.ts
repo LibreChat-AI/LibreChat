@@ -32,11 +32,21 @@ export const discordGuildTextSourceSchema = z
   })
   .strict();
 export type DiscordGuildTextSource = z.infer<typeof discordGuildTextSourceSchema>;
+/** Fresh per-actor observation, not a stored grant or inferred channel membership. */
+export const discordGuildTextActorSourceSchema = discordGuildTextSourceSchema
+  .extend({
+    authorId: channelSnowflakeSchema,
+    authorMember: z.literal(true),
+    authorPermissions: discordGuildTextSourceSchema.shape.permissions,
+  })
+  .strict();
+export type DiscordGuildTextActorSource = z.infer<typeof discordGuildTextActorSourceSchema>;
 export const discordMessageSubmissionSchema = z
   .object({
     owner: discordGatewayOwnerSchema,
     event: discordGatewayMessageSchema,
-    source: discordGuildTextSourceSchema.nullable(),
+    // Legacy bot-only decoding does not prove the actor can currently access the source.
+    source: z.union([discordGuildTextActorSourceSchema, discordGuildTextSourceSchema]).nullable(),
   })
   .strict();
 export type DiscordMessageSubmission = z.infer<typeof discordMessageSubmissionSchema>;
@@ -67,4 +77,10 @@ export function discordGuildTextPermissions(value: string): boolean {
   const bits = BigInt(parsed.data);
   const required = BigInt(1024 | 2048 | 65536);
   return (bits & BigInt(8)) !== BigInt(0) || (bits & required) === required;
+}
+export function discordGuildTextActorUsable(value: DiscordGuildTextActorSource): boolean {
+  const parsed = discordGuildTextActorSourceSchema.safeParse(value);
+  if (!parsed.success || !discordGuildTextPermissions(parsed.data.permissions)) return false;
+  const bits = BigInt(parsed.data.authorPermissions);
+  return (bits & BigInt(8)) !== BigInt(0) || (bits & BigInt(1024)) !== BigInt(0);
 }

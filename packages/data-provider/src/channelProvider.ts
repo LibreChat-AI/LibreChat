@@ -25,6 +25,24 @@ export const channelRunActorSchema = z.union([
       externalUserId: channelSnowflakeSchema,
     })
     .strict(),
+  z
+    .object({
+      provider: z.literal('discord'),
+      scope: z.literal('dm'),
+      applicationId: channelSnowflakeSchema,
+      externalUserId: channelSnowflakeSchema,
+      selectionId: z
+        .string()
+        .min(1)
+        .max(128)
+        .regex(/^[\w-]+$/),
+      selectionRevision: z
+        .string()
+        .min(1)
+        .max(128)
+        .regex(/^[\w-]+$/),
+    })
+    .strict(),
 ]);
 
 const identity = {
@@ -49,11 +67,19 @@ export const channelExternalIdentitySchema = z.union([
 
 /** Slack remains untagged so historical lane and event fingerprints do not change. */
 export function sameChannelRunActor(a: ChannelRunActor, b: ChannelRunActor): boolean {
+  if (!channelRunActorSchema.safeParse(a).success || !channelRunActorSchema.safeParse(b).success)
+    return false;
   if (a.externalUserId !== b.externalUserId) return false;
-  if (a.provider === 'discord')
-    return (
-      b.provider === 'discord' && a.applicationId === b.applicationId && a.guildId === b.guildId
-    );
+  if (a.provider === 'discord') {
+    if (b.provider !== 'discord' || a.applicationId !== b.applicationId) return false;
+    if (a.scope === 'dm')
+      return (
+        b.scope === 'dm' &&
+        a.selectionId === b.selectionId &&
+        a.selectionRevision === b.selectionRevision
+      );
+    return a.scope === undefined && b.scope === undefined && a.guildId === b.guildId;
+  }
   return (
     a.provider === undefined &&
     b.provider === undefined &&
@@ -85,15 +111,18 @@ export function channelActorMatchesChannel(
   channel: ProviderAgentChannel,
   actor: ChannelRunActor,
 ): boolean {
+  if (!channelRunActorSchema.safeParse(actor).success) return false;
   if (channel.type === 'discord')
     return (
       actor.provider === 'discord' &&
+      actor.scope === undefined &&
       actor.applicationId === channel.discord?.applicationId &&
       actor.guildId === channel.discord?.guildId
     );
   return (
     channel.type === 'slack' &&
     actor.provider === undefined &&
+    actor.scope === undefined &&
     actor.teamId === channel.slack?.teamId &&
     actor.appId === channel.slack?.appId
   );

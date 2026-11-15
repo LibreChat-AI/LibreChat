@@ -36,7 +36,12 @@ export function createDiscordFeedbackProjection(deps: {
 }): (run: ChannelRunRecord) => Promise<boolean> {
   return async (run) => {
     const responseId = run.snapshot?.responseId;
-    if (run.admission.actor.provider !== 'discord' || run.cancellationRequested || !responseId)
+    if (
+      run.admission.actor.provider !== 'discord' ||
+      run.admission.actor.scope !== undefined ||
+      run.cancellationRequested ||
+      !responseId
+    )
       return false;
     const [policy, source] = await Promise.all([
       deps.getPolicy({ tenantId: run.tenantId, userId: run.principal.userId }),

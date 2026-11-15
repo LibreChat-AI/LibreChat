@@ -159,6 +159,7 @@ export function createChannelFeedbackStorage(
         const actor = run.admission.actor;
         if (
           actor.provider !== 'discord' ||
+          actor.scope !== undefined ||
           !run.principal.linkId ||
           !run.principal.linkRevision ||
           run.snapshot?.status !== 'completed' ||
