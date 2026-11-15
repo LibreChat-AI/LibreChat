@@ -455,6 +455,10 @@ it('fences consent replacement and run admission against inbox lease reclamation
         now,
       }),
     ).toBe(true);
+    await db.models.ChannelIdentity.updateOne(
+      { linkId: record.linkId },
+      { $set: { discordActivatedAtMs: Number(BigInt(eventId) >> BigInt(22)) + 1420070400000 - 1 } },
+    );
     const second = await claim(now + 30000, 'replacement');
     expect(
       await identities.saveChannelIdentity(

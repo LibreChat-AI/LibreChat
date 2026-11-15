@@ -1933,6 +1933,7 @@ it(
       await authority.identity.confirm(identity, accepted.linkId, accepted.revision, confirmation),
     );
     await settleInteraction(confirmation);
+    const promptEventId = String(BigInt(Date.now() + 2 - 1420070400000) << BigInt(22));
     const call = (suffix: string, revision = configured.value.revision) =>
       request(app)
         .post(`/service/discord-channel/${suffix}`)
@@ -1942,10 +1943,10 @@ it(
     const admitted = await call('runs')
       .send({
         actor: { provider: 'discord', applicationId, guildId, externalUserId },
-        eventId: '678901234567890123',
+        eventId: promptEventId,
         externalChannelId,
-        externalThreadKey: `${externalChannelId}:678901234567890123`,
-        externalMessageKey: `${externalChannelId}:678901234567890123`,
+        externalThreadKey: `${externalChannelId}:${promptEventId}`,
+        externalMessageKey: `${externalChannelId}:${promptEventId}`,
         input: 'hello',
       })
       .expect(201);

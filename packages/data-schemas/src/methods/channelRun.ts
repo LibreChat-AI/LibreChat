@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   channelStorageConfigSchema,
   channelRunActorSchema,
+  channelSnowflakeSchema,
   CHANNEL_DELIVERY_PARTS_HARD_MAX,
 } from 'librechat-data-provider';
 import type {
@@ -428,6 +429,15 @@ export function createChannelRunStorage(
     },
     async admit(input, now) {
       channelRunActorSchema.parse(input.admission.actor);
+      if (
+        input.admission.actor.provider === 'discord' &&
+        !channelSnowflakeSchema.safeParse(input.admission.eventId).success
+      )
+        throw new ChannelRunConflict('invalid_transition');
+      const promptEventAtMs =
+        input.admission.actor.provider === 'discord'
+          ? Number(BigInt(input.admission.eventId) >> BigInt(22)) + 1420070400000
+          : undefined;
       if (input.admission.actor.provider === 'discord' && !input.applicationRevision)
         throw new ChannelRunConflict('invalid_transition');
       if (input.workspaceId && input.admission.actor.provider !== undefined)
@@ -486,6 +496,7 @@ export function createChannelRunStorage(
               channelId: input.channelId,
               agentId: input.agentId,
               channelRevision: input.principal.channelRevision,
+              promptEventAtMs,
               provider: input.admission.actor.provider,
               applicationId: input.admission.actor.applicationId,
               applicationRevision: input.applicationRevision,
