@@ -4,6 +4,7 @@ export interface IResourceLock extends Document {
   key: string;
   ownerId: string;
   expiresAt: Date;
+  fenceWrites?: number;
 }
 
 export interface ResourceLockAcquireData {

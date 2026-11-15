@@ -261,3 +261,10 @@ export type {
   DiscordCommandScope,
   DiscordCommandRun,
 } from './methods/discordCommands';
+export { createDiscordGatewayStorage, touchDiscordGatewayOwner } from './methods/discordGateway';
+export type {
+  DiscordGatewayStorage,
+  DiscordGatewayScope,
+  DiscordGatewayStoragePolicy,
+  DiscordGatewayPrivateState,
+} from './methods/discordGateway';
