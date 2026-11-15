@@ -12,10 +12,11 @@ const guildSchema = z.object({ id: channelSnowflakeSchema, name: z.string().min(
 const applicationSchema = z.object({
   id: channelSnowflakeSchema,
   name: z.string().min(1).max(100),
-  bot: z.object({ id: channelSnowflakeSchema, bot: z.literal(true).optional() }),
+  bot: z.object({ id: channelSnowflakeSchema, bot: z.literal(true).optional() }).optional(),
   verify_key: discordPublicKeySchema,
   bot_require_code_grant: z.boolean(),
 });
+const botSchema = z.object({ id: channelSnowflakeSchema, bot: z.literal(true) });
 const grantSchema = z.object({
   access_token: z.string().min(1).max(4096),
   token_type: z.literal('Bearer'),
@@ -236,15 +237,15 @@ export function createDiscordProviderClient(deps: {
   ): Promise<VerifiedDiscordApplication> {
     snowflake(input.applicationId);
     credential(input.botToken);
-    const app = parse(
-      applicationSchema,
-      await request('/applications/@me', {
-        headers: { Authorization: `Bot ${input.botToken}` },
-      }),
-    );
+    const headers = { Authorization: `Bot ${input.botToken}` };
+    const [app, bot] = await Promise.all([
+      request('/applications/@me', { headers }).then((value) => parse(applicationSchema, value)),
+      request('/users/@me', { headers }).then((value) => parse(botSchema, value)),
+    ]);
     if (
       app.id !== input.applicationId ||
-      (input.expectedBotUserId !== undefined && app.bot.id !== input.expectedBotUserId) ||
+      (app.bot !== undefined && app.bot.id !== bot.id) ||
+      (input.expectedBotUserId !== undefined && bot.id !== input.expectedBotUserId) ||
       (input.expectedPublicKey !== undefined &&
         app.verify_key.toLowerCase() !== input.expectedPublicKey.toLowerCase())
     )
@@ -252,7 +253,7 @@ export function createDiscordProviderClient(deps: {
     if (!app.bot_require_code_grant) failure('unsupported_installation');
     return {
       applicationId: app.id,
-      botUserId: app.bot.id,
+      botUserId: bot.id,
       publicKey: app.verify_key.toLowerCase(),
       name: app.name,
     };

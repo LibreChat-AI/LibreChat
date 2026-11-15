@@ -40,6 +40,7 @@ const makeClient = (config = configuration) =>
 beforeEach(() => {
   payloads = {
     '/applications/@me': appPayload(),
+    '/users/@me': { id: botUserId, bot: true },
     '/oauth2/token': {
       access_token: accessToken,
       token_type: 'Bearer',
@@ -80,7 +81,45 @@ it('verifies authoritative application, bot and public key without returning cre
       signal: expect.any(AbortSignal),
     }),
   );
+  expect(fetchProvider).toHaveBeenCalledWith(
+    'https://discord.com/api/v10/users/@me',
+    expect.objectContaining({ headers: { Authorization: `Bot ${botToken}` } }),
+  );
 });
+
+it('verifies bot identity when the optional application bot expansion is absent', async () => {
+  payloads['/applications/@me'] = { ...appPayload(), bot: undefined };
+  expect(await client.verifyApplication({ applicationId, botToken })).toEqual({
+    ok: true,
+    value: expected,
+  });
+  expect(await client.exchangeGuild(exchange())).toEqual({
+    ok: true,
+    value: { application: expected, guildId, guildName: 'Verified guild' },
+  });
+  expect(
+    await client.verifyApplication({ applicationId, botToken, expectedBotUserId: '999' }),
+  ).toEqual({ ok: false, error: { code: 'application_changed' } });
+});
+
+it('rejects an application bot expansion that differs from the authenticated bot', async () => {
+  payloads['/applications/@me'] = { ...appPayload(), bot: { id: '999', bot: true } };
+  expect(await client.verifyApplication({ applicationId, botToken })).toEqual({
+    ok: false,
+    error: { code: 'application_changed' },
+  });
+});
+
+it.each([{ id: botUserId, bot: false }, { id: botUserId }, { id: 123, bot: true }])(
+  'rejects an unverified authenticated bot identity %p',
+  async (bot) => {
+    payloads['/users/@me'] = bot;
+    expect(await client.verifyApplication({ applicationId, botToken })).toEqual({
+      ok: false,
+      error: { code: 'malformed_response' },
+    });
+  },
+);
 
 it.each(['application', 'bot', 'key'])('rejects a mismatched %s identity', async (kind) => {
   const input = {
@@ -108,11 +147,10 @@ it('requires the code grant installation setting', async () => {
     ok: false,
     error: { code: 'unsupported_installation' },
   });
-  expect(fetchProvider.mock.calls.every(([url]) => url.endsWith('/applications/@me'))).toBe(true);
+  expect(fetchProvider.mock.calls.every(([url]) => !url.endsWith('/oauth2/token'))).toBe(true);
 });
 
 it.each([
-  { ...appPayload(), bot: undefined },
   { ...appPayload(), bot: { id: botUserId, bot: false } },
   { ...appPayload(), verify_key: 'invalid' },
   { ...appPayload(), id: 123 },
@@ -426,6 +464,7 @@ it('rejects a refused one-time code without continuing installation or exposing 
   });
   expect(fetchProvider.mock.calls.map(([url]) => url)).toEqual([
     'https://discord.com/api/v10/applications/@me',
+    'https://discord.com/api/v10/users/@me',
     'https://discord.com/api/v10/oauth2/token',
   ]);
 });
