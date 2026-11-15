@@ -16,9 +16,6 @@ import type {
   TTokenUsageEvent,
   TContextUsageEvent,
   TSteerUpdatedEvent,
-  TSteerAppliedEvent,
-  TActivityLabelEvent,
-  TReasoningLabelEvent,
 } from 'librechat-data-provider';
 import type { GenerationProtocolVersion } from '../protocol';
 import type { RunEnd } from '../steer/types';
@@ -322,33 +319,6 @@ export interface ResumableMessages {
   set: (messages: TMessage[]) => void;
 }
 
-/**
- * How the app places the parts a run reports beside its deltas onto a response message, and
- * finds the response each one targets among the pane's messages.
- */
-export interface ResumableParts {
-  applySteer: (message: TMessage, event: TSteerAppliedEvent) => TMessage;
-  findSteerTarget: (
-    messages: TMessage[],
-    event: TSteerAppliedEvent,
-    fallbackMessageIds?: readonly (string | null | undefined)[],
-  ) => number;
-  applyActivityLabel: (message: TMessage, event: TActivityLabelEvent) => TMessage;
-  findActivityLabelTarget: (
-    messages: TMessage[],
-    event: TActivityLabelEvent,
-    fallbackMessageIds?: readonly (string | null | undefined)[],
-  ) => number;
-  /** Shifts a phase label's end boundary past an edit's retained prefix. */
-  offsetActivityPhaseBoundary: (
-    endIndex: number,
-    prefixLength: number,
-    foldedFirstPart: boolean,
-  ) => number;
-  applyReasoningLabel: (message: TMessage, event: TReasoningLabelEvent) => TMessage;
-  findReasoningLabelTarget: (messages: TMessage[], event: TReasoningLabelEvent) => number;
-}
-
 /** Everything a resumable run needs from the app it runs in. */
 export interface ResumableHost extends SubscriptionHost {
   cache: ResumableCache;
@@ -357,7 +327,6 @@ export interface ResumableHost extends SubscriptionHost {
   steers: ResumableSteers;
   events: ResumableEvents;
   messages: ResumableMessages;
-  parts: ResumableParts;
   usage: ResumableUsage;
   /** The stream side of the app's transport, bound to the signed-in user. */
   stream: ChatTransport;
