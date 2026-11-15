@@ -1,5 +1,5 @@
 import { channelExternalIdentitySchema } from 'librechat-data-provider';
-import type { ChannelExternalIdentity } from 'librechat-data-provider';
+import type { ChannelExternalIdentity, DiscordInboxFence } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
 import {
@@ -12,8 +12,13 @@ import { startRequiredTransactionSession } from '~/utils/transactions';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { channelIdentityScope } from './channelProvider';
+import { touchDiscordInbox } from './discordInboxScope';
 export type { ChannelIdentityRecord } from '~/models/channelIdentity';
 
+export interface DiscordIdentityWrite {
+  fence: DiscordInboxFence;
+  now: number;
+}
 export interface ChannelIdentityStorage {
   readChannelIdentity(identity: ChannelExternalIdentity): Promise<ChannelIdentityRecord | null>;
   readChannelTicket(tenantId: string, ticketHash: string): Promise<ChannelIdentityRecord | null>;
@@ -34,6 +39,7 @@ export interface ChannelIdentityStorage {
     record: ChannelIdentityRecord,
     expectedRevision: string | null,
     applicationRevision?: string,
+    ingress?: DiscordIdentityWrite,
   ): Promise<boolean>;
   /** Owner-only authority reduction remains available after the channel closes. */
   revokeChannelIdentity(
@@ -119,7 +125,7 @@ export function createChannelIdentityStorage(
         { $unset: { slackReply: '' } },
       );
     },
-    async saveChannelIdentity(record, expectedRevision, applicationRevision) {
+    async saveChannelIdentity(record, expectedRevision, applicationRevision, ingress) {
       assertChannelTenant(record.tenantId);
       channelExternalIdentitySchema.parse(record.identity);
       if (record.tenantId !== record.identity.tenantId)
@@ -184,6 +190,27 @@ export function createChannelIdentityStorage(
         try {
           let saved = false;
           await session.withTransaction(async () => {
+            if (
+              ingress &&
+              (record.identity.provider !== 'discord' ||
+                ingress.fence.applicationId !== record.identity.applicationId ||
+                !applicationRevision ||
+                !(await touchDiscordInbox(
+                  mongoose,
+                  {
+                    tenantId: record.tenantId,
+                    channelId: record.identity.channelId,
+                    externalUserId: record.identity.externalUserId,
+                    applicationRevision,
+                  },
+                  ingress.fence,
+                  ingress.now,
+                  session,
+                )))
+            ) {
+              saved = false;
+              return;
+            }
             if (admit && !(await admit(session))) {
               saved = false;
               return;

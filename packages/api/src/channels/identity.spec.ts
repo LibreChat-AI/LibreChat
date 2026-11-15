@@ -2,6 +2,9 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
+  createDiscordInstallationStorage,
+  createDiscordRouteStorage,
+  createDiscordInboxStorage,
   createMethods,
   createChannelIdentityStorage,
   runAsSystem,
@@ -651,3 +654,129 @@ it.each(['revoked', 'erased', 'replaced', 'expired', 'permission', 'channel'])(
       expect(onError).not.toHaveBeenCalled();
     })(),
 );
+
+it('requires a live Discord ingress lease for ticket issue and external confirmation', async () => {
+  await tenantStorage.run({ tenantId: identity.tenantId }, async () => {
+    const owner = '000000000000000000000001';
+    const applicationId = '123456789012345678';
+    const guildId = '234567890123456789';
+    const botUserId = '345678901234567890';
+    const externalChannelId = '456789012345678901';
+    const externalUserId = '567890123456789012';
+    const eventId = '678901234567890123';
+    await mongoose.models.User.create({
+      _id: owner,
+      tenantId: identity.tenantId,
+      email: 'discord@example.test',
+      provider: 'local',
+    });
+    const installations = createDiscordInstallationStorage(mongoose);
+    const app = await installations.configureApplication({
+      actorId: owner,
+      applicationId,
+      botUserId,
+      publicKey: 'a'.repeat(64),
+      encryptedBotToken: 'sealed',
+      encryptedClientSecret: 'secret',
+    });
+    if (!app.ok) throw new Error(app.error.code);
+    const applicationRevision = app.value.revision;
+    const guild = await installations.connectGuild({
+      actorId: owner,
+      applicationId,
+      applicationRevision,
+      guildId,
+      guildName: 'Guild',
+    });
+    if (!guild.ok) throw new Error(guild.error.code);
+    await db.createAgentChannel({
+      type: 'discord',
+      tenantId: identity.tenantId,
+      channelId: 'discord',
+      agentId: identity.agentId,
+      createdBy: owner,
+      credentialMode: 'per_user',
+      revision: currentRevision,
+      status: 'pending_install',
+      installationId: guild.value.installationId,
+      installationRevision: guild.value.revision,
+      discord: { applicationId, guildId, botUserId, externalChannelId },
+      applicationRevision,
+    });
+    const assigned = await createDiscordRouteStorage(mongoose).assign({
+      actorId: owner,
+      applicationRevision,
+      installationId: guild.value.installationId,
+      installationRevision: guild.value.revision,
+      externalChannelId,
+      channelId: 'discord',
+      channelRevision: currentRevision,
+    });
+    if (!assigned.ok) throw new Error(assigned.error.code);
+    const bound = await db.getAgentChannelMetadata('discord');
+    if (!bound?.revision) throw new Error('Missing binding');
+    currentRevision = bound.revision;
+    const actor = {
+      provider: 'discord' as const,
+      tenantId: identity.tenantId,
+      channelId: 'discord',
+      channelRevision: currentRevision,
+      agentId: identity.agentId,
+      applicationId,
+      guildId,
+      externalUserId,
+    };
+    expect(await service.issue(actor)).toMatchObject({ ok: false, error: { code: 'changed' } });
+    const inbox = createDiscordInboxStorage(mongoose);
+    const submit = async (id: string) =>
+      inbox.submit(
+        {
+          eventId: id,
+          applicationId,
+          applicationRevision,
+          guildId,
+          channelId: actor.channelId,
+          channelRevision: currentRevision,
+          agentId: actor.agentId,
+          externalChannelId,
+          externalUserId,
+          action: { kind: 'link' },
+          encryptedToken: 'sealed',
+          tokenHash: 'b'.repeat(64),
+          expiresAt: clock + 900000,
+        },
+        clock,
+      );
+    expect((await submit(eventId)).ok).toBe(true);
+    const claimed = await inbox.claim(applicationId, 'worker', clock);
+    if (!claimed) throw new Error('Missing claim');
+    const authority = {
+      applicationRevision,
+      fence: { applicationId, eventId, owner: 'worker', epoch: claimed.leaseEpoch },
+    };
+    const ticket = value(await service.issue(actor, authority));
+    const local = { tenantId: identity.tenantId, userId: owner, accountLabel: 'Local account' };
+    allowedUsers.add(owner);
+    const secret = new URL(ticket.url).hash.slice(1);
+    const preview = value(await service.preview(local, secret));
+    const accepted = value(await service.accept(local, secret, preview.revision));
+    expect(await service.confirm(actor, accepted.linkId, accepted.revision)).toMatchObject({
+      ok: false,
+      error: { code: 'changed' },
+    });
+    clock += 30000;
+    const replacement = await inbox.claim(applicationId, 'replacement', clock);
+    if (!replacement) throw new Error('Missing replacement');
+    expect(
+      await service.confirm(actor, accepted.linkId, accepted.revision, authority),
+    ).toMatchObject({ ok: false, error: { code: 'changed' } });
+    const confirmed = value(
+      await service.confirm(actor, accepted.linkId, accepted.revision, {
+        applicationRevision,
+        fence: { ...authority.fence, owner: 'replacement', epoch: replacement.leaseEpoch },
+      }),
+    );
+    expect(confirmed.userId).toBe(owner);
+    expect(value(await service.resolve(actor)).revision).toBe(confirmed.revision);
+  });
+});

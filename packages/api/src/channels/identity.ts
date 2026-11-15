@@ -6,6 +6,7 @@ import {
 } from 'librechat-data-provider';
 import type {
   ChannelExternalIdentity,
+  DiscordInboxFence,
   ChannelLink,
   ChannelLinkView,
   ChannelLinkTicket,
@@ -13,6 +14,10 @@ import type {
 } from 'librechat-data-provider';
 import type { ChannelIdentityRecord, ChannelIdentityStorage } from '@librechat/data-schemas';
 
+export interface DiscordIdentityAuthority {
+  applicationRevision: string;
+  fence: DiscordInboxFence;
+}
 export interface ChannelLinkPrincipal {
   userId: string;
   tenantId: string;
@@ -207,7 +212,9 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
     },
     async issue(
       identity: ChannelExternalIdentity,
+      ingress?: DiscordIdentityAuthority,
     ): Promise<ChannelIdentityResult<ChannelLinkTicket>> {
+      if ((identity.provider === 'discord') !== Boolean(ingress)) return failure('changed');
       if (!deps.publicBaseUrl) return failure('unavailable');
       if (!(await deps.channelIsCurrent(identity))) return failure('changed');
       const existing = await deps.storage.readChannelIdentity(identity);
@@ -244,7 +251,14 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
         ticketExpiresAtMs: expiry,
         expiresAtMs: expiry,
       };
-      if (!(await deps.storage.saveChannelIdentity(record, existing?.revision ?? null)))
+      if (
+        !(await deps.storage.saveChannelIdentity(
+          record,
+          existing?.revision ?? null,
+          ingress?.applicationRevision,
+          ingress ? { fence: ingress.fence, now: now() } : undefined,
+        ))
+      )
         return failure('changed');
       const url = new URL('channels/link', base.href.endsWith('/') ? base : `${base.href}/`);
       url.hash = secret;
@@ -293,12 +307,14 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
       await updateReply(accepted);
       return { ok: true, value: view(accepted, now()) };
     },
-    /** Called only after trusted Slack ingress verifies this exact external actor. */
+    /** Called only after trusted provider ingress verifies this exact external actor. */
     async confirm(
       identity: ChannelExternalIdentity,
       linkId: string,
       expectedRevision: string,
+      ingress?: DiscordIdentityAuthority,
     ): Promise<ChannelIdentityResult<ChannelLink>> {
+      if ((identity.provider === 'discord') !== Boolean(ingress)) return failure('changed');
       const record = await deps.storage.readChannelLink(identity.tenantId, linkId);
       if (!record || !sameChannelActor(record.identity, identity)) return failure('forbidden');
       if (record.state !== 'accepted' || record.revision !== expectedRevision || !record.userId)
@@ -311,7 +327,14 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
         revision: nonce(),
         expiresAtMs: now() + (await lifetime('linkLifetimeMs')),
       };
-      if (!(await deps.storage.saveChannelIdentity(active, record.revision)))
+      if (
+        !(await deps.storage.saveChannelIdentity(
+          active,
+          record.revision,
+          ingress?.applicationRevision,
+          ingress ? { fence: ingress.fence, now: now() } : undefined,
+        ))
+      )
         return failure('changed');
       await deps.storage.clearChannelIdentityReply(
         active.tenantId,

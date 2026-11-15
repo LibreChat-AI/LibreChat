@@ -252,3 +252,5 @@ export type {
   SubmitDiscordInteraction,
 } from './methods/discordInbox';
 export type { DiscordInboxRecord } from './models/discordInbox';
+
+export type { DiscordIdentityWrite } from './methods/channelIdentity';
