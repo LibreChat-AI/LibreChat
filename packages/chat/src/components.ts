@@ -17,6 +17,8 @@ export type {
 } from './components/Part';
 
 /** Composer: the chat input, its controls and the steering queue. */
+export { default as BrowserAudio } from './components/composer/Audio';
+export type { BrowserAudioProps } from './components/composer/Audio';
 export { default as StopButton } from './components/composer/StopButton';
 export { default as MentionItem } from './components/composer/MentionItem';
 export { default as MentionPopover } from './components/composer/popover/Mention';
