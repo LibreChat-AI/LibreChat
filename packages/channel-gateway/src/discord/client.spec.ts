@@ -6,6 +6,43 @@ function fixture(response: () => Promise<Response>) {
   const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(response);
   return { transport, client: new DiscordClient(options, transport) };
 }
+describe('current bot guild membership', () => {
+  test('requires the exact guild identity from an authenticated current lookup', async () => {
+    const f = fixture(async () => Response.json({ id: '123' }));
+    expect(await f.client.isGuildMember('123')).toBe(true);
+    expect(f.transport.mock.calls[0]).toEqual([
+      'https://discord.com/api/v10/guilds/123',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ Authorization: 'Bot secret-token' }),
+        redirect: 'error',
+      }),
+    ]);
+  });
+  test.each([403, 404])('treats only definite HTTP %s as absent membership', async (status) => {
+    expect(
+      await fixture(async () => Response.json({}, { status })).client.isGuildMember('123'),
+    ).toBe(false);
+  });
+  test.each([401, 429, 500, 503])(
+    'propagates HTTP %s without inventing removal',
+    async (status) => {
+      const f = fixture(async () => Response.json({}, { status }));
+      await expect(f.client.isGuildMember('123')).rejects.toMatchObject(
+        status === 429 ? { outcome: 'retryable', retryAfterMs: 1000 } : { status },
+      );
+      expect(f.transport).toHaveBeenCalledTimes(1);
+    },
+  );
+  test.each([{}, { id: '456' }])(
+    'rejects partial or different guild success data',
+    async (body) => {
+      await expect(
+        fixture(async () => Response.json(body)).client.isGuildMember('123'),
+      ).rejects.toThrow();
+    },
+  );
+});
 describe('Discord REST writes', () => {
   test('uses stable bounded nonces, suppresses all mentions on create and edit', async () => {
     const f = fixture(async () => Response.json({ id: '456', channel_id: '123' }));

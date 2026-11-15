@@ -2,11 +2,16 @@ import {
   discordGatewayOwnerSchema,
   discordGatewayBatchSchema,
   discordGatewayBootstrapSchema,
+  discordGuildRemovalTargetSchema,
+  discordGuildRemovalPreparationSchema,
+  channelSnowflakeSchema,
 } from 'librechat-data-provider';
 import type {
   DiscordGatewayOwner,
   DiscordGatewayBatch,
   DiscordGatewayBootstrap,
+  DiscordGuildRemovalTarget,
+  DiscordGuildRemovalPreparation,
 } from 'librechat-data-provider';
 import type { ServiceConnection } from '../transport';
 import { ServiceClient, ServiceError, boundedBody } from '../transport';
@@ -15,6 +20,42 @@ import { ServiceClient, ServiceError, boundedBody } from '../transport';
 export class DiscordGatewayControlClient extends ServiceClient {
   constructor(connection: ServiceConnection, transport: typeof fetch = fetch) {
     super({ ...connection, CHANNEL_TENANT_ID: undefined }, transport);
+  }
+  async prepareGuildRemoval(
+    owner: DiscordGatewayOwner,
+    guildId: string,
+    signal?: AbortSignal,
+  ): Promise<DiscordGuildRemovalPreparation> {
+    const response = await this.raw(
+      '/api/channels/discord/service/gateway/prepareGuildRemoval',
+      {
+        owner: discordGatewayOwnerSchema.parse(owner),
+        guildId: channelSnowflakeSchema.parse(guildId),
+      },
+      signal,
+    );
+    const result = discordGuildRemovalPreparationSchema.parse(await this.read(response));
+    if (result.target && result.target.guildId !== guildId)
+      throw new Error('Discord guild removal mismatch');
+    return result;
+  }
+  async removeGuild(
+    owner: DiscordGatewayOwner,
+    target: DiscordGuildRemovalTarget,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const response = await this.raw(
+      '/api/channels/discord/service/gateway/removeGuild',
+      {
+        owner: discordGatewayOwnerSchema.parse(owner),
+        target: discordGuildRemovalTargetSchema.parse(target),
+      },
+      signal,
+    );
+    if (response.status !== 204) {
+      if (!response.ok) await this.decode(response);
+      throw new Error('Discord guild removal was not confirmed');
+    }
   }
   private async call(
     path: string,

@@ -14,6 +14,19 @@ export const discordGatewayOwnerSchema = z
   })
   .strict();
 export type DiscordGatewayOwner = z.infer<typeof discordGatewayOwnerSchema>;
+/** Exact installation observed before a fresh bot membership inspection. */
+export const discordGuildRemovalTargetSchema = z
+  .object({
+    guildId: channelSnowflakeSchema,
+    installationId: z.string().min(1).max(128),
+    installationRevision: discordGatewayOwnerSchema.shape.applicationRevision,
+  })
+  .strict();
+export type DiscordGuildRemovalTarget = z.infer<typeof discordGuildRemovalTargetSchema>;
+export const discordGuildRemovalPreparationSchema = z
+  .object({ target: discordGuildRemovalTargetSchema.nullable() })
+  .strict();
+export type DiscordGuildRemovalPreparation = z.infer<typeof discordGuildRemovalPreparationSchema>;
 /** Resume URLs carry bot credentials during authentication; reject arbitrary destinations. */
 export const discordGatewaySessionSchema = z
   .object({

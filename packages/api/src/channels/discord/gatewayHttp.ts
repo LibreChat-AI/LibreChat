@@ -3,6 +3,8 @@ import {
   discordGatewayOwnerSchema,
   discordGatewayBatchSchema,
   discordChannelConfigSchema,
+  discordGuildRemovalTargetSchema,
+  channelSnowflakeSchema,
 } from 'librechat-data-provider';
 import type { RequestHandler } from 'express';
 import type { DiscordGatewayService } from './gateway';
@@ -12,7 +14,17 @@ import { acceptsChannelServiceToken } from '../service';
 export function createDiscordGatewayHandlers(deps: {
   service: DiscordGatewayService;
   serviceToken: () => string | undefined;
-}): Record<'acquire' | 'renew' | 'release' | 'bootstrap' | 'load' | 'save', RequestHandler> {
+}): Record<
+  | 'acquire'
+  | 'renew'
+  | 'release'
+  | 'bootstrap'
+  | 'load'
+  | 'save'
+  | 'prepareGuildRemoval'
+  | 'removeGuild',
+  RequestHandler
+> {
   const ownerSchema = z.object({ owner: discordGatewayOwnerSchema }).strict();
   const leaseSchema = ownerSchema.extend({
     leaseMs: discordChannelConfigSchema.shape.gateway
@@ -42,6 +54,14 @@ export function createDiscordGatewayHandlers(deps: {
     };
   }
   return {
+    prepareGuildRemoval: handle(
+      ownerSchema.extend({ guildId: channelSnowflakeSchema }),
+      ({ owner, guildId }) => deps.service.prepareGuildRemoval(owner, guildId),
+    ),
+    removeGuild: handle(
+      ownerSchema.extend({ target: discordGuildRemovalTargetSchema }),
+      ({ owner, target }) => deps.service.removeGuild(owner, target),
+    ),
     acquire: handle(leaseSchema, ({ owner, leaseMs }) => deps.service.acquire(owner, leaseMs)),
     renew: handle(leaseSchema, ({ owner, leaseMs }) => deps.service.renew(owner, leaseMs)),
     release: handle(ownerSchema, ({ owner }) => deps.service.release(owner)),

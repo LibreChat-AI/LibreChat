@@ -177,6 +177,21 @@ export class DiscordClient {
       throw new DiscordWriteError('unknown');
     return { channelId, messageId: value.id, externalMessageKey: `${channelId}:${value.id}` };
   }
+  /** Get Guild confirms current bot membership: https://docs.discord.com/developers/resources/guild#get-guild */
+  async isGuildMember(guildId: string, signal?: AbortSignal): Promise<boolean> {
+    channelSnowflakeSchema.parse(guildId);
+    try {
+      const value = z
+        .object({ id: channelSnowflakeSchema })
+        .safeParse(await this.request('GET', `/guilds/${guildId}`, undefined, signal));
+      if (!value.success || value.data.id !== guildId) throw new DiscordWriteError('unknown');
+      return true;
+    } catch (error) {
+      if (error instanceof DiscordWriteError && [403, 404].includes(error.status ?? 0))
+        return false;
+      throw error;
+    }
+  }
   /** Discord computes roles and overwrites: https://docs.discord.com/developers/resources/channel#get-channel-member-permissions */
   async inspectGuildTextSource(
     input: { applicationId: string; botUserId: string; guildId: string; channelId: string },
