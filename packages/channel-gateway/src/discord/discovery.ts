@@ -5,6 +5,9 @@ import {
   discordRuntimeChannelsSchema,
   discordRuntimeBootstrapSchema,
   discordRuntimeApplicationsSchema,
+  discordDmMessagePrepareSchema,
+  discordDmMessagePreparedSchema,
+  discordDmMessageSubmissionSchema,
 } from 'librechat-data-provider';
 import type {
   DiscordRuntimeApplications,
@@ -14,6 +17,7 @@ import type {
   DiscordMessageResult,
   DiscordRuntimeChannels,
   DiscordRuntimeBootstrap,
+  DiscordDmMessagePrepared,
 } from 'librechat-data-provider';
 import type { ServiceConnection } from '../transport';
 import { ServiceClient, boundedBody } from '../transport';
@@ -61,6 +65,57 @@ export class DiscordRuntimeClient extends ServiceClient {
       return discordMessageResultSchema.parse(JSON.parse(bytes.toString()));
     } catch {
       throw new Error('Invalid Discord message admission');
+    }
+  }
+
+  async prepareDm(
+    owner: DiscordGatewayOwner,
+    event: DiscordGatewayMessage,
+    signal?: AbortSignal,
+  ): Promise<DiscordDmMessagePrepared | null> {
+    const input = discordDmMessagePrepareSchema.parse({ owner, event });
+    const response = await this.raw('/api/channels/discord/service/dm/prepare', input, signal);
+    if (!response.ok) return this.decode(response);
+    let value: DiscordDmMessagePrepared | null;
+    try {
+      value = discordDmMessagePreparedSchema
+        .nullable()
+        .parse(JSON.parse((await boundedBody(response, 65536)).toString()));
+    } catch {
+      throw new Error('Invalid Discord DM preparation');
+    }
+    if (
+      value &&
+      (value.applicationId !== owner.applicationId ||
+        value.externalUserId !== event.authorId ||
+        value.dmChannelId !== event.channelId)
+    )
+      throw new Error('Discord DM preparation identity changed');
+    return value;
+  }
+
+  async dmMessage(
+    owner: DiscordGatewayOwner,
+    event: DiscordGatewayMessage,
+    prepared: DiscordDmMessagePrepared,
+    source: DiscordGuildTextActorSource | null,
+    signal?: AbortSignal,
+  ): Promise<DiscordMessageResult> {
+    const input = discordDmMessageSubmissionSchema.parse({
+      owner,
+      event,
+      source,
+      selectionId: prepared.selectionId,
+      selectionRevision: prepared.selectionRevision,
+    });
+    const response = await this.raw('/api/channels/discord/service/dm/message', input, signal);
+    if (!response.ok) return this.decode(response);
+    try {
+      return discordMessageResultSchema.parse(
+        JSON.parse((await boundedBody(response, 65536)).toString()),
+      );
+    } catch {
+      throw new Error('Invalid Discord DM admission');
     }
   }
 }
