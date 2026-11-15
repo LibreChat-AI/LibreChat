@@ -31,9 +31,12 @@ import {
   ChannelRunConflict,
 } from './channelProtocol';
 import { initializeChannelScope, touchChannelAuthority, touchChannelScope } from './channelScope';
+import { assertDiscordMessageUnused, recordDiscordMessage } from './discordMessage';
+import { createDiscordMessageReceiptModel } from '~/models/discordMessage';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { createSlackThreadRouteModel } from '~/models/slackRoute';
 import { prepareChannelOwnerAdmission } from './channelOwner';
+import { touchDiscordGatewayOwner } from './discordGateway';
 import { createChannelIndexGate } from './channelIndexes';
 import { channelRunActorScope } from './channelProvider';
 import { touchDiscordInbox } from './discordInboxScope';
@@ -222,6 +225,7 @@ export function createChannelRunStorage(
   const lanes = () => mongoose.model<ChannelLaneRecord>('ChannelLane');
   const threads = createSlackThreadRouteModel(mongoose);
   const ensureIndexes = createChannelIndexGate(() => [runs(), lanes(), threads]);
+  const messageIndexes = createChannelIndexGate(() => [createDiscordMessageReceiptModel(mongoose)]);
   async function transaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
     await ensureIndexes();
     const session = await startRequiredTransactionSession(mongoose);
@@ -428,12 +432,31 @@ export function createChannelRunStorage(
         throw new ChannelRunConflict('invalid_transition');
       if (input.workspaceId && input.admission.actor.provider !== undefined)
         throw new ChannelRunConflict('invalid_transition');
+      if (input.discordGateway) await messageIndexes();
       const ownerAdmission = await prepareChannelOwnerAdmission(mongoose, {
         userId: input.principal.userId,
         tenantId: input.tenantId === '_' ? undefined : input.tenantId,
       });
       await initializeChannelScope(mongoose, input.tenantId, input.channelId);
       const assertAuthority = async (session: ClientSession) => {
+        if (input.discordGateway) {
+          const { owner, occurrence } = input.discordGateway;
+          if (
+            input.discordInbox ||
+            input.admission.actor.provider !== 'discord' ||
+            owner.applicationId !== input.admission.actor.applicationId ||
+            occurrence.applicationId !== owner.applicationId ||
+            occurrence.messageId !== input.admission.eventId ||
+            owner.applicationRevision !== input.applicationRevision ||
+            !(await touchDiscordGatewayOwner(
+              mongoose,
+              { ...owner, tenantId: input.tenantId === '_' ? undefined : input.tenantId },
+              session,
+            ))
+          )
+            throw new ChannelRunConflict('stale_fence');
+          await assertDiscordMessageUnused(mongoose, occurrence, session);
+        }
         if (
           input.discordInbox &&
           (input.admission.actor.provider !== 'discord' ||
@@ -551,6 +574,13 @@ export function createChannelRunStorage(
             ],
             { session },
           );
+          if (input.discordGateway)
+            await recordDiscordMessage(
+              mongoose,
+              input.discordGateway.occurrence,
+              'admitted',
+              session,
+            );
           return { run: record.toObject(), duplicate: false };
         });
       } catch (error) {

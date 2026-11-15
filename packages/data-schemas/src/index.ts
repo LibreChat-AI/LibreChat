@@ -270,3 +270,10 @@ export type {
 } from './methods/discordGateway';
 export { createDiscordRuntimeStorage } from './methods/discordRuntime';
 export type { DiscordRuntimeStorage } from './methods/discordRuntime';
+
+export { createDiscordMessageStorage } from './methods/discordMessage';
+export type {
+  DiscordMessageStorage,
+  DiscordMessageOccurrence,
+  DiscordMessageRoute,
+} from './methods/discordMessage';

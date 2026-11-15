@@ -129,3 +129,4 @@ export * from './types/discordInbox';
 
 export * from './types/discordGateway';
 export * from './types/discordRuntime';
+export * from './types/discordMessage';
