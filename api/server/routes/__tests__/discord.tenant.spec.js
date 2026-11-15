@@ -27,6 +27,24 @@ jest.mock(
     ),
 );
 
+jest.mock('~/server/services/DiscordChannels', () => ({
+  bindings: {
+    status: (_req, res) => res.sendStatus(204),
+    bind: (_req, res) => res.sendStatus(204),
+    remove: (_req, res) => res.sendStatus(204),
+  },
+  routes: {
+    security: (_req, res) => res.sendStatus(401),
+    resolve: (_req, res) => res.sendStatus(401),
+  },
+  inbox: Object.fromEntries(
+    ['submit', 'claim', 'finish', 'defer'].map((name) => [
+      name,
+      (_req, res) => res.sendStatus(401),
+    ]),
+  ),
+}));
+
 const savedTrust = process.env.TRUST_TENANT_HEADER;
 afterEach(() => {
   if (savedTrust == null) delete process.env.TRUST_TENANT_HEADER;
@@ -51,6 +69,8 @@ it.each([true, false])(
 );
 it.each([
   ['put', '/apps'],
+  ['put', '/agents/agent/binding'],
+  ['delete', '/agents/agent/binding'],
   ['post', '/connect'],
   ['delete', '/attempts/flow'],
   ['delete', '/guilds/installation'],

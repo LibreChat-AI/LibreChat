@@ -198,3 +198,4 @@ export * from './channels/discord/gateway';
 export * from './channels/discord/gatewayHttp';
 export * from './channels/discord/discovery';
 export * from './channels/discord/discoveryHttp';
+export * from './channels/discord/host';
