@@ -152,6 +152,45 @@ it('keeps failed/cancelled/legacy attempts visible as metric coverage gaps', asy
   );
   expect((await read(record(4))).map((row) => row.sequence)).toEqual([3, 2, 1]);
 });
+it('isolates DM generations and rejects malformed guild/DM mixed rows from legacy summaries', async () => {
+  const dm = record(1);
+  dm.admission.actor = {
+    provider: 'discord',
+    scope: 'dm',
+    applicationId: '123',
+    externalUserId: '345',
+    selectionId: 'selection',
+    selectionRevision: 'generation',
+  };
+  const foreign = {
+    ...dm,
+    runId: 'foreign',
+    sequence: 2,
+    admission: {
+      ...dm.admission,
+      eventId: 'foreign-event',
+      actor: { ...dm.admission.actor, selectionRevision: 'other' },
+    },
+  };
+  await runAsSystem(async () => mongoose.models.ChannelRun.insertMany([dm, foreign]));
+  expect((await read({ ...dm, sequence: 3 })).map((row) => row.sequence)).toEqual([1]);
+  await runAsSystem(async () =>
+    mongoose.models.ChannelRun.collection.insertOne({
+      ...record(4),
+      runId: 'mixed',
+      admission: {
+        ...record(4).admission,
+        actor: {
+          ...record(4).admission.actor,
+          scope: 'dm',
+          selectionId: 'selection',
+          selectionRevision: 'generation',
+        },
+      },
+    }),
+  );
+  expect(await read(record(5))).toEqual([]);
+});
 
 it('bounds long-history reads at newest 1000 rows without silently altering the sequence cutoff', async () => {
   const count = CHANNEL_SUMMARY_MAX_PRIOR_ROWS + 3;

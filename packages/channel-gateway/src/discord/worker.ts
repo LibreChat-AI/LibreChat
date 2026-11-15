@@ -100,6 +100,7 @@ function assertBinding(
     run.revision !== bundle.channel.revision ||
     !channelRunActorSchema.safeParse(actor).success ||
     actor.provider !== 'discord' ||
+    actor.scope !== undefined ||
     actor.applicationId !== bundle.channel.discord.applicationId ||
     actor.guildId !== bundle.channel.discord.guildId ||
     run.admission.externalChannelId !== bundle.channel.discord.externalChannelId
