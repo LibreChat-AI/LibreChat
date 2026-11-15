@@ -4,6 +4,7 @@ import {
   discordInboxResolutionSchema,
   discordInboxSubmissionSchema,
   discordPrivateReplySchema,
+  discordGuildTextActorUsable,
 } from 'librechat-data-provider';
 import type {
   DiscordInboxSubmission,
@@ -11,8 +12,7 @@ import type {
   DiscordInboxClaim,
   DiscordInboxDelivery,
   DiscordInboxResolution,
-  DiscordGatewayOwner,
-  DiscordGuildThreadSource,
+  DiscordNativeAuthority,
   DiscordPrivateReply,
 } from 'librechat-data-provider';
 import type {
@@ -38,11 +38,11 @@ export interface DiscordInboxServiceDependencies {
   retryDelayMs: () => Promise<number>;
   inspection?: {
     storage: DiscordInboxResolutionStorage;
-    threads: Pick<DiscordThreadStorage, 'bind'>;
+    threads?: Pick<DiscordThreadStorage, 'bind'>;
     execute: (
       record: DiscordInboxRecord,
       fence: DiscordInboxFence,
-      context: { owner: DiscordGatewayOwner; source: DiscordGuildThreadSource },
+      context: DiscordNativeAuthority,
     ) => Promise<DiscordPrivateReply>;
   };
   now?: () => number;
@@ -128,7 +128,10 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
           if (!record) return null;
           const fence = { applicationId, eventId: record.eventId, owner, epoch: record.leaseEpoch };
           try {
-            if (record.state === 'processing' && (record.routing === 'inspection' || record.thread))
+            if (
+              record.state === 'processing' &&
+              (record.routing === 'inspection' || record.thread || record.action?.kind === 'ask')
+            )
               return {
                 fence,
                 applicationRevision: record.applicationRevision,
@@ -184,13 +187,40 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
                 await deps.encrypt(
                   JSON.stringify({
                     content:
-                      'This thread is unavailable. Run the command again in an accessible active thread.',
+                      'This destination is unavailable. Run the command again in an accessible active channel or thread.',
                   }),
                 ),
                 now(),
               );
               return prepared.ok ? await delivery(prepared.value, fence) : null;
             };
+            if (source?.kind === 'guild_text') {
+              if (
+                record.routing === 'inspection' ||
+                record.thread ||
+                !discordGuildTextActorUsable(source) ||
+                source.applicationId !== record.applicationId ||
+                source.guildId !== record.guildId ||
+                source.channelId !== record.externalChannelId ||
+                source.authorId !== record.externalUserId
+              )
+                return await unavailable();
+              const resolved = await inspection.storage.resolveText(fence, owner, source, now());
+              if (!resolved.ok) return null;
+              const reply = discordPrivateReplySchema.parse(
+                await inspection.execute(resolved.value, fence, {
+                  kind: 'guild_text',
+                  owner,
+                  source,
+                }),
+              );
+              const prepared = await deps.storage.prepareReply(
+                fence,
+                await deps.encrypt(JSON.stringify(reply)),
+                now(),
+              );
+              return prepared.ok ? await delivery(prepared.value, fence) : null;
+            }
             if (
               !source ||
               source.applicationId !== record.applicationId ||
@@ -205,7 +235,7 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
               externalChannelId: source.parentChannelId,
               expectedApplicationRevision: record.applicationRevision,
             });
-            if (!parent) return await unavailable();
+            if (!parent || !inspection.threads) return await unavailable();
             const mapping = await inspection.threads.bind(owner, source, {
               channelId: parent.channelId,
               channelRevision: parent.channelRevision,
@@ -221,7 +251,11 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
             );
             if (!resolved.ok) return null;
             const reply = discordPrivateReplySchema.parse(
-              await inspection.execute(resolved.value, fence, { owner, source }),
+              await inspection.execute(resolved.value, fence, {
+                kind: 'guild_thread',
+                owner,
+                source,
+              }),
             );
             const prepared = await deps.storage.prepareReply(
               fence,

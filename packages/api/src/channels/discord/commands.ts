@@ -1,7 +1,12 @@
 import { ChannelRunConflict } from '@librechat/data-schemas';
-import { discordConfirmationControl, discordConfirmationParts } from 'librechat-data-provider';
+import {
+  discordConfirmationControl,
+  discordConfirmationParts,
+  discordGuildTextActorUsable,
+} from 'librechat-data-provider';
 import type {
   DiscordInboxFence,
+  DiscordNativeAuthority,
   DiscordPrivateReply,
   DiscordChannelExternalIdentity,
   ChannelRunPrincipal,
@@ -33,7 +38,11 @@ export function createDiscordCommandExecutor(deps: {
     principal: ChannelRunPrincipal,
   ) => Promise<DiscordPrivateReply>;
   now?: () => number;
-}): (record: DiscordInboxRecord, fence: DiscordInboxFence) => Promise<DiscordPrivateReply> {
+}): (
+  record: DiscordInboxRecord,
+  fence: DiscordInboxFence,
+  native?: DiscordNativeAuthority,
+) => Promise<DiscordPrivateReply> {
   const now = deps.now ?? Date.now;
   const base = deps.publicBaseUrl
     ? slackPublicURL(deps.publicBaseUrl).href.replace(/\/+$/, '') + '/'
@@ -73,7 +82,7 @@ export function createDiscordCommandExecutor(deps: {
       actions: [{ label: 'Link LibreChat account', url: issued.value.url }],
     };
   }
-  return async (record, fence) => {
+  return async (record, fence, native) => {
     if (!record.action || !(await deps.enabled())) return unavailable();
     const channel = await deps.channels.getAgentChannelMetadata(record.channelId);
     if (
@@ -124,6 +133,19 @@ export function createDiscordCommandExecutor(deps: {
     if (!principal) return link(identity, record, fence);
     if (!(await deps.enabled())) return unavailable();
     if (action.kind === 'ask') {
+      if (
+        !native ||
+        native.kind !== 'guild_text' ||
+        native.owner.applicationId !== record.applicationId ||
+        native.owner.applicationRevision !== record.applicationRevision ||
+        native.source.applicationId !== record.applicationId ||
+        native.source.botUserId !== channel.discord.botUserId ||
+        native.source.guildId !== record.guildId ||
+        native.source.channelId !== record.externalChannelId ||
+        native.source.authorId !== record.externalUserId ||
+        !discordGuildTextActorUsable(native.source)
+      )
+        return unavailable();
       try {
         await deps.runs.admit(
           {
@@ -132,6 +154,7 @@ export function createDiscordCommandExecutor(deps: {
             agentId: channel.agentId,
             applicationRevision: record.applicationRevision,
             discordInbox: fence,
+            discordAuthority: native,
             principal,
             admission: {
               actor,

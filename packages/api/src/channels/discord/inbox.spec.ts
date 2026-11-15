@@ -3,6 +3,7 @@ import express from 'express';
 import request from 'supertest';
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { discordInboxResolutionSchema } from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -65,7 +66,7 @@ function input(overrides: Partial<DiscordInboxSubmission> = {}): DiscordInboxSub
     externalUserId,
     eventId,
     token,
-    action: { kind: 'ask', prompt: 'Private question' },
+    action: { kind: 'status' },
     ...overrides,
   };
 }
@@ -515,7 +516,7 @@ describe('owned thread resolution', () => {
         thread: expect.objectContaining({ parentChannelId: externalChannelId }),
       }),
       value.fence,
-      { owner: value.owner, source: value.source },
+      { kind: 'guild_thread', owner: value.owner, source: value.source },
     ]);
     expect(executions).toBe(0);
     expect((await resolve(value).expect(200)).body).toEqual(result.body);
@@ -547,7 +548,7 @@ describe('owned thread resolution', () => {
   it('prepares a terminal safe unavailable reply and cannot later turn it into executable work', async () => {
     const value = await pending();
     const failed = await resolve({ ...value, source: null }).expect(200);
-    expect(failed.body.reply.content).toContain('thread is unavailable');
+    expect(failed.body.reply.content).toContain('destination is unavailable');
     expect(threadExecutions).not.toHaveBeenCalled();
     expect((await resolve(value).expect(200)).body).toEqual(failed.body);
     expect(threadExecutions).not.toHaveBeenCalled();
@@ -586,5 +587,150 @@ describe('owned thread resolution', () => {
     await resolve({ ...value, fence: next.body.fence }).expect(200);
     expect(threadExecutions).toHaveBeenCalledTimes(2);
     expect(executions).toBe(0);
+  });
+});
+
+describe('owned guild text prompt preflight', () => {
+  const ownerScope = () => ({ applicationId, applicationRevision, ownerId: 'a'.repeat(32) });
+  const source = () => ({
+    kind: 'guild_text' as const,
+    applicationId,
+    botUserId,
+    guildId,
+    channelId: externalChannelId,
+    permissions: '68608',
+    authorId: externalUserId,
+    authorMember: true as const,
+    authorPermissions: '1024',
+  });
+  async function pending() {
+    await scope(async () => {
+      expect(
+        await createDiscordGatewayStorage(db, async () => ({
+          ownershipLeaseMs: 30000,
+          shardCount: 1,
+        })).acquire(ownerScope(), 30000),
+      ).toBe(true);
+    });
+    const effect = jest.fn(async () => ({ content: 'Authorized prompt.' }));
+    deps.inspection = { storage: createDiscordInboxResolutionStorage(db), execute: effect };
+    service = createDiscordInboxService(deps);
+    unwrap(
+      await service.submit(input({ action: { kind: 'ask', prompt: 'Retained original prompt' } })),
+    );
+    const job = await service.claim(applicationId, 'worker');
+    if (!job || !('inspection' in job)) throw new Error('Missing inspection');
+    expect(JSON.stringify(job)).not.toMatch(/Retained|token|agentId|channelRevision/);
+    expect(executions).toBe(0);
+    return { effect, value: { fence: job.fence, owner: ownerScope(), source: source() } };
+  }
+  it('joins a fresh actor observation to the original immutable prompt and prepares only once', async () => {
+    const { value, effect } = await pending();
+    const reply = await service.resolve(value);
+    expect(reply?.reply.content).toBe('Authorized prompt.');
+    expect(effect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventId,
+        externalChannelId,
+        externalUserId,
+        action: { kind: 'ask', prompt: 'Retained original prompt' },
+      }),
+      value.fence,
+      { kind: 'guild_text', owner: value.owner, source: value.source },
+    );
+    expect(await service.resolve(value)).toEqual(reply);
+    expect(effect).toHaveBeenCalledTimes(1);
+  });
+  it('reserves text execution once per inspected lease even across concurrent resolution', async () => {
+    const { value, effect } = await pending();
+    let entered: () => void = () => {};
+    let release: () => void = () => {};
+    const started = new Promise<void>((done) => {
+      entered = done;
+    });
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    effect.mockImplementation(async () => {
+      entered();
+      await gate;
+      return { content: 'Once.' };
+    });
+    const first = service.resolve(value);
+    await started;
+    expect(await service.resolve(value)).toBeNull();
+    expect(await service.resolve({ ...value, source: null })).toBeNull();
+    release();
+    expect((await first)?.reply.content).toBe('Once.');
+    expect(effect).toHaveBeenCalledTimes(1);
+  });
+  it('rejects bot or destination observations that do not match the canonical binding', async () => {
+    const { value, effect } = await pending();
+    expect(
+      await service.resolve({
+        ...value,
+        source: { ...value.source, botUserId: '345678901234567891' },
+      }),
+    ).toBeNull();
+    expect(effect).not.toHaveBeenCalled();
+    expect((await service.resolve(value))?.reply.content).toBe('Authorized prompt.');
+    expect(effect).toHaveBeenCalledTimes(1);
+  });
+  it.each(['missing', 'denied', 'foreign-author', 'legacy'] as const)(
+    'never executes %s visibility proof',
+    async (kind) => {
+      const { value, effect } = await pending();
+      if (kind === 'legacy') {
+        const { authorId, authorMember, authorPermissions, ...legacy } = value.source;
+        expect(authorId && authorMember && authorPermissions).toBeTruthy();
+        expect(discordInboxResolutionSchema.safeParse({ ...value, source: legacy }).success).toBe(
+          false,
+        );
+      } else {
+        const observed =
+          kind === 'missing'
+            ? null
+            : {
+                ...value.source,
+                authorPermissions: kind === 'denied' ? '0' : '1024',
+                authorId: kind === 'foreign-author' ? '567890123456789013' : externalUserId,
+              };
+        expect((await service.resolve({ ...value, source: observed }))?.reply.content).toContain(
+          'destination is unavailable',
+        );
+        expect((await service.resolve(value))?.reply.content).toContain(
+          'destination is unavailable',
+        );
+      }
+      expect(effect).not.toHaveBeenCalled();
+    },
+  );
+  it('rejects a stale owner and revoked canonical route before reserving execution', async () => {
+    const { value, effect } = await pending();
+    expect(
+      await service.resolve({ ...value, owner: { ...value.owner, ownerId: 'b'.repeat(32) } }),
+    ).toBeNull();
+    await scope(async () => {
+      await db.models.AgentChannel.updateOne(
+        { channelId: 'channel' },
+        { $set: { status: 'inactive' } },
+      );
+    });
+    expect(await service.resolve(value)).toBeNull();
+    expect(effect).not.toHaveBeenCalled();
+  });
+  it('retries operational outages through a fresh inspected lease, never the old inspection epoch', async () => {
+    const { value, effect } = await pending();
+    effect.mockRejectedValueOnce(new Error('private provider outage'));
+    await expect(service.resolve(value)).rejects.toThrow('private provider outage');
+    expect(await service.resolve(value)).toBeNull();
+    now += 1000;
+    const next = await service.claim(applicationId, 'replacement');
+    if (!next || !('inspection' in next)) throw new Error('Missing retry inspection');
+    expect(next.fence.epoch).toBe(value.fence.epoch + 1);
+    expect((await service.resolve({ ...value, fence: next.fence }))?.reply.content).toBe(
+      'Authorized prompt.',
+    );
+    expect(effect).toHaveBeenCalledTimes(2);
   });
 });

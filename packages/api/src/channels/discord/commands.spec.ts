@@ -13,6 +13,7 @@ import {
   createDiscordRouteStorage,
   createDiscordInboxStorage,
   createDiscordCommandStorage,
+  createDiscordGatewayStorage,
   createChannelRunStorage,
   createChannelIdentityStorage,
   tenantStorage,
@@ -20,6 +21,7 @@ import {
 } from '@librechat/data-schemas';
 import type {
   DiscordIngressAction,
+  DiscordNativeAuthority,
   DiscordPrivateReply,
   DiscordAgentChannel,
 } from 'librechat-data-provider';
@@ -87,12 +89,33 @@ async function claim(action: DiscordIngressAction, actor = externalUserId, id = 
     fence: { applicationId, eventId: id, owner: 'worker', epoch: record.leaseEpoch },
   };
 }
+function native(record: DiscordInboxRecord): DiscordNativeAuthority {
+  return {
+    kind: 'guild_text',
+    owner: {
+      applicationId,
+      applicationRevision: record.applicationRevision,
+      ownerId: 'a'.repeat(32),
+    },
+    source: {
+      kind: 'guild_text',
+      applicationId,
+      guildId,
+      botUserId,
+      channelId: record.externalChannelId,
+      permissions: '68608',
+      authorId: record.externalUserId,
+      authorMember: true,
+      authorPermissions: '1024',
+    },
+  };
+}
 async function invoke(
   action: DiscordIngressAction,
   actor = externalUserId,
 ): Promise<DiscordPrivateReply> {
   const job = await claim(action, actor);
-  const reply = await execute(job.record, job.fence);
+  const reply = await execute(job.record, job.fence, native(job.record));
   unwrap(await inbox.prepareReply(job.fence, 'sealed-reply', now));
   expect(await inbox.finish(job.fence, 'completed', now)).toBe(true);
   return reply;
@@ -148,6 +171,7 @@ beforeEach(async () => {
       'DiscordInbox',
       'AgentChannel',
       'ChannelScope',
+      'ResourceLock',
       'ChannelIdentity',
       'ChannelRun',
       'ChannelLane',
@@ -180,6 +204,13 @@ beforeEach(async () => {
         encryptedClientSecret: 'secret',
       }),
     ).revision;
+    if (
+      !(await createDiscordGatewayStorage(db, async () => ({
+        ownershipLeaseMs: 30000,
+        shardCount: 1,
+      })).acquire({ applicationId, applicationRevision, ownerId: 'a'.repeat(32) }, 30000))
+    )
+      throw new Error('Missing application lease');
     const guild = unwrap(
       await installations.connectGuild({
         actorId: owner,
@@ -266,8 +297,8 @@ it('deduplicates ask retries and keeps separate commands in separate conversatio
   scope(async () => {
     await linked();
     const job = await claim({ kind: 'ask', prompt: 'Once' });
-    await execute(job.record, job.fence);
-    await execute(job.record, job.fence);
+    await execute(job.record, job.fence, native(job.record));
+    await execute(job.record, job.fence, native(job.record));
     expect(await allRuns()).toHaveLength(1);
     unwrap(await inbox.prepareReply(job.fence, 'reply', now));
     await inbox.finish(job.fence, 'completed', now);
@@ -316,7 +347,9 @@ it('freezes cancellation across a replay even if another run is admitted later',
     await invoke({ kind: 'ask', prompt: 'First' });
     const [first] = await allRuns();
     const job = await claim({ kind: 'cancel' });
-    expect((await execute(job.record, job.fence)).content).toContain('Cancellation requested');
+    expect((await execute(job.record, job.fence, native(job.record))).content).toContain(
+      'Cancellation requested',
+    );
     const second = await runs.admit(
       {
         tenantId,
@@ -333,7 +366,9 @@ it('freezes cancellation across a replay even if another run is admitted later',
       },
       now + 1,
     );
-    expect((await execute(job.record, job.fence)).content).toContain('Cancellation requested');
+    expect((await execute(job.record, job.fence, native(job.record))).content).toContain(
+      'Cancellation requested',
+    );
     const persisted = await models.ChannelRun.findOne({ runId: second.run.runId }).lean();
     expect(persisted?.cancellationRequested).toBe(false);
     unwrap(await inbox.prepareReply(job.fence, 'reply', now));
@@ -386,15 +421,17 @@ it('fails closed on revoked permissions, stale application authority and stale c
     await linked();
     const denied = await claim({ kind: 'ask', prompt: 'Denied' });
     allowed = false;
-    await execute(denied.record, denied.fence);
+    await execute(denied.record, denied.fence, native(denied.record));
     expect(await allRuns()).toHaveLength(0);
     allowed = true;
     now += 30000;
     const reclaimed = await inbox.claim(applicationId, 'replacement', now);
     expect(reclaimed?.eventId).toBe(denied.record.eventId);
-    await expect(execute(denied.record, denied.fence)).rejects.toMatchObject({
-      code: 'stale_fence',
-    });
+    await expect(execute(denied.record, denied.fence, native(denied.record))).rejects.toMatchObject(
+      {
+        code: 'stale_fence',
+      },
+    );
     const fresh = { ...denied.fence, owner: 'replacement', epoch: reclaimed!.leaseEpoch };
     unwrap(
       await installations.configureApplication({
@@ -406,7 +443,9 @@ it('fails closed on revoked permissions, stale application authority and stale c
         expectedRevision: applicationRevision,
       }),
     );
-    expect((await execute(denied.record, fresh)).content).toContain('no longer authorized');
+    expect((await execute(denied.record, fresh, native(denied.record))).content).toContain(
+      'no longer authorized',
+    );
     expect(await inbox.prepareReply(fresh, 'reply', now)).toMatchObject({
       ok: false,
       error: { code: 'authority_changed' },
@@ -423,11 +462,39 @@ it('refuses a signed ask created before confirmation even when first received af
       externalUserId,
       delayedId,
     );
-    const reply = await execute(delayed.record, delayed.fence);
+    const reply = await execute(delayed.record, delayed.fence, native(delayed.record));
     expect(reply.content).toContain('new /librechat ask');
     expect(await allRuns()).toHaveLength(0);
     unwrap(await inbox.prepareReply(delayed.fence, 'reply', now));
     await inbox.finish(delayed.fence, 'completed', now);
     expect((await invoke({ kind: 'ask', prompt: 'Fresh prompt' })).content).toContain('queued');
+    expect(await allRuns()).toHaveLength(1);
+  }));
+
+it('requires owned fresh actor source proof for signed asks even after account confirmation', () =>
+  scope(async () => {
+    await linked();
+    const job = await claim({ kind: 'ask', prompt: 'Must have current access' });
+    expect((await execute(job.record, job.fence)).content).toContain('no longer available');
+    const observed = native(job.record);
+    if (observed.kind !== 'guild_text') throw new Error('Missing text proof');
+    expect(
+      (
+        await execute(job.record, job.fence, {
+          ...observed,
+          source: { ...observed.source, authorPermissions: '0' },
+        })
+      ).content,
+    ).toContain('no longer available');
+    expect(
+      (
+        await execute(job.record, job.fence, {
+          ...observed,
+          source: { ...observed.source, authorId: otherActor },
+        })
+      ).content,
+    ).toContain('no longer available');
+    expect(await allRuns()).toHaveLength(0);
+    expect((await execute(job.record, job.fence, observed)).content).toContain('queued');
     expect(await allRuns()).toHaveLength(1);
   }));
