@@ -49,6 +49,7 @@ export function createChannelApplicationAuthority(
   const authority = createChannelAuthority({
     channels: deps.channels,
     identityStorage: deps.identityStorage,
+    discordDm: deps.discordDm,
     authorizeDestination: async (channel, admission, principal) => {
       return deps.storage.authorizeDestination(
         {

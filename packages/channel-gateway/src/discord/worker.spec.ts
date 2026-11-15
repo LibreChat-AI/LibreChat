@@ -58,7 +58,7 @@ const summary = (url: string): ChannelRunSummary => ({
   session: { url },
 });
 
-function fixture(owned = false, thread = false) {
+function fixture(owned = false, thread = false, dm = false) {
   const config = loadConfig({
     CHANNEL_SERVICE_TOKEN: 'service-token',
     CHANNEL_ID: 'channel-1',
@@ -121,6 +121,29 @@ function fixture(owned = false, thread = false) {
         mappingRevision: 'thread-revision',
       },
     };
+  if (dm) {
+    bundle.discord.dm.enabled = true;
+    state.admission = {
+      ...state.admission,
+      externalChannelId: '555',
+      externalThreadKey: '555:444',
+      externalMessageKey: '555:222',
+      actor: {
+        provider: 'discord',
+        scope: 'dm',
+        applicationId: '123',
+        externalUserId: '333',
+        selectionId: 'selection',
+        selectionRevision: 'generation',
+      },
+      discordDestination: {
+        kind: 'dm',
+        parentChannelId: '111',
+        selectionId: 'selection',
+        selectionRevision: 'generation',
+      },
+    };
+  }
   const lease: Lease = {
     run: state,
     fence: { runId: state.runId, owner: 'worker-1', epoch: 1 },
@@ -1032,4 +1055,93 @@ it('projects a resumed bound response without requesting a fresh credential when
   expect(f.calls.some((call) => call.path.endsWith('/delivery/begin'))).toBe(false);
   expect(f.state.snapshot?.status).toBe('completed');
   expect(f.writes).toEqual([]);
+});
+
+describe('native DM provider output', () => {
+  it('sends only to the actual DM and proves current source-guild actor access before durable begins', async () => {
+    const f = fixture(true, false, true);
+    f.savedPlan();
+    await f.execute();
+    expect(f.writes.length).toBeGreaterThan(0);
+    expect(f.writes.every((write) => write.path.includes('/channels/555/'))).toBe(true);
+    const begin = f.calls.find((call) => call.path.endsWith('/delivery/begin'));
+    expect(begin?.body.discordAuthority?.native).toMatchObject({
+      kind: 'dm',
+      source: { guildId: '456', channelId: '111', authorId: '333' },
+    });
+    expect(
+      f.transport.mock.calls
+        .filter(([, init]) => !init?.method || init.method === 'GET')
+        .map(([input]) => new URL(String(input)).pathname),
+    ).not.toContain('/api/v10/channels/555');
+  });
+  it('requires fresh real-parent proof before the first execution grant', async () => {
+    const f = fixture(true, false, true);
+    f.state.state = 'queued';
+    await f.execute();
+    expect(
+      f.calls.find((call) => call.path.endsWith('/response/prepare'))?.body.discordAuthority
+        ?.native,
+    ).toMatchObject({ kind: 'dm', source: { guildId: '456', channelId: '111', authorId: '333' } });
+  });
+  it.each(['disabled', 'access'])(
+    'projects a resumed DM response after %s loss without new credentials or output grants',
+    async (changed) => {
+      const f = fixture(true, false, true);
+      if (changed === 'disabled') f.bundle.discord.dm.enabled = false;
+      else f.hooks.read = () => json({ message: 'Access removed' }, 403);
+      await expect(f.execute()).rejects.toThrow();
+      expect(f.calls.some((call) => call.path.endsWith('/advance'))).toBe(true);
+      expect(
+        f.calls.some(
+          (call) =>
+            call.path.endsWith('/response/prepare') || call.path.endsWith('/delivery/begin'),
+        ),
+      ).toBe(false);
+      expect(f.state.snapshot?.status).toBe('completed');
+      expect(f.writes).toEqual([]);
+    },
+  );
+  it('refuses source access lost after a grant before the actual DM write', async () => {
+    const f = fixture(true, false, true);
+    f.savedPlan();
+    f.hooks.begin = () => {
+      f.hooks.read = () => json({ message: 'Access removed' }, 403);
+    };
+    await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+    expect(f.writes).toEqual([]);
+    expect(f.state.receipts[0].outcome).toBe('permanent_failure');
+  });
+  it('refuses a different selection generation returned after delivery begins', async () => {
+    const f = fixture(true, false, true);
+    f.savedPlan();
+    f.hooks.begin = () => {
+      if (
+        f.state.admission.actor.scope !== 'dm' ||
+        f.state.admission.discordDestination?.kind !== 'dm'
+      )
+        throw new Error('Fixture DM scope missing');
+      f.state.admission.actor.selectionRevision = 'other';
+      f.state.admission.discordDestination.selectionRevision = 'other';
+    };
+    await expect(f.execute()).rejects.toThrow('Run admission changed');
+    expect(f.writes).toEqual([]);
+  });
+  it('keeps exact cosmetic progress deletion available while DM is disabled or source access is lost', async () => {
+    const f = fixture(true, false, true);
+    f.bundle.discord.dm.enabled = false;
+    f.state.progress = {
+      revision: 1,
+      rendererVersion: 'discord-progress-v1',
+      text: 'Working',
+      outcome: 'confirmed',
+      attempts: 1,
+      externalMessageKey: '555:777',
+    };
+    f.hooks.read = () => json({ message: 'Access removed' }, 403);
+    await f.provider.deleteProgress(f.state, f.bundle, f.controller.signal);
+    expect(f.writes).toMatchObject([
+      { method: 'DELETE', path: '/api/v10/channels/555/messages/777' },
+    ]);
+  });
 });

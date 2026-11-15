@@ -32,9 +32,11 @@ import type { SafeErrorMetadata } from '~/utils/errors';
 import { createDiscordBindingHandlers, createDiscordRouteHandlers } from './bindingHttp';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceAdminGuard } from '../workspaceRuntime';
+import { createDiscordDmMessageHandlers } from './dmMessageHttp';
 import { createDiscordRuntimeHandlers } from './discoveryHttp';
 import { createDiscordGatewayHandlers } from './gatewayHttp';
 import { createDiscordMessageHandlers } from './messageHttp';
+import { createDiscordDmMessageService } from './dmMessages';
 import { createDiscordCommandExecutor } from './commands';
 import { createDiscordRuntimeService } from './discovery';
 import { createDiscordFeedbackHandler } from './feedback';
@@ -65,6 +67,7 @@ export interface DiscordChannelRuntime {
   discovery: ReturnType<typeof createDiscordRuntimeHandlers>;
   messages: ReturnType<typeof createDiscordMessageHandlers>;
   dm: ReturnType<typeof createDiscordDmHandlers>;
+  dmMessages: ReturnType<typeof createDiscordDmMessageHandlers>;
 }
 
 /** Read the canonical tenant policy on each authorization boundary, including disabled teardown. */
@@ -190,6 +193,16 @@ export function createDiscordChannelRuntime(
     retryDelayMs: async () => (await deps.policy.read()).inbox.retryDelayMs,
   });
   return {
+    dmMessages: createDiscordDmMessageHandlers({
+      serviceToken: deps.serviceToken,
+      service: createDiscordDmMessageService({
+        ...deps,
+        selections: deps.dm,
+        authority: deps.application.authority,
+        runs: deps.application.storage,
+        settings: deps.policy.read,
+      }),
+    }),
     dm: createDiscordDmHandlers({
       serviceToken: deps.serviceToken,
       service: createDiscordDmService({

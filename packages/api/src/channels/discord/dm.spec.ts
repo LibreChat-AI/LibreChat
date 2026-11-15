@@ -56,9 +56,22 @@ const identities = createChannelIdentityStorage(db);
 const installations = createDiscordInstallationStorage(db);
 const settings = async () => discordChannelConfigSchema.parse({ dm: { enabled } }).dm;
 const storage = createDiscordDmStorage(db, settings);
+const runStorage = createChannelRunStorage(db);
 const authority = createChannelAuthority({
   channels,
   identityStorage: identities,
+  discordDm: storage,
+  authorizeDestination: (channel, admission, principal) =>
+    runStorage.authorizeDestination(
+      {
+        tenantId: channel.tenantId,
+        channelId: channel.channelId,
+        agentId: channel.agentId,
+        principal,
+        admission,
+      },
+      Date.now(),
+    ),
   getConfig: async () => ({ enabled: true }),
   findUser: (id) => channels.findUser({ _id: id }),
   getRole: async (name) => models.Role.findOne({ name }),
@@ -364,7 +377,7 @@ const dmMessages = createDiscordDmMessageService({
   installations,
   channels,
   messages: createDiscordMessageStorage(db),
-  runs: createChannelRunStorage(db),
+  runs: runStorage,
   authority,
   settings: async () =>
     discordChannelConfigSchema.parse({
@@ -651,4 +664,33 @@ it('rejects future physical timestamps and never admits prompts older than recei
     ).body,
   ).toEqual({ outcome: 'ignored', reason: 'expired' });
   await scope(async () => expect(await models.ChannelRun.countDocuments()).toBe(0));
+});
+it('resolves the real source-guild identity for an exact DM run while execution is disabled', async () => {
+  const f = await messageFixture();
+  await request(f.app).post('/message').auth(token, { type: 'bearer' }).send(f.input).expect(200);
+  await scope(async () => {
+    const run = await models.ChannelRun.findOne().lean();
+    if (!run) throw new Error('Fixture DM run missing');
+    enabled = false;
+    expect(await authority.resolvePrincipal(channel, run.admission.actor, run.admission)).toEqual(
+      run.principal,
+    );
+    expect(await authority.resolvePrincipal(channel, run.admission.actor)).toBeNull();
+    expect(
+      await authority.resolvePrincipal(channel, run.admission.actor, {
+        ...run.admission,
+        externalChannelId: '999',
+      }),
+    ).toBeNull();
+    expect(
+      await authority.resolvePrincipal(channel, run.admission.actor, {
+        ...run.admission,
+        externalChannelId: 'not-a-snowflake',
+      }),
+    ).toBeNull();
+    await storage.revoke(userId, f.selection.selectionId, f.selection.selectionRevision);
+    expect(
+      await authority.resolvePrincipal(channel, run.admission.actor, run.admission),
+    ).toBeNull();
+  });
 });
