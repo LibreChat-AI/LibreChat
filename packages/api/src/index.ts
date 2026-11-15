@@ -199,3 +199,5 @@ export * from './channels/discord/gatewayHttp';
 export * from './channels/discord/discovery';
 export * from './channels/discord/discoveryHttp';
 export * from './channels/discord/host';
+export * from './channels/discord/messages';
+export * from './channels/discord/messageHttp';
