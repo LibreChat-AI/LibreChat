@@ -1,145 +1,153 @@
-import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { renderHook, waitFor } from '@testing-library/react';
-import { TaskContentScopeContext } from '@librechat/chat/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { TMessage, ToolCallPartParams } from 'librechat-data-provider';
+import { renderHook } from '@testing-library/react';
+import { ForkOptions } from 'librechat-data-provider';
+import type { TConversation } from 'librechat-data-provider';
+import { appSubagentsHost } from '../SubagentsHostContext';
 
-const mockThreadMessages = jest.fn();
-const mockThreadToolCallPart = jest.fn();
-jest.mock('librechat-data-provider', () => {
-  const actual = jest.requireActual('librechat-data-provider');
-  return {
-    ...actual,
-    dataService: {
-      ...actual.dataService,
-      getSubagentThreadMessages: (...args: unknown[]) => mockThreadMessages(...args),
-      getSubagentThreadToolCallPart: (...args: unknown[]) => mockThreadToolCallPart(...args),
-    },
-  };
-});
+const mockThreadRefetch = jest.fn();
+const mockPartRefetch = jest.fn();
+const mockUseSubagentThreadQuery = jest.fn();
+const mockForkMutate = jest.fn();
+const mockNavigate = jest.fn();
+const mockNavigateToConvo = jest.fn();
+const mockMediaQuery = jest.fn();
+let mockRemScale = 1;
 
-const mockStreamStatus = jest.fn();
-jest.mock('~/data-provider/SSE/queries', () => ({
-  ...jest.requireActual('~/data-provider/SSE/queries'),
-  fetchStreamStatus: (...args: unknown[]) => mockStreamStatus(...args),
+jest.mock('~/data-provider', () => ({
+  ...jest.requireActual('~/data-provider'),
+  useSubagentThreadQuery: (...args: unknown[]) => {
+    mockUseSubagentThreadQuery(...args);
+    return {
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      isPreviousData: false,
+      isReadinessPending: false,
+      refetch: mockThreadRefetch,
+    };
+  },
+  useToolCallPartQuery: () => ({ data: undefined, isError: false, refetch: mockPartRefetch }),
+  useForkConvoMutation: () => ({ mutate: mockForkMutate, isLoading: false }),
 }));
 
-const { appSubagentsHost } = jest.requireActual('~/Providers/SubagentsHostContext');
+jest.mock('react-router-dom', () => ({
+  ...jest.requireActual('react-router-dom'),
+  useNavigate: () => mockNavigate,
+}));
 
-const brief = {
-  messageId: 'task:user',
-  conversationId: 'child-thread',
-  parentMessageId: null,
-  isCreatedByUser: true,
-  text: 'Investigate the release.',
-} as TMessage;
+jest.mock('~/hooks/Conversations/useNavigateToConvo', () => ({
+  __esModule: true,
+  default: () => ({ navigateToConvo: mockNavigateToConvo }),
+}));
 
-const wrapper =
-  (scope?: { parentConversationId: string; threadId: string; taskId: string }) =>
-  ({ children }: { children: React.ReactNode }) => {
-    const [client] = React.useState(
-      () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useRemScale: () => mockRemScale,
+  useMediaQuery: (query: string) => mockMediaQuery(query),
+}));
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockRemScale = 1;
+});
+
+describe('appSubagentsHost reads', () => {
+  /** The thread panel revalidates in an effect that depends on `refetch`; a callback that
+   *  changed every render would refetch on every fetch-state render instead of once. */
+  it('hands back the thread query refetch itself, stable across renders', () => {
+    const { result, rerender } = renderHook(() =>
+      appSubagentsHost.useThread('parent', 'thread', 'task', { keepPreviousData: true }),
     );
-    return (
-      <RecoilRoot>
-        <QueryClientProvider client={client}>
-          <TaskContentScopeContext.Provider value={scope ?? null}>
-            {children}
-          </TaskContentScopeContext.Provider>
-        </QueryClientProvider>
-      </RecoilRoot>
-    );
-  };
-
-describe("the app's subagents host, following a child thread", () => {
-  beforeEach(() => {
-    mockThreadMessages.mockReset();
-    mockThreadToolCallPart.mockReset();
-    mockStreamStatus.mockReset();
+    const first = result.current.refetch;
+    rerender();
+    expect(result.current.refetch).toBe(first);
+    expect(first).toBe(mockThreadRefetch);
   });
 
-  it("reads the thread's messages through its parent, with tool previews", async () => {
-    mockStreamStatus.mockResolvedValue({ active: false });
-    mockThreadMessages.mockResolvedValue([brief]);
-
-    const { result } = renderHook(
-      () =>
-        appSubagentsHost.useThreadChat('parent-conversation', 'child-thread', {
-          live: false,
-          enabled: true,
-        }),
-      { wrapper: wrapper() },
+  it('hands back the stored tool part refetch itself, stable across renders', () => {
+    const { result, rerender } = renderHook(() =>
+      appSubagentsHost.useToolCallPart(
+        { conversationId: 'c', messageId: 'm', partIndex: 0 },
+        { enabled: true },
+      ),
     );
-    expect(result.current.isLoading).toBe(true);
+    const first = result.current.refetch;
+    rerender();
+    expect(result.current.refetch).toBe(first);
+    expect(first).toBe(mockPartRefetch);
+  });
 
-    await waitFor(() => expect(result.current.messages).toEqual([brief]));
-    expect(mockStreamStatus).toHaveBeenCalledWith('child-thread');
-    expect(mockThreadMessages).toHaveBeenCalledWith('parent-conversation', 'child-thread', {
-      toolPreviews: true,
+  /** A plain read keeps the query's own readiness schedule: it passes no options at all. */
+  it('reads a thread without options when the panel asks for none', () => {
+    renderHook(() => appSubagentsHost.useThread('parent', 'thread', 'task', {}));
+    expect(mockUseSubagentThreadQuery).toHaveBeenCalledWith('parent', 'thread', 'task');
+    expect(mockUseSubagentThreadQuery.mock.calls[0]).toHaveLength(3);
+  });
+
+  it('forwards the selected task view options', () => {
+    renderHook(() =>
+      appSubagentsHost.useThread('parent', 'thread', 'task', {
+        keepPreviousData: true,
+        refetchInterval: 2000,
+      }),
+    );
+    expect(mockUseSubagentThreadQuery).toHaveBeenCalledWith('parent', 'thread', 'task', {
+      keepPreviousData: true,
+      refetchInterval: 2000,
     });
-    expect(result.current.isLoading).toBe(false);
+  });
+});
+
+describe('appSubagentsHost writes and navigation', () => {
+  /** A child thread is view-only on the server, so continuing it forks the direct path to
+   *  the selected task's reply into a conversation of the reader's own. */
+  it('continues a thread as a direct-path fork of the task reply', () => {
+    const { result } = renderHook(() => appSubagentsHost.useContinueChat({}));
+    result.current.mutate({ conversationId: 'child-thread', messageId: 'task:assistant' });
+    expect(mockForkMutate).toHaveBeenCalledTimes(1);
+    expect(mockForkMutate).toHaveBeenCalledWith({
+      conversationId: 'child-thread',
+      messageId: 'task:assistant',
+      option: ForkOptions.DIRECT_PATH,
+    });
   });
 
-  it('reports messages it could not read instead of an empty thread', async () => {
-    mockStreamStatus.mockResolvedValue({ active: false });
-    mockThreadMessages.mockRejectedValue(new Error('not found'));
-
-    const { result } = renderHook(
-      () =>
-        appSubagentsHost.useThreadChat('parent-conversation', 'child-thread', {
-          live: false,
-          enabled: true,
-        }),
-      { wrapper: wrapper() },
-    );
-
-    await waitFor(() => expect(result.current.isLoadError).toBe(true));
+  it('opens the parent conversation by its encoded chat path', () => {
+    const { result } = renderHook(() => appSubagentsHost.useNavigation());
+    result.current.openConversationId('parent conversation/1');
+    expect(mockNavigate).toHaveBeenCalledWith('/c/parent%20conversation%2F1');
   });
 
-  it('reads nothing for a selection that has no thread to follow', async () => {
-    renderHook(
-      () =>
-        appSubagentsHost.useThreadChat('parent-conversation', '', { live: false, enabled: false }),
-      { wrapper: wrapper() },
-    );
-    await Promise.resolve();
-
-    expect(mockStreamStatus).not.toHaveBeenCalled();
-    expect(mockThreadMessages).not.toHaveBeenCalled();
-  });
-
-  const params: ToolCallPartParams = {
-    conversationId: 'child-thread',
-    messageId: 'task:assistant',
-    partIndex: 1,
-    toolCallId: 'call-1',
-  };
-
-  it("reads a tool call's full output through the parent the task scope names", async () => {
-    const part = { type: 'tool_call', tool_call: { id: 'call-1', output: 'whole output' } };
-    mockThreadToolCallPart.mockResolvedValue(part);
-    const scope = {
-      parentConversationId: 'parent-conversation',
-      threadId: 'child-thread',
-      taskId: 'task',
+  it('opens a forked conversation the way the chat list does', () => {
+    const conversation: TConversation = {
+      conversationId: 'continued-chat',
+      title: 'Continued',
+      endpoint: null,
+      createdAt: '2026-11-03T00:00:00.000Z',
+      updatedAt: '2026-11-03T00:00:00.000Z',
     };
+    const { result } = renderHook(() => appSubagentsHost.useNavigation());
+    result.current.openConversation(conversation);
+    expect(mockNavigateToConvo).toHaveBeenCalledWith(conversation);
+  });
+});
 
-    const { result } = renderHook(() => appSubagentsHost.useThreadToolContent(params), {
-      wrapper: wrapper(scope),
-    });
-
-    await waitFor(() => expect(result.current.data).toEqual(part));
-    expect(mockThreadToolCallPart).toHaveBeenCalledWith('parent-conversation', params);
+describe('appSubagentsHost layout', () => {
+  /** The panel turns into a modal sheet at the artifacts breakpoint, measured in the units
+   *  the layout uses: 868 px at the default rem scale, wider when the reader scales text up. */
+  it.each([
+    [1, '(max-width: 868px)'],
+    [1.25, '(max-width: 1085px)'],
+  ])('measures the sheet breakpoint at rem scale %s', (scale, query) => {
+    mockRemScale = scale;
+    mockMediaQuery.mockReturnValue(true);
+    const { result } = renderHook(() => appSubagentsHost.useSheetLayout());
+    expect(mockMediaQuery).toHaveBeenCalledWith(query);
+    expect(result.current).toBe(true);
   });
 
-  it('asks for nothing outside a task scope, where it could not name the parent', async () => {
-    const { result } = renderHook(() => appSubagentsHost.useThreadToolContent(params), {
-      wrapper: wrapper(),
-    });
-    await Promise.resolve();
-
-    expect(result.current.fetchStatus).toBe('idle');
-    expect(mockThreadToolCallPart).not.toHaveBeenCalled();
+  it('is a side region when the viewport is wider than the sheet breakpoint', () => {
+    mockMediaQuery.mockReturnValue(false);
+    const { result } = renderHook(() => appSubagentsHost.useSheetLayout());
+    expect(result.current).toBe(false);
   });
 });
