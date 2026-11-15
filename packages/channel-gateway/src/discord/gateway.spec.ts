@@ -135,6 +135,7 @@ function fixture(
   applicationId = '123',
   botUserId = '456',
   policy: { shardCount?: number; maxQueuedEvents?: number } = {},
+  ownerId?: string,
 ) {
   const hooks: {
     dispatch?: (event: DiscordGatewayEvent, signal: AbortSignal) => Promise<void>;
@@ -150,6 +151,7 @@ function fixture(
   const gateway = new OwnedDiscordGateway(
     { applicationId, applicationRevision: 'revision-1', botUserId, botToken: 'private-bot-token' },
     {
+      ownerId,
       ownership: store.ownership,
       checkpoints: store.checkpoints,
       log,
@@ -223,6 +225,21 @@ describe('owned Discord Gateway sessions', () => {
     expect(first.drivers[0].retrieveSessionInfo(1)?.shardId).toBe(1);
     expect(second.drivers).toHaveLength(0);
     await first.gateway.stop();
+  });
+  test('uses the supplied application owner for acquisition, dispatch and checkpoints', async () => {
+    const ownerId = 'a'.repeat(32);
+    const f = fixture(shared(), '123', '456', {}, ownerId);
+    expect(await f.start()).toBe(true);
+    expect(f.store.locks.get('123')?.ownerId).toBe(ownerId);
+    await f.send(message());
+    expect(f.seen[0]?.ownerId).toBe(ownerId);
+    await f.gateway.stop();
+    expect(f.store.locks.size).toBe(0);
+  });
+  test('rejects malformed supplied application owners before acquiring a lease', () => {
+    const store = shared();
+    expect(() => fixture(store, '123', '456', {}, 'not-an-owner')).toThrow();
+    expect(store.locks.size).toBe(0);
   });
   test('two bots using shard zero keep separate hot and durable session state', async () => {
     const store = shared();
