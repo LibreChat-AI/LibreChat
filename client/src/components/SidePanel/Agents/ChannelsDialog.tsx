@@ -39,7 +39,7 @@ const CHANNELS: ChannelOption[] = [
     kind: 'discord',
     icon: DiscordIcon,
     name: 'com_ui_discord_title',
-    description: 'com_ui_discord_description',
+    description: 'com_ui_discord_binding_description',
   },
 ];
 
