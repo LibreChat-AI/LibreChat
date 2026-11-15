@@ -101,3 +101,75 @@ it('propagates authentication failure and rate limits instead of silently consum
   });
   expect(transport).toHaveBeenCalledTimes(4);
 });
+
+const actorInput = { ...input, authorId: '567890123456789012' };
+function actorFixture({
+  bits = '1024',
+  member = { user: { id: actorInput.authorId } },
+  status = 200,
+} = {}) {
+  const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === `/api/v10/guilds/${input.guildId}/members/${actorInput.authorId}`)
+      return Response.json(member, { status });
+    if (path.endsWith(`/member/${actorInput.authorId}`))
+      return Response.json({ permissions: bits });
+    if (path.endsWith(`/member/${input.botUserId}`)) return Response.json({ permissions });
+    return Response.json(channel);
+  });
+  return { client: new DiscordClient(options, transport), transport };
+}
+it('proves current human guild membership and effective actor visibility independently of bot access', async () => {
+  const { client, transport } = actorFixture();
+  expect(await client.inspectGuildTextActorSource(actorInput)).toEqual({
+    kind: 'guild_text',
+    ...input,
+    permissions,
+    authorId: actorInput.authorId,
+    authorMember: true,
+    authorPermissions: '1024',
+  });
+  expect(transport).toHaveBeenCalledTimes(4);
+  expect(transport).toHaveBeenCalledWith(
+    `https://discord.com/api/v10/guilds/${input.guildId}/members/${actorInput.authorId}`,
+    expect.objectContaining({ method: 'GET', redirect: 'error' }),
+  );
+  expect(
+    await actorFixture({ bits: '8' }).client.inspectGuildTextActorSource(actorInput),
+  ).not.toBeNull();
+});
+it.each([403, 404])('refuses a departed or inaccessible guild member (HTTP%s)', async (status) => {
+  expect(await actorFixture({ status }).client.inspectGuildTextActorSource(actorInput)).toBeNull();
+});
+it('refuses actors without View Channel and bot/system identities', async () => {
+  expect(
+    await actorFixture({ bits: '2048' }).client.inspectGuildTextActorSource(actorInput),
+  ).toBeNull();
+  for (const flags of [{ bot: true }, { system: true }]) {
+    const transport: typeof fetch = async (url) => {
+      const path = new URL(String(url)).pathname;
+      if (path.includes('/members/'))
+        return Response.json({ user: { id: actorInput.authorId, ...flags } });
+      if (path.includes('/permissions/member/')) return Response.json({ permissions });
+      return Response.json(channel);
+    };
+    expect(
+      await new DiscordClient(options, transport).inspectGuildTextActorSource(actorInput),
+    ).toBeNull();
+  }
+  const own = actorFixture();
+  expect(
+    await own.client.inspectGuildTextActorSource({ ...actorInput, authorId: input.botUserId }),
+  ).toBeNull();
+  expect(own.transport).not.toHaveBeenCalled();
+});
+it('does not convert malformed membership or operational failures into durable permission denials', async () => {
+  await expect(
+    actorFixture({ member: { user: { id: input.botUserId } } }).client.inspectGuildTextActorSource(
+      actorInput,
+    ),
+  ).rejects.toMatchObject({ outcome: 'unknown', message: 'Discord operation was not confirmed' });
+  await expect(
+    actorFixture({ status: 503 }).client.inspectGuildTextActorSource(actorInput),
+  ).rejects.toMatchObject({ outcome: 'unknown', message: 'Discord operation was not confirmed' });
+});

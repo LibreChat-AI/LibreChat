@@ -38,6 +38,10 @@ function fixture(status = 200, sourceStatus = 200) {
       if (sourceStatus !== 200) return Response.json({}, { status: sourceStatus });
       if (url.pathname.endsWith('/permissions/member/456'))
         return Response.json({ permissions: '68608' });
+      if (url.pathname.endsWith('/permissions/member/600'))
+        return Response.json({ permissions: '1024' });
+      if (url.pathname === '/api/v10/guilds/900/members/600')
+        return Response.json({ user: { id: '600' } });
       expect(url.pathname).toBe('/api/v10/channels/800');
       return Response.json({ id: '800', guild_id: '900', type: 0 });
     }
@@ -86,7 +90,7 @@ function fixture(status = 200, sourceStatus = 200) {
 it('inspects the actual destination and waits for private durable admission', async () => {
   const f = fixture();
   await dispatchDiscordEvent(f.deps, event, f.controller.signal);
-  expect(f.calls).toHaveLength(3);
+  expect(f.calls).toHaveLength(5);
   expect(f.submitted).toEqual([
     {
       owner,
@@ -98,6 +102,9 @@ it('inspects the actual destination and waits for private durable admission', as
         guildId: '900',
         channelId: '800',
         permissions: '68608',
+        authorId: '600',
+        authorMember: true,
+        authorPermissions: '1024',
       },
     },
   ]);
