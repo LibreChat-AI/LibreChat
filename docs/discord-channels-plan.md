@@ -4,21 +4,23 @@ Status: implementation in progress, authorized on 2026-11-15. The provider is be
 
 Current implementation and verification:
 
-| Area                                                                                     | State                                                                                                                   |
-| ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Provider contracts, organization applications, guild installations and explicit bindings | Implemented with focused compatibility and authority tests                                                              |
-| Signed HTTP commands, account consent, durable execution and text delivery               | Implemented with signature, replay, transaction, recovery and built-process tests                                       |
-| Optional Gateway mentions, resumable sessions and guild removal                          | Implemented with owner-fenced dispatch and platform-client tests                                                        |
-| Account and organization settings                                                        | Component tests and seven browser scenarios pass, including light/dark DM selection and accessibility scans             |
-| Feedback                                                                                 | Storage, API policy projection and immutable native button plans implemented and tested                                 |
-| Native threads                                                                           | Immutable parent affinity, REST source inspection and leased inbox resolution implemented; execution wiring is pending  |
-| Direct messages                                                                          | Hashed codes, signed selection, owner cleanup and browser controls implemented and tested; execution wiring is pending  |
-| Consent and destination access                                                           | New prompts require native confirmation predating the event; current bot and actor access is checked before text output |
-| Deployment                                                                               | Compose and Helm configuration validated; a built Node process smoke passes; local Docker execution remains unverified  |
-| Startup performance                                                                      | Lighthouse passes with 250 ms per-query latency: median LCP 2.12 s, CLS 0.013 and TBT 196 ms                            |
-| Release gates                                                                            | Integrated precheck, remaining runtime work, live Discord verification and published-head review/closeout remain open   |
+| Area                                                                                     | State                                                                                                                                        |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider contracts, organization applications, guild installations and explicit bindings | Implemented with focused compatibility and authority tests                                                                                   |
+| Signed HTTP commands, account consent, durable execution and text delivery               | Implemented with signature, replay, transaction, recovery and built-process tests                                                            |
+| Optional Gateway mentions, resumable sessions and guild removal                          | Queued mention output validated for text and native threads, with actor-scoped mixed-ingress continuity                                      |
+| Account and organization settings                                                        | Seven prior browser cases remain unchanged; four Discord scenario tags are now literal and discoverable                                      |
+| Feedback                                                                                 | Storage, API policy projection and immutable native button plans implemented and tested                                                      |
+| Native threads                                                                           | Signed commands and Gateway mention execution validated; application-fallback companion remains in the DM output candidate                   |
+| Direct messages                                                                          | Six queued/restored output integration cases pass in an unreleased candidate; signed controls, feedback and production mounts remain pending |
+| Consent and destination access                                                           | New prompts require native confirmation predating the event; current bot and actor access is checked before text output                      |
+| Deployment                                                                               | Compose and Helm configuration validated; a built Node process smoke passes; local Docker execution remains unverified                       |
+| Startup performance                                                                      | Lighthouse passes with 250 ms per-query latency: median LCP 2.12 s, CLS 0.013 and TBT 196 ms                                                 |
+| Release gates                                                                            | Final integrated precheck, production composition, live Discord verification and published-head review/closeout remain open                  |
 
-The original worktree's unrelated lockfile change remains outside the feature. See [the operator guide](discord-channels.md) for configuration and deployment. A dedicated Discord test application/guild and the location of its local secret configuration are still needed for live verification. Never put a bot token in this document, chat, screenshots or test output.
+Independent reviews of the native thread and Gateway mention integration are clean. Precheck at `75732872ff` completed static checks and all seven workspace lanes except two stale fixtures, corrected with focused passing checks at `81c7f169b5`. The final integrated precheck remains open; the installed precheck has no Gateway lane.
+
+The original worktree's unrelated lockfile change remains outside the feature. See [the operator guide](discord-channels.md) for configuration and deployment. An editable private credentials file exists outside Git; credential provisioning and live test application/guild setup await user confirmation. Current runtime verification needs an isolated Mongo replica set: the shared/lab Mongo instance is standalone, and a local Docker daemon is unavailable. Never put a bot token in this document, chat, screenshots or test output.
 
 ## 1. Recommendation and scope
 
@@ -273,7 +275,7 @@ Resolve these product choices before their dependent implementation, using the r
 4. Should users work only in explicitly bound channels, or should a guild-wide agent selector/default exist? Explicit binding is the safer first scope.
 5. Are buttons and web review sufficient, or are reactions, native modals, and files launch requirements? Each adds a distinct platform contract.
 
-The next implementation gate is coherent thread and DM execution: source resolution, actor-scoped continuity, current permission checks and durable delivery must agree on the same real destination. The completed foundation remains protected by the existing Slack regression suites.
+The next implementation gate is signed DM controls and feedback, followed by production composition of the validated thread, mention and candidate DM output paths. The final integrated checks and live Discord verification remain release gates. The completed foundation remains protected by the existing Slack regression suites.
 
 ## 15. Sources and planning validation
 
