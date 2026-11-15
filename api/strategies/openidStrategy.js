@@ -27,6 +27,7 @@ const {
   getOpenIdProxyDispatcher,
   getOpenIdRoleSyncOptions,
   preserveAdminOAuthState,
+  resolveOpenIdClientAuth,
   getOpenIdRolesForOpenIdSync,
   getLibreChatRolesForOpenIdSync,
   DEFAULT_OAUTH_TOKEN_TTL_SECONDS,
@@ -964,14 +965,24 @@ async function setupOpenId() {
     };
 
     const clientSecret = process.env.OPENID_CLIENT_SECRET?.trim();
-
     if (clientSecret) {
       clientMetadata.client_secret = clientSecret;
-      if (shouldGenerateNonce) {
-        clientMetadata.token_endpoint_auth_method = 'client_secret_post';
-      }
-    } else if (usePKCE) {
-      clientMetadata.token_endpoint_auth_method = 'none';
+    }
+
+    const clientAuth = resolveOpenIdClientAuth({
+      method: process.env.OPENID_TOKEN_ENDPOINT_AUTH_METHOD,
+      clientSecret,
+      usePKCE,
+      generateNonce: shouldGenerateNonce,
+      factories: client,
+    });
+    if (!clientAuth.ok) {
+      throw new Error(clientAuth.error.message);
+    }
+
+    const { tokenEndpointAuthMethod, clientAuthentication } = clientAuth.value;
+    if (tokenEndpointAuthMethod) {
+      clientMetadata.token_endpoint_auth_method = tokenEndpointAuthMethod;
     }
 
     /** @type {Configuration} */
@@ -979,7 +990,7 @@ async function setupOpenId() {
       new URL(process.env.OPENID_ISSUER),
       process.env.OPENID_CLIENT_ID,
       clientMetadata,
-      undefined,
+      clientAuthentication,
       {
         [client.customFetch]: customFetch,
       },
@@ -988,7 +999,8 @@ async function setupOpenId() {
     logger.info(`[openidStrategy] OpenID authentication configuration`, {
       usePKCE,
       hasClientSecret: !!clientSecret,
-      tokenEndpointAuthMethod: clientMetadata.token_endpoint_auth_method ?? '(library default)',
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod ?? '(library default)',
+      explicitClientAuthentication: !!clientAuthentication,
       generateNonce: shouldGenerateNonce,
     });
 
