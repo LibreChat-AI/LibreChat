@@ -16,10 +16,10 @@ import {
 } from '@librechat/data-schemas';
 import type { DiscordHttpConfig } from './runtime';
 import { createDiscordManagementRuntime, createDiscordManagementSettingsReader } from './runtime';
+import { setOAuthSession, setLocalSessionCookies, setOpenIDMarkerCookies } from '~/oauth/csrf';
 import { DISCORD_MANAGEMENT_PATH, DISCORD_FLOW_COOKIE, DISCORD_CALLBACK_PATH } from './http';
 import { preAuthTenantMiddleware } from '~/middleware/preAuthTenant';
 import { createSameOriginGuard } from '~/middleware/origin';
-import { setOAuthSession } from '~/oauth/csrf';
 
 const db = new mongoose.Mongoose();
 const userId = '000000000000000000000001';
@@ -409,3 +409,44 @@ it('reads only the enabled operator policy through the injected config boundary'
   expect(await reader()).toBeUndefined();
   expect(DISCORD_CALLBACK_PATH).toBe('/api/channels/discord/oauth/callback');
 });
+
+it.each(['local', 'openid'])(
+  'rejects account switching through canonical %s auth cookies with the old session still active',
+  async (kind) => {
+    const flow = await connect();
+    const otherUserId = '000000000000000000000002';
+    app.post('/test/account-switch', (_req, res) => {
+      const expires = new Date(Date.now() + 3600000);
+      if (kind === 'local') {
+        setLocalSessionCookies(res, {
+          userId: otherUserId,
+          tenantId,
+          refreshToken: 'private-second-refresh-token',
+          expires,
+        });
+      } else {
+        setOpenIDMarkerCookies(res, {
+          userId: otherUserId,
+          tenantId,
+          expires,
+          reuseTokens: false,
+          refreshExpiryMs: 3600000,
+        });
+      }
+      res.sendStatus(204);
+    });
+    const switched = await request(app).post('/test/account-switch').expect(204);
+    const replacement = cookies(switched);
+    const names = new Set(replacement.map((cookie) => cookie.split('=')[0]));
+    const merged = [
+      ...flow.cookies.filter((cookie) => !names.has(cookie.split('=')[0])),
+      ...replacement,
+    ];
+    expect(await scoped(async () => models.Session.exists({ _id: sessionId }))).not.toBeNull();
+    providerFetch.mockClear();
+    expect((await callback(flow.state, merged).expect(302)).headers.location).toContain(
+      'discord_invalid_state',
+    );
+    expect(providerFetch).not.toHaveBeenCalled();
+  },
+);
