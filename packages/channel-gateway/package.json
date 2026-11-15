@@ -13,9 +13,12 @@
     "test:ci": "jest --ci --runInBand"
   },
   "dependencies": {
+    "@discordjs/rest": "2.5.1",
+    "@discordjs/ws": "1.2.3",
     "@slack/socket-mode": "3.1.0",
     "@slack/types": "3.2.0",
     "@slack/web-api": "8.2.0",
+    "discord-api-types": "0.38.1",
     "librechat-data-provider": "*",
     "mdast-util-from-markdown": "2.0.1",
     "mdast-util-gfm": "3.0.0",
