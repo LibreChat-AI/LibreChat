@@ -650,3 +650,149 @@ it('reclaims expired processing before starting a later event for that actor', (
     expect(recovered).toMatchObject({ eventId, leaseEpoch: first.leaseEpoch + 1 });
     expect(await storage.claim(applicationId, 'later-worker', first.leaseExpiresAt)).toBeNull();
   }));
+
+it('keeps deferred effects ahead of later commands while another actor progresses', () =>
+  scope(async () => {
+    const cancelId = '567890123456789013';
+    const otherId = '567890123456789014';
+    await storage.submit(input(), now);
+    await storage.submit(input({ eventId: cancelId, action: { kind: 'cancel' } }), now + 1);
+    await storage.submit(
+      input({ eventId: otherId, externalUserId: '456789012345678902' }),
+      now + 2,
+    );
+    const first = await claim(now + 2);
+    expect(first.eventId).toBe(eventId);
+    expect(await storage.defer(first, now + 1000, now + 3)).toBe(true);
+    expect(await storage.claim(applicationId, 'independent', now + 4)).toMatchObject({
+      eventId: otherId,
+    });
+    expect(await storage.claim(applicationId, 'later', now + 999)).toBeNull();
+    const recovered = await claim(now + 1000, 'recovery');
+    expect(recovered).toMatchObject({ eventId, epoch: first.epoch + 1 });
+    expect(await storage.prepareReply(first, 'stale-reply', now + 1000)).toMatchObject({
+      ok: false,
+      error: { code: 'stale_fence' },
+    });
+    expect(await storage.prepareReply(recovered, 'reply', now + 1000)).toMatchObject({ ok: true });
+    expect(await storage.claim(applicationId, 'later', now + 1001)).toMatchObject({
+      eventId: cancelId,
+    });
+  }));
+
+it.each(['queued', 'processing'] as const)(
+  'keeps older queued due times ahead of later %s effects, using event IDs to break receive-time ties',
+  (state) =>
+    scope(async () => {
+      const laterId = '567890123456789013';
+      const otherId = '567890123456789014';
+      await storage.submit(input(), now);
+      await storage.submit(input({ eventId: laterId }), now);
+      await storage.submit(
+        input({ eventId: otherId, externalUserId: '456789012345678902' }),
+        now + 1,
+      );
+      await db.models.DiscordInbox.updateOne({ eventId }, { $set: { nextAttemptAt: now + 1000 } });
+      if (state === 'processing')
+        await db.models.DiscordInbox.updateOne(
+          { eventId: laterId },
+          { $set: { state, leaseEpoch: 1, leaseExpiresAt: 0 } },
+        );
+      expect(await storage.claim(applicationId, 'independent', now + 2)).toMatchObject({
+        eventId: otherId,
+      });
+      expect(await storage.claim(applicationId, 'later', now + 999)).toBeNull();
+      const first = await claim(now + 1000, 'earlier');
+      expect(first.eventId).toBe(eventId);
+      expect(await storage.prepareReply(first, 'reply', now + 1000)).toMatchObject({ ok: true });
+      expect(await storage.claim(applicationId, 'later', now + 1000)).toMatchObject({
+        eventId: laterId,
+      });
+    }),
+);
+
+it('recovers the oldest expired processing peer without deadlocking behind later expired peers', () =>
+  scope(async () => {
+    const laterId = '567890123456789013';
+    await storage.submit(input(), now);
+    await storage.submit(input({ eventId: laterId }), now + 1);
+    await db.models.DiscordInbox.updateMany(
+      {},
+      { $set: { state: 'processing', leaseEpoch: 1, leaseExpiresAt: 0 } },
+    );
+    const first = await claim(now + 2, 'recovery');
+    expect(first).toMatchObject({ eventId, epoch: 2 });
+    expect(await storage.claim(applicationId, 'parallel', now + 2)).toBeNull();
+    expect(await storage.prepareReply(first, 'reply', now + 2)).toMatchObject({ ok: true });
+    expect(await storage.claim(applicationId, 'next', now + 2)).toMatchObject({
+      eventId: laterId,
+      leaseEpoch: 2,
+    });
+  }));
+
+it('keeps a deferred actor independent from their commands in another destination', () =>
+  scope(async () => {
+    const destination = '678901234567890124';
+    const channels = createAgentChannelMethods(db);
+    await channels.createAgentChannel({
+      ...channel,
+      channelId: 'second-channel',
+      status: 'pending_install',
+      revision: 'second-initial',
+      applicationRevision,
+      discord: { ...channel.discord, externalChannelId: destination },
+    });
+    const assigned = await createDiscordRouteStorage(db).assign({
+      actorId: owner,
+      installationId: channel.installationId,
+      installationRevision: channel.installationRevision,
+      applicationRevision,
+      externalChannelId: destination,
+      channelId: 'second-channel',
+      channelRevision: 'second-initial',
+    });
+    if (!assigned.ok) throw new Error(assigned.error.code);
+    const second = await channels.getAgentChannelMetadata('second-channel');
+    if (!second) throw new Error('Missing second destination');
+    await storage.submit(input(), now);
+    await storage.submit(
+      input({
+        eventId: '567890123456789013',
+        channelId: second.channelId,
+        channelRevision: second.revision,
+        externalChannelId: destination,
+      }),
+      now + 1,
+    );
+    const first = await claim(now + 2);
+    expect(await storage.defer(first, now + 1000, now + 2)).toBe(true);
+    expect(await storage.claim(applicationId, 'independent', now + 3)).toMatchObject({
+      channelId: second.channelId,
+    });
+  }));
+
+it('does not starve an older due queued row behind a later expired processing peer at the scan limit', () =>
+  scope(async () => {
+    storage = createDiscordInboxStorage(db, async () => ({ scanLimit: 1 }));
+    await storage.submit(input(), now);
+    await storage.submit(input({ eventId: '567890123456789013' }), now + 1);
+    await db.models.DiscordInbox.updateOne(
+      { eventId: '567890123456789013' },
+      {
+        $set: { state: 'processing', leaseEpoch: 1, leaseExpiresAt: 0 },
+      },
+    );
+    expect(await storage.claim(applicationId, 'earlier', now + 2)).toMatchObject({ eventId });
+  }));
+
+it('does not block later effects behind a prepared reply waiting for transport retry', () =>
+  scope(async () => {
+    await storage.submit(input(), now);
+    await storage.submit(input({ eventId: '567890123456789013' }), now + 1);
+    const first = await claim(now + 2);
+    expect(await storage.prepareReply(first, 'reply', now + 2)).toMatchObject({ ok: true });
+    expect(await storage.defer(first, now + 1000, now + 3)).toBe(true);
+    expect(await storage.claim(applicationId, 'later', now + 4)).toMatchObject({
+      eventId: '567890123456789013',
+    });
+  }));
