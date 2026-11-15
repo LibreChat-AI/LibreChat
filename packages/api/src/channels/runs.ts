@@ -799,7 +799,10 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.json(await presentRun(channel, run));
         return;
       }
-      if (run.execution?.protocol !== 'responses' || !run.execution.responseId) {
+      if (
+        channel.type === 'discord' &&
+        (run.execution?.protocol !== 'responses' || !run.execution.responseId)
+      ) {
         res.status(409).json({ error: 'execution_not_prepared' });
         return;
       }

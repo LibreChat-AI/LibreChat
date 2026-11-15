@@ -234,7 +234,7 @@ export class ChannelWorker {
     await this.provider.lifecycle?.(initial, bundle, 'started', signal);
     let run = initial;
     let projected = false;
-    if (!run.plan && run.state !== 'queued') {
+    if (this.provider.effectContext && !run.plan && run.state !== 'queued') {
       try {
         run = await this.client.mutate(fence, 'advance', {}, signal);
         projected = true;

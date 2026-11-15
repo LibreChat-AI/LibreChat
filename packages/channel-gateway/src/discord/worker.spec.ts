@@ -340,7 +340,8 @@ describe('Discord durable worker delivery', () => {
       const f = fixture();
       f.savedPlan();
       f.hooks.begin = () => {
-        f.hooks.read = (path) => (path.endsWith('/333') ? json({ permissions }) : undefined);
+        f.hooks.read = (path) =>
+          path.includes('/permissions/member/333') ? json({ permissions }) : undefined;
       };
       await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
       expect(f.writes).toEqual([]);
@@ -364,7 +365,7 @@ describe('Discord durable worker delivery', () => {
   test('retries failed permission reads without claiming an uncertain message write', async () => {
     const f = fixture();
     f.savedPlan();
-    f.hooks.read = (path) => (path.endsWith('/333') ? json({}, 503) : undefined);
+    f.hooks.read = (path) => (path.includes('/permissions/member/333') ? json({}, 503) : undefined);
     await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
     expect(f.writes).toEqual([]);
     expect(f.state.receipts[0]).toMatchObject({
@@ -378,7 +379,8 @@ describe('Discord durable worker delivery', () => {
     async (permissions) => {
       const f = fixture();
       f.savedPlan();
-      f.hooks.read = (path) => (path.endsWith('/333') ? json({ permissions }) : undefined);
+      f.hooks.read = (path) =>
+        path.includes('/permissions/member/333') ? json({ permissions }) : undefined;
       await f.execute();
       expect(f.writes).toHaveLength(1);
       expect(f.state.state).toBe('delivered');
@@ -397,7 +399,8 @@ describe('Discord durable worker delivery', () => {
         attempts: 1,
         externalMessageKey,
       };
-      f.hooks.read = (path) => (path.endsWith('/333') ? json({ permissions: '0' }) : undefined);
+      f.hooks.read = (path) =>
+        path.includes('/permissions/member/333') ? json({ permissions: '0' }) : undefined;
       await expect(
         f.provider.writeProgress(f.state, f.bundle, f.controller.signal),
       ).rejects.toMatchObject({ outcome: 'permanent' });
@@ -477,7 +480,7 @@ describe('Discord durable worker delivery', () => {
     });
     await expect(f.execute()).rejects.toThrow('reconciliation');
     expect(f.writes).toHaveLength(1);
-    expect(f.transport).toHaveBeenCalledTimes(4);
+    expect(f.transport).toHaveBeenCalledTimes(5);
     expect(f.calls.some((call) => /response\/prepare|\/advance$/.test(call.path))).toBe(false);
   });
 
@@ -490,7 +493,7 @@ describe('Discord durable worker delivery', () => {
     await f.execute();
     expect(f.state.state).toBe('delivered');
     expect(f.writes).toHaveLength(1);
-    expect(f.transport).toHaveBeenCalledTimes(4);
+    expect(f.transport).toHaveBeenCalledTimes(5);
   });
 
   test('safe rate-limit rejections remain retryable without immediate replay', async () => {
@@ -505,7 +508,7 @@ describe('Discord durable worker delivery', () => {
     expect(f.state.receipts[0].retryAt).toBeGreaterThan(Date.now());
     await expect(f.execute()).rejects.toThrow('reconciliation');
     expect(f.writes).toHaveLength(1);
-    expect(f.transport).toHaveBeenCalledTimes(4);
+    expect(f.transport).toHaveBeenCalledTimes(5);
   });
 
   test('each new worker turn uses refreshed credentials and the same rate coordinator', async () => {
@@ -559,9 +562,9 @@ describe('Discord durable worker delivery', () => {
       f.state.admission.externalThreadKey = '999:222';
       f.state.admission.externalMessageKey = '999:222';
     };
-    await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+    await expect(f.execute()).rejects.toThrow('Run admission changed');
     expect(f.transport).not.toHaveBeenCalled();
-    expect(f.state.receipts[0].outcome).toBe('unknown');
+    expect(f.state.receipts[0].outcome).toBe('inflight');
   });
 
   test.each(['artifact', 'presentation'])(
@@ -831,7 +834,7 @@ describe('Discord durable worker delivery', () => {
     await expect(f.execute()).rejects.toThrow('HTTP 503');
     f.hooks.commit = undefined;
     await f.restartExecute();
-    expect(f.transport).toHaveBeenCalledTimes(4);
+    expect(f.transport).toHaveBeenCalledTimes(5);
     expect(f.writes).toHaveLength(1);
     expect(f.writes[0].body.components?.[0].components).toHaveLength(2);
     expect(f.state.plan).toEqual(plan);
