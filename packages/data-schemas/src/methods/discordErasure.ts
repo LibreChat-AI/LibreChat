@@ -10,6 +10,7 @@ import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createDiscordInstallModel } from '~/models/discordInstall';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { eraseDiscordThreadRoutes } from './discordThreadErasure';
 import { createResourceLockModel } from '~/models/resourceLock';
 import { createDiscordRouteModel } from '~/models/discordRoute';
 import { retireDiscordReservation } from './discordReservation';
@@ -130,6 +131,12 @@ export async function eraseDiscordPersistenceForUser(
       { kind: 'guild', tenantId, applicationId: guild.applicationId, guildId: guild.guildId },
       options.erasureBatchSize,
     );
+    await eraseDiscordThreadRoutes(mongoose, {
+      kind: 'guild',
+      tenantId,
+      applicationId: guild.applicationId,
+      guildId: guild.guildId,
+    });
     await routes.deleteMany({ tenantId: partition, installationId: guild.installationId });
     await installs.deleteMany({
       tenantId: partition,
@@ -194,6 +201,11 @@ export async function eraseDiscordPersistenceForUser(
         await installations.close();
       }
       await installs.deleteMany({ tenantId: partition, applicationId: application.applicationId });
+      await eraseDiscordThreadRoutes(mongoose, {
+        kind: 'application',
+        tenantId,
+        applicationId: application.applicationId,
+      });
       await createDiscordGatewayCheckpointModel(mongoose).deleteMany({
         tenantId: partition,
         applicationId: application.applicationId,
