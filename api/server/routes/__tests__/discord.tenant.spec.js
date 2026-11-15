@@ -28,6 +28,7 @@ jest.mock(
 );
 
 jest.mock('~/server/services/DiscordChannels', () => ({
+  messages: { submit: (_req, res) => res.sendStatus(401) },
   discovery: Object.fromEntries(
     ['bootstrap', 'applications', 'channels'].map((name) => [
       name,
@@ -102,4 +103,9 @@ it.each([
     .set('Origin', 'https://chat.example')
     .expect(204);
   expect(response.status).toBe(204);
+});
+
+it('mounts private Gateway message admission without a browser authentication bypass', async () => {
+  const response = await request(server()).post('/api/channels/discord/service/messages').send({});
+  expect(response.status).toBe(401);
 });

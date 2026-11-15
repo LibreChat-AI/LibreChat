@@ -12,6 +12,7 @@ router.get('/service/runtime/applications', channels.discovery.applications);
 router.get('/service/runtime/channels', channels.discovery.channels);
 router.get('/service/security/:applicationId', channels.routes.security);
 router.post('/service/resolve', channels.routes.resolve);
+router.post('/service/messages', channels.messages.submit);
 router.post('/service/gateway/acquire', channels.gateway.acquire);
 router.post('/service/gateway/renew', channels.gateway.renew);
 router.post('/service/gateway/release', channels.gateway.release);
