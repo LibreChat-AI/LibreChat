@@ -244,3 +244,6 @@ export type {
   ConsumeDiscordInstall,
 } from './methods/discordInstall';
 export type { DiscordInstallRecord, DiscordInstallView } from './models/discordInstall';
+
+export { createDiscordBrowserSessionStorage } from './methods/discordSession';
+export type { DiscordBrowserSession, DiscordBrowserSessionStorage } from './methods/discordSession';
