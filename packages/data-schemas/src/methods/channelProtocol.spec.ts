@@ -1,6 +1,12 @@
 import type { ChannelDeliveryOutcome, ChannelRunSnapshot } from 'librechat-data-provider';
 import type { ChannelRunRecord } from '~/models/channelRun';
-import { deliveryDisposition, snapshotPatch, stopScopeKey } from './channelProtocol';
+import {
+  deliveryDisposition,
+  snapshotPatch,
+  stopScopeKey,
+  laneKey,
+  digest,
+} from './channelProtocol';
 
 function run(): ChannelRunRecord {
   return {
@@ -56,6 +62,40 @@ function run(): ChannelRunRecord {
     ],
   };
 }
+
+it('preserves historical Slack lane, stop and admission fingerprints', () => {
+  const current = run();
+  expect(laneKey(current)).toBe('bd0af70711e9c79d1c19ca885dc8ad294bc75050e1dcae070fe43dd9cd3d2243');
+  expect(stopScopeKey(current)).toBe(
+    'c68e880e109a1c5f4616937bc4176ec4aa01c30ef80ad1a7868d8fa63988b41f',
+  );
+  expect(digest(current.admission)).toBe(
+    'fb451a0a3ff012781408fb5dfdb7be56a070f71bd079b336ec4d493cf40bc24d',
+  );
+});
+
+it('isolates Discord lanes and stop scopes by application, guild and actor', () => {
+  const current = run();
+  const slackLane = laneKey(current);
+  current.admission.actor = {
+    provider: 'discord',
+    applicationId: '123456789012345678',
+    guildId: '234567890123456789',
+    externalUserId: '345678901234567890',
+  };
+  expect(laneKey(current)).not.toBe(slackLane);
+  for (const field of ['applicationId', 'guildId', 'externalUserId'] as const) {
+    const changed = {
+      ...current,
+      admission: {
+        ...current.admission,
+        actor: { ...current.admission.actor, [field]: '456789012345678901' },
+      },
+    };
+    expect(laneKey(changed)).not.toBe(laneKey(current));
+    expect(stopScopeKey(changed)).not.toBe(stopScopeKey(current));
+  }
+});
 
 const outcomes: ChannelDeliveryOutcome[] = [
   'planned',

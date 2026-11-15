@@ -58,6 +58,7 @@ export function validActorView(
   return (
     identity?.tenantId === tenantId &&
     identity.channelId === bundle.channel.channelId &&
+    identity.provider === undefined &&
     identity.teamId === bundle.channel.slack.teamId &&
     identity.externalUserId === actorId &&
     identity.agentId === bundle.agent.id &&

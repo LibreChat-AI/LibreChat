@@ -154,6 +154,25 @@ it.each(['disabled', 'missing', 'team', 'app', 'agent', 'provider'] as const)(
     }),
 );
 
+it('rejects a mixed-provider consent row at the final linked-run admission fence', () =>
+  scope(async () => {
+    expect(await identities().saveChannelIdentity(link(), null)).toBe(true);
+    await mongoose.models.ChannelIdentity.collection.updateOne(
+      { linkId: 'link' },
+      {
+        $set: {
+          'identity.provider': 'discord',
+          'identity.applicationId': '123456789012345678',
+          'identity.guildId': '234567890123456789',
+        },
+      },
+    );
+    await expect(runs().admit(linkedEvent(), Date.now())).rejects.toMatchObject({
+      code: 'invalid_transition',
+    });
+    expect(await mongoose.models.ChannelRun.countDocuments({})).toBe(0);
+  }));
+
 it('rejects identity writes and linked runs when the canonical provider changes', () =>
   scope(async () => {
     expect(await identities().saveChannelIdentity(link(), null)).toBe(true);

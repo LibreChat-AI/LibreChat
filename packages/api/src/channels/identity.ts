@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { isSlackReplyURL, SLACK_REPLY_LIFETIME_MS } from 'librechat-data-provider';
+import {
+  isSlackReplyURL,
+  SLACK_REPLY_LIFETIME_MS,
+  sameChannelExternalIdentity,
+} from 'librechat-data-provider';
 import type {
   ChannelExternalIdentity,
   ChannelLink,
@@ -43,14 +47,7 @@ const failure = <T>(
 ): ChannelIdentityResult<T> => ({ ok: false, error: { code } });
 
 export function sameChannelActor(a: ChannelExternalIdentity, b: ChannelExternalIdentity): boolean {
-  return (
-    a.tenantId === b.tenantId &&
-    a.channelId === b.channelId &&
-    a.channelRevision === b.channelRevision &&
-    a.teamId === b.teamId &&
-    a.externalUserId === b.externalUserId &&
-    a.agentId === b.agentId
-  );
+  return sameChannelExternalIdentity(a, b);
 }
 
 function view(record: ChannelIdentityRecord, now: number): ChannelLinkView {
@@ -107,7 +104,7 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
   async function updateReply(
     record: Pick<ChannelIdentityRecord, 'tenantId' | 'linkId' | 'ticketHash' | 'identity'>,
   ): Promise<void> {
-    if (!deps.reply) return;
+    if (!deps.reply || record.identity.provider !== undefined) return;
     try {
       const current = await deps.storage.readChannelLink(record.tenantId, record.linkId);
       const reply = current?.slackReply;
@@ -175,7 +172,12 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
       attempt: string,
       url: string,
     ): Promise<ChannelIdentityResult<null>> {
-      if (!deps.reply || !isSlackReplyURL(url) || !/^[a-f0-9]{64}$/.test(attempt))
+      if (
+        identity.provider !== undefined ||
+        !deps.reply ||
+        !isSlackReplyURL(url) ||
+        !/^[a-f0-9]{64}$/.test(attempt)
+      )
         return failure('forbidden');
       const record = await deps.storage.readChannelLink(identity.tenantId, linkId);
       if (

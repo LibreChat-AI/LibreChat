@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { ChannelRunConflict } from '@librechat/data-schemas';
 import {
+  channelRunActorSchema,
+  sameChannelRunActor,
+  channelActorMatchesChannel,
   responseReviewDecisionSchema,
   CHANNEL_DELIVERY_PARTS_HARD_MAX,
   CHANNEL_DELIVERY_TEXT_MAX_CHARS,
@@ -66,7 +69,7 @@ const id = z
   .min(1)
   .max(256)
   .regex(/^[\w:.-]+$/);
-const actorSchema = z.object({ teamId: id, appId: id, externalUserId: id }).strict();
+const actorSchema = channelRunActorSchema;
 const fenceSchema = z.object({ runId: id, owner: id, epoch: z.number().int().positive() }).strict();
 const admissionSchema = z
   .object({
@@ -406,9 +409,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       return;
     }
     if (
-      actor.teamId !== run.admission.actor.teamId ||
-      actor.appId !== run.admission.actor.appId ||
-      actor.externalUserId !== run.admission.actor.externalUserId ||
+      !sameChannelRunActor(actor, run.admission.actor) ||
       (parsed.data.externalChannelId != null &&
         parsed.data.externalChannelId !== run.admission.externalChannelId) ||
       revision !== run.principal.channelRevision
@@ -450,7 +451,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       const { actor, externalThreadKey, externalChannelId, eventAt } = parsed.data;
-      if (actor.teamId !== channel.slack?.teamId || actor.appId !== channel.slack?.appId) {
+      if (!channelActorMatchesChannel(channel, actor)) {
         res.status(403).json({ error: 'channel_action_forbidden' });
         return;
       }
@@ -567,10 +568,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       const admission = parsed.data;
-      if (
-        admission.actor.teamId !== channel.slack?.teamId ||
-        admission.actor.appId !== channel.slack?.appId
-      ) {
+      if (!channelActorMatchesChannel(channel, admission.actor)) {
         res.status(403).json({ error: 'channel_actor_mismatch' });
         return;
       }

@@ -1,4 +1,5 @@
 import { Schema } from 'mongoose';
+import { channelExternalIdentitySchema } from 'librechat-data-provider';
 import type { ChannelExternalIdentity } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
@@ -30,12 +31,19 @@ export function createChannelIdentityModel(
       tenantId: { type: String, required: true },
       channelId: { type: String, required: true },
       channelRevision: { type: String, required: true },
-      teamId: { type: String, required: true },
+      provider: { type: String, enum: ['discord'] },
+      teamId: String,
+      applicationId: String,
+      guildId: String,
       externalUserId: { type: String, required: true },
       agentId: { type: String, required: true },
     },
     { _id: false },
   );
+  identity.pre('validate', function () {
+    const parsed = channelExternalIdentitySchema.safeParse(this.toObject());
+    if (!parsed.success) this.invalidate('provider', 'Invalid channel provider identity');
+  });
   const schema = new Schema<ChannelIdentityRecord>(
     {
       tenantId: { type: String, required: true },

@@ -1,3 +1,4 @@
+import { channelExternalIdentitySchema } from 'librechat-data-provider';
 import type { ChannelExternalIdentity } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
@@ -10,6 +11,7 @@ import {
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
+import { channelIdentityScope } from './channelProvider';
 export type { ChannelIdentityRecord } from '~/models/channelIdentity';
 
 export interface ChannelIdentityStorage {
@@ -49,11 +51,12 @@ export function createChannelIdentityStorage(
   return {
     async readChannelIdentity(identity) {
       assertChannelTenant(identity.tenantId);
+      channelExternalIdentitySchema.parse(identity);
       return model()
         .findOne({
           tenantId: identity.tenantId,
           'identity.channelId': identity.channelId,
-          'identity.teamId': identity.teamId,
+          ...channelIdentityScope(identity),
           'identity.externalUserId': identity.externalUserId,
         })
         .select('+ticketHash +slackReply')
@@ -73,6 +76,7 @@ export function createChannelIdentityStorage(
     },
     async saveChannelIdentityReply(record, reply) {
       assertChannelTenant(record.tenantId);
+      if (record.identity.provider !== undefined) return false;
       if (reply.attempt !== record.ticketHash) throw new TypeError('Reply ticket mismatch');
       // Existing-row only: deletion cannot be followed by a callback upsert.
       const result = await model().updateOne(
@@ -91,6 +95,7 @@ export function createChannelIdentityStorage(
     },
     async claimChannelIdentityReply(record, reply) {
       assertChannelTenant(record.tenantId);
+      if (record.identity.provider !== undefined) return false;
       const result = await model().updateOne(
         {
           tenantId: record.tenantId,
@@ -115,6 +120,7 @@ export function createChannelIdentityStorage(
     },
     async saveChannelIdentity(record, expectedRevision) {
       assertChannelTenant(record.tenantId);
+      channelExternalIdentitySchema.parse(record.identity);
       if (record.tenantId !== record.identity.tenantId)
         throw new TypeError('Channel identity tenant mismatch');
       if (typeof record.identity.channelRevision !== 'string' || !record.identity.channelRevision)
@@ -155,7 +161,7 @@ export function createChannelIdentityStorage(
             revision: expectedRevision,
             'identity.tenantId': record.identity.tenantId,
             'identity.channelId': record.identity.channelId,
-            'identity.teamId': record.identity.teamId,
+            ...channelIdentityScope(record.identity),
             'identity.externalUserId': record.identity.externalUserId,
             'identity.agentId': record.identity.agentId,
           },
@@ -189,6 +195,9 @@ export function createChannelIdentityStorage(
                   channelId: record.identity.channelId,
                   agentId: record.identity.agentId,
                   channelRevision: record.identity.channelRevision,
+                  provider: record.identity.provider,
+                  applicationId: record.identity.applicationId,
+                  guildId: record.identity.guildId,
                   teamId: record.identity.teamId,
                 },
                 session,
