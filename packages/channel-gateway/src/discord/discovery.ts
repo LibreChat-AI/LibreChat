@@ -1,11 +1,17 @@
 import {
   discordRuntimeCursorSchema,
+  discordMessageSubmissionSchema,
+  discordMessageResultSchema,
   discordRuntimeChannelsSchema,
   discordRuntimeBootstrapSchema,
   discordRuntimeApplicationsSchema,
 } from 'librechat-data-provider';
 import type {
   DiscordRuntimeApplications,
+  DiscordGatewayOwner,
+  DiscordGatewayMessage,
+  DiscordGuildTextSource,
+  DiscordMessageResult,
   DiscordRuntimeChannels,
   DiscordRuntimeBootstrap,
 } from 'librechat-data-provider';
@@ -40,5 +46,21 @@ export class DiscordRuntimeClient extends ServiceClient {
   }
   async channels(cursor?: string, signal?: AbortSignal): Promise<DiscordRuntimeChannels> {
     return discordRuntimeChannelsSchema.parse(await this.read('channels', cursor, signal));
+  }
+  async message(
+    owner: DiscordGatewayOwner,
+    event: DiscordGatewayMessage,
+    source: DiscordGuildTextSource | null,
+    signal?: AbortSignal,
+  ): Promise<DiscordMessageResult> {
+    const input = discordMessageSubmissionSchema.parse({ owner, event, source });
+    const response = await this.raw('/api/channels/discord/service/messages', input, signal);
+    if (!response.ok) return this.decode(response);
+    const bytes = await boundedBody(response, 65536);
+    try {
+      return discordMessageResultSchema.parse(JSON.parse(bytes.toString()));
+    } catch {
+      throw new Error('Invalid Discord message admission');
+    }
   }
 }
