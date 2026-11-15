@@ -731,6 +731,7 @@ export default function InsightsView() {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [pendingAgentIds, setPendingAgentIds] = useState<string[] | null>(null);
+  const [allAgentsSelectionBlocked, setAllAgentsSelectionBlocked] = useState(false);
   const dateRangeSelectionTimeout = useRef<number>();
   const isSmallScreen = useDrawerViewport();
   const insightsFeatureEnabled = startupConfig?.insightsEnabled === true;
@@ -785,9 +786,9 @@ export default function InsightsView() {
   }, [data]);
   const effectiveAgentIds = useMemo(() => {
     if (selectedAgentIds.length > 0) return selectedAgentIds;
-    if (data?.autoSelectAllAgents === false) return [];
+    if (data?.allAgentsAllowed === false) return [];
     return agentItems.map((agent) => agent.value);
-  }, [agentItems, selectedAgentIds, data?.autoSelectAllAgents]);
+  }, [agentItems, selectedAgentIds, data?.allAgentsAllowed]);
   const displayedAgentIds = pendingAgentIds ?? effectiveAgentIds;
 
   useDocumentTitle(`${localize('com_insights_title')} | LibreChat`);
@@ -936,6 +937,15 @@ export default function InsightsView() {
     if (!data) {
       return;
     }
+    if (
+      data.allAgentsAllowed === false &&
+      data.agents.length > 1 &&
+      new Set(agentIds).size === data.agents.length
+    ) {
+      setAllAgentsSelectionBlocked(true);
+      return;
+    }
+    setAllAgentsSelectionBlocked(false);
     if (agentIds.length === 0) {
       setPendingAgentIds([]);
       return;
@@ -946,7 +956,7 @@ export default function InsightsView() {
     const nextParams = new URLSearchParams(urlSearchParams);
     nextParams.delete('agentIds');
     if (
-      data.autoSelectAllAgents === false ||
+      data.allAgentsAllowed === false ||
       normalizedIds.length !== allAgentIds.length ||
       normalizedIds.some((agentId, index) => agentId !== allAgentIds[index])
     ) {
@@ -1010,7 +1020,7 @@ export default function InsightsView() {
                 if (values.length === 0) {
                   return localize('com_insights_no_agents_selected');
                 }
-                if (values.length === agentItems.length) {
+                if (values.length === agentItems.length && data.allAgentsAllowed !== false) {
                   return localize('com_insights_all_agents', { count: agentItems.length });
                 }
                 if (values.length === 1) {
@@ -1024,8 +1034,9 @@ export default function InsightsView() {
                     type="button"
                     size="sm"
                     variant="ghost"
+                    disabled={data.allAgentsAllowed === false}
                     aria-label={
-                      displayedAgentIds.length > 0
+                      displayedAgentIds.length > 0 && data.allAgentsAllowed !== false
                         ? localize('com_ui_clear_all')
                         : localize('com_insights_select_all_agents')
                     }
@@ -1054,6 +1065,11 @@ export default function InsightsView() {
                         <span className="text-text-secondary">({displayedAgentIds.length})</span>
                       )}
                   </Button>
+                  {allAgentsSelectionBlocked && (
+                    <p role="alert" className="text-text-secondary px-4 py-2 text-sm">
+                      {localize('com_insights_all_agents_disabled')}
+                    </p>
+                  )}
                 </div>
               }
             />

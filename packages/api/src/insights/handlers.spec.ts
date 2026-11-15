@@ -41,12 +41,12 @@ const emptyInsights: TInsightsResponse = {
 const insightsEnabled = jest.fn(() => ({
   enabled: true,
   showDetails: true,
-  adminAutoSelectAllAgents: true,
+  adminAllowAllAgents: true,
 }));
 const insightsDisabled = jest.fn(() => ({
   enabled: false,
   showDetails: false,
-  adminAutoSelectAllAgents: true,
+  adminAllowAllAgents: true,
 }));
 const fullAccess = { agents, detailAgentIds: agents.map((agent) => agent.id) };
 const getInsightsAccess = jest.fn().mockResolvedValue(fullAccess);
@@ -82,7 +82,7 @@ describe('Insights handlers', () => {
     insightsEnabled.mockReturnValueOnce({
       enabled: true,
       showDetails: true,
-      adminAutoSelectAllAgents: false,
+      adminAllowAllAgents: false,
     });
     const { handler, getInsights } = createDashboardHandler();
     const req = createRequest();
@@ -91,32 +91,91 @@ describe('Insights handlers', () => {
     await handler(req, response);
     expect(getInsights).not.toHaveBeenCalled();
     expect(json).toHaveBeenCalledWith(
-      expect.objectContaining({ agents, selectionRequired: true, autoSelectAllAgents: false }),
+      expect.objectContaining({ agents, selectionRequired: true, allAgentsAllowed: false }),
     );
   });
 
-  it('loads an explicitly selected set, including an explicitly selected all-agents set', async () => {
+  it('loads an individually selected agent when the admin all-agents view is disabled', async () => {
     insightsEnabled.mockReturnValueOnce({
       enabled: true,
       showDetails: false,
-      adminAutoSelectAllAgents: false,
+      adminAllowAllAgents: false,
+    });
+    const { handler, getInsights } = createDashboardHandler();
+    const req = createRequest({ agentIds: ['agent-a'] });
+    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
+    const { response, json } = createResponse();
+    await handler(req, response);
+    expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ agentIds: ['agent-a'] }));
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ allAgentsAllowed: false }));
+  });
+
+  it.each([
+    ['agent-a', 'agent-b'],
+    ['agent-b', 'agent-a', 'agent-a'],
+  ])('rejects an admin all-agents request before querying statistics: %j', async (...agentIds) => {
+    insightsEnabled.mockReturnValueOnce({
+      enabled: true,
+      showDetails: false,
+      adminAllowAllAgents: false,
+    });
+    const { handler, getInsights } = createDashboardHandler();
+    const req = createRequest({ agentIds });
+    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
+    const { response, status } = createResponse();
+    await handler(req, response);
+    expect(status).toHaveBeenCalledWith(403);
+    expect(getInsights).not.toHaveBeenCalled();
+  });
+
+  it('allows subsets without restricting admins to a single agent', async () => {
+    insightsEnabled.mockReturnValueOnce({
+      enabled: true,
+      showDetails: false,
+      adminAllowAllAgents: false,
+    });
+    getInsightsAccess.mockResolvedValueOnce({
+      agents: [...agents, { id: 'agent-c', name: 'Gamma' }],
+      detailAgentIds: [],
     });
     const { handler, getInsights } = createDashboardHandler();
     const req = createRequest({ agentIds: ['agent-a', 'agent-b'] });
     req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
-    const { response, json } = createResponse();
-    await handler(req, response);
+    await handler(req, createResponse().response);
     expect(getInsights).toHaveBeenCalledWith(
       expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
     );
-    expect(json).toHaveBeenCalledWith(expect.objectContaining({ autoSelectAllAgents: false }));
   });
 
-  it('retains automatic selection for non-admin viewers when admin automatic selection is disabled', async () => {
+  it('allows the only available agent even when the admin all-agents view is disabled', async () => {
     insightsEnabled.mockReturnValueOnce({
       enabled: true,
       showDetails: false,
-      adminAutoSelectAllAgents: false,
+      adminAllowAllAgents: false,
+    });
+    getInsightsAccess.mockResolvedValueOnce({ agents: [agents[0]], detailAgentIds: [] });
+    const { handler, getInsights } = createDashboardHandler();
+    const req = createRequest({ agentIds: ['agent-a'] });
+    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
+    await handler(req, createResponse().response);
+    expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ agentIds: ['agent-a'] }));
+  });
+
+  it('allows the admin all-agents view when configured', async () => {
+    const { handler, getInsights } = createDashboardHandler();
+    const req = createRequest({ agentIds: ['agent-a', 'agent-b'] });
+    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
+    await handler(req, createResponse().response);
+    expect(getInsights).toHaveBeenCalledWith(
+      expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
+    );
+  });
+
+  it('retains the all-agents view for non-admin viewers when disabled for admins', async () => {
+    insightsEnabled.mockReturnValueOnce({
+      enabled: true,
+      showDetails: false,
+      adminAllowAllAgents: false,
     });
     const { handler, getInsights } = createDashboardHandler();
     await handler(createRequest(), createResponse().response);
@@ -294,7 +353,7 @@ describe('Insights handlers', () => {
       insightsEnabled.mockReturnValueOnce({
         enabled: true,
         showDetails: false,
-        adminAutoSelectAllAgents: true,
+        adminAllowAllAgents: true,
       });
       const privateValue = 'private-content-must-not-cross-api';
       const feedback = {
@@ -445,7 +504,7 @@ describe('Insights handlers', () => {
     insightsEnabled.mockReturnValueOnce({
       enabled: false,
       showDetails: false,
-      adminAutoSelectAllAgents: true,
+      adminAllowAllAgents: true,
     });
     const { handler, getInsights } = createDashboardHandler();
     const { response, status } = createResponse();

@@ -3214,8 +3214,8 @@ export const insightsConfigSchema = z
     enabled: z.boolean().optional(),
     /** Allows identity and conversation sections; defaults to false when resolved. */
     showDetails: z.boolean().optional(),
-    /** Automatically loads every accessible agent when an administrator opens Insights. */
-    adminAutoSelectAllAgents: z.boolean().optional(),
+    /** Allows administrators to load the combined all-agents view. Defaults to true. */
+    adminAllowAllAgents: z.boolean().optional(),
   })
   .strict();
 
@@ -3223,14 +3223,14 @@ export type TInsightsConfig = z.infer<typeof insightsConfigSchema>;
 export type TResolvedInsightsConfig = {
   enabled: boolean;
   showDetails: boolean;
-  adminAutoSelectAllAgents: boolean;
+  adminAllowAllAgents: boolean;
 };
 
 export function resolveInsightsConfig(config?: TInsightsConfig | null): TResolvedInsightsConfig {
   return {
     enabled: config?.enabled ?? false,
     showDetails: config?.showDetails ?? false,
-    adminAutoSelectAllAgents: config?.adminAutoSelectAllAgents ?? true,
+    adminAllowAllAgents: config?.adminAllowAllAgents ?? true,
   };
 }
 

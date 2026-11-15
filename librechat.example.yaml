@@ -204,8 +204,9 @@ interface:
   insights:
     enabled: true
     showDetails: false
-    # Set false to require administrators to explicitly select agents before statistics load.
-    adminAutoSelectAllAgents: true
+    # Set false to disable the combined All agents view for administrators.
+    # Admins can still inspect individual agents and subsets of agents.
+    adminAllowAllAgents: false
 
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
   # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).

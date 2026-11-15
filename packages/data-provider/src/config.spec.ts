@@ -118,13 +118,9 @@ const endpointsConfig: TEndpointsConfig = {
 };
 
 describe('Insights configuration', () => {
-  it('accepts explicit administrator selection and rejects non-boolean policy values', () => {
-    expect(
-      resolveInsightsConfig({ adminAutoSelectAllAgents: false }).adminAutoSelectAllAgents,
-    ).toBe(false);
-    expect(insightsConfigSchema.safeParse({ adminAutoSelectAllAgents: 'false' }).success).toBe(
-      false,
-    );
+  it('accepts disabling the admin all-agents view and rejects non-boolean policy values', () => {
+    expect(resolveInsightsConfig({ adminAllowAllAgents: false }).adminAllowAllAgents).toBe(false);
+    expect(insightsConfigSchema.safeParse({ adminAllowAllAgents: 'false' }).success).toBe(false);
   });
   it('accepts the proposed YAML object without adding other settings', () => {
     const insights = { enabled: true, showDetails: false };
@@ -169,22 +165,22 @@ describe('Insights configuration', () => {
     expect(resolveInsightsConfig()).toEqual({
       enabled: false,
       showDetails: false,
-      adminAutoSelectAllAgents: true,
+      adminAllowAllAgents: true,
     });
     expect(resolveInsightsConfig(null)).toEqual({
       enabled: false,
       showDetails: false,
-      adminAutoSelectAllAgents: true,
+      adminAllowAllAgents: true,
     });
     expect(resolveInsightsConfig({})).toEqual({
       enabled: false,
       showDetails: false,
-      adminAutoSelectAllAgents: true,
+      adminAllowAllAgents: true,
     });
     expect(resolveInsightsConfig({ enabled: true })).toEqual({
       enabled: true,
       showDetails: false,
-      adminAutoSelectAllAgents: true,
+      adminAllowAllAgents: true,
     });
   });
 
@@ -192,12 +188,12 @@ describe('Insights configuration', () => {
     expect(resolveInsightsConfig({ enabled: true, showDetails: false })).toEqual({
       enabled: true,
       showDetails: false,
-      adminAutoSelectAllAgents: true,
+      adminAllowAllAgents: true,
     });
     expect(resolveInsightsConfig({ enabled: true, showDetails: true })).toEqual({
       enabled: true,
       showDetails: true,
-      adminAutoSelectAllAgents: true,
+      adminAllowAllAgents: true,
     });
   });
 });

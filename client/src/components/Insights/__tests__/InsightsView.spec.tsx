@@ -136,11 +136,11 @@ async function openAgentMenu(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('InsightsView agent selection', () => {
-  it('waits for explicit selection and keeps all selected IDs in the URL when automatic selection is disabled', async () => {
+  it('disables All agents and prevents selecting the full set through individual choices', async () => {
     mockUseInsightsQuery.mockImplementation((params) => ({
       data: {
         ...insightsData,
-        autoSelectAllAgents: false,
+        allAgentsAllowed: false,
         selectionRequired: !params.agentIds?.length,
       },
       isLoading: false,
@@ -153,11 +153,20 @@ describe('InsightsView agent selection', () => {
     expect(screen.getByText('com_insights_select_agents_to_load')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'com_insights_models' })).not.toBeInTheDocument();
     await user.click(screen.getByText('com_insights_no_agents_selected'));
-    await user.click(screen.getByRole('button', { name: 'com_insights_select_all_agents' }));
-    await waitFor(() =>
-      expect(lastQueryParams().agentIds).toEqual(['agent-1', 'agent-2', 'agent-3']),
-    );
+    expect(screen.getByRole('button', { name: 'com_insights_select_all_agents' })).toBeDisabled();
+    await user.click(screen.getByRole('option', { name: 'Alpha' }));
+    await waitFor(() => expect(lastQueryParams().agentIds).toEqual(['agent-1']));
     expect(screen.queryByText('com_insights_select_agents_to_load')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('option', { name: 'Beta' }));
+    await waitFor(() => expect(lastQueryParams().agentIds).toEqual(['agent-1', 'agent-2']));
+    await user.click(screen.getByRole('option', { name: 'Gamma' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('com_insights_all_agents_disabled');
+    expect(lastQueryParams().agentIds).toEqual(['agent-1', 'agent-2']);
+    expect(screen.getByRole('option', { name: 'Gamma' })).toHaveAttribute('aria-selected', 'false');
+    await user.click(screen.getByRole('option', { name: 'Alpha' }));
+    await user.click(screen.getByRole('option', { name: 'Gamma' }));
+    await waitFor(() => expect(lastQueryParams().agentIds).toEqual(['agent-2', 'agent-3']));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('lets an administrator explicitly select their only available agent', async () => {
@@ -165,7 +174,7 @@ describe('InsightsView agent selection', () => {
       data: {
         ...insightsData,
         agents: [insightsData.agents[0]],
-        autoSelectAllAgents: false,
+        allAgentsAllowed: false,
         selectionRequired: !params.agentIds?.length,
       },
       isLoading: false,
@@ -178,6 +187,33 @@ describe('InsightsView agent selection', () => {
     await user.click(screen.getByText('com_insights_no_agents_selected'));
     await user.click(await screen.findByRole('option', { name: 'Alpha' }));
     await waitFor(() => expect(lastQueryParams().agentIds).toEqual(['agent-1']));
+    expect(screen.getByRole('combobox', { hidden: true })).toHaveTextContent('Alpha');
+  });
+
+  it('recovers an old all-agents URL rejected by the server without showing all agents as selected', async () => {
+    mockUseInsightsQuery.mockImplementation((params) => {
+      if (params.agentIds?.length === insightsData.agents.length) {
+        return {
+          data: undefined,
+          isLoading: false,
+          isFetching: false,
+          isError: true,
+          error: Object.assign(new Error('Forbidden'), { response: { status: 403 } }),
+          params,
+        };
+      }
+      return {
+        data: { ...insightsData, allAgentsAllowed: false, selectionRequired: true },
+        isLoading: false,
+        isFetching: false,
+        error: null,
+        params,
+      };
+    });
+    renderView('/insights?agentIds=agent-1&agentIds=agent-2&agentIds=agent-3');
+    await waitFor(() => expect(lastQueryParams().agentIds).toBeUndefined());
+    expect(screen.getByText('com_insights_no_agents_selected')).toBeInTheDocument();
+    expect(screen.getByText('com_insights_select_agents_to_load')).toBeInTheDocument();
   });
 
   beforeEach(() => {

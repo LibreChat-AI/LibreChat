@@ -6,23 +6,30 @@ const request = (insights?: TInsightsConfig): Pick<ServerRequest, 'config'> =>
   ({ config: { interfaceConfig: { insights } } }) as Pick<ServerRequest, 'config'>;
 
 describe('Insights request configuration', () => {
+  it('uses the scoped policy to disable the admin all-agents view', () => {
+    expect(
+      createInsightsConfigResolver(() => false)(
+        request({ enabled: true, adminAllowAllAgents: false }),
+      ).adminAllowAllAgents,
+    ).toBe(false);
+  });
   it('uses YAML to enable aggregate-only Insights without the environment switch', () => {
     expect(
       createInsightsConfigResolver(() => false)(request({ enabled: true, showDetails: false })),
-    ).toEqual({ enabled: true, showDetails: false, adminAutoSelectAllAgents: true });
+    ).toEqual({ enabled: true, showDetails: false, adminAllowAllAgents: true });
   });
 
   it('honours explicit YAML disable even when the environment switch is enabled', () => {
     expect(
       createInsightsConfigResolver(() => true)(request({ enabled: false, showDetails: true })),
-    ).toEqual({ enabled: false, showDetails: true, adminAutoSelectAllAgents: true });
+    ).toEqual({ enabled: false, showDetails: true, adminAllowAllAgents: true });
   });
 
   it('keeps environment-only enablement aggregate-only by default', () => {
     expect(createInsightsConfigResolver(() => true)(request())).toEqual({
       enabled: true,
       showDetails: false,
-      adminAutoSelectAllAgents: true,
+      adminAllowAllAgents: true,
     });
     expect(createInsightsConfigResolver(() => false)(request()).enabled).toBe(false);
   });
@@ -32,12 +39,12 @@ describe('Insights request configuration', () => {
     expect(resolve(request({ enabled: true }))).toEqual({
       enabled: true,
       showDetails: false,
-      adminAutoSelectAllAgents: true,
+      adminAllowAllAgents: true,
     });
     expect(resolve(request({ enabled: true, showDetails: true }))).toEqual({
       enabled: true,
       showDetails: true,
-      adminAutoSelectAllAgents: true,
+      adminAllowAllAgents: true,
     });
   });
 

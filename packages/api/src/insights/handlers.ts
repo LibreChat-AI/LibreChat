@@ -78,7 +78,7 @@ function selectionResponse(agents: TInsightsAgent[]): TInsightsAggregateResponse
   return {
     agents: agents.map(({ id, name }) => ({ id, name })),
     selectionRequired: true,
-    autoSelectAllAgents: false,
+    allAgentsAllowed: false,
     summary: {
       totalUsers: 0,
       totalConversations: 0,
@@ -140,7 +140,7 @@ export function createInsightsHandler({
       const {
         enabled,
         showDetails: configuredShowDetails,
-        adminAutoSelectAllAgents,
+        adminAllowAllAgents,
       } = resolveInsightsConfig(req);
       if (!enabled) {
         res.status(404).json({ message: 'Not found' });
@@ -168,9 +168,17 @@ export function createInsightsHandler({
         return;
       }
       const requiresSelection =
-        req.user.role === SystemRoles.ADMIN && adminAutoSelectAllAgents === false;
+        req.user.role === SystemRoles.ADMIN && adminAllowAllAgents === false;
       if (requiresSelection && requestedAgentIds.length === 0) {
         res.json(selectionResponse(agents));
+        return;
+      }
+      if (
+        requiresSelection &&
+        authorizedAgentIds.size > 1 &&
+        requestedAgentIds.length === authorizedAgentIds.size
+      ) {
+        res.status(403).json({ message: 'Forbidden' });
         return;
       }
       const agentIds = requestedAgentIds.length > 0 ? requestedAgentIds : [...authorizedAgentIds];
@@ -203,7 +211,7 @@ export function createInsightsHandler({
       });
       const response = {
         ...insights,
-        ...(requiresSelection && { autoSelectAllAgents: false }),
+        ...(requiresSelection && { allAgentsAllowed: false }),
       };
       res.json(showDetails ? response : toAggregateInsightsResponse(response));
     } catch (error) {

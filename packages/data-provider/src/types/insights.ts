@@ -108,8 +108,8 @@ export type TInsightsModel = TInsightsResponseOutcomes & {
 };
 
 export type TInsightsAggregateResponse = {
-  /** False when an administrator must explicitly choose the agents to load. */
-  autoSelectAllAgents?: boolean;
+  /** False when the administrator's combined all-agents view is disabled. */
+  allAgentsAllowed?: boolean;
   selectionRequired?: boolean;
   agents: TInsightsAgent[];
   summary: TInsightsSummary;
