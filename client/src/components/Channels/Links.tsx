@@ -31,7 +31,7 @@ const dotColors: Record<ChannelLinkView['state'], string> = {
 
 /** The agent's own name when it can be read. While it loads the row reads as a channel agent; when
  *  it cannot be read (deleted, or no longer shared) the id stays, so two such links stay distinct. */
-function LinkAgentName({ agentId }: { agentId: string }) {
+export function LinkAgentName({ agentId }: { agentId: string }) {
   const localize = useLocalize();
   const agent = useGetAgentByIdQuery(agentId);
   if (agent.data?.name) {
@@ -59,9 +59,14 @@ function OwnedLinks({ api, principalKey }: { api: ChannelIdentityClient; princip
   const revoke = useMutation({
     mutationKey: [MutationKeys.channelLinks, principalKey],
     mutationFn: (link: ChannelLinkView) => api.revoke(link.linkId, link.revision),
-    onSuccess: async (result, link) => {
+    onSuccess: (result, link) => {
       if (result.ok) setConfirm((current) => (current === link.linkId ? null : current));
-      await queryClient.invalidateQueries(key);
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries(key),
+        queryClient.invalidateQueries([QueryKeys.discordDmSelections, principalKey]),
+      ]);
     },
   });
   const selected = links.data?.find((link) => link.linkId === confirm);
