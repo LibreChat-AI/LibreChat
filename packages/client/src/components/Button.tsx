@@ -43,6 +43,7 @@ type ButtonVariantOptions =
         | 'inline-edit'
         | 'card'
         | 'activity-card'
+        | 'fold-header'
         | 'disclosure'
         | 'disclosure-line'
         | 'disclosure-panel'
@@ -297,6 +298,7 @@ const buttonVariantRecipe = cva(
         option:
           'w-full select-none justify-start gap-2.5 whitespace-normal text-start font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all motion-reduce:transition-none motion-reduce:disabled:transition-none hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
         'activity-card': '',
+        'fold-header': '',
         card: 'justify-start whitespace-normal rounded-2xl text-start font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
         /** A small text action in the secondary ink beside a status line, such as a failed
          *  steer's Retry or a pending one's Cancel; it rises to the primary ink under the pointer. */
@@ -483,8 +485,15 @@ const buttonVariantRecipe = cva(
 
 /** A status card keeps native focus and its content-sized box. Unlike action buttons,
  * unavailable details dim the whole card without replacing its surface or descendant ink. */
-const buttonVariants: (props?: ButtonVariantOptions) => string = (props) =>
-  props?.variant === 'activity-card'
+const buttonVariants: (props?: ButtonVariantOptions) => string = (props) => {
+  if (props?.variant === 'fold-header') {
+    return cn(
+      'text-text-secondary hover:text-text-secondary focus-visible:ring-focus-subtle inline-flex h-auto items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
+      props.class,
+      props.className,
+    );
+  }
+  return props?.variant === 'activity-card'
     ? cn(
         'border-border-light bg-surface-secondary flex w-full flex-col gap-1 rounded-lg border px-3 py-2 text-start transition',
         props.class,
@@ -493,6 +502,7 @@ const buttonVariants: (props?: ButtonVariantOptions) => string = (props) =>
     : buttonVariantRecipe(
         props == null ? props : { ...props, shape: props.shape == null ? 'unset' : props.shape },
       );
+};
 
 export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,

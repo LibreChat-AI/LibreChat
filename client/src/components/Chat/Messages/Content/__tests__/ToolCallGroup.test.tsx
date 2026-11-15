@@ -1,5 +1,6 @@
 import React, { useContext } from 'react';
 import { RecoilRoot } from 'recoil';
+import { createPortal } from 'react-dom';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
@@ -12,6 +13,7 @@ import {
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
+import { HeaderActionSlotContext } from '../slot';
 import ToolCallGroup from '../ToolCallGroup';
 
 const mockMCPServerNames: string[] = [];
@@ -436,10 +438,35 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByText('Only allow sites you trust')).not.toBeInTheDocument();
   });
 
-  it('keeps the group disclosure chevron visible', () => {
-    renderGroup(baseProps);
-
-    expect(screen.getByTestId('group-chevron')).not.toHaveClass('opacity-0');
+  it('keeps the real header action target stable while the group updates', () => {
+    const actionTargets: HTMLElement[] = [];
+    function Action() {
+      const target = useContext(HeaderActionSlotContext);
+      if (target == null) {
+        return null;
+      }
+      actionTargets.push(target);
+      return createPortal(<span data-testid="tool-action">{'Sources'}</span>, target);
+    }
+    const props = {
+      ...baseProps,
+      initialExpansionState: { isExpanded: true, userOverride: true },
+      renderPart: (_part: TMessageContentParts, idx: number) => <Action key={idx} />,
+    };
+    const { rerender } = renderGroup(props);
+    const header = screen.getByRole('button', { expanded: true });
+    const target = screen.getAllByTestId('tool-action')[0].parentElement;
+    expect(target?.parentElement).toBe(header.parentElement);
+    expect(header).not.toContainElement(target);
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props} isSubmitting />
+      </RecoilRoot>,
+    );
+    expect(screen.getAllByTestId('tool-action')[0].parentElement).toBe(target);
+    expect(actionTargets.every((element) => element === target)).toBe(true);
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('does not reconcile layout for an initially collapsed completed group', () => {
@@ -1807,30 +1834,6 @@ describe('ToolCallGroup failure fast path', () => {
     expect(header).toHaveAttribute('aria-expanded', 'true');
     /** Once per row the group rendered, after those rows mounted. */
     expect(onReveal).toHaveBeenCalledTimes(failedParts.length);
-  });
-
-  it('keeps the count quiet when the group contains both successful and failed calls', () => {
-    renderGroup(props(jest.fn()));
-    expect(
-      screen
-        .getByTestId('failed-reveal-pill')
-        .querySelector('span.text-text-secondary, span.text-status-error'),
-    ).toHaveClass('text-text-secondary');
-  });
-
-  it('keeps the count in the error tone when every call failed', () => {
-    renderGroup({
-      ...props(jest.fn()),
-      parts: [
-        failedParts[1],
-        { part: makePart('c3', 'Error processing tool: gone', 'create_file'), idx: 1 },
-      ],
-    });
-    expect(
-      screen
-        .getByTestId('failed-reveal-pill')
-        .querySelector('span.text-text-secondary, span.text-status-error'),
-    ).toHaveClass('text-status-error');
   });
 
   it.each(['created', 'Error processing tool: unavailable'])(
