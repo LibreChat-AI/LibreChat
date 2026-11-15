@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   channelStorageConfigSchema,
+  channelRunActorSchema,
   CHANNEL_DELIVERY_PARTS_HARD_MAX,
 } from 'librechat-data-provider';
 import type {
@@ -34,6 +35,7 @@ import { startRequiredTransactionSession } from '~/utils/transactions';
 import { createSlackThreadRouteModel } from '~/models/slackRoute';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
+import { channelRunActorScope } from './channelProvider';
 import { responseOwnerFilter } from './responseScope';
 import { getTenantId } from '~/config/tenantContext';
 
@@ -384,6 +386,9 @@ export function createChannelRunStorage(
       });
     },
     async admit(input, now) {
+      channelRunActorSchema.parse(input.admission.actor);
+      if (input.workspaceId && input.admission.actor.provider !== undefined)
+        throw new ChannelRunConflict('invalid_transition');
       const ownerAdmission = await prepareChannelOwnerAdmission(mongoose, {
         userId: input.principal.userId,
         tenantId: input.tenantId === '_' ? undefined : input.tenantId,
@@ -399,6 +404,9 @@ export function createChannelRunStorage(
               channelId: input.channelId,
               agentId: input.agentId,
               channelRevision: input.principal.channelRevision,
+              provider: input.admission.actor.provider,
+              applicationId: input.admission.actor.applicationId,
+              guildId: input.admission.actor.guildId,
               teamId: input.admission.actor.teamId,
               appId: input.admission.actor.appId,
               principal: input.principal,
@@ -413,8 +421,7 @@ export function createChannelRunStorage(
       const eventKey = {
         tenantId: input.tenantId,
         channelId: input.channelId,
-        'admission.actor.teamId': input.admission.actor.teamId,
-        'admission.actor.appId': input.admission.actor.appId,
+        ...channelRunActorScope(input.admission.actor),
         'admission.eventId': input.admission.eventId,
       };
       const payloadHash = digest(input.admission);

@@ -115,6 +115,7 @@ export class ChannelClient extends ServiceClient {
       !validId(run.admission?.externalChannelId) ||
       typeof run.admission?.externalThreadKey !== 'string' ||
       !run.admission.externalThreadKey.startsWith(run.admission.externalChannelId + ':') ||
+      run.admission.actor?.provider !== undefined ||
       !validId(run.admission.actor?.teamId) ||
       !validId(run.admission.actor?.appId) ||
       !validId(run.admission.actor?.externalUserId)

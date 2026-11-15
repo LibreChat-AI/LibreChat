@@ -1,5 +1,8 @@
 /** Supplied by authenticated channel ingress, never by browser identity fields. */
 export interface SlackChannelExternalIdentity {
+  provider?: never;
+  applicationId?: never;
+  guildId?: never;
   tenantId: string;
   channelId: string;
   channelRevision: string;
@@ -8,8 +11,19 @@ export interface SlackChannelExternalIdentity {
   agentId: string;
 }
 
-/** Consent storage and current ingress still accept only Slack identities. */
-export type ChannelExternalIdentity = SlackChannelExternalIdentity;
+export interface DiscordChannelExternalIdentity {
+  provider: 'discord';
+  tenantId: string;
+  channelId: string;
+  channelRevision: string;
+  agentId: string;
+  applicationId: string;
+  guildId: string;
+  externalUserId: string;
+  teamId?: never;
+}
+
+export type ChannelExternalIdentity = SlackChannelExternalIdentity | DiscordChannelExternalIdentity;
 
 export interface ChannelLink {
   identity: ChannelExternalIdentity;

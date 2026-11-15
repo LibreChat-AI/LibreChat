@@ -293,7 +293,7 @@ function OwnedLink({
                 {localize('com_ui_channel_link_accept')}
               </Button>
             )}
-            {canReturnToSlack && (
+            {canReturnToSlack && data.identity.provider === undefined && (
               <Button asChild size="lg" className="w-full">
                 <a href={`slack://open?team=${encodeURIComponent(data.identity.teamId)}`}>
                   {localize('com_ui_channel_link_open_slack')}

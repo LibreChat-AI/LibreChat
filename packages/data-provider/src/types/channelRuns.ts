@@ -11,13 +11,24 @@ export const CHANNEL_RUN_MAX_JSON_BYTES = 128 * 1024 * 1024;
 
 /** Verified transport identities are supplied by the gateway, never by Agent output. */
 export interface SlackChannelRunActor {
+  provider?: never;
+  applicationId?: never;
+  guildId?: never;
   teamId: string;
   appId: string;
   externalUserId: string;
 }
 
-/** Admission remains Slack-only until provider-specific actor validation is installed. */
-export type ChannelRunActor = SlackChannelRunActor;
+export interface DiscordChannelRunActor {
+  provider: 'discord';
+  applicationId: string;
+  guildId: string;
+  externalUserId: string;
+  teamId?: never;
+  appId?: never;
+}
+
+export type ChannelRunActor = SlackChannelRunActor | DiscordChannelRunActor;
 
 export interface ChannelRunPrincipal {
   userId: string;

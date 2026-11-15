@@ -84,6 +84,9 @@ export async function touchChannelAuthority(
     channelId: string;
     agentId: string;
     channelRevision: string;
+    provider?: 'discord';
+    applicationId?: string;
+    guildId?: string;
     teamId?: string;
     appId?: string;
     principal?: { userId: string; linkId?: string; linkRevision?: string };
@@ -92,6 +95,9 @@ export async function touchChannelAuthority(
   },
   session: ClientSession,
 ): Promise<boolean> {
+  // Discord admission stays closed until its canonical installation fence is available.
+  if (authority.provider !== undefined || authority.applicationId || authority.guildId)
+    return false;
   if (!(await touchChannelScope(mongoose, authority.tenantId, authority.channelId, session)))
     return false;
   const parent = await createAgentChannelModel(mongoose)
@@ -163,6 +169,9 @@ export async function touchChannelAuthority(
         'identity.channelId': authority.channelId,
         'identity.channelRevision': authority.channelRevision,
         'identity.agentId': authority.agentId,
+        'identity.provider': { $exists: false },
+        'identity.applicationId': { $exists: false },
+        'identity.guildId': { $exists: false },
         'identity.teamId': authority.teamId,
         'identity.externalUserId': authority.externalUserId,
       })

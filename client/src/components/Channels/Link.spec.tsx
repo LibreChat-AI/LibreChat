@@ -401,6 +401,33 @@ test('accepted consent clearly points back to the verified Slack workspace witho
   expect(screen.queryByText('com_ui_channel_link_active')).not.toBeInTheDocument();
 });
 
+test('does not send a Discord identity to the Slack return link', async () => {
+  api.preview.mockResolvedValue({
+    ok: true,
+    value: {
+      ...pending,
+      state: 'active',
+      identity: {
+        provider: 'discord',
+        tenantId: 'tenant',
+        channelId: 'channel',
+        channelRevision: 'c-rev',
+        agentId: 'agent',
+        applicationId: '123456789012345678',
+        guildId: '234567890123456789',
+        externalUserId: '345678901234567890',
+      },
+    },
+  });
+  renderPage(
+    <Link api={api} accountLabel="Account A" principalKey="tenant:user-a" ticket="ticket" />,
+  );
+  await screen.findByRole('status');
+  expect(
+    screen.queryByRole('link', { name: 'com_ui_channel_link_open_slack' }),
+  ).not.toBeInTheDocument();
+});
+
 test('each link is a row: the agent name, the Slack ids, a status and a hover-only revoke', async () => {
   api.list.mockResolvedValue([{ ...pending, state: 'active' }]);
   renderPage(<Links api={api} principalKey="tenant:user-a" />);

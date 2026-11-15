@@ -5,6 +5,7 @@ import type {
   ChannelStorageConfig,
 } from 'librechat-data-provider';
 import type { ChannelRunRecord } from '~/models/channelRun';
+import { channelRunActorScope } from './channelProvider';
 
 export type ChannelSummaryScope = Pick<
   ChannelRunRecord,
@@ -52,8 +53,7 @@ export function createChannelSummaryStorage(
           'principal.channelRevision': scope.principal.channelRevision,
           'principal.linkId': scope.principal.linkId ?? null,
           'principal.linkRevision': scope.principal.linkRevision ?? null,
-          'admission.actor.teamId': scope.admission.actor.teamId,
-          'admission.actor.appId': scope.admission.actor.appId,
+          ...channelRunActorScope(scope.admission.actor),
           'admission.actor.externalUserId': scope.admission.actor.externalUserId,
           'admission.externalChannelId': scope.admission.externalChannelId,
           'admission.externalThreadKey': scope.admission.externalThreadKey,
