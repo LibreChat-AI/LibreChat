@@ -1,7 +1,7 @@
 import { useContext } from 'react';
 import fs from 'fs';
-import { ContentTypes, Tools } from 'librechat-data-provider';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
+import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { PhaseLabel as PackagePhaseLabel, FOLD_EASING } from '@librechat/chat/components';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES, useFailedReveal } from '@librechat/chat/components';
@@ -888,6 +888,58 @@ describe('ActivityPhaseGroup open live header', () => {
     fireEvent.click(screen.getByRole('button'));
     settle();
     expect(within(screen.getByRole('button')).getByTitle('Found the recap')).toBeInTheDocument();
+  });
+
+  test.each<[string, boolean]>([
+    ['read_file', false],
+    [String(Constants.CHECK_BACKGROUND_TASK), true],
+  ])('passes the formatted repeated %s count to the real package header', (name, background) => {
+    const call = {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: { id: 'first', name, args: '{}', type: 'tool_call', progress: 0.5, output: '' },
+    } satisfies TMessageContentParts;
+    const next = { ...call, tool_call: { ...call.tool_call, id: 'next' } };
+    render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[call, next]}>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+
+    const count = screen.getByTestId('live-phase-combo');
+    expect(count).toHaveTextContent(background ? 'com_ui_background_tasks_n_checks' : '×2');
+    expect(count).toHaveClass(background ? 'text-text-secondary' : 'sr-only');
+    const header = screen.getByRole('button');
+    expect(header.getAttribute('aria-labelledby')?.split(' ')).toContain(count.id);
+  });
+
+  test('announces a completed live line and then the settled summary through the same region', () => {
+    const { rerender } = render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought()]}>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    const announcer = screen.getByTestId('activity-phase-announcer');
+    expect(announcer).toBeEmptyDOMElement();
+
+    rerender(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[thought(), thought()]}
+      >
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    settle();
+    expect(announcer).toHaveTextContent('Next I check the ordering.');
+
+    rerender(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.getByTestId('activity-phase-announcer')).toBe(announcer);
+    expect(announcer).toHaveTextContent(LABEL);
   });
 });
 
