@@ -14,6 +14,8 @@ for (const file of [
   'docker-compose.channels.yml',
   'docker-compose.slack-workspaces.yml',
   'docker-compose.channels-build.yml',
+  'docker-compose.discord.yml',
+  'docker-compose.discord-build.yml',
   'docker-compose.mongo-replica.yml',
   '.env.example',
 ]) {
@@ -22,11 +24,14 @@ for (const file of [
 copyFileSync(join(root, '.env.example'), join(fixture, '.env'));
 process.on('exit', () => rmSync(fixture, { recursive: true, force: true }));
 
-function configuration(tag, source = false, shared = false, gatewayPort) {
-  const files = ['docker-compose.yml', 'docker-compose.channels.yml'];
+function configuration(tag, source = false, shared = false, gatewayPort, discord) {
+  const files = ['docker-compose.yml'];
+  if (discord !== 'only') files.push('docker-compose.channels.yml');
   if (shared) files.push('docker-compose.slack-workspaces.yml');
+  if (discord) files.push('docker-compose.discord.yml');
   if (source) {
-    files.push('docker-compose.channels-build.yml');
+    if (discord !== 'only') files.push('docker-compose.channels-build.yml');
+    if (discord) files.push('docker-compose.discord-build.yml');
   }
   files.push('docker-compose.mongo-replica.yml');
   return JSON.parse(
@@ -61,6 +66,8 @@ function configuration(tag, source = false, shared = false, gatewayPort) {
           CHANNEL_TENANT_ID: 'org.a',
           SLACK_APP_TOKEN: 'xapp-fixture',
           CHANNEL_GATEWAY_PORT: gatewayPort ?? '',
+          DISCORD_GATEWAY_PORT: gatewayPort ?? '',
+          DISCORD_BOT_TOKEN: 'must-not-be-inherited',
         },
       },
     ),
@@ -124,6 +131,61 @@ assert.equal(
   '3999',
 );
 console.log('PASS: shared Compose needs no app credentials and clears all bound-gateway settings');
+
+for (const source of [false, true]) {
+  for (const mode of ['only', 'both']) {
+    const rendered = configuration('v1.2.3', source, mode === 'both', undefined, mode);
+    const gateway = rendered['discord-gateway'];
+    assert.equal(
+      rendered.api.image,
+      source ? 'librechat-channels-api:local' : 'ghcr.io/librechat-ai/librechat:v1.2.3',
+    );
+    assert.equal(
+      gateway.image,
+      source
+        ? 'librechat-channel-gateway:local'
+        : 'ghcr.io/librechat-ai/librechat-channel-gateway:v1.2.3',
+    );
+    assert.equal(gateway.environment.CHANNEL_PROVIDER, 'discord');
+    assert.equal(gateway.environment.CHANNEL_ID, '');
+    assert.equal(gateway.environment.CHANNEL_TENANT_ID, '_');
+    assert.equal(gateway.environment.SLACK_APP_TOKEN, '');
+    for (const key of [
+      'DISCORD_BOT_TOKEN',
+      'DISCORD_CLIENT_SECRET',
+      'DISCORD_PUBLIC_KEY',
+      'SLACK_TRANSPORT',
+    ])
+      assert.equal(gateway.environment[key], undefined);
+    assert.equal(gateway.ports[0].host_ip, '127.0.0.1');
+    assert.equal(gateway.ports[0].published, '3082');
+    assert.equal(gateway.depends_on.api.condition, 'service_healthy');
+    assert.equal(gateway.read_only, true);
+    assert.equal(gateway.init, true);
+    assert.deepEqual(gateway.cap_drop, ['ALL']);
+    assert.ok(gateway.security_opt.includes('no-new-privileges:true'));
+    assert.deepEqual(gateway.profiles, ['channels']);
+    assert.equal(
+      gateway.build?.dockerfile,
+      source ? 'packages/channel-gateway/Dockerfile' : undefined,
+    );
+    assert.equal(gateway.pull_policy, source ? 'build' : undefined);
+    if (mode === 'only') {
+      assert.equal(rendered['channel-gateway'], undefined);
+      assert.equal(rendered.api.environment.SLACK_WORKSPACES_ENABLED, undefined);
+    } else {
+      assert.equal(rendered['channel-gateway'].ports[0].published, '3081');
+      assert.equal(rendered['channel-gateway'].environment.CHANNEL_PROVIDER, undefined);
+    }
+  }
+}
+assert.equal(
+  configuration('v1.2.3', false, false, '3998', 'only')['discord-gateway'].ports[0].published,
+  '3998',
+);
+console.log(
+  'PASS: Discord-only and combined Compose preserve provider isolation, image parity and private ingress',
+);
 
 // Run the shipped healthcheck against an API that listens before initialization completes.
 let ready = false;

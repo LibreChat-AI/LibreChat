@@ -33,6 +33,7 @@ export class DiscordGatewayApp {
   ready = false;
   private ownersHealthy = false;
   private workersHealthy = false;
+  private readinessReported = false;
   private readonly active = new Map<string, OwnedApplication>();
   private readonly control: DiscordControlClient;
   private readonly runtime: DiscordRuntimeClient;
@@ -60,6 +61,12 @@ export class DiscordGatewayApp {
 
   http(request: IncomingMessage, response: ServerResponse): Promise<void> {
     return this.ingress.http(request, response);
+  }
+
+  private reportReadiness(): void {
+    const ready = this.ready && this.ownersHealthy && this.workersHealthy;
+    if (ready && !this.readinessReported) this.log.info('discord_gateway_ready');
+    this.readinessReported = ready;
   }
 
   private async own(owner: DiscordGatewayOwner, signal: AbortSignal): Promise<void> {
@@ -112,6 +119,7 @@ export class DiscordGatewayApp {
           throw new Error('Discord channel cursor did not advance');
         cursor = page.next;
         this.workersHealthy = true;
+        this.reportReadiness();
         const tasks: (() => Promise<void>)[] = [];
         for (const context of this.active.values()) {
           tasks.push(() =>
@@ -182,6 +190,7 @@ export class DiscordGatewayApp {
         );
       } catch {
         this.workersHealthy = false;
+        this.reportReadiness();
         if (!signal.aborted) this.log.warn('discord_worker_discovery_unavailable');
       }
       await delay(this.policy.gateway.pollIntervalMs, undefined, { signal }).catch(() => {});
@@ -200,9 +209,11 @@ export class DiscordGatewayApp {
             try {
               const page = await this.runtime.applications(cursor, discoverySignal);
               this.ownersHealthy = true;
+              this.reportReadiness();
               return page;
             } catch (error) {
               this.ownersHealthy = false;
+              this.reportReadiness();
               throw error;
             }
           },

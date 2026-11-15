@@ -27,6 +27,7 @@ import { slackPublicURL } from '../workspaces';
 /** Pick of the operator's Discord policy; shared schema defaults are applied by getAppConfig. */
 export interface DiscordHttpConfig {
   enabled: boolean;
+  publicUrl?: string;
   flowLifetimeMs: number;
   requestTimeoutMs: number;
   maxResponseBytes: number;
@@ -34,6 +35,7 @@ export interface DiscordHttpConfig {
 }
 const policySchema = z.object({
   enabled: z.boolean(),
+  publicUrl: discordChannelConfigSchema.shape.publicUrl,
   flowLifetimeMs: z.number().int().positive(),
   requestTimeoutMs: z.number().int().positive(),
   maxResponseBytes: z.number().int().positive(),
@@ -48,12 +50,11 @@ export function createDiscordManagementSettingsReader(deps: {
     const channels = z
       .object({ enabled: z.boolean().optional(), discord: z.unknown().optional() })
       .parse(config.endpoints?.agents?.channels ?? {});
-    if (
-      !channels.enabled ||
-      !z.object({ enabled: z.literal(true) }).safeParse(channels.discord).success
-    )
-      return undefined;
-    return policySchema.parse(channels.discord);
+    const discord = discordChannelConfigSchema.parse(channels.discord ?? {});
+    return policySchema.parse({
+      ...discord,
+      enabled: channels.enabled === true && discord.enabled,
+    });
   };
 }
 
@@ -117,6 +118,9 @@ export function createDiscordManagementRuntime(
           service,
           publicBaseUrl,
           clientBaseUrl,
+          interactionBaseUrl: config.publicUrl
+            ? getOAuthCallbackUrl(config.publicUrl, '/discord/')
+            : undefined,
         });
         await handlers[method](req, res, next);
       } catch (error) {

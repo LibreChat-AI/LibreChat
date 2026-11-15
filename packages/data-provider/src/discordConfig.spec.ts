@@ -74,3 +74,22 @@ it.each([
 ])('rejects invalid Gateway policy %j', (gateway) => {
   expect(discordChannelConfigSchema.safeParse({ gateway }).success).toBe(false);
 });
+
+it('accepts explicit HTTPS ingress and loopback fixtures without inheriting a Slack URL', () => {
+  expect(discordChannelConfigSchema.parse({}).publicUrl).toBeUndefined();
+  for (const publicUrl of [
+    'https://discord.example/prefix/',
+    'http://localhost:8080',
+    'http://[::1]:8080',
+  ])
+    expect(discordChannelConfigSchema.safeParse({ publicUrl }).success).toBe(true);
+  for (const publicUrl of [
+    'invalid',
+    'ftp://discord.example',
+    'http://discord.example',
+    'https://user:secret@discord.example',
+    'https://discord.example?token=secret',
+    'https://discord.example/#fragment',
+  ])
+    expect(discordChannelConfigSchema.safeParse({ publicUrl }).success).toBe(false);
+});

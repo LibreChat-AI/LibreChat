@@ -1311,6 +1311,26 @@ export const sharedSlackGatewayWirePolicySchema = sharedSlackGatewayPolicySchema
 /** Discord transport and installation policy. Secrets remain in organization storage. */
 export const discordChannelConfigSchema = z
   .object({
+    /** Public gateway origin/prefix, independent of the Slack gateway and browser origin. */
+    publicUrl: z
+      .url()
+      .refine((value) => {
+        try {
+          const url = new URL(value);
+          return (
+            !url.username &&
+            !url.password &&
+            !url.search &&
+            !url.hash &&
+            (url.protocol === 'https:' ||
+              (url.protocol === 'http:' &&
+                ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
+          );
+        } catch {
+          return false;
+        }
+      })
+      .optional(),
     inbox: z
       .object({
         maxPendingPerApplication: z.number().int().min(1).max(100_000).default(1000),

@@ -401,14 +401,14 @@ it('keeps disabled configuration and operational failures safe', async () => {
   expect(failed.body).toEqual({ ok: false, error: { code: 'provider_unavailable' } });
 });
 
-it('reads only the enabled operator policy through the injected config boundary', async () => {
+it('reads operator policy while retaining setup metadata when disabled', async () => {
   const raw = Object.assign(channelConfigSchema.parse({ enabled: true }), { discord: settings });
   const reader = createDiscordManagementSettingsReader({
     readAppConfig: async () => ({ endpoints: { agents: { channels: raw } } }),
   });
   expect(await reader()).toEqual(settings);
   raw.enabled = false;
-  expect(await reader()).toBeUndefined();
+  expect(await reader()).toEqual({ ...settings, enabled: false });
   expect(DISCORD_CALLBACK_PATH).toBe('/api/channels/discord/oauth/callback');
 });
 
@@ -563,4 +563,17 @@ it('exposes an explicit authenticated same-origin command registration operation
     .expect(409);
   settings = undefined;
   await authorize(path).send(input).expect(404);
+});
+
+it('advertises only the explicitly configured Discord public ingress, including while disabled', async () => {
+  if (!settings) throw new Error('Missing fixture settings');
+  settings = { ...settings, publicUrl: 'https://discord.example/prefix/', enabled: false };
+  const page = await request(app)
+    .get(`${base}/apps`)
+    .set('Authorization', 'Bearer admin')
+    .expect(200);
+  expect(page.body.setup).toEqual({
+    oauthCallbackUrl: `${publicBaseUrl}${DISCORD_CALLBACK_PATH}`,
+    interactionBaseUrl: 'https://discord.example/prefix/discord/',
+  });
 });
