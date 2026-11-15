@@ -272,3 +272,5 @@ export type {
   DiscordGatewayStoragePolicy,
   DiscordGatewayPrivateState,
 } from './methods/discordGateway';
+export { createDiscordRuntimeStorage } from './methods/discordRuntime';
+export type { DiscordRuntimeStorage } from './methods/discordRuntime';
