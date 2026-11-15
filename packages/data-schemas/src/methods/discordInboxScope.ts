@@ -34,6 +34,7 @@ export async function touchDiscordInbox(
       leaseExpiresAt: { $gt: now },
       expiresAt: { $gt: now },
       state: 'processing',
+      routing: { $ne: 'inspection' },
     },
     { $inc: { authorityWrites: 1 } },
     { session },

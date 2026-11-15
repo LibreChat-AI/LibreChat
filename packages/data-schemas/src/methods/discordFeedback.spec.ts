@@ -85,7 +85,8 @@ async function job(eventId: string, rating: ChannelRating, source = messageId) {
     ),
   );
   const record = await inbox.claim(applicationId, 'worker', now);
-  if (!record || record.eventId !== eventId) throw new Error('Missing feedback claim');
+  if (!record || record.routing === 'inspection' || record.eventId !== eventId)
+    throw new Error('Missing feedback claim');
   return {
     record,
     fence: { applicationId, eventId, owner: 'worker', epoch: record.leaseEpoch },

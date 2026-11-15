@@ -4,7 +4,7 @@ import { discordInboxSubmissionSchema, discordPrivateReplySchema } from 'librech
 import type {
   DiscordInboxSubmission,
   DiscordInboxFence,
-  DiscordInboxDelivery,
+  DiscordInboxClaim,
   DiscordPrivateReply,
 } from 'librechat-data-provider';
 import type { DiscordInboxStorage, DiscordInboxRecord } from '@librechat/data-schemas';
@@ -66,7 +66,7 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
           ),
       );
     },
-    async claim(applicationId: string, owner: string): Promise<DiscordInboxDelivery | null> {
+    async claim(applicationId: string, owner: string): Promise<DiscordInboxClaim | null> {
       return scope(
         applicationId,
         async () => {
@@ -74,6 +74,17 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
           if (!record) return null;
           const fence = { applicationId, eventId: record.eventId, owner, epoch: record.leaseEpoch };
           try {
+            if (record.routing === 'inspection')
+              return {
+                fence,
+                applicationRevision: record.applicationRevision,
+                expiresAt: record.expiresAt,
+                inspection: {
+                  guildId: record.guildId,
+                  externalChannelId: record.externalChannelId,
+                  externalUserId: record.externalUserId,
+                },
+              };
             if (record.state === 'processing') {
               const reply = discordPrivateReplySchema.parse(await deps.execute(record, fence));
               const prepared = await deps.storage.prepareReply(

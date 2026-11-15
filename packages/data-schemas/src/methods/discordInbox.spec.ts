@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { DiscordAgentChannel } from 'librechat-data-provider';
-import type { SubmitDiscordInteraction } from './discordInbox';
+import type { SubmitDiscordInteraction, SubmitDiscordInspection } from './discordInbox';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { withRequiredTransaction } from '~/utils/transactions';
@@ -812,3 +812,165 @@ it('does not block later effects behind a prepared reply waiting for transport r
       eventId: '567890123456789013',
     });
   }));
+describe('unresolved channel inspection', () => {
+  async function unresolved(
+    overrides: Partial<SubmitDiscordInspection> = {},
+  ): Promise<SubmitDiscordInspection> {
+    const guild = await installations.resolveGuild(applicationId, guildId);
+    if (!guild) throw new Error('Missing guild');
+    const physical = input();
+    const { eventId, applicationRevision, action, encryptedToken, tokenHash, expiresAt } = physical;
+    return {
+      eventId,
+      applicationId,
+      applicationRevision,
+      guildId,
+      externalUserId,
+      action,
+      encryptedToken,
+      tokenHash,
+      expiresAt,
+      routing: 'inspection',
+      installationId: guild.installationId,
+      installationRevision: guild.revision,
+      externalChannelId: '789012345678901234',
+      ...overrides,
+    };
+  }
+  it('durably leases physical source without invented binding or executable authority', () =>
+    scope(async () => {
+      const pending = await unresolved();
+      expect((await storage.submit(pending, now)).ok).toBe(true);
+      const record = await storage.claim(applicationId, 'worker', now);
+      expect(record).toMatchObject({
+        routing: 'inspection',
+        externalChannelId: pending.externalChannelId,
+        externalUserId,
+      });
+      expect(record).not.toHaveProperty('channelId');
+      expect(record).not.toHaveProperty('agentId');
+      const fence = { applicationId, eventId, owner: 'worker', epoch: record!.leaseEpoch };
+      expect(await storage.prepareReply(fence, 'sealed-reply', now)).toEqual({
+        ok: false,
+        error: { code: 'authority_changed' },
+      });
+      expect(
+        await withRequiredTransaction(db, (session) =>
+          touchDiscordInbox(
+            db,
+            {
+              tenantId,
+              channelId: channel.channelId,
+              externalUserId,
+              applicationRevision,
+            },
+            fence,
+            now,
+            session,
+          ),
+        ),
+      ).toBe(false);
+      expect(await storage.defer(fence, now + 1000, now)).toBe(true);
+      const reclaimed = await storage.claim(applicationId, 'next-worker', now + 1000);
+      expect(reclaimed).toMatchObject({
+        routing: 'inspection',
+        externalChannelId: pending.externalChannelId,
+        action: pending.action,
+      });
+      expect(reclaimed!.leaseEpoch).toBe(fence.epoch + 1);
+      expect(await storage.finish(fence, 'unavailable', now + 1000)).toBe(false);
+    }));
+  it('deduplicates unresolved jobs and rejects changed signed identity or payload', () =>
+    scope(async () => {
+      const pending = await unresolved();
+      await storage.submit(pending, now);
+      expect(await storage.submit(pending, now)).toMatchObject({
+        ok: true,
+        value: { duplicate: true },
+      });
+      for (const changed of [
+        { externalChannelId },
+        { externalUserId: '111111111111111111' },
+        { action: { kind: 'ask' as const, prompt: 'Changed' } },
+      ])
+        expect(await storage.submit({ ...pending, ...changed }, now)).toEqual({
+          ok: false,
+          error: { code: 'event_conflict' },
+        });
+      await expect(
+        storage.submit({ ...pending, channelId: 'fake' } as SubmitDiscordInspection, now),
+      ).rejects.toThrow();
+    }));
+  it('serializes concurrent pending capacity with the canonical installation fence', () =>
+    scope(async () => {
+      storage = createDiscordInboxStorage(db, async () => ({ maxPendingPerApplication: 1 }));
+      const pending = await unresolved();
+      const results = await Promise.all([
+        storage.submit(pending, now),
+        storage.submit({ ...pending, eventId: '111111111111111111' }, now),
+      ]);
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      expect(results.find((result) => !result.ok)).toEqual({
+        ok: false,
+        error: { code: 'capacity' },
+      });
+    }));
+  it('rejects stale installation and application revisions before private storage or claim', () =>
+    scope(async () => {
+      const pending = await unresolved();
+      expect(await storage.submit({ ...pending, installationRevision: 'stale' }, now)).toEqual({
+        ok: false,
+        error: { code: 'authority_changed' },
+      });
+      await storage.submit(pending, now);
+      await rotate();
+      expect(await storage.claim(applicationId, 'worker', now)).toBeNull();
+      const row = await db.models.DiscordInbox.findOne({ eventId })
+        .select('+action +encryptedToken')
+        .lean();
+      expect(row).toMatchObject({ state: 'failed', result: 'authority_changed' });
+      expect(row).not.toHaveProperty('action');
+      expect(row).not.toHaveProperty('encryptedToken');
+    }));
+  it('erases unresolved private payload by actor and retains an opaque replay receipt', () =>
+    scope(async () => {
+      const pending = await unresolved();
+      await storage.submit(pending, now);
+      const other = await installations.connectGuild({
+        actorId: owner,
+        applicationId,
+        applicationRevision,
+        guildId: '222222222222222222',
+        guildName: 'Other guild',
+      });
+      if (!other.ok) throw new Error(other.error.code);
+      await storage.submit(
+        {
+          ...pending,
+          eventId: '333333333333333333',
+          guildId: other.value.guildId,
+          installationId: other.value.installationId,
+          installationRevision: other.value.revision,
+        },
+        now,
+      );
+      const fence = jest.fn(async () => {});
+      await createDiscordInboxErasure(db, fence).erase({
+        kind: 'actor',
+        tenantId,
+        channelId: channel.channelId,
+        applicationId,
+        guildId,
+        externalUserId,
+      });
+      expect(fence).not.toHaveBeenCalled();
+      expect(await db.models.DiscordInbox.countDocuments({ eventId })).toBe(0);
+      expect(await db.models.DiscordInbox.countDocuments({ eventId: '333333333333333333' })).toBe(
+        1,
+      );
+      expect(
+        await db.models.DiscordReceipt.findOne({ applicationId, eventId }).lean(),
+      ).toMatchObject({ applicationId, eventId });
+      expect(await storage.submit(pending, now)).toEqual({ ok: false, error: { code: 'expired' } });
+    }));
+});

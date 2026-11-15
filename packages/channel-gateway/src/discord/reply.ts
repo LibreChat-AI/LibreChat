@@ -149,6 +149,11 @@ export async function deliverDiscordReply(
     await deps.control.finish(job.fence, 'expired', signal);
     return true;
   }
+  // No unresolved job can reach external delivery or execute without the owned preflight adapter.
+  if ('inspection' in job) {
+    await deps.control.finish(job.fence, 'unavailable', signal);
+    return true;
+  }
   try {
     await deps.reply.write(
       deps.applicationId,

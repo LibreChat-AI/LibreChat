@@ -9,15 +9,12 @@ export interface DiscordCancelResult {
 }
 
 /** Private ingress payloads are erased at completion; only deduplication metadata survives. */
-export interface DiscordInboxRecord {
+interface DiscordInboxPayload {
   tenantId?: string;
   eventId: string;
   applicationId: string;
   applicationRevision: string;
   guildId: string;
-  channelId: string;
-  channelRevision: string;
-  agentId: string;
   externalChannelId: string;
   externalUserId: string;
   fingerprint: string;
@@ -37,20 +34,45 @@ export interface DiscordInboxRecord {
   result?: 'completed' | 'expired' | 'authority_changed' | 'unavailable';
 }
 
+/** Only resolved records may reach the command executor. Legacy records are resolved by default. */
+export interface DiscordInboxRecord extends DiscordInboxPayload {
+  routing?: 'bound';
+  channelId: string;
+  channelRevision: string;
+  agentId: string;
+}
+/** No internal destination is invented before an owned client inspects the actual channel. */
+export interface DiscordInboxUnresolvedRecord extends DiscordInboxPayload {
+  routing: 'inspection';
+  installationId: string;
+  installationRevision: string;
+}
+export type DiscordInboxLeaseRecord = DiscordInboxRecord | DiscordInboxUnresolvedRecord;
+
+function bound(this: { routing?: string }): boolean {
+  return this.routing !== 'inspection';
+}
+function inspection(this: { routing?: string }): boolean {
+  return this.routing === 'inspection';
+}
+
 export function createDiscordInboxModel(
   mongoose: typeof import('mongoose'),
-): Model<DiscordInboxRecord> {
-  if (mongoose.models.DiscordInbox) return mongoose.model<DiscordInboxRecord>('DiscordInbox');
-  const schema = new Schema<DiscordInboxRecord>(
+): Model<DiscordInboxLeaseRecord> {
+  if (mongoose.models.DiscordInbox) return mongoose.model<DiscordInboxLeaseRecord>('DiscordInbox');
+  const schema = new Schema<DiscordInboxLeaseRecord>(
     {
       tenantId: String,
       eventId: { type: String, required: true },
       applicationId: { type: String, required: true },
       applicationRevision: { type: String, required: true },
       guildId: { type: String, required: true },
-      channelId: { type: String, required: true },
-      channelRevision: { type: String, required: true },
-      agentId: { type: String, required: true },
+      routing: { type: String, enum: ['bound', 'inspection'] },
+      channelId: { type: String, required: bound },
+      channelRevision: { type: String, required: bound },
+      agentId: { type: String, required: bound },
+      installationId: { type: String, required: inspection },
+      installationRevision: { type: String, required: inspection },
       externalChannelId: { type: String, required: true },
       externalUserId: { type: String, required: true },
       fingerprint: { type: String, required: true },
@@ -96,5 +118,5 @@ export function createDiscordInboxModel(
   });
   schema.index({ purgeAt: 1 }, { expireAfterSeconds: 0 });
   applyTenantIsolation(schema);
-  return mongoose.model<DiscordInboxRecord>('DiscordInbox', schema);
+  return mongoose.model<DiscordInboxLeaseRecord>('DiscordInbox', schema);
 }
