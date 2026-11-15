@@ -28,6 +28,7 @@ import { TargetContext } from '~/Providers/TargetContext';
 import useTarget from '~/hooks/Chat/target';
 import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
+import WelcomeBackdrop from './Backdrop';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
 import Lia from '~/components/Lia';
@@ -176,12 +177,17 @@ function ChatViewPane({
                             renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
                             renderMessages={renderMessages}
                             landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
-                            renderColumn={(column) => (
+                            renderColumn={(column, { isLanding }) => (
                               <OwnerTextProvider
                                 messages={messages}
                                 conversationId={conversationId}
                                 isSubmitting={chat.isSubmitting}
                               >
+                                {/* The welcome screen only, behind its column: a theme's
+                                backdrop covers the greeting and the composer together and
+                                goes with them on the first message. It paints nothing unless
+                                the theme asks and the build registers one. */}
+                                {isLanding && <WelcomeBackdrop />}
                                 {column}
                               </OwnerTextProvider>
                             )}

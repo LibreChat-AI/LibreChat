@@ -1,24 +1,18 @@
-import { useCallback, useRef } from 'react';
-import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
-import { cn, Button, disclosureChevronVariants, useLocalize } from '@librechat/client';
+import { useCallback } from 'react';
+import { cn, useLocalize } from '@librechat/client';
+import { MessageCircleQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents, PartMetadata } from 'librechat-data-provider';
 import type { CSSProperties, ReactNode } from 'react';
-import {
-  DISCLOSURE_COLLAPSE,
-  PROGRESS_TEXT_CONTENT,
-  PROGRESS_TEXT_WRAPPER,
-  ROW_GLYPH_SLOT,
-  TOOL_ROW_CLASSES,
-} from '../rows';
 import {
   getSubmittedAskAnswer,
   parseAskUserQuestionArgs,
   parseAskUserQuestionsArgs,
 } from '../../../core/parts/questions';
 import { toolPanelSpacingClassName, useToolExpansion } from '../../../react/parts/disclosure';
+import { DISCLOSURE_COLLAPSE, TOOL_ROW_CLASSES } from '../rows';
 import useExpandCollapse from '../useExpandCollapse';
 import AskUserQuestionProgress from './Progress';
-import { useFailedReveal } from '../reveal';
+import ProgressText from '../ProgressText';
 import EmptyText from '../../EmptyText';
 import Container from '../Container';
 
@@ -146,12 +140,28 @@ export default function AskUserQuestionCall({
   return (
     <>
       <div className={TOOL_ROW_CLASSES} data-testid="ask-user-question-call">
-        <AskCallHeader
-          failed={terminalFailure}
-          expanded={expanded}
-          label={statusLabel}
-          subtitle={summary}
+        {/* Settled row. Same disclosure, failure reveal, and line as the other
+            tool cards. `failed` keeps the warning glyph; `cancelled` would
+            replace it with the stop mark, which a rejected question does not use.
+            A blank question keeps its empty summary slot, as this header always did. */}
+        <ProgressText
+          phase={terminalFailure ? 'failed' : 'completed'}
           onClick={toggleExpanded}
+          inProgressText={statusLabel}
+          finishedText={statusLabel}
+          subtitle={summary}
+          keepEmptySubtitle
+          icon={
+            terminalFailure ? (
+              <TriangleAlert className="text-text-warning size-4 shrink-0" aria-hidden="true" />
+            ) : (
+              <MessageCircleQuestion
+                className="text-text-secondary size-4 shrink-0"
+                aria-hidden="true"
+              />
+            )
+          }
+          isExpanded={expanded}
         />
       </div>
       {/* A rejected call is the one state the reader did not ask for and
@@ -219,101 +229,6 @@ export default function AskUserQuestionCall({
       </div>
       {resumingCursor}
     </>
-  );
-}
-
-/**
- * The settled row. Same disclosure, failure reveal, and line as the other tool
- * cards: a failed call opens and takes focus when a parent fold asks.
- */
-function AskCallHeader({
-  failed,
-  expanded,
-  label,
-  subtitle,
-  onClick,
-}: {
-  failed: boolean;
-  expanded: boolean;
-  label: string;
-  subtitle?: string;
-  onClick: () => void;
-}) {
-  const localize = useLocalize();
-  const rootRef = useRef<HTMLDivElement>(null);
-  const revealFailure = useCallback(
-    (claimFocus: () => boolean) => {
-      if (!expanded) {
-        onClick();
-      }
-      if (!claimFocus()) {
-        return;
-      }
-      const button = rootRef.current?.querySelector('button');
-      if (button == null) {
-        return;
-      }
-      if (typeof button.scrollIntoView === 'function') {
-        button.scrollIntoView({ block: 'nearest' });
-      }
-      button.focus({ preventScroll: true });
-    },
-    [expanded, onClick],
-  );
-  useFailedReveal(failed, revealFailure);
-  return (
-    <div className={PROGRESS_TEXT_WRAPPER} ref={rootRef}>
-      <div className={PROGRESS_TEXT_CONTENT}>
-        <Button
-          type="button"
-          variant="disclosure"
-          className="group/disclosure"
-          onClick={onClick}
-          aria-expanded={expanded}
-        >
-          <span className={ROW_GLYPH_SLOT} aria-hidden="true">
-            {failed ? (
-              <TriangleAlert className="text-text-warning size-4 shrink-0" aria-hidden="true" />
-            ) : (
-              <MessageCircleQuestion
-                className="text-text-secondary size-4 shrink-0"
-                aria-hidden="true"
-              />
-            )}
-          </span>
-          <span className="flex min-w-0 items-center gap-2">
-            <span
-              className={cn(
-                'max-w-full min-w-0 truncate font-medium',
-                subtitle != null && 'shrink-0',
-              )}
-            >
-              {label}
-            </span>
-            {subtitle != null && (
-              <span className="text-text-secondary min-w-0 shrink truncate font-normal">
-                {subtitle}
-              </span>
-            )}
-          </span>
-          {failed && (
-            <span className="text-status-error shrink-0 font-normal">
-              {'· '}
-              {localize('com_ui_tool_failed')}
-            </span>
-          )}
-          <span className="ms-auto flex shrink-0 items-center gap-2">
-            <ChevronDown
-              className={cn(
-                disclosureChevronVariants({ expanded }),
-                'size-4 shrink-0 translate-y-[0.0625rem]',
-              )}
-              aria-hidden="true"
-            />
-          </span>
-        </Button>
-      </div>
-    </div>
   );
 }
 

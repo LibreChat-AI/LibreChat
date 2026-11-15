@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
+import { ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
 import { Tools, Constants, ContentTypes, isOpaqueReasoning } from 'librechat-data-provider';
-import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
 import {
   LoneGroupContext,
   SoleToolContext,
@@ -21,18 +21,17 @@ import {
   FOLD_RAIL_CLASSES,
   ROW_GLYPH_SLOT,
   FoldRail,
-  RailGlyph,
   useFoldPath,
   useRailHover,
   revealFoldHeader,
   FoldHeaderContext,
   FailedRevealContext,
-  FailedRevealPill,
   useFailedReveal,
   useFailedRevealTrigger,
   ToolAuthWarning,
   ToolAuthWarningContext,
   useExpandCollapse,
+  ToolGroupHeader,
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { ToolMeta } from '@librechat/chat';
@@ -43,7 +42,6 @@ import { cn, getPartKeyIndex, hasPendingAuthInPart } from '~/utils';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { PhaseLabel } from './ActivityPhaseGroup';
 import { HeaderActionSlotContext } from './slot';
 import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
@@ -648,24 +646,24 @@ export default function ToolCallGroup({
   return (
     <HeaderActionSlotContext.Provider value={flattenGroup ? parentActionSlot : actionSlot}>
       <div className="mt-1 mb-2" ref={rootRef} data-fold-root={flattenGroup ? undefined : ''}>
-        <div
-          className={cn(
-            'relative w-full items-center gap-2 pe-6',
-            flattenGroup ? 'hidden' : 'flex',
-          )}
+        <ToolGroupHeader
+          label={groupLabel}
+          detail={visibleGroupDetail}
+          ariaLabel={groupAriaLabel}
+          expanded={isExpanded}
           hidden={flattenGroup}
-          ref={headerRef}
-        >
-          <button
-            type="button"
-            className={cn(
-              'text-text-secondary hover:text-text-secondary focus-visible:ring-focus-subtle inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
-            )}
-            onClick={handleToggle}
-            aria-expanded={isExpanded}
-            aria-label={groupAriaLabel}
-          >
-            <RailGlyph hover={railHover}>
+          animate={smoothStreaming}
+          hover={railHover}
+          headerRef={headerRef}
+          actionSlotRef={setActionSlot}
+          onToggle={handleToggle}
+          failure={
+            !withinActivityPhase && !parentPhaseOwnsFailurePill
+              ? { count: activitySummary.failedCount, total: count, onReveal: handleRevealFailed }
+              : undefined
+          }
+          glyph={
+            <>
               {partialMarkerFallback && (
                 <TriangleAlert className="text-status-warning size-4 shrink-0" aria-hidden="true" />
               )}
@@ -695,39 +693,9 @@ export default function ToolCallGroup({
                     />
                   </div>
                 ))}
-            </RailGlyph>
-            <span
-              className="tool-status-text min-w-0 truncate font-medium"
-              role="status"
-              title={groupLabel}
-            >
-              <PhaseLabel text={groupLabel} animate={smoothStreaming} />
-            </span>
-            {visibleGroupDetail && (
-              <span
-                className="text-text-secondary max-w-[40%] min-w-0 truncate text-xs font-normal"
-                title={visibleGroupDetail}
-              >
-                · {visibleGroupDetail}
-              </span>
-            )}
-            <ChevronDown
-              className={cn(
-                'text-text-secondary absolute end-0 size-4 shrink-0 transition-transform duration-200 ease-out',
-                isExpanded && 'rotate-180',
-              )}
-              aria-hidden="true"
-            />
-          </button>
-          {!withinActivityPhase && !parentPhaseOwnsFailurePill && (
-            <FailedRevealPill
-              count={activitySummary.failedCount}
-              total={count}
-              onReveal={handleRevealFailed}
-            />
-          )}
-          <span ref={setActionSlot} className="flex shrink-0 items-center empty:hidden" />
-        </div>
+            </>
+          }
+        />
         <div
           style={flattenGroup ? undefined : expandStyle}
           onTransitionEnd={handleTransitionEnd}

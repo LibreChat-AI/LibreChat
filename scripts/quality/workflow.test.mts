@@ -32,6 +32,7 @@ interface Step {
   with?: Record<string, string | number | boolean>;
   env?: Record<string, string>;
   'working-directory'?: string;
+  'timeout-minutes'?: number;
 }
 interface Job {
   env?: Record<string, string>;
@@ -178,6 +179,27 @@ test('PR updates retain PostgreSQL contracts without starting source quality rep
   );
   assert.ok(prewarm > 0 && prewarm < report.steps.indexOf(runner));
   assert.equal(report.steps[prewarm].with?.['working-directory'], 'source');
+});
+
+test('API risk coverage provisions pinned host Redis before executing source tests', () => {
+  const provision = report.steps.findIndex(
+    ({ uses }) => uses === './tooling/.github/actions/redis-binaries',
+  );
+  const node = report.steps.findIndex(({ uses }) => uses === 'actions/setup-node@v5');
+  const tooling = report.steps.findIndex(({ name }) => name === 'Check out quality tooling');
+  assert.ok(provision > node && provision > tooling, 'trusted provisioning needs Node and tooling');
+  assert.ok(provision < report.steps.indexOf(runner), 'test fixtures need host Redis on PATH');
+  assert.equal(
+    report.steps[provision].if,
+    "matrix.workspace == 'api' && matrix.task.check == 'risk'",
+  );
+  assert.equal(report.steps[provision]['timeout-minutes'], 8);
+  assert.ok(
+    workflow.jobs.verify.steps.some(
+      ({ run }) => run === 'node --test .github/actions/redis-binaries/provision.test.mjs',
+    ),
+  );
+  assert.ok(workflow.on.pull_request?.paths.includes('.github/actions/redis-binaries/**'));
 });
 
 test('comment commands from humans and bots reach trusted admission before report jobs', () => {

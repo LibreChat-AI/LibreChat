@@ -242,6 +242,18 @@ module.exports = {
      * Declared as a peer dependency so the consumer's install provides it.
      */
     require('tailwindcss-animate'),
+    /** The fold's animation properties need distinct names: `ease-*` also controls transitions,
+     *  and the design parser reads the plugin's `fill-mode-*` utilities as SVG fill colors. */
+    {
+      handler: ({ addUtilities }) => {
+        addUtilities({
+          '.animation-ease-fold': {
+            animationTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)',
+          },
+          '.animation-fill-forwards': { animationFillMode: 'forwards' },
+        });
+      },
+    },
     /**
      * A bare function rather than `plugin()` from `tailwindcss/plugin`, because
      * this preset ships as a raw file through the `./tailwind-preset` export and

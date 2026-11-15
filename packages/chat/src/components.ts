@@ -17,6 +17,8 @@ export type {
 } from './components/Part';
 
 /** Composer: the chat input, its controls and the steering queue. */
+export { default as BrowserAudio } from './components/composer/Audio';
+export type { BrowserAudioProps } from './components/composer/Audio';
 export { default as StopButton } from './components/composer/StopButton';
 export { default as MentionItem } from './components/composer/MentionItem';
 export { default as MentionPopover } from './components/composer/popover/Mention';
@@ -124,6 +126,10 @@ export { default as MessageNav } from './components/messages/MessageNav';
 export type { MessageFooterProps } from './components/messages/MessageFooter';
 export { getMessageAriaLabel, getHeaderPrefixForScreenReader } from './components/messages/labels';
 
+export { default as PhaseLabel, FOLD_EASING } from './components/parts/PhaseLabel';
+export { default as ToolGroupHeader } from './components/parts/group/Header';
+export type { ToolGroupHeaderProps } from './components/parts/group/Header';
+
 /** Parts: the leaf components and row classes tool cards share. */
 export { default as Stdout } from './components/parts/Stdout';
 export { default as BareStatus } from './components/parts/BareStatus';
@@ -172,6 +178,10 @@ export { default as PendingSkillCall } from './components/parts/PendingSkillCall
 export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
 export { default as ToolCall } from './components/parts/ToolCall';
 export type { ToolCallProps } from './components/parts/ToolCall';
+export { default as ProgressText } from './components/parts/ProgressText';
+export type { ProgressTextProps } from './components/parts/ProgressText';
+export { default as SubagentCall } from './components/parts/SubagentCall';
+export type { SubagentCallProps, SubagentCallContext } from './components/parts/SubagentCall';
 export { default as ResumeAuthorHeader } from './components/parts/ResumeAuthorHeader';
 export { ToolAuthWarning, ToolAuthWarningContext } from './components/parts/auth';
 export { ToolPreparation, useToolPreparation } from './components/parts/preparation';
