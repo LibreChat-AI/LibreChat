@@ -3,6 +3,7 @@ import {
   channelSnowflakeSchema,
   discordInboxFenceSchema,
   discordInboxSubmissionSchema,
+  discordInboxResolutionSchema,
 } from 'librechat-data-provider';
 import type { RequestHandler, Response } from 'express';
 import type { DiscordInboxService } from './inbox';
@@ -12,7 +13,7 @@ import { acceptsChannelServiceToken } from '../service';
 export function createDiscordInboxHandlers(deps: {
   service: DiscordInboxService;
   serviceToken: () => string | undefined;
-}): Record<'submit' | 'claim' | 'finish' | 'defer', RequestHandler> {
+}): Record<'submit' | 'claim' | 'resolve' | 'finish' | 'defer', RequestHandler> {
   function handle<T>(
     schema: z.ZodType<T>,
     work: (input: T, res: Response) => Promise<void>,
@@ -54,6 +55,11 @@ export function createDiscordInboxHandlers(deps: {
         res.json(result);
       },
     ),
+    resolve: handle(discordInboxResolutionSchema, async (input, res) => {
+      const result = await deps.service.resolve(input);
+      if (!result) return void res.sendStatus(409);
+      res.json(result);
+    }),
     finish: handle(
       z
         .object({

@@ -20,10 +20,18 @@ and no internal channel, agent, or fabricated parent destination.
 Inspection claims return the inbox fence, expiration, application revision, and real
 guild/channel/actor IDs. They do not expose the interaction token or prompt. The same
 inbox lease, capacity bounds, expiration and opaque erasure receipts apply. Unresolved
-records cannot authorize command effects or prepare a reply.
+records cannot authorize command effects. An owned resolver may prepare only a fixed
+private unavailable reply without inventing a binding. That reply remains terminal and
+cannot later become executable work.
 
-The submission fallback and inspection resolver are intentionally not enabled in this
-protocol slice. A worker without the owned inspection adapter terminates such a claim
-as unavailable. Thread routing will be enabled only with owner-fenced source inspection
-and atomic canonical mapping resolution. Existing guild text submissions and prepared
+The protected `/service/inbox/resolve` endpoint accepts the exact inbox fence, current
+application owner and fresh thread source. The server derives the parent binding, joins
+the current owner and immutable mapping, and reserves execution once per lease epoch.
+Concurrent resolves cannot both execute. Lease reclamation increments the epoch and
+requires another source inspection, allowing recovery through the same durable loop.
+Prepared replies replay without re-executing a command.
+
+The submission fallback and thread executor are intentionally not composed in this
+protocol slice. A worker without the owned inspection adapter terminates an inspection
+claim as unavailable. Thread routing will be enabled with the admission and output fences. Existing guild text submissions and prepared
 reply delivery retain their current wire format.

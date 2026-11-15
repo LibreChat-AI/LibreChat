@@ -1,4 +1,8 @@
-import { discordInboxClaimSchema, discordInboxInspectionSchema } from './types/discordInbox';
+import {
+  discordInboxClaimSchema,
+  discordInboxInspectionSchema,
+  discordInboxResolutionSchema,
+} from './types/discordInbox';
 
 const inspection = {
   fence: {
@@ -45,4 +49,32 @@ it('preserves the existing prepared reply wire format', () => {
     reply: { content: 'Prepared' },
   };
   expect(discordInboxClaimSchema.parse(delivery)).toEqual(delivery);
+});
+
+it('binds resolution to the same application and rejects caller-selected tenant or lease expiry', () => {
+  const value = {
+    fence: inspection.fence,
+    owner: {
+      applicationId: inspection.fence.applicationId,
+      applicationRevision: 'revision',
+      ownerId: 'a'.repeat(32),
+    },
+    source: null,
+  };
+  expect(discordInboxResolutionSchema.parse(value)).toEqual(value);
+  expect(
+    discordInboxResolutionSchema.safeParse({
+      ...value,
+      owner: { ...value.owner, applicationId: '999999999999999999' },
+    }).success,
+  ).toBe(false);
+  expect(discordInboxResolutionSchema.safeParse({ ...value, tenantId: 'forged' }).success).toBe(
+    false,
+  );
+  expect(
+    discordInboxResolutionSchema.safeParse({
+      ...value,
+      owner: { ...value.owner, expiresAt: 2000000000000 },
+    }).success,
+  ).toBe(false);
 });

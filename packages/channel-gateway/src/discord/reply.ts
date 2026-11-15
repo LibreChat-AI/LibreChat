@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import { channelSnowflakeSchema, discordPrivateReplySchema } from 'librechat-data-provider';
-import type { DiscordPrivateReply } from 'librechat-data-provider';
+import type {
+  DiscordPrivateReply,
+  DiscordInboxInspection,
+  DiscordInboxDelivery,
+} from 'librechat-data-provider';
 import type { DiscordControlClient } from './control';
 import type { DiscordRatePermit } from './rates';
 import { DiscordRateCoordinator, DiscordRateQueueError } from './rates';
@@ -134,6 +138,10 @@ export async function deliverDiscordReply(
     control: Pick<DiscordControlClient, 'claim' | 'finish' | 'defer'>;
     reply: Pick<DiscordReplyClient, 'write'>;
     retryDelayMs: number;
+    inspect?: (
+      job: DiscordInboxInspection,
+      signal: AbortSignal,
+    ) => Promise<DiscordInboxDelivery | null>;
     now?: () => number;
   },
   signal: AbortSignal,
@@ -142,19 +150,32 @@ export async function deliverDiscordReply(
     throw new TypeError('Invalid Discord retry policy');
   const now = deps.now ?? Date.now;
   signal.throwIfAborted();
-  const job = await deps.control.claim(deps.applicationId, deps.owner, signal);
+  let job = await deps.control.claim(deps.applicationId, deps.owner, signal);
   if (!job) return false;
   signal.throwIfAborted();
   if (job.expiresAt <= now()) {
     await deps.control.finish(job.fence, 'expired', signal);
     return true;
   }
-  // No unresolved job can reach external delivery or execute without the owned preflight adapter.
-  if ('inspection' in job) {
-    await deps.control.finish(job.fence, 'unavailable', signal);
-    return true;
-  }
   try {
+    if ('inspection' in job) {
+      if (!deps.inspect) {
+        await deps.control.finish(job.fence, 'unavailable', signal);
+        return true;
+      }
+      const resolved = await deps.inspect(job, signal);
+      if (!resolved) return true;
+      if (
+        resolved.fence.applicationId !== job.fence.applicationId ||
+        resolved.fence.eventId !== job.fence.eventId ||
+        resolved.fence.owner !== job.fence.owner ||
+        resolved.fence.epoch !== job.fence.epoch ||
+        resolved.applicationRevision !== job.applicationRevision ||
+        resolved.expiresAt !== job.expiresAt
+      )
+        throw new Error('Discord inspection lease changed');
+      job = resolved;
+    }
     await deps.reply.write(
       deps.applicationId,
       job.token,

@@ -7,10 +7,12 @@ import type {
   DiscordThreadBinding,
 } from 'librechat-data-provider';
 import { createDiscordThreadStorage, touchDiscordThreadRoute } from './discordThread';
+import { createDiscordInboxResolutionStorage } from './discordInboxResolution';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createDiscordGatewayStorage } from './discordGateway';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createDiscordInstallationStorage } from './discord';
+import { createDiscordInboxStorage } from './discordInbox';
 import { createDiscordRouteStorage } from './discordRoute';
 import { createAgentChannelMethods } from './channel';
 import { laneKey } from './channelProtocol';
@@ -341,3 +343,204 @@ it('retains discoverable parents on erasure failure and clears private mappings 
     expect(await models.DiscordThreadPin.countDocuments()).toBe(1);
     expect(await models.DiscordApplication.exists({ applicationId })).toBeNull();
   }));
+
+describe('owned interaction preflight', () => {
+  const inbox = createDiscordInboxStorage(db);
+  const resolution = createDiscordInboxResolutionStorage(db);
+  async function job() {
+    const now = Date.now();
+    const eventId = '789012345678901234';
+    const input = {
+      routing: 'inspection' as const,
+      eventId,
+      applicationId,
+      applicationRevision: revision,
+      guildId,
+      installationId,
+      installationRevision,
+      externalChannelId: threadChannelId,
+      externalUserId: authorId,
+      action: { kind: 'ask' as const, prompt: 'Private original prompt' },
+      encryptedToken: 'sealed-token',
+      tokenHash: 'a'.repeat(64),
+      expiresAt: now + 900000,
+    };
+    unwrap(await inbox.submit(input, now));
+    const claimed = await inbox.claim(applicationId, 'worker', now);
+    if (!claimed) throw new Error('Missing pending job');
+    const route = unwrap(await threads.bind(owner(), source(), binding));
+    return {
+      now,
+      input,
+      claimed,
+      route,
+      fence: { applicationId, eventId, owner: 'worker', epoch: claimed.leaseEpoch },
+    };
+  }
+  it('resolves once per lease epoch and preserves original signed physical identity and dedup fingerprint', () =>
+    scoped(async () => {
+      const work = await job();
+      const results = await Promise.all([
+        resolution.resolve(work.fence, owner(), source(), work.route, work.now),
+        resolution.resolve(work.fence, owner(), source(), work.route, work.now),
+      ]);
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      expect(results.find((result) => !result.ok)).toEqual({
+        ok: false,
+        error: { code: 'stale_fence' },
+      });
+      const record = unwrap(results.find((result) => result.ok)!);
+      expect(record).toMatchObject({
+        routing: 'bound',
+        eventId: work.input.eventId,
+        applicationId,
+        applicationRevision: revision,
+        guildId,
+        externalChannelId: threadChannelId,
+        externalUserId: authorId,
+        action: work.input.action,
+        fingerprint: work.claimed.fingerprint,
+        encryptedToken: 'sealed-token',
+        channelId: binding.channelId,
+        channelRevision: binding.channelRevision,
+        agentId: 'agent',
+        thread: { parentChannelId, mappingRevision: work.route.mappingRevision },
+        inspectionEpoch: work.fence.epoch,
+      });
+      expect(
+        await resolution.unavailable(work.fence, owner(), 'different-reply', work.now),
+      ).toEqual({ ok: false, error: { code: 'stale_fence' } });
+      expect(await inbox.submit(work.input, work.now)).toMatchObject({
+        ok: true,
+        value: { duplicate: true },
+      });
+      expect(await inbox.defer(work.fence, work.now + 1000, work.now)).toBe(true);
+      const recovered = await inbox.claim(applicationId, 'replacement', work.now + 1000);
+      expect(recovered).toMatchObject({
+        routing: 'bound',
+        externalChannelId: threadChannelId,
+        thread: record.thread,
+      });
+      const next = { ...work.fence, owner: 'replacement', epoch: recovered!.leaseEpoch };
+      expect(
+        (await resolution.resolve(next, owner(), source(), work.route, work.now + 1000)).ok,
+      ).toBe(true);
+      expect(
+        (await resolution.resolve(work.fence, owner(), source(), work.route, work.now + 1000)).ok,
+      ).toBe(false);
+    }));
+  it('rejects a changed actor or physical destination before reserving execution', () =>
+    scoped(async () => {
+      const work = await job();
+      for (const changed of [
+        { authorId: parentChannelId },
+        { threadChannelId: authorId },
+        { guildId: parentChannelId },
+        { parentChannelId: authorId },
+      ])
+        expect(
+          await resolution.resolve(
+            work.fence,
+            owner(),
+            { ...source(), ...changed },
+            work.route,
+            work.now,
+          ),
+        ).toEqual({ ok: false, error: { code: 'authority_changed' } });
+      expect(
+        (await resolution.resolve(work.fence, owner(), source(), work.route, work.now)).ok,
+      ).toBe(true);
+    }));
+  it('prepares an immutable terminal unavailable reply without fabricating a channel binding', () =>
+    scoped(async () => {
+      const work = await job();
+      const prepared = unwrap(
+        await resolution.unavailable(work.fence, owner(), 'sealed-unavailable', work.now),
+      );
+      expect(prepared).toMatchObject({
+        routing: 'inspection',
+        state: 'reply',
+        encryptedReply: 'sealed-unavailable',
+      });
+      expect(prepared).not.toHaveProperty('channelId');
+      expect(
+        unwrap(await resolution.unavailable(work.fence, owner(), 'replacement', work.now))
+          .encryptedReply,
+      ).toBe('sealed-unavailable');
+      expect(
+        (await resolution.resolve(work.fence, owner(), source(), work.route, work.now)).ok,
+      ).toBe(false);
+      const reply = await inbox.claim(applicationId, 'next-worker', work.now + 30000);
+      expect(reply).toMatchObject({
+        state: 'reply',
+        routing: 'inspection',
+        encryptedReply: 'sealed-unavailable',
+      });
+    }));
+  it('rejects expired inbox leases and lost application ownership for inspection, resolution and unavailable replies', () =>
+    scoped(async () => {
+      const work = await job();
+      expect(await resolution.inspect(work.fence, owner(), work.now + 30000)).toBeNull();
+      expect(
+        (await resolution.resolve(work.fence, owner(), source(), work.route, work.now + 30000)).ok,
+      ).toBe(false);
+      expect(
+        (await resolution.unavailable(work.fence, owner(), 'sealed', work.now + 30000)).ok,
+      ).toBe(false);
+      expect(await gateway.release(owner())).toBe(true);
+      expect(await resolution.inspect(work.fence, owner(), work.now)).toBeNull();
+      expect(
+        (await resolution.resolve(work.fence, owner(), source(), work.route, work.now)).ok,
+      ).toBe(false);
+      expect((await resolution.unavailable(work.fence, owner(), 'sealed', work.now)).ok).toBe(
+        false,
+      );
+    }));
+  it('does not expose a bound prepared reply through resolution after the parent route is revoked', () =>
+    scoped(async () => {
+      const work = await job();
+      unwrap(await resolution.resolve(work.fence, owner(), source(), work.route, work.now));
+      unwrap(await inbox.prepareReply(work.fence, 'sealed-private-reply', work.now));
+      unwrap(
+        await routes.remove({
+          actorId: userId,
+          installationId,
+          externalChannelId: parentChannelId,
+          expectedRevision: binding.routeRevision,
+        }),
+      );
+      expect(await resolution.inspect(work.fence, owner(), work.now)).toBeNull();
+      expect((await resolution.unavailable(work.fence, owner(), 'replacement', work.now)).ok).toBe(
+        false,
+      );
+    }));
+  it('fences parent replacement and source permissions without exposing stored prompts across tenants', () =>
+    scoped(async () => {
+      const work = await job();
+      expect(
+        await scoped(() => resolution.inspect(work.fence, owner(), work.now), 'other-tenant'),
+      ).toBeNull();
+      expect(
+        (
+          await resolution.resolve(
+            work.fence,
+            owner(),
+            { ...source(), locked: true },
+            work.route,
+            work.now,
+          )
+        ).ok,
+      ).toBe(false);
+      unwrap(
+        await routes.remove({
+          actorId: userId,
+          installationId,
+          externalChannelId: parentChannelId,
+          expectedRevision: binding.routeRevision,
+        }),
+      );
+      expect(
+        (await resolution.resolve(work.fence, owner(), source(), work.route, work.now)).ok,
+      ).toBe(false);
+    }));
+});

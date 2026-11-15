@@ -2,6 +2,7 @@ import type { DiscordInboxDelivery } from 'librechat-data-provider';
 import { DiscordReplyClient, deliverDiscordReply } from './reply';
 import { DiscordControlClient } from './control';
 import { DiscordRateCoordinator } from './rates';
+import { DiscordWriteError } from './client';
 
 const applicationId = '123456789012345678';
 const eventId = '234567890123456789';
@@ -224,4 +225,121 @@ it('cannot deliver an unresolved source claim before the owned inspection adapte
     fence: job.fence,
     result: 'unavailable',
   });
+});
+
+it('inspects once before delivering the exact prepared reply without replacing the physical lease', async () => {
+  const inspection = {
+    fence: job.fence,
+    applicationRevision: job.applicationRevision,
+    expiresAt: job.expiresAt,
+    inspection: {
+      guildId: '345678901234567890',
+      externalChannelId: '456789012345678901',
+      externalUserId: '567890123456789012',
+    },
+  };
+  transport.mockImplementation(async (url) => {
+    if (String(url).endsWith('/claim')) return Response.json(inspection);
+    if (String(url).endsWith('/resolve')) return Response.json(job);
+    if (String(url).endsWith('/finish')) return new Response(null, { status: 204 });
+    if (String(url).startsWith('https://discord.com')) return discord();
+    throw new Error('Unexpected endpoint');
+  });
+  const inspect = jest.fn(async (value: typeof inspection, signal: AbortSignal) =>
+    control.resolve(
+      {
+        fence: value.fence,
+        owner: {
+          applicationId,
+          applicationRevision: job.applicationRevision,
+          ownerId: 'a'.repeat(32),
+        },
+        source: null,
+      },
+      signal,
+    ),
+  );
+  expect(
+    await deliverDiscordReply(
+      {
+        applicationId,
+        owner: 'worker',
+        control,
+        reply,
+        retryDelayMs: 1000,
+        now: () => now,
+        inspect,
+      },
+      controller.signal,
+    ),
+  ).toBe(true);
+  expect(inspect).toHaveBeenCalledTimes(1);
+  expect(calls('/webhooks/')).toHaveLength(1);
+  expect(calls('/resolve')).toHaveLength(1);
+});
+it('defers failed source reads as reads without marking a bot write uncertain', async () => {
+  const inspection = {
+    fence: job.fence,
+    applicationRevision: job.applicationRevision,
+    expiresAt: job.expiresAt,
+    inspection: {
+      guildId: '345678901234567890',
+      externalChannelId: '456789012345678901',
+      externalUserId: '567890123456789012',
+    },
+  };
+  transport.mockImplementation(async (url) =>
+    String(url).endsWith('/claim')
+      ? Response.json(inspection)
+      : new Response(null, { status: 204 }),
+  );
+  const inspect = jest.fn(async () => {
+    throw new DiscordWriteError('retryable', 2000);
+  });
+  expect(
+    await deliverDiscordReply(
+      {
+        applicationId,
+        owner: 'worker',
+        control,
+        reply,
+        retryDelayMs: 1000,
+        now: () => now,
+        inspect,
+      },
+      controller.signal,
+    ),
+  ).toBe(true);
+  expect(calls('/webhooks/')).toHaveLength(0);
+  expect(calls('/defer')).toHaveLength(1);
+  expect(JSON.parse(calls('/defer')[0][1].body).retryAt).toBe(now + 2000);
+});
+it('rejects an inspection callback that returns another physical event or deadline', async () => {
+  const inspection = {
+    fence: job.fence,
+    applicationRevision: job.applicationRevision,
+    expiresAt: job.expiresAt,
+    inspection: {
+      guildId: '345678901234567890',
+      externalChannelId: '456789012345678901',
+      externalUserId: '567890123456789012',
+    },
+  };
+  transport.mockImplementation(async () => Response.json(inspection));
+  const inspect = async () => ({ ...job, expiresAt: job.expiresAt + 1 });
+  await expect(
+    deliverDiscordReply(
+      {
+        applicationId,
+        owner: 'worker',
+        control,
+        reply,
+        retryDelayMs: 1000,
+        now: () => now,
+        inspect,
+      },
+      controller.signal,
+    ),
+  ).rejects.toThrow('lease changed');
+  expect(calls('/webhooks/')).toHaveLength(0);
 });

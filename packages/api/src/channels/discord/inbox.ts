@@ -1,13 +1,27 @@
 import { createHash } from 'node:crypto';
 import { tenantStorage } from '@librechat/data-schemas';
-import { discordInboxSubmissionSchema, discordPrivateReplySchema } from 'librechat-data-provider';
+import {
+  discordInboxResolutionSchema,
+  discordInboxSubmissionSchema,
+  discordPrivateReplySchema,
+} from 'librechat-data-provider';
 import type {
   DiscordInboxSubmission,
   DiscordInboxFence,
   DiscordInboxClaim,
+  DiscordInboxDelivery,
+  DiscordInboxResolution,
+  DiscordGatewayOwner,
+  DiscordGuildThreadSource,
   DiscordPrivateReply,
 } from 'librechat-data-provider';
-import type { DiscordInboxStorage, DiscordInboxRecord } from '@librechat/data-schemas';
+import type {
+  DiscordInboxStorage,
+  DiscordInboxRecord,
+  DiscordInboxLeaseRecord,
+  DiscordInboxResolutionStorage,
+  DiscordThreadStorage,
+} from '@librechat/data-schemas';
 import type { DiscordRouteResolver } from './routes';
 
 /** Discord timestamps are encoded in globally unique snowflakes, not supplied by a client clock. */
@@ -22,6 +36,15 @@ export interface DiscordInboxServiceDependencies {
   decrypt: (value: string) => Promise<string>;
   execute: (record: DiscordInboxRecord, fence: DiscordInboxFence) => Promise<DiscordPrivateReply>;
   retryDelayMs: () => Promise<number>;
+  inspection?: {
+    storage: DiscordInboxResolutionStorage;
+    threads: Pick<DiscordThreadStorage, 'bind'>;
+    execute: (
+      record: DiscordInboxRecord,
+      fence: DiscordInboxFence,
+      context: { owner: DiscordGatewayOwner; source: DiscordGuildThreadSource },
+    ) => Promise<DiscordPrivateReply>;
+  };
   now?: () => number;
 }
 
@@ -32,6 +55,37 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
     const app = await deps.resolver.security(applicationId);
     if (!app) return absent;
     return tenantStorage.run({ tenantId: app.tenantId === '_' ? undefined : app.tenantId }, run);
+  }
+  async function delivery(
+    record: DiscordInboxLeaseRecord,
+    fence: DiscordInboxFence,
+  ): Promise<DiscordInboxDelivery | null> {
+    if (!record.encryptedReply || !record.encryptedToken)
+      throw new Error('Discord inbox payload unavailable');
+    const [token, reply] = await Promise.all([
+      deps.decrypt(record.encryptedToken),
+      deps.decrypt(record.encryptedReply),
+    ]);
+    if (record.expiresAt <= now()) {
+      await deps.storage.finish(fence, 'expired', now());
+      return null;
+    }
+    return {
+      fence,
+      applicationRevision: record.applicationRevision,
+      token,
+      expiresAt: record.expiresAt,
+      reply: discordPrivateReplySchema.parse(JSON.parse(reply)),
+    };
+  }
+  async function deferFailure(fence: DiscordInboxFence, expiresAt: number): Promise<void> {
+    if (expiresAt <= now()) await deps.storage.finish(fence, 'expired', now());
+    else {
+      const delay = await deps.retryDelayMs();
+      if (!Number.isSafeInteger(delay) || delay <= 0)
+        throw new TypeError('Invalid inbox retry delay');
+      await deps.storage.defer(fence, now() + delay, now());
+    }
   }
   return {
     async submit(input: DiscordInboxSubmission): ReturnType<DiscordInboxStorage['submit']> {
@@ -74,7 +128,7 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
           if (!record) return null;
           const fence = { applicationId, eventId: record.eventId, owner, epoch: record.leaseEpoch };
           try {
-            if (record.routing === 'inspection')
+            if (record.state === 'processing' && (record.routing === 'inspection' || record.thread))
               return {
                 fence,
                 applicationRevision: record.applicationRevision,
@@ -85,7 +139,7 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
                   externalUserId: record.externalUserId,
                 },
               };
-            if (record.state === 'processing') {
+            if (record.state === 'processing' && record.routing !== 'inspection') {
               const reply = discordPrivateReplySchema.parse(await deps.execute(record, fence));
               const prepared = await deps.storage.prepareReply(
                 fence,
@@ -102,31 +156,81 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
               }
               record = prepared.value;
             }
-            if (!record.encryptedReply || !record.encryptedToken)
-              throw new Error('Discord inbox payload unavailable');
-            const [token, reply] = await Promise.all([
-              deps.decrypt(record.encryptedToken),
-              deps.decrypt(record.encryptedReply),
-            ]);
-            if (record.expiresAt <= now()) {
-              await deps.storage.finish(fence, 'expired', now());
-              return null;
-            }
-            return {
-              fence,
-              applicationRevision: record.applicationRevision,
-              token,
-              expiresAt: record.expiresAt,
-              reply: discordPrivateReplySchema.parse(JSON.parse(reply)),
-            };
+            return await delivery(record, fence);
           } catch (error) {
-            if (record.expiresAt <= now()) await deps.storage.finish(fence, 'expired', now());
-            else {
-              const delay = await deps.retryDelayMs();
-              if (!Number.isSafeInteger(delay) || delay <= 0)
-                throw new TypeError('Invalid inbox retry delay');
-              await deps.storage.defer(fence, now() + delay, now());
-            }
+            await deferFailure(fence, record.expiresAt);
+            throw error;
+          }
+        },
+        null,
+      );
+    },
+    async resolve(input: DiscordInboxResolution): Promise<DiscordInboxDelivery | null> {
+      const parsed = discordInboxResolutionSchema.parse(input);
+      const inspection = deps.inspection;
+      if (!inspection) return null;
+      const { fence, owner, source } = parsed;
+      return scope(
+        fence.applicationId,
+        async () => {
+          const record = await inspection.storage.inspect(fence, owner, now());
+          if (!record) return null;
+          try {
+            if (record.state === 'reply') return await delivery(record, fence);
+            const unavailable = async (): Promise<DiscordInboxDelivery | null> => {
+              const prepared = await inspection.storage.unavailable(
+                fence,
+                owner,
+                await deps.encrypt(
+                  JSON.stringify({
+                    content:
+                      'This thread is unavailable. Run the command again in an accessible active thread.',
+                  }),
+                ),
+                now(),
+              );
+              return prepared.ok ? await delivery(prepared.value, fence) : null;
+            };
+            if (
+              !source ||
+              source.applicationId !== record.applicationId ||
+              source.guildId !== record.guildId ||
+              source.threadChannelId !== record.externalChannelId ||
+              source.authorId !== record.externalUserId
+            )
+              return await unavailable();
+            const parent = await deps.resolver.resolve({
+              applicationId: record.applicationId,
+              guildId: record.guildId,
+              externalChannelId: source.parentChannelId,
+              expectedApplicationRevision: record.applicationRevision,
+            });
+            if (!parent) return await unavailable();
+            const mapping = await inspection.threads.bind(owner, source, {
+              channelId: parent.channelId,
+              channelRevision: parent.channelRevision,
+              routeRevision: parent.routeRevision,
+            });
+            if (!mapping.ok) return await unavailable();
+            const resolved = await inspection.storage.resolve(
+              fence,
+              owner,
+              source,
+              mapping.value,
+              now(),
+            );
+            if (!resolved.ok) return null;
+            const reply = discordPrivateReplySchema.parse(
+              await inspection.execute(resolved.value, fence, { owner, source }),
+            );
+            const prepared = await deps.storage.prepareReply(
+              fence,
+              await deps.encrypt(JSON.stringify(reply)),
+              now(),
+            );
+            return prepared.ok ? await delivery(prepared.value, fence) : null;
+          } catch (error) {
+            await deferFailure(fence, record.expiresAt);
             throw error;
           }
         },
