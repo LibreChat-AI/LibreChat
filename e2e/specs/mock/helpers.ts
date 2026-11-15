@@ -50,6 +50,14 @@ export const modelSelectorTrigger = (page: Page) =>
 
 export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * Whether a computed color paints nothing. Only a four-part `rgba()` whose last part is zero
+ * does: matching a bare trailing `, 0)` also catches opaque black, `rgb(0, 0, 0)`, and every
+ * color with no blue in it.
+ */
+export const isTransparentColor = (color: string) =>
+  color === 'transparent' || /^rgba\(.*,\s*0\)$/.test(color);
+
 /** Open the model selector, choose an endpoint, then its model (committed on the model click). */
 export async function selectMockEndpoint(page: Page, endpoint: MockEndpoint) {
   const trigger = modelSelectorTrigger(page);
