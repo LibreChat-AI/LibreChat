@@ -2,6 +2,7 @@ import { Schema } from 'mongoose';
 import type { IResourceLock } from '~/types';
 
 const resourceLockSchema: Schema<IResourceLock> = new Schema<IResourceLock>({
+  fenceWrites: { type: Number },
   key: {
     type: String,
     required: true,
