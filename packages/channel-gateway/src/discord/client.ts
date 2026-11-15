@@ -5,21 +5,17 @@ import {
   discordGuildTextSourceSchema,
   discordGuildTextPermissions,
 } from 'librechat-data-provider';
+import type { DiscordGuildTextSource, DiscordGuildThreadSource } from 'librechat-data-provider';
 import type { APIActionRowComponent, APIButtonComponent } from 'discord-api-types/v10';
-import type { DiscordGuildTextSource } from 'librechat-data-provider';
+import type { DiscordThreadInspection } from './thread';
+import type { DiscordWriteOutcome } from './errors';
 import type { DiscordRatePermit } from './rates';
 import { DiscordRateCoordinator, DiscordRateQueueError } from './rates';
+import { inspectDiscordThread } from './thread';
+import { DiscordWriteError } from './errors';
 
-export type DiscordWriteOutcome = 'permanent' | 'retryable' | 'unknown';
-export class DiscordWriteError extends Error {
-  constructor(
-    readonly outcome: DiscordWriteOutcome,
-    readonly retryAfterMs = 0,
-    readonly status?: number,
-  ) {
-    super('Discord operation was not confirmed');
-  }
-}
+export { DiscordWriteError } from './errors';
+export type { DiscordWriteOutcome } from './errors';
 export interface DiscordClientOptions {
   botToken: string;
   timeoutMs: number;
@@ -233,6 +229,22 @@ export class DiscordClient {
     } catch (error) {
       if (error instanceof DiscordWriteError && [403, 404].includes(error.status ?? 0)) return null;
       throw error;
+    }
+  }
+  /** Fresh roles/overwrites and exact private membership, never cached permission grants. */
+  async inspectGuildThreadSource(
+    input: DiscordThreadInspection,
+    signal?: AbortSignal,
+  ): Promise<DiscordGuildThreadSource | null> {
+    const lifetime = new AbortController();
+    const inspectionSignal = AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]);
+    try {
+      return await inspectDiscordThread(input, (path) =>
+        this.request('GET', path, undefined, inspectionSignal),
+      );
+    } finally {
+      // An early failed projection must not leave sibling requests queued behind a rate limit.
+      lifetime.abort();
     }
   }
   async createMessage(

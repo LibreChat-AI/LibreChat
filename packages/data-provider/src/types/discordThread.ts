@@ -51,10 +51,11 @@ export function discordThreadUsable(value: DiscordGuildThreadSource): boolean {
   const parsed = discordGuildThreadSourceSchema.safeParse(value);
   if (!parsed.success || parsed.data.archived || parsed.data.locked) return false;
   const source = parsed.data;
-  const required = BigInt(1024 | 65536) | (BigInt(1) << BigInt(38));
+  const botRequired = BigInt(1024 | 65536) | (BigInt(1) << BigInt(38));
   return (['bot', 'author'] as const).every((actor) => {
     const bits = BigInt(source.permissions[actor]);
     const admin = (bits & BigInt(8)) !== BigInt(0);
+    const required = actor === 'bot' ? botRequired : BigInt(1024);
     if (!admin && (bits & required) !== required) return false;
     return (
       source.threadType !== 12 ||
