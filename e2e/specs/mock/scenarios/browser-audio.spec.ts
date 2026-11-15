@@ -36,7 +36,7 @@ test.afterAll(async () => {
   await deleteConversations(createdConversationIds);
 });
 
-/** Keep native utterances and the real app; replace only the operating system speech service. */
+/** Replace the Web Speech boundary; native utterances reject service-fake voice objects. */
 async function openChat(page: Page, voicesReady = true) {
   await page.addInitScript((ready) => {
     for (const [key, value] of Object.entries({
@@ -60,7 +60,22 @@ async function openChat(page: Page, voicesReady = true) {
     };
     let available = ready;
     let fail = false;
-    let current: SpeechSynthesisUtterance | null = null;
+    class Utterance extends EventTarget {
+      voice: SpeechSynthesisVoice | null = null;
+      onend: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+
+      constructor(public text: string) {
+        super();
+        this.addEventListener('end', (event) => this.onend?.(event));
+        this.addEventListener('error', (event) => this.onerror?.(event));
+      }
+    }
+    Object.defineProperty(window, 'SpeechSynthesisUtterance', {
+      configurable: true,
+      value: Utterance,
+    });
+    let current: Utterance | null = null;
     const record = (type: SpeechEvent['type']) => {
       window.browserAudio.events.push({ type, path: location.pathname });
     };
@@ -94,7 +109,7 @@ async function openChat(page: Page, voicesReady = true) {
         },
         addEventListener: target.addEventListener.bind(target),
         removeEventListener: target.removeEventListener.bind(target),
-        speak: (utterance: SpeechSynthesisUtterance) => {
+        speak: (utterance: Utterance) => {
           current = utterance;
           window.browserAudio.activeText = utterance.text;
           window.browserAudio.spoken.push(utterance.text);
