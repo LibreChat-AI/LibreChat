@@ -28,6 +28,12 @@ export interface ChannelAuthorityDependencies {
   getConfig: (user: IUser) => Promise<Pick<ChannelConfig, 'enabled'>>;
   enrollmentRequired?: typeof isTwoFactorEnrollmentRequired;
   identityStorage: ChannelIdentityStorage;
+  /** Canonical native reference check, separate from fresh external source grants. */
+  authorizeDestination?: (
+    channel: AgentChannelRecord,
+    admission: ChannelRunAdmission,
+    principal: ChannelRunPrincipal,
+  ) => Promise<boolean>;
   findUser: (userId: string) => Promise<IUser | null>;
   getRole: (role: string) => Promise<IRole | null>;
   isPrincipalActive: (userId: string) => Promise<boolean>;
@@ -70,6 +76,7 @@ export interface ChannelAuthority {
   resolvePrincipal(
     channel: AgentChannelRecord,
     actor: ChannelRunAdmission['actor'],
+    admission?: ChannelRunAdmission,
   ): Promise<ChannelRunPrincipal | null>;
 }
 
@@ -128,16 +135,32 @@ export function createChannelAuthority(deps: ChannelAuthorityDependencies): Chan
   async function resolvePrincipal(
     channel: AgentChannelRecord,
     actor: ChannelRunAdmission['actor'],
+    admission?: ChannelRunAdmission,
   ): Promise<ChannelRunPrincipal | null> {
     if (!channelActorMatchesChannel(channel, actor)) return null;
     const linked = await identity.resolve(channelExternalIdentity(channel, actor.externalUserId));
     if (!linked.ok) return null;
-    return {
+    const principal = {
       userId: linked.value.userId,
       channelRevision: channel.revision,
       linkId: linked.value.linkId,
       linkRevision: linked.value.revision,
     };
+    if (admission) {
+      if (
+        channel.type === 'discord' &&
+        !admission.discordDestination &&
+        admission.externalChannelId !== channel.discord.externalChannelId
+      )
+        return null;
+      if (
+        admission.discordDestination &&
+        (!deps.authorizeDestination ||
+          !(await deps.authorizeDestination(channel, admission, principal)))
+      )
+        return null;
+    }
+    return principal;
   }
   return { identity, resolvePrincipal };
 }

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { randomBytes, randomUUID } from 'crypto';
 import { discordConfirmationControl, parseDiscordControl } from 'librechat-data-provider';
-import type { DiscordAgentChannel } from 'librechat-data-provider';
+import type { DiscordAgentChannel, DiscordGatewayOwner } from 'librechat-data-provider';
 import {
   GUILDS,
   inOrg,
@@ -25,10 +25,18 @@ test('Discord authority preserves binding and fences linked admission @scenario:
     const tenantId = world.org();
     const [owner, user] = await Promise.all([world.member(tenantId), world.member(tenantId)]);
     const app = world.app();
+    const nativeOwnerId = randomBytes(16).toString('hex');
+    let nativeOwner: DiscordGatewayOwner | undefined;
     await inOrg(tenantId, async () => {
-      const { store, methods, identities, runs, routes, inbox } = world;
+      const { store, methods, identities, runs, routes, inbox, gateway } = world;
       type Enrollment = Parameters<typeof runs.admit>[0];
       const configured = ok(await store.configureApplication({ actorId: owner, ...app }));
+      nativeOwner = {
+        applicationId: app.applicationId,
+        applicationRevision: configured.revision,
+        ownerId: nativeOwnerId,
+      };
+      expect(await gateway.acquire(nativeOwner, 120_000)).toBe(true);
       const guildId = snowflake();
       const installed = ok(
         await store.connectGuild({
@@ -179,13 +187,35 @@ test('Discord authority preserves binding and fences linked admission @scenario:
         eventAtMs = Math.max(Date.now(), eventAtMs + 1);
         return eventAtMs;
       };
-      const event = (applicationRevision = configured.revision): Enrollment => {
+      const event = (
+        applicationRevision = configured.revision,
+        authorityChannelId = externalChannelId,
+      ): Enrollment => {
         const eventId = String(BigInt(clock() - 1420070400000) << BigInt(22));
         return {
           tenantId,
           channelId: channel.channelId,
           agentId: channel.agentId,
           applicationRevision,
+          discordAuthority: {
+            kind: 'guild_text',
+            owner: {
+              applicationId: app.applicationId,
+              applicationRevision,
+              ownerId: nativeOwnerId,
+            },
+            source: {
+              kind: 'guild_text',
+              applicationId: app.applicationId,
+              guildId,
+              channelId: authorityChannelId,
+              botUserId: app.botUserId,
+              authorId: identity.externalUserId,
+              authorMember: true,
+              permissions: '68608',
+              authorPermissions: '1024',
+            },
+          },
           principal: {
             userId: user,
             channelRevision: channel.revision,
@@ -211,6 +241,10 @@ test('Discord authority preserves binding and fences linked admission @scenario:
       const refused = async (input: Enrollment) => {
         await expect(admit(input)).rejects.toMatchObject({ code: 'invalid_transition' });
       };
+      const unowned = event();
+      expect(await gateway.release(nativeOwner)).toBe(true);
+      await refused(unowned);
+      expect(await gateway.acquire(nativeOwner, 120_000)).toBe(true);
       const first = event();
       const admitted = await admit(first);
       expect(admitted.duplicate).toBe(false);
@@ -234,8 +268,8 @@ test('Discord authority preserves binding and fences linked admission @scenario:
           },
         },
       });
-      const wrong = event();
       const otherDestination = snowflake();
+      const wrong = event(configured.revision, otherDestination);
       await refused({
         ...wrong,
         admission: {
@@ -288,6 +322,9 @@ test('Discord authority preserves binding and fences linked admission @scenario:
           ).toBe(false);
         },
       );
+      expect(await gateway.release(nativeOwner)).toBe(true);
+      nativeOwner = { ...nativeOwner, applicationRevision: rotatedRevision };
+      expect(await gateway.acquire(nativeOwner, 120_000)).toBe(true);
       const current = await methods.getActiveAgentChannel(channel.channelId);
       expect(current?.applicationRevision).toBe(rotatedRevision);
       expect(current?.encryptedBotToken === rotatedToken).toBe(true);
@@ -360,6 +397,9 @@ test('Discord authority preserves binding and fences linked admission @scenario:
         status: 'deleting',
       });
       expect(await identities.readChannelIdentity(identity)).toBeNull();
+    }).finally(async () => {
+      const owner = nativeOwner;
+      if (owner) await inOrg(tenantId, () => world.gateway.release(owner));
     });
   });
 });

@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { DiscordAgentChannel } from 'librechat-data-provider';
 import type { AssignDiscordRoute, DiscordRouteResult } from './discordRoute';
+import { waitForPause, discordTextAuthority, ownDiscordAuthority } from './test-helpers';
 import { tenantStorage, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { withRequiredTransaction } from '~/utils/transactions';
@@ -11,7 +12,6 @@ import { touchDiscordRoute } from './discordRouteScope';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
 import { closeResponseScopes } from './responseScope';
-import { waitForPause } from './test-helpers';
 import { createModels } from '~/models';
 
 const db = new mongoose.Mongoose();
@@ -78,11 +78,30 @@ async function event(channelId = 'first') {
       applicationRevision,
     ),
   ).toBe(true);
+  const discordAuthority = discordTextAuthority({
+    applicationId,
+    applicationRevision,
+    botUserId,
+    guildId,
+    channelId: externalChannelId,
+    authorId: identity.externalUserId,
+  });
+  await ownDiscordAuthority(db, discordAuthority.owner);
+  await db.models.ChannelIdentity.updateOne(
+    { linkId: `link-${channelId}` },
+    {
+      $set: {
+        discordActivatedAtMs:
+          Number(BigInt('678901234567890123') >> BigInt(22)) + 1420070400000 - 1,
+      },
+    },
+  );
   return {
     tenantId,
     channelId,
     agentId: channel.agentId,
     applicationRevision,
+    discordAuthority,
     principal: {
       userId: member,
       channelRevision: channel.revision,
@@ -130,6 +149,7 @@ beforeEach(async () => {
       'DiscordRoute',
       'AgentChannel',
       'ChannelScope',
+      'ResourceLock',
       'ChannelIdentity',
       'ChannelRun',
       'ChannelLane',
@@ -331,10 +351,10 @@ it('blocks admission that races a replacement already closing the old scope', ()
     });
     const replacement = routes().assign({ ...next, expectedRevision: initial.revision });
     await waitForPause(entered.wait, replacement);
-    const fences = db.models.ChannelScope.collection;
-    const touch = fences.updateOne.bind(fences);
-    const observe = jest.spyOn(fences, 'updateOne').mockImplementation(async (...args) => {
-      if (!Array.isArray(args[1]) && args[1].$inc?.revision === 1) attempted.release();
+    const fences = db.models.DiscordApplication.collection;
+    const touch = fences.findOneAndUpdate.bind(fences);
+    const observe = jest.spyOn(fences, 'findOneAndUpdate').mockImplementation(async (...args) => {
+      if (!Array.isArray(args[1]) && args[1].$inc?.authorityWrites === 1) attempted.release();
       return touch(...args);
     });
     const admitting = runs().admit(admission, Date.now());

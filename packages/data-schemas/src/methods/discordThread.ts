@@ -20,6 +20,7 @@ import type { ClientSession } from 'mongoose';
 import type { DiscordThreadRouteRecord } from '~/models/discordThread';
 import { createDiscordThreadRouteModel, createDiscordThreadPinModel } from '~/models/discordThread';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { createDiscordApplicationModel } from '~/models/discord';
 import { createDiscordRouteModel } from '~/models/discordRoute';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { touchDiscordGatewayOwner } from './discordGateway';
@@ -255,7 +256,7 @@ export async function touchDiscordThreadBinding(
   scope: {
     tenantId?: string;
     applicationId: string;
-    applicationRevision: string;
+    applicationRevision?: string;
     channelId: string;
     channelRevision: string;
     externalChannelId: string;
@@ -276,7 +277,29 @@ export async function touchDiscordThreadBinding(
     })
     .session(session)
     .lean();
-  if (!row || !(await currentMapping(mongoose, scope, row, session))) return false;
+  if (!row) return false;
+  const applicationRevision =
+    scope.applicationRevision ??
+    (
+      await createDiscordApplicationModel(mongoose)
+        .findOne({ tenantId: tenant() ?? null, applicationId: scope.applicationId })
+        .select('revision')
+        .session(session)
+        .lean()
+    )?.revision;
+  if (
+    !applicationRevision ||
+    !(await currentMapping(
+      mongoose,
+      {
+        applicationId: scope.applicationId,
+        applicationRevision,
+      },
+      row,
+      session,
+    ))
+  )
+    return false;
   const result = await createDiscordThreadRouteModel(mongoose).updateOne(
     {
       tenantId: tenant() ?? null,

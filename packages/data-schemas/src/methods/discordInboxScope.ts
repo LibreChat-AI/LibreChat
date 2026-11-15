@@ -13,6 +13,7 @@ export async function touchDiscordInbox(
     channelId: string;
     externalUserId: string;
     applicationRevision: string;
+    externalChannelId?: string;
   },
   fence: DiscordInboxFence,
   now: number,
@@ -26,6 +27,9 @@ export async function touchDiscordInbox(
       tenantId: !scope.tenantId || scope.tenantId === '_' ? null : scope.tenantId,
       channelId: scope.channelId,
       externalUserId: scope.externalUserId,
+      ...(scope.externalChannelId !== undefined
+        ? { externalChannelId: scope.externalChannelId }
+        : {}),
       applicationRevision: scope.applicationRevision,
       applicationId: fence.applicationId,
       eventId: fence.eventId,

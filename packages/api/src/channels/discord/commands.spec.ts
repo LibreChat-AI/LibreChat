@@ -357,6 +357,7 @@ it('freezes cancellation across a replay even if another run is admitted later',
         agentId: channel.agentId,
         applicationRevision,
         principal: first.principal,
+        discordAuthority: native(job.record),
         admission: {
           ...first.admission,
           eventId: eventId(),

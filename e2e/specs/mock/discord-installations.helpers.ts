@@ -12,6 +12,7 @@ import {
   touchDiscordInstallation,
   createDiscordRouteStorage,
   createDiscordInboxStorage,
+  createDiscordGatewayStorage,
   createChannelIdentityStorage,
   createDiscordInstallationStorage,
 } from '@librechat/data-schemas';
@@ -123,6 +124,10 @@ async function open() {
     runs: createChannelRunStorage(mongo),
     routes: createDiscordRouteStorage(mongo),
     inbox: createDiscordInboxStorage(mongo),
+    gateway: createDiscordGatewayStorage(mongo, async () => ({
+      ownershipLeaseMs: 120_000,
+      shardCount: 1,
+    })),
     channel(tenantId: string): string {
       const channelId = `discord-e2e-${randomUUID()}`;
       made.channels.push({ tenantId, channelId });
