@@ -62,7 +62,7 @@ The existing Discord social-login strategy and `DISCORD_CLIENT_ID`, `DISCORD_CLI
 
 ## 3. User experience and acceptance contract
 
-An organization administrator enables Discord and registers an application using its application ID, public key, and bot token. The UI returns an interaction endpoint and an installation URL. Secrets are write-only after submission. A manager connects an authorized guild, and an agent editor binds an eligible text channel to an agent.
+An organization administrator enables Discord and registers an application using its application ID, bot token and OAuth client secret. LibreChat retrieves the public key from the verified Discord application. The UI returns an interaction endpoint and an installation URL. Secrets are write-only after submission. A manager connects an authorized guild, and an agent editor binds an eligible text channel to an agent.
 
 Members use a command family such as:
 
@@ -88,6 +88,8 @@ Before editing implementation code, enumerate all affected paths by grep: dedica
 DMs cannot infer a tenant, agent or guild from the most recently used link. In account settings, a user chooses one confirmed guild account link and requests a short-lived code. Only a hash is stored. The same Discord actor sends `/librechat select code:<value>` in a bot DM. Signed bot-DM context, application revision and actual DM channel identity must match before a transaction creates the selection. Browser input supplies only the link reference and expected revision; the server derives every source authority field.
 
 One selection generation is current for each application, actor and actual DM destination. Replaying a consumed code cannot extend its expiry or replace a newer generation. Its original confirmation interaction anchors conversation continuity. Selection expiry is bounded by both configured policy and the source consent expiry. Source guild, installation, channel, account link and principal remain real authority references, distinct from the DM destination. Revocation and owner-visible selection cleanup remain available when DM admission is disabled. Before execution, refresh the bot's and actor's access to the source guild channel, then join current database authority in the admission transaction.
+
+Disabling `discord.dm.enabled` must block new DM admission, first execution grants and new progress or answer writes, including queued runs admitted before the toggle. It must preserve existing-run metadata, settlement and cleanup, without treating the toggle as consent revocation or automatic cancellation of work already granted. Gateway message ingestion has its own enablement setting; disabling that transport is distinct from disabling DM execution.
 
 Native threads use their actual thread channel ID as the delivery destination. A durable mapping pins the original parent-channel binding and its revisions. Replacing the parent binding invalidates old thread execution instead of silently changing its agent. An opaque retired pin survives private-data erasure so the same thread cannot be implicitly retargeted. Check archived/locked state and the bot's visibility, history and `SEND_MESSAGES_IN_THREADS` permissions. The requesting actor needs current channel visibility; read-only access does not prevent a slash invocation. Private threads additionally require current membership or `MANAGE_THREADS` for both bot and actor, with administrator permission honored.
 
