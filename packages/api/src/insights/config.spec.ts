@@ -9,29 +9,35 @@ describe('Insights request configuration', () => {
   it('uses YAML to enable aggregate-only Insights without the environment switch', () => {
     expect(
       createInsightsConfigResolver(() => false)(request({ enabled: true, showDetails: false })),
-    ).toEqual({ enabled: true, showDetails: false });
+    ).toEqual({ enabled: true, showDetails: false, adminAutoSelectAllAgents: true });
   });
 
   it('honours explicit YAML disable even when the environment switch is enabled', () => {
     expect(
       createInsightsConfigResolver(() => true)(request({ enabled: false, showDetails: true })),
-    ).toEqual({ enabled: false, showDetails: true });
+    ).toEqual({ enabled: false, showDetails: true, adminAutoSelectAllAgents: true });
   });
 
   it('keeps environment-only enablement aggregate-only by default', () => {
     expect(createInsightsConfigResolver(() => true)(request())).toEqual({
       enabled: true,
       showDetails: false,
+      adminAutoSelectAllAgents: true,
     });
     expect(createInsightsConfigResolver(() => false)(request()).enabled).toBe(false);
   });
 
   it('requires explicit detail opt-in', () => {
     const resolve = createInsightsConfigResolver(() => false);
-    expect(resolve(request({ enabled: true }))).toEqual({ enabled: true, showDetails: false });
+    expect(resolve(request({ enabled: true }))).toEqual({
+      enabled: true,
+      showDetails: false,
+      adminAutoSelectAllAgents: true,
+    });
     expect(resolve(request({ enabled: true, showDetails: true }))).toEqual({
       enabled: true,
       showDetails: true,
+      adminAutoSelectAllAgents: true,
     });
   });
 

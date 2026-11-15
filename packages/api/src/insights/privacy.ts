@@ -18,6 +18,12 @@ export function toAggregateInsightsResponse(
   insights: TInsightsResponse,
 ): TInsightsAggregateResponse {
   return {
+    ...(insights.autoSelectAllAgents !== undefined && {
+      autoSelectAllAgents: insights.autoSelectAllAgents,
+    }),
+    ...(insights.selectionRequired !== undefined && {
+      selectionRequired: insights.selectionRequired,
+    }),
     agents: insights.agents.map(({ id, name }) => ({ id, name })),
     summary: {
       totalUsers: insights.summary.totalUsers,

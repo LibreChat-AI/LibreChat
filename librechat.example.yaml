@@ -204,6 +204,8 @@ interface:
   insights:
     enabled: true
     showDetails: false
+    # Set false to require administrators to explicitly select agents before statistics load.
+    adminAutoSelectAllAgents: true
 
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
   # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).

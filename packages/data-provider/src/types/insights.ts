@@ -108,6 +108,9 @@ export type TInsightsModel = TInsightsResponseOutcomes & {
 };
 
 export type TInsightsAggregateResponse = {
+  /** False when an administrator must explicitly choose the agents to load. */
+  autoSelectAllAgents?: boolean;
+  selectionRequired?: boolean;
   agents: TInsightsAgent[];
   summary: TInsightsSummary;
   daily: TInsightsDailyPoint[];

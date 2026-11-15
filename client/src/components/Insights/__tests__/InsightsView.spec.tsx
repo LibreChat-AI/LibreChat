@@ -136,6 +136,50 @@ async function openAgentMenu(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('InsightsView agent selection', () => {
+  it('waits for explicit selection and keeps all selected IDs in the URL when automatic selection is disabled', async () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: {
+        ...insightsData,
+        autoSelectAllAgents: false,
+        selectionRequired: !params.agentIds?.length,
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+    const user = userEvent.setup();
+    renderView();
+    expect(screen.getByText('com_insights_select_agents_to_load')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'com_insights_models' })).not.toBeInTheDocument();
+    await user.click(screen.getByText('com_insights_no_agents_selected'));
+    await user.click(screen.getByRole('button', { name: 'com_insights_select_all_agents' }));
+    await waitFor(() =>
+      expect(lastQueryParams().agentIds).toEqual(['agent-1', 'agent-2', 'agent-3']),
+    );
+    expect(screen.queryByText('com_insights_select_agents_to_load')).not.toBeInTheDocument();
+  });
+
+  it('lets an administrator explicitly select their only available agent', async () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: {
+        ...insightsData,
+        agents: [insightsData.agents[0]],
+        autoSelectAllAgents: false,
+        selectionRequired: !params.agentIds?.length,
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+    const user = userEvent.setup();
+    renderView();
+    await user.click(screen.getByText('com_insights_no_agents_selected'));
+    await user.click(await screen.findByRole('option', { name: 'Alpha' }));
+    await waitFor(() => expect(lastQueryParams().agentIds).toEqual(['agent-1']));
+  });
+
   beforeEach(() => {
     mockStartupConfig.mockReturnValue({ data: { insightsEnabled: true }, isLoading: false });
     mockUseInsightsQuery.mockClear();

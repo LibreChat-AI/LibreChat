@@ -38,8 +38,16 @@ const emptyInsights: TInsightsResponse = {
   latest: { conversations: [], page: 1, pageSize: 10, pages: 1 },
 };
 
-const insightsEnabled = jest.fn(() => ({ enabled: true, showDetails: true }));
-const insightsDisabled = jest.fn(() => ({ enabled: false, showDetails: false }));
+const insightsEnabled = jest.fn(() => ({
+  enabled: true,
+  showDetails: true,
+  adminAutoSelectAllAgents: true,
+}));
+const insightsDisabled = jest.fn(() => ({
+  enabled: false,
+  showDetails: false,
+  adminAutoSelectAllAgents: true,
+}));
 const fullAccess = { agents, detailAgentIds: agents.map((agent) => agent.id) };
 const getInsightsAccess = jest.fn().mockResolvedValue(fullAccess);
 
@@ -70,6 +78,52 @@ const createDashboardHandler = (getInsights = jest.fn().mockResolvedValue(emptyI
 });
 
 describe('Insights handlers', () => {
+  it('returns only agent choices without running statistics when an admin must choose agents', async () => {
+    insightsEnabled.mockReturnValueOnce({
+      enabled: true,
+      showDetails: true,
+      adminAutoSelectAllAgents: false,
+    });
+    const { handler, getInsights } = createDashboardHandler();
+    const req = createRequest();
+    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
+    const { response, json } = createResponse();
+    await handler(req, response);
+    expect(getInsights).not.toHaveBeenCalled();
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ agents, selectionRequired: true, autoSelectAllAgents: false }),
+    );
+  });
+
+  it('loads an explicitly selected set, including an explicitly selected all-agents set', async () => {
+    insightsEnabled.mockReturnValueOnce({
+      enabled: true,
+      showDetails: false,
+      adminAutoSelectAllAgents: false,
+    });
+    const { handler, getInsights } = createDashboardHandler();
+    const req = createRequest({ agentIds: ['agent-a', 'agent-b'] });
+    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
+    const { response, json } = createResponse();
+    await handler(req, response);
+    expect(getInsights).toHaveBeenCalledWith(
+      expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
+    );
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ autoSelectAllAgents: false }));
+  });
+
+  it('retains automatic selection for non-admin viewers when admin automatic selection is disabled', async () => {
+    insightsEnabled.mockReturnValueOnce({
+      enabled: true,
+      showDetails: false,
+      adminAutoSelectAllAgents: false,
+    });
+    const { handler, getInsights } = createDashboardHandler();
+    await handler(createRequest(), createResponse().response);
+    expect(getInsights).toHaveBeenCalledWith(
+      expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
+    );
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     getInsightsAccess.mockResolvedValue(fullAccess);
@@ -237,7 +291,11 @@ describe('Insights handlers', () => {
   it.each(['USER', 'ADMIN'])(
     'returns only whitelisted aggregate fields for %s when detail is disabled',
     async (role) => {
-      insightsEnabled.mockReturnValueOnce({ enabled: true, showDetails: false });
+      insightsEnabled.mockReturnValueOnce({
+        enabled: true,
+        showDetails: false,
+        adminAutoSelectAllAgents: true,
+      });
       const privateValue = 'private-content-must-not-cross-api';
       const feedback = {
         thumbsUp: 1,
@@ -384,7 +442,11 @@ describe('Insights handlers', () => {
   );
 
   it('does not let request parameters enable a disabled feature', async () => {
-    insightsEnabled.mockReturnValueOnce({ enabled: false, showDetails: false });
+    insightsEnabled.mockReturnValueOnce({
+      enabled: false,
+      showDetails: false,
+      adminAutoSelectAllAgents: true,
+    });
     const { handler, getInsights } = createDashboardHandler();
     const { response, status } = createResponse();
     await handler(createRequest({ enabled: 'true', showDetails: 'true' }), response);
