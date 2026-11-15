@@ -15,6 +15,7 @@ router.get(
 );
 router.get('/apps', requireJwtAuth, handlers.applications);
 router.put('/apps', requireJwtAuth, requireSameOrigin, handlers.configure);
+router.post('/apps/:applicationId/commands', requireJwtAuth, requireSameOrigin, handlers.register);
 router.get('/guilds', requireJwtAuth, handlers.guilds);
 router.post('/connect', requireJwtAuth, requireSameOrigin, setOAuthSession, handlers.connect);
 router.delete('/attempts/:flowId', requireJwtAuth, requireSameOrigin, handlers.cancel);

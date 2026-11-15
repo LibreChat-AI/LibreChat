@@ -24,6 +24,8 @@ import type {
   DiscordGuildPage,
   DiscordConnect,
   ConfigureDiscordApplication,
+  RegisterDiscordCommands,
+  DiscordCommandRegistration,
 } from './types/discord';
 import type {
   ResponseReviewView,
@@ -117,6 +119,11 @@ export function configureDiscordApplication(
   input: ConfigureDiscordApplication,
 ): Promise<DiscordApplication> {
   return request.put(`${endpoints.discordManagement()}/apps`, input).catch(discordFailure);
+}
+export function registerDiscordCommands(
+  input: RegisterDiscordCommands,
+): Promise<DiscordCommandRegistration> {
+  return request.post(endpoints.discordCommands(input.applicationId), input).catch(discordFailure);
 }
 export function connectDiscordGuild(
   applicationId: string,

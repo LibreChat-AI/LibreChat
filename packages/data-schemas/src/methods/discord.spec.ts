@@ -533,3 +533,25 @@ it('retains only organization reservation metadata and permits fresh same-tenant
     ).toBe(false);
   });
 });
+
+it('fences server-only application credentials by actor, revision, tenant and owner account', async () =>
+  scoped(async () => {
+    const app = await configure();
+    const authority = { actorId: adminId, applicationId, expectedRevision: app.revision };
+    expect(await store.authorizeApplication(authority)).toMatchObject({
+      ok: true,
+      value: { revision: app.revision, encryptedBotToken: 'encrypted-bot-token' },
+    });
+    expect(
+      await store.authorizeApplication({ ...authority, expectedRevision: 'old' }),
+    ).toMatchObject({ ok: false, error: { code: 'application_changed' } });
+    await scoped(async () => {
+      expect(await store.authorizeApplication(authority)).toMatchObject({ ok: false });
+    }, 'foreign-org');
+    await closeResponseScopes(db, { userId: actorId, tenantId });
+    expect(await store.authorizeApplication(authority)).toMatchObject({
+      ok: false,
+      error: { code: 'principal_unavailable' },
+    });
+    expect((await store.readApplication(applicationId))?.revision).toBe(app.revision);
+  }));

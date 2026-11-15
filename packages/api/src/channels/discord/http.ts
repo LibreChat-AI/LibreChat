@@ -5,6 +5,7 @@ import { getTenantId, tenantStorage } from '@librechat/data-schemas';
 import {
   channelSnowflakeSchema,
   configureDiscordApplicationSchema,
+  registerDiscordCommandsSchema,
   tenantIdSchema,
 } from 'librechat-data-provider';
 import type { DiscordBrowserSessionStorage } from '@librechat/data-schemas';
@@ -63,6 +64,7 @@ export function clearDiscordOAuthCookies(res: Response, publicBaseUrl: string): 
 export interface DiscordManagementHandlers {
   applications: RequestHandler;
   configure: RequestHandler;
+  register: RequestHandler;
   guilds: RequestHandler;
   connect: RequestHandler;
   cancel: RequestHandler;
@@ -169,6 +171,14 @@ export function createDiscordManagementHandlers(deps: {
           },
         },
       });
+    }),
+    register: browser(async (req, res, principal) => {
+      const input = registerDiscordCommandsSchema.safeParse(req.body);
+      if (!input.success || input.data.applicationId !== req.params.applicationId) {
+        res.sendStatus(400);
+        return;
+      }
+      send(res, await deps.service.register(principal, input.data));
     }),
     configure: browser(async (req, res, principal) => {
       const input = configureDiscordApplicationSchema.safeParse(req.body);
