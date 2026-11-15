@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { discordChannelConfigSchema } from 'librechat-data-provider';
 import type {
   AppConfig,
   DiscordBrowserSessionStorage,
@@ -77,8 +78,9 @@ export function createDiscordManagementRuntime(
     async (req, res, next) => {
       res.set('Cache-Control', 'no-store');
       try {
-        const config = await deps.readSettings();
-        if (!config?.enabled) {
+        const config = (await deps.readSettings()) ?? discordChannelConfigSchema.parse({});
+        const cleanup = ['applications', 'guilds', 'cancel', 'disconnect'].includes(method);
+        if (!config.enabled && !cleanup) {
           if (method === 'callback') {
             clearDiscordOAuthCookies(res, publicBaseUrl);
             res.redirect(

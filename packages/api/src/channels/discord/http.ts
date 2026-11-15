@@ -155,7 +155,20 @@ export function createDiscordManagementHandlers(deps: {
         res.sendStatus(400);
         return;
       }
-      send(res, await deps.service.applications(principal, query.data.cursor));
+      const result = await deps.service.applications(principal, query.data.cursor);
+      if (!result.ok) {
+        send(res, result);
+        return;
+      }
+      send(res, {
+        ok: true,
+        value: {
+          ...result.value,
+          setup: {
+            oauthCallbackUrl: getOAuthCallbackUrl(deps.publicBaseUrl, DISCORD_CALLBACK_PATH),
+          },
+        },
+      });
     }),
     configure: browser(async (req, res, principal) => {
       const input = configureDiscordApplicationSchema.safeParse(req.body);
