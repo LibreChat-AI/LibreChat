@@ -194,6 +194,30 @@ beforeEach(async () => {
   app.post('/service/:channelId/reactions', handlers.reaction);
 });
 
+test('rejects feedback for another provider with retained Slack source metadata', async () => {
+  await mongoose.models.AgentChannel.collection.updateOne(
+    { channelId: 'channel-a' },
+    { $set: { type: 'discord' } },
+  );
+  const readSource = jest.spyOn(deps.storage, 'readReplySource');
+  await expect(
+    scope(() =>
+      feedback.mapReply(
+        {
+          tenantId,
+          channelId: 'channel-a',
+          channelRevision: 'rev-1',
+          agentId: 'agent-a',
+          teamId: 'T1',
+        },
+        event.externalMessageKey,
+      ),
+    ),
+  ).resolves.toEqual({ ok: false, error: { code: 'forbidden' } });
+  expect(readSource).not.toHaveBeenCalled();
+  expect(deps.sendScore).not.toHaveBeenCalled();
+});
+
 test('resolves confirmed delivered receipt and actual message trace, keeping browser feedback untouched', async () => {
   const result = await post().expect(200);
   expect(result.body).toEqual({

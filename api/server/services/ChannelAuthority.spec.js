@@ -68,6 +68,7 @@ it('refuses an unsafe origin at actual ticket issuance before persisting a ticke
     agentId: 'agent',
     revision: 'v1',
     status: 'active',
+    type: 'slack',
     slack: { teamId: 'T1' },
   });
   await expect(
@@ -92,6 +93,7 @@ it('issues a ticket to the installed link page using the trusted deployment orig
     agentId: 'agent',
     revision: 'v1',
     status: 'active',
+    type: 'slack',
     slack: { teamId: 'T1' },
   });
   mockIdentityStorage.saveChannelIdentity.mockResolvedValue(true);

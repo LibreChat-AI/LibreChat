@@ -219,7 +219,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
 
   const update = protect(async (req, res, config) => {
     const channel = await ownedChannel(req);
-    if (!channel) {
+    if (!channel || channel.type !== 'slack') {
       res.status(404).json({ error: 'channel_not_found' });
       return;
     }
@@ -331,7 +331,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
 
   const manifest = protect(async (req, res, config) => {
     const channel = await ownedChannel(req);
-    if (!channel) {
+    if (!channel || channel.type !== 'slack') {
       res.status(404).json({ error: 'channel_not_found' });
       return;
     }
@@ -376,6 +376,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
         const requestedTenant = req.params.tenantId ?? req.get('x-tenant-id') ?? '_';
         if (
           !channel ||
+          channel.type !== 'slack' ||
           channel.status !== 'active' ||
           requestedTenant !== (channel.tenantId || '_')
         ) {
