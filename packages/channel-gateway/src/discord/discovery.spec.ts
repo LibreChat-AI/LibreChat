@@ -84,6 +84,9 @@ it('posts the owned physical event and verified source, and waits for a bounded 
     guildId: event.guildId,
     channelId: event.channelId,
     permissions: '68608',
+    authorId: event.authorId,
+    authorMember: true as const,
+    authorPermissions: '1024',
   };
   const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () =>
     Response.json({ outcome: 'duplicate' }),

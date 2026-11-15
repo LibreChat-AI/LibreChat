@@ -4,8 +4,14 @@ import {
   channelSnowflakeSchema,
   discordGuildTextSourceSchema,
   discordGuildTextPermissions,
+  discordGuildTextActorSourceSchema,
+  discordGuildTextActorUsable,
 } from 'librechat-data-provider';
-import type { DiscordGuildTextSource, DiscordGuildThreadSource } from 'librechat-data-provider';
+import type {
+  DiscordGuildTextSource,
+  DiscordGuildThreadSource,
+  DiscordGuildTextActorSource,
+} from 'librechat-data-provider';
 import type { APIActionRowComponent, APIButtonComponent } from 'discord-api-types/v10';
 import type { DiscordThreadInspection } from './thread';
 import type { DiscordWriteOutcome } from './errors';
@@ -265,6 +271,69 @@ export class DiscordClient {
       lifetime.abort();
     }
   }
+  /** Single-member reads establish membership independently of the effective channel permission result. */
+  async inspectGuildTextActorSource(
+    input: {
+      applicationId: string;
+      botUserId: string;
+      guildId: string;
+      channelId: string;
+      authorId: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<DiscordGuildTextActorSource | null> {
+    for (const value of Object.values(input)) channelSnowflakeSchema.parse(value);
+    if (input.authorId === input.botUserId) return null;
+    const inspection = new AbortController();
+    const currentSignal = AbortSignal.any([inspection.signal, ...(signal ? [signal] : [])]);
+    try {
+      const [source, permissions, rawMember] = await Promise.all([
+        this.inspectGuildTextSource(
+          {
+            applicationId: input.applicationId,
+            botUserId: input.botUserId,
+            guildId: input.guildId,
+            channelId: input.channelId,
+          },
+          currentSignal,
+        ),
+        this.getChannelMemberPermissions(input.channelId, input.authorId, currentSignal),
+        this.request(
+          'GET',
+          `/guilds/${input.guildId}/members/${input.authorId}`,
+          undefined,
+          currentSignal,
+        ),
+      ]);
+      if (!source || permissions === null) return null;
+      const member = z
+        .object({
+          user: z.object({
+            id: channelSnowflakeSchema,
+            bot: z.boolean().optional(),
+            system: z.boolean().optional(),
+          }),
+        })
+        .safeParse(rawMember);
+      if (!member.success || member.data.user.id !== input.authorId)
+        throw new DiscordWriteError('unknown');
+      if (member.data.user.bot || member.data.user.system) return null;
+      const observed = discordGuildTextActorSourceSchema.parse({
+        ...source,
+        authorId: input.authorId,
+        authorMember: true,
+        authorPermissions: permissions,
+      });
+      return discordGuildTextActorUsable(observed) ? observed : null;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof DiscordWriteError && [403, 404].includes(error.status ?? 0)) return null;
+      throw error;
+    } finally {
+      inspection.abort();
+    }
+  }
+
   async createMessage(
     channelId: string,
     message: DiscordMessage,
