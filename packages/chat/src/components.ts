@@ -124,6 +124,8 @@ export { default as MessageNav } from './components/messages/MessageNav';
 export type { MessageFooterProps } from './components/messages/MessageFooter';
 export { getMessageAriaLabel, getHeaderPrefixForScreenReader } from './components/messages/labels';
 
+export { default as PhaseLabel, FOLD_EASING } from './components/parts/PhaseLabel';
+
 /** Parts: the leaf components and row classes tool cards share. */
 export { default as Stdout } from './components/parts/Stdout';
 export { default as BareStatus } from './components/parts/BareStatus';
