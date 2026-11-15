@@ -133,6 +133,9 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
     record: ChannelFeedbackEventRecord,
   ): Promise<ChannelFeedbackResult<ChannelFeedbackView>> {
     if (!(await deps.canRecord(record.mapping))) return failure('forbidden');
+    const event = record.event;
+    // Discord button events are projected atomically by their fenced admission operation.
+    if (event.provider === 'discord') return failure('forbidden');
     try {
       return await deps.storage.withAuthority(record.mapping, async (storage) => {
         let ledger = await storage.ensureChannelFeedback({
@@ -150,7 +153,7 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
         for (let attempt = 0; attempt < deps.maxConflictRetries; attempt++) {
           const votes = ledger.votes;
           if (votes.length > CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX) return failure('capacity');
-          const next = projectChannelReaction(votes, record.event, record.rating);
+          const next = projectChannelReaction(votes, event, record.rating);
           if (next.votes.length > CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX) return failure('capacity');
           if (!next.changed) {
             await storage.markChannelFeedbackEvent(record);
@@ -217,6 +220,7 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
     ): Promise<ChannelFeedbackResult<ChannelFeedbackView>> {
       const parsed = channelReactionSchema.safeParse(input);
       if (!parsed.success) return failure('invalid_reaction');
+      if (actor.provider !== undefined) return failure('forbidden');
       if (!(await deps.canRecord(actor))) return failure('forbidden');
       const event = parsed.data;
       const rating = normalizeChannelRating(event.reaction);

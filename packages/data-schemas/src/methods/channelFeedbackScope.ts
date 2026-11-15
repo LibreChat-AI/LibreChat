@@ -2,9 +2,11 @@ import type { ChannelReplyMapping } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import { initializeResponseScopes, responseScopeKeys } from './responseScope';
 import { assertChannelTenant, touchChannelAuthority } from './channelScope';
+import { discordFeedbackDeliveryFilter } from './channelFeedbackSource';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { createChannelRunModel } from '~/models/channelRun';
 
 export class ChannelFeedbackAuthorityError extends Error {
   constructor() {
@@ -14,6 +16,18 @@ export class ChannelFeedbackAuthorityError extends Error {
 }
 
 export function sameFeedbackSource(left: ChannelReplyMapping, right: ChannelReplyMapping): boolean {
+  if (left.provider !== right.provider) return false;
+  if (
+    left.provider === 'discord' &&
+    (right.provider !== 'discord' ||
+      left.applicationId !== right.applicationId ||
+      left.guildId !== right.guildId ||
+      left.externalChannelId !== right.externalChannelId ||
+      left.externalUserId !== right.externalUserId ||
+      left.linkId !== right.linkId ||
+      left.linkRevision !== right.linkRevision)
+  )
+    return false;
   return [
     'tenantId',
     'channelId',
@@ -114,6 +128,19 @@ export async function withChannelFeedbackAuthority<T>(
 ): Promise<T> {
   assertChannelTenant(mapping.tenantId);
   if (
+    (mapping.provider !== undefined && mapping.provider !== 'discord') ||
+    (mapping.provider === undefined &&
+      [
+        'applicationId',
+        'guildId',
+        'externalChannelId',
+        'externalUserId',
+        'linkId',
+        'linkRevision',
+      ].some((key) => mapping[key as keyof ChannelReplyMapping] !== undefined))
+  )
+    throw new ChannelFeedbackAuthorityError();
+  if (
     [
       mapping.principalId,
       mapping.conversationId,
@@ -121,7 +148,16 @@ export async function withChannelFeedbackAuthority<T>(
       mapping.channelId,
       mapping.channelRevision,
       mapping.agentId,
-      mapping.teamId,
+      ...(mapping.provider === 'discord'
+        ? [
+            mapping.applicationId,
+            mapping.guildId,
+            mapping.externalChannelId,
+            mapping.externalUserId,
+            mapping.linkId,
+            mapping.linkRevision,
+          ]
+        : [mapping.teamId]),
     ].some((value) => typeof value !== 'string' || !value) ||
     mapping.messageId !== mapping.responseId
   )
@@ -155,10 +191,56 @@ export async function withChannelFeedbackAuthority<T>(
             channelId: mapping.channelId,
             agentId: mapping.agentId,
             channelRevision: mapping.channelRevision,
-            teamId: mapping.teamId,
+            ...(mapping.provider === 'discord'
+              ? {
+                  provider: 'discord',
+                  applicationId: mapping.applicationId,
+                  guildId: mapping.guildId,
+                  externalChannelId: mapping.externalChannelId,
+                  externalUserId: mapping.externalUserId,
+                  now: Date.now(),
+                  principal: {
+                    userId: mapping.principalId,
+                    linkId: mapping.linkId,
+                    linkRevision: mapping.linkRevision,
+                  },
+                }
+              : { teamId: mapping.teamId }),
           },
           session,
         ))
+      )
+        throw new ChannelFeedbackAuthorityError();
+      if (
+        mapping.provider === 'discord' &&
+        !(await createChannelRunModel(mongoose)
+          .exists({
+            tenantId: mapping.tenantId,
+            channelId: mapping.channelId,
+            runId: mapping.runId,
+            agentId: mapping.agentId,
+            state: 'delivered',
+            'principal.userId': mapping.principalId,
+            'principal.channelRevision': mapping.channelRevision,
+            'principal.linkId': mapping.linkId,
+            'principal.linkRevision': mapping.linkRevision,
+            'admission.actor.provider': 'discord',
+            'admission.actor.teamId': { $exists: false },
+            'admission.actor.appId': { $exists: false },
+            'admission.actor.applicationId': mapping.applicationId,
+            'admission.actor.guildId': mapping.guildId,
+            'admission.actor.externalUserId': mapping.externalUserId,
+            'admission.externalChannelId': mapping.externalChannelId,
+            'execution.protocol': 'responses',
+            'execution.responseId': mapping.responseId,
+            'execution.conversationId': mapping.conversationId,
+            'snapshot.responseId': mapping.responseId,
+            ...discordFeedbackDeliveryFilter(mapping.externalMessageKey),
+            receipts: {
+              $elemMatch: { outcome: 'confirmed', externalMessageKey: mapping.externalMessageKey },
+            },
+          })
+          .session(session))
       )
         throw new ChannelFeedbackAuthorityError();
       const state = await readChannelFeedbackSourceState(mongoose, mapping, session);
