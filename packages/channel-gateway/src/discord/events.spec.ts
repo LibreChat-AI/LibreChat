@@ -8,6 +8,8 @@ const command = {
   version: 1,
   type: 2,
   guild_id: '789',
+  context: 0,
+  authorizing_integration_owners: { '0': '789' },
   channel_id: '321',
   member: { user: { id: '654' } },
   data: { id: '987', name: 'ask', options: [{ name: 'prompt', type: 3, value: ' Hello ' }] },
@@ -78,6 +80,40 @@ describe('Discord interaction ingress', () => {
     expect(() => parseDiscordInteraction(body, 1)).toThrow();
     expect(() => parseDiscordInteraction(Buffer.from([0xff]), 4096)).toThrow();
     expect(() => parseDiscordInteraction(Buffer.from('{"type":4}'), 100)).toThrow();
+  });
+  test.each([
+    { context: 1 },
+    { context: 2 },
+    { context: undefined },
+    { authorizing_integration_owners: undefined },
+    { authorizing_integration_owners: { '1': '654' } },
+    { authorizing_integration_owners: { '0': '0' } },
+    { authorizing_integration_owners: { '0': '999' } },
+  ])('rejects commands without matching guild installation authority: %j', (override) => {
+    const parsed = parseDiscordInteraction(
+      Buffer.from(JSON.stringify({ ...command, ...override })),
+      4096,
+    );
+    expect(normalizeDiscordCommand(parsed, '456')).toBeNull();
+  });
+  test('accepts guild authority when both installations authorize the interaction', () => {
+    const parsed = parseDiscordInteraction(
+      Buffer.from(
+        JSON.stringify({ ...command, authorizing_integration_owners: { '0': '789', '1': '654' } }),
+      ),
+      4096,
+    );
+    expect(normalizeDiscordCommand(parsed, '456')?.guildId).toBe('789');
+  });
+  test.each([
+    { context: 3 },
+    { context: '0' },
+    { authorizing_integration_owners: { '0': 789 } },
+    { authorizing_integration_owners: { '0': 'invalid' } },
+  ])('rejects malformed authority metadata: %j', (override) => {
+    expect(() =>
+      parseDiscordInteraction(Buffer.from(JSON.stringify({ ...command, ...override })), 4096),
+    ).toThrow();
   });
   test('normalizes guild slash commands with a fresh lane and interaction deduplication', () => {
     const parsed = parseDiscordInteraction(body, 4096);

@@ -27,6 +27,21 @@ export interface DiscordMessageReceipt {
 const idPattern = /^[0-9]{1,20}$/;
 const noMentions = { parse: [], replied_user: false };
 
+/** Discord documents both retry sources in seconds; never retry before either valid delay. */
+function rateLimitDelay(response: Response, body?: unknown): number {
+  const retry =
+    body && typeof body === 'object' && 'retry_after' in body ? body.retry_after : undefined;
+  const values = [
+    Number(response.headers.get('retry-after')),
+    typeof retry === 'number' ? retry : 0,
+  ];
+  const delays = values.filter(
+    (seconds) =>
+      Number.isFinite(seconds) && seconds > 0 && seconds <= Number.MAX_SAFE_INTEGER / 1000,
+  );
+  return delays.length ? Math.ceil(Math.max(...delays) * 1000) : 1000;
+}
+
 /** Stable across retries, within Discord's 25 character nonce bound. */
 export function discordNonce(operationId: string): string {
   return createHash('sha256').update(operationId).digest('hex').slice(0, 25);
@@ -82,11 +97,12 @@ export class DiscordClient {
     } catch {
       throw new DiscordWriteError('unknown');
     }
-    const reader = response.body?.getReader();
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     const chunks: Uint8Array[] = [];
     let size = 0;
     let value: unknown;
     try {
+      reader = response.body?.getReader();
       while (reader) {
         const chunk = await reader.read();
         if (chunk.done) break;
@@ -98,24 +114,15 @@ export class DiscordClient {
     } catch {
       let outcome: DiscordWriteOutcome = 'unknown';
       if ([400, 401, 403, 404].includes(response.status)) outcome = 'permanent';
-      else if (response.status === 429) outcome = 'retryable';
+      else if (response.status === 429)
+        throw new DiscordWriteError('retryable', rateLimitDelay(response));
       throw new DiscordWriteError(outcome);
     } finally {
       await reader?.cancel().catch(() => {});
       reader?.releaseLock();
     }
-    if (response.status === 429) {
-      const retry =
-        value && typeof value === 'object' && 'retry_after' in value
-          ? value.retry_after
-          : undefined;
-      const seconds =
-        typeof retry === 'number' ? retry : Number(response.headers.get('retry-after'));
-      throw new DiscordWriteError(
-        'retryable',
-        Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds * 1000, 86_400_000) : 1000,
-      );
-    }
+    if (response.status === 429)
+      throw new DiscordWriteError('retryable', rateLimitDelay(response, value));
     if (!response.ok)
       throw new DiscordWriteError(
         [400, 401, 403, 404].includes(response.status) ? 'permanent' : 'unknown',
