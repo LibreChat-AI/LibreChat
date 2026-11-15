@@ -4,6 +4,7 @@ import { createDiscordProviderClient } from './client';
 const applicationId = '123456789012345678';
 const botUserId = '123456789012345679';
 const guildId = '123456789012345680';
+const channelId = '123456789012345681';
 const publicKey = 'a'.repeat(64);
 const botToken = 'private-bot-token';
 const clientSecret = 'private-client-secret';
@@ -55,6 +56,14 @@ beforeEach(() => {
     },
     '/users/@me/guilds?limit=200': [{ id: guildId, owner: false, permissions: '32' }],
     [`/guilds/${guildId}`]: { id: guildId, name: 'Verified guild' },
+    [`/channels/${channelId}`]: {
+      id: channelId,
+      guild_id: guildId,
+      type: 0,
+      name: 'agent',
+      flags: 0,
+    },
+    [`/channels/${channelId}/permissions/member/${botUserId}`]: { permissions: '68608' },
   };
   overrides = new Map();
   fetchProvider = jest.fn<Promise<Response>, [string, RequestInit]>(async (url: string) => {
@@ -486,4 +495,68 @@ it('cancels responses that arrive after an uncooperative transport times out', a
   deliver(new Response(new ReadableStream({ cancel })));
   await Promise.resolve();
   expect(cancel).toHaveBeenCalled();
+});
+
+const destination = () => ({
+  application: expected,
+  botToken,
+  guildId,
+  externalChannelId: channelId,
+});
+it('verifies a text destination using the bot identity and server-computed role/overwrite permissions', async () => {
+  expect(await client.inspectChannel(destination())).toEqual({
+    ok: true,
+    value: { externalChannelId: channelId, guildId, name: 'agent' },
+  });
+  expect(fetchProvider).toHaveBeenCalledWith(
+    `https://discord.com/api/v10/channels/${channelId}/permissions/member/${botUserId}`,
+    expect.objectContaining({ headers: { Authorization: `Bot ${botToken}` }, redirect: 'error' }),
+  );
+});
+it.each(['0', '3072', '67584', '66560'])(
+  'rejects incomplete effective channel permissions %s',
+  async (permissions) => {
+    payloads[`/channels/${channelId}/permissions/member/${botUserId}`] = { permissions };
+    expect(await client.inspectChannel(destination())).toEqual({
+      ok: false,
+      error: { code: 'missing_permissions' },
+    });
+  },
+);
+it.each([5, 10, 11, 12])(
+  'rejects unsupported channel type %s without thread inheritance',
+  async (type) => {
+    payloads[`/channels/${channelId}`] = { id: channelId, guild_id: guildId, type, name: 'other' };
+    expect(await client.inspectChannel(destination())).toEqual({
+      ok: false,
+      error: { code: 'unsupported_channel' },
+    });
+  },
+);
+it('honors administrator bypass while refusing obfuscated destinations', async () => {
+  payloads[`/channels/${channelId}/permissions/member/${botUserId}`] = { permissions: '8' };
+  expect((await client.inspectChannel(destination())).ok).toBe(true);
+  payloads[`/channels/${channelId}`] = {
+    id: channelId,
+    guild_id: guildId,
+    type: 0,
+    name: 'hidden',
+    flags: 1 << 17,
+  };
+  expect(await client.inspectChannel(destination())).toEqual({
+    ok: false,
+    error: { code: 'missing_permissions' },
+  });
+});
+it('rejects partial destinations and guild substitution', async () => {
+  payloads[`/channels/${channelId}`] = { id: channelId, guild_id: guildId, type: 0 };
+  expect(await client.inspectChannel(destination())).toEqual({
+    ok: false,
+    error: { code: 'malformed_response' },
+  });
+  payloads[`/channels/${channelId}`] = { id: channelId, guild_id: '999', type: 0, name: 'foreign' };
+  expect(await client.inspectChannel(destination())).toEqual({
+    ok: false,
+    error: { code: 'guild_changed' },
+  });
 });

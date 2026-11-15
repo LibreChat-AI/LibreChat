@@ -57,11 +57,23 @@ export interface VerifiedDiscordGuildInstallation {
   guildId: string;
   guildName: string;
 }
+export interface InspectDiscordChannel {
+  application: VerifiedDiscordApplication;
+  botToken: string;
+  guildId: string;
+  externalChannelId: string;
+}
+export interface VerifiedDiscordChannel {
+  externalChannelId: string;
+  guildId: string;
+  name: string;
+}
 
 export type DiscordProviderError =
   | 'invalid_input'
   | 'application_changed'
   | 'unsupported_installation'
+  | 'unsupported_channel'
   | 'invalid_grant'
   | 'guild_changed'
   | 'missing_permissions'
@@ -104,6 +116,9 @@ export interface DiscordProviderClient {
   exchangeGuild(
     input: ExchangeDiscordGuild,
   ): Promise<DiscordProviderResult<VerifiedDiscordGuildInstallation>>;
+  inspectChannel(
+    input: InspectDiscordChannel,
+  ): Promise<DiscordProviderResult<VerifiedDiscordChannel>>;
 }
 
 class ProviderFailure extends Error {
@@ -260,6 +275,53 @@ export function createDiscordProviderClient(deps: {
   }
 
   return {
+    async inspectChannel(input) {
+      try {
+        snowflake(input.guildId);
+        snowflake(input.externalChannelId);
+        const application = await verifiedApplication({
+          applicationId: input.application.applicationId,
+          botToken: input.botToken,
+          expectedBotUserId: input.application.botUserId,
+          expectedPublicKey: input.application.publicKey,
+        });
+        const headers = { Authorization: `Bot ${input.botToken}` };
+        const [channel, effective] = await Promise.all([
+          request(`/channels/${input.externalChannelId}`, { headers }).then((value) =>
+            parse(
+              z.object({
+                id: channelSnowflakeSchema,
+                guild_id: channelSnowflakeSchema,
+                type: z.number().int(),
+                name: z.string().min(1).max(100),
+                flags: z.number().int().nonnegative().optional(),
+              }),
+              value,
+            ),
+          ),
+          // Discord computes roles and channel/member overwrites, including administrator bypass.
+          request(
+            `/channels/${input.externalChannelId}/permissions/member/${application.botUserId}`,
+            { headers },
+          ).then((value) => parse(z.object({ permissions }), value)),
+        ]);
+        if (channel.id !== input.externalChannelId || channel.guild_id !== input.guildId)
+          failure('guild_changed');
+        if (channel.type !== 0) failure('unsupported_channel');
+        if ((BigInt(channel.flags ?? 0) & BigInt(1 << 17)) !== BigInt(0))
+          failure('missing_permissions');
+        const required = BigInt(1024 | 2048 | 65536);
+        const granted = BigInt(effective.permissions);
+        if ((granted & BigInt(8)) === BigInt(0) && (granted & required) !== required)
+          failure('missing_permissions');
+        return {
+          ok: true,
+          value: { externalChannelId: channel.id, guildId: channel.guild_id, name: channel.name },
+        };
+      } catch (error) {
+        return resultError(error);
+      }
+    },
     async verifyApplication(input) {
       try {
         return { ok: true, value: await verifiedApplication(input) };

@@ -186,3 +186,7 @@ export * from './channels/summary';
 
 export * from './channels/discord/http';
 export * from './channels/discord/runtime';
+export * from './channels/discord/client';
+export * from './channels/discord/bindings';
+export * from './channels/discord/bindingHttp';
+export * from './channels/discord/routes';
