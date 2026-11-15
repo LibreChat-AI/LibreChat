@@ -7,6 +7,8 @@ import type {
   ChannelRunView,
 } from 'librechat-data-provider';
 import type { ChannelBundle, Lease, Logger, ResponseGrant, ResponsePreparation } from './types';
+import type { WorkerProvider } from './provider';
+import { createSlackWorkerProvider } from './slack/worker';
 import { ChannelWorker, progressText } from './worker';
 import { ChannelClient } from './client';
 import { makeSlackPlan } from './render';
@@ -300,6 +302,8 @@ function fixture() {
     log,
     hooks,
     backend,
+    client,
+    slack,
     slackTransport,
     worker,
     savedPlan,
@@ -310,6 +314,95 @@ function fixture() {
 }
 
 describe('durable Channels worker', () => {
+  test('an injected provider uses the shared execution and durable receipt transitions', async () => {
+    const f = fixture();
+    f.bundle.gateway.nativeSessions = true;
+    const provider: WorkerProvider = {
+      ...createSlackWorkerProvider(f.slack, f.log),
+      progressRenderer: 'test-progress-v1',
+      maxProgressLength: 2000,
+      progressText: () => 'Provider status',
+      setSessionStatus: undefined,
+      lifecycle: undefined,
+      makePlan: (run) => ({
+        revision: 'test-plan',
+        rendererVersion: 'test-renderer-v1',
+        parts: [
+          {
+            operationId: `${run.runId}:answer`,
+            kind: 'message',
+            required: true,
+            text: run.snapshot?.text ?? '',
+          },
+        ],
+      }),
+      supportsRenderer: (renderer) => renderer === 'test-renderer-v1',
+      writeProgress: jest.fn(async (run) => {
+        expect(run.progress?.outcome).toBe('inflight');
+        expect(f.paths().at(-1)).toMatch(/progress\/begin$/);
+        return { externalMessageKey: 'C1:123.700' };
+      }),
+      preparePart: jest.fn((part) => async (run) => {
+        expect(run.receipts.find((item) => item.operationId === part.operationId)?.outcome).toBe(
+          'inflight',
+        );
+        expect(f.paths().at(-1)).toMatch(/delivery\/begin$/);
+        return { externalMessageKey: 'C1:123.800' };
+      }),
+      deleteProgress: jest.fn(async () => {
+        expect(f.state.receipts[0].outcome).toBe('confirmed');
+        expect(f.paths().some((path) => path.endsWith('/commit'))).toBe(false);
+      }),
+    };
+    const worker = new ChannelWorker(f.config, f.client, provider, f.log);
+    await worker.process({ ...f.lease, run: structuredClone(f.state) }, f.controller.signal);
+    expect(f.state.state).toBe('delivered');
+    expect(f.state.progress?.rendererVersion).toBe('test-progress-v1');
+    expect(f.state.plan?.rendererVersion).toBe('test-renderer-v1');
+    expect(f.state.receipts[0]).toMatchObject({
+      outcome: 'confirmed',
+      externalMessageKey: 'C1:123.800',
+    });
+    expect(provider.writeProgress).toHaveBeenCalledTimes(1);
+    expect(provider.preparePart).toHaveBeenCalledTimes(1);
+    expect(provider.deleteProgress).toHaveBeenCalledTimes(1);
+    expect(f.slackRequests).toHaveLength(0);
+    expect(f.paths().some((path) => path.endsWith('/response/prepare'))).toBe(true);
+    expect(f.paths().some((path) => path.includes('/api/agents/v1/responses/'))).toBe(true);
+  });
+
+  test('invalid persisted presentation is held before starting a transport receipt', async () => {
+    const f = fixture();
+    f.savedPlan();
+    f.state.plan!.parts[0].presentation = { format: 'slack-blocks-v1', payload: '{invalid' };
+    await expect(f.execute()).rejects.toThrow('Invalid persisted Slack blocks');
+    expect(f.state.receipts[0].outcome).toBe('planned');
+    expect(f.paths().some((path) => path.endsWith('/delivery/begin'))).toBe(false);
+    expect(f.slackRequests).toHaveLength(0);
+  });
+
+  test('a lost uploaded checkpoint acknowledgement cannot complete or replay an artifact', async () => {
+    const f = fixture();
+    f.savedPlan(true);
+    let checkpoints = 0;
+    f.hooks.checkpoint = async () => {
+      if (++checkpoints === 2) throw new Error('Uploaded checkpoint acknowledgement lost');
+      return json(f.state);
+    };
+    await expect(f.execute()).rejects.toThrow('Uploaded checkpoint acknowledgement lost');
+    const receipt = f.state.receipts.find((item) => item.operationId.includes(':artifact:'))!;
+    expect(receipt).toMatchObject({
+      outcome: 'inflight',
+      upload: { fileId: 'F1', stage: 'uploaded' },
+    });
+    await expect(f.execute()).rejects.toThrow('reconciliation');
+    expect(f.slackRequests.map((request) => request.method)).toEqual([
+      'chat.postMessage',
+      'files.getUploadURLExternal',
+      'upload',
+    ]);
+  });
+
   test('a reduced server delivery budget reaches the persisted plan and completes without optional uploads', async () => {
     const f = fixture();
     f.bundle.delivery = { maxDeliveryParts: 1 };
