@@ -3,6 +3,11 @@ import type { DiscordIngressAction } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 
+export interface DiscordCancelResult {
+  runId?: string;
+  cancelled: boolean;
+}
+
 /** Private ingress payloads are erased at completion; only deduplication metadata survives. */
 export interface DiscordInboxRecord {
   tenantId?: string;
@@ -19,6 +24,7 @@ export interface DiscordInboxRecord {
   action?: DiscordIngressAction;
   encryptedToken?: string;
   encryptedReply?: string;
+  commandResult?: DiscordCancelResult;
   state: 'queued' | 'processing' | 'reply' | 'done' | 'failed';
   receivedAt: number;
   expiresAt: number;
@@ -51,6 +57,7 @@ export function createDiscordInboxModel(
       action: { type: Schema.Types.Mixed, select: false },
       encryptedToken: { type: String, select: false },
       encryptedReply: { type: String, select: false },
+      commandResult: { type: Schema.Types.Mixed, select: false },
       state: {
         type: String,
         required: true,

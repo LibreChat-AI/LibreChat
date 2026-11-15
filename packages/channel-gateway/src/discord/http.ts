@@ -1,4 +1,8 @@
-import { channelSnowflakeSchema, discordChannelConfigSchema } from 'librechat-data-provider';
+import {
+  channelSnowflakeSchema,
+  discordChannelConfigSchema,
+  parseDiscordControl,
+} from 'librechat-data-provider';
 import type {
   DiscordApplicationSecurity,
   DiscordInboxSubmission,
@@ -50,8 +54,6 @@ export interface DiscordWebhookDependencies {
     input: DiscordInboxSubmission,
     signal: AbortSignal,
   ) => Promise<'accepted' | 'conflict' | 'capacity'>;
-  /** Opaque component resolution is added by the bound control adapter. */
-  component?: (event: Extract<DiscordInteraction, { type: 3 }>) => DiscordIngressAction | null;
   log: Logger;
   now?: () => number;
 }
@@ -118,7 +120,13 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
         event.user
       )
         return { status: 400, body: { error: 'invalid_context' } };
-      const action = event.type === 3 ? deps.component?.(event) : discordInteractionAction(event);
+      let action: DiscordIngressAction | null;
+      if (event.type === 3)
+        action =
+          event.data.component_type === 2
+            ? parseDiscordControl(event.data.custom_id, event.message?.id)
+            : null;
+      else action = discordInteractionAction(event);
       if (!action) return { status: 400, body: { error: 'unsupported_interaction' } };
       signal.throwIfAborted();
       const result = await deps.submit(
