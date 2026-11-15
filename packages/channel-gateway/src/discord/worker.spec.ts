@@ -10,6 +10,7 @@ import type {
   ChannelRunView,
   DiscordChannelServiceBundle,
 } from 'librechat-data-provider';
+import type { APIActionRowComponent, APIButtonComponent } from 'discord-api-types/v10';
 import type { Lease, Logger } from '../types';
 import { createDiscordWorkerProvider, discordProgressText } from './worker';
 import { DiscordClient, DiscordWriteError, discordNonce } from './client';
@@ -28,6 +29,7 @@ interface Mutation {
   receipt?: ChannelDeliveryReceipt;
 }
 interface Write {
+  components?: APIActionRowComponent<APIButtonComponent>[];
   content?: string;
   nonce?: string;
   enforce_nonce?: boolean;
@@ -274,6 +276,10 @@ describe('Discord durable worker delivery', () => {
       'Final answer',
       undefined,
     ]);
+    expect(f.writes[0].body.components).toEqual([
+      { type: 1, components: [{ type: 2, style: 4, label: 'Stop', custom_id: 'lc1:x:run-1' }] },
+    ]);
+    expect(f.writes[1].body.components).toEqual([]);
     expect(f.writes[0].body.nonce).toBe(discordNonce('run-1:progress:1'));
     expect(f.writes[2].body.nonce).toBe(discordNonce('run-1:discord:0'));
     for (const write of f.writes.filter((item) => item.method !== 'DELETE')) {
@@ -493,6 +499,28 @@ describe('Discord durable worker delivery', () => {
     };
     expect(discordProgressText(f.state)).toContain('Completion is not confirmed');
     expect(discordProgressText(f.state)).not.toContain('private review');
+  });
+
+  test('removes Stop while cancellation is pending and gives an actionable private-review path', async () => {
+    const f = fixture();
+    f.state.cancellationRequested = true;
+    f.state.progress = {
+      revision: 1,
+      rendererVersion: 'discord-progress-v1',
+      text: 'Cancellation requested.',
+      outcome: 'inflight',
+      attempts: 1,
+    };
+    await f.provider.writeProgress(f.state, f.bundle, f.controller.signal);
+    expect(f.writes[0].body.components).toEqual([]);
+    f.state.cancellationRequested = false;
+    f.state.snapshot = {
+      status: 'requires_action',
+      text: '',
+      elapsedMs: 10,
+      pendingAction: { kind: 'tool_approval', actionId: 'private', expiresAt: Date.now() + 60000 },
+    };
+    expect(discordProgressText(f.state)).toContain('/librechat status');
   });
 
   test('progress address validation prevents edits or deletes in another channel', async () => {

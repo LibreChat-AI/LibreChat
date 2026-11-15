@@ -1,9 +1,15 @@
-import { channelSnowflakeSchema, channelRunActorSchema } from 'librechat-data-provider';
+import { ButtonStyle, ComponentType } from 'discord-api-types/v10';
+import {
+  channelSnowflakeSchema,
+  channelRunActorSchema,
+  discordRunControl,
+} from 'librechat-data-provider';
 import type {
   ChannelRunView,
   ChannelDeliveryPart,
   DiscordChannelServiceBundle,
 } from 'librechat-data-provider';
+import type { APIActionRowComponent, APIButtonComponent } from 'discord-api-types/v10';
 import type { DiscordRateCoordinator } from './rates';
 import type { WorkerProvider } from '../provider';
 import type { ChannelBundle } from '../types';
@@ -110,7 +116,7 @@ export function discordProgressText(run: ChannelRunView): string {
   if (run.cancellationRequested) return 'Cancellation requested.';
   if (run.snapshot?.status === 'requires_action')
     return pendingReview(run)
-      ? 'Your input is needed. Open the private review to continue.'
+      ? 'Your input is needed. Use /librechat status to open your private review in LibreChat.'
       : 'Waiting for input. The review action is unavailable or expired.';
   return 'Working...';
 }
@@ -190,7 +196,23 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
       )
         throw new Error('Invalid Discord progress state');
       const channel = run.admission.externalChannelId;
-      const message = { content: progress.text };
+      const components: APIActionRowComponent<APIButtonComponent>[] =
+        !terminalSnapshot(run) && !run.cancellationRequested
+          ? [
+              {
+                type: ComponentType.ActionRow,
+                components: [
+                  {
+                    type: ComponentType.Button,
+                    style: ButtonStyle.Danger,
+                    label: 'Stop',
+                    custom_id: discordRunControl('cancel', run.runId),
+                  },
+                ],
+              },
+            ]
+          : [];
+      const message = { content: progress.text, components };
       if (progress.externalMessageKey)
         return client(bundle).editMessage(
           channel,
