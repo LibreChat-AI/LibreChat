@@ -17,6 +17,7 @@ const responseText = 'The capital of Germany is Berlin.';
 const nextChatLabel = 'Next chat';
 
 const spoken: string[] = [];
+const speechEvents: string[] = [];
 let cancelCount = 0;
 
 class FakeSpeechSynthesisUtterance {
@@ -36,9 +37,11 @@ const speechSynthesis = {
     voicesChanged = listener;
   },
   speak: (utterance: FakeSpeechSynthesisUtterance) => {
+    speechEvents.push('speak');
     spoken.push(utterance.text);
   },
   cancel: () => {
+    speechEvents.push('cancel');
     cancelCount += 1;
   },
 };
@@ -122,6 +125,7 @@ describe('BrowserAudio autoplay', () => {
 
   beforeEach(() => {
     spoken.length = 0;
+    speechEvents.length = 0;
     cancelCount = 0;
     availableVoices = [fakeVoice];
     act(() => voicesChanged());
@@ -257,6 +261,7 @@ describe('BrowserAudio autoplay', () => {
     expect(screen.getByTestId('played-run')).toHaveTextContent('run-1');
     // Route cleanup and the speech service's pre-utterance cancellation both precede speaking.
     expect(cancelCount).toBe(2);
+    expect(speechEvents).toEqual(['cancel', 'cancel', 'speak']);
   });
 
   it('does not cancel or replay an accepted utterance when voices update', async () => {
@@ -269,5 +274,23 @@ describe('BrowserAudio autoplay', () => {
     expect(cancelCount).toBe(cancelsAfterSpeaking);
     expect(spoken).toEqual([responseText]);
     expect(screen.getByTestId('played-run')).toHaveTextContent('run-1');
+  });
+
+  it('still cancels accepted speech if a later voice refresh fails', async () => {
+    const { unmount } = renderBrowserAudio();
+    await waitFor(() => expect(spoken).toEqual([responseText]));
+    const cancelsAfterSpeaking = cancelCount;
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const getVoices = jest.spyOn(speechSynthesis, 'getVoices').mockImplementationOnce(() => {
+      throw new Error('Voice service unavailable');
+    });
+
+    act(() => voicesChanged());
+    expect(cancelCount).toBe(cancelsAfterSpeaking);
+    unmount();
+
+    expect(cancelCount).toBe(cancelsAfterSpeaking + 1);
+    getVoices.mockRestore();
+    error.mockRestore();
   });
 });

@@ -32,7 +32,11 @@ export default function BrowserAudio({
   /** Cleanup belongs only to the route lifetime, not voice availability or callback identity.
    * React runs cleanups before effect bodies, so same-commit new-chat finalization cancels the
    * previous utterance before starting the newly finalized reply. */
-  useEffect(() => () => cancelRef.current(), [routeKey]);
+  useEffect(() => {
+    // Preserve this route's cancellation even if a later voice refresh reports no support.
+    const cancelRoute = cancelRef.current;
+    return () => cancelRoute();
+  }, [routeKey]);
 
   useEffect(() => {
     if (!shouldPlay || activeRunId == null || latestMessage == null) {

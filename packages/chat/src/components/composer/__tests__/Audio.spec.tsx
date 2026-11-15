@@ -107,7 +107,7 @@ describe('BrowserAudio', () => {
     expect(events).toEqual(['cancel', 'speak', 'started', 'cancel']);
   });
 
-  it('does not cancel or replay when only the cancellation callback changes', () => {
+  it('preserves the route cancellation callback without cancelling or replaying on updates', () => {
     const input = props();
     const { rerender, unmount } = render(<BrowserAudio {...input} />);
     const nextCancel = jest.fn();
@@ -117,8 +117,12 @@ describe('BrowserAudio', () => {
     expect(input.cancel).not.toHaveBeenCalled();
     expect(nextCancel).not.toHaveBeenCalled();
 
+    rerender(<BrowserAudio {...input} routeKey="next-chat" cancel={nextCancel} />);
+    expect(input.cancel).toHaveBeenCalledTimes(1);
+    expect(nextCancel).not.toHaveBeenCalled();
+
     unmount();
     expect(nextCancel).toHaveBeenCalledTimes(1);
-    expect(input.cancel).not.toHaveBeenCalled();
+    expect(input.cancel).toHaveBeenCalledTimes(1);
   });
 });
