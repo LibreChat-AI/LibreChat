@@ -8,6 +8,7 @@ import { DiscordReplyClient, deliverDiscordReply } from './reply';
 import { DiscordGatewayControlClient } from './ownership';
 import { createDiscordWorkerProvider } from './worker';
 import { withDiscordApplicationLease } from './lease';
+import { createDiscordGatewayDriver } from './socket';
 import { DiscordRuntimeClient } from './discovery';
 import { dispatchDiscordEvent } from './dispatch';
 import { DiscordRateCoordinator } from './rates';
@@ -95,7 +96,9 @@ export class DiscordGatewayApp {
                 owner,
                 policy: this.policy,
                 ownership: this.ownership,
-                createDriver: this.createDriver,
+                createDriver:
+                  this.createDriver ??
+                  ((options) => createDiscordGatewayDriver(options, this.transport, context.rates)),
                 log: this.log,
                 dispatch: (application, event, dispatchSignal) =>
                   dispatchDiscordEvent(
