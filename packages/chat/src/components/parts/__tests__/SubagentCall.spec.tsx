@@ -1,110 +1,195 @@
-import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { useAtomValue, useStore } from 'jotai';
-import { MemoryRouter } from 'react-router-dom';
+/**
+ * @jest-environment jsdom
+ */
+import React, { useState } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Provider as JotaiProvider, createStore, useAtomValue, useStore } from 'jotai';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { FOLD_GLYPH_SELECTOR, FailedRevealContext, litFoldPath } from '@librechat/chat/components';
-import {
-  activeSubagentPanel,
-  subagentProgressByToolCallId,
-  subagentProgressKey,
-} from '@librechat/chat/react';
-import {
-  foldSubagentEvent,
-  foldSubagentEventIntoTicker,
-  initSubagentAggregatorState,
-  initSubagentTickerState,
-} from '@librechat/chat';
 import type {
+  Agent,
   PartMetadata,
   TAttachment,
   SubagentIdentity,
   SubagentUpdateEvent,
   ParentSubagentSummary,
 } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
 import type {
   SubagentAggregatorState,
   SubagentContentPart,
   SubagentTickerState,
-} from '@librechat/chat';
-import type { ActiveSubagentPanel, SubagentProgress } from '@librechat/chat/react';
-import SubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
-import { MessageContext } from '~/Providers/MessageContext';
-import { ChatSurfaceHarness } from 'test/harness';
+} from '../../../core/subagents/content';
+import type { ActiveSubagentPanel, SubagentProgress } from '../../../react/subagents/state';
+import type { ChatSurface } from '../../../react/subagents/context';
+import type { StreamHost } from '../../../react/stream/host';
+import type { SubagentCallProps } from '../SubagentCall';
+import {
+  foldSubagentEvent,
+  foldSubagentEventIntoTicker,
+  initSubagentAggregatorState,
+  initSubagentTickerState,
+} from '../../../core/subagents/content';
+import {
+  activeSubagentPanel,
+  subagentProgressByToolCallId,
+  subagentProgressKey,
+} from '../../../react/subagents/state';
+import PackageSubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
+import { ParentSubagentsProvider } from '../../../react/subagents/parents';
+import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { ChatSurfaceProvider } from '../../../react/subagents/provider';
+import { SubagentsHostProvider } from '../../../react/subagents/host';
+import { StreamHostProvider } from '../../../react/stream/host';
+import { MessagePartsHostProvider } from '../../../react/host';
+import { FailedRevealContext } from '../reveal';
+import { FOLD_GLYPH_SELECTOR } from '../rows';
+import { litFoldPath } from '../rail';
 
 const mockMCPServerNames: string[] = [];
 let mockIndexedChildren = new Map<string, ParentSubagentSummary>();
 
-jest.mock('~/hooks', () => ({
-  useLocalize:
-    () =>
-    (key: string): string => {
-      const translations: Record<string, string> = {
-        com_ui_subagent_running: 'Running agent',
-        com_ui_subagent_activity: 'Agent activity',
-        com_ui_subagent_complete: 'Ran agent',
-        com_ui_subagent_cancelled: 'Cancelled agent',
-        com_ui_subagent_errored: 'Agent errored',
-        com_ui_subagent_waiting: 'Waiting for first update…',
-        com_ui_subagent_ticker_writing: 'Writing',
-        com_ui_subagent_ticker_reasoning: 'Reasoning',
-        com_ui_subagent_ticker_error: 'Error',
-        com_ui_subagent_ticker_using: 'Using',
-        com_ui_subagent_ticker_tool_done: 'done',
-      };
-      return translations[key] ?? key;
+type CardMessage = {
+  messageId: string;
+  conversationId?: string | null;
+  partIndex?: number;
+};
+
+const defaultMessage: CardMessage = {
+  messageId: 'parent-message',
+  conversationId: 'parent-conversation',
+  partIndex: 0,
+};
+
+let currentMessage: CardMessage = defaultMessage;
+
+const localize = (key: string): string => {
+  const translations: Record<string, string> = {
+    com_ui_subagent_running: 'Running agent',
+    com_ui_subagent_activity: 'Agent activity',
+    com_ui_subagent_complete: 'Ran agent',
+    com_ui_subagent_cancelled: 'Cancelled agent',
+    com_ui_subagent_errored: 'Agent errored',
+    com_ui_subagent_waiting: 'Waiting for first update…',
+    com_ui_subagent_ticker_writing: 'Writing',
+    com_ui_subagent_ticker_reasoning: 'Reasoning',
+    com_ui_subagent_ticker_error: 'Error',
+    com_ui_subagent_ticker_using: 'Using',
+    com_ui_subagent_ticker_tool_done: 'done',
+  };
+  return translations[key] ?? key;
+};
+
+const agents = {
+  'agent-1': { id: 'agent-1', name: 'Analyst One', avatar: { filepath: '/analyst.png' } },
+  agent_reviewer: {
+    id: 'agent_reviewer',
+    name: 'Code Reviewer',
+    avatar: { filepath: '/reviewer.png' },
+  },
+} as unknown as Record<string, Agent | undefined>;
+
+function SubagentCall(props: SubagentCallProps) {
+  return (
+    <PackageSubagentCall
+      {...props}
+      message={currentMessage}
+      agentsMap={agents}
+      localize={localize}
+      mcpServerNames={mockMCPServerNames}
+      renderAgentIcon={(agent) =>
+        agent?.avatar?.filepath != null ? (
+          <img alt={agent.name ?? ''} src={agent.avatar.filepath} />
+        ) : null
+      }
+      renderAttachments={(attachments) => (
+        <>
+          <div data-testid="attachment-group">{JSON.stringify(attachments)}</div>
+          <div data-testid="app-views">{JSON.stringify(attachments)}</div>
+        </>
+      )}
+    />
+  );
+}
+const partsHost = createMessagePartsHost();
+
+const subagentsHost = createSubagentsHost({
+  useAgentsMap: () => agents,
+});
+
+const streamHost = {
+  useParentSubagentIndex: () => ({
+    data: {
+      parentConversationId: 'parent-conversation',
+      children: [...mockIndexedChildren.values()],
+      childrenTruncated: false,
     },
-}));
-
-jest.mock('../Attachment', () => ({
-  AttachmentGroup: ({ attachments }: { attachments: unknown }) => (
-    <div data-testid="attachment-group">{JSON.stringify(attachments)}</div>
-  ),
-}));
-
-jest.mock('~/components/MCPUIResource', () => ({
-  MCPAppViews: ({ attachments }: { attachments?: unknown[] }) => (
-    <div data-testid="app-views">{JSON.stringify(attachments)}</div>
-  ),
-}));
-
-jest.mock('lucide-react', () => ({
-  // eslint-disable-next-line i18next/no-literal-string
-  ChevronRight: () => <span aria-hidden="true">chevron</span>,
-  // eslint-disable-next-line i18next/no-literal-string
-  Users: () => <span aria-hidden="true">users</span>,
-}));
-
-jest.mock('~/Providers', () => ({
-  useAgentsMapContext: () => ({
-    'agent-1': { id: 'agent-1', name: 'Analyst One', avatar: { filepath: '/analyst.png' } },
-    agent_reviewer: {
-      id: 'agent_reviewer',
-      name: 'Code Reviewer',
-      avatar: { filepath: '/reviewer.png' },
-    },
+    isError: false,
+    refetch: async () => ({ data: undefined }),
   }),
-}));
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useParentSubagents: () => ({ byThreadId: mockIndexedChildren }),
-}));
-jest.mock('~/components/Share/MessageIcon', () => ({
-  __esModule: true,
-  default: ({ agent }: { agent: { name: string; avatar: { filepath: string } } }) => (
-    <img alt={agent.name} src={agent.avatar.filepath} />
-  ),
-}));
-jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => mockMCPServerNames }));
-jest.mock('~/utils', () => ({
-  cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
-  logger: { log: jest.fn() },
-}));
+} as unknown as StreamHost;
+
+const surface: ChatSurface = {
+  enterToSend: true,
+  maximizeChatSpace: false,
+  showScrollButton: true,
+  composerBindings: {
+    shortcutsEnabled: true,
+    submitOverride: undefined,
+    yieldedChords: new Set<string>(),
+  },
+  claimForeground: () => undefined,
+  handOffComposerText: () => undefined,
+};
+
+function Providers({
+  surface: withSurface = true,
+  seed,
+  tick = 0,
+  children,
+}: {
+  surface?: boolean;
+  seed?: (store: ReturnType<typeof createStore>) => void;
+  tick?: number;
+  children: ReactNode;
+}) {
+  const [store] = useState(() => {
+    const created = createStore();
+    seed?.(created);
+    return created;
+  });
+  const [queryClient] = useState(
+    () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  );
+  const card = (
+    <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
+      <MessagePartsHostProvider host={partsHost}>{children}</MessagePartsHostProvider>
+    </FailedRevealContext.Provider>
+  );
+  return (
+    <QueryClientProvider client={queryClient}>
+      <StreamHostProvider host={streamHost}>
+        <ParentSubagentsProvider conversationId="parent-conversation" enabled>
+          <JotaiProvider store={store}>
+            <SubagentsHostProvider host={subagentsHost}>
+              {withSurface ? (
+                <ChatSurfaceProvider value={surface}>{card}</ChatSurfaceProvider>
+              ) : (
+                card
+              )}
+            </SubagentsHostProvider>
+          </JotaiProvider>
+        </ParentSubagentsProvider>
+      </StreamHostProvider>
+    </QueryClientProvider>
+  );
+}
 
 afterEach(() => {
   jest.useRealTimers();
   mockMCPServerNames.length = 0;
   mockIndexedChildren = new Map();
+  currentMessage = defaultMessage;
 });
 
 function foldEvents(events: SubagentUpdateEvent[]): {
@@ -163,33 +248,19 @@ function renderWithState(args: {
     return null;
   };
   const tree = (tick: number) => (
-    <MemoryRouter>
-      <ChatSurfaceHarness seed={(store) => store.set(activeSubagentPanel, args.selection ?? null)}>
-        <RecoilRoot>
-          <SeedHelper />
-          <SelectionObserver />
-          <MessageContext.Provider
-            value={{
-              messageId: 'parent-message',
-              conversationId: 'parent-conversation',
-              isExpanded: false,
-            }}
-          >
-            <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
-              <SubagentCall
-                toolCallId={args.toolCallId}
-                initialProgress={args.initialProgress}
-                isSubmitting={args.isSubmitting ?? false}
-                args={args.toolArgs ?? { subagent_type: 'self', description: 'compute' }}
-                output={args.output}
-                runStepStatus={args.runStepStatus}
-                subagentIdentity={args.subagentIdentity}
-              />
-            </FailedRevealContext.Provider>
-          </MessageContext.Provider>
-        </RecoilRoot>
-      </ChatSurfaceHarness>
-    </MemoryRouter>
+    <Providers tick={tick} seed={(store) => store.set(activeSubagentPanel, args.selection ?? null)}>
+      <SeedHelper />
+      <SelectionObserver />
+      <SubagentCall
+        toolCallId={args.toolCallId}
+        initialProgress={args.initialProgress}
+        isSubmitting={args.isSubmitting ?? false}
+        args={args.toolArgs ?? { subagent_type: 'self', description: 'compute' }}
+        output={args.output}
+        runStepStatus={args.runStepStatus}
+        subagentIdentity={args.subagentIdentity}
+      />
+    </Providers>
   );
   const rendered = render(tree(0));
   act(() => setter.current?.(args.progress ?? null));
@@ -242,6 +313,62 @@ describe('SubagentCall', () => {
     expect(litFoldPath(root, row, 155)).toEqual([{ rail: rails[1], branch: 0 }]);
   });
 
+  it.each([
+    { child: 'streams', progress: { initialProgress: 0.1, isSubmitting: true }, running: 'true' },
+    {
+      child: 'has a result',
+      progress: { initialProgress: 1, isSubmitting: true },
+      running: 'false',
+    },
+    {
+      child: 'stops before a result',
+      progress: { initialProgress: 0.1, isSubmitting: false },
+      running: 'false',
+    },
+    {
+      child: 'is cancelled',
+      progress: {
+        initialProgress: 0.1,
+        isSubmitting: true,
+        runStepStatus: 'cancelled' as const,
+      },
+      running: 'false',
+    },
+  ])('marks the card as running only while its child $child', ({ progress, running }) => {
+    renderWithState({ toolCallId: 'pulse', ...progress });
+    expect(screen.getByRole('button')).toHaveAttribute('data-running', running);
+  });
+
+  it.each([
+    {
+      child: 'streams with no saved agent',
+      state: { initialProgress: 0.1, toolArgs: { subagent_type: 'self' } },
+      pulses: true,
+    },
+    {
+      child: 'streams as a saved agent',
+      state: {
+        initialProgress: 0.1,
+        toolArgs: { subagent_type: 'agent-1' },
+        subagentIdentity: { subagentKind: 'agent' as const, subagentAgentId: 'agent-1' },
+      },
+      pulses: false,
+    },
+    {
+      child: 'has a result',
+      state: { initialProgress: 1, toolArgs: { subagent_type: 'self' } },
+      pulses: false,
+    },
+  ])(
+    'pulses the glyph of an unnamed agent only while its child $child, and stops under reduced motion',
+    ({ state, pulses }) => {
+      renderWithState({ toolCallId: 'glyph-pulse', isSubmitting: true, ...state });
+      const glyph = screen.getByRole('button').querySelector<HTMLElement>(FOLD_GLYPH_SELECTOR);
+      expect(glyph?.classList.contains('animate-pulse')).toBe(pulses);
+      expect(glyph?.classList.contains('motion-reduce:animate-none')).toBe(pulses);
+    },
+  );
+
   it('keeps the configured name and avatar after live progress is cleared', () => {
     const { setProgress } = renderWithState({
       toolCallId: 'identity',
@@ -274,7 +401,9 @@ describe('SubagentCall', () => {
         subagentIdentity,
       });
       expect(screen.queryByText('Analyst One')).not.toBeInTheDocument();
-      expect(screen.getByText('users')).toBeInTheDocument();
+      const fallbackButton = screen.getByRole('button', { name: 'Ran agent' });
+      expect(fallbackButton.querySelector('img')).toBeNull();
+      expect(fallbackButton.querySelectorAll('svg').length).toBeGreaterThan(1);
       fireEvent.click(screen.getByRole('button', { name: 'Ran agent' }));
       expect(getSelection()?.subagentIdentity).toEqual(subagentIdentity);
     },
@@ -290,7 +419,7 @@ describe('SubagentCall', () => {
         subagentIdentity: { subagentKind: 'agent', subagentAgentId: agentId },
       });
       expect(screen.queryByText('Analyst One') != null).toBe(agentId === 'agent-1');
-      expect(screen.queryByText('users') != null).toBe(agentId !== 'agent-1');
+      expect(screen.getByRole('button').querySelector('img') != null).toBe(agentId === 'agent-1');
     },
   );
 
@@ -461,29 +590,18 @@ describe('SubagentCall', () => {
       },
       { type: 'text', text: 'The answer is 4.' },
     ] as Parameters<typeof SubagentCall>[0]['persistedContent'];
+    currentMessage = { messageId: 'parent', conversationId: 'parent-conversation' };
     render(
-      <MemoryRouter>
-        <ChatSurfaceHarness>
-          <RecoilRoot>
-            <Observer />
-            <MessageContext.Provider
-              value={{
-                conversationId: 'parent-conversation',
-                messageId: 'parent',
-                isExpanded: false,
-              }}
-            >
-              <SubagentCall
-                toolCallId="foreground-call"
-                initialProgress={1}
-                args={{ subagent_type: 'self', description: 'Compute the answer.' }}
-                output="legacy fallback"
-                persistedContent={persistedContent}
-              />
-            </MessageContext.Provider>
-          </RecoilRoot>
-        </ChatSurfaceHarness>
-      </MemoryRouter>,
+      <Providers>
+        <Observer />
+        <SubagentCall
+          toolCallId="foreground-call"
+          initialProgress={1}
+          args={{ subagent_type: 'self', description: 'Compute the answer.' }}
+          output="legacy fallback"
+          persistedContent={persistedContent}
+        />
+      </Providers>,
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Ran agent' }));
@@ -661,74 +779,51 @@ describe('SubagentCall', () => {
         'Started subagent "self" background task. Poll the host background-task tool with background_task_id "task-1".',
     });
 
+    currentMessage = { messageId: 'nested-message', conversationId: null };
     render(
-      <MemoryRouter>
-        <ChatSurfaceHarness>
-          <RecoilRoot>
-            <MessageContext.Provider
-              value={{ messageId: 'nested-message', conversationId: null, isExpanded: true }}
-            >
-              <SubagentCall
-                toolCallId="nested-detached-call"
-                initialProgress={1}
-                args={{ subagent_type: 'self', run_in_background: true }}
-                output={output}
-              />
-            </MessageContext.Provider>
-          </RecoilRoot>
-        </ChatSurfaceHarness>
-      </MemoryRouter>,
+      <Providers>
+        <SubagentCall
+          toolCallId="nested-detached-call"
+          initialProgress={1}
+          args={{ subagent_type: 'self', run_in_background: true }}
+          output={output}
+        />
+      </Providers>,
     );
 
     expect(screen.getByRole('button', { name: 'Agent activity' })).toBeDisabled();
   });
 
   it('disables a nested fallback that cannot remain attached to the conversation host', () => {
+    currentMessage = { messageId: 'nested-message', conversationId: null };
     render(
-      <MemoryRouter>
-        <ChatSurfaceHarness>
-          <RecoilRoot>
-            <MessageContext.Provider
-              value={{ messageId: 'nested-message', conversationId: null, isExpanded: true }}
-            >
-              <SubagentCall
-                toolCallId="nested-foreground-call"
-                initialProgress={1}
-                args={{ subagent_type: 'self' }}
-                output="Nested result"
-              />
-            </MessageContext.Provider>
-          </RecoilRoot>
-        </ChatSurfaceHarness>
-      </MemoryRouter>,
+      <Providers>
+        <SubagentCall
+          toolCallId="nested-foreground-call"
+          initialProgress={1}
+          args={{ subagent_type: 'self' }}
+          output="Nested result"
+        />
+      </Providers>,
     );
 
     expect(screen.getByRole('button', { name: 'Ran agent' })).toBeDisabled();
   });
 
   /** Search results render this same card through `Part`, and that route is not
-   *  a chat surface — there is no panel on it to open. The card still has to
+   *  a chat surface, so there is no panel on it to open. The card still has to
    *  render; it just cannot be opened from there. */
   it('renders outside a chat surface with its details control disabled', () => {
+    currentMessage = { messageId: 'parent', conversationId: 'parent-conversation' };
     render(
-      <MemoryRouter>
-        <RecoilRoot>
-          <MessageContext.Provider
-            value={{
-              conversationId: 'parent-conversation',
-              messageId: 'parent',
-              isExpanded: false,
-            }}
-          >
-            <SubagentCall
-              toolCallId="hostless-call"
-              initialProgress={1}
-              args={{ subagent_type: 'self', description: 'Compute the answer.' }}
-              output="A result worth reading."
-            />
-          </MessageContext.Provider>
-        </RecoilRoot>
-      </MemoryRouter>,
+      <Providers surface={false}>
+        <SubagentCall
+          toolCallId="hostless-call"
+          initialProgress={1}
+          args={{ subagent_type: 'self', description: 'Compute the answer.' }}
+          output="A result worth reading."
+        />
+      </Providers>,
     );
 
     expect(screen.getByRole('button', { name: 'Ran agent' })).toBeDisabled();
@@ -742,27 +837,18 @@ describe('SubagentCall', () => {
       toolCallId: 'child-app-call',
       ui_resources: [{ uri: 'ui://e2e/app', toolName: 'show_app', serverName: 'e2e-app' }],
     } as unknown as TAttachment;
+    currentMessage = { messageId: 'parent', conversationId: 'parent-conversation' };
     const tree = (hideAttachments: boolean) => (
-      <MemoryRouter>
-        <RecoilRoot>
-          <MessageContext.Provider
-            value={{
-              conversationId: 'parent-conversation',
-              messageId: 'parent',
-              isExpanded: false,
-            }}
-          >
-            <SubagentCall
-              toolCallId="app-call"
-              initialProgress={1}
-              args={{ subagent_type: 'self', description: 'Show the app.' }}
-              output="Shown."
-              attachments={[app]}
-              hideAttachments={hideAttachments}
-            />
-          </MessageContext.Provider>
-        </RecoilRoot>
-      </MemoryRouter>
+      <Providers>
+        <SubagentCall
+          toolCallId="app-call"
+          initialProgress={1}
+          args={{ subagent_type: 'self', description: 'Show the app.' }}
+          output="Shown."
+          attachments={[app]}
+          hideAttachments={hideAttachments}
+        />
+      </Providers>
     );
     const rendered = render(tree(false));
 

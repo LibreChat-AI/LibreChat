@@ -10,6 +10,23 @@ jest.mock('react-i18next', () => ({
 }));
 
 describe('Button', () => {
+  it('keeps the activity card content-sized with native focus and disabled semantics', () => {
+    render(
+      <Button variant="activity-card" disabled>
+        <span>Agent activity</span>
+        <ul>
+          <li>Details</li>
+        </ul>
+      </Button>,
+    );
+    const card = screen.getByRole('button', { name: 'Agent activity Details' });
+    expect(card).toBeDisabled();
+    expect(card).toHaveClass('flex-col', 'w-full', 'text-start', 'bg-surface-secondary');
+    expect(card).not.toHaveClass('h-theme-button', 'whitespace-nowrap', 'disabled:opacity-50');
+    expect(card.className).not.toContain('theme-disabled:');
+    expect(card.className).not.toContain('focus-visible:outline');
+  });
+
   it('keeps a confirming destructive button solid in every theme', () => {
     const destructive = cn(buttonVariants({ variant: 'destructive' }));
 
