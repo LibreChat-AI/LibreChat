@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
+import { spawnSync } from 'node:child_process';
 import { repoRoot, run } from './lint.helpers';
 
 /**
@@ -194,5 +195,93 @@ Promise.all(${JSON.stringify([
      *  disabled button still reads as not-allowed. */
     expect((await read('enabled', ['cursor'])).cursor).toBe('pointer');
     expect((await read('disabled', ['cursor'])).cursor).toBe('not-allowed');
+  });
+});
+
+/** The client test renders both real consumers. Only this browser lane asks it to save markup,
+ *  so ordinary Jest needs neither a browser binary nor the browser lane's services. */
+test.describe('phase label animation cascade', () => {
+  let fixture: { ticker: string; entrance: string; reduced: string };
+  let css: string;
+
+  test.beforeAll(async ({ browserName }, testInfo) => {
+    const fixturePath = testInfo.outputPath(`phase-label-${browserName}.json`);
+    mkdirSync(resolve(fixturePath, '..'), { recursive: true });
+    const rendered = spawnSync(
+      process.execPath,
+      [
+        resolve(repoRoot, 'node_modules/jest/bin/jest.js'),
+        'src/components/Chat/Messages/Content/__tests__/ActivityPhaseGroup.test.tsx',
+        '--maxWorkers=2',
+        '-t',
+        'exports real phase consumers for the browser cascade checks',
+      ],
+      {
+        cwd: resolve(repoRoot, 'client'),
+        env: { ...process.env, E2E_PHASE_CASCADE_FIXTURE: fixturePath },
+        encoding: 'utf8',
+      },
+    );
+    expect(rendered.status, rendered.stdout + rendered.stderr).toBe(0);
+    fixture = JSON.parse(readFileSync(fixturePath, 'utf8'));
+    const compilerPath = testInfo.outputPath('compile.cjs');
+    const compiledPath = testInfo.outputPath('app.css');
+    writeFileSync(
+      compilerPath,
+      `const {readFileSync, writeFileSync} = require('node:fs');
+const postcss = require(${JSON.stringify(require.resolve('postcss'))});
+const tailwind = require(${JSON.stringify(require.resolve('@tailwindcss/postcss'))});
+const input = ${JSON.stringify(resolve(repoRoot, 'client/src/style.css'))};
+postcss([tailwind()]).process(readFileSync(input, 'utf8'), {from: input})
+  .then(result => writeFileSync(${JSON.stringify(compiledPath)}, result.css))
+  .catch(error => { console.error(error); process.exitCode = 1; });`,
+    );
+    const compiled = run(process.execPath, [compilerPath]);
+    expect(compiled.status, compiled.output).toBe(0);
+    css = `${readFileSync(DIST_STYLESHEET, 'utf8')}\n${readFileSync(compiledPath, 'utf8')}`;
+  });
+
+  test('keeps the ticker curve, duration and retired fill @scenario:phase-label-ticker-cascade', async ({
+    page,
+  }) => {
+    await page.setContent(`<style>${css}</style>${fixture.ticker}`);
+    await expect(page.locator('.animate-in')).toHaveCSS(
+      'animation-timing-function',
+      'cubic-bezier(0.16, 1, 0.3, 1)',
+    );
+    await expect(page.locator('.animate-out')).toHaveCSS(
+      'animation-timing-function',
+      'cubic-bezier(0.16, 1, 0.3, 1)',
+    );
+    await expect(page.locator('.animate-in')).toHaveCSS('animation-duration', '0.3s');
+    await expect(page.locator('.animate-out')).toHaveCSS('animation-duration', '0.3s');
+    await expect(page.locator('.animate-in')).toHaveCSS('animation-fill-mode', 'none');
+    await expect(page.locator('.animate-out')).toHaveCSS('animation-fill-mode', 'forwards');
+  });
+
+  for (const reduced of [false, true]) {
+    test(`keeps the phase entrance with reduced motion ${reduced} @scenario:phase-label-entrance-cascade`, async ({
+      page,
+    }) => {
+      await page.emulateMedia({ reducedMotion: reduced ? 'reduce' : 'no-preference' });
+      await page.setContent(`<style>${css}</style>${fixture.entrance}`);
+      const card = page.getByTestId('activity-phase-card');
+      await expect(card).toHaveCSS(
+        'animation-timing-function',
+        reduced ? 'ease' : 'cubic-bezier(0.16, 1, 0.3, 1)',
+      );
+      await expect(card).toHaveCSS('animation-duration', reduced ? '0s' : '0.3s');
+      await expect(card).toHaveCSS('animation-fill-mode', 'none');
+      await expect(card).toHaveCSS('animation-name', reduced ? 'none' : 'enter');
+    });
+  }
+
+  test('calms the ticker and shimmer for reduced motion @scenario:phase-label-reduced-motion', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.setContent(`<style>${css}</style>${fixture.reduced}`);
+    await expect(page.locator('.shimmer-clip')).toHaveCSS('display', 'none');
+    await expect(page.locator('.animate-in, .animate-out')).toHaveCount(0);
   });
 });
