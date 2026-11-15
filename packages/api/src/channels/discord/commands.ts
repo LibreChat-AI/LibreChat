@@ -177,7 +177,7 @@ export function createDiscordCommandExecutor(deps: {
                 ? { discordDestination: { kind: 'guild_thread' as const, ...record.thread } }
                 : {}),
               externalChannelId: record.externalChannelId,
-              externalThreadKey: `${record.externalChannelId}:${record.eventId}`,
+              externalThreadKey: `${record.externalChannelId}:${record.thread ? record.externalChannelId : record.eventId}`,
               externalMessageKey: `${record.externalChannelId}:${record.eventId}`,
             },
           },

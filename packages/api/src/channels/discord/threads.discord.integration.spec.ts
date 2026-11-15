@@ -23,6 +23,8 @@ import {
   db,
   tenantId,
   owner,
+  other,
+  otherActor,
   applicationId,
   guildId,
   botUserId,
@@ -94,9 +96,9 @@ describe('signed native thread commands', () => {
   let submissionCode: string;
   let responseCreates: number;
   const json = (value: object, status = 200) => Response.json(value, { status });
-  async function inspect(): Promise<DiscordGuildThreadSource | null> {
+  async function inspect(authorId = externalUserId): Promise<DiscordGuildThreadSource | null> {
     return client.inspectGuildThreadSource(
-      { applicationId, botUserId, guildId, threadChannelId: threadId, authorId: externalUserId },
+      { applicationId, botUserId, guildId, threadChannelId: threadId, authorId },
       new AbortController().signal,
     );
   }
@@ -104,6 +106,7 @@ describe('signed native thread commands', () => {
     action: 'ask' | 'status' | 'cancel',
     prompt = 'Thread prompt',
     component?: { customId: string; messageId: string },
+    authorId = externalUserId,
   ) {
     const id = eventId();
     const body = JSON.stringify({
@@ -118,7 +121,7 @@ describe('signed native thread commands', () => {
       channel_id: threadId,
       // An untrusted partial channel must never select the canonical parent.
       channel: { id: threadId, type: 11, parent_id: '999999999999999999' },
-      member: { user: { id: externalUserId } },
+      member: { user: { id: authorId } },
       ...(component ? { message: { id: component.messageId, channel_id: threadId } } : {}),
       data: component
         ? { component_type: 2, custom_id: component.customId }
@@ -164,7 +167,7 @@ describe('signed native thread commands', () => {
       .send({ applicationId, owner: 'thread-inbox-worker' })
       .expect(200);
     expect(claimed.body.inspection.externalChannelId).toBe(threadId);
-    const source = await inspect();
+    const source = await inspect(authorId);
     const resolved = await request(control)
       .post('/resolve')
       .set('Authorization', `Bearer ${serviceToken}`)
@@ -196,9 +199,9 @@ describe('signed native thread commands', () => {
           }
           if (path.includes('/permissions/member/'))
             return json({
-              permissions: path.endsWith(`/${externalUserId}`)
-                ? '1024'
-                : String(BigInt(1024 | 65536) | (BigInt(1) << BigInt(38))),
+              permissions: path.endsWith(`/${botUserId}`)
+                ? String(BigInt(1024 | 65536) | (BigInt(1) << BigInt(38)))
+                : '1024',
             });
           return json({
             id: threadId,
@@ -420,7 +423,7 @@ describe('signed native thread commands', () => {
           eventId: sent.id,
           input: 'Thread prompt',
           externalChannelId: threadId,
-          externalThreadKey: `${threadId}:${sent.id}`,
+          externalThreadKey: `${threadId}:${threadId}`,
           discordDestination: { kind: 'guild_thread', parentChannelId: externalChannelId },
         });
         expect(await allRuns()).toHaveLength(1);
@@ -532,6 +535,33 @@ describe('signed native thread commands', () => {
         expect(write.path).toContain(`/channels/${threadId}/messages`);
         expect(write.body.allowed_mentions).toEqual({ parse: [], replied_user: false });
       }
+      const continued = await signed('ask', 'Continue the same thread');
+      const continuation = (await allRuns()).find(
+        (item) => item.admission.eventId === continued.id,
+      );
+      expect(continuation?.laneId).toBe(run.laneId);
+      expect(continuation?.admission.externalThreadKey).toBe(`${threadId}:${threadId}`);
+      const service = new ChannelClient(config, fetch, { type: 'discord' });
+      const signal = new AbortController().signal;
+      const claimed = await service.claim('thread-continuation', signal);
+      if (!claimed || !provider.effectContext) throw new Error('Missing continuation');
+      const context = await provider.effectContext(
+        claimed.run,
+        await service.channel(signal),
+        signal,
+      );
+      const prepared = await service.prepare(claimed.fence, signal, context);
+      if ('settled' in prepared) throw new Error('Continuation unexpectedly settled');
+      expect(prepared.request.previous_response_id).toBe('resp_thread');
+      const continuedRun = await runs.read(tenantId, channel.channelId, claimed.run.runId);
+      expect(continuedRun?.execution?.conversationId).toBe(run.execution?.conversationId);
+      expect(continuedRun?.execution?.parentMessageId).toBe('resp_thread');
+      await linked(otherActor, other);
+      const otherPrompt = await signed('ask', 'A separate actor', undefined, otherActor);
+      const isolated = (await allRuns()).find((item) => item.admission.eventId === otherPrompt.id);
+      expect(isolated?.principal.userId).toBe(other);
+      expect(isolated?.laneId).not.toBe(run.laneId);
+      expect(isolated?.admission.externalThreadKey).toBe(`${threadId}:${threadId}`);
     }));
   it('honors native Stop only for the confirmed message in the same mapped thread', () =>
     scope(async () => {

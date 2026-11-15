@@ -70,7 +70,7 @@ export async function touchDiscordCommandAuthority(
         eventId: record.eventId,
         input: 'control',
         externalChannelId: record.externalChannelId,
-        externalThreadKey: `${record.externalChannelId}:${record.eventId}`,
+        externalThreadKey: `${record.externalChannelId}:${record.thread ? record.externalChannelId : record.eventId}`,
         externalMessageKey: `${record.externalChannelId}:${record.eventId}`,
         ...(record.thread
           ? { discordDestination: { kind: 'guild_thread', ...record.thread } }
