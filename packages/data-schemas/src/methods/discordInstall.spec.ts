@@ -194,7 +194,7 @@ it('propagates operational failures and rejects malformed private state', async 
     ).rejects.toThrow(TypeError);
   }));
 
-it('erases only the deleted account OAuth state within its tenant and blocks reinsertion', async () =>
+it('erases the deleted account and owned application OAuth state within its tenant and blocks reinsertion', async () =>
   scope(async () => {
     value(await start());
     const otherUserId = '000000000000000000000002';
@@ -229,11 +229,11 @@ it('erases only the deleted account OAuth state within its tenant and blocks rei
     await closeResponseScopes(db, owner);
     await eraseChannelPersistenceForUser(db, owner);
     expect(await states.lookup(stateHash, new Date())).toBeNull();
-    expect(await states.lookup('c'.repeat(64), new Date())).not.toBeNull();
+    expect(await states.lookup('c'.repeat(64), new Date())).toBeNull();
     expect(await states.lookup('d'.repeat(64), new Date())).not.toBeNull();
-    expect(await start()).toEqual({ ok: false, error: { code: 'principal_unavailable' } });
+    expect(await start()).toEqual({ ok: false, error: { code: 'application_changed' } });
     await eraseChannelPersistenceForUser(db, owner);
-    expect(await states.lookup('c'.repeat(64), new Date())).not.toBeNull();
+    expect(await states.lookup('c'.repeat(64), new Date())).toBeNull();
   }));
 
 it.each([undefined, ''])(

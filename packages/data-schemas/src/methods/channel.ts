@@ -323,9 +323,16 @@ export function createAgentChannelMethods(
   }
 
   async function beginDeletion(channelId: string, createdBy: string) {
-    const parent = await channel().findOne({ channelId, createdBy }).select('tenantId').lean();
+    const parent = await channel().findOne({ channelId, createdBy }).select('tenantId type').lean();
     if (!parent) return null;
-    return retireAgentChannel(mongoose, { channelId, createdBy, tenantId: parent.tenantId });
+    return retireAgentChannel(
+      mongoose,
+      { channelId, createdBy, tenantId: parent.tenantId },
+      false,
+      parent.type === 'discord'
+        ? channelStorageConfigSchema.parse(await getStorageConfig()).erasureBatchSize
+        : undefined,
+    );
   }
 
   return {
@@ -474,7 +481,10 @@ export function createAgentChannelMethods(
           )
           .select(secrets)
           .lean();
-      const parent = await channel().findOne({ channelId, createdBy }).select('tenantId').lean();
+      const parent = await channel()
+        .findOne({ channelId, createdBy })
+        .select('tenantId type')
+        .lean();
       if (!parent) return null;
       await initializeChannelScope(mongoose, parent.tenantId, channelId);
       return ownerWrite(createdBy, parent.tenantId, async (session) => {
