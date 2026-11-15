@@ -19,6 +19,11 @@ const common = {
   token: z.string().min(1).max(4096),
   version: z.literal(1),
   guild_id: snowflake.optional(),
+  context: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
+  authorizing_integration_owners: z
+    .object({ '0': snowflake.optional(), '1': snowflake.optional() })
+    .strict()
+    .optional(),
   channel_id: snowflake.optional(),
   member: z.object({ user }).optional(),
   user: user.optional(),
@@ -141,6 +146,8 @@ export function normalizeDiscordCommand(
     interaction.type !== 2 ||
     interaction.application_id !== applicationId ||
     !interaction.guild_id ||
+    interaction.context !== 0 ||
+    interaction.authorizing_integration_owners?.['0'] !== interaction.guild_id ||
     !interaction.channel_id ||
     interaction.data.name !== commandName
   )

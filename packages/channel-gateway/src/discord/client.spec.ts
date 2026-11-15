@@ -48,6 +48,53 @@ describe('Discord REST writes', () => {
     ).rejects.toMatchObject({ outcome: 'retryable', retryAfterMs: 2500 });
     expect(f.transport).toHaveBeenCalledTimes(1);
   });
+  test.each(['malformed', 'oversized', 'interrupted', 'locked'])(
+    'retains Retry-After with a %s rate-limit body',
+    async (kind) => {
+      const f = fixture(async () => {
+        const headers = { 'retry-after': '65' };
+        if (kind === 'malformed') return new Response('{', { status: 429, headers });
+        if (kind === 'oversized') return new Response('x'.repeat(2049), { status: 429, headers });
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            if (kind === 'interrupted') controller.error(new Error('private transport detail'));
+          },
+        });
+        const response = new Response(stream, { status: 429, headers });
+        if (kind === 'locked') response.body?.getReader();
+        return response;
+      });
+      await expect(
+        f.client.createMessage('123', { content: 'hello' }, 'operation'),
+      ).rejects.toMatchObject({ outcome: 'retryable', retryAfterMs: 65_000 });
+      expect(f.transport).toHaveBeenCalledTimes(1);
+    },
+  );
+  test.each([undefined, 'invalid', '0', '-1', 'Infinity'])(
+    'uses a positive fallback for an unreadable 429 with header %s',
+    async (header) => {
+      const f = fixture(
+        async () =>
+          new Response('{', {
+            status: 429,
+            headers: header === undefined ? {} : { 'retry-after': header },
+          }),
+      );
+      await expect(
+        f.client.createMessage('123', { content: 'hello' }, 'operation'),
+      ).rejects.toMatchObject({ outcome: 'retryable', retryAfterMs: 1000 });
+    },
+  );
+  test('honors the header when the decoded body delay is invalid or shorter', async () => {
+    for (const retry_after of [0, -1, 'invalid', 1]) {
+      const f = fixture(async () =>
+        Response.json({ retry_after }, { status: 429, headers: { 'retry-after': '65' } }),
+      );
+      await expect(
+        f.client.createMessage('123', { content: 'hello' }, 'operation'),
+      ).rejects.toMatchObject({ outcome: 'retryable', retryAfterMs: 65_000 });
+    }
+  });
   test.each([500, 502, 503])('holds uncertain HTTP %s writes', async (status) => {
     const f = fixture(async () => new Response('untrusted diagnostics', { status }));
     await expect(
