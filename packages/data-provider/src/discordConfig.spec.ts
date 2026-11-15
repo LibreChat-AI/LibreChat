@@ -33,6 +33,7 @@ it('bounds durable interaction backlog, leases and deduplication retention', () 
     leaseMs: 30000,
     scanLimit: 20,
     retentionMs: 86400000,
+    retryDelayMs: 1000,
   });
   for (const inbox of [
     { maxPendingPerApplication: 0 },
@@ -41,6 +42,7 @@ it('bounds durable interaction backlog, leases and deduplication retention', () 
     { leaseMs: 120001 },
     { scanLimit: 101 },
     { retentionMs: 899999 },
+    { retryDelayMs: 99 },
     { retentionMs: 604800001 },
     { unknown: true },
   ])
