@@ -128,3 +128,4 @@ export * from './types/discordIngress';
 export * from './types/discordInbox';
 
 export * from './types/discordGateway';
+export * from './types/discordRuntime';
