@@ -3,9 +3,11 @@ import { Registry, collectDefaultMetrics, Counter } from 'prom-client';
 import type { Server } from 'node:http';
 import type { SocketConnection } from './socket';
 import { loadBootstrap, resolveGatewayConfig } from './config';
+import { DiscordRuntimeClient } from './discord/discovery';
 import { ChannelWorker, recoveryEvent } from './worker';
 import { runSharedWorkers } from './shared/worker';
 import { WorkspaceClient } from './shared/client';
+import { DiscordGatewayApp } from './discord/app';
 import { SharedGatewayApp } from './shared/app';
 import { assertSlackBundle } from './types';
 import { ServiceError } from './transport';
@@ -18,7 +20,7 @@ import { logger } from './types';
 async function main(): Promise<void> {
   const bootstrap = loadBootstrap(process.env);
   const controller = new AbortController();
-  let app: GatewayApp | SharedGatewayApp | undefined;
+  let app: GatewayApp | SharedGatewayApp | DiscordGatewayApp | undefined;
   let server: Server | undefined;
   let connection: SocketConnection | undefined;
   let worker: Promise<void> | undefined;
@@ -39,10 +41,16 @@ async function main(): Promise<void> {
   process.once('SIGINT', shutdown);
   try {
     const config = bootstrap.config;
-    let application: GatewayApp | SharedGatewayApp;
+    let application: GatewayApp | SharedGatewayApp | DiscordGatewayApp;
     let startWorker: () => Promise<void>;
     let startSocket: (() => Promise<SocketConnection>) | undefined;
-    if (bootstrap.mode === 'shared') {
+    if (bootstrap.mode === 'discord') {
+      const client = new DiscordRuntimeClient(bootstrap.config);
+      const settings = await client.bootstrap(controller.signal);
+      const discord = new DiscordGatewayApp(bootstrap.config, settings.discord, logger);
+      application = discord;
+      startWorker = () => discord.run(controller.signal);
+    } else if (bootstrap.mode === 'shared') {
       const client = new WorkspaceClient(bootstrap.config);
       const settings = await client.bootstrap(controller.signal);
       application = new SharedGatewayApp(bootstrap.config, client, settings, logger);
