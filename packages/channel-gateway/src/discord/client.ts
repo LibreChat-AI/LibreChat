@@ -190,20 +190,40 @@ export class DiscordClient {
     }
   }
   /** Discord computes roles and overwrites: https://docs.discord.com/developers/resources/channel#get-channel-member-permissions */
+  async getChannelMemberPermissions(
+    channelId: string,
+    userId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    channelSnowflakeSchema.parse(channelId);
+    channelSnowflakeSchema.parse(userId);
+    try {
+      const result = z
+        .object({ permissions: discordGuildTextSourceSchema.shape.permissions })
+        .safeParse(
+          await this.request(
+            'GET',
+            `/channels/${channelId}/permissions/member/${userId}`,
+            undefined,
+            signal,
+          ),
+        );
+      if (!result.success) throw new DiscordWriteError('unknown');
+      return result.data.permissions;
+    } catch (error) {
+      if (error instanceof DiscordWriteError && [403, 404].includes(error.status ?? 0)) return null;
+      throw error;
+    }
+  }
   async inspectGuildTextSource(
     input: { applicationId: string; botUserId: string; guildId: string; channelId: string },
     signal?: AbortSignal,
   ): Promise<DiscordGuildTextSource | null> {
     for (const value of Object.values(input)) channelSnowflakeSchema.parse(value);
     try {
-      const [rawChannel, rawPermissions] = await Promise.all([
+      const [rawChannel, permissions] = await Promise.all([
         this.request('GET', `/channels/${input.channelId}`, undefined, signal),
-        this.request(
-          'GET',
-          `/channels/${input.channelId}/permissions/member/${input.botUserId}`,
-          undefined,
-          signal,
-        ),
+        this.getChannelMemberPermissions(input.channelId, input.botUserId, signal),
       ]);
       const channel = z
         .object({
@@ -213,19 +233,17 @@ export class DiscordClient {
           flags: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
         })
         .safeParse(rawChannel);
-      const permissions = z
-        .object({ permissions: discordGuildTextSourceSchema.shape.permissions })
-        .safeParse(rawPermissions);
-      if (!channel.success || !permissions.success) throw new DiscordWriteError('unknown');
+      if (permissions === null) return null;
+      if (!channel.success) throw new DiscordWriteError('unknown');
       if (
         channel.data.id !== input.channelId ||
         channel.data.guild_id !== input.guildId ||
         channel.data.type !== 0 ||
         (BigInt(channel.data.flags ?? 0) & BigInt(1 << 17)) !== BigInt(0) ||
-        !discordGuildTextPermissions(permissions.data.permissions)
+        !discordGuildTextPermissions(permissions)
       )
         return null;
-      return { kind: 'guild_text', ...input, permissions: permissions.data.permissions };
+      return { kind: 'guild_text', ...input, permissions };
     } catch (error) {
       if (error instanceof DiscordWriteError && [403, 404].includes(error.status ?? 0)) return null;
       throw error;
