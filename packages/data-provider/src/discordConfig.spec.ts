@@ -25,3 +25,24 @@ it.each([
 ])('rejects invalid policy %#', (input) => {
   expect(discordChannelConfigSchema.safeParse(input).success).toBe(false);
 });
+
+it('bounds durable interaction backlog, leases and deduplication retention', () => {
+  expect(discordChannelConfigSchema.parse({}).inbox).toEqual({
+    maxPendingPerApplication: 1000,
+    maxPendingPerActor: 20,
+    leaseMs: 30000,
+    scanLimit: 20,
+    retentionMs: 86400000,
+  });
+  for (const inbox of [
+    { maxPendingPerApplication: 0 },
+    { maxPendingPerActor: 1001 },
+    { leaseMs: 4999 },
+    { leaseMs: 120001 },
+    { scanLimit: 101 },
+    { retentionMs: 899999 },
+    { retentionMs: 604800001 },
+    { unknown: true },
+  ])
+    expect(discordChannelConfigSchema.safeParse({ inbox }).success).toBe(false);
+});

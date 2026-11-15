@@ -1311,6 +1311,16 @@ export const sharedSlackGatewayWirePolicySchema = sharedSlackGatewayPolicySchema
 /** Discord transport and installation policy. Secrets remain in organization storage. */
 export const discordChannelConfigSchema = z
   .object({
+    inbox: z
+      .object({
+        maxPendingPerApplication: z.number().int().min(1).max(100_000).default(1000),
+        maxPendingPerActor: z.number().int().min(1).max(1000).default(20),
+        leaseMs: z.number().int().min(5000).max(120_000).default(30_000),
+        scanLimit: z.number().int().min(1).max(100).default(20),
+        retentionMs: z.number().int().min(900_000).max(604_800_000).default(86_400_000),
+      })
+      .strict()
+      .prefault({}),
     enabled: z.boolean().default(false),
     gateway: sharedSlackGatewayPolicySchema.prefault({}),
     flowLifetimeMs: z.number().int().min(60_000).max(3_600_000).default(600_000),
