@@ -105,8 +105,8 @@ export interface LocalSessionCookieOptions extends SessionHintOwner {
 }
 
 /**
- * Issues the cookies of a LibreChat-managed session together: the refresh token, its provider
- * marker and the readable hint naming the owner, so all three share one expiry and owner.
+ * Issues the refresh token, provider marker and readable owner hint together, and
+ * synchronizes OAuth browser ownership with the authenticated account.
  */
 export function setLocalSessionCookies(
   res: Response,
@@ -120,6 +120,9 @@ export function setLocalSessionCookies(
     sameSite: 'strict',
   });
   setSessionHintCookie(res, expires, { userId, tenantId });
+  if (userId && process.env.JWT_SECRET) {
+    setOAuthSessionCookie(res, userId.toString());
+  }
 }
 
 /** Retires the readable session hint when a request proves there is no session to vouch for. */
@@ -158,6 +161,9 @@ export function setOpenIDMarkerCookies(
 
   res.cookie(TOKEN_PROVIDER_COOKIE, 'openid', cookieOptions);
   setSessionHintCookie(res, expires, { userId, tenantId });
+  if (userId && process.env.JWT_SECRET) {
+    setOAuthSessionCookie(res, userId.toString());
+  }
 
   if (!userId || !reuseTokens) {
     return;
