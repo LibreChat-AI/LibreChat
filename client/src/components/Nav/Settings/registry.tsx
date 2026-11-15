@@ -847,7 +847,7 @@ export const registry: SettingEntry[] = [
     tab: ACCOUNT,
     section: 'connections',
     labelKey: 'com_ui_channel_link_personal',
-    keywords: ['slack', 'channel', 'identity', 'link', 'revoke'],
+    keywords: ['slack', 'discord', 'channel', 'identity', 'link', 'revoke'],
     Component: LinksSettings,
   },
   {
