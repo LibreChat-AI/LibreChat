@@ -28,6 +28,12 @@ jest.mock(
 );
 
 jest.mock('~/server/services/DiscordChannels', () => ({
+  discovery: Object.fromEntries(
+    ['bootstrap', 'applications', 'channels'].map((name) => [
+      name,
+      (_req, res) => res.sendStatus(401),
+    ]),
+  ),
   gateway: Object.fromEntries(
     ['acquire', 'renew', 'release', 'bootstrap', 'load', 'save'].map((name) => [
       name,

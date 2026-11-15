@@ -12,6 +12,7 @@ import {
   createDiscordInboxStorage,
   createDiscordCommandStorage,
   createDiscordGatewayStorage,
+  createDiscordRuntimeStorage,
   createChannelIdentityStorage,
   createChannelRunStorage,
   tenantStorage,
@@ -461,6 +462,7 @@ it('composes binding permissions, protected routing, and policy changes around t
     inbox: createDiscordInboxStorage(db, policy.inbox),
     commands: createDiscordCommandStorage(db),
     gateway: createDiscordGatewayStorage(db, policy.ownership),
+    discovery: createDiscordRuntimeStorage(db),
     application: { authority, storage: createChannelRunStorage(db) },
     policy,
     access,
@@ -478,7 +480,23 @@ it('composes binding permissions, protected routing, and policy changes around t
   app.get('/host/security/:applicationId', runtime.routes.security);
   app.post('/host/inbox/claim', runtime.inbox.claim);
   app.post('/host/gateway/acquire', runtime.gateway.acquire);
+  app.get('/host/runtime/bootstrap', runtime.discovery.bootstrap);
+  app.get('/host/runtime/applications', runtime.discovery.applications);
   app.post('/host/gateway/bootstrap', runtime.gateway.bootstrap);
+  await request(app).get('/host/runtime/bootstrap').expect(401);
+  const bootstrapConfig = await request(app)
+    .get('/host/runtime/bootstrap')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(200);
+  expect(bootstrapConfig.body.discord.enabled).toBe(true);
+  expect(JSON.stringify(bootstrapConfig.body)).not.toMatch(/private-|encrypted/);
+  const applications = await request(app)
+    .get('/host/runtime/applications')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(200);
+  expect(applications.body.applications).toEqual([
+    { applicationId, applicationRevision, tenantId: principal.tenantId },
+  ]);
   const { agentId, ...target } = input();
   const url = `/host/${agentId}/binding`;
   await request(app).put(url).send(target).expect(403);

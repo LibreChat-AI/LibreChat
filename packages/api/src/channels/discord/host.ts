@@ -12,6 +12,7 @@ import type {
   DiscordRouteStorage,
   DiscordInboxStorage,
   DiscordGatewayStorage,
+  DiscordRuntimeStorage,
   DiscordGatewayStoragePolicy,
   DiscordCommandStorage,
 } from '@librechat/data-schemas';
@@ -25,8 +26,10 @@ import type { SafeErrorMetadata } from '~/utils/errors';
 import { createDiscordBindingHandlers, createDiscordRouteHandlers } from './bindingHttp';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceAdminGuard } from '../workspaceRuntime';
+import { createDiscordRuntimeHandlers } from './discoveryHttp';
 import { createDiscordGatewayHandlers } from './gatewayHttp';
 import { createDiscordCommandExecutor } from './commands';
+import { createDiscordRuntimeService } from './discovery';
 import { createDiscordBindingService } from './bindings';
 import { createDiscordInboxHandlers } from './inboxHttp';
 import { createDiscordGatewayService } from './gateway';
@@ -46,6 +49,7 @@ export interface DiscordChannelRuntime {
   routes: ReturnType<typeof createDiscordRouteHandlers>;
   inbox: ReturnType<typeof createDiscordInboxHandlers>;
   gateway: ReturnType<typeof createDiscordGatewayHandlers>;
+  discovery: ReturnType<typeof createDiscordRuntimeHandlers>;
 }
 
 /** Read the canonical tenant policy on each authorization boundary, including disabled teardown. */
@@ -81,6 +85,7 @@ export function createDiscordChannelRuntime(
     routes: DiscordRouteStorage;
     inbox: DiscordInboxStorage;
     gateway: DiscordGatewayStorage;
+    discovery: DiscordRuntimeStorage;
     commands: DiscordCommandStorage;
     application: Pick<ChannelApplicationAuthority, 'authority' | 'storage'>;
     access: ChannelApplicationAuthorityDependencies['access'];
@@ -154,6 +159,10 @@ export function createDiscordChannelRuntime(
     retryDelayMs: async () => (await deps.policy.read()).inbox.retryDelayMs,
   });
   return {
+    discovery: createDiscordRuntimeHandlers({
+      serviceToken: deps.serviceToken,
+      service: createDiscordRuntimeService({ storage: deps.discovery, settings: deps.policy.read }),
+    }),
     gateway: createDiscordGatewayHandlers({
       serviceToken: deps.serviceToken,
       service: createDiscordGatewayService({
