@@ -593,6 +593,22 @@ jobs:
             npm run test:ci -- --shard=${{ matrix.shard }}/2 $JEST_JSON
           fi
         working-directory: client
+      # TEMPORARY diagnostic capture; remove before merge.
+      - name: Capture MCP transform evidence after failure
+        if: ${{ failure() && matrix.shard == 2 }}
+        continue-on-error: true
+        env:
+          MCP_CACHE_KEY: node-modules-frontend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
+          MCP_CACHE_HIT: ${{ steps.cache-node-modules.outputs.cache-hit }}
+        run: NODE_ENV=development COVERAGE=true node ../.github/scripts/mcp-cache.cjs
+        working-directory: client
+      - uses: actions/upload-artifact@v6
+        if: ${{ failure() && matrix.shard == 2 }}
+        continue-on-error: true
+        with:
+          name: mcp-transform-capture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mcp-transform-capture
+          retention-days: 7
       # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
       # Never part of the gate: it cannot fail the job or stall it into its timeout, and a re-run
       # overwrites its own artifact.
