@@ -204,3 +204,5 @@ export * from './channels/discord/messages';
 export * from './channels/discord/messageHttp';
 export * from './channels/discord/dm';
 export * from './channels/discord/dmHttp';
+export * from './channels/discord/dmMessages';
+export * from './channels/discord/dmMessageHttp';

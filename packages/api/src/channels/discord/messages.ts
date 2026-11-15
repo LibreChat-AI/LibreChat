@@ -22,8 +22,8 @@ import type { ChannelAuthority } from '../authority';
 import type { DiscordRouteResolver } from './routes';
 import { channelExternalIdentity } from '../authority';
 
-export type DiscordMessageServiceResult =
-  | { ok: true; value: DiscordMessageResult }
+export type DiscordMessageServiceResult<T = DiscordMessageResult> =
+  | { ok: true; value: T }
   | { ok: false; error: { code: 'authority_changed' | 'event_conflict' | 'invalid_input' } };
 export interface DiscordMessageService {
   submit(input: DiscordMessageSubmission): Promise<DiscordMessageServiceResult>;

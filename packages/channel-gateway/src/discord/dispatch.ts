@@ -6,7 +6,7 @@ import type { DiscordRuntimeClient } from './discovery';
 import type { DiscordRateCoordinator } from './rates';
 import { DiscordClient } from './client';
 
-/** Owned guild removals require fresh membership inspection; messages require an own-bot mention. */
+/** Guild messages require a bot mention; private messages require an explicit current selection. */
 export async function dispatchDiscordEvent(
   deps: {
     owner: DiscordGatewayOwner;
@@ -30,7 +30,16 @@ export async function dispatchDiscordEvent(
   )
     throw new Error('Discord event ownership changed');
   if (event.kind === 'guild' && event.state !== 'removed') return;
-  if (event.kind === 'message' && !discordMentionPrompt(event, deps.application.botUserId)) return;
+  if (
+    event.kind === 'message' &&
+    (event.guildId
+      ? !discordMentionPrompt(event, deps.application.botUserId)
+      : !deps.policy.dm.enabled ||
+        (event.channelType !== undefined && event.channelType !== 1) ||
+        event.authorId === deps.application.botUserId ||
+        !event.content.trim())
+  )
+    return;
   if (event.kind !== 'guild' && event.kind !== 'message') return;
   const client = new DiscordClient(
     {
@@ -46,6 +55,25 @@ export async function dispatchDiscordEvent(
     if (!target || (await client.isGuildMember(event.guildId, signal))) return;
     signal.throwIfAborted();
     await deps.gateway.removeGuild(deps.owner, target, signal);
+    return;
+  }
+  if (!event.guildId) {
+    const prepared = await deps.runtime.prepareDm(deps.owner, event, signal);
+    if (!prepared) return;
+    if (prepared.botUserId !== deps.application.botUserId)
+      throw new Error('Discord DM preparation bot changed');
+    const source = await client.inspectGuildTextActorSource(
+      {
+        applicationId: deps.owner.applicationId,
+        botUserId: deps.application.botUserId,
+        guildId: prepared.guildId,
+        channelId: prepared.parentChannelId,
+        authorId: event.authorId,
+      },
+      signal,
+    );
+    signal.throwIfAborted();
+    await deps.runtime.dmMessage(deps.owner, event, prepared, source, signal);
     return;
   }
   const source = event.guildId
