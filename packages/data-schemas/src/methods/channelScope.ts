@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { channelStorageConfigSchema } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
 import { startRequiredTransactionSession } from '~/utils/transactions';
@@ -7,6 +8,7 @@ import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createDiscordApplicationModel } from '~/models/discord';
 import { createChannelScopeModel } from '~/models/channelScope';
 import { createDiscordRouteModel } from '~/models/discordRoute';
+import { createDiscordInboxErasure } from './discordReceipt';
 import { touchChannelOwnerAdmission } from './channelOwner';
 import { touchSlackWorkspace } from './slackWorkspaceScope';
 import { createSlackRouteModel } from '~/models/slackRoute';
@@ -71,13 +73,24 @@ export async function lockChannelScope(
   channelId: string,
   session: ClientSession,
 ): Promise<void> {
+  if (!(await lockExistingChannelScope(mongoose, tenantId, channelId, session)))
+    throw new Error('Channel serialization fence unavailable');
+}
+
+/** Missing anchors already prevent admission; cleanup may still remove orphaned private rows. */
+export async function lockExistingChannelScope(
+  mongoose: typeof import('mongoose'),
+  tenantId: string | undefined,
+  channelId: string,
+  session: ClientSession,
+): Promise<boolean> {
   assertChannelTenant(tenantId);
   const locked = await createChannelScopeModel(mongoose).updateOne(
     { _id: key(tenantId, channelId) },
     { $inc: { revision: 1 } },
     { session },
   );
-  if (locked.matchedCount !== 1) throw new Error('Channel serialization fence unavailable');
+  return locked.matchedCount === 1;
 }
 
 /** Read canonical authority only after joining the same fence as every parent mutation. */
@@ -284,7 +297,10 @@ export async function retireAgentChannel(
   mongoose: typeof import('mongoose'),
   connection: { tenantId?: string; channelId: string; createdBy: string },
   redactCredentials = false,
+  erasureBatchSize?: number,
 ): Promise<AgentChannelRecord | null> {
+  if (erasureBatchSize !== undefined)
+    channelStorageConfigSchema.shape.erasureBatchSize.parse(erasureBatchSize);
   const { tenantId, channelId, createdBy } = connection;
   assertChannelTenant(tenantId);
   if (
@@ -326,12 +342,16 @@ export async function retireAgentChannel(
         { session },
       );
       await createDiscordRouteModel(mongoose).deleteMany(
-        { tenantId: tenantId ?? null, channelId },
+        { tenantId: tenantId || { $in: [null, ''] }, channelId },
         { session },
       );
       return record;
     });
     if (!deleting) return null;
+    if (deleting.type === 'discord')
+      await createDiscordInboxErasure(mongoose, async (scope, transaction) => {
+        await lockExistingChannelScope(mongoose, scope.tenantId, scope.channelId, transaction);
+      }).erase({ kind: 'channel', tenantId, channelId }, erasureBatchSize);
     await createChannelIdentityModel(mongoose).deleteMany({
       tenantId: tenantId || '_',
       'identity.channelId': channelId,

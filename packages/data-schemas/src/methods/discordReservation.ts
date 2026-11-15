@@ -21,7 +21,7 @@ export async function reserveDiscordApplication(
   const reservations = createDiscordReservationModel(mongoose);
   const record = await reservations
     .findOneAndUpdate(
-      { applicationId, tenantId: tenantId ?? null },
+      { applicationId, tenantId: tenantId || { $in: [null, ''] } },
       {
         $setOnInsert: { tenantId, retiring: false },
         $inc: { authorityWrites: 1 },
@@ -32,17 +32,21 @@ export async function reserveDiscordApplication(
   if (!record) throw new Error('Discord application reservation unavailable');
   if (!record.retiring) return true;
   const remainingApplication = await createDiscordApplicationModel(mongoose)
-    .exists({ applicationId, tenantId: tenantId ?? null })
+    .exists({ applicationId, tenantId: tenantId || { $in: [null, ''] } })
     .session(session);
   const remainingChannels = await createAgentChannelModel(mongoose)
-    .exists({ type: 'discord', tenantId: tenantId ?? null, 'discord.applicationId': applicationId })
+    .exists({
+      type: 'discord',
+      tenantId: tenantId || { $in: [null, ''] },
+      'discord.applicationId': applicationId,
+    })
     .session(session);
   const remainingGuilds = await createDiscordGuildModel(mongoose)
-    .exists({ applicationId, tenantId: tenantId ?? null })
+    .exists({ applicationId, tenantId: tenantId || { $in: [null, ''] } })
     .session(session);
   if (remainingApplication || remainingChannels || remainingGuilds) return false;
   const updated = await reservations.updateOne(
-    { applicationId, tenantId: tenantId ?? null, retiring: true },
+    { applicationId, tenantId: tenantId || { $in: [null, ''] }, retiring: true },
     { $set: { retiring: false } },
     { session },
   );
@@ -58,7 +62,7 @@ export async function retireDiscordReservation(
 ): Promise<void> {
   const tenantId = tenant();
   await createDiscordReservationModel(mongoose).updateOne(
-    { applicationId, tenantId: tenantId ?? null },
+    { applicationId, tenantId: tenantId || { $in: [null, ''] } },
     {
       $setOnInsert: { tenantId },
       $set: { retiring: true },

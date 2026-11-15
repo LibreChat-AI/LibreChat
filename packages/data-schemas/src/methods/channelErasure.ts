@@ -7,6 +7,7 @@ import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createDiscordInstallModel } from '~/models/discordInstall';
 import { createSlackInstallModel } from '~/models/slackWorkspace';
 import { createSlackThreadRouteModel } from '~/models/slackRoute';
+import { eraseDiscordPersistenceForUser } from './discordErasure';
 import { createAgentApiKeyModel } from '~/models/agentApiKey';
 import { createAgentChannelModel } from '~/models/channel';
 import { createIndexesWithRetry } from '~/utils/retry';
@@ -26,6 +27,7 @@ export async function eraseChannelPersistenceForUser(
   options: Pick<Partial<ChannelStorageConfig>, 'erasureBatchSize'> = {},
 ): Promise<void> {
   resolveChannelErasureConfig(options);
+  await eraseDiscordPersistenceForUser(mongoose, owner, options);
   const tenantId = owner.tenantId || '_';
   await createAgentApiKeyModel(mongoose).deleteMany({
     userId: owner.userId,
@@ -61,7 +63,12 @@ export async function eraseChannelPersistenceForUser(
     for await (const connection of connections) {
       // Keep redacted deletion metadata while other principals' runs drain. The
       // deleted owner's credentials are erased immediately.
-      await retireAgentChannel(mongoose, { ...connection, createdBy: owner.userId }, true);
+      await retireAgentChannel(
+        mongoose,
+        { ...connection, createdBy: owner.userId },
+        true,
+        options.erasureBatchSize,
+      );
       await eraseChannelFeedbackForChannel(mongoose, connection.tenantId, connection.channelId);
       if (
         !(await runs.exists({
