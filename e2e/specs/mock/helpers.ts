@@ -67,7 +67,10 @@ export async function selectMockEndpoint(page: Page, endpoint: MockEndpoint) {
   const expands = (await option.getAttribute('aria-expanded')) != null;
   await option.click();
   if (expands) {
-    await page.getByRole('option', { name: endpoint.model, exact: true }).click();
+    await page
+      .getByRole('option')
+      .filter({ has: page.getByText(endpoint.model, { exact: true }) })
+      .click();
   }
   await expect(trigger).toContainText(expands ? endpoint.model : endpoint.label);
   await expect(trigger).toHaveAttribute('aria-expanded', 'false');
