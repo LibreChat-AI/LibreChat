@@ -20,6 +20,7 @@ import { setOAuthSession, setLocalSessionCookies, setOpenIDMarkerCookies } from 
 import { DISCORD_MANAGEMENT_PATH, DISCORD_FLOW_COOKIE, DISCORD_CALLBACK_PATH } from './http';
 import { preAuthTenantMiddleware } from '~/middleware/preAuthTenant';
 import { createSameOriginGuard } from '~/middleware/origin';
+import { discordCommandManifest } from './registration';
 
 const db = new mongoose.Mongoose();
 const userId = '000000000000000000000001';
@@ -207,6 +208,7 @@ beforeEach(async () => {
   const origin = createSameOriginGuard({ trustedOrigins: [publicBaseUrl, clientBaseUrl] });
   app.get(`${base}/apps`, handlers.applications);
   app.put(`${base}/apps`, origin, handlers.configure);
+  app.post(`${base}/apps/:applicationId/commands`, origin, handlers.register);
   app.get(`${base}/guilds`, handlers.guilds);
   app.post(`${base}/connect`, origin, setOAuthSession, handlers.connect);
   app.delete(`${base}/attempts/:flowId`, origin, handlers.cancel);
@@ -492,4 +494,47 @@ it('preserves admin discovery and teardown while Discord is disabled', async () 
   expect((await scoped(async () => models.DiscordGuild.findOne({ guildId }).lean()))?.status).toBe(
     'disconnected',
   );
+});
+
+it('exposes an explicit authenticated same-origin command registration operation', async () => {
+  const configured = await register();
+  const path = `${base}/apps/${applicationId}/commands`;
+  const input = { applicationId, expectedRevision: configured.body.revision, manifestVersion: '1' };
+  payloads[`/applications/${applicationId}/commands`] = {
+    ...discordCommandManifest,
+    id: '234567890123456789',
+    application_id: applicationId,
+    version: '345678901234567890',
+  };
+  expect(providerFetch.mock.calls.some(([url]) => url.endsWith('/commands'))).toBe(false);
+  await request(app).post(path).send(input).expect(401);
+  await request(app)
+    .post(path)
+    .set('Authorization', 'Bearer admin')
+    .set('Origin', 'https://attacker.example')
+    .send(input)
+    .expect(403);
+  await authorize(path)
+    .send({ ...input, manifestVersion: '2' })
+    .expect(400);
+  await authorize(path)
+    .send({ ...input, applicationId: '999' })
+    .expect(400);
+  await authorize(path)
+    .send({ ...input, botToken: 'browser-secret' })
+    .expect(400);
+  expect(providerFetch.mock.calls.some(([url]) => url.endsWith('/commands'))).toBe(false);
+  const result = await authorize(path).send(input).expect(200);
+  expect(result.body).toEqual({
+    applicationId,
+    commandId: '234567890123456789',
+    providerVersion: '345678901234567890',
+    manifestVersion: '1',
+  });
+  expect(JSON.stringify(result.body)).not.toMatch(/private|encrypted/);
+  await authorize(path)
+    .send({ ...input, expectedRevision: 'stale' })
+    .expect(409);
+  settings = undefined;
+  await authorize(path).send(input).expect(404);
 });

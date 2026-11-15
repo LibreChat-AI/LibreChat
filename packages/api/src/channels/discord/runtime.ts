@@ -132,6 +132,7 @@ export function createDiscordManagementRuntime(
   return {
     applications: handle('applications'),
     configure: handle('configure'),
+    register: handle('register'),
     guilds: handle('guilds'),
     connect: handle('connect'),
     cancel: handle('cancel'),

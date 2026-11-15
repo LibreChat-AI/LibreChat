@@ -1,6 +1,17 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
-import { channelSnowflakeSchema, configureDiscordApplicationSchema } from 'librechat-data-provider';
+import {
+  channelSnowflakeSchema,
+  configureDiscordApplicationSchema,
+  registerDiscordCommandsSchema,
+} from 'librechat-data-provider';
+import type {
+  ConfigureDiscordApplication,
+  RegisterDiscordCommands,
+  DiscordCommandRegistration,
+  DiscordApplication,
+  DiscordGuild,
+} from 'librechat-data-provider';
 import type {
   DiscordInstallationStorage,
   DiscordInstallStorage,
@@ -8,11 +19,6 @@ import type {
   DiscordStorageError,
   DiscordInstallError,
 } from '@librechat/data-schemas';
-import type {
-  ConfigureDiscordApplication,
-  DiscordApplication,
-  DiscordGuild,
-} from 'librechat-data-provider';
 import type { DiscordProviderClient, DiscordProviderError } from './client';
 import type { SafeErrorMetadata } from '~/utils/errors';
 import { getSafeErrorMetadata } from '~/utils/errors';
@@ -99,6 +105,41 @@ export function createDiscordManagementService(deps: {
     }
   }
   return {
+    register(
+      principal: DiscordManagementPrincipal,
+      input: RegisterDiscordCommands,
+    ): Promise<DiscordManagementResult<DiscordCommandRegistration>> {
+      return protect(async () => {
+        if (!(await authorized(principal))) return failure('forbidden');
+        if (!(await settings()).enabled) return failure('not_configured');
+        const parsed = registerDiscordCommandsSchema.safeParse(input);
+        if (!parsed.success) return failure('invalid_input');
+        const authority = {
+          actorId: principal.id,
+          applicationId: parsed.data.applicationId,
+          expectedRevision: parsed.data.expectedRevision,
+        };
+        const admitted = await deps.installations.authorizeApplication(authority);
+        if (!admitted.ok) return admitted;
+        const current = admitted.value;
+        const botToken = await deps.decrypt(current.encryptedBotToken);
+        if (!(await authorized(principal))) return failure('forbidden');
+        if (!(await settings()).enabled) return failure('not_configured');
+        const result = await deps.provider.registerCommands({
+          application: {
+            applicationId: current.applicationId,
+            botUserId: current.botUserId,
+            publicKey: current.publicKey,
+            name: current.name ?? 'LibreChat',
+          },
+          botToken,
+        });
+        if (!(await authorized(principal))) return failure('forbidden');
+        if (!(await settings()).enabled) return failure('not_configured');
+        const latest = await deps.installations.authorizeApplication(authority);
+        return latest.ok ? result : latest;
+      });
+    },
     configure(
       principal: DiscordManagementPrincipal,
       input: ConfigureDiscordApplication,
