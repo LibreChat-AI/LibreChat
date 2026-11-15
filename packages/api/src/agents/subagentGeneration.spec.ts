@@ -450,6 +450,146 @@ describe('child generation host', () => {
     expect((await manager.getJob(threadId))?.status).toBe('aborted');
   });
 
+  describe('when the job store misbehaves at settlement', () => {
+    const wrap = (overrides: Partial<ChildGenerationManager>): ChildGenerationManager => ({
+      getJob: manager.getJob.bind(manager),
+      createJob: manager.createJob.bind(manager),
+      touchJob: manager.touchJob.bind(manager),
+      setContentParts: manager.setContentParts.bind(manager),
+      emitChunk: manager.emitChunk.bind(manager),
+      claimTerminalJob: manager.claimTerminalJob.bind(manager),
+      publishTerminalClaim: manager.publishTerminalClaim.bind(manager),
+      finishTerminalJob: manager.finishTerminalJob.bind(manager),
+      ...overrides,
+    });
+
+    it('releases a terminal claim that lands after the wait, with a refetch notice', async () => {
+      let land!: () => void;
+      const landed = new Promise<void>((resolve) => {
+        land = resolve;
+      });
+      const late = wrap({
+        claimTerminalJob: async (...args) => {
+          await landed;
+          return manager.claimTerminalJob(...args);
+        },
+      });
+      const generation = await createChildGenerationHost(late, { settleTimeoutMs: 20 }).open(
+        input(),
+      );
+      let done: ServerSentEvent | undefined;
+      await manager.subscribe(
+        threadId,
+        () => undefined,
+        (event) => {
+          done = event;
+        },
+      );
+      const persist = jest.fn(async () => final);
+
+      await generation?.settle(false, persist);
+      expect(persist).toHaveBeenCalledTimes(1);
+      expect(done).toBeUndefined();
+      expect((await manager.getJob(threadId))?.status).toBe('running');
+
+      land();
+      await flush();
+      await flush();
+
+      expect(done).toMatchObject({ final: true, reconcile: true });
+      expect((await manager.getJob(threadId))?.status).toBe('complete');
+    });
+
+    it('persists and returns when the terminal claim throws', async () => {
+      const failing = wrap({
+        claimTerminalJob: async () => {
+          throw new Error('redis unavailable');
+        },
+      });
+      const generation = await createChildGenerationHost(failing).open(input());
+      const persist = jest.fn(async () => final);
+
+      await expect(generation?.settle(false, persist)).resolves.toBeUndefined();
+
+      expect(persist).toHaveBeenCalledTimes(1);
+    });
+
+    it('still releases the job when publishing the final event throws', async () => {
+      const finish = jest.fn(manager.finishTerminalJob.bind(manager));
+      const failing = wrap({
+        publishTerminalClaim: async () => {
+          throw new Error('redis unavailable');
+        },
+        finishTerminalJob: finish,
+      });
+      const generation = await createChildGenerationHost(failing).open(input());
+      const persist = jest.fn(async () => final);
+
+      await expect(generation?.settle(false, persist)).resolves.toBeUndefined();
+
+      expect(persist).toHaveBeenCalledTimes(1);
+      expect(finish).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives up waiting on a write that never lands, and keeps the content whole', async () => {
+      let writes = 0;
+      const stalled = wrap({
+        emitChunk: () => {
+          writes += 1;
+          return new Promise<void>(() => undefined);
+        },
+      });
+      const generation = await createChildGenerationHost(stalled, { settleTimeoutMs: 20 }).open(
+        input(),
+      );
+      generation?.emit(runStep('s1', 0));
+      generation?.emit(text('s1', 'never '));
+      generation?.emit(text('s1', 'written'));
+      const persist = jest.fn(async () => final);
+
+      await expect(generation?.settle(false, persist)).resolves.toBeUndefined();
+
+      expect(writes).toBe(1);
+      expect(persist).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(generation?.content())).toContain('never written');
+    });
+
+    it('stops queueing past its backlog limit without losing content', async () => {
+      let writes = 0;
+      const stalled = wrap({
+        emitChunk: () => {
+          writes += 1;
+          return new Promise<void>(() => undefined);
+        },
+      });
+      const generation = await createChildGenerationHost(stalled, { settleTimeoutMs: 20 }).open(
+        input(),
+      );
+      /** Distinct steps never merge, so each one is its own queued frame. */
+      for (let index = 0; index < 5_002; index += 1) {
+        generation?.emit(runStep(`step-${index}`, index));
+      }
+      generation?.emit(text('step-5001', 'after the limit'));
+
+      expect(writes).toBe(1);
+      expect(JSON.stringify(generation?.content())).toContain('after the limit');
+      const persist = jest.fn(async () => final);
+      await expect(generation?.settle(false, persist)).resolves.toBeUndefined();
+      expect(persist).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not throw from touch when the store rejects it', async () => {
+      const failing = wrap({
+        touchJob: async () => {
+          throw new Error('redis unavailable');
+        },
+      });
+      const generation = await createChildGenerationHost(failing).open(input());
+
+      await expect(generation?.touch()).resolves.toBeUndefined();
+    });
+  });
+
   it('refreshes the idle clock on touch', async () => {
     const generation = await createChildGenerationHost(manager).open(input());
     const touch = jest.spyOn(manager, 'touchJob');
