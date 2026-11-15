@@ -22,7 +22,8 @@ import type {
   TInsightsUser,
 } from 'librechat-data-provider';
 import type { Model, PipelineStage } from 'mongoose';
-import type { IAgent, IConversation, IUser } from '~/types';
+import type { IAgent, IConversation, IMessage, IUser } from '~/types';
+import type { ITransaction } from '~/schema/transaction';
 
 export type InsightsOptions = TInsightsParams & {
   tenantId?: string;
@@ -266,50 +267,41 @@ function conversationScope(
   ];
 }
 
+function indexedAgentMatch(agentIds: string[]) {
+  if (agentIds.length === 0) return { insightsAgentId: { $in: [] } };
+  return {
+    $or: [{ insightsAgentId: { $in: agentIds } }, { insightsAgentId: { $exists: false } }],
+  };
+}
+
 function messageScope(
   match: Record<string, unknown> & { $or?: ReturnType<typeof conversationOwnerMatch>[] },
   agentIds: string[],
   tenantId?: string,
 ): PipelineStage[] {
-  const { $or: ownerPairs, ...fields } = match;
-  const recordMatch = Object.fromEntries(
-    Object.entries(fields).map(([field, value]) => [`insightsMessage.${field}`, value]),
-  );
-  if (ownerPairs) {
-    recordMatch.$or = ownerPairs.map(({ conversationId, user }) => ({
-      'insightsMessage.conversationId': conversationId,
-      'insightsMessage.user': user,
-    }));
-  }
-  const ownerMatch = {
-    ...(fields.user != null ? { user: fields.user } : {}),
-    ...(fields.conversationId != null ? { conversationId: fields.conversationId } : {}),
-    ...(ownerPairs ? { $or: ownerPairs } : {}),
-  };
   return [
-    ...conversationScope(agentIds, tenantId),
-    { $match: ownerMatch },
+    { $match: { $and: [match, indexedAgentMatch(agentIds)] } },
     {
       $lookup: {
-        from: 'messages',
+        from: 'conversations',
         localField: 'conversationId',
         foreignField: 'conversationId',
-        as: 'insightsMessage',
+        as: 'insightsConversation',
       },
     },
-    { $unwind: '$insightsMessage' },
-    { $match: recordMatch },
+    { $unwind: '$insightsConversation' },
     {
-      $addFields: {
-        insightsOwnerMatches: { $eq: ['$user', '$insightsMessage.user'] },
+      $match: {
+        ...conversationEligibility(agentIds, tenantId, 'insightsConversation.'),
       },
     },
+    { $addFields: { insightsOwnerMatches: { $eq: ['$user', '$insightsConversation.user'] } } },
     { $match: { insightsOwnerMatches: true } },
-    { $replaceRoot: { newRoot: '$insightsMessage' } },
+    { $project: { insightsConversation: 0, insightsAgentId: 0, insightsOwnerMatches: 0 } },
   ];
 }
 
-/** Usage transactions of eligible conversations, owned by the conversation owner. */
+/** Date-bounded ledger reads, followed by live conversation/owner validation. */
 function transactionScope(
   agentIds: string[],
   tenantId: string | undefined,
@@ -317,56 +309,75 @@ function transactionScope(
   match: Record<string, unknown> = {},
 ): PipelineStage[] {
   return [
-    ...conversationScope(agentIds, tenantId),
-    {
-      $lookup: {
-        from: 'transactions',
-        localField: 'conversationId',
-        foreignField: 'conversationId',
-        as: 'insightsTransaction',
-      },
-    },
-    { $unwind: '$insightsTransaction' },
     {
       $match: {
-        ...tenantMatch(tenantId, 'insightsTransaction.'),
-        'insightsTransaction.createdAt': createdAt,
-        ...match,
+        $and: [
+          {
+            ...tenantMatch(tenantId),
+            createdAt,
+            tokenType: { $in: ['prompt', 'completion'] },
+            tokenValue: { $gte: -Number.MAX_VALUE, $lte: 0 },
+            ...Object.fromEntries(
+              Object.entries(match).map(([key, value]) => [
+                key.replace(/^insightsTransaction\./, ''),
+                value,
+              ]),
+            ),
+          },
+          indexedAgentMatch(agentIds),
+        ],
       },
     },
     {
       $addFields: {
-        insightsTransactionOwnerMatches: {
-          $eq: [
-            '$user',
-            {
-              $convert: {
-                input: '$insightsTransaction.user',
-                to: 'string',
-                onError: null,
-                onNull: null,
-              },
-            },
-          ],
-        },
-        insightsTransactionIsUsage: {
+        insightsUsageEligible: {
           $and: [
-            {
-              $or: [
-                { $eq: ['$insightsTransaction.tokenType', 'prompt'] },
-                { $eq: ['$insightsTransaction.tokenType', 'completion'] },
-              ],
-            },
-            { $gte: ['$insightsTransaction.tokenValue', -Number.MAX_VALUE] },
-            { $lte: ['$insightsTransaction.tokenValue', 0] },
+            { $or: [{ $eq: ['$tokenType', 'prompt'] }, { $eq: ['$tokenType', 'completion'] }] },
+            { $gte: ['$tokenValue', -Number.MAX_VALUE] },
+            { $lte: ['$tokenValue', 0] },
           ],
         },
       },
     },
+    { $match: { insightsUsageEligible: true } },
+    {
+      $lookup: {
+        from: 'conversations',
+        localField: 'conversationId',
+        foreignField: 'conversationId',
+        as: 'insightsConversation',
+      },
+    },
+    { $unwind: '$insightsConversation' },
     {
       $match: {
-        insightsTransactionOwnerMatches: true,
-        insightsTransactionIsUsage: true,
+        ...conversationEligibility(agentIds, tenantId, 'insightsConversation.'),
+      },
+    },
+    {
+      $addFields: {
+        insightsOwnerMatches: {
+          $eq: [
+            '$insightsConversation.user',
+            { $convert: { input: '$user', to: 'string', onError: null, onNull: null } },
+          ],
+        },
+      },
+    },
+    { $match: { insightsOwnerMatches: true } },
+    {
+      $project: {
+        _id: 0,
+        conversationId: 1,
+        user: '$insightsConversation.user',
+        insightsTransaction: {
+          _id: '$_id',
+          createdAt: '$createdAt',
+          model: '$model',
+          messageId: '$messageId',
+          tokenValue: '$tokenValue',
+          rawAmount: '$rawAmount',
+        },
       },
     },
   ];
@@ -462,6 +473,8 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
   async function getInsights(options: InsightsOptions = {}): Promise<InsightsResult> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const User = mongoose.models.User as Model<IUser>;
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const Transaction = mongoose.models.Transaction as Model<ITransaction>;
     const showDetails = options.showDetails !== false;
     const page = Math.max(1, Math.floor(options.page ?? 1));
     const pageSize = Math.min(50, Math.max(5, Math.floor(options.pageSize ?? 10)));
@@ -575,7 +588,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             { $count: 'total' },
           ])
         : Promise.resolve([] as CountResult[]),
-      Conversation.aggregate<MessageDay>([
+      Message.aggregate<MessageDay>([
         ...messagePipeline,
         {
           $addFields: {
@@ -637,12 +650,12 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         },
         { $sort: { date: 1 } },
       ]),
-      Conversation.aggregate<CountResult>([
+      Message.aggregate<CountResult>([
         ...messagePipeline,
         { $group: { _id: '$user' } },
         { $count: 'total' },
       ]),
-      Conversation.aggregate<DailyUsers>([
+      Message.aggregate<DailyUsers>([
         ...messagePipeline,
         {
           $group: {
@@ -659,7 +672,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         { $sort: { date: 1 } },
       ]),
       showDetails
-        ? Conversation.aggregate<MessageSummary>([
+        ? Message.aggregate<MessageSummary>([
             ...messagePipeline,
             { $group: { _id: '$user', messages: { $sum: 1 } } },
             { $sort: { messages: -1, _id: 1 } },
@@ -667,7 +680,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
           ])
         : Promise.resolve([] as MessageSummary[]),
       showDetails
-        ? Conversation.aggregate<ChurnedUserActivity>([
+        ? Message.aggregate<ChurnedUserActivity>([
             ...messageScope(
               {
                 ...tenant,
@@ -685,7 +698,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             { $limit: churnedUserLimit },
           ])
         : Promise.resolve([] as ChurnedUserActivity[]),
-      Conversation.aggregate<ModelSpend>([
+      Transaction.aggregate<ModelSpend>([
         ...transactionScope(agentIds, options.tenantId, { $gte: from, $lte: to }),
         // Deduplicate ledger rows before daily totals, independently of conversation joins.
         {
@@ -722,7 +735,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         { $sort: { date: 1, model: 1 } },
       ]),
       // Each reply counts once, under the model of its own run's last completion usage row.
-      Conversation.aggregate<ModelReplies>([
+      Transaction.aggregate<ModelReplies>([
         ...transactionScope(
           agentIds,
           options.tenantId,
@@ -966,7 +979,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     ] = await Promise.all([
       latestConversationMatches.length === 0
         ? Promise.resolve([] as ConversationMessageSummary[])
-        : Conversation.aggregate<ConversationMessageSummary>([
+        : Message.aggregate<ConversationMessageSummary>([
             ...messageScope(
               {
                 ...messageMatch,
@@ -986,7 +999,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
           ]),
       latestConversationMatches.length === 0
         ? Promise.resolve([] as FirstMessage[])
-        : Conversation.aggregate<FirstMessage>([
+        : Message.aggregate<FirstMessage>([
             ...messageScope(
               {
                 ...tenant,
@@ -1008,7 +1021,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
           ]),
       topUserIds.length === 0
         ? Promise.resolve([] as UserConversationCount[])
-        : Conversation.aggregate<UserConversationCount>([
+        : Message.aggregate<UserConversationCount>([
             ...messageScope(
               { ...messageMatch, user: { $in: topUserIds } },
               agentIds,
@@ -1019,7 +1032,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
           ]),
       churnedUserIds.length === 0
         ? Promise.resolve([] as ChurnedUserSummary[])
-        : Conversation.aggregate<ChurnedUserSummary>([
+        : Message.aggregate<ChurnedUserSummary>([
             ...messageScope(
               {
                 ...tenant,

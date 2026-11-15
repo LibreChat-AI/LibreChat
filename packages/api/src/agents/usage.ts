@@ -13,6 +13,7 @@ import type {
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { SubagentUsageEvent as AgentsSubagentUsageEvent } from '@librechat/agents';
+import type { InsightsConversationContext } from '@librechat/data-schemas';
 import type {
   StructuredTokenUsage,
   BulkWriteDeps,
@@ -901,6 +902,7 @@ export async function recordFallbackTokenUsage(
 }
 
 export interface RecordUsageParams {
+  insightsConversation?: InsightsConversationContext;
   user: string;
   conversationId: string;
   collectedUsage: UsageMetadata[];
@@ -927,6 +929,7 @@ export interface RecordUsageResult {
 }
 
 export interface DetachedSubagentUsageRecorderParams {
+  insightsConversation?: InsightsConversationContext;
   user: string;
   conversationId: string;
   model?: string;
@@ -959,6 +962,7 @@ export async function recordCollectedUsage(
     endpointTokenConfig,
     resolveEndpointTokenConfig,
     context = 'message',
+    insightsConversation,
   } = params;
 
   if (!collectedUsage || !collectedUsage.length) {
@@ -1013,6 +1017,7 @@ export async function recordCollectedUsage(
       }
 
       const txMetadata: TxMetadata = {
+        ...(insightsConversation != null && { insightsConversation }),
         user,
         balance,
         messageId,
@@ -1140,6 +1145,7 @@ export function createDetachedSubagentUsageRecorder(
         return;
       }
       await recordCollectedUsage(deps, {
+        insightsConversation: billing.insightsConversation,
         user: billing.user,
         conversationId: billing.conversationId,
         collectedUsage: [usage],

@@ -163,6 +163,7 @@ const messageSchema: Schema<IMessage> = new Schema(
       select: false,
       default: undefined,
     },
+    insightsAgentId: { type: String, select: false },
     subagentTranscript: {
       type: {
         taskId: { type: String, required: true },
@@ -393,5 +394,10 @@ messageSchema.index(
 
 // index for MeiliSearch sync operations
 messageSchema.index({ _meiliIndex: 1, isTemporary: 1, expiredAt: 1 });
+
+messageSchema.index(
+  { tenantId: 1, insightsAgentId: 1, createdAt: 1 },
+  { name: 'insights_root_period' },
+);
 
 export default messageSchema;

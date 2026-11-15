@@ -12,8 +12,11 @@ import type {
   TransactionData,
   IBalance,
 } from '~/types';
+import type { InsightsConversationContext } from './insights/attribution';
 import type { ITransaction } from '~/schema/transaction';
+import { withInsightsAttribution } from './insights/attribution';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { tenantStorage } from '~/config/tenantContext';
 import logger from '~/config/winston';
 
 const cancelRate = 1.15;
@@ -59,6 +62,7 @@ interface InternalTxDoc {
 
 /** Input data for creating a transaction */
 export interface TxData {
+  insightsConversation?: InsightsConversationContext;
   user: string | Types.ObjectId;
   conversationId?: string;
   model?: string;
@@ -682,7 +686,10 @@ export function createTransactionMethods(
     }
 
     const Transaction = mongoose.models.Transaction;
-    const transaction = new Transaction(txData);
+    const [indexedData] = await withInsightsAttribution(mongoose, [
+      { ...txData, tenantId: tenantStorage.getStore()?.tenantId },
+    ]);
+    const transaction = new Transaction(indexedData);
     transaction.endpointTokenConfig = txData.endpointTokenConfig;
     transaction.inputTokenCount = txData.inputTokenCount;
     calculateTokenValue(transaction);
@@ -719,7 +726,10 @@ export function createTransactionMethods(
     }
 
     const Transaction = mongoose.models.Transaction;
-    const transaction = new Transaction(txData);
+    const [indexedData] = await withInsightsAttribution(mongoose, [
+      { ...txData, tenantId: tenantStorage.getStore()?.tenantId },
+    ]);
+    const transaction = new Transaction(indexedData);
     transaction.endpointTokenConfig = txData.endpointTokenConfig;
     transaction.inputTokenCount = txData.inputTokenCount;
     transaction.write1hTokens = txData.write1hTokens;
@@ -841,7 +851,11 @@ export function createTransactionMethods(
     }
     try {
       const Transaction = mongoose.models.Transaction;
-      await Transaction.insertMany(docs);
+      const indexedDocs = await withInsightsAttribution(
+        mongoose,
+        docs.map((doc) => ({ ...doc, tenantId: tenantStorage.getStore()?.tenantId })),
+      );
+      await Transaction.insertMany(indexedDocs);
     } catch (error) {
       logger.error('[bulkInsertTransactions] Error inserting transaction docs:', error);
       throw error;

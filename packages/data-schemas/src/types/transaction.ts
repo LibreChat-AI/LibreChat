@@ -1,4 +1,7 @@
+import type { InsightsConversationContext } from '~/methods/insights/attribution';
+
 export interface TransactionData {
+  insightsConversation?: InsightsConversationContext;
   user: string;
   conversationId: string;
   tokenType: string;

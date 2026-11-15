@@ -508,6 +508,7 @@ describe('Insights methods', () => {
     const userFind = jest.spyOn(mongoose.models.User, 'find');
     const conversationAggregate = jest.spyOn(mongoose.models.Conversation, 'aggregate');
     const messageAggregate = jest.spyOn(mongoose.models.Message, 'aggregate');
+    const transactionAggregate = jest.spyOn(mongoose.models.Transaction, 'aggregate');
     const aggregate = await methods.getInsights({
       ...options,
       showDetails: false,
@@ -569,9 +570,13 @@ describe('Insights methods', () => {
     ]);
     expect(JSON.stringify(aggregate)).not.toContain(privateValue);
     expect(userFind).not.toHaveBeenCalled();
-    expect(conversationAggregate).toHaveBeenCalledTimes(6);
-    expect(messageAggregate).not.toHaveBeenCalled();
-    const pipelines = [...conversationAggregate.mock.calls, ...messageAggregate.mock.calls];
+    expect(conversationAggregate).toHaveBeenCalledTimes(1);
+    expect(messageAggregate).toHaveBeenCalledTimes(3);
+    const pipelines = [
+      ...conversationAggregate.mock.calls,
+      ...messageAggregate.mock.calls,
+      ...transactionAggregate.mock.calls,
+    ];
     const serialized = JSON.stringify(pipelines);
     expect(serialized).not.toContain('matchedIdentity');
     expect(serialized).not.toContain('firstMessage');
@@ -2728,6 +2733,7 @@ describe('Insights methods', () => {
   it('uses focused DocumentDB-compatible aggregations during searches', async () => {
     const conversationAggregateSpy = jest.spyOn(mongoose.models.Conversation, 'aggregate');
     const messageAggregateSpy = jest.spyOn(mongoose.models.Message, 'aggregate');
+    const transactionAggregateSpy = jest.spyOn(mongoose.models.Transaction, 'aggregate');
 
     try {
       await createScopedInsightsMethods().getInsights({
@@ -2751,6 +2757,9 @@ describe('Insights methods', () => {
       const allStages = [
         ...conversationPipelines.flat(),
         ...messageAggregateSpy.mock.calls.flatMap(([pipeline]) => pipeline as AggregationStage[]),
+        ...transactionAggregateSpy.mock.calls.flatMap(
+          ([pipeline]) => pipeline as AggregationStage[],
+        ),
       ];
       const searchedPipelines = conversationPipelines.filter((pipeline) =>
         pipeline.some((stage) => stage.$lookup?.from === 'users'),
@@ -2774,7 +2783,7 @@ describe('Insights methods', () => {
             stage.$lookup == null || (!('let' in stage.$lookup) && !('pipeline' in stage.$lookup)),
         ),
       ).toBe(true);
-      expect(messageAggregateSpy).not.toHaveBeenCalled();
+      expect(messageAggregateSpy).toHaveBeenCalled();
       expect(
         conversationPipelines.every((pipeline) => {
           const firstMatch = pipeline.find((stage) => stage.$match)?.$match;
@@ -2792,6 +2801,7 @@ describe('Insights methods', () => {
     } finally {
       conversationAggregateSpy.mockRestore();
       messageAggregateSpy.mockRestore();
+      transactionAggregateSpy.mockRestore();
     }
   });
 

@@ -1,0 +1,72 @@
+import type { AnyBulkWriteOperation } from 'mongodb';
+import type { Types } from 'mongoose';
+import type { InsightsRecordIdentity } from './attribution';
+import { resolveInsightsAttributions, insightsIdentityKey } from './attribution';
+import { runAsSystem } from '~/config/tenantContext';
+
+type IndexedRecord = InsightsRecordIdentity & { _id: Types.ObjectId; insightsAgentId?: string };
+
+export type InsightsBackfillOptions = {
+  collection: 'messages' | 'transactions';
+  after?: string;
+  batchSize: number;
+  apply?: boolean;
+};
+
+/** One resumable batch. Native collection reads deliberately cover every tenant. */
+export async function backfillInsightsAttribution(
+  mongoose: typeof import('mongoose'),
+  options: InsightsBackfillOptions,
+): Promise<{ processed: number; updated: number; nextAfter?: string }> {
+  if (!Number.isInteger(options.batchSize) || options.batchSize < 1) {
+    throw new Error('Insights backfill batchSize must be a positive integer');
+  }
+  if (options.after && !mongoose.Types.ObjectId.isValid(options.after)) {
+    throw new Error('Insights backfill cursor must be an ObjectId');
+  }
+  const db = mongoose.connection.db;
+  if (!db) throw new Error('Insights backfill requires a database connection');
+  const collection = db.collection<IndexedRecord>(options.collection);
+  const records = await collection
+    .find(options.after ? { _id: { $gt: new mongoose.Types.ObjectId(options.after) } } : {}, {
+      projection: { _id: 1, conversationId: 1, user: 1, tenantId: 1, insightsAgentId: 1 },
+    })
+    .sort({ _id: 1 })
+    .limit(options.batchSize)
+    .toArray();
+  const attributions = await runAsSystem(async () =>
+    resolveInsightsAttributions(mongoose, records),
+  );
+  const operations: AnyBulkWriteOperation<IndexedRecord>[] = [];
+  for (const record of records) {
+    const hint = attributions.get(insightsIdentityKey(record));
+    if (hint === record.insightsAgentId) continue;
+    operations.push({
+      updateOne: {
+        filter: {
+          _id: record._id,
+          conversationId: record.conversationId ?? { $exists: false },
+          user: record.user ?? { $exists: false },
+          tenantId: record.tenantId ?? { $exists: false },
+        },
+        update:
+          hint === undefined
+            ? { $unset: { insightsAgentId: '' } }
+            : { $set: { insightsAgentId: hint } },
+      },
+    });
+  }
+  const result =
+    options.apply && operations.length > 0
+      ? // This explicit cross-tenant migration uses native records and identity-scoped filters.
+        // eslint-disable-next-line no-restricted-syntax
+        await collection.bulkWrite(operations, { ordered: false })
+      : undefined;
+  return {
+    processed: records.length,
+    updated: result?.modifiedCount ?? operations.length,
+    ...(records.length === options.batchSize && {
+      nextAfter: records[records.length - 1]?._id.toString(),
+    }),
+  };
+}

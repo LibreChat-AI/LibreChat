@@ -194,10 +194,12 @@ export {
   CHECKPOINT_STORAGE_COLLECTION,
 } from './checkpoints/catalog';
 export type { CheckpointStorageRecord } from './checkpoints/catalog';
+export type { InsightsBackfillOptions } from './methods/insights/backfill';
+export type { InsightsConversationContext } from './methods/insights/attribution';
 export { createCheckpointDeletionJournal, checkpointDeletionTarget } from './checkpoints/journal';
 export { createActorCheckpointPruning } from './checkpoints/pruning';
 export { isCheckpointDatabaseAvailable } from './checkpoints/database';
-
+export { backfillInsightsAttribution,  } from './methods/insights/backfill';
 export { setupCheckpointIndexes } from './checkpoints/indexes';
 export {
   CheckpointTooLargeError,

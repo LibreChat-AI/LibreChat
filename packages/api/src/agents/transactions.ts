@@ -1,6 +1,6 @@
 import { CANCEL_RATE } from '@librechat/data-schemas';
+import type { TransactionData, InsightsConversationContext } from '@librechat/data-schemas';
 import type { TCustomConfig, TTransactionsConfig } from 'librechat-data-provider';
-import type { TransactionData } from '@librechat/data-schemas';
 import type { EndpointTokenConfig } from '~/types/tokens';
 
 type TokenType = 'prompt' | 'completion';
@@ -27,6 +27,7 @@ export interface PricingFns {
 }
 
 interface BaseTxData {
+  insightsConversation?: InsightsConversationContext;
   user: string;
   model?: string;
   context: string;
@@ -84,6 +85,7 @@ export interface StructuredTokenUsage {
 }
 
 export interface TxMetadata {
+  insightsConversation?: InsightsConversationContext;
   user: string;
   model?: string;
   context: string;

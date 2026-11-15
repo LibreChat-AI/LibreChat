@@ -2,6 +2,7 @@ import mongoose, { Schema, Document, Types } from 'mongoose';
 
 // @ts-ignore
 export interface ITransaction extends Document {
+  insightsAgentId?: string;
   user: Types.ObjectId;
   conversationId?: string;
   tokenType: 'prompt' | 'completion' | 'credits';
@@ -48,6 +49,7 @@ const transactionSchema: Schema<ITransaction> = new Schema(
     valueKey: {
       type: String,
     },
+    insightsAgentId: { type: String, select: false },
     rate: Number,
     rawAmount: Number,
     tokenValue: Number,
@@ -69,6 +71,11 @@ const transactionSchema: Schema<ITransaction> = new Schema(
 transactionSchema.index(
   { conversationId: 1, createdAt: 1 },
   { name: 'insights_conversation_period' },
+);
+
+transactionSchema.index(
+  { tenantId: 1, insightsAgentId: 1, createdAt: 1 },
+  { name: 'insights_root_period' },
 );
 
 export default transactionSchema;

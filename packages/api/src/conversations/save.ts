@@ -1,6 +1,11 @@
 import { logger } from '@librechat/data-schemas';
 import { excludedKeys, isAgentsEndpoint, isEphemeralAgentId } from 'librechat-data-provider';
-import type { AppConfig, ConversationMethods, IConversation } from '@librechat/data-schemas';
+import type {
+  AppConfig,
+  ConversationMethods,
+  IConversation,
+  MessageMethods,
+} from '@librechat/data-schemas';
 import type { TConversation } from 'librechat-data-provider';
 import type { PersistedReply } from './announce';
 import { isAnnounceableReply } from './announce';
@@ -11,7 +16,8 @@ type SavedMessageId = NonNullable<SaveConvoOptions['appendMessageIds']>[number];
 type ConversationStore = Pick<ConversationMethods, 'getConvo' | 'saveConvo'>;
 
 /** Retention context a message or conversation write runs under. */
-export type ConversationWriteContext = Parameters<SaveConvo>[0];
+export type ConversationWriteContext = Parameters<SaveConvo>[0] &
+  Pick<Parameters<MessageMethods['saveMessage']>[0], 'insightsConversation'>;
 
 /** The request state a turn's conversation writes read and update. */
 export interface TurnConversationRequest {
@@ -90,6 +96,20 @@ export function getConversationWriteContext(
       req?.body?.isTemporary,
     expiredAt: req?._agentEventBindingRetention?.expiredAt ?? resolved?.expiredAt ?? undefined,
     interfaceConfig: req?.config?.interfaceConfig,
+    ...(resolved?.conversationId &&
+      resolved.user && {
+        insightsConversation: {
+          conversationId: resolved.conversationId,
+          user: resolved.user,
+          tenantId: resolved.tenantId,
+          ...(Object.prototype.hasOwnProperty.call(resolved, 'initial_agent_id') && {
+            initial_agent_id: resolved.initial_agent_id,
+          }),
+          ...(Object.prototype.hasOwnProperty.call(resolved, 'subagentThread') && {
+            subagentThread: resolved.subagentThread,
+          }),
+        },
+      }),
   };
 }
 

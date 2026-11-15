@@ -26,6 +26,7 @@ const {
   applyContextToAgent,
   isMemoryAgentEnabled,
   recordCollectedUsage,
+  getConversationWriteContext,
   resolveRunUsageContext,
   getScheduleMCPExecution,
   createScheduledMCPPolicyRecorder,
@@ -3889,6 +3890,7 @@ class AgentClient extends BaseClient {
         messageId: this.responseMessageId,
         balance,
         transactions,
+        insightsConversation: getConversationWriteContext(this.options.req).insightsConversation,
         endpointTokenConfig: overrideTokenConfig
           ? endpointTokenConfig
           : this.options.endpointTokenConfig,
@@ -4022,6 +4024,7 @@ class AgentClient extends BaseClient {
     const options = this.options;
     const billing = {
       user: this.user ?? options?.req?.user?.id,
+      insightsConversation: getConversationWriteContext(options?.req).insightsConversation,
       conversationId: this.conversationId,
       messageId: this.responseMessageId,
       model: this.model ?? options?.agent?.model_parameters?.model,
@@ -6405,6 +6408,7 @@ class AgentClient extends BaseClient {
         promptTokens,
         completionTokens,
         txMetadata: {
+          insightsConversation: getConversationWriteContext(this.options.req).insightsConversation,
           model,
           balance,
           transactions,
