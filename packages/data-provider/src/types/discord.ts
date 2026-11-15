@@ -41,6 +41,21 @@ export const configureDiscordApplicationSchema = z
 
 export type ConfigureDiscordApplication = z.infer<typeof configureDiscordApplicationSchema>;
 
+export interface DiscordApplicationPage {
+  applications: DiscordApplication[];
+  next?: string;
+  setup?: { oauthCallbackUrl: string; interactionBaseUrl?: string };
+}
+export interface DiscordGuildPage {
+  guilds: DiscordGuild[];
+  next?: string;
+}
+export interface DiscordConnect {
+  url: string;
+  flowId: string;
+  expiresInSeconds: number;
+}
+
 export interface DiscordBindingStatus {
   occupied: boolean;
   assignedToThisAgent: boolean;

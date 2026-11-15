@@ -68,6 +68,18 @@ export default defineConfig(({ command }) => ({
       '/oauth': {
         target: backendURL,
         changeOrigin: true,
+        bypass(req) {
+          const url = new URL(req.url ?? '/', backendURL);
+          // Result pages need Vite's app shell; callbacks and social-login failures stay proxied.
+          if (
+            req.method === 'GET' &&
+            (url.pathname === '/oauth/success' ||
+              (url.pathname === '/oauth/error' &&
+                url.searchParams.getAll('error').some((value) => value.trim())))
+          ) {
+            return '/index.html';
+          }
+        },
       },
     },
   },

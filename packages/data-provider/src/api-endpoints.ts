@@ -29,6 +29,12 @@ export const responseCancel = (responseId: string): string =>
 export const slackWorkspaces = (workspaceId?: string): string =>
   `${apiBaseUrl()}/api/channels/workspaces${workspaceId ? `/${encodeURIComponent(workspaceId)}` : ''}`;
 
+export const discordManagement = (): string => `${apiBaseUrl()}/api/channels/discord`;
+export const discordGuild = (installationId: string): string =>
+  `${discordManagement()}/guilds/${encodeURIComponent(installationId)}`;
+export const discordAttempt = (flowId: string): string =>
+  `${discordManagement()}/attempts/${encodeURIComponent(flowId)}`;
+
 export const agentChannels = (agentId: string, channelId?: string): string =>
   `${BASE_URL}/api/agents/${encodeURIComponent(agentId)}/channels${
     channelId ? `/${encodeURIComponent(channelId)}` : ''

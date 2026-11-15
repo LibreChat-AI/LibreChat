@@ -18,6 +18,14 @@ import type {
   SetSlackWorkspaceRoute,
 } from './types/channels';
 import type {
+  DiscordApplication,
+  DiscordApplicationPage,
+  DiscordGuild,
+  DiscordGuildPage,
+  DiscordConnect,
+  ConfigureDiscordApplication,
+} from './types/discord';
+import type {
   ResponseReviewView,
   ResponseCancelReceipt,
   ResponseReviewDecision,
@@ -67,6 +75,70 @@ import * as r from './roles';
 
 export function listAgentChannels(agentId: string): Promise<ListedAgentChannel[]> {
   return request.get(endpoints.agentChannels(agentId));
+}
+
+function discordFailure(error: unknown): never {
+  const response = isAxiosError<{ error?: { code?: string } }>(error) ? error.response : undefined;
+  const allowed = new Set([
+    'forbidden',
+    'not_configured',
+    'application_changed',
+    'application_in_use',
+    'installation_changed',
+    'invalid_state',
+    'missing_permissions',
+    'unsupported_installation',
+    'transactions_unavailable',
+    'provider_refused',
+    'rate_limited',
+  ]);
+  const code = response?.data?.error?.code;
+  throw Object.assign(new Error('Discord operation was not confirmed'), {
+    code: code && allowed.has(code) ? code : 'unavailable',
+    status: response?.status,
+  });
+}
+
+export function getDiscordApps(cursor?: string): Promise<DiscordApplicationPage> {
+  return request
+    .get<DiscordApplicationPage>(
+      `${endpoints.discordManagement()}/apps${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+    )
+    .catch(discordFailure);
+}
+export function getDiscordGuilds(cursor?: string): Promise<DiscordGuildPage> {
+  return request
+    .get<DiscordGuildPage>(
+      `${endpoints.discordManagement()}/guilds${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+    )
+    .catch(discordFailure);
+}
+export function configureDiscordApplication(
+  input: ConfigureDiscordApplication,
+): Promise<DiscordApplication> {
+  return request.put(`${endpoints.discordManagement()}/apps`, input).catch(discordFailure);
+}
+export function connectDiscordGuild(
+  applicationId: string,
+  installationId?: string,
+): Promise<DiscordConnect> {
+  return request
+    .post(`${endpoints.discordManagement()}/connect`, {
+      applicationId,
+      ...(installationId ? { installationId } : {}),
+    })
+    .catch(discordFailure);
+}
+export function cancelDiscordInstall(flowId: string): Promise<boolean> {
+  return request.delete<boolean>(endpoints.discordAttempt(flowId)).catch(discordFailure);
+}
+export function disconnectDiscordGuild(
+  installationId: string,
+  revision: string,
+): Promise<DiscordGuild> {
+  return request
+    .deleteWithOptions<DiscordGuild>(endpoints.discordGuild(installationId), { data: { revision } })
+    .catch(discordFailure);
 }
 
 export function getResponseReview(responseId: string): Promise<ResponseReviewView> {
