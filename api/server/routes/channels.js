@@ -7,6 +7,7 @@ router.use(require('./slack-dispatch'));
 router.use(require('./channels-identity'));
 router.use(require('./channels-feedback'));
 router.get('/service/slack/:tenantId/:channelId', handlers.bundle);
+router.get('/service/discord/:tenantId/:channelId', handlers.discordBundle);
 router.get('/service/:channelId/threads/:externalThreadKey', handlers.getThread);
 router.put('/service/:channelId/threads/:externalThreadKey', handlers.putThread);
 router.post('/service/:channelId/runs', handlers.runs.admit);

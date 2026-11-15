@@ -186,6 +186,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
   remove: RequestHandler;
   manifest: RequestHandler;
   bundle: RequestHandler;
+  discordBundle: RequestHandler;
   getThread: RequestHandler;
   putThread: RequestHandler;
   service: ChannelServiceGuard;
@@ -414,7 +415,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
         const requestedTenant = req.params.tenantId ?? req.get('x-tenant-id') ?? '_';
         if (
           !channel ||
-          channel.type !== 'slack' ||
+          (channel.type !== 'slack' && channel.type !== 'discord') ||
           channel.status !== 'active' ||
           requestedTenant !== (channel.tenantId || '_')
         ) {
@@ -428,6 +429,12 @@ export function createChannelHandlers(deps: ChannelDependencies): {
             return;
           }
           const config = channelConfigSchema.parse(loaded);
+          if (channel.type === 'discord') {
+            if (!config.discord?.enabled || !channel.applicationRevision) {
+              res.status(404).json({ error: 'channel_not_found' });
+              return;
+            }
+          }
           if (
             channel.workspaceId &&
             (!config.slackApp?.enabled || config.transport !== 'webhook')
@@ -445,51 +452,85 @@ export function createChannelHandlers(deps: ChannelDependencies): {
   const service: ChannelServiceGuard = (handler) =>
     serviceWithConfig((req, res, channel, config) => handler(req, res, channel, config));
 
-  const bundle = serviceWithConfig(async (_req, res, channel, config) => {
-    const metadata = publicChannel(channel);
-    if (metadata.type !== 'slack') {
-      res.status(404).json({ error: 'channel_not_found' });
-      return;
-    }
-    const agent = await deps.getAgent(channel.agentId);
-    const slack = channel.slack;
-    if (
-      !agent ||
-      !channel.encryptedBotToken ||
-      !slack?.teamId ||
-      !slack.appId ||
-      !slack.botUserId
-    ) {
-      res.status(404).json({ error: 'channel_not_found' });
-      return;
-    }
-    const signing = channel.encryptedSigningSecret
-      ? decryptCredential(channel.encryptedSigningSecret)
-      : Promise.resolve('');
-    const [botToken, signingSecret] = await Promise.all([
-      decryptCredential(channel.encryptedBotToken),
-      signing,
-    ]);
-    res.set('Cache-Control', 'no-store');
-    if (!validSigningSecret(config, signingSecret)) {
-      res.status(409).json({ error: 'channel_signing_secret_required' });
-      return;
-    }
-    res.json({
-      channel: {
-        ...metadata,
-        revision: channel.revision,
-        slack,
-      },
-      credentials: { botToken, signingSecret },
-      agent: { id: agent.id, name: agent.name ?? 'Agent' },
-      delivery: { maxDeliveryParts: config.maxDeliveryParts },
-      gateway: channelGatewayWirePolicySchema.parse({
-        version: CHANNEL_GATEWAY_POLICY_VERSION,
-        ...config,
-      }),
-    } satisfies ChannelServiceBundle);
-  });
+  const bundle = (provider: 'slack' | 'discord') =>
+    serviceWithConfig(async (req, res, channel, config) => {
+      const metadata = publicChannel(channel);
+      if (metadata.type !== provider) {
+        res.status(404).json({ error: 'channel_not_found' });
+        return;
+      }
+      const agent = await deps.getAgent(channel.agentId);
+      if (metadata.type === 'discord') {
+        const expected = req.get('x-discord-application-revision');
+        if (expected !== undefined && expected !== channel.applicationRevision) {
+          res.status(409).json({ error: 'channel_application_changed' });
+          return;
+        }
+        if (
+          !agent ||
+          !channel.encryptedBotToken ||
+          !channel.applicationRevision ||
+          !config.discord?.enabled
+        ) {
+          res.status(404).json({ error: 'channel_not_found' });
+          return;
+        }
+        res.set('Cache-Control', 'no-store');
+        res.json({
+          channel: metadata,
+          applicationRevision: channel.applicationRevision,
+          credentials: { botToken: await decryptCredential(channel.encryptedBotToken) },
+          agent: { id: agent.id, name: agent.name ?? 'Agent' },
+          discord: config.discord,
+          delivery: { maxDeliveryParts: config.maxDeliveryParts },
+          gateway: channelGatewayWirePolicySchema.parse({
+            version: CHANNEL_GATEWAY_POLICY_VERSION,
+            ...config,
+            transport: 'webhook',
+            nativeSessions: false,
+            lifecycleReactions: false,
+          }),
+        } satisfies ChannelServiceBundle);
+        return;
+      }
+      const slack = channel.slack;
+      if (
+        !agent ||
+        !channel.encryptedBotToken ||
+        !slack?.teamId ||
+        !slack.appId ||
+        !slack.botUserId
+      ) {
+        res.status(404).json({ error: 'channel_not_found' });
+        return;
+      }
+      const signing = channel.encryptedSigningSecret
+        ? decryptCredential(channel.encryptedSigningSecret)
+        : Promise.resolve('');
+      const [botToken, signingSecret] = await Promise.all([
+        decryptCredential(channel.encryptedBotToken),
+        signing,
+      ]);
+      res.set('Cache-Control', 'no-store');
+      if (!validSigningSecret(config, signingSecret)) {
+        res.status(409).json({ error: 'channel_signing_secret_required' });
+        return;
+      }
+      res.json({
+        channel: {
+          ...metadata,
+          revision: channel.revision,
+          slack,
+        },
+        credentials: { botToken, signingSecret },
+        agent: { id: agent.id, name: agent.name ?? 'Agent' },
+        delivery: { maxDeliveryParts: config.maxDeliveryParts },
+        gateway: channelGatewayWirePolicySchema.parse({
+          version: CHANNEL_GATEWAY_POLICY_VERSION,
+          ...config,
+        }),
+      } satisfies ChannelServiceBundle);
+    });
 
   const getThread = service(async (_req, res) => {
     res.status(410).json({ error: 'use_actor_scoped_runs' });
@@ -497,5 +538,16 @@ export function createChannelHandlers(deps: ChannelDependencies): {
 
   const putThread = getThread;
 
-  return { list, create, update, remove, manifest, bundle, getThread, putThread, service };
+  return {
+    list,
+    create,
+    update,
+    remove,
+    manifest,
+    bundle: bundle('slack'),
+    discordBundle: bundle('discord'),
+    getThread,
+    putThread,
+    service,
+  };
 }

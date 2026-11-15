@@ -1,5 +1,15 @@
+import type { ChannelServiceBundle, SlackChannelServiceBundle } from 'librechat-data-provider';
 import type { ResponseReviewView } from 'librechat-data-provider';
-export type { ChannelServiceBundle as ChannelBundle } from 'librechat-data-provider';
+export type {
+  ChannelServiceBundle as ChannelBundle,
+  SlackChannelServiceBundle as SlackChannelBundle,
+} from 'librechat-data-provider';
+
+export function assertSlackBundle(
+  bundle: ChannelServiceBundle,
+): asserts bundle is SlackChannelServiceBundle {
+  if (bundle.channel.type !== 'slack') throw new Error('Unsupported Slack channel provider');
+}
 export type {
   ChannelRunLease as Lease,
   ChannelRunLeaseRenewal as LeaseRenewal,

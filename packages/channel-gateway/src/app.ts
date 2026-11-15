@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { ChannelBundle, Logger } from './types';
+import type { SlackChannelBundle as ChannelBundle, Logger } from './types';
 import type { GatewayRuntimeConfig } from './config';
 import type { ReviewInteraction } from './review';
 import { eventTimestampUs, normalizeEvent, parseEnvelope, parseWebhookRequest } from './events';
+import { assertSlackBundle } from './types';
 import { ServiceError } from './transport';
 import { IdentityFlow } from './identity';
 import { ChannelClient } from './client';
@@ -90,6 +91,7 @@ export class GatewayApp {
       },
       dispatch: async (body, headers, interactive, signal) => {
         const bundle = await this.client.channel(signal);
+        assertSlackBundle(bundle);
         signal.throwIfAborted();
         this.assertPolicy(bundle);
         const parsed = parseWebhookRequest(body, headers, bundle, interactive);
@@ -119,6 +121,7 @@ export class GatewayApp {
     try {
       signal.throwIfAborted();
       const bundle = verifiedBundle ?? (await this.client.channel(signal));
+      assertSlackBundle(bundle);
       this.assertPolicy(bundle);
       if (interactive) {
         const callback = interactionSchema.parse(body);

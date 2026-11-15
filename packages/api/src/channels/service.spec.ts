@@ -2,8 +2,10 @@ import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { discordChannelConfigSchema } from 'librechat-data-provider';
 import {
   createModels,
+  createDiscordInstallationStorage,
   createMethods,
   tenantStorage,
   runAsSystem,
@@ -11,6 +13,7 @@ import {
 } from '@librechat/data-schemas';
 import type { ChannelDependencies } from './service';
 import { acceptsChannelServiceToken, createChannelHandlers, publicChannel } from './service';
+import { encryptCredential } from '~/crypto/credentials';
 
 jest.mock('@librechat/data-schemas', () => {
   process.env.CREDS_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -44,6 +47,9 @@ beforeEach(async () => {
   await runAsSystem(async () => {
     await mongoose.models.AgentChannel.deleteMany({});
     await mongoose.models.ChannelRun.deleteMany({});
+    await mongoose.models.DiscordApplication.deleteMany({});
+    await mongoose.models.DiscordGuild.deleteMany({});
+    await mongoose.models.User.deleteMany({});
   });
   deps = {
     db,
@@ -66,6 +72,7 @@ beforeEach(async () => {
   app.delete('/ui/:agentId/channels/:channelId', handlers.remove);
   app.get('/ui/:agentId/channels/:channelId/manifest', handlers.manifest);
   app.get('/service/slack/:tenantId/:channelId', handlers.bundle);
+  app.get('/service/discord/:tenantId/:channelId', handlers.discordBundle);
   app.put('/service/:channelId/threads/:externalThreadKey', handlers.putThread);
   app.get('/service/:channelId/threads/:externalThreadKey', handlers.getThread);
 });
@@ -460,4 +467,92 @@ it('uses the same setup error contract for an authenticated service operation', 
     .set('Authorization', `Bearer ${serviceToken}`)
     .expect(503);
   expect(result.body).toEqual({ error: 'transactions_unavailable' });
+});
+
+async function createDiscordChannel() {
+  return tenantStorage.run({ tenantId }, async () => {
+    await mongoose.models.User.create({
+      _id: owner,
+      tenantId,
+      email: 'discord-owner@example.test',
+      provider: 'local',
+    });
+    const installations = createDiscordInstallationStorage(mongoose);
+    const applicationId = '123456789012345678';
+    const botUserId = '234567890123456789';
+    const guildId = '345678901234567890';
+    const application = await installations.configureApplication({
+      actorId: owner,
+      applicationId,
+      botUserId,
+      publicKey: 'a'.repeat(64),
+      encryptedBotToken: await encryptCredential('private-discord-token'),
+      encryptedClientSecret: await encryptCredential('private-oauth-secret'),
+    });
+    if (!application.ok) throw new Error(application.error.code);
+    const guild = await installations.connectGuild({
+      actorId: owner,
+      applicationId,
+      applicationRevision: application.value.revision,
+      guildId,
+      guildName: 'Guild',
+    });
+    if (!guild.ok) throw new Error(guild.error.code);
+    await db.createAgentChannel({
+      channelId: 'discord-channel',
+      tenantId,
+      agentId: 'agent-test',
+      createdBy: owner,
+      type: 'discord',
+      status: 'active',
+      credentialMode: 'per_user',
+      revision: 'channel-revision',
+      installationId: guild.value.installationId,
+      installationRevision: guild.value.revision,
+      applicationRevision: application.value.revision,
+      discord: { applicationId, guildId, botUserId, externalChannelId: '456789012345678901' },
+    });
+    return application.value.revision;
+  });
+}
+
+it('serves Discord credentials only through enabled authenticated provider and tenant scope', async () => {
+  const revision = await createDiscordChannel();
+  const url = `/service/discord/${tenantId}/discord-channel`;
+  await request(app).get(url).set('Authorization', `Bearer ${serviceToken}`).expect(404);
+  deps.config = async () => ({
+    enabled: true,
+    discord: discordChannelConfigSchema.parse({ enabled: true }),
+  });
+  await request(app).get(url).expect(401);
+  await request(app)
+    .get('/service/discord/other-tenant/discord-channel')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(404);
+  await request(app)
+    .get(`/service/slack/${tenantId}/discord-channel`)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(404);
+  await request(app)
+    .get(url)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .set('X-Discord-Application-Revision', 'stale')
+    .expect(409);
+  const response = await request(app)
+    .get(url)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .set('X-Discord-Application-Revision', revision)
+    .expect(200);
+  expect(response.headers['cache-control']).toBe('no-store');
+  expect(response.body).toMatchObject({
+    applicationRevision: revision,
+    channel: { type: 'discord', credentialMode: 'per_user' },
+    credentials: { botToken: 'private-discord-token' },
+    gateway: { nativeSessions: false, lifecycleReactions: false, transport: 'webhook' },
+  });
+  expect(JSON.stringify(response.body)).not.toContain('private-oauth-secret');
+  const metadata = await request(app).get('/ui/agent-test/channels').expect(200);
+  expect(JSON.stringify(metadata.body)).not.toMatch(
+    /private-discord-token|applicationRevision|encrypted/,
+  );
 });

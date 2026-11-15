@@ -202,6 +202,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'endpoints.agents.subagentActivity': 'startup',
   'endpoints.agents.eventDriven': 'startup',
   'endpoints.agents.channels.slackApp': 'operator',
+  'endpoints.agents.channels.discord': 'operator',
   'endpoints.agents.backgroundTasks.shutdownInterruptGraceMs': 'startup',
   'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
   'endpoints.agents.backgroundTasks.completionReceiptBatching': 'startup',
@@ -1307,8 +1308,48 @@ export const sharedSlackGatewayWirePolicySchema = sharedSlackGatewayPolicySchema
   pollIntervalMs: sharedSlackGatewayPolicySchema.shape.pollIntervalMs.removeDefault(),
 });
 
+/** Discord transport and installation policy. Secrets remain in organization storage. */
+export const discordChannelConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    gateway: sharedSlackGatewayPolicySchema.prefault({}),
+    flowLifetimeMs: z.number().int().min(60_000).max(3_600_000).default(600_000),
+    requestTimeoutMs: z.number().int().min(1000).max(30_000).default(10_000),
+    maxResponseBytes: z.number().int().min(1024).max(262_144).default(65_536),
+    signatureToleranceSeconds: z.number().int().min(1).max(300).default(300),
+    interactionTimeoutMs: z.number().int().min(100).max(2500).default(2000),
+    maxBodyBytes: z.number().int().min(1024).max(1_048_576).default(65_536),
+    botPermissions: z
+      .string()
+      .regex(/^[1-9]\d{0,19}$/)
+      .pipe(
+        z
+          .string()
+          .refine(
+            (value) =>
+              BigInt(value) <= BigInt('18446744073709551615') &&
+              (BigInt(value) & BigInt(8)) === BigInt(0),
+          ),
+      )
+      .default('274877975552'),
+    rateLimits: z
+      .object({
+        globalRequestsPerSecond: z.number().int().min(1).max(50).default(50),
+        maxQueued: z.number().int().min(1).max(10_000).default(100),
+        maxQueueWaitMs: z.number().int().min(100).max(300_000).default(30_000),
+        maxTrackedRoutes: z.number().int().min(1).max(100_000).default(4096),
+        idleTtlMs: z.number().int().min(1000).max(3_600_000).default(300_000),
+        fallbackRetryMs: z.number().int().min(100).max(300_000).default(1000),
+      })
+      .strict()
+      .prefault({}),
+  })
+  .strict();
+export type DiscordChannelConfig = z.infer<typeof discordChannelConfigSchema>;
+
 /** Channel runtime and operator policy; execution remains disabled by default. */
 export const channelConfigSchema = channelStorageConfigSchema.extend({
+  discord: discordChannelConfigSchema.optional(),
   enabled: z.boolean().default(false),
   transport: channelGatewayPolicySchema.shape.transport.default(
     DEFAULT_CHANNEL_GATEWAY_POLICY.transport,

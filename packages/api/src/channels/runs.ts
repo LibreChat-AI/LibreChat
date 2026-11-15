@@ -568,6 +568,13 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       const admission = parsed.data;
+      if (
+        channel.type === 'discord' &&
+        req.get('x-discord-application-revision') !== channel.applicationRevision
+      ) {
+        res.status(409).json({ error: 'channel_application_changed' });
+        return;
+      }
       if (!channelActorMatchesChannel(channel, admission.actor)) {
         res.status(403).json({ error: 'channel_actor_mismatch' });
         return;
@@ -583,6 +590,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
           channelId: channel.channelId,
           agentId: channel.agentId,
           workspaceId: channel.workspaceId,
+          applicationRevision: channel.applicationRevision,
           principal,
           admission,
         },
@@ -660,7 +668,12 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       const parsed = fenceBody.safeParse(req.body);
       const binding = await bound(req, res, channel, parsed.success ? parsed.data.fence : null);
       if (!binding) return;
-      let run = await deps.storage.prepareExecution(channel.tenantId ?? '_', binding.fence, now());
+      let run = await deps.storage.prepareExecution(
+        channel.tenantId ?? '_',
+        binding.fence,
+        now(),
+        channel.type === 'discord' ? req.get('x-discord-application-revision') : undefined,
+      );
       if (!run.execution || run.execution.deliveryKey || run.execution.enqueueAttemptedAt) {
         res.status(409).json({ error: 'execution_protocol_conflict' });
         return;
@@ -734,7 +747,12 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.json(await presentRun(channel, run));
         return;
       }
-      run = await deps.storage.prepareExecution(channel.tenantId ?? '_', fence, now());
+      run = await deps.storage.prepareExecution(
+        channel.tenantId ?? '_',
+        fence,
+        now(),
+        channel.type === 'discord' ? req.get('x-discord-application-revision') : undefined,
+      );
       const result = await deps.advance(run);
       if (deps.artifacts && result.snapshot.status === 'completed') {
         try {
@@ -852,6 +870,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
             binding.fence,
             parsed.data.revision,
             now(),
+            channel.type === 'discord' ? req.get('x-discord-application-revision') : undefined,
           ),
         ),
       );
@@ -939,6 +958,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
             binding.fence,
             parsed.data.operationId,
             now(),
+            channel.type === 'discord' ? req.get('x-discord-application-revision') : undefined,
           ),
         ),
       );

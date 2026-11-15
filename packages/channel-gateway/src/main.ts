@@ -7,6 +7,7 @@ import { ChannelWorker, recoveryEvent } from './worker';
 import { runSharedWorkers } from './shared/worker';
 import { WorkspaceClient } from './shared/client';
 import { SharedGatewayApp } from './shared/app';
+import { assertSlackBundle } from './types';
 import { ServiceError } from './transport';
 import { connectSocket } from './socket';
 import { ChannelClient } from './client';
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
     } else {
       const client = new ChannelClient(bootstrap.config);
       const bundle = await client.channel(controller.signal);
+      assertSlackBundle(bundle);
       const runtime = resolveGatewayConfig(bootstrap.config, bundle.gateway);
       const slack = new SlackClient(runtime, logger);
       const boundApp = new GatewayApp(runtime, client, slack, logger);

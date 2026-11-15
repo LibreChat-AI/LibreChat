@@ -3,6 +3,7 @@ import type {
   ChannelStorageConfig,
   ChannelGatewayWirePolicy,
   SharedSlackGatewayPolicy,
+  DiscordChannelConfig,
 } from '../config';
 
 export const SLACK_CHANNEL_BOT_SCOPES = [
@@ -283,4 +284,14 @@ export interface SlackChannelServiceBundle {
   delivery: Pick<ChannelStorageConfig, 'maxDeliveryParts'>;
 }
 
-export type ChannelServiceBundle = SlackChannelServiceBundle;
+export interface DiscordChannelServiceBundle {
+  channel: DiscordAgentChannel;
+  credentials: { botToken: string; signingSecret?: never };
+  applicationRevision: string;
+  agent: { id: string; name?: string };
+  gateway: ChannelGatewayWirePolicy;
+  discord: DiscordChannelConfig;
+  delivery: Pick<ChannelStorageConfig, 'maxDeliveryParts'>;
+}
+
+export type ChannelServiceBundle = SlackChannelServiceBundle | DiscordChannelServiceBundle;
