@@ -1,4 +1,12 @@
-import type { Run, RunConfig, EventHandler, IState, HookEvent } from '@librechat/agents';
+import type {
+  HostToolDescriptor,
+  HostToolBindings,
+  Run,
+  RunConfig,
+  EventHandler,
+  IState,
+  HookEvent,
+} from '@librechat/agents';
 import type { SdkAgentIdentity } from './identity';
 
 export interface RemoteSdkRecoveryOptions {
@@ -42,6 +50,7 @@ export type SdkRunInput = Parameters<SdkRun['processStream']>[0];
 export type SdkRunOptions = Parameters<SdkRun['processStream']>[1];
 export type SdkEventData = Parameters<EventHandler['handle']>[1];
 export interface RemoteSdkStart {
+  hostTools?: HostToolDescriptor[];
   operation: 'start' | 'resume';
   input: IState;
   resume?: unknown;
@@ -74,6 +83,7 @@ export interface RemoteSdkSnapshot {
   runSteps?: ReturnType<NonNullable<SdkRun['Graph']>['createRunStepResumeState']>;
 }
 export interface RemoteSdkFactoryInput {
+  hostTools?: HostToolBindings;
   identity: Readonly<SdkAgentIdentity>;
   /** Host-owned event, hook, and checkpoint adapters. Retain these in the returned Run. */
   config: Pick<RunConfig, 'runId' | 'customHandlers' | 'hooks' | 'humanInTheLoop' | 'streamLimits'>;

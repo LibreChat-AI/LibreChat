@@ -1,7 +1,7 @@
 const { Run, Providers, FakeChatModel } = require('@librechat/agents');
 
 /** Smallest key-free example: a real SDK Run, streamed through the native Agents UI. */
-async function createMinimalRun({ config, compileOptions, identity, agent, signal }) {
+async function createMinimalRun({ config, compileOptions, identity, agent, signal, hostTools }) {
   const run = await Run.create({
     ...config,
     returnContent: true,
@@ -16,6 +16,7 @@ async function createMinimalRun({ config, compileOptions, identity, agent, signa
           provider: Providers.OPENAI,
           instructions: agent.instructions,
           tools: [],
+          toolDefinitions: hostTools?.toolDefinitions,
           clientOptions: { model: 'gpt-4.1-mini' },
         },
       ],

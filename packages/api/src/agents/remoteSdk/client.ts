@@ -24,6 +24,7 @@ import type { SdkAgentIdentity } from './identity';
 import { hydrateResumeRunSteps, createContentIndexOffsetHandlers } from '../hitl/resume';
 import { connectRecoveringSdkSocket } from './recovery/client';
 import { remoteSdkLimits, isRemoteSdkSecret } from './types';
+import { createHostToolService } from './hostTools';
 import { createSdkPeer } from './peer';
 
 /** Construct a real local Run whose execution is delegated to one operator-trusted runtime. */
@@ -38,6 +39,8 @@ export async function createRemoteSdkRun({
   remote: RemoteSdkOptions;
   resumeState?: RemoteSdkResumeState;
 }): ReturnType<typeof Run.create> {
+  if (config.clientDelegatedToolNames?.length)
+    throw new Error('Remote SDK client-owned tools require a supported ownership adapter');
   if (config.providerTextProtection)
     throw new Error('Remote SDK provider protection requires a supported policy adapter');
   identity = Object.freeze({ ...identity });
@@ -96,6 +99,14 @@ export async function createRemoteSdkRun({
   const saver = candidate instanceof BaseCheckpointSaver ? candidate : undefined;
   if (config.humanInTheLoop?.enabled && !saver)
     throw new Error('Remote SDK approvals require a host checkpointer');
+  const agentConfig =
+    'agents' in config.graphConfig ? config.graphConfig.agents[0] : config.graphConfig;
+  const descriptors = (agentConfig.toolDefinitions ?? []).map((definition) => ({
+    definition,
+    reference: definition.name,
+  }));
+  const toolHandler = config.customHandlers?.[GraphEvents.ON_TOOL_EXECUTE];
+  if (descriptors.length && !toolHandler) throw new Error('Host tool handler is unavailable');
   let invoked = false;
   const execute = async (
     operation: RemoteSdkStart['operation'],
@@ -187,6 +198,7 @@ export async function createRemoteSdkRun({
           );
         else resolve(value);
       };
+      let hostToolInvoke: ReturnType<typeof createHostToolService> | undefined;
       const peer = createSdkPeer(socket, {
         ...limits,
         timeoutMs: limits.rpcTimeoutMs,
@@ -220,6 +232,25 @@ export async function createRemoteSdkRun({
         onCall: async (method, data) => {
           if (execution.signal.aborted || options.signal?.aborted)
             throw new Error('SDK runtime execution stopped');
+          if (method === 'tools') {
+            if (!toolHandler || !descriptors.length) throw new Error('Host tools are unavailable');
+            hostToolInvoke ??= createHostToolService({
+              identity,
+              tools: descriptors,
+              handler: toolHandler,
+              graph,
+              metadata: options.metadata,
+              configurable: {
+                ...options.configurable,
+                user_id: identity.userId,
+                run_id: identity.runId,
+                thread_id: threadId,
+              },
+              peer,
+              signal: execution.signal,
+            });
+            return hostToolInvoke(data);
+          }
           if (method === 'hook') {
             if (config.hooks == null) throw new Error('Host hooks are unavailable');
             const args = data as {
@@ -320,6 +351,7 @@ export async function createRemoteSdkRun({
       const agent =
         'agents' in config.graphConfig ? config.graphConfig.agents[0] : config.graphConfig;
       const start: RemoteSdkStart = {
+        hostTools: descriptors.length ? descriptors : undefined,
         operation,
         input,
         resume,
@@ -353,7 +385,14 @@ export async function createRemoteSdkRun({
         streamLimits: config.streamLimits,
         agent: { id: identity.agentId, name: agent?.name, instructions: agent?.instructions },
       };
-      void peer.call('run', start).catch(() => finish());
+      void (async () => {
+        if (descriptors.length) {
+          const capabilities = (await peer.call('capabilities', null)) as { hostTools?: number };
+          if (capabilities?.hostTools !== 1)
+            throw new Error('Worker host tool capability unavailable');
+        }
+        await peer.call('run', start);
+      })().catch(() => finish());
     });
     try {
       snapshot = await result;
