@@ -243,3 +243,12 @@ export type { DiscordInstallRecord, DiscordInstallView } from './models/discordI
 
 export { createDiscordBrowserSessionStorage } from './methods/discordSession';
 export type { DiscordBrowserSession, DiscordBrowserSessionStorage } from './methods/discordSession';
+export { createDiscordInboxStorage } from './methods/discordInbox';
+export type {
+  DiscordInboxStorage,
+  DiscordInboxResult,
+  DiscordInboxError,
+  DiscordInboxAdmission,
+  SubmitDiscordInteraction,
+} from './methods/discordInbox';
+export type { DiscordInboxRecord } from './models/discordInbox';

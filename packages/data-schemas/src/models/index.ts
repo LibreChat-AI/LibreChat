@@ -25,6 +25,7 @@ import { createDiscordInstallModel } from './discordInstall';
 import { createSkillDeletionModel } from './skillDeletion';
 import { createAgentCategoryModel } from './agentCategory';
 import { createResponseScopeModel } from './responseScope';
+import { createDiscordInboxModel } from './discordInbox';
 import { createDiscordRouteModel } from './discordRoute';
 import { createChannelScopeModel } from './channelScope';
 import { createResourceLockModel } from './resourceLock';
@@ -89,6 +90,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   DiscordApplication: ReturnType<typeof createDiscordApplicationModel>;
   DiscordGuild: ReturnType<typeof createDiscordGuildModel>;
   DiscordRoute: ReturnType<typeof createDiscordRouteModel>;
+  DiscordInbox: ReturnType<typeof createDiscordInboxModel>;
   DiscordInstall: ReturnType<typeof createDiscordInstallModel>;
   ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
   ChannelScope: ReturnType<typeof createChannelScopeModel>;
@@ -158,6 +160,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     DiscordApplication: createDiscordApplicationModel(mongoose),
     DiscordGuild: createDiscordGuildModel(mongoose),
     DiscordRoute: createDiscordRouteModel(mongoose),
+    DiscordInbox: createDiscordInboxModel(mongoose),
     DiscordInstall: createDiscordInstallModel(mongoose),
     ChannelIdentity: createChannelIdentityModel(mongoose),
     ChannelScope: createChannelScopeModel(mongoose),
