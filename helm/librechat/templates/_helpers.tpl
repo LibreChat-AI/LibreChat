@@ -250,9 +250,10 @@ Define apiVersion of HorizontalPodAutoscaler
 {{/* Keep the gateway suffix even when the application name reaches 63 characters. */}}
 {{- define "librechat.channelGateway.fullname" -}}
 {{- $base := include "librechat.fullname" . -}}
-{{- $name := printf "%s-channel-gateway" $base -}}
+{{- $suffix := ternary "discord-gateway" "channel-gateway" (eq .channelProvider "discord") -}}
+{{- $name := printf "%s-%s" $base $suffix -}}
 {{- if gt (len $name) 63 -}}
-{{- $name = printf "%s-channel-gateway-%s" ($base | trunc 38 | trimSuffix "-") ($base | sha256sum | trunc 8) -}}
+{{- $name = printf "%s-%s-%s" ($base | trunc 38 | trimSuffix "-") $suffix ($base | sha256sum | trunc 8) -}}
 {{- end -}}
 {{- if eq $name $base -}}
 {{- fail "The gateway name collides with the application name; choose a different fullnameOverride" -}}

@@ -27,8 +27,10 @@ try {
   writeFileSync(join(fixture, 'values.yaml'), yaml.dump(defaults));
   for (const file of [
     '_helpers.tpl',
+    '_channel-gateway.tpl',
     'service.yaml',
     'deployment.yaml',
+    'configmap.yaml',
     'configmap-env.yaml',
     'serviceaccount.yaml',
     'channel-gateway.yaml',
@@ -462,8 +464,315 @@ try {
     metadata.appVersion,
     'existing application labels must remain unchanged',
   );
+  const discordOnly = { 'image.tag': 'v1.2.3', 'channelGateway.discord.enabled': true };
+  const providerDeployment = (docs, provider) =>
+    docs.find(
+      (doc) =>
+        doc.kind === 'Deployment' &&
+        doc.spec.template.spec.containers[0].name === 'channel-gateway' &&
+        (doc.spec.template.spec.containers[0].env.find((entry) => entry.name === 'CHANNEL_PROVIDER')
+          ?.value ?? 'slack') === provider,
+    );
+  assert.throws(() => render({ 'channelGateway.discord.enabled': true }), /Set image.tag/);
+  for (const count of ['0', '-1', '1.5', 'invalid'])
+    assert.throws(
+      () => render({ ...discordOnly, 'channelGateway.discord.replicaCount': count }),
+      /channelGateway.discord.replicaCount/,
+    );
+  assert.throws(
+    () => render({ ...discordOnly, 'mongodb.enabled': true }),
+    /transaction-capable MongoDB/,
+  );
+  assert.doesNotThrow(() =>
+    render({ ...discordOnly, 'mongodb.enabled': true, 'mongodb.architecture': 'replicaset' }),
+  );
+  assert.doesNotThrow(() =>
+    render(
+      { ...discordOnly, 'mongodb.enabled': true },
+      { librechat: { configEnv: { MONGO_URI: 'mongodb://external/LibreChat' } } },
+    ),
+  );
+  assert.throws(
+    () => render({ ...discordOnly, 'global.librechat.existingSecretName': '' }),
+    /existingSecretName/,
+  );
+  const discordDocs = render(discordOnly);
+  const discordPod = providerDeployment(discordDocs, 'discord');
+  assert.equal(discordDocs.filter((doc) => doc.kind === 'Deployment').length, 2);
+  assert.equal(providerDeployment(discordDocs, 'slack'), undefined);
+  assert(discordPod.metadata.name.endsWith('-discord-gateway'));
+  assert.equal(discordPod.spec.replicas, 1);
+  assert.equal(discordPod.spec.strategy.type, 'RollingUpdate');
+  const discordContainer = discordPod.spec.template.spec.containers[0];
+  const discordEnv = Object.fromEntries(discordContainer.env.map((entry) => [entry.name, entry]));
+  assert.equal(discordEnv.CHANNEL_PROVIDER.value, 'discord');
+  for (const key of [
+    'CHANNEL_ID',
+    'CHANNEL_TENANT_ID',
+    'SLACK_APP_TOKEN',
+    'DISCORD_BOT_TOKEN',
+    'DISCORD_CLIENT_SECRET',
+    'DISCORD_APPLICATION_ID',
+  ])
+    assert.equal(discordEnv[key], undefined);
+  assert.equal(discordContainer.envFrom, undefined);
+  assert.equal(
+    loadBootstrap({
+      ...Object.fromEntries(
+        discordContainer.env
+          .filter((entry) => 'value' in entry)
+          .map((entry) => [entry.name, entry.value]),
+      ),
+      CHANNEL_SERVICE_TOKEN: 'fixture',
+    }).mode,
+    'discord',
+  );
+  const discordApi = discordDocs.find((doc) => doc.kind === 'Deployment' && doc !== discordPod);
+  const discordApiEnv = discordApi.spec.template.spec.containers[0].env;
+  assert.equal(discordApiEnv.filter((entry) => entry.name === 'CHANNEL_SERVICE_TOKEN').length, 1);
+  assert.equal(
+    discordApiEnv.find((entry) => entry.name === 'CHANNEL_SERVICE_TOKEN').valueFrom.secretKeyRef
+      .name,
+    'librechat-credentials-env',
+  );
+  const discordDefaults =
+    discordDocs.find((doc) => doc.kind === 'ConfigMap' && doc.metadata.name.endsWith('-configenv'))
+      .data ?? {};
+  assert.equal(discordDefaults.SLACK_WORKSPACES_ENABLED, undefined);
+  assert.equal(discordDefaults.SLACK_GATEWAY_URL, undefined);
+  assert(!Object.keys(discordDefaults).some((key) => key.startsWith('DISCORD_')));
+  const providerSettings = {
+    podAnnotations: { platform: 'shared' },
+    channelGateway: {
+      image: { repository: 'registry.example/gateway', tag: 'v1.2.4' },
+      internalUrl: 'http://api.internal:3080',
+      existingSecretName: 'service-credentials',
+      resources: { requests: { cpu: '100m' } },
+      podAnnotations: { slackOnly: 'fixture' },
+      discord: {
+        replicaCount: 2,
+        resources: { requests: { memory: '256Mi' } },
+        podAnnotations: { discordOnly: 'fixture' },
+      },
+    },
+  };
+  for (const names of [{}, { fullnameOverride: 'a'.repeat(63) }]) {
+    const docs = render(
+      { ...enabled, ...names, 'channelGateway.discord.enabled': true },
+      providerSettings,
+    );
+    const slackPod = providerDeployment(docs, 'slack');
+    const discord = providerDeployment(docs, 'discord');
+    const singleDocs = render({ ...enabled, ...names }, providerSettings);
+    assert.deepEqual(
+      slackPod,
+      providerDeployment(singleDocs, 'slack'),
+      'enabling Discord must not change Slack workload or its checksum',
+    );
+    assert.equal(docs.filter((doc) => doc.kind === 'Deployment').length, 3);
+    assert.notEqual(slackPod.metadata.name, discord.metadata.name);
+    for (const workload of [slackPod, discord]) {
+      const service = docs.find(
+        (doc) => doc.kind === 'Service' && doc.metadata.name === workload.metadata.name,
+      );
+      const matching = docs.filter(
+        (doc) =>
+          doc.kind === 'Deployment' &&
+          Object.entries(service.spec.selector).every(
+            ([key, value]) => doc.spec.template.metadata.labels[key] === value,
+          ),
+      );
+      assert.deepEqual(
+        matching.map((doc) => doc.metadata.name),
+        [workload.metadata.name],
+        'provider Services must select exactly their own workload',
+      );
+      assert(workload.metadata.name.length <= 63);
+      assert.equal(
+        workload.spec.template.spec.containers[0].image,
+        'registry.example/gateway:v1.2.4',
+      );
+      const env = Object.fromEntries(
+        workload.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+      );
+      assert.equal(env.LIBRECHAT_INTERNAL_URL.value, 'http://api.internal:3080');
+      assert.equal(env.CHANNEL_SERVICE_TOKEN.valueFrom.secretKeyRef.name, 'service-credentials');
+      assert.equal(workload.spec.template.metadata.annotations.platform, 'shared');
+    }
+    assert.equal(slackPod.spec.replicas, 1);
+    assert.equal(discord.spec.replicas, 2);
+    assert.equal(slackPod.spec.strategy.type, 'Recreate');
+    assert.equal(discord.spec.strategy.type, 'RollingUpdate');
+    assert.deepEqual(discord.spec.template.spec.containers[0].resources, {
+      requests: { memory: '256Mi' },
+    });
+    assert.equal(discord.spec.template.metadata.annotations.slackOnly, undefined);
+    assert.equal(slackPod.spec.template.metadata.annotations.discordOnly, undefined);
+    assert.equal(discord.spec.template.metadata.annotations.discordOnly, 'fixture');
+  }
+  const bounded = providerDeployment(
+    render(discordOnly, {
+      channelGateway: {
+        channelId: 'slack-bound',
+        tenantId: 'slack-org',
+        discord: {
+          channelId: 'ignored-bound',
+          tenantId: 'ignored-org',
+          mode: 'single',
+          image: { repository: 'ignored' },
+          existingSecretName: 'ignored',
+          env: [{ name: 'DISCORD_BOT_TOKEN', value: 'must-not-import' }],
+        },
+      },
+    }),
+    'discord',
+  );
+  assert.equal(bounded.spec.template.spec.containers[0].image, discordContainer.image);
+  assert(!JSON.stringify(bounded).includes('must-not-import'));
+  assert.equal(
+    loadBootstrap({
+      ...Object.fromEntries(
+        bounded.spec.template.spec.containers[0].env
+          .filter((entry) => 'value' in entry)
+          .map((entry) => [entry.name, entry.value]),
+      ),
+      CHANNEL_SERVICE_TOKEN: 'fixture',
+    }).mode,
+    'discord',
+  );
+  const explicitDiscord = render(discordOnly, {
+    global: {
+      librechat: {
+        env: [
+          {
+            name: 'CHANNEL_SERVICE_TOKEN',
+            valueFrom: { secretKeyRef: { name: 'explicit', key: 'service' } },
+          },
+        ],
+      },
+    },
+  }).find(
+    (doc) =>
+      doc.kind === 'Deployment' && doc.spec.template.spec.containers[0].name !== 'channel-gateway',
+  );
+  assert.equal(
+    explicitDiscord.spec.template.spec.containers[0].env.filter(
+      (entry) => entry.name === 'CHANNEL_SERVICE_TOKEN',
+    ).length,
+    1,
+  );
+  assert.equal(
+    explicitDiscord.spec.template.spec.containers[0].env.find(
+      (entry) => entry.name === 'CHANNEL_SERVICE_TOKEN',
+    ).valueFrom.secretKeyRef.name,
+    'explicit',
+  );
+  assert.throws(
+    () => render({}, { channelGateway: { discord: { ingress: { enabled: true } } } }),
+    /channelGateway.discord.enabled/,
+  );
+  assert.throws(
+    () => render(discordOnly, { channelGateway: { discord: { ingress: { enabled: true } } } }),
+    /channelGateway.discord.ingress.host/,
+  );
+  assert.throws(
+    () =>
+      render(
+        discordOnly,
+        {
+          channelGateway: { discord: { ingress: { enabled: true, host: 'discord.example.test' } } },
+        },
+        '1.18.20',
+      ),
+    /Kubernetes 1.19/,
+  );
+  const publicPolicy = {
+    version: '1.3.1',
+    endpoints: {
+      agents: {
+        channels: { discord: { enabled: true, publicUrl: 'https://discord.example.test/proxy' } },
+      },
+    },
+  };
+  const publicDocs = render(
+    { ...shared, 'channelGateway.discord.enabled': true },
+    {
+      librechat: { configYamlContent: yaml.dump(publicPolicy) },
+      ingress: { className: 'public-controller', annotations: { apiOnly: 'fixture' } },
+      channelGateway: {
+        ingress: {
+          enabled: true,
+          host: 'slack.example.test',
+          annotations: { slackOnly: 'fixture' },
+        },
+        discord: {
+          ingress: {
+            enabled: true,
+            host: 'discord.example.test',
+            annotations: { discordOnly: 'fixture' },
+            tls: [{ hosts: ['discord.example.test'], secretName: 'discord-tls' }],
+          },
+        },
+      },
+    },
+  );
+  const publicDiscordPod = providerDeployment(publicDocs, 'discord');
+  const publicDiscordIngress = publicDocs.find(
+    (doc) => doc.kind === 'Ingress' && doc.metadata.name === publicDiscordPod.metadata.name,
+  );
+  const publicSlackIngress = publicDocs.find(
+    (doc) =>
+      doc.kind === 'Ingress' &&
+      doc.metadata.name === providerDeployment(publicDocs, 'slack').metadata.name,
+  );
+  assert.deepEqual(
+    publicDiscordIngress.spec.rules[0].http.paths.map((entry) => entry.path),
+    ['/discord/'],
+  );
+  assert.deepEqual(
+    publicSlackIngress.spec.rules[0].http.paths.map((entry) => entry.path),
+    ['/slack/events', '/slack/interactions'],
+  );
+  assert.equal(
+    publicDiscordIngress.spec.rules[0].http.paths[0].backend.service.name,
+    publicDiscordPod.metadata.name,
+  );
+  assert.equal(publicDiscordIngress.spec.rules[0].http.paths[0].backend.service.port.number, 8080);
+  assert.equal(publicDiscordIngress.spec.rules[0].http.paths[0].pathType, 'Prefix');
+  assert.equal(publicDiscordIngress.spec.ingressClassName, 'public-controller');
+  assert.equal(publicDiscordIngress.spec.tls[0].secretName, 'discord-tls');
+  assert.equal(publicDiscordIngress.metadata.annotations.apiOnly, undefined);
+  assert.equal(publicDiscordIngress.metadata.annotations.slackOnly, undefined);
+  assert.equal(publicSlackIngress.metadata.annotations.discordOnly, undefined);
+  const publicDefaults = publicDocs.find(
+    (doc) => doc.kind === 'ConfigMap' && doc.metadata.name.endsWith('-configenv'),
+  ).data;
+  assert.equal(publicDefaults.SLACK_WORKSPACES_ENABLED, 'true');
+  assert.equal(publicDefaults.SLACK_GATEWAY_URL, 'https://slack.example.test');
+  assert(!Object.keys(publicDefaults).some((key) => key.startsWith('DISCORD_')));
+  const policyMap = publicDocs.find(
+    (doc) => doc.kind === 'ConfigMap' && doc.data?.['librechat.yaml'],
+  );
+  assert.deepEqual(yaml.load(policyMap.data['librechat.yaml']), publicPolicy);
+  const discordPublicOnly = render(discordOnly, {
+    channelGateway: { discord: { ingress: { enabled: true, host: 'discord.example.test' } } },
+  });
+  assert.equal(
+    discordPublicOnly.filter(
+      (doc) => doc.kind === 'Ingress' && doc.spec.rules[0].host === 'discord.example.test',
+    ).length,
+    1,
+  );
+  assert(
+    !discordPublicOnly.some(
+      (doc) =>
+        doc.kind === 'Ingress' &&
+        doc.spec.rules[0].http.paths.some((entry) => entry.path.startsWith('/slack/')),
+    ),
+  );
+  execFileSync('helm', ['lint', fixture, '--strict'], { stdio: ['ignore', 'pipe', 'pipe'] });
   console.log(
-    'PASS: optional gateway rendering, image matching, secret isolation, selectors and probes',
+    'PASS: Slack and Discord gateway rendering, isolation, public ingress, bootstrap and strict Helm lint',
   );
 } finally {
   rmSync(fixture, { recursive: true, force: true });
