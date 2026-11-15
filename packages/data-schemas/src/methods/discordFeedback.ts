@@ -101,6 +101,7 @@ export function createDiscordFeedbackRecorder(
         const action = parsedAction.success ? parsedAction.data : null;
         if (
           !current ||
+          current.routing === 'inspection' ||
           action?.kind !== 'feedback' ||
           action.reference !== mapping.runId ||
           `${current.externalChannelId}:${action.messageId}` !== mapping.externalMessageKey ||

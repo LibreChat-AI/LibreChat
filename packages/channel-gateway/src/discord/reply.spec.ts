@@ -201,3 +201,27 @@ it.each(['oversized', 'interrupted'])(
     });
   },
 );
+
+it('cannot deliver an unresolved source claim before the owned inspection adapter is enabled', async () => {
+  const inspection = {
+    fence: job.fence,
+    applicationRevision: job.applicationRevision,
+    expiresAt: job.expiresAt,
+    inspection: {
+      guildId: '345678901234567890',
+      externalChannelId: '456789012345678901',
+      externalUserId: '567890123456789012',
+    },
+  };
+  transport.mockImplementation(async (url) => {
+    if (String(url).endsWith('/claim')) return Response.json(inspection);
+    if (String(url).endsWith('/finish')) return new Response(null, { status: 204 });
+    throw new Error('Unexpected external effect');
+  });
+  expect(await turn()).toBe(true);
+  expect(calls('/webhooks/')).toHaveLength(0);
+  expect(JSON.parse(calls('/finish')[0][1].body)).toEqual({
+    fence: job.fence,
+    result: 'unavailable',
+  });
+});

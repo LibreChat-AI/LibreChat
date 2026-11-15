@@ -10,7 +10,13 @@ export type DiscordInboxErasureScope = { tenantId?: string } & (
   | { kind: 'application'; applicationId: string }
   | { kind: 'guild'; applicationId: string; guildId: string }
   | { kind: 'channel'; channelId: string }
-  | { kind: 'actor'; channelId: string; externalUserId: string }
+  | {
+      kind: 'actor';
+      channelId: string;
+      externalUserId: string;
+      applicationId?: string;
+      guildId?: string;
+    }
 );
 
 /** The caller supplies the canonical channel cleanup fence; no private rows cross this boundary. */
@@ -38,11 +44,20 @@ export function createDiscordInboxErasure(
         (kind === 'actor' && (typeof scope.externalUserId !== 'string' || !scope.externalUserId))
       )
         throw new TypeError('Invalid Discord inbox erasure scope');
+      let destination: object;
+      if (kind === 'application' || kind === 'guild')
+        destination = { applicationId: scope.applicationId };
+      else if (kind === 'actor' && scope.applicationId && scope.guildId)
+        destination = {
+          $or: [
+            { channelId: scope.channelId },
+            { routing: 'inspection', applicationId: scope.applicationId, guildId: scope.guildId },
+          ],
+        };
+      else destination = { channelId: scope.channelId };
       const filter = {
         tenantId: tenantId || { $in: [null, ''] },
-        ...(kind === 'application' || kind === 'guild'
-          ? { applicationId: scope.applicationId }
-          : { channelId: scope.channelId }),
+        ...destination,
         ...(kind === 'guild' ? { guildId: scope.guildId } : {}),
         ...(kind === 'actor' ? { externalUserId: scope.externalUserId } : {}),
       };
@@ -62,12 +77,12 @@ export function createDiscordInboxErasure(
               .find({ ...filter, _id: { $lte: last._id } })
               .sort({ _id: 1 })
               .limit(batchSize)
-              .select('applicationId eventId fingerprint purgeAt channelId')
+              .select('applicationId eventId fingerprint purgeAt channelId routing')
               .session(session)
               .lean();
             const locked = new Set<string>();
             for (const row of rows) {
-              if (!locked.has(row.channelId)) {
+              if (row.routing !== 'inspection' && !locked.has(row.channelId)) {
                 await fence({ tenantId, channelId: row.channelId }, session);
                 locked.add(row.channelId);
               }

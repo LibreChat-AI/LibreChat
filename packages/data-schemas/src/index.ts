@@ -250,8 +250,13 @@ export type {
   DiscordInboxError,
   DiscordInboxAdmission,
   SubmitDiscordInteraction,
+  SubmitDiscordInspection,
 } from './methods/discordInbox';
-export type { DiscordInboxRecord } from './models/discordInbox';
+export type {
+  DiscordInboxRecord,
+  DiscordInboxUnresolvedRecord,
+  DiscordInboxLeaseRecord,
+} from './models/discordInbox';
 
 export type { DiscordIdentityWrite } from './methods/channelIdentity';
 

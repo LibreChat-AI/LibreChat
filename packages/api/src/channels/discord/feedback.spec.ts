@@ -107,7 +107,7 @@ async function job(
     ),
   );
   const record = await inbox.claim(applicationId, 'worker', now);
-  if (!record) throw new Error('Missing claim');
+  if (!record || record.routing === 'inspection') throw new Error('Missing claim');
   return {
     record,
     fence: { applicationId, eventId: id, owner: 'worker', epoch: record.leaseEpoch },

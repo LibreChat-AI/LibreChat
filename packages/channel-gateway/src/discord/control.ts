@@ -1,14 +1,14 @@
 import { z } from 'zod';
 import {
   channelSnowflakeSchema,
-  discordInboxDeliverySchema,
+  discordInboxClaimSchema,
   discordInboxSubmissionSchema,
   discordInboxFenceSchema,
 } from 'librechat-data-provider';
 import type {
   DiscordApplicationSecurity,
   DiscordInboxSubmission,
-  DiscordInboxDelivery,
+  DiscordInboxClaim,
   DiscordInboxFence,
 } from 'librechat-data-provider';
 import type { ServiceConnection } from '../transport';
@@ -75,12 +75,12 @@ export class DiscordControlClient extends ServiceClient {
     applicationId: string,
     owner: string,
     signal?: AbortSignal,
-  ): Promise<DiscordInboxDelivery | null> {
+  ): Promise<DiscordInboxClaim | null> {
     channelSnowflakeSchema.parse(applicationId);
     if (!/^[\w-]{1,128}$/.test(owner)) throw new TypeError('Invalid Discord inbox owner');
     const response = await this.raw(`${this.root}/inbox/claim`, { applicationId, owner }, signal);
     if (response.status === 204) return null;
-    const result = discordInboxDeliverySchema.parse(await this.decode(response));
+    const result = discordInboxClaimSchema.parse(await this.decode(response));
     if (result.fence.applicationId !== applicationId || result.fence.owner !== owner)
       throw new Error('Discord inbox lease mismatch');
     return result;

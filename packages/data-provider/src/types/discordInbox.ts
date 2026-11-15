@@ -62,3 +62,25 @@ export const discordInboxDeliverySchema = z
   })
   .strict();
 export type DiscordInboxDelivery = z.infer<typeof discordInboxDeliverySchema>;
+
+/** Inspection claims intentionally expose no interaction token, prompt, or internal route. */
+export const discordInboxInspectionSchema = z
+  .object({
+    fence: discordInboxFenceSchema,
+    applicationRevision: reference,
+    expiresAt: z.number().int().positive(),
+    inspection: z
+      .object({
+        guildId: channelSnowflakeSchema,
+        externalChannelId: channelSnowflakeSchema,
+        externalUserId: channelSnowflakeSchema,
+      })
+      .strict(),
+  })
+  .strict();
+export type DiscordInboxInspection = z.infer<typeof discordInboxInspectionSchema>;
+export const discordInboxClaimSchema = z.union([
+  discordInboxDeliverySchema,
+  discordInboxInspectionSchema,
+]);
+export type DiscordInboxClaim = z.infer<typeof discordInboxClaimSchema>;
