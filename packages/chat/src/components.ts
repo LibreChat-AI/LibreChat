@@ -16,6 +16,16 @@ export type {
   ToolRenderProps,
 } from './components/Part';
 
+export {
+  AnimatedText,
+  createFadePlugin,
+  FADE_DURATION_MS,
+  FADE_STAGGER_MS,
+  FADE_STAGGER_MAX_MS,
+  FADE_HYDRATION_THRESHOLD,
+} from './components/fade';
+export type { FadePlugin } from './components/fade';
+
 /** Composer: the chat input, its controls and the steering queue. */
 export { default as BrowserAudio } from './components/composer/Audio';
 export type { BrowserAudioProps } from './components/composer/Audio';
