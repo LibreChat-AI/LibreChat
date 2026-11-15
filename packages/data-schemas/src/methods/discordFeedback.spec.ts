@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type {
   DiscordChannelReplyMapping,
+  DiscordGuildThreadSource,
   ChannelRating,
   DiscordAgentChannel,
 } from 'librechat-data-provider';
@@ -11,10 +12,13 @@ import {
   createChannelFeedbackEventModel,
 } from '~/models/channelFeedback';
 import { createChannelFeedbackStorage, ChannelFeedbackAuthorityError } from './channelFeedback';
+import { createDiscordInboxResolutionStorage } from './discordInboxResolution';
 import { isLaterChannelFeedbackEvent } from './channelFeedbackProtocol';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
+import { createDiscordGatewayStorage } from './discordGateway';
 import { createDiscordInstallationStorage } from './discord';
+import { createDiscordThreadStorage } from './discordThread';
 import { createDiscordInboxStorage } from './discordInbox';
 import { createDiscordRouteStorage } from './discordRoute';
 import { createAgentChannelMethods } from './channel';
@@ -134,6 +138,9 @@ beforeEach(async () => {
       'DiscordGuild',
       'DiscordReservation',
       'DiscordInbox',
+      'DiscordThreadRoute',
+      'DiscordThreadPin',
+      'ResourceLock',
       'DiscordReceipt',
       'DiscordRoute',
     ])
@@ -575,4 +582,120 @@ it('requires the native fenced writer and rejects mixed provider mappings and fo
       ),
     ).rejects.toThrow('authenticated scope');
     expect(await ledger()).toMatchObject({ rating: 'thumbsUp', revision: 1 });
+  }));
+
+it('records feedback for the exact immutable native thread mapping and rejects a replaced parent', () =>
+  scope(async () => {
+    const threadChannelId = '789012345678901234';
+    const owner = { applicationId, applicationRevision, ownerId: 'a'.repeat(32) };
+    expect(
+      await createDiscordGatewayStorage(db, async () => ({
+        ownershipLeaseMs: 30000,
+        shardCount: 1,
+      })).acquire(owner, 30000),
+    ).toBe(true);
+    const source: DiscordGuildThreadSource = {
+      kind: 'guild_thread',
+      applicationId,
+      guildId,
+      botUserId,
+      parentChannelId: externalChannelId,
+      threadChannelId,
+      authorId: externalUserId,
+      threadType: 11,
+      archived: false,
+      locked: false,
+      membership: { bot: false, author: false },
+      permissions: {
+        bot: String(BigInt(1024 | 65536) | (BigInt(1) << BigInt(38))),
+        author: '1024',
+      },
+    };
+    const parent = await createDiscordRouteStorage(db).read(
+      channel.installationId,
+      externalChannelId,
+    );
+    if (!parent) throw new Error('Missing parent');
+    const route = value(
+      await createDiscordThreadStorage(db, async () => ({ maxThreadRoutes: 10 })).bind(
+        owner,
+        source,
+        {
+          channelId: channel.channelId,
+          channelRevision: channel.revision,
+          routeRevision: parent.revision,
+        },
+      ),
+    );
+    const thread = { parentChannelId: externalChannelId, mappingRevision: route.mappingRevision };
+    await db.models.ChannelRun.updateOne(
+      { runId },
+      {
+        $set: {
+          'admission.externalChannelId': threadChannelId,
+          'admission.externalThreadKey': `${threadChannelId}:700000000000000000`,
+          'admission.externalMessageKey': `${threadChannelId}:700000000000000000`,
+          'admission.discordDestination': { kind: 'guild_thread', ...thread },
+          receipts: [messageId, secondMessageId].map((id) => ({
+            operationId: id,
+            outcome: 'confirmed',
+            attempts: 1,
+            externalMessageKey: `${threadChannelId}:${id}`,
+          })),
+        },
+      },
+    );
+    const nativeMapping = {
+      ...mapping,
+      externalChannelId: threadChannelId,
+      externalMessageKey: `${threadChannelId}:${messageId}`,
+    };
+    const guild = await installations.resolveGuild(applicationId, guildId);
+    if (!guild) throw new Error('Missing guild');
+    const eventId = '9007199254740995';
+    value(
+      await inbox.submit(
+        {
+          routing: 'inspection',
+          eventId,
+          applicationId,
+          applicationRevision,
+          guildId,
+          installationId: guild.installationId,
+          installationRevision: guild.revision,
+          externalChannelId: threadChannelId,
+          externalUserId,
+          action: { kind: 'feedback', reference: runId, messageId, rating: 'thumbsUp' },
+          encryptedToken: 'sealed',
+          tokenHash: 'a'.repeat(64),
+          expiresAt: now + 900000,
+        },
+        now,
+      ),
+    );
+    const record = await inbox.claim(applicationId, 'thread-feedback', now);
+    if (!record) throw new Error('Missing claim');
+    const fence = { applicationId, eventId, owner: 'thread-feedback', epoch: record.leaseEpoch };
+    const resolved = value(
+      await createDiscordInboxResolutionStorage(db).resolve(fence, owner, source, route, now),
+    );
+    const work = { record: resolved, fence, principal: principal() };
+    expect(await storage.recordDiscordFeedback(work, nativeMapping, now)).toMatchObject({
+      ok: true,
+    });
+    expect(await ledger()).toMatchObject({
+      rating: 'thumbsUp',
+      votes: [expect.objectContaining({ eventId })],
+    });
+    value(
+      await createDiscordRouteStorage(db).remove({
+        actorId: userId,
+        installationId: channel.installationId,
+        externalChannelId,
+        expectedRevision: parent.revision,
+      }),
+    );
+    expect(await storage.recordDiscordFeedback(work, nativeMapping, now)).toMatchObject({
+      ok: false,
+    });
   }));
