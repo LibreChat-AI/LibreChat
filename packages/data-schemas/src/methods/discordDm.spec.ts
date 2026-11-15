@@ -4,15 +4,24 @@ import type {
   DiscordAgentChannel,
   DiscordChannelConfig,
   DiscordDmResult,
+  DiscordNativeAuthority,
 } from 'librechat-data-provider';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
-import { createDiscordDmStorage, hashDiscordDmCode, touchDiscordDmSelection } from './discordDm';
+import type { DiscordDmDestinationScope } from './discordDm';
+import {
+  createDiscordDmStorage,
+  hashDiscordDmCode,
+  touchDiscordDmSelection,
+  touchDiscordDmDestination,
+  authorizeDiscordDmDestination,
+} from './discordDm';
 import { createDiscordDmCodeModel, createDiscordDmSelectionModel } from '~/models/discordDm';
 import { closeChannelScope, retireAgentChannel } from './channelScope';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { eraseChannelPersistenceForUser } from './channelErasure';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { withRequiredTransaction } from '~/utils/transactions';
+import { createDiscordGatewayStorage } from './discordGateway';
 import { createDiscordInstallationStorage } from './discord';
 import { createDiscordRouteStorage } from './discordRoute';
 import { closeResponseScopes } from './responseScope';
@@ -168,6 +177,7 @@ async function setup() {
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await db.connect(mongo.getUri());
+  await runAsSystem(async () => Promise.all(Object.values(db.models).map((model) => model.init())));
 }, 60000);
 afterAll(async () => {
   await db.disconnect();
@@ -507,3 +517,233 @@ it('cleans channel-owned rows and supports tenantless canonical records without 
     expect(await current()).not.toBeNull();
   });
 });
+
+const snowflake = (at: number) => String((BigInt(at - 1420070400000) << BigInt(22)) + BigInt(1));
+async function destinationScope(): Promise<DiscordDmDestinationScope> {
+  const issued = await issue();
+  const selected = value(await consume(issued.code, { confirmationEventId: snowflake(now) }));
+  const eventId = snowflake(now + 1);
+  return {
+    tenantId,
+    channelId: selected.source.channelId,
+    agentId: selected.source.agentId,
+    applicationRevision,
+    principal: {
+      userId: user,
+      channelRevision: selected.source.channelRevision,
+      linkId: selected.source.linkId,
+      linkRevision: selected.source.linkRevision,
+    },
+    now,
+    admission: {
+      eventId,
+      externalChannelId: dmChannelId,
+      externalThreadKey: `${dmChannelId}:${selected.confirmationEventId}`,
+      externalMessageKey: `${dmChannelId}:${eventId}`,
+      actor: {
+        provider: 'discord',
+        scope: 'dm',
+        applicationId,
+        externalUserId,
+        selectionId: selected.selectionId,
+        selectionRevision: selected.revision,
+      },
+      discordDestination: {
+        kind: 'dm',
+        parentChannelId: selected.source.externalChannelId,
+        selectionId: selected.selectionId,
+        selectionRevision: selected.revision,
+      },
+      input: 'private prompt',
+    },
+  };
+}
+const touchDestination = (input: DiscordDmDestinationScope) =>
+  withRequiredTransaction(db, (session) => touchDiscordDmDestination(db, input, session));
+async function destinationAuthority(): Promise<Extract<DiscordNativeAuthority, { kind: 'dm' }>> {
+  const gateway = createDiscordGatewayStorage(db, async () => ({
+    ownershipLeaseMs: 30000,
+    shardCount: 1,
+  }));
+  const native: Extract<DiscordNativeAuthority, { kind: 'dm' }> = {
+    kind: 'dm',
+    owner: { applicationId, applicationRevision, ownerId: 'a'.repeat(32) },
+    source: {
+      kind: 'guild_text',
+      applicationId,
+      botUserId,
+      guildId,
+      channelId: channel.discord.externalChannelId,
+      permissions: '68608',
+      authorId: externalUserId,
+      authorMember: true,
+      authorPermissions: '1024',
+    },
+  };
+  expect(await gateway.acquire(native.owner, 30000)).toBe(true);
+  return native;
+}
+const authorizeDestination = (
+  input: DiscordDmDestinationScope,
+  native: Extract<DiscordNativeAuthority, { kind: 'dm' }>,
+) =>
+  withRequiredTransaction(db, (session) =>
+    authorizeDiscordDmDestination(db, input, native, session),
+  );
+
+it('joins exact DM destination metadata without granting fresh provider permission', () =>
+  scope(async () => {
+    const input = await destinationScope();
+    expect(await touchDestination(input)).toBe(true);
+    const native = await destinationAuthority();
+    expect(await authorizeDestination(input, native)).toBe(true);
+    await models.ResourceLock.deleteMany({});
+    expect(await touchDestination(input)).toBe(true);
+    expect(await authorizeDestination(input, native)).toBe(false);
+  }));
+it('requires original prompt snowflakes after both native consent and explicit DM selection', () =>
+  scope(async () => {
+    const input = await destinationScope();
+    const prompt = { ...input, promptEventAtMs: now + 1 };
+    expect(await touchDestination(prompt)).toBe(false);
+    await models.ChannelIdentity.collection.updateOne(
+      { linkId: input.principal.linkId },
+      { $set: { discordActivatedAtMs: now - 1 } },
+    );
+    expect(await touchDestination(prompt)).toBe(true);
+    expect(await touchDestination({ ...prompt, promptEventAtMs: now })).toBe(false);
+    const eventId = snowflake(now);
+    expect(
+      await touchDestination({
+        ...prompt,
+        promptEventAtMs: now,
+        admission: {
+          ...input.admission,
+          eventId,
+          externalMessageKey: `${dmChannelId}:${eventId}`,
+        },
+      }),
+    ).toBe(false);
+    await models.ChannelIdentity.collection.updateOne(
+      { linkId: input.principal.linkId },
+      { $set: { discordActivatedAtMs: now + 1 } },
+    );
+    expect(await touchDestination(prompt)).toBe(false);
+    expect(await touchDestination(input)).toBe(true);
+  }));
+it.each([
+  'principal',
+  'agent',
+  'parent',
+  'dm',
+  'thread',
+  'message',
+  'actor',
+  'generation',
+  'application',
+])('rejects a mismatched DM %s scope', (changed) =>
+  scope(async () => {
+    const input = await destinationScope();
+    if (changed === 'principal') input.principal.linkRevision = 'other';
+    if (changed === 'agent') input.agentId = 'other';
+    if (changed === 'parent' && input.admission.discordDestination)
+      input.admission.discordDestination.parentChannelId = '999';
+    if (changed === 'dm') input.admission.externalChannelId = '999';
+    if (changed === 'thread') input.admission.externalThreadKey = `${dmChannelId}:999`;
+    if (changed === 'message') input.admission.externalMessageKey = `${dmChannelId}:999`;
+    if (changed === 'actor') input.admission.actor.externalUserId = '999';
+    if (changed === 'generation' && input.admission.actor.scope === 'dm')
+      input.admission.actor.selectionRevision = 'other';
+    if (changed === 'application') input.applicationRevision = 'other';
+    expect(await touchDestination(input)).toBe(false);
+  }),
+);
+it.each([
+  'author',
+  'membership',
+  'visibility',
+  'bot',
+  'guild',
+  'parent',
+  'permissions',
+  'owner',
+  'application',
+])('rejects fresh DM source authority with changed %s', (changed) =>
+  scope(async () => {
+    const input = await destinationScope();
+    const native = await destinationAuthority();
+    if (changed === 'author') native.source.authorId = '999';
+    if (changed === 'membership') Object.assign(native.source, { authorMember: false });
+    if (changed === 'visibility') native.source.authorPermissions = '0';
+    if (changed === 'bot') native.source.botUserId = '999';
+    if (changed === 'guild') native.source.guildId = '999';
+    if (changed === 'parent') native.source.channelId = '999';
+    if (changed === 'permissions') native.source.permissions = '1024';
+    if (changed === 'owner') native.owner.ownerId = 'b'.repeat(32);
+    if (changed === 'application') native.owner.applicationRevision = 'other';
+    expect(await authorizeDestination(input, native)).toBe(false);
+  }),
+);
+it.each([
+  'replacement',
+  'revocation',
+  'expiry',
+  'source-link',
+  'source-expiry',
+  'closure',
+  'owner',
+])('invalidates canonical DM authority after %s without relying on TTL', (changed) =>
+  scope(async () => {
+    const input = await destinationScope();
+    const selected = await current();
+    if (!selected) throw new Error('Fixture selection missing');
+    if (changed === 'replacement') {
+      const issued = await issue();
+      value(await consume(issued.code));
+    }
+    if (changed === 'revocation')
+      expect(await store.revoke(user, selected.selectionId, selected.revision)).toBe(true);
+    if (changed === 'expiry') input.now = selected.expiresAtMs;
+    if (changed === 'source-link')
+      await models.ChannelIdentity.updateOne(
+        { linkId: selected.source.linkId },
+        { state: 'revoked' },
+      );
+    if (changed === 'source-expiry')
+      await models.ChannelIdentity.updateOne(
+        { linkId: selected.source.linkId },
+        { expiresAtMs: now },
+      );
+    if (changed === 'closure') await closeChannelScope(db, tenantId, channel.channelId);
+    if (changed === 'owner') await closeResponseScopes(db, { userId: owner, tenantId });
+    expect(await touchDestination(input)).toBe(false);
+  }),
+);
+it('rejects cross-tenant and malformed raw DM selection authority', () =>
+  scope(async () => {
+    const input = await destinationScope();
+    await expect(touchDestination({ ...input, tenantId: 'other' })).rejects.toThrow(
+      'tenant mismatch',
+    );
+    await selections.collection.updateOne({}, { $set: { 'source.teamId': 'T' } });
+    expect(await touchDestination(input)).toBe(false);
+  }));
+it('cannot commit authority from a snapshot predating concurrent selection replacement', () =>
+  scope(async () => {
+    const input = await destinationScope();
+    const issued = await issue();
+    const session = await db.startSession();
+    try {
+      session.startTransaction();
+      await selections.findOne({}).session(session).lean();
+      value(await consume(issued.code));
+      await expect(touchDiscordDmDestination(db, input, session)).rejects.toHaveProperty(
+        'code',
+        112,
+      );
+      expect(await touchDestination(input)).toBe(false);
+    } finally {
+      await session.abortTransaction();
+      await session.endSession();
+    }
+  }));
