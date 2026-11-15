@@ -259,8 +259,11 @@ postcss([tailwind()]).process(readFileSync(input, 'utf8'), {from: input})
     await expect(page.locator('.animate-out')).toHaveCSS('animation-fill-mode', 'forwards');
   });
 
-  for (const reduced of [false, true]) {
-    test(`keeps the phase entrance with reduced motion ${reduced} @scenario:phase-label-entrance-cascade`, async ({
+  for (const { reduced, scenario } of [
+    { reduced: false, scenario: '@scenario:phase-label-entrance-normal-cascade' },
+    { reduced: true, scenario: '@scenario:phase-label-entrance-reduced-cascade' },
+  ]) {
+    test(`keeps the phase entrance with reduced motion ${reduced} ${scenario}`, async ({
       page,
     }) => {
       await page.emulateMedia({ reducedMotion: reduced ? 'reduce' : 'no-preference' });
