@@ -8,6 +8,7 @@ import {
   Permissions,
   PermissionBits,
   discordChannelConfigSchema,
+  discordGuildTextActorSourceSchema,
 } from 'librechat-data-provider';
 import {
   createModels,
@@ -665,7 +666,8 @@ it('keeps operational database failures retryable under unchanged consent', asyn
 
 it('requires fresh native confirmation for restored markerless links without interrupting an authorized run', async () => {
   await scoped(() => linked());
-  expect(await service.submit(submission())).toEqual({ ok: true, value: { outcome: 'admitted' } });
+  const input = submission();
+  expect(await service.submit(input)).toEqual({ ok: true, value: { outcome: 'admitted' } });
   await scoped(async () => {
     await models.ChannelIdentity.updateMany({}, { $unset: { discordActivatedAtMs: '' } });
     const record = await models.ChannelIdentity.findOne().lean();
@@ -688,16 +690,18 @@ it('requires fresh native confirmation for restored markerless links without int
     });
     const claimed = await runs.claim(tenantId, channel.channelId, 'continuation', clock, 60000);
     if (!claimed) throw new Error('Missing authorized run');
-    expect(
-      (
-        await runs.prepareExecution(
-          tenantId,
-          { runId: claimed.runId, owner: 'continuation', epoch: claimed.leaseEpoch },
-          clock,
-          revision,
-        )
-      ).execution,
-    ).toBeDefined();
+    const fence = { runId: claimed.runId, owner: 'continuation', epoch: claimed.leaseEpoch };
+    const prepared = await runs.prepareExecution(tenantId, fence, clock, {
+      applicationRevision: revision,
+      native: {
+        kind: 'guild_text',
+        owner: input.owner,
+        source: discordGuildTextActorSourceSchema.parse(input.source),
+      },
+    });
+    expect(prepared.execution).toBeDefined();
+    const continued = await runs.prepareExecution(tenantId, fence, clock, revision);
+    expect(continued.execution).toEqual(prepared.execution);
   });
   expect(await service.submit(submission())).toEqual({
     ok: true,
