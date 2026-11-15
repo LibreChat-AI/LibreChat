@@ -382,9 +382,9 @@ it('cancels only the active session flow and disconnects with revision checks', 
 it('keeps disabled configuration and operational failures safe', async () => {
   const configured = settings;
   settings = configured ? { ...configured, enabled: false } : undefined;
-  await request(app).get(`${base}/apps`).set('Authorization', 'Bearer admin').expect(404);
+  await request(app).get(`${base}/apps`).set('Authorization', 'Bearer admin').expect(200);
   settings = undefined;
-  await request(app).get(`${base}/apps`).set('Authorization', 'Bearer admin').expect(404);
+  await request(app).get(`${base}/apps`).set('Authorization', 'Bearer admin').expect(200);
   expect((await callback('s'.repeat(43), []).expect(302)).headers.location).toContain(
     'discord_not_configured',
   );
@@ -450,3 +450,46 @@ it.each(['local', 'openid'])(
     expect(providerFetch).not.toHaveBeenCalled();
   },
 );
+
+it('preserves admin discovery and teardown while Discord is disabled', async () => {
+  const flow = await connect();
+  await callback(flow.state, flow.cookies).expect(302);
+  const pending = await authorize(`${base}/connect`).send({ applicationId }).expect(200);
+  const guild = await scoped(async () => models.DiscordGuild.findOne({ guildId }).lean());
+  if (!guild) throw new Error('Missing installed guild');
+  settings = undefined;
+  const page = await request(app)
+    .get(`${base}/apps`)
+    .set('Authorization', 'Bearer admin')
+    .expect(200);
+  expect(page.body.applications).toHaveLength(1);
+  expect(page.body.setup).toEqual({ oauthCallbackUrl: `${publicBaseUrl}${DISCORD_CALLBACK_PATH}` });
+  expect(page.body).not.toHaveProperty('interactionBaseUrl');
+  const discovered = await request(app)
+    .get(`${base}/guilds`)
+    .set('Authorization', 'Bearer admin')
+    .expect(200);
+  expect(discovered.body.guilds).toHaveLength(1);
+  await request(app)
+    .delete(`${base}/attempts/${pending.body.flowId}`)
+    .set('Authorization', 'Bearer admin')
+    .set('Origin', clientBaseUrl)
+    .set('Cookie', cookies(pending))
+    .expect(200);
+  await request(app)
+    .delete(`${base}/guilds/${guild.installationId}`)
+    .set('Authorization', 'Bearer admin')
+    .set('Origin', clientBaseUrl)
+    .send({ revision: guild.revision })
+    .expect(200);
+  await authorize(`${base}/connect`).send({ applicationId }).expect(404);
+  await request(app)
+    .put(`${base}/apps`)
+    .set('Authorization', 'Bearer admin')
+    .set('Origin', clientBaseUrl)
+    .send({ applicationId, botToken: 'token', clientSecret: 'secret' })
+    .expect(404);
+  expect((await scoped(async () => models.DiscordGuild.findOne({ guildId }).lean()))?.status).toBe(
+    'disconnected',
+  );
+});
