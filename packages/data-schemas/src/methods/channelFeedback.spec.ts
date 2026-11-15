@@ -38,7 +38,7 @@ const mapping: ChannelReplyMapping = {
   destinationIds: ['destination'],
   centralTraceExportEnabled: false,
 };
-const ledger = (source = mapping): ChannelFeedbackLedger => ({
+const ledger = (source: ChannelReplyMapping = mapping): ChannelFeedbackLedger => ({
   tenantId: source.tenantId,
   key: source.runId,
   mapping: source,
@@ -50,7 +50,7 @@ const ledger = (source = mapping): ChannelFeedbackLedger => ({
   exportStatus: 'pending',
   retryAtMs: 0,
 });
-const event = (source = mapping): ChannelFeedbackEventRecord => ({
+const event = (source: ChannelReplyMapping = mapping): ChannelFeedbackEventRecord => ({
   tenantId: source.tenantId,
   channelId: source.channelId,
   eventId: source.runId,
@@ -68,7 +68,7 @@ const event = (source = mapping): ChannelFeedbackEventRecord => ({
     action: 'added',
   },
 });
-async function message(source = mapping) {
+async function message(source: ChannelReplyMapping = mapping) {
   return mongoose.models.Message.create({
     tenantId: source.tenantId === '_' ? undefined : source.tenantId,
     user: source.principalId,
@@ -81,12 +81,12 @@ async function message(source = mapping) {
     text: 'retained answer',
   });
 }
-async function persist(source = mapping) {
+async function persist(source: ChannelReplyMapping = mapping) {
   await storage.putChannelReply(source);
   await storage.admitChannelFeedbackEvent(event(source));
   await storage.ensureChannelFeedback(ledger(source));
 }
-async function assertEmpty(source = mapping) {
+async function assertEmpty(source: ChannelReplyMapping = mapping) {
   expect(
     await mongoose.models.ChannelReply.countDocuments({
       tenantId: source.tenantId,
@@ -103,7 +103,7 @@ async function assertEmpty(source = mapping) {
       }),
     ).toBe(0);
 }
-async function assertRetired(source = mapping) {
+async function assertRetired(source: ChannelReplyMapping = mapping) {
   await expect(storage.putChannelReply(source)).rejects.toBeInstanceOf(
     ChannelFeedbackAuthorityError,
   );

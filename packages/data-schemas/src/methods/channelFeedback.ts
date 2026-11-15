@@ -1,9 +1,16 @@
-import type { ChannelReplyMapping, ChannelFeedbackActor } from 'librechat-data-provider';
+import type {
+  ChannelReplyMapping,
+  ChannelFeedbackActor,
+  DiscordChannelReplyMapping,
+  ChannelFeedbackResult,
+  ChannelFeedbackView,
+} from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
 import type { ChannelFeedbackReplySource } from './channelFeedbackSource';
 import type { ChannelFeedbackSourceState } from './channelFeedbackScope';
 import type { FeedbackCheckpoint } from './channelFeedbackCheckpoint';
+import type { DiscordCommandScope } from './discordCommands';
 import {
   withChannelFeedbackAuthority,
   sameFeedbackSource,
@@ -14,7 +21,9 @@ import {
   pinFeedbackCheckpoint,
   acknowledgeFeedbackReceipt,
 } from './channelFeedbackCheckpoint';
+import { channelFeedbackProviderFilter } from './channelFeedbackProtocol';
 import { readChannelFeedbackReplySource } from './channelFeedbackSource';
+import { createDiscordFeedbackRecorder } from './discordFeedback';
 import { createChannelIndexGate } from './channelIndexes';
 import { assertChannelTenant } from './channelScope';
 export type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
@@ -28,6 +37,14 @@ export {
   channelFeedbackReactionIdentity,
   isLaterChannelFeedbackEvent,
 } from './channelFeedbackProtocol';
+export interface DiscordFeedbackStorage {
+  /** The canonical inbox action chooses the rating and referenced run. Vote and receipt commit atomically. */
+  recordDiscordFeedback(
+    scope: DiscordCommandScope,
+    mapping: DiscordChannelReplyMapping,
+    now: number,
+  ): Promise<ChannelFeedbackResult<ChannelFeedbackView>>;
+}
 export interface ChannelFeedbackStorage {
   deferChannelFeedbackEvent(record: ChannelFeedbackEventRecord, retryAtMs: number): Promise<void>;
   deferChannelFeedbackExport(
@@ -85,7 +102,8 @@ export interface ChannelFeedbackStorage {
 
 export function createChannelFeedbackStorage(
   mongoose: typeof import('mongoose'),
-): ChannelFeedbackStorage {
+): ChannelFeedbackStorage & DiscordFeedbackStorage {
+  const recordDiscordFeedback = createDiscordFeedbackRecorder(mongoose);
   const replies = () => mongoose.model<ChannelReplyMapping>('ChannelReply');
   const events = () => mongoose.model<ChannelFeedbackEventRecord>('ChannelFeedbackEvent');
   const ledger = () => mongoose.model<ChannelFeedbackLedger>('ChannelFeedback');
@@ -101,7 +119,7 @@ export function createChannelFeedbackStorage(
     source?: ChannelReplyMapping,
     sourceExpiry: Date | null = null,
     sourceState?: ChannelFeedbackSourceState,
-  ): ChannelFeedbackStorage {
+  ): ChannelFeedbackStorage & DiscordFeedbackStorage {
     let checkpoint: FeedbackCheckpoint | undefined;
     function remember(record: ChannelFeedbackLedger) {
       if (session && source && sameFeedbackSource(source, record.mapping))
@@ -131,7 +149,8 @@ export function createChannelFeedbackStorage(
         ...(expiredAt ? { $min: { expiredAt } } : {}),
       };
     }
-    const storage: ChannelFeedbackStorage = {
+    const storage: ChannelFeedbackStorage & DiscordFeedbackStorage = {
+      recordDiscordFeedback,
       async deferChannelFeedbackEvent(record, retryAtMs) {
         assertChannelTenant(record.tenantId);
         if (!Number.isSafeInteger(retryAtMs) || retryAtMs < 0)
@@ -193,7 +212,7 @@ export function createChannelFeedbackStorage(
           const filter = {
             tenantId: mapping.tenantId,
             channelId: mapping.channelId,
-            teamId: mapping.teamId,
+            ...channelFeedbackProviderFilter(mapping),
             externalMessageKey: mapping.externalMessageKey,
           };
           await replies().updateOne(filter, retainedInsert(mapping, expiredAt), {
@@ -212,7 +231,7 @@ export function createChannelFeedbackStorage(
           .findOne({
             tenantId: actor.tenantId,
             channelId: actor.channelId,
-            teamId: actor.teamId,
+            ...channelFeedbackProviderFilter(actor),
             channelRevision: actor.channelRevision,
             agentId: actor.agentId,
             externalMessageKey,
@@ -221,6 +240,11 @@ export function createChannelFeedbackStorage(
           .lean();
       },
       async admitChannelFeedbackEvent(record) {
+        if (
+          record.mapping.provider === 'discord' ||
+          record.event.provider !== record.mapping.provider
+        )
+          throw new ChannelFeedbackAuthorityError();
         return guard(record.mapping, async (active, expiredAt) => {
           const filter = {
             tenantId: record.tenantId,
@@ -274,6 +298,7 @@ export function createChannelFeedbackStorage(
         });
       },
       async ensureChannelFeedback(record) {
+        if (record.mapping.provider === 'discord') throw new ChannelFeedbackAuthorityError();
         return guard(record.mapping, async (active, expiredAt) => {
           const filter = { tenantId: record.tenantId, key: record.key };
           await ledger().updateOne(
@@ -301,6 +326,7 @@ export function createChannelFeedbackStorage(
         return stored;
       },
       async saveChannelFeedback(record, expectedRevision) {
+        if (record.mapping.provider === 'discord') throw new ChannelFeedbackAuthorityError();
         return guard(record.mapping, async (active) => {
           const result = await ledger().updateOne(
             { tenantId: record.tenantId, key: record.key, revision: expectedRevision },

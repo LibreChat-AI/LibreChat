@@ -1,7 +1,8 @@
 import { Schema } from 'mongoose';
+import { channelSnowflakeSchema } from 'librechat-data-provider';
 import type {
   ChannelReplyMapping,
-  ChannelReactionEvent,
+  ChannelFeedbackEvent,
   ChannelRating,
   ChannelFeedbackVote,
 } from 'librechat-data-provider';
@@ -20,7 +21,7 @@ export interface ChannelFeedbackEventRecord extends ChannelFeedbackRetention {
   eventId: string;
   digest: string;
   ledgerKey: string;
-  event: ChannelReactionEvent;
+  event: ChannelFeedbackEvent;
   mapping: ChannelReplyMapping;
   rating: ChannelRating;
   processed: boolean;
@@ -47,12 +48,24 @@ export interface ChannelFeedbackLedger extends ChannelFeedbackRetention {
 }
 
 function mappingSchema(): Schema<ChannelReplyRecord> {
-  return new Schema<ChannelReplyRecord>(
+  const schema = new Schema<ChannelReplyRecord>(
     {
       tenantId: { type: String, required: true },
       channelId: { type: String, required: true },
       channelRevision: { type: String, required: true },
-      teamId: { type: String, required: true },
+      provider: { type: String, enum: ['discord'] },
+      teamId: {
+        type: String,
+        required: function (this: { provider?: string }) {
+          return this.provider !== 'discord';
+        },
+      },
+      applicationId: String,
+      guildId: String,
+      externalChannelId: String,
+      externalUserId: String,
+      linkId: String,
+      linkRevision: String,
       agentId: { type: String, required: true },
       externalMessageKey: { type: String, required: true },
       runId: { type: String, required: true },
@@ -69,6 +82,30 @@ function mappingSchema(): Schema<ChannelReplyRecord> {
     },
     { _id: false },
   );
+  schema.pre('validate', function () {
+    if (this.provider === 'discord') {
+      if (
+        this.teamId !== undefined ||
+        ![this.applicationId, this.guildId, this.externalChannelId, this.externalUserId].every(
+          (value) => channelSnowflakeSchema.safeParse(value).success,
+        ) ||
+        !this.linkId ||
+        !this.linkRevision
+      )
+        this.invalidate('provider', 'Invalid Discord feedback source');
+    } else if (
+      [
+        'applicationId',
+        'guildId',
+        'externalChannelId',
+        'externalUserId',
+        'linkId',
+        'linkRevision',
+      ].some((field) => this.get(field) !== undefined)
+    )
+      this.invalidate('provider', 'Invalid Slack feedback source');
+  });
+  return schema;
 }
 
 export function createChannelReplyModel(
@@ -85,17 +122,36 @@ export function createChannelReplyModel(
 export function createChannelFeedbackEventModel(
   mongoose: typeof import('mongoose'),
 ): Model<ChannelFeedbackEventRecord> {
-  const event = new Schema<ChannelReactionEvent>(
+  const event = new Schema<ChannelFeedbackEvent>(
     {
       eventId: { type: String, required: true },
-      eventTimestampUs: { type: Number, required: true },
+      provider: { type: String, enum: ['discord'] },
+      eventTimestampUs: {
+        type: Number,
+        required: function (this: { provider?: string }) {
+          return this.provider !== 'discord';
+        },
+      },
       externalMessageKey: { type: String, required: true },
       externalUserId: { type: String, required: true },
       reaction: { type: String, required: true },
-      action: { type: String, enum: ['added', 'removed'], required: true },
+      action: { type: String, enum: ['added', 'removed', 'replaced'], required: true },
     },
     { _id: false },
   );
+  event.pre('validate', function () {
+    if (this.provider === 'discord') {
+      if (
+        this.eventTimestampUs !== undefined ||
+        this.action !== 'replaced' ||
+        this.reaction !== 'discord-button' ||
+        !channelSnowflakeSchema.safeParse(this.eventId).success ||
+        !channelSnowflakeSchema.safeParse(this.externalUserId).success
+      )
+        this.invalidate('provider', 'Invalid Discord feedback event');
+    } else if (this.get('action') === 'replaced')
+      this.invalidate('action', 'Invalid Slack feedback event');
+  });
   const schema = new Schema<ChannelFeedbackEventRecord>(
     {
       tenantId: { type: String, required: true },
@@ -141,11 +197,27 @@ export function createChannelFeedbackModel(
       externalMessageKey: { type: String, required: true },
       rating: { type: String, enum: ['thumbsUp', 'thumbsDown'], required: true },
       active: { type: Boolean, required: true },
-      eventTimestampUs: { type: Number, required: true },
+      provider: { type: String, enum: ['discord'] },
+      eventTimestampUs: {
+        type: Number,
+        required: function (this: { provider?: string }) {
+          return this.provider !== 'discord';
+        },
+      },
       eventId: { type: String, required: true },
     },
     { _id: false },
   );
+  vote.pre('validate', function () {
+    if (
+      this.provider === 'discord' &&
+      (this.get('eventTimestampUs') !== undefined ||
+        this.reaction !== 'discord-button' ||
+        this.active !== true ||
+        !channelSnowflakeSchema.safeParse(this.eventId).success)
+    )
+      this.invalidate('provider', 'Invalid Discord feedback vote');
+  });
   const schema = new Schema<ChannelFeedbackLedger>(
     {
       tenantId: { type: String, required: true },
