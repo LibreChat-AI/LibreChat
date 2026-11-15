@@ -1,5 +1,5 @@
 import { z } from 'zod';
-
+import type { DiscordAgentChannel } from './channels';
 import { channelSnowflakeSchema } from '../channelProvider';
 export const discordPublicKeySchema = z.string().regex(/^[a-f\d]{64}$/i);
 
@@ -40,3 +40,48 @@ export const configureDiscordApplicationSchema = z
   .refine((input) => Boolean(input.expectedRevision || (input.botToken && input.clientSecret)));
 
 export type ConfigureDiscordApplication = z.infer<typeof configureDiscordApplicationSchema>;
+
+export interface DiscordBindingStatus {
+  occupied: boolean;
+  assignedToThisAgent: boolean;
+  canReplace: boolean;
+  revision?: string;
+  assignedAgentName?: string;
+}
+
+export interface DiscordBindingTarget {
+  agentId: string;
+  installationId: string;
+  externalChannelId: string;
+}
+export interface BindDiscordChannel extends DiscordBindingTarget {
+  expectedRevision?: string;
+}
+export interface RemoveDiscordBinding extends DiscordBindingTarget {
+  expectedRevision: string;
+}
+
+export interface DiscordBindingView {
+  channel: DiscordAgentChannel;
+  routeRevision: string;
+}
+
+/** Protected gateway projections; neither contains provider credentials. */
+export interface DiscordApplicationSecurity {
+  tenantId: string;
+  applicationId: string;
+  applicationRevision: string;
+  publicKey: string;
+  botUserId: string;
+}
+
+export interface DiscordResolvedRoute extends DiscordApplicationSecurity {
+  routeRevision: string;
+  installationId: string;
+  installationRevision: string;
+  guildId: string;
+  externalChannelId: string;
+  channelId: string;
+  channelRevision: string;
+  agentId: string;
+}

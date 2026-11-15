@@ -5,10 +5,11 @@ import type { ClientSession } from 'mongoose';
 import type { DiscordApplicationRecord } from '~/models/discord';
 import { createDiscordApplicationModel, createDiscordGuildModel } from '~/models/discord';
 import { prepareChannelOwnerAdmission, touchChannelOwnerAdmission } from './channelOwner';
-import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { getTenantId, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createChannelIndexGate } from './channelIndexes';
+import { responseScopeKeys } from './responseScope';
 import { createUserModel } from '~/models/user';
 
 export type DiscordStorageError =
@@ -56,6 +57,8 @@ export interface DiscordInstallationStorage {
     input: ConfigureDiscordApplicationRecord,
   ): Promise<DiscordStorageResult<DiscordApplication>>;
   readApplication(applicationId: string): Promise<DiscordApplication | null>;
+  /** Server-only lookup establishes tenant ownership before verifying application ingress. */
+  lookupApplication(applicationId: string): Promise<DiscordApplication | null>;
   readApplicationCredentials(applicationId: string): Promise<DiscordApplicationRecord | null>;
   listApplications(
     cursor?: string,
@@ -63,6 +66,7 @@ export interface DiscordInstallationStorage {
   ): Promise<{ applications: DiscordApplication[]; next?: string }>;
   connectGuild(input: ConnectDiscordGuild): Promise<DiscordStorageResult<DiscordGuild>>;
   readGuild(installationId: string): Promise<DiscordGuild | null>;
+  resolveGuild(applicationId: string, guildId: string): Promise<DiscordGuild | null>;
   listGuilds(cursor?: string, limit?: number): Promise<{ guilds: DiscordGuild[]; next?: string }>;
   disconnectGuild(input: {
     actorId: string;
@@ -305,6 +309,32 @@ export function createDiscordInstallationStorage(
         .lean();
       return record ? applicationMetadata(record) : null;
     },
+    async lookupApplication(applicationId) {
+      channelSnowflakeSchema.parse(applicationId);
+      return runAsSystem(async () => {
+        const record = await applications.findOne({ applicationId }).read('primary').lean();
+        if (!record || !mongoose.isValidObjectId(record.createdBy)) return null;
+        const [user, fence] = await Promise.all([
+          createUserModel(mongoose)
+            .exists({
+              _id: record.createdBy,
+              tenantId: record.tenantId ?? null,
+              agentTriggerDeletionStartedAt: { $exists: false },
+            })
+            .read('primary'),
+          createResponseScopeModel(mongoose)
+            .exists({
+              _id: responseScopeKeys(
+                { userId: record.createdBy, tenantId: record.tenantId || undefined },
+                '',
+              )[0],
+              closed: false,
+            })
+            .read('primary'),
+        ]);
+        return user && fence ? applicationMetadata(record) : null;
+      });
+    },
     async readApplicationCredentials(applicationId) {
       const record = await applications
         .findOne({ applicationId, tenantId: tenant() ?? null })
@@ -412,6 +442,20 @@ export function createDiscordInstallationStorage(
     async readGuild(installationId) {
       const record = await guilds
         .findOne({ installationId, tenantId: tenant() ?? null })
+        .read('primary')
+        .lean();
+      return record ? guildMetadata(record) : null;
+    },
+    async resolveGuild(applicationId, guildId) {
+      channelSnowflakeSchema.parse(applicationId);
+      channelSnowflakeSchema.parse(guildId);
+      const record = await guilds
+        .findOne({
+          tenantId: tenant() ?? null,
+          applicationId,
+          guildId,
+          status: 'active',
+        })
         .read('primary')
         .lean();
       return record ? guildMetadata(record) : null;
