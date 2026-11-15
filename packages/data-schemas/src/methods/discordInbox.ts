@@ -16,6 +16,7 @@ import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createDiscordReceiptModel } from '~/models/discordReceipt';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 import { withRequiredTransaction } from '~/utils/transactions';
+import { touchDiscordThreadBinding } from './discordThread';
 import { createChannelIndexGate } from './channelIndexes';
 import { touchChannelAuthority } from './channelScope';
 import { touchDiscordInstallation } from './discord';
@@ -173,6 +174,8 @@ export function createDiscordInboxStorage(
         },
         session,
       );
+    if ('thread' in record && record.thread)
+      return touchDiscordThreadBinding(mongoose, { ...record, thread: record.thread }, session);
     return touchChannelAuthority(mongoose, { ...record, provider: 'discord' }, session);
   }
   async function expire(

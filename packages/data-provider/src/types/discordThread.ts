@@ -45,6 +45,11 @@ export const discordThreadRouteSchema = discordThreadBindingSchema
     mappingRevision: reference,
   })
   .strict();
+export const discordThreadReferenceSchema = discordThreadRouteSchema.pick({
+  parentChannelId: true,
+  mappingRevision: true,
+});
+export type DiscordThreadReference = z.infer<typeof discordThreadReferenceSchema>;
 export type DiscordThreadRoute = z.infer<typeof discordThreadRouteSchema>;
 /** Reject archive/lock changes rather than implicitly reopening a conversation. */
 export function discordThreadUsable(value: DiscordGuildThreadSource): boolean {

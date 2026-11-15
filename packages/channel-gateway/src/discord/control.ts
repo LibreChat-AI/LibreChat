@@ -2,6 +2,8 @@ import { z } from 'zod';
 import {
   channelSnowflakeSchema,
   discordInboxClaimSchema,
+  discordInboxResolutionSchema,
+  discordInboxDeliverySchema,
   discordInboxSubmissionSchema,
   discordInboxFenceSchema,
   discordDmConsumeSchema,
@@ -11,6 +13,8 @@ import type {
   DiscordApplicationSecurity,
   DiscordInboxSubmission,
   DiscordInboxClaim,
+  DiscordInboxResolution,
+  DiscordInboxDelivery,
   DiscordInboxFence,
   DiscordDmConsume,
 } from 'librechat-data-provider';
@@ -110,6 +114,27 @@ export class DiscordControlClient extends ServiceClient {
     const result = discordInboxClaimSchema.parse(await this.decode(response));
     if (result.fence.applicationId !== applicationId || result.fence.owner !== owner)
       throw new Error('Discord inbox lease mismatch');
+    return result;
+  }
+  async resolve(
+    input: DiscordInboxResolution,
+    signal?: AbortSignal,
+  ): Promise<DiscordInboxDelivery | null> {
+    const parsed = discordInboxResolutionSchema.parse(input);
+    const response = await this.raw(`${this.root}/inbox/resolve`, parsed, signal);
+    if (response.status === 409) {
+      await boundedBody(response, 65536);
+      return null;
+    }
+    const result = discordInboxDeliverySchema.parse(await this.decode(response));
+    if (
+      result.fence.applicationId !== parsed.fence.applicationId ||
+      result.fence.eventId !== parsed.fence.eventId ||
+      result.fence.owner !== parsed.fence.owner ||
+      result.fence.epoch !== parsed.fence.epoch ||
+      result.applicationRevision !== parsed.owner.applicationRevision
+    )
+      throw new Error('Discord inbox resolution mismatch');
     return result;
   }
   private async settle(path: string, body: object, signal?: AbortSignal): Promise<boolean> {

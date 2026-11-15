@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { discordIngressActionSchema, discordInboxFenceSchema } from './discordIngress';
+import { discordGuildThreadSourceSchema } from './discordThread';
+import { discordGatewayOwnerSchema } from './discordGateway';
 import { channelSnowflakeSchema } from '../channelProvider';
 
 const reference = z
@@ -84,3 +86,14 @@ export const discordInboxClaimSchema = z.union([
   discordInboxInspectionSchema,
 ]);
 export type DiscordInboxClaim = z.infer<typeof discordInboxClaimSchema>;
+
+/** Trusted owner supplies fresh Discord source observations, never a caller-selected parent binding. */
+export const discordInboxResolutionSchema = z
+  .object({
+    fence: discordInboxFenceSchema,
+    owner: discordGatewayOwnerSchema,
+    source: discordGuildThreadSourceSchema.nullable(),
+  })
+  .strict()
+  .refine((input) => input.fence.applicationId === input.owner.applicationId);
+export type DiscordInboxResolution = z.infer<typeof discordInboxResolutionSchema>;
