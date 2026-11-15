@@ -1,20 +1,9 @@
-export interface DiscordRatePolicy {
-  globalRequestsPerSecond: number;
-  maxQueued: number;
-  maxQueueWaitMs: number;
-  maxTrackedRoutes: number;
-  idleTtlMs: number;
-  fallbackRetryMs: number;
-}
+import { discordChannelConfigSchema } from 'librechat-data-provider';
+import type { DiscordChannelConfig } from 'librechat-data-provider';
 
-export const DEFAULT_DISCORD_RATE_POLICY: Readonly<DiscordRatePolicy> = {
-  globalRequestsPerSecond: 50,
-  maxQueued: 100,
-  maxQueueWaitMs: 30_000,
-  maxTrackedRoutes: 4096,
-  idleTtlMs: 300_000,
-  fallbackRetryMs: 1000,
-};
+export type DiscordRatePolicy = DiscordChannelConfig['rateLimits'];
+export const DEFAULT_DISCORD_RATE_POLICY: Readonly<DiscordRatePolicy> =
+  discordChannelConfigSchema.parse({}).rateLimits;
 
 /** Route excludes individual message IDs; major identifies a channel, guild or webhook. */
 export interface DiscordRateRoute {

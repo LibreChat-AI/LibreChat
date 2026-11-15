@@ -689,7 +689,7 @@ function validUsage(
   );
 }
 
-function validSummary(
+export function validSummary(
   summary: ChannelRunSummary | undefined,
   sequence: number,
 ): summary is ChannelRunSummary {
