@@ -7,8 +7,8 @@ import {
   channelGatewayWirePolicySchema,
   CHANNEL_GATEWAY_POLICY_VERSION,
 } from 'librechat-data-provider';
+import type { AgentChannel, ChannelConfig, ChannelServiceBundle } from 'librechat-data-provider';
 import type { AgentChannelMethods, AgentChannelRecord } from '@librechat/data-schemas';
-import type { ChannelConfig, ChannelServiceBundle } from 'librechat-data-provider';
 import type { Request, Response, RequestHandler } from 'express';
 import type { ChannelServiceGuard } from './types';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
@@ -70,30 +70,29 @@ const modeInput = z
   .object({ credentialMode: z.enum(['shared', 'per_user']), revision: identifier })
   .strict();
 
-export function publicChannel(
-  channel: AgentChannelRecord,
-): Pick<
-  AgentChannelRecord,
-  | 'channelId'
-  | 'tenantId'
-  | 'agentId'
-  | 'createdBy'
-  | 'type'
-  | 'status'
-  | 'credentialMode'
-  | 'revision'
-  | 'workspaceId'
-  | 'slack'
-> {
-  return {
+export function publicChannel(channel: AgentChannelRecord): AgentChannel {
+  const common = {
     channelId: channel.channelId,
     tenantId: channel.tenantId,
     agentId: channel.agentId,
     createdBy: channel.createdBy,
-    type: channel.type,
     status: channel.status,
-    credentialMode: channel.credentialMode,
     revision: channel.revision,
+  };
+  if (channel.type === 'discord')
+    return {
+      ...common,
+      type: 'discord',
+      credentialMode: 'per_user',
+      installationId: channel.installationId,
+      installationRevision: channel.installationRevision,
+      discord: channel.discord,
+    };
+  if (channel.type !== 'slack') throw new TypeError('Unsupported channel provider');
+  return {
+    ...common,
+    type: 'slack',
+    credentialMode: channel.credentialMode,
     workspaceId: channel.workspaceId,
     slack: channel.slack,
   };
@@ -408,6 +407,11 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     serviceWithConfig((req, res, channel, config) => handler(req, res, channel, config));
 
   const bundle = serviceWithConfig(async (_req, res, channel, config) => {
+    const metadata = publicChannel(channel);
+    if (metadata.type !== 'slack') {
+      res.status(404).json({ error: 'channel_not_found' });
+      return;
+    }
     const agent = await deps.getAgent(channel.agentId);
     const slack = channel.slack;
     if (
@@ -434,7 +438,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     }
     res.json({
       channel: {
-        ...publicChannel(channel),
+        ...metadata,
         revision: channel.revision,
         slack,
       },

@@ -387,6 +387,8 @@ export function createChannelRunStorage(
     },
     async admit(input, now) {
       channelRunActorSchema.parse(input.admission.actor);
+      if (input.admission.actor.provider === 'discord' && !input.applicationRevision)
+        throw new ChannelRunConflict('invalid_transition');
       if (input.workspaceId && input.admission.actor.provider !== undefined)
         throw new ChannelRunConflict('invalid_transition');
       const ownerAdmission = await prepareChannelOwnerAdmission(mongoose, {
@@ -406,11 +408,13 @@ export function createChannelRunStorage(
               channelRevision: input.principal.channelRevision,
               provider: input.admission.actor.provider,
               applicationId: input.admission.actor.applicationId,
+              applicationRevision: input.applicationRevision,
               guildId: input.admission.actor.guildId,
               teamId: input.admission.actor.teamId,
               appId: input.admission.actor.appId,
               principal: input.principal,
               externalUserId: input.admission.actor.externalUserId,
+              externalChannelId: input.admission.externalChannelId,
               now,
             },
             session,

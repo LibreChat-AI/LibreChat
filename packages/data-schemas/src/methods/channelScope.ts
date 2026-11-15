@@ -4,11 +4,13 @@ import type { AgentChannelRecord } from '~/models/channel';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
+import { createDiscordApplicationModel } from '~/models/discord';
 import { createChannelScopeModel } from '~/models/channelScope';
 import { touchChannelOwnerAdmission } from './channelOwner';
 import { touchSlackWorkspace } from './slackWorkspaceScope';
 import { createSlackRouteModel } from '~/models/slackRoute';
 import { createAgentChannelModel } from '~/models/channel';
+import { touchDiscordInstallation } from './discord';
 
 export function assertChannelTenant(tenantId: string | undefined): void {
   const current = getTenantId();
@@ -87,16 +89,25 @@ export async function touchChannelAuthority(
     provider?: 'discord';
     applicationId?: string;
     guildId?: string;
+    applicationRevision?: string;
     teamId?: string;
     appId?: string;
     principal?: { userId: string; linkId?: string; linkRevision?: string };
     externalUserId?: string;
+    externalChannelId?: string;
     now?: number;
   },
   session: ClientSession,
 ): Promise<boolean> {
-  // Discord admission stays closed until its canonical installation fence is available.
-  if (authority.provider !== undefined || authority.applicationId || authority.guildId)
+  if (
+    authority.provider === undefined &&
+    (authority.applicationId || authority.guildId || authority.applicationRevision)
+  )
+    return false;
+  if (
+    authority.provider === 'discord' &&
+    (authority.teamId || authority.appId || !authority.applicationId || !authority.guildId)
+  )
     return false;
   if (!(await touchChannelScope(mongoose, authority.tenantId, authority.channelId, session)))
     return false;
@@ -107,7 +118,7 @@ export async function touchChannelAuthority(
           ? { $in: [null, ''] }
           : authority.tenantId,
       channelId: authority.channelId,
-      type: 'slack',
+      type: authority.provider ?? 'slack',
       agentId: authority.agentId,
       revision:
         authority.channelRevision === authority.channelId
@@ -115,7 +126,9 @@ export async function touchChannelAuthority(
           : authority.channelRevision,
       status: 'active',
     })
-    .select('createdBy tenantId credentialMode workspaceId slack')
+    .select(
+      'type createdBy tenantId credentialMode workspaceId slack installationId installationRevision discord',
+    )
     .session(session)
     .lean();
   if (
@@ -130,7 +143,44 @@ export async function touchChannelAuthority(
     ))
   )
     return false;
-  if (parent.workspaceId) {
+  if (parent.type === 'discord') {
+    if (
+      !parent.discord ||
+      parent.credentialMode !== 'per_user' ||
+      parent.discord.applicationId !== authority.applicationId ||
+      parent.discord.guildId !== authority.guildId
+    )
+      return false;
+    if (
+      authority.externalChannelId !== undefined &&
+      authority.externalChannelId !== parent.discord.externalChannelId
+    )
+      return false;
+    const application = await createDiscordApplicationModel(mongoose)
+      .findOne({
+        tenantId: parent.tenantId ?? null,
+        applicationId: authority.applicationId,
+        botUserId: parent.discord.botUserId,
+      })
+      .session(session)
+      .lean();
+    if (
+      !application ||
+      !(await touchDiscordInstallation(
+        mongoose,
+        {
+          tenantId: parent.tenantId,
+          installationId: parent.installationId,
+          applicationId: parent.discord.applicationId,
+          guildId: parent.discord.guildId,
+          expectedRevision: parent.installationRevision,
+          expectedApplicationRevision: authority.applicationRevision ?? application.revision,
+        },
+        session,
+      ))
+    )
+      return false;
+  } else if (parent.workspaceId) {
     if (
       parent.credentialMode !== 'per_user' ||
       !(await touchSlackWorkspace(
@@ -169,10 +219,19 @@ export async function touchChannelAuthority(
         'identity.channelId': authority.channelId,
         'identity.channelRevision': authority.channelRevision,
         'identity.agentId': authority.agentId,
-        'identity.provider': { $exists: false },
-        'identity.applicationId': { $exists: false },
-        'identity.guildId': { $exists: false },
-        'identity.teamId': authority.teamId,
+        ...(authority.provider === 'discord'
+          ? {
+              'identity.provider': 'discord',
+              'identity.applicationId': authority.applicationId,
+              'identity.guildId': authority.guildId,
+              'identity.teamId': { $exists: false },
+            }
+          : {
+              'identity.provider': { $exists: false },
+              'identity.applicationId': { $exists: false },
+              'identity.guildId': { $exists: false },
+              'identity.teamId': authority.teamId,
+            }),
         'identity.externalUserId': authority.externalUserId,
       })
       .session(session),

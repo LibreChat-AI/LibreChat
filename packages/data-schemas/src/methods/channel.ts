@@ -1,5 +1,5 @@
 import { channelStorageConfigSchema } from 'librechat-data-provider';
-import type { ChannelStorageConfig } from 'librechat-data-provider';
+import type { AgentChannel, ChannelStorageConfig } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { SlackWorkspaceRecord } from '~/models/slackWorkspace';
 import type { AgentChannelRecord } from '~/models/channel';
@@ -8,27 +8,20 @@ import {
   createSlackInstallGenerationModel,
 } from '~/models/slackWorkspace';
 import { retireAgentChannel, initializeChannelScope, touchChannelScope } from './channelScope';
+import { createDiscordApplicationModel, createDiscordGuildModel } from '~/models/discord';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { createResponseScopeModel } from '~/models/responseScope';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { touchSlackWorkspace } from './slackWorkspaceScope';
 import { createChannelIndexGate } from './channelIndexes';
+import { touchDiscordInstallation } from './discord';
+import { responseScopeKeys } from './responseScope';
+import { createUserModel } from '~/models/user';
 
 export type { AgentChannelRecord } from '~/models/channel';
-export type AgentChannelMetadata = Pick<
-  AgentChannelRecord,
-  | 'channelId'
-  | 'tenantId'
-  | 'agentId'
-  | 'createdBy'
-  | 'type'
-  | 'status'
-  | 'credentialMode'
-  | 'revision'
-  | 'workspaceId'
-  | 'slack'
->;
+export type AgentChannelMetadata = AgentChannel;
 
 export type AgentChannelDeletionResult =
   | { status: 'deleted' }
@@ -81,8 +74,8 @@ export function createAgentChannelMethods(
     workspace?: SlackWorkspaceRecord | null,
   ): AgentChannelRecord {
     // A restored row of another provider must not inherit Slack workspace credentials.
+    if (record.type !== 'slack') return { ...record, status: 'disabled' };
     if (
-      record.type !== 'slack' ||
       !workspace ||
       record.credentialMode !== 'per_user' ||
       (workspace.tenantId || undefined) !== (record.tenantId || undefined)
@@ -95,10 +88,139 @@ export function createAgentChannelMethods(
     };
   }
 
+  async function discordInstallations(
+    records: AgentChannelRecord[],
+    includeCredentials: boolean,
+  ): Promise<AgentChannelRecord[]> {
+    const active = records.filter(
+      (record) => record.type === 'discord' && record.status === 'active',
+    );
+    if (!active.length) return records;
+    const appQuery = createDiscordApplicationModel(mongoose)
+      .find({
+        applicationId: {
+          $in: active.flatMap((record) =>
+            record.discord?.applicationId ? [record.discord.applicationId] : [],
+          ),
+        },
+      })
+      .read('primary');
+    const [guilds, apps] = await Promise.all([
+      createDiscordGuildModel(mongoose)
+        .find({
+          installationId: { $in: active.map((record) => record.installationId) },
+          status: 'active',
+        })
+        .read('primary')
+        .lean(),
+      (includeCredentials ? appQuery.select('+encryptedBotToken') : appQuery).lean(),
+    ]);
+    const owners = [...guilds, ...apps].filter((record) =>
+      mongoose.isValidObjectId(record.createdBy),
+    );
+    const keys = owners.map(
+      (record) =>
+        responseScopeKeys(
+          { userId: record.createdBy, tenantId: record.tenantId || undefined },
+          '',
+        )[0],
+    );
+    const [users, scopes] = await Promise.all([
+      createUserModel(mongoose)
+        .find({
+          _id: { $in: owners.map((record) => record.createdBy) },
+          agentTriggerDeletionStartedAt: { $exists: false },
+        })
+        .select('_id tenantId')
+        .read('primary')
+        .lean(),
+      createResponseScopeModel(mongoose)
+        .find({ _id: { $in: keys }, closed: false })
+        .select('_id')
+        .read('primary')
+        .lean(),
+    ]);
+    const availableUsers = new Map(
+      users.map((user) => [String(user._id), user.tenantId || undefined]),
+    );
+    const availableScopes = new Set(scopes.map((scope) => scope._id));
+    const ownerActive = (record: { createdBy: string; tenantId?: string }) =>
+      availableUsers.has(record.createdBy) &&
+      availableUsers.get(record.createdBy) === (record.tenantId || undefined) &&
+      availableScopes.has(
+        responseScopeKeys(
+          { userId: record.createdBy, tenantId: record.tenantId || undefined },
+          '',
+        )[0],
+      );
+    const guildById = new Map(guilds.map((guild) => [guild.installationId, guild]));
+    const appById = new Map(apps.map((app) => [app.applicationId, app]));
+    return records.map((record) => {
+      if (record.type !== 'discord' || record.status !== 'active') return record;
+      const guild = guildById.get(record.installationId);
+      const app = appById.get(record.discord?.applicationId);
+      if (
+        !guild ||
+        !app ||
+        !record.discord?.externalChannelId ||
+        record.credentialMode !== 'per_user' ||
+        guild.applicationId !== record.discord.applicationId ||
+        guild.guildId !== record.discord.guildId ||
+        guild.revision !== record.installationRevision ||
+        app.botUserId !== record.discord.botUserId ||
+        (guild.tenantId || undefined) !== (record.tenantId || undefined) ||
+        (app.tenantId || undefined) !== (record.tenantId || undefined) ||
+        !ownerActive(guild) ||
+        !ownerActive(app) ||
+        (includeCredentials && !app.encryptedBotToken)
+      )
+        return { ...record, status: 'disabled' };
+      return {
+        ...record,
+        ...(includeCredentials
+          ? { encryptedBotToken: app.encryptedBotToken, applicationRevision: app.revision }
+          : {}),
+      };
+    });
+  }
+
+  async function touchDiscord(
+    record: AgentChannelRecord,
+    session: ClientSession,
+  ): Promise<boolean> {
+    if (record.type !== 'discord') return true;
+    if (!record.applicationRevision || !record.discord) return false;
+    if (
+      !(await createDiscordApplicationModel(mongoose)
+        .exists({
+          tenantId: record.tenantId ?? null,
+          applicationId: record.discord.applicationId,
+          botUserId: record.discord.botUserId,
+          revision: record.applicationRevision,
+        })
+        .session(session))
+    )
+      return false;
+    return touchDiscordInstallation(
+      mongoose,
+      {
+        tenantId: record.tenantId,
+        installationId: record.installationId,
+        applicationId: record.discord.applicationId,
+        guildId: record.discord.guildId,
+        expectedRevision: record.installationRevision,
+        expectedApplicationRevision: record.applicationRevision,
+      },
+      session,
+    );
+  }
+
   async function installed(
     record: AgentChannelRecord | null,
     includeCredentials: boolean,
   ): Promise<AgentChannelRecord | null> {
+    if (record?.type === 'discord')
+      return (await discordInstallations([record], includeCredentials))[0];
     if (!record?.workspaceId || record.status !== 'active') return record;
     const query = createSlackWorkspaceModel(mongoose)
       .findOne({
@@ -128,6 +250,24 @@ export function createAgentChannelMethods(
   }
 
   function validWorkspaceBinding(record: AgentChannelRecord): void {
+    if (record.type === 'discord') {
+      if (
+        record.credentialMode !== 'per_user' ||
+        !record.installationId ||
+        !record.installationRevision ||
+        !record.discord ||
+        record.workspaceId ||
+        record.slack ||
+        record.encryptedBotToken ||
+        record.encryptedSigningSecret
+      )
+        throw new TypeError(
+          'Discord channels require an immutable installation and personal identities',
+        );
+      return;
+    }
+    if (record.installationId || record.installationRevision || record.discord)
+      throw new TypeError('Invalid Slack provider binding');
     if (
       record.workspaceId &&
       (record.credentialMode !== 'per_user' ||
@@ -201,6 +341,8 @@ export function createAgentChannelMethods(
           ))
         )
           throw new Error('Slack installation unavailable');
+        if (!(await touchDiscord(input, session)))
+          throw new Error('Discord installation unavailable');
         const [record] = await channel().create([input], { session });
         return record.toObject();
       });
@@ -218,16 +360,19 @@ export function createAgentChannelMethods(
             .flatMap((record) => (record.workspaceId ? [record.workspaceId] : [])),
         ),
       ];
-      if (!workspaceIds.length) return records;
+      if (!workspaceIds.length) return discordInstallations(records, false);
       const workspaces = await createSlackWorkspaceModel(mongoose)
         .find({ workspaceId: { $in: workspaceIds }, status: 'active' })
         .read('primary')
         .lean();
       const byId = new Map(workspaces.map((workspace) => [workspace.workspaceId, workspace]));
-      return records.map((record) =>
-        record.workspaceId && record.status === 'active'
-          ? withInstallation(record, byId.get(record.workspaceId))
-          : record,
+      return discordInstallations(
+        records.map((record) =>
+          record.workspaceId && record.status === 'active'
+            ? withInstallation(record, byId.get(record.workspaceId))
+            : record,
+        ),
+        false,
       );
     },
     async listAgentChannelTenants(cursor, limit) {
@@ -268,6 +413,9 @@ export function createAgentChannelMethods(
           credentialMode: 1,
           revision: 1,
           workspaceId: 1,
+          installationId: 1,
+          installationRevision: 1,
+          discord: 1,
           'slack.teamId': 1,
           'slack.appId': 1,
           'slack.botUserId': 1,
@@ -325,7 +473,41 @@ export function createAgentChannelMethods(
           .session(session)
           .lean();
         if (!current) return null;
-        const next = { ...current, ...update };
+        if (update.type !== undefined && update.type !== current.type) return null;
+        if (
+          current.type === 'discord' &&
+          (update.installationId !== undefined ||
+            update.installationRevision !== undefined ||
+            update.discord !== undefined ||
+            update.workspaceId !== undefined ||
+            update.slack !== undefined ||
+            update.credentialMode !== undefined ||
+            update.encryptedBotToken !== undefined ||
+            update.encryptedSigningSecret !== undefined)
+        )
+          return null;
+        if (
+          current.type === 'slack' &&
+          (update.installationId !== undefined ||
+            update.installationRevision !== undefined ||
+            update.discord !== undefined)
+        )
+          return null;
+        const next: AgentChannelRecord =
+          current.type === 'discord'
+            ? {
+                ...current,
+                status: update.status ?? current.status,
+                revision: update.revision ?? current.revision,
+              }
+            : {
+                ...current,
+                ...update,
+                type: 'slack',
+                installationId: undefined,
+                installationRevision: undefined,
+                discord: undefined,
+              };
         validWorkspaceBinding(next);
         if (
           next.workspaceId &&
@@ -337,6 +519,20 @@ export function createAgentChannelMethods(
           ))
         )
           return null;
+        if (next.type === 'discord' && next.status === 'active') {
+          const application = await createDiscordApplicationModel(mongoose)
+            .findOne({
+              applicationId: next.discord.applicationId,
+              tenantId: next.tenantId ?? null,
+            })
+            .session(session)
+            .lean();
+          if (
+            !application ||
+            !(await touchDiscord({ ...next, applicationRevision: application.revision }, session))
+          )
+            return null;
+        }
         return write(session);
       });
     },
