@@ -48,6 +48,7 @@ export function sameFeedbackSource(left: ChannelReplyMapping, right: ChannelRepl
 export interface ChannelFeedbackSourceState {
   expiredAt: Date | null;
   sampled?: boolean;
+  isTemporary?: boolean;
   destinationIds?: string[];
   langfuseRunId?: string;
   centralTraceExportEnabled?: boolean;
@@ -74,11 +75,12 @@ export async function readChannelFeedbackSourceState(
       ...SERVER_AUTHORED_MESSAGE_FILTER,
     })
     .select(
-      'expiredAt langfuseSampled langfuseDestinationIds langfuseRunId langfuseCentralTraceExportEnabled',
+      'expiredAt isTemporary langfuseSampled langfuseDestinationIds langfuseRunId langfuseCentralTraceExportEnabled',
     )
     .session(session ?? null)
     .lean<{
       expiredAt?: Date | null;
+      isTemporary?: boolean;
       langfuseSampled?: boolean;
       langfuseDestinationIds?: string[];
       langfuseRunId?: string;
@@ -102,6 +104,7 @@ export async function readChannelFeedbackSourceState(
   return {
     expiredAt: deadlines.length ? new Date(Math.min(...deadlines)) : null,
     sampled: message.langfuseSampled,
+    isTemporary: message.isTemporary,
     destinationIds: message.langfuseDestinationIds,
     langfuseRunId: message.langfuseRunId,
     centralTraceExportEnabled: message.langfuseCentralTraceExportEnabled,
