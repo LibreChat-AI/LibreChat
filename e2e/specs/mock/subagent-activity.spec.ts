@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { ParentSubagentIndex, SubagentThreadView, TMessage } from 'librechat-data-provider';
-import type { BrowserContext, Locator, Page, Request } from '@playwright/test';
+import type { BrowserContext, Locator, Page } from '@playwright/test';
 import type { AgentDetail } from './agents.helpers';
 import {
   MOCK_ENDPOINTS,
@@ -21,9 +21,14 @@ import history from '../../fixtures/subagent-history.cjs';
 import { openChatHistory } from './scenarios/sidebar';
 
 const DETACHED_ACTIVITY_MARKER = 'E2E_SUBAGENT_ACTIVITY:';
-/** The activity hook's first reconnect is scheduled after 500 ms. */
+/** Long enough for a stream that was going to reattach on its own to have done so. */
 const ACTIVITY_RECONNECT_GUARD_MS = 1_000;
+/** The bounded activity feed, which a followed thread no longer reads. */
 const ACTIVITY_PATH = /\/api\/convos\/[^/]+\/subagents\/[^/]+\/tasks\/[^/]+\/activity$/;
+/** A generation's stream; the last segment is the conversation, here a child thread. */
+const GENERATION_STREAM_PATH = /\/api\/agents\/chat\/stream\/([^/]+)$/;
+/** A child thread's messages, read through its parent. */
+const THREAD_MESSAGES_PATH = /\/api\/convos\/[^/]+\/subagents\/([^/]+)\/messages$/;
 
 async function createAgent(
   page: Page,
@@ -112,23 +117,23 @@ test.describe('detached subagent activity', () => {
     const parentName = uniqueAgentName('E2E Activity Parent');
     const createdAgentIds: string[] = [];
     const activityRequests: string[] = [];
-    const endedActivityRequests: string[] = [];
+    /** The thread each generation stream was opened for, and each read of a thread's messages. */
+    const streamAttaches: string[] = [];
+    const messageReads: string[] = [];
     page.on('request', (request) => {
       const url = new URL(request.url());
       if (ACTIVITY_PATH.test(url.pathname)) {
         activityRequests.push(url.pathname);
       }
-    });
-    /** The stream ends either way once the child is terminal: the server closes it after the final
-     *  frame, or the panel aborts it on the durable terminal status, whichever arrives first. */
-    const recordEndedActivity = (request: Request) => {
-      const url = new URL(request.url());
-      if (ACTIVITY_PATH.test(url.pathname)) {
-        endedActivityRequests.push(url.pathname);
+      const stream = GENERATION_STREAM_PATH.exec(url.pathname);
+      if (stream != null) {
+        streamAttaches.push(decodeURIComponent(stream[1]));
       }
-    };
-    page.on('requestfinished', recordEndedActivity);
-    page.on('requestfailed', recordEndedActivity);
+      const read = THREAD_MESSAGES_PATH.exec(url.pathname);
+      if (read != null) {
+        messageReads.push(decodeURIComponent(read[1]));
+      }
+    });
     const activityStreams = await recordActivityStreams(page);
 
     try {
@@ -158,30 +163,36 @@ test.describe('detached subagent activity', () => {
       const cards = page.locator('[data-subagent-tool-call^="call_e2e_subagent_activity_"]');
       await expect(cards).toHaveCount(2, { timeout: 30_000 });
       await expect(cards.first()).toHaveAttribute('data-subagent-thread', /.+/);
-      const activityResponsePromise = page.waitForResponse((candidate) => {
-        const url = new URL(candidate.url());
-        return ACTIVITY_PATH.test(url.pathname);
+      const firstThreadId = (await cards.first().getAttribute('data-subagent-thread')) ?? '';
+      const threadReadPromise = page.waitForResponse((candidate) => {
+        const read = THREAD_MESSAGES_PATH.exec(new URL(candidate.url()).pathname);
+        return read != null && decodeURIComponent(read[1]) === firstThreadId;
       });
       await cards.first().click();
 
+      /** The child's thread opens as a conversation: its messages, read through the parent, and
+       *  its own generation stream while it runs. The bounded activity feed is not read at all. */
       const panel = childActivityPanel(page);
-      await activityResponsePromise;
+      expect((await threadReadPromise).ok()).toBeTruthy();
       await expect(panel).toBeVisible();
       await expect(panel).toContainText('child-1-phase-10');
       await expect(panel.getByText('Running', { exact: true })).toHaveCount(0);
-      await expect.poll(() => activityRequests.length).toBe(1);
 
       await expect(panel).toContainText(`E2E detached child 1 complete ${label}`, {
         timeout: 30_000,
       });
       await expect(panel.getByText('Completed', { exact: true })).toHaveCount(0);
-      await expect.poll(() => endedActivityRequests.length).toBe(1);
-      const [activityStreamBody, ...otherStreams] = await activityStreams();
-      expect(otherStreams).toHaveLength(0);
-      expect(activityStreamBody).toContain('"event":"on_subagent_update"');
-      expect(activityStreamBody).toContain('"phase":"message_delta"');
+      const attachesOf = (threadId: string) =>
+        streamAttaches.filter((attached) => attached === threadId).length;
+      /** At most one attachment, and none added once the run is over: a finished child is read
+       *  from its stored messages, and a running one is followed by a single stream. */
+      const attaches = attachesOf(firstThreadId);
+      expect(attaches).toBeLessThanOrEqual(1);
       await page.waitForTimeout(ACTIVITY_RECONNECT_GUARD_MS);
-      expect(activityRequests).toHaveLength(1);
+      expect(attachesOf(firstThreadId)).toBe(attaches);
+      expect(messageReads).toContain(firstThreadId);
+      expect(activityRequests).toHaveLength(0);
+      expect(await activityStreams()).toHaveLength(0);
 
       await panel.getByRole('button', { name: 'Close' }).click();
       await expect(panel).not.toBeVisible();
@@ -293,7 +304,8 @@ async function steerPlacement(
 ): Promise<{ before: boolean; after: boolean }> {
   return steer.evaluate(
     (node, texts) => {
-      const root = node.closest('[data-subagent-conversation]');
+      /** The durable view's own root, or the message list that draws a followed thread. */
+      const root = node.closest('[data-subagent-conversation], [data-conversation-id]');
       const find = (text: string): Element | undefined => {
         if (root == null) return undefined;
         return [...root.querySelectorAll('*')].find(

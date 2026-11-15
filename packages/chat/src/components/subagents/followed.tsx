@@ -60,12 +60,18 @@ export default function FollowedChildThread({
       {/* `null` keeps tool calls as previews where the app gives no parent-scoped read: the
           ordinary message route answers 404 for a child thread. */}
       <ToolContentQueryContext.Provider value={host.useThreadToolContent ?? null}>
-        <FollowedThread
-          id={threadId}
-          index={SUBAGENT_THREAD_PANE}
-          followed={followed}
-          conversation={conversation}
-        />
+        {/* Main chat's rows take their side gutter from the viewport's width, and in a viewport
+            wide enough to seat this panel beside a chat that is the narrow one meant for a
+            centered column. The panel is not that column, so it supplies the rest of the gutter
+            its own transcript has always had. */}
+        <div className="flex min-h-0 flex-1 flex-col sm:px-2">
+          <FollowedThread
+            id={threadId}
+            index={SUBAGENT_THREAD_PANE}
+            followed={followed}
+            conversation={conversation}
+          />
+        </div>
       </ToolContentQueryContext.Provider>
     </MessagePartsHostProvider>
   );
