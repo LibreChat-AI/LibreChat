@@ -292,6 +292,15 @@ describe('FollowedThread', () => {
     expect(rows()).toEqual(['task-1:user=Research this']);
   });
 
+  it("leaves the page's end marker and screenshot target to the main list", async () => {
+    const { transport } = createTransport({ active: false });
+    mount(<Pane transport={transport} loadMessages={async () => [brief]} />);
+    await waitFor(() => expect(rows()).toHaveLength(1));
+
+    expect(document.getElementById('messages-end')).toBeNull();
+    expect(screen.queryByTestId('screenshot-target')).toBeNull();
+  });
+
   it('leaves the navigation rail out unless a host supplies one', async () => {
     const { transport } = createTransport({ active: false });
     const load = async () => [brief];

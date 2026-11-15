@@ -34,7 +34,8 @@ const followedSlots: ChatScreenMessagesSlots = {
 /**
  * A followed conversation drawn by main chat's own message list: the same thread, rows, parts
  * and scrolling, reading a chat contract built from the followed `Chat`. The hosts those rows
- * read come from the tree it is mounted in.
+ * read come from the tree it is mounted in. It is never the page's main list, so it leaves the
+ * page-wide end marker and screenshot target to that one.
  */
 export default function FollowedThread({
   id,
@@ -49,7 +50,12 @@ export default function FollowedThread({
   const listSlots = useMemo(() => ({ ...followedSlots, ...slots }), [slots]);
   return (
     <ChatContext.Provider value={contract}>
-      <ScreenMessages messagesTree={messagesTree} messages={messages} slots={listSlots} />
+      <ScreenMessages
+        messagesTree={messagesTree}
+        messages={messages}
+        slots={listSlots}
+        primary={false}
+      />
     </ChatContext.Provider>
   );
 }
