@@ -711,7 +711,7 @@ describe('remote SDK runtime bridge', () => {
       ]);
       return run;
     };
-    const runtime = await fixture(createRun);
+    const runtime = await fixture(createRun, { rpcTimeoutMs: 100, maxRunMs: 5000 });
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
@@ -749,11 +749,15 @@ describe('remote SDK runtime bridge', () => {
           },
         },
       };
-      const run = await createRemoteSdkRun({ config, identity, remote: runtime.remote });
+      const run = await createRemoteSdkRun({
+        config,
+        identity,
+        remote: { ...runtime.remote, rpcTimeoutMs: 100, maxRunMs: 5000 },
+      });
       const result = run.processStream({ messages: [new HumanMessage('tools')] }, invocation());
       const completed = result.catch((error) => {
         first();
-        throw error;
+        return error as Error;
       });
       let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -766,8 +770,9 @@ describe('remote SDK runtime bridge', () => {
       } finally {
         clearTimeout(timeout);
       }
+      await new Promise((resolve) => setTimeout(resolve, 200));
       release();
-      await completed;
+      expect(await completed).not.toBeInstanceOf(Error);
       expect(calls).toBe(1);
     } finally {
       release?.();

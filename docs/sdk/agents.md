@@ -194,3 +194,8 @@ Child-agent execution subjects are explicitly rejected until the host can author
 registered tool ownership. Uploaded file authorization, model/PII policy, steering, accounting
 and tracing adapters retain the limitations in the matrix above. A tool reference does not
 itself grant access to domain data; the existing host tool implementation must authorize it.
+
+Host tool execution uses `maxRunMs` for its RPC lifetime. `rpcTimeoutMs` continues to bound
+control, checkpoint and notification RPCs; a healthy long-running tool must not fail solely
+because it exceeds that shorter control timeout. The run's cancellation/deadline still aborts
+both sides cooperatively.

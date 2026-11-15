@@ -249,7 +249,8 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         };
         transport.once('close', cleanup);
         const workerTools = createWorkerToolService({
-          call: (method, data) => peer.call(method, data),
+          call: (method, data) =>
+            peer.call(method, data, method === 'tools' ? limits.maxRunMs : undefined),
         });
         const peer = createSdkPeer(transport, {
           ...limits,
