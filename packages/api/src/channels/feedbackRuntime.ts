@@ -1,6 +1,6 @@
 import type { RequestHandler } from 'express';
+import type { ChannelFeedbackHostDependencies, ChannelFeedbackHost } from './feedbackHost';
 import type { ChannelFeedbackWorkerDependencies } from './feedbackWorker';
-import type { ChannelFeedbackHostDependencies } from './feedbackHost';
 import type { ChannelWorkerSettings } from './settings';
 import type { ChannelServiceGuard } from './runs';
 import { createChannelFeedbackHandlers } from './feedbackHttp';
@@ -23,6 +23,7 @@ export interface ChannelFeedbackRuntimeDependencies {
 
 export interface ChannelFeedbackRuntime {
   handlers: ReturnType<typeof createChannelFeedbackHandlers>;
+  recordDiscordFeedback: ChannelFeedbackHost['recordDiscordFeedback'];
   initialize: () => Promise<void>;
   stop: () => Promise<void>;
 }
@@ -31,6 +32,7 @@ export interface ChannelFeedbackRuntime {
 export function createChannelFeedbackRuntime(
   deps: ChannelFeedbackRuntimeDependencies,
 ): ChannelFeedbackRuntime {
+  let feedback: ChannelFeedbackHost | undefined;
   let worker: ReturnType<typeof createChannelFeedbackWorker> | undefined;
   let handlers: ReturnType<typeof createChannelFeedbackHandlers> | undefined;
   let initialization: Promise<void> | undefined;
@@ -46,6 +48,12 @@ export function createChannelFeedbackRuntime(
   };
   return {
     handlers: { reaction },
+    async recordDiscordFeedback(scope) {
+      if (!ready || stopped || !feedback) return { ok: false, error: { code: 'forbidden' } };
+      const result = await feedback.recordDiscordFeedback(scope);
+      if (result.ok && !result.value.ignored) worker?.wake();
+      return result;
+    },
     initialize(): Promise<void> {
       if (stopped) return Promise.resolve();
       if (initialization) return initialization;
@@ -53,7 +61,7 @@ export function createChannelFeedbackRuntime(
         const config = channelWorkerSettings(await deps.getWorkerSettings());
         if (stopped) return;
         const settings = config.feedback;
-        const feedback = createChannelFeedbackHost({
+        feedback = createChannelFeedbackHost({
           ...deps.hostDeps,
           maxConflictRetries: settings.maxConflictRetries,
           exportTimeoutMs: settings.exportTimeoutMs,
@@ -78,6 +86,7 @@ export function createChannelFeedbackRuntime(
       })().catch(async (error: unknown) => {
         ready = false;
         handlers = undefined;
+        feedback = undefined;
         const failed = worker;
         worker = undefined;
         try {
