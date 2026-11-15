@@ -7,6 +7,9 @@ const handlers = require('~/server/services/DiscordManagement');
 const channels = require('~/server/services/DiscordChannels');
 
 const router = express.Router();
+router.get('/service/runtime/bootstrap', channels.discovery.bootstrap);
+router.get('/service/runtime/applications', channels.discovery.applications);
+router.get('/service/runtime/channels', channels.discovery.channels);
 router.get('/service/security/:applicationId', channels.routes.security);
 router.post('/service/resolve', channels.routes.resolve);
 router.post('/service/gateway/acquire', channels.gateway.acquire);
