@@ -56,7 +56,7 @@ export interface ChannelFeedbackSourceState {
 
 export async function readChannelFeedbackSourceState(
   mongoose: typeof import('mongoose'),
-  mapping: ChannelReplyMapping,
+  mapping: Pick<ChannelReplyMapping, 'tenantId' | 'principalId' | 'conversationId' | 'messageId'>,
   session?: ClientSession,
 ): Promise<ChannelFeedbackSourceState> {
   assertChannelTenant(mapping.tenantId);

@@ -136,6 +136,7 @@ it('installs the channel owner-review URL with the owning review page', () => {
   expect(createChannelRunHandlers).toHaveBeenCalledWith(
     expect.objectContaining({
       publicBaseUrl: process.env.DOMAIN_CLIENT,
+      feedbackEnabled: expect.any(Function),
       interactive: {
         readInteractiveReview: expect.any(Function),
         submitInteractiveReview: expect.any(Function),

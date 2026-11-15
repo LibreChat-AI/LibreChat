@@ -62,6 +62,8 @@ export interface ChannelRunDependencies {
   artifacts?: ReturnType<typeof createChannelArtifactService>;
   /** Optional final metadata only; the caller checks live authority on both sides. */
   summarize?: (run: ChannelRunRecord, snapshot: ChannelRunSnapshot) => Promise<ChannelRunSummary>;
+  /** Actual principal and retained-response eligibility, recomputed for each service projection. */
+  feedbackEnabled?: (run: ChannelRunRecord) => Promise<boolean>;
 }
 
 const id = z
@@ -305,6 +307,14 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
     run: ChannelRunRecord,
   ): Promise<ChannelRunView> {
     const view = channelRunView(run);
+    if (run.admission.actor.provider === 'discord' && deps.feedbackEnabled) {
+      try {
+        view.feedbackEnabled = await deps.feedbackEnabled(run);
+      } catch {
+        // Optional controls fail closed while canonical response delivery remains available.
+        view.feedbackEnabled = false;
+      }
+    }
     let traceUrl: string | undefined;
     if (run.snapshot?.summary && deps.summarize) {
       try {

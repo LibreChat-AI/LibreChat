@@ -7,7 +7,7 @@ import type {
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 
-export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
+export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision' | 'feedbackEnabled'> {
   tenantId: string;
   agentId: string;
   workspaceId?: string;
