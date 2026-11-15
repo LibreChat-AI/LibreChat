@@ -15,14 +15,14 @@ import type {
 import type { DiscordGatewayStorage, DiscordInstallationStorage } from '@librechat/data-schemas';
 
 export interface DiscordGatewayService {
-  acquire(owner: DiscordGatewayOwner): Promise<boolean>;
-  renew(owner: DiscordGatewayOwner): Promise<boolean>;
+  acquire(owner: DiscordGatewayOwner, leaseMs: number): Promise<boolean>;
+  renew(owner: DiscordGatewayOwner, leaseMs: number): Promise<boolean>;
   release(owner: DiscordGatewayOwner): Promise<boolean>;
   bootstrap(owner: DiscordGatewayOwner): Promise<DiscordGatewayBootstrap | null>;
   load(owner: DiscordGatewayOwner): Promise<DiscordGatewayBatch | null>;
   save(owner: DiscordGatewayOwner, batch: DiscordGatewayBatch): Promise<boolean>;
 }
-/** Settings return null when either the channel host, Discord, or Gateway is disabled. */
+/** Settings return null when the channel host or Discord is disabled. */
 export function createDiscordGatewayService(deps: {
   storage: DiscordGatewayStorage;
   installations: Pick<DiscordInstallationStorage, 'lookupApplication'>;
@@ -34,7 +34,7 @@ export function createDiscordGatewayService(deps: {
     const value = await deps.settings();
     if (!value) return null;
     const parsed = discordChannelConfigSchema.parse(value);
-    return parsed.enabled && parsed.gateway.enabled ? parsed : null;
+    return parsed.enabled ? parsed : null;
   }
   async function scoped<T>(
     owner: DiscordGatewayOwner,
@@ -56,9 +56,10 @@ export function createDiscordGatewayService(deps: {
     return next && JSON.stringify(next.gateway) === JSON.stringify(policy.gateway);
   };
   return {
-    acquire: (owner: DiscordGatewayOwner) =>
-      scoped(owner, false, () => deps.storage.acquire(owner)),
-    renew: (owner: DiscordGatewayOwner) => scoped(owner, false, () => deps.storage.renew(owner)),
+    acquire: (owner: DiscordGatewayOwner, leaseMs: number) =>
+      scoped(owner, false, () => deps.storage.acquire(owner, leaseMs)),
+    renew: (owner: DiscordGatewayOwner, leaseMs: number) =>
+      scoped(owner, false, () => deps.storage.renew(owner, leaseMs)),
     release: (owner: DiscordGatewayOwner) =>
       scoped(owner, false, () => deps.storage.release(owner), true),
     bootstrap: (owner: DiscordGatewayOwner) =>

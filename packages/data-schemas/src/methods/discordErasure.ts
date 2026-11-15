@@ -4,11 +4,13 @@ import type { ResponseOwner } from '~/models/response';
 import { createDiscordApplicationModel, createDiscordGuildModel } from '~/models/discord';
 import { getTenantId, SYSTEM_TENANT_ID, tenantStorage } from '~/config/tenantContext';
 import { retireAgentChannel, lockExistingChannelScope } from './channelScope';
+import { createDiscordGatewayCheckpointModel } from '~/models/discordGateway';
 import { createDiscordReservationModel } from '~/models/discordReservation';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createDiscordInstallModel } from '~/models/discordInstall';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { createResourceLockModel } from '~/models/resourceLock';
 import { createDiscordRouteModel } from '~/models/discordRoute';
 import { retireDiscordReservation } from './discordReservation';
 import { withRequiredTransaction } from '~/utils/transactions';
@@ -192,6 +194,13 @@ export async function eraseDiscordPersistenceForUser(
         await installations.close();
       }
       await installs.deleteMany({ tenantId: partition, applicationId: application.applicationId });
+      await createDiscordGatewayCheckpointModel(mongoose).deleteMany({
+        tenantId: partition,
+        applicationId: application.applicationId,
+      });
+      await createResourceLockModel(mongoose).deleteOne({
+        key: `discord:gateway:${application.applicationId}`,
+      });
       await applications.deleteOne({
         tenantId: partition,
         applicationId: application.applicationId,

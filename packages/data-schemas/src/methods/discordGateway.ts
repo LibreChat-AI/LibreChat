@@ -29,8 +29,8 @@ export interface DiscordGatewayPrivateState {
   checkpoints: DiscordGatewayCheckpointRecord[];
 }
 export interface DiscordGatewayStorage {
-  acquire(owner: DiscordGatewayOwner): Promise<boolean>;
-  renew(owner: DiscordGatewayOwner): Promise<boolean>;
+  acquire(owner: DiscordGatewayOwner, leaseMs: number): Promise<boolean>;
+  renew(owner: DiscordGatewayOwner, leaseMs: number): Promise<boolean>;
   release(owner: DiscordGatewayOwner): Promise<boolean>;
   load(owner: DiscordGatewayOwner): Promise<DiscordGatewayPrivateState | null>;
   save(
@@ -167,15 +167,23 @@ export function createDiscordGatewayStorage(
     expiresAt: { $gt: new Date() },
   });
   return {
-    acquire: (owner) =>
+    acquire: (owner, leaseMs) =>
       operation(owner, false, async (_scope, policy, session) => {
+        if (leaseMs !== policy.ownershipLeaseMs) return false;
         const existing = await locks
           .findOne({ key: key(owner.applicationId) })
           .session(session)
           .lean();
         const now = Date.now();
-        if (existing && existing.expiresAt.getTime() > now)
-          return existing.ownerId === holder(owner);
+        if (existing && existing.expiresAt.getTime() > now) {
+          if (existing.ownerId !== holder(owner)) return false;
+          const renewed = await locks.updateOne(
+            lease(owner),
+            { $max: { expiresAt: new Date(now + leaseMs) }, $inc: { fenceWrites: 1 } },
+            { session },
+          );
+          return renewed.matchedCount === 1;
+        }
         if (existing) {
           const result = await locks.updateOne(
             { _id: existing._id, expiresAt: { $lte: new Date(now) } },
@@ -200,8 +208,9 @@ export function createDiscordGatewayStorage(
         );
         return true;
       }),
-    renew: (owner) =>
+    renew: (owner, leaseMs) =>
       operation(owner, false, async (_scope, policy, session) => {
+        if (leaseMs !== policy.ownershipLeaseMs) return false;
         const result = await locks.updateOne(
           lease(owner),
           {

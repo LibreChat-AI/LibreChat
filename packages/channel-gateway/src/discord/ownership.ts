@@ -21,11 +21,16 @@ export class DiscordGatewayControlClient extends ServiceClient {
     owner: DiscordGatewayOwner,
     batch?: DiscordGatewayBatch,
     signal?: AbortSignal,
+    leaseMs?: number,
   ): Promise<Response> {
     const parsed = discordGatewayOwnerSchema.parse(owner);
     return this.raw(
       `/api/channels/discord/service/gateway/${path}`,
-      { owner: parsed, ...(batch ? { batch: discordGatewayBatchSchema.parse(batch) } : {}) },
+      {
+        owner: parsed,
+        ...(batch ? { batch: discordGatewayBatchSchema.parse(batch) } : {}),
+        ...(leaseMs === undefined ? {} : { leaseMs }),
+      },
       signal,
     );
   }
@@ -44,8 +49,9 @@ export class DiscordGatewayControlClient extends ServiceClient {
     owner: DiscordGatewayOwner,
     batch?: DiscordGatewayBatch,
     signal?: AbortSignal,
+    leaseMs?: number,
   ): Promise<boolean> {
-    const response = await this.call(path, owner, batch, signal);
+    const response = await this.call(path, owner, batch, signal, leaseMs);
     if (response.status === 204) return true;
     if (response.status === 409) {
       await boundedBody(response, 65536);
@@ -54,11 +60,11 @@ export class DiscordGatewayControlClient extends ServiceClient {
     await this.decode(response);
     throw new ServiceError(response.status);
   }
-  acquire(owner: DiscordGatewayOwner, signal?: AbortSignal): Promise<boolean> {
-    return this.effect('acquire', owner, undefined, signal);
+  acquire(owner: DiscordGatewayOwner, leaseMs: number, signal?: AbortSignal): Promise<boolean> {
+    return this.effect('acquire', owner, undefined, signal, leaseMs);
   }
-  renew(owner: DiscordGatewayOwner, signal?: AbortSignal): Promise<boolean> {
-    return this.effect('renew', owner, undefined, signal);
+  renew(owner: DiscordGatewayOwner, leaseMs: number, signal?: AbortSignal): Promise<boolean> {
+    return this.effect('renew', owner, undefined, signal, leaseMs);
   }
   release(owner: DiscordGatewayOwner, signal?: AbortSignal): Promise<boolean> {
     return this.effect('release', owner, undefined, signal);

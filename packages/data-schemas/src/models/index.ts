@@ -11,6 +11,7 @@ import { createScheduleModel, createScheduleRunModel } from './schedule';
 import { getTenantIndexMigrationHint } from '~/migrations/tenantIndexes';
 import { createSkillSyncCredentialModel } from './skillSyncCredential';
 import { createOpenIDRefreshFlightModel } from './openidRefreshFlight';
+import { createDiscordGatewayCheckpointModel } from './discordGateway';
 import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
 import { createDiscordReservationModel } from './discordReservation';
 import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
@@ -95,6 +96,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   DiscordInbox: ReturnType<typeof createDiscordInboxModel>;
   DiscordReservation: ReturnType<typeof createDiscordReservationModel>;
   DiscordReceipt: ReturnType<typeof createDiscordReceiptModel>;
+  DiscordGatewayCheckpoint: ReturnType<typeof createDiscordGatewayCheckpointModel>;
   DiscordInstall: ReturnType<typeof createDiscordInstallModel>;
   ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
   ChannelScope: ReturnType<typeof createChannelScopeModel>;
@@ -167,6 +169,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     DiscordInbox: createDiscordInboxModel(mongoose),
     DiscordReservation: createDiscordReservationModel(mongoose),
     DiscordReceipt: createDiscordReceiptModel(mongoose),
+    DiscordGatewayCheckpoint: createDiscordGatewayCheckpointModel(mongoose),
     DiscordInstall: createDiscordInstallModel(mongoose),
     ChannelIdentity: createChannelIdentityModel(mongoose),
     ChannelScope: createChannelScopeModel(mongoose),

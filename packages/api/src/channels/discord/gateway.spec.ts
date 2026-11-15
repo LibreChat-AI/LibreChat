@@ -28,7 +28,7 @@ let policy: DiscordChannelConfig | null;
 let revision: string;
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId }, work);
 const storage = createDiscordGatewayStorage(db, async () =>
-  policy?.enabled && policy.gateway.enabled
+  policy?.enabled
     ? { ownershipLeaseMs: policy.gateway.ownershipLeaseMs, shardCount: policy.gateway.shardCount }
     : null,
 );
@@ -133,7 +133,13 @@ it('requires bearer authentication on every endpoint and rejects caller-selected
 });
 it('reveals credentials and decrypted checkpoints only to a current owner and persists capabilities encrypted', async () => {
   const app = server();
-  const post = (path: string, body = { owner: current() }) =>
+  const post = (
+    path: string,
+    body: object = {
+      owner: current(),
+      ...(['acquire', 'renew'].includes(path) ? { leaseMs: 30000 } : {}),
+    },
+  ) =>
     request(app).post(`/${path}`).auth('private-service-'.repeat(3), { type: 'bearer' }).send(body);
   expect((await post('bootstrap')).status).toBe(409);
   expect((await post('acquire')).status).toBe(204);
@@ -171,7 +177,7 @@ it('reveals credentials and decrypted checkpoints only to a current owner and pe
   expect((await post('bootstrap')).status).toBe(409);
 });
 it('rejects arbitrary resume URLs, mismatched shard topology and cross-application batches', async () => {
-  await service.acquire(current());
+  await service.acquire(current(), 30000);
   const app = server();
   for (const resumeURL of [
     'wss://attacker.test/',
@@ -199,7 +205,7 @@ it('rejects arbitrary resume URLs, mismatched shard topology and cross-applicati
 });
 it('rechecks ownership, application revision and enablement after asynchronous credential decryption', async () => {
   const originalOwner = current();
-  await service.acquire(originalOwner);
+  await service.acquire(originalOwner, 30000);
   let rotate = true;
   const racing = createDiscordGatewayService({
     storage,
@@ -228,7 +234,7 @@ it('rechecks ownership, application revision and enablement after asynchronous c
   const active = await installs.lookupApplication(applicationId);
   revision = active!.revision;
   expect(await service.release(originalOwner)).toBe(true);
-  await service.acquire(current());
+  await service.acquire(current(), 30000);
   expect(await racing.bootstrap(current())).toBeNull();
 });
 it('redacts unexpected failures instead of forwarding provider tokens or stored checkpoint payloads', async () => {
@@ -247,4 +253,14 @@ it('redacts unexpected failures instead of forwarding provider tokens or stored 
     .send({ owner: current() });
   expect(response.status).toBe(503);
   expect(response.body).toEqual({ error: 'discord_gateway_unavailable' });
+});
+
+it('uses one application owner for bot delivery while the optional Gateway socket is disabled', async () => {
+  policy = discordChannelConfigSchema.parse({ enabled: true, gateway: { enabled: false } });
+  expect(await service.acquire(current(), 30000)).toBe(true);
+  expect(await service.acquire({ ...current(), ownerId: 'b'.repeat(32) }, 30000)).toBe(false);
+  expect(await service.bootstrap(current())).toMatchObject({
+    botToken: 'private-bot-token',
+    policy: { enabled: false },
+  });
 });

@@ -23,10 +23,14 @@ it('uses protected POST requests without forwarding caller-selected tenant autho
     async () => new Response(null, { status: 204 }),
   );
   const client = new DiscordGatewayControlClient(connection, transport);
-  expect(await client.acquire(owner)).toBe(true);
+  expect(await client.acquire(owner, 30000)).toBe(true);
   expect(transport).toHaveBeenCalledWith(
     'http://internal/prefix/api/channels/discord/service/gateway/acquire',
-    expect.objectContaining({ method: 'POST', redirect: 'error', body: JSON.stringify({ owner }) }),
+    expect.objectContaining({
+      method: 'POST',
+      redirect: 'error',
+      body: JSON.stringify({ owner, leaseMs: 30000 }),
+    }),
   );
   const headers = transport.mock.calls[0][1]?.headers;
   expect(headers).toEqual({
@@ -52,11 +56,11 @@ it('propagates outages safely and distinguishes a lost lease without replaying w
     Response.json({ error: 'private-database-content' }, { status: 503 }),
   );
   const client = new DiscordGatewayControlClient(connection, transport);
-  await expect(client.renew(owner)).rejects.toThrow('HTTP 503');
+  await expect(client.renew(owner, 30000)).rejects.toThrow('HTTP 503');
   expect(transport).toHaveBeenCalledTimes(1);
   transport.mockImplementation(async () =>
     Response.json({ error: 'unavailable' }, { status: 409 }),
   );
-  expect(await client.renew(owner)).toBe(false);
+  expect(await client.renew(owner, 30000)).toBe(false);
   expect(await client.load(owner)).toBeNull();
 });

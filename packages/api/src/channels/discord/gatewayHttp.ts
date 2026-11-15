@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { discordGatewayOwnerSchema, discordGatewayBatchSchema } from 'librechat-data-provider';
+import {
+  discordGatewayOwnerSchema,
+  discordGatewayBatchSchema,
+  discordChannelConfigSchema,
+} from 'librechat-data-provider';
 import type { RequestHandler } from 'express';
 import type { DiscordGatewayService } from './gateway';
 import { acceptsChannelServiceToken } from '../service';
@@ -10,6 +14,11 @@ export function createDiscordGatewayHandlers(deps: {
   serviceToken: () => string | undefined;
 }): Record<'acquire' | 'renew' | 'release' | 'bootstrap' | 'load' | 'save', RequestHandler> {
   const ownerSchema = z.object({ owner: discordGatewayOwnerSchema }).strict();
+  const leaseSchema = ownerSchema.extend({
+    leaseMs: discordChannelConfigSchema.shape.gateway
+      .unwrap()
+      .shape.ownershipLeaseMs.removeDefault(),
+  });
   const saveSchema = ownerSchema.extend({ batch: discordGatewayBatchSchema });
   function handle<T>(
     schema: z.ZodType<T>,
@@ -33,8 +42,8 @@ export function createDiscordGatewayHandlers(deps: {
     };
   }
   return {
-    acquire: handle(ownerSchema, ({ owner }) => deps.service.acquire(owner)),
-    renew: handle(ownerSchema, ({ owner }) => deps.service.renew(owner)),
+    acquire: handle(leaseSchema, ({ owner, leaseMs }) => deps.service.acquire(owner, leaseMs)),
+    renew: handle(leaseSchema, ({ owner, leaseMs }) => deps.service.renew(owner, leaseMs)),
     release: handle(ownerSchema, ({ owner }) => deps.service.release(owner)),
     bootstrap: handle(ownerSchema, ({ owner }) => deps.service.bootstrap(owner)),
     load: handle(ownerSchema, ({ owner }) => deps.service.load(owner)),
