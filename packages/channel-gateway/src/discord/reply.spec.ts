@@ -180,3 +180,24 @@ it('bounds exponential retry backoff by the interaction token lifetime', async (
   expect(await turn()).toBe(true);
   expect(JSON.parse(calls('/defer')[0][1].body).retryAt).toBe(job.expiresAt);
 });
+
+it.each(['oversized', 'interrupted'])(
+  'preserves Retry-After when a 429 body is %s',
+  async (body) => {
+    discord = async () =>
+      new Response(
+        body === 'oversized'
+          ? 'x'.repeat(5000)
+          : new ReadableStream({
+              start(stream) {
+                stream.error(new Error(token));
+              },
+            }),
+        { status: 429, headers: { 'Retry-After': '7' } },
+      );
+    await expect(reply.write(applicationId, token, job.reply)).rejects.toMatchObject({
+      outcome: 'retryable',
+      retryAfterMs: 7000,
+    });
+  },
+);

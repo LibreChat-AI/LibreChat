@@ -92,9 +92,18 @@ export class DiscordReplyClient {
             }),
           },
         );
-        bytes = await boundedBody(response, this.options.maxResponseBytes);
       } catch {
         throw new DiscordWriteError('unknown');
+      }
+      permit.observe(response);
+      try {
+        bytes = await boundedBody(response, this.options.maxResponseBytes);
+      } catch {
+        if (response.status === 429)
+          throw new DiscordWriteError('retryable', this.rates.retryAfter(response));
+        throw new DiscordWriteError(
+          response.status >= 400 && response.status < 500 ? 'permanent' : 'unknown',
+        );
       }
       let payload: unknown;
       try {
