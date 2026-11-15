@@ -13,6 +13,7 @@ const {
   createChannelArtifactService,
   createChannelCleanupRuntime,
   createChannelSummaryService,
+  createDiscordFeedbackProjection,
   createChannelSummaryTraceResolver,
 } = require('@librechat/api');
 const {
@@ -90,6 +91,10 @@ const runs = createChannelRunHandlers({
   resolvePrincipal: authority.resolvePrincipal,
   advance: execution.advance,
   summarize: summary.summarize,
+  feedbackEnabled: createDiscordFeedbackProjection({
+    storage: createChannelFeedbackStorage(mongoose),
+    getPolicy: policy.feedbackPolicy,
+  }),
   retireForAuthorityLoss: execution.retireForAuthorityLoss,
 });
 const cleanup = createChannelCleanupRuntime({

@@ -173,6 +173,8 @@ export interface ChannelRunProgress
 }
 
 export interface ChannelRunView {
+  /** Current server policy for this retained response; never persisted as run authority. */
+  feedbackEnabled?: boolean;
   runId: string;
   channelId: string;
   revision: string;
