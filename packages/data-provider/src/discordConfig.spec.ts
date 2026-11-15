@@ -30,6 +30,7 @@ it('bounds durable interaction backlog, leases and deduplication retention', () 
   expect(discordChannelConfigSchema.parse({}).inbox).toEqual({
     maxPendingPerApplication: 1000,
     maxPendingPerActor: 20,
+    maxPendingPerChannel: 100,
     leaseMs: 30000,
     scanLimit: 20,
     retentionMs: 86400000,
@@ -38,6 +39,8 @@ it('bounds durable interaction backlog, leases and deduplication retention', () 
   for (const inbox of [
     { maxPendingPerApplication: 0 },
     { maxPendingPerActor: 1001 },
+    { maxPendingPerChannel: 0 },
+    { maxPendingPerChannel: 100001 },
     { leaseMs: 4999 },
     { leaseMs: 120001 },
     { scanLimit: 101 },

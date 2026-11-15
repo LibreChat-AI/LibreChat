@@ -12,6 +12,7 @@ import { getTenantIndexMigrationHint } from '~/migrations/tenantIndexes';
 import { createSkillSyncCredentialModel } from './skillSyncCredential';
 import { createOpenIDRefreshFlightModel } from './openidRefreshFlight';
 import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
+import { createDiscordReservationModel } from './discordReservation';
 import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
 import { createAgentTriggerDeliveryModel } from './triggerDelivery';
 import { createToolApprovalGrantModel } from './toolApprovalGrant';
@@ -21,6 +22,7 @@ import { createChannelIdentityModel } from './channelIdentity';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
 import { createConversationTagModel } from './conversationTag';
 import { createCodeEnvironmentModel } from './codeEnvironment';
+import { createDiscordReceiptModel } from './discordReceipt';
 import { createDiscordInstallModel } from './discordInstall';
 import { createSkillDeletionModel } from './skillDeletion';
 import { createAgentCategoryModel } from './agentCategory';
@@ -91,6 +93,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
   DiscordGuild: ReturnType<typeof createDiscordGuildModel>;
   DiscordRoute: ReturnType<typeof createDiscordRouteModel>;
   DiscordInbox: ReturnType<typeof createDiscordInboxModel>;
+  DiscordReservation: ReturnType<typeof createDiscordReservationModel>;
+  DiscordReceipt: ReturnType<typeof createDiscordReceiptModel>;
   DiscordInstall: ReturnType<typeof createDiscordInstallModel>;
   ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
   ChannelScope: ReturnType<typeof createChannelScopeModel>;
@@ -161,6 +165,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
     DiscordGuild: createDiscordGuildModel(mongoose),
     DiscordRoute: createDiscordRouteModel(mongoose),
     DiscordInbox: createDiscordInboxModel(mongoose),
+    DiscordReservation: createDiscordReservationModel(mongoose),
+    DiscordReceipt: createDiscordReceiptModel(mongoose),
     DiscordInstall: createDiscordInstallModel(mongoose),
     ChannelIdentity: createChannelIdentityModel(mongoose),
     ChannelScope: createChannelScopeModel(mongoose),
