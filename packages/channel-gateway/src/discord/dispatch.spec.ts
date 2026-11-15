@@ -26,7 +26,7 @@ const event: DiscordGatewayMessage = {
   mentionsBot: true,
 };
 
-function fixture(status = 200, sourceStatus = 200) {
+function fixture(status = 200, sourceStatus = 200, threadType?: 11 | 12) {
   const calls: string[] = [];
   const controller = new AbortController();
   const submitted: object[] = [];
@@ -37,11 +37,25 @@ function fixture(status = 200, sourceStatus = 200) {
       expect(new Headers(init?.headers).get('authorization')).toBe('Bot private-token');
       if (sourceStatus !== 200) return Response.json({}, { status: sourceStatus });
       if (url.pathname.endsWith('/permissions/member/456'))
-        return Response.json({ permissions: '68608' });
+        return Response.json({
+          permissions: threadType
+            ? String(BigInt(1024 | 65536) | (BigInt(1) << BigInt(38)))
+            : '68608',
+        });
       if (url.pathname.endsWith('/permissions/member/600'))
         return Response.json({ permissions: '1024' });
       if (url.pathname === '/api/v10/guilds/900/members/600')
         return Response.json({ user: { id: '600' } });
+      if (url.pathname.includes('/thread-members/'))
+        return Response.json({ id: '800', user_id: url.pathname.split('/').at(-1) });
+      if (threadType)
+        return Response.json({
+          id: '800',
+          guild_id: '900',
+          parent_id: '801',
+          type: threadType,
+          thread_metadata: { archived: false, locked: false },
+        });
       expect(url.pathname).toBe('/api/v10/channels/800');
       return Response.json({ id: '800', guild_id: '900', type: 0 });
     }
@@ -109,6 +123,31 @@ it('inspects the actual destination and waits for private durable admission', as
     },
   ]);
 });
+
+it.each([11, 12] as const)(
+  'inspects actual type %s thread metadata and membership before submitting its physical destination',
+  async (threadType) => {
+    const f = fixture(200, 200, threadType);
+    await dispatchDiscordEvent(f.deps, { ...event, channelType: threadType }, f.controller.signal);
+    expect(f.submitted).toEqual([
+      {
+        owner,
+        event: { ...event, channelType: threadType },
+        source: expect.objectContaining({
+          kind: 'guild_thread',
+          parentChannelId: '801',
+          threadChannelId: '800',
+          authorId: '600',
+          threadType,
+        }),
+      },
+    ]);
+    expect(f.calls.filter((path) => path === '/api/v10/channels/800')).toHaveLength(2);
+    expect(f.calls.filter((path) => path.includes('/thread-members/'))).toHaveLength(
+      threadType === 12 ? 2 : 0,
+    );
+  },
+);
 
 it.each([
   { content: 'ordinary message', mentionsBot: false },

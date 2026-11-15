@@ -1,6 +1,10 @@
 import { z } from 'zod';
+import { discordGuildThreadSourceSchema } from './discordThread';
+import { discordGuildTextSourceSchema } from './discordSource';
 import { discordGatewayOwnerSchema } from './discordGateway';
 import { channelSnowflakeSchema } from '../channelProvider';
+export { discordGuildTextSourceSchema } from './discordSource';
+export type { DiscordGuildTextSource } from './discordSource';
 
 export const discordGatewayMessageSchema = discordGatewayOwnerSchema
   .extend({
@@ -18,20 +22,6 @@ export const discordGatewayMessageSchema = discordGatewayOwnerSchema
   })
   .strict();
 export type DiscordGatewayMessage = z.infer<typeof discordGatewayMessageSchema>;
-export const discordGuildTextSourceSchema = z
-  .object({
-    kind: z.literal('guild_text'),
-    applicationId: channelSnowflakeSchema,
-    botUserId: channelSnowflakeSchema,
-    guildId: channelSnowflakeSchema,
-    channelId: channelSnowflakeSchema,
-    permissions: z
-      .string()
-      .regex(/^(0|[1-9]\d{0,19})$/)
-      .refine((value) => value.length < 20 || value <= '18446744073709551615'),
-  })
-  .strict();
-export type DiscordGuildTextSource = z.infer<typeof discordGuildTextSourceSchema>;
 /** Fresh per-actor observation, not a stored grant or inferred channel membership. */
 export const discordGuildTextActorSourceSchema = discordGuildTextSourceSchema
   .extend({
@@ -46,7 +36,13 @@ export const discordMessageSubmissionSchema = z
     owner: discordGatewayOwnerSchema,
     event: discordGatewayMessageSchema,
     // Legacy bot-only decoding does not prove the actor can currently access the source.
-    source: z.union([discordGuildTextActorSourceSchema, discordGuildTextSourceSchema]).nullable(),
+    source: z
+      .union([
+        discordGuildTextActorSourceSchema,
+        discordGuildTextSourceSchema,
+        discordGuildThreadSourceSchema,
+      ])
+      .nullable(),
   })
   .strict();
 export type DiscordMessageSubmission = z.infer<typeof discordMessageSubmissionSchema>;

@@ -339,7 +339,10 @@ it('rejects forged source identifiers, stale owners and fingerprint conflicts wh
     (
       await service.submit({
         ...input,
-        source: { ...input.source!, channelId: '999999999999999999' },
+        source: {
+          ...discordGuildTextActorSourceSchema.parse(input.source),
+          channelId: '999999999999999999',
+        },
       })
     ).ok,
   ).toBe(false);

@@ -6,18 +6,22 @@ import {
   discordMentionPrompt,
   discordGuildTextActorSourceSchema,
   discordGuildTextActorUsable,
+  discordThreadUsable,
+} from 'librechat-data-provider';
+import type {
+  DiscordMessageSubmission,
+  DiscordNativeAuthority,
+  DiscordGuildThreadDestination,
+  DiscordMessageResult,
+  DiscordChannelConfig,
 } from 'librechat-data-provider';
 import type {
   DiscordMessageStorage,
+  DiscordThreadStorage,
   DiscordInstallationStorage,
   ChannelRunStorage,
   AgentChannelMethods,
 } from '@librechat/data-schemas';
-import type {
-  DiscordMessageSubmission,
-  DiscordMessageResult,
-  DiscordChannelConfig,
-} from 'librechat-data-provider';
 import type { ChannelAuthority } from '../authority';
 import type { DiscordRouteResolver } from './routes';
 import { channelExternalIdentity } from '../authority';
@@ -40,6 +44,7 @@ export function createDiscordMessageService(deps: {
   resolver: DiscordRouteResolver;
   channels: Pick<AgentChannelMethods, 'getAgentChannelMetadata'>;
   messages: DiscordMessageStorage;
+  threads?: Pick<DiscordThreadStorage, 'bind'>;
   runs: Pick<ChannelRunStorage, 'admit'>;
   authority: ChannelAuthority;
   settings: () => Promise<DiscordChannelConfig>;
@@ -96,7 +101,8 @@ export function createDiscordMessageService(deps: {
             (source.applicationId !== app.applicationId ||
               source.botUserId !== app.botUserId ||
               source.guildId !== event.guildId ||
-              source.channelId !== event.channelId ||
+              (source.kind === 'guild_thread' ? source.threadChannelId : source.channelId) !==
+                event.channelId ||
               ('authorId' in source && source.authorId !== event.authorId))
           )
             return denied('invalid_input');
@@ -105,7 +111,8 @@ export function createDiscordMessageService(deps: {
                 applicationId: owner.applicationId,
                 expectedApplicationRevision: owner.applicationRevision,
                 guildId: event.guildId,
-                externalChannelId: event.channelId,
+                externalChannelId:
+                  source?.kind === 'guild_thread' ? source.parentChannelId : event.channelId,
               })
             : null;
           const scope = route
@@ -126,11 +133,19 @@ export function createDiscordMessageService(deps: {
               : ignored(reason);
           }
           if (timestamp - createdAt >= policy.gateway.messageMaxAgeMs) return consume('expired');
-          if (!event.guildId || (event.channelType !== undefined && event.channelType !== 0))
+          if (
+            !event.guildId ||
+            (event.channelType !== undefined &&
+              event.channelType !== (source?.kind === 'guild_thread' ? source.threadType : 0))
+          )
             return consume('unsupported');
           const actorSource = discordGuildTextActorSourceSchema.safeParse(source);
-          if (!actorSource.success || !discordGuildTextActorUsable(actorSource.data))
-            return consume(route ? 'unavailable' : 'unsupported');
+          let native: DiscordNativeAuthority;
+          if (source?.kind === 'guild_thread' && discordThreadUsable(source))
+            native = { kind: 'guild_thread', owner, source };
+          else if (actorSource.success && discordGuildTextActorUsable(actorSource.data))
+            native = { kind: 'guild_text', owner, source: actorSource.data };
+          else return consume(route ? 'unavailable' : 'unsupported');
           if (!route) return consume('unavailable');
           const channel = await deps.channels.getAgentChannelMetadata(route.channelId);
           if (!channel || channel.type !== 'discord' || channel.revision !== route.channelRevision)
@@ -160,6 +175,20 @@ export function createDiscordMessageService(deps: {
           if (admittedAt - createdAt >= current.gateway.messageMaxAgeMs) return consume('expired');
           if (event.content.length > current.gateway.maxMessageCharacters)
             return consume('unavailable');
+          let destination: DiscordGuildThreadDestination | undefined;
+          if (native.kind === 'guild_thread') {
+            const mapping = await deps.threads?.bind(owner, native.source, {
+              channelId: route.channelId,
+              channelRevision: route.channelRevision,
+              routeRevision: route.routeRevision,
+            });
+            if (!mapping?.ok) return consume('unavailable');
+            destination = {
+              kind: 'guild_thread',
+              parentChannelId: mapping.value.parentChannelId,
+              mappingRevision: mapping.value.mappingRevision,
+            };
+          }
           try {
             await deps.runs.admit(
               {
@@ -168,14 +197,15 @@ export function createDiscordMessageService(deps: {
                 agentId: channel.agentId,
                 applicationRevision: owner.applicationRevision,
                 discordGateway: { owner, occurrence },
-                discordAuthority: { kind: 'guild_text', owner, source: actorSource.data },
+                discordAuthority: native,
                 principal,
                 admission: {
                   actor,
                   eventId: event.messageId,
                   input: prompt,
                   externalChannelId: event.channelId,
-                  externalThreadKey: `${event.channelId}:${event.messageId}`,
+                  externalThreadKey: `${event.channelId}:${destination ? event.channelId : event.messageId}`,
+                  ...(destination ? { discordDestination: destination } : {}),
                   externalMessageKey: `${event.channelId}:${event.messageId}`,
                 },
               },

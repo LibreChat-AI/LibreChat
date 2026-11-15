@@ -9,11 +9,18 @@ import { channelConfigSchema } from 'librechat-data-provider';
 import { discordRunControl, discordChannelConfigSchema } from 'librechat-data-provider';
 import {
   createResponseStorage,
+  createDiscordGatewayStorage,
+  createDiscordMessageStorage,
   createDiscordRouteStorage,
   createDiscordThreadStorage,
   createDiscordInboxResolutionStorage,
 } from '@librechat/data-schemas';
-import type { DiscordGuildThreadSource, DiscordPrivateReply } from 'librechat-data-provider';
+import type {
+  DiscordGuildThreadSource,
+  DiscordPrivateReply,
+  DiscordGatewayMessage,
+  DiscordMessageSubmission,
+} from 'librechat-data-provider';
 import type { StoredResponseRecord } from '@librechat/data-schemas';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
@@ -45,7 +52,10 @@ import {
   linked,
   allRuns,
 } from './commands.helper';
+import { DiscordGatewayControlClient } from '../../../../channel-gateway/src/discord/ownership';
 import { createDiscordWorkerProvider } from '../../../../channel-gateway/src/discord/worker';
+import { DiscordRuntimeClient } from '../../../../channel-gateway/src/discord/discovery';
+import { dispatchDiscordEvent } from '../../../../channel-gateway/src/discord/dispatch';
 import { DiscordRateCoordinator } from '../../../../channel-gateway/src/discord/rates';
 import { createDiscordWebhook } from '../../../../channel-gateway/src/discord/http';
 import { DiscordClient } from '../../../../channel-gateway/src/discord/client';
@@ -56,7 +66,9 @@ import { ChannelClient } from '../../../../channel-gateway/src/client';
 import { loadConfig } from '../../../../channel-gateway/src/config';
 import { createChannelResponseCredentials } from '../credentials';
 import { createChannelResponseProjection } from '../responses';
+import { createDiscordMessageHandlers } from './messageHttp';
 import { createDiscordInboxHandlers } from './inboxHttp';
+import { createDiscordMessageService } from './messages';
 import { createDiscordRouteResolver } from './routes';
 import { createDiscordInboxService } from './inbox';
 import { createChannelRunHandlers } from '../runs';
@@ -92,6 +104,8 @@ describe('signed native thread commands', () => {
   let authorMember: boolean;
   let writes: { path: string; body: Record<string, unknown> }[];
   let client: DiscordClient;
+  let discordTransport: typeof fetch;
+  let messageSubmissions: DiscordMessageSubmission[];
   let submissionStatus: number;
   let submissionCode: string;
   let responseCreates: number;
@@ -101,6 +115,51 @@ describe('signed native thread commands', () => {
       { applicationId, botUserId, guildId, threadChannelId: threadId, authorId },
       new AbortController().signal,
     );
+  }
+  async function mention(
+    content = 'Mention prompt',
+    authorId = externalUserId,
+    original?: DiscordGatewayMessage,
+  ) {
+    const event: DiscordGatewayMessage = original ?? {
+      ...owned(),
+      kind: 'message',
+      shardId: 0,
+      sequence: 1,
+      messageId: eventId(),
+      channelId: threadId,
+      guildId,
+      authorId,
+      content: `<@${botUserId}> ${content}`,
+      mentionsBot: true,
+      channelType: threadType,
+    };
+    const connection = {
+      LIBRECHAT_INTERNAL_URL: base,
+      CHANNEL_SERVICE_TOKEN: serviceToken,
+      API_CALL_TIMEOUT_MS: 2000,
+    };
+    await dispatchDiscordEvent(
+      {
+        owner: owned(),
+        application: {
+          ...owned(),
+          botUserId,
+          botToken: 'private-bot-token',
+          policy: policy.gateway,
+        },
+        policy: { ...policy, gateway: { ...policy.gateway, enabled: true } },
+        rates: new DiscordRateCoordinator(policy.rateLimits),
+        runtime: new DiscordRuntimeClient(connection),
+        gateway: new DiscordGatewayControlClient(connection),
+        transport: discordTransport,
+      },
+      event,
+      new AbortController().signal,
+    );
+    const submitted = messageSubmissions.at(-1);
+    if (!submitted) throw new Error('Missing physical message submission');
+    return { event, submitted };
   }
   async function signed(
     action: 'ask' | 'status' | 'cancel',
@@ -186,6 +245,8 @@ describe('signed native thread commands', () => {
     authorMember = true;
     writes = [];
     responseCreates = 0;
+    messageSubmissions = [];
+    await scope(() => db.models.DiscordMessageReceipt.deleteMany({}));
     const transport = Object.assign(
       async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         const path = new URL(String(input)).pathname;
@@ -217,6 +278,7 @@ describe('signed native thread commands', () => {
       },
       { preconnect: fetch.preconnect },
     );
+    discordTransport = transport;
     client = new DiscordClient(
       { botToken: 'private-bot-token', timeoutMs: 1000, maxResponseBytes: 16384 },
       transport,
@@ -246,6 +308,27 @@ describe('signed native thread commands', () => {
     control.use(express.json());
     for (const name of ['submit', 'claim', 'resolve', 'finish', 'defer'] as const)
       control.post(`/${name}`, handlers[name]);
+    const messageHandlers = createDiscordMessageHandlers({
+      serviceToken: () => serviceToken,
+      service: createDiscordMessageService({
+        installations,
+        resolver,
+        channels,
+        messages: createDiscordMessageStorage(db),
+        runs,
+        authority,
+        threads: createDiscordThreadStorage(db, async () => ({ maxThreadRoutes: 10 })),
+        settings: async () => ({ ...policy, gateway: { ...policy.gateway, enabled: true } }),
+      }),
+    });
+    control.post(
+      '/api/channels/discord/service/messages',
+      (req, res, next) => {
+        messageSubmissions.push(req.body);
+        next();
+      },
+      messageHandlers.submit,
+    );
     const channelHandlers = createChannelHandlers({
       db: channels,
       serviceToken: () => serviceToken,
@@ -563,6 +646,154 @@ describe('signed native thread commands', () => {
       expect(isolated?.laneId).not.toBe(run.laneId);
       expect(isolated?.admission.externalThreadKey).toBe(`${threadId}:${threadId}`);
     }));
+  it('shares signed and Gateway thread context only for the same actor and consumes physical mentions once', () =>
+    scope(async () => {
+      await linked();
+      const mentioned = await mention();
+      expect(mentioned.submitted.source?.kind).toBe('guild_thread');
+      const config = loadConfig({
+        CHANNEL_SERVICE_TOKEN: serviceToken,
+        CHANNEL_ID: channel.channelId,
+        CHANNEL_TENANT_ID: tenantId,
+        LIBRECHAT_INTERNAL_URL: base,
+      });
+      const provider = createDiscordWorkerProvider({
+        owner: owned(),
+        rates: new DiscordRateCoordinator(policy.rateLimits),
+        createClient: () => client,
+      });
+      const service = new ChannelClient(config, fetch, { type: 'discord' });
+      const worker = new ChannelWorker(config, service, provider, {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      });
+      expect(await worker.tick(new AbortController().signal)).toBe(true);
+      const [first] = await allRuns();
+      expect(first.state).toBe('delivered');
+      expect(first.admission).toMatchObject({
+        eventId: mentioned.event.messageId,
+        externalChannelId: threadId,
+        externalThreadKey: `${threadId}:${threadId}`,
+        discordDestination: { kind: 'guild_thread', parentChannelId: externalChannelId },
+      });
+      expect(writes.some((write) => write.body.content === 'Thread answer')).toBe(true);
+      await mention('', externalUserId, mentioned.event);
+      expect(await allRuns()).toHaveLength(1);
+      await request(control)
+        .post('/api/channels/discord/service/messages')
+        .set('Authorization', `Bearer ${serviceToken}`)
+        .send({
+          ...mentioned.submitted,
+          event: { ...mentioned.event, content: `<@${botUserId}> altered physical payload` },
+        })
+        .expect(409, { error: 'event_conflict' });
+      const slash = await signed('ask', 'Signed continuation');
+      const next = (await allRuns()).find((run) => run.admission.eventId === slash.id);
+      expect(next?.laneId).toBe(first.laneId);
+      const signal = new AbortController().signal;
+      const claim = await service.claim('mixed-ingress', signal);
+      if (!claim || !provider.effectContext) throw new Error('Missing continued run');
+      const context = await provider.effectContext(
+        claim.run,
+        await service.channel(signal),
+        signal,
+      );
+      const prepared = await service.prepare(claim.fence, signal, context);
+      if ('settled' in prepared) throw new Error('Unexpected settlement');
+      expect(prepared.request.previous_response_id).toBe('resp_thread');
+      expect(
+        (await runs.read(tenantId, channel.channelId, claim.run.runId))?.execution?.conversationId,
+      ).toBe(first.execution?.conversationId);
+      await linked(otherActor, owner);
+      const otherMention = await mention('Another actor', otherActor);
+      const otherSlash = await signed('ask', 'Same other actor', undefined, otherActor);
+      const retained = await allRuns();
+      const a = retained.find((run) => run.admission.eventId === otherMention.event.messageId);
+      const b = retained.find((run) => run.admission.eventId === otherSlash.id);
+      expect(a?.principal.userId).toBe(owner);
+      expect(a?.laneId).not.toBe(first.laneId);
+      expect(b?.laneId).toBe(a?.laneId);
+      const afterSlash = await mention('Mention after signed continuation');
+      const mixed = (await allRuns()).find(
+        (run) => run.admission.eventId === afterSlash.event.messageId,
+      );
+      expect(mixed?.laneId).toBe(next?.laneId);
+      expect(mixed?.principal.userId).toBe(first.principal.userId);
+      expect(await db.models.DiscordMessageReceipt.countDocuments()).toBe(3);
+      for (const run of retained) expect(run).not.toHaveProperty('discordAuthority');
+    }));
+  it('keeps a physical thread mention consumed across credential revision and rejects payload conflicts', () =>
+    scope(async () => {
+      await linked();
+      const original = await mention('Physical occurrence');
+      const configured = await installations.configureApplication({
+        actorId: owner,
+        applicationId,
+        botUserId,
+        publicKey: keys.publicKey
+          .export({ type: 'spki', format: 'der' })
+          .subarray(-32)
+          .toString('hex'),
+        encryptedBotToken: await encryptCredential('rotated-private-bot-token'),
+        expectedRevision: applicationRevision,
+      });
+      if (!configured.ok) throw new Error(configured.error.code);
+      const nextOwner = { ...owned(), applicationRevision: configured.value.revision };
+      const gateway = createDiscordGatewayStorage(db, async () => ({
+        ownershipLeaseMs: 30000,
+        shardCount: 1,
+      }));
+      expect(await gateway.release(owned())).toBe(true);
+      expect(await gateway.acquire(nextOwner, 30000)).toBe(true);
+      const replay = {
+        ...original.submitted,
+        owner: nextOwner,
+        event: { ...original.event, applicationRevision: nextOwner.applicationRevision },
+      };
+      await request(control)
+        .post('/api/channels/discord/service/messages')
+        .set('Authorization', `Bearer ${serviceToken}`)
+        .send(replay)
+        .expect(200, { outcome: 'duplicate' });
+      await request(control)
+        .post('/api/channels/discord/service/messages')
+        .set('Authorization', `Bearer ${serviceToken}`)
+        .send({ ...replay, event: { ...replay.event, content: `<@${botUserId}> changed payload` } })
+        .expect(409, { error: 'event_conflict' });
+      expect(await allRuns()).toHaveLength(1);
+      expect(await db.models.DiscordMessageReceipt.countDocuments()).toBe(1);
+    }));
+  it('never revives an unlinked physical thread mention after account linking', () =>
+    scope(async () => {
+      const ignored = await mention('Never replay this');
+      expect(await allRuns()).toHaveLength(0);
+      await linked();
+      await mention('', externalUserId, ignored.event);
+      expect(await allRuns()).toHaveLength(0);
+      await mention('Fresh after consent');
+      const [fresh] = await allRuns();
+      expect(fresh.admission.input).toBe('Fresh after consent');
+      expect(await db.models.DiscordMessageReceipt.countDocuments()).toBe(2);
+    }));
+  it.each(['archived', 'membership', 'inaccessible'])(
+    'consumes a currently %s thread mention without running it',
+    (state) =>
+      scope(async () => {
+        await linked();
+        archived = state === 'archived';
+        inaccessible = state === 'inaccessible';
+        threadType = state === 'membership' ? 12 : 11;
+        authorMember = state !== 'membership';
+        const ignored = await mention();
+        expect(await allRuns()).toHaveLength(0);
+        expect(writes).toEqual([]);
+        archived = inaccessible = false;
+        authorMember = true;
+        await mention('', externalUserId, ignored.event);
+        expect(await allRuns()).toHaveLength(0);
+      }),
+  );
   it('honors native Stop only for the confirmed message in the same mapped thread', () =>
     scope(async () => {
       await linked();
