@@ -660,6 +660,22 @@ describe('remote SDK runtime bridge', () => {
       ).rejects.toThrow();
     },
   );
+  it('does not reinterpret client-owned functions as host-executable tools', async () => {
+    const createRun = jest.fn(factory);
+    const runtime = await fixture(createRun);
+    try {
+      await expect(
+        createRemoteSdkRun({
+          config: { ...hostConfig(), clientDelegatedToolNames: ['browser_function'] },
+          identity,
+          remote: runtime.remote,
+        }),
+      ).rejects.toThrow('ownership adapter');
+      expect(createRun).not.toHaveBeenCalled();
+    } finally {
+      await runtime.close();
+    }
+  });
   it('fails before tool execution when a factory omits required host schemas', async () => {
     const runtime = await fixture();
     const handle = jest.fn();

@@ -39,6 +39,8 @@ export async function createRemoteSdkRun({
   remote: RemoteSdkOptions;
   resumeState?: RemoteSdkResumeState;
 }): ReturnType<typeof Run.create> {
+  if (config.clientDelegatedToolNames?.length)
+    throw new Error('Remote SDK client-owned tools require a supported ownership adapter');
   if (config.providerTextProtection)
     throw new Error('Remote SDK provider protection requires a supported policy adapter');
   identity = Object.freeze({ ...identity });

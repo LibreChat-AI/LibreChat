@@ -199,3 +199,8 @@ Host tool execution uses `maxRunMs` for its RPC lifetime. `rpcTimeoutMs` continu
 control, checkpoint and notification RPCs; a healthy long-running tool must not fail solely
 because it exceeds that shorter control timeout. The run's cancellation/deadline still aborts
 both sides cooperatively.
+
+Caller-owned function tools (`clientDelegatedToolNames`) are not host tools. Remote SDK
+execution rejects that configuration until an explicit ownership/continuation adapter is
+available; their schemas must never be reinterpreted as permission to execute on the host.
+Native Responses execution without a remote SDK binding retains its existing behavior.
