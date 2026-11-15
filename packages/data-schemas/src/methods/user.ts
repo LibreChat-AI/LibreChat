@@ -661,6 +661,9 @@ export function createUserMethods(
 
   /**
    * Delete a user by their unique ID.
+   * The cascade, grant cleanup and auth cache key on the loaded account's canonical string id,
+   * not the caller's value: `createUser(..., true)` callers hold an ObjectId, which the
+   * string-only erasure guards reject after the admission scope has irreversibly closed.
    */
   async function deleteUserById(
     userId: string,
@@ -674,24 +677,27 @@ export function createUserMethods(
     }
     try {
       const User = mongoose.models.User;
-      const owner = await User.findById(userId).select('tenantId').lean<Pick<IUser, 'tenantId'>>();
+      const owner = await User.findById(userId)
+        .select('_id tenantId')
+        .lean<Pick<IUser, '_id' | 'tenantId'>>();
+      const accountId = owner ? String(owner._id) : userId;
       if (owner) {
         const channelConfig = resolveChannelErasureConfig(
           (await deps.getChannelStorageConfig?.()) ?? {},
         );
-        await closeResponseScopes(mongoose, { userId, tenantId: owner.tenantId });
-        await eraseResponseRecords(mongoose, { userId, tenantId: owner.tenantId });
+        await closeResponseScopes(mongoose, { userId: accountId, tenantId: owner.tenantId });
+        await eraseResponseRecords(mongoose, { userId: accountId, tenantId: owner.tenantId });
         // Admission writes the same owner anchor in its insertion transaction.
         // Closing it therefore precedes both this sweep and every delayed retry.
         await eraseChannelPersistenceForUser(
           mongoose,
-          { userId, tenantId: owner.tenantId },
+          { userId: accountId, tenantId: owner.tenantId },
           channelConfig,
         );
       }
-      await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
+      await mongoose.models.ToolApprovalGrant?.deleteMany({ user: accountId });
       const result = await User.deleteOne({
-        _id: userId,
+        _id: accountId,
         ...(fence === undefined
           ? {}
           : {
@@ -702,7 +708,7 @@ export function createUserMethods(
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }
-      await invalidateAuthUserDocCache(userId);
+      await invalidateAuthUserDocCache(accountId);
       return { deletedCount: result.deletedCount, message: 'User was deleted successfully.' };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
