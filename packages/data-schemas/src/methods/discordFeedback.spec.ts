@@ -3,6 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type {
   DiscordChannelReplyMapping,
   DiscordGuildThreadSource,
+  ChannelReplyMapping,
   ChannelRating,
   DiscordAgentChannel,
 } from 'librechat-data-provider';
@@ -720,4 +721,120 @@ it('validates a DM mapping separately from legacy guild sources and rejects mixe
     { parentChannelId: 'invalid' },
   ])
     await expect(new db.models.ChannelReply({ ...dm, ...patch }).validate()).rejects.toThrow();
+});
+
+// Schema validation does not run for upserts or raw restores, so the storage boundary itself must
+// refuse any partial, mixed or unknown scope. The cast stands in for rows the types forbid.
+const asMapping = (source: object) => source as unknown as ChannelReplyMapping;
+const anchors = () => db.models.ResponseScope.collection.countDocuments({});
+// A raw insert skips schema validation; ignoreUndefined keeps absent fields absent, not null.
+const restoreLedger = (restored: object) =>
+  db.models.ChannelFeedback.collection.insertOne(
+    {
+      tenantId,
+      key: 'restored',
+      mapping: restored,
+      externalUserId,
+      scoreId: 'score',
+      scoreTimestamp: new Date(now),
+      votes: [],
+      revision: 1,
+      rating: 'thumbsUp',
+      exportStatus: 'pending',
+      retryAtMs: 0,
+    },
+    { ignoreUndefined: true },
+  );
+const dmScope = {
+  scope: 'dm',
+  selectionId: 'selection',
+  selectionRevision: 'generation',
+  sourceGuildId: guildId,
+  parentChannelId: externalChannelId,
+  confirmationEventId: '700000000000000000',
+};
+const dmMapping = () => ({ ...mapping, guildId: undefined, ...dmScope });
+const slackMapping = () => ({
+  ...mapping,
+  provider: undefined,
+  teamId: 'T1',
+  applicationId: undefined,
+  guildId: undefined,
+  externalChannelId: undefined,
+  externalUserId: undefined,
+  linkId: undefined,
+  linkRevision: undefined,
+});
+const malformedScopes: Array<[string, () => object]> = [
+  ['dm scope with a guild id', () => ({ ...dmMapping(), guildId })],
+  ['dm scope with a null guild id', () => ({ ...dmMapping(), guildId: null })],
+  ['dm scope of an unknown kind', () => ({ ...dmMapping(), scope: 'future' })],
+  ['dm scope without a source guild', () => ({ ...dmMapping(), sourceGuildId: undefined })],
+  [
+    'dm scope without a confirmation event',
+    () => ({ ...dmMapping(), confirmationEventId: undefined }),
+  ],
+  [
+    'dm scope with an invalid parent channel',
+    () => ({ ...dmMapping(), parentChannelId: 'invalid' }),
+  ],
+  ['dm scope with a slack team', () => ({ ...dmMapping(), teamId: 'T1' })],
+  ['guild scope with a dm selection', () => ({ ...mapping, selectionId: 'selection' })],
+  ['guild scope marked as dm', () => ({ ...mapping, scope: 'dm' })],
+  ['guild scope without a guild id', () => ({ ...mapping, guildId: undefined })],
+  ['slack scope with dm fields', () => ({ ...slackMapping(), ...dmScope })],
+  ['slack scope with a guild id', () => ({ ...slackMapping(), guildId })],
+];
+
+describe('malformed Discord feedback scopes', () => {
+  beforeEach(async () => {
+    // The fixtures leave one response anchor behind; start from none so any authority work shows.
+    await db.models.ResponseScope.collection.deleteMany({});
+  });
+
+  it('admits a well-formed guild scope and leases its restored ledger at the same boundary', () =>
+    scope(async () => {
+      expect(await storage.isAuthorityCurrent(mapping)).toBe(true);
+      expect(await storage.readChannelReplyTrace(mapping)).not.toBeNull();
+      await expect(storage.putChannelReply(mapping)).resolves.toMatchObject({
+        externalMessageKey: mapping.externalMessageKey,
+      });
+      expect(await db.models.ChannelReply.countDocuments()).toBe(1);
+      expect(await anchors()).toBeGreaterThan(0);
+      await restoreLedger(mapping);
+      const [restored] = await storage.pendingChannelFeedbackExports(tenantId, now, 1);
+      expect(
+        await storage.claimChannelFeedbackExport(restored, 'exporter', now, now + 10000),
+      ).toMatchObject({ leaseId: 'exporter' });
+    }));
+
+  it.each(malformedScopes)('refuses the reply upsert and score authority: %s', (_name, build) =>
+    scope(async () => {
+      const forged = asMapping(build());
+      expect(await storage.isAuthorityCurrent(forged)).toBe(false);
+      expect(await storage.readChannelReplyTrace(forged)).toBeNull();
+      await expect(storage.putChannelReply(forged)).rejects.toBeInstanceOf(
+        ChannelFeedbackAuthorityError,
+      );
+      expect(await db.models.ChannelReply.countDocuments()).toBe(0);
+      // Refused on the scope alone, before any authority transaction touched the response anchors.
+      expect(await anchors()).toBe(0);
+    }),
+  );
+
+  it.each(malformedScopes)('never leases a restored ledger for export: %s', (_name, build) =>
+    scope(async () => {
+      await restoreLedger(build());
+      const [restored] = await storage.pendingChannelFeedbackExports(tenantId, now, 1);
+      expect(restored).toMatchObject({ key: 'restored', exportStatus: 'pending' });
+      await expect(
+        storage.claimChannelFeedbackExport(restored, 'exporter', now, now + 10000),
+      ).rejects.toBeInstanceOf(ChannelFeedbackAuthorityError);
+      const saved = await ledger();
+      expect(saved).toMatchObject({ exportStatus: 'pending' });
+      expect(saved).not.toHaveProperty('leaseId');
+      expect(saved).not.toHaveProperty('leaseUntilMs');
+      expect(await anchors()).toBe(0);
+    }),
+  );
 });
