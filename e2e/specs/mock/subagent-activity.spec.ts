@@ -232,11 +232,20 @@ const HISTORY_FOLDS =
   '[data-fold-root] > div > button[aria-expanded="false"]:visible, ' +
   '[data-testid="activity-phase-card"] > div > div > button[aria-expanded="false"]:visible';
 
+/** How long a click waits for a fold that was counted a moment ago. */
+const FOLD_CLICK_TIMEOUT_MS = 1_000;
+
 async function expandHistory(surface: Locator): Promise<void> {
   for (let depth = 0; depth < 32; depth++) {
     const collapsed = surface.locator(HISTORY_FOLDS);
     if ((await collapsed.count()) === 0) return;
-    await collapsed.first().click();
+    /** A fold can be gone by the time it is clicked: a running call's card is one, and it is
+     *  replaced by the call's own row when the call ends. One that is gone needs no expanding,
+     *  and a click left waiting for it would hold the caller's poll until that times out. */
+    await collapsed
+      .first()
+      .click({ timeout: FOLD_CLICK_TIMEOUT_MS })
+      .catch(() => undefined);
   }
   await expect(surface.locator(HISTORY_FOLDS), 'history folds must be reachable').toHaveCount(0);
 }
