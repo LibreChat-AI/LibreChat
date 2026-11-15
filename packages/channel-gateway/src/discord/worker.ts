@@ -1,13 +1,19 @@
-import { ButtonStyle, ComponentType, PermissionFlagsBits } from 'discord-api-types/v10';
+import { ButtonStyle, ComponentType } from 'discord-api-types/v10';
 import {
   channelSnowflakeSchema,
   channelRunActorSchema,
   discordRunControl,
+  discordGatewayOwnerSchema,
+  discordGuildThreadDestinationSchema,
+  discordGuildTextActorUsable,
+  discordThreadUsable,
 } from 'librechat-data-provider';
 import type {
   ChannelRunView,
   ChannelDeliveryPart,
   DiscordChannelServiceBundle,
+  DiscordGatewayOwner,
+  ChannelRunEffectContext,
 } from 'librechat-data-provider';
 import type { APIActionRowComponent, APIButtonComponent } from 'discord-api-types/v10';
 import type { DiscordRateCoordinator } from './rates';
@@ -28,6 +34,7 @@ import { DiscordWriteError } from './client';
 
 export interface DiscordWorkerDependencies {
   rates: DiscordRateCoordinator;
+  owner?: DiscordGatewayOwner;
   /** Build from the current bundle, not the credential present when the worker was constructed. */
   createClient: (
     bundle: DiscordChannelServiceBundle,
@@ -39,6 +46,8 @@ export interface DiscordWorkerDependencies {
     | 'deleteMessage'
     | 'inspectGuildTextSource'
     | 'getChannelMemberPermissions'
+    | 'inspectGuildTextActorSource'
+    | 'inspectGuildThreadSource'
   >;
 }
 
@@ -103,7 +112,12 @@ function assertBinding(
     actor.scope !== undefined ||
     actor.applicationId !== bundle.channel.discord.applicationId ||
     actor.guildId !== bundle.channel.discord.guildId ||
-    run.admission.externalChannelId !== bundle.channel.discord.externalChannelId
+    (run.admission.discordDestination
+      ? !discordGuildThreadDestinationSchema.safeParse(run.admission.discordDestination).success ||
+        run.admission.discordDestination.parentChannelId !==
+          bundle.channel.discord.externalChannelId ||
+        run.admission.externalChannelId === bundle.channel.discord.externalChannelId
+      : run.admission.externalChannelId !== bundle.channel.discord.externalChannelId)
   )
     throw new Error('Discord run binding changed');
   if (run.plan) {
@@ -146,8 +160,9 @@ export function discordProgressText(run: ChannelRunView): string {
 }
 
 export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): WorkerProvider {
+  const owner = deps.owner ? discordGatewayOwnerSchema.parse(deps.owner) : undefined;
   const client = (bundle: DiscordChannelServiceBundle) => deps.createClient(bundle, deps.rates);
-  async function writableClient(
+  async function sourceForEffect(
     run: ChannelRunView,
     bundle: DiscordChannelServiceBundle,
     signal: AbortSignal,
@@ -156,46 +171,92 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
     if (actor.provider !== 'discord' || actor.scope === 'dm')
       throw new Error('Unsupported Discord actor');
     const current = client(bundle);
-    const inspection = new AbortController();
-    const inspectionSignal = AbortSignal.any([signal, inspection.signal]);
     try {
-      const [source, permissions] = await Promise.all([
-        current.inspectGuildTextSource(
-          {
-            applicationId: actor.applicationId,
-            botUserId: bundle.channel.discord.botUserId,
-            guildId: actor.guildId,
-            channelId: run.admission.externalChannelId,
-          },
-          inspectionSignal,
-        ),
-        current.getChannelMemberPermissions(
-          run.admission.externalChannelId,
-          actor.externalUserId,
-          inspectionSignal,
-        ),
-      ]);
+      const destination = run.admission.discordDestination;
+      const source =
+        destination?.kind === 'guild_thread'
+          ? await current.inspectGuildThreadSource(
+              {
+                applicationId: actor.applicationId,
+                botUserId: bundle.channel.discord.botUserId,
+                guildId: actor.guildId,
+                threadChannelId: run.admission.externalChannelId,
+                authorId: actor.externalUserId,
+              },
+              signal,
+            )
+          : await current.inspectGuildTextActorSource(
+              {
+                applicationId: actor.applicationId,
+                botUserId: bundle.channel.discord.botUserId,
+                guildId: actor.guildId,
+                channelId: run.admission.externalChannelId,
+                authorId: actor.externalUserId,
+              },
+              signal,
+            );
       if (
         !source ||
-        permissions === null ||
-        (BigInt(permissions) &
-          (PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Administrator)) ===
-          0n
+        (destination?.kind === 'guild_thread') !== (source.kind === 'guild_thread') ||
+        (source.kind === 'guild_thread'
+          ? !discordThreadUsable(source)
+          : !discordGuildTextActorUsable(source)) ||
+        (source.kind === 'guild_text' && source.channelId !== run.admission.externalChannelId) ||
+        source.applicationId !== actor.applicationId ||
+        source.botUserId !== bundle.channel.discord.botUserId ||
+        source.guildId !== actor.guildId ||
+        source.authorId !== actor.externalUserId ||
+        (source.kind === 'guild_thread' &&
+          (source.threadChannelId !== run.admission.externalChannelId ||
+            source.parentChannelId !== destination?.parentChannelId))
       )
         throw new DiscordWriteError('permanent', 0, 403);
       signal.throwIfAborted();
-      return current;
+      return { current, source };
     } catch (error) {
       signal.throwIfAborted();
-      // Permission reads have no message side effect, so a failed read can safely retry.
       if (error instanceof DiscordWriteError && error.outcome === 'unknown')
         throw new DiscordWriteError('retryable', error.retryAfterMs, error.status);
       throw error;
-    } finally {
-      inspection.abort();
     }
   }
+  async function writableClient(
+    run: ChannelRunView,
+    bundle: DiscordChannelServiceBundle,
+    signal: AbortSignal,
+  ) {
+    return (await sourceForEffect(run, bundle, signal)).current;
+  }
   return {
+    ...(owner
+      ? {
+          effectContext: async (
+            run: ChannelRunView,
+            bundle: ChannelBundle,
+            signal: AbortSignal,
+          ): Promise<ChannelRunEffectContext> => {
+            assertBinding(run, bundle);
+            const actor = run.admission.actor;
+            if (
+              actor.provider !== 'discord' ||
+              actor.scope === 'dm' ||
+              owner.applicationId !== actor.applicationId ||
+              owner.applicationRevision !== bundle.applicationRevision
+            )
+              throw new DiscordWriteError('permanent', 0, 403);
+            const { source } = await sourceForEffect(run, bundle, signal);
+            return {
+              discordAuthority: {
+                applicationRevision: bundle.applicationRevision,
+                native:
+                  source.kind === 'guild_thread'
+                    ? { kind: 'guild_thread', owner, source }
+                    : { kind: 'guild_text', owner, source },
+              },
+            };
+          },
+        }
+      : {}),
     progressRenderer: 'discord-progress-v1',
     maxProgressLength: 2000,
     validateAddress,

@@ -1,7 +1,12 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import type { DiscordAgentChannel, DiscordChannelExternalIdentity } from 'librechat-data-provider';
+import type {
+  DiscordAgentChannel,
+  DiscordChannelExternalIdentity,
+  DiscordRunEffectAuthority,
+} from 'librechat-data-provider';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
+import { discordTextAuthority, ownDiscordAuthority } from './test-helpers';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { createDiscordInstallationStorage } from './discord';
@@ -62,6 +67,7 @@ async function confirmedLink(revision?: string) {
         },
       },
     );
+  if (saved) await ownDiscordAuthority(db, event().discordAuthority.owner);
   return saved;
 }
 
@@ -71,6 +77,14 @@ function event() {
     channelId: channel.channelId,
     agentId: channel.agentId,
     applicationRevision,
+    discordAuthority: discordTextAuthority({
+      applicationId,
+      applicationRevision,
+      guildId,
+      botUserId,
+      channelId: '678901234567890123',
+      authorId: identity().externalUserId,
+    }),
     principal: {
       userId: user,
       channelRevision: channel.revision,
@@ -120,6 +134,7 @@ beforeEach(async () => {
       'ChannelScope',
       'ResponseScope',
       'StoredResponse',
+      'ResourceLock',
     ])
       await db.models[name].deleteMany({});
   });
@@ -291,9 +306,18 @@ it('fences credential rotation without changing consent identity', () =>
     expect(await identities.readChannelIdentity(identity())).toMatchObject({
       revision: 'link-rev',
     });
+    const fresh = discordTextAuthority({
+      ...event().discordAuthority.source,
+      applicationRevision: rotated.value.revision,
+    });
+    await ownDiscordAuthority(db, fresh.owner, event().discordAuthority.owner);
     expect(
-      (await runs.admit({ ...event(), applicationRevision: rotated.value.revision }, Date.now()))
-        .duplicate,
+      (
+        await runs.admit(
+          { ...event(), applicationRevision: rotated.value.revision, discordAuthority: fresh },
+          Date.now(),
+        )
+      ).duplicate,
     ).toBe(false);
   }));
 
@@ -413,7 +437,10 @@ it.each(['execution', 'progress', 'delivery'] as const)(
           now,
         );
       if (effect === 'delivery') {
-        await runs.prepareExecution(tenantId, fence, now, applicationRevision);
+        await runs.prepareExecution(tenantId, fence, now, {
+          applicationRevision,
+          native: event().discordAuthority,
+        });
         await db.models.StoredResponse.create({
           tenantId,
           userId: user,
@@ -450,7 +477,7 @@ it.each(['execution', 'progress', 'delivery'] as const)(
           now,
         );
       }
-      const begin = (revision?: string) => {
+      const begin = (revision?: string | DiscordRunEffectAuthority) => {
         if (effect === 'execution') return runs.prepareExecution(tenantId, fence, now, revision);
         if (effect === 'progress') return runs.beginProgress(tenantId, fence, 1, now, revision);
         return runs.beginDelivery(tenantId, fence, 'answer', now, revision);
@@ -468,7 +495,12 @@ it.each(['execution', 'progress', 'delivery'] as const)(
       await expect(begin(applicationRevision)).rejects.toMatchObject({
         code: 'invalid_transition',
       });
-      const begun = await begin(rotated.value.revision);
+      const fresh = discordTextAuthority({
+        ...event().discordAuthority.source,
+        applicationRevision: rotated.value.revision,
+      });
+      await ownDiscordAuthority(db, fresh.owner, event().discordAuthority.owner);
+      const begun = await begin({ applicationRevision: rotated.value.revision, native: fresh });
       if (effect === 'execution') {
         expect(begun.execution?.requestId).toBeTruthy();
         return;

@@ -8,6 +8,7 @@ import { createDiscordInstallationStorage } from './discord';
 import { createDiscordRouteStorage } from './discordRoute';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
+import { discordTextAuthority } from './test-helpers';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
@@ -52,6 +53,14 @@ const enrollment = () => ({
   agentId: route.agentId,
   applicationRevision: revision,
   discordGateway: { owner: owner(), occurrence: occurrence() },
+  discordAuthority: discordTextAuthority({
+    applicationId,
+    applicationRevision: revision,
+    botUserId,
+    guildId,
+    channelId: externalChannelId,
+    authorId: externalUserId,
+  }),
   principal: {
     userId,
     channelRevision: route.channelRevision,

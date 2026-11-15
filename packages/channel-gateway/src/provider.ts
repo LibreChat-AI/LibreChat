@@ -4,6 +4,7 @@ import type {
   ChannelDeliveryPlan,
   ChannelDeliveryReceipt,
   ChannelRunView,
+  ChannelRunEffectContext,
 } from 'librechat-data-provider';
 import type { ChannelBundle } from './types';
 
@@ -34,6 +35,11 @@ export interface ProviderArtifactRequest {
 
 /** Platform effects only. Leases, execution, plans and receipts remain owned by ChannelWorker. */
 export interface WorkerProvider {
+  effectContext?(
+    run: ChannelRunView,
+    bundle: ChannelBundle,
+    signal: AbortSignal,
+  ): Promise<ChannelRunEffectContext>;
   progressRenderer: string;
   maxProgressLength: number;
   validateAddress(run: ChannelRunView): void;

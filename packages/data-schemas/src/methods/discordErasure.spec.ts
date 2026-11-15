@@ -5,6 +5,7 @@ import type {
   DiscordApplication,
   DiscordAgentChannel,
 } from 'librechat-data-provider';
+import { discordTextAuthority, ownDiscordAuthority } from './test-helpers';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { createDiscordInstallStorage } from './discordInstall';
@@ -137,6 +138,17 @@ async function link(userId = member, actor = externalUserId) {
     { linkId: record.linkId },
     { $set: { discordActivatedAtMs: Number(BigInt(eventId) >> BigInt(22)) + 1420070400000 - 1 } },
   );
+  await ownDiscordAuthority(
+    db,
+    discordTextAuthority({
+      applicationId,
+      applicationRevision: app.revision,
+      botUserId,
+      guildId,
+      channelId: externalChannelId,
+      authorId: actor,
+    }).owner,
+  );
   return record;
 }
 async function pendingState(installation = guild) {
@@ -207,6 +219,17 @@ beforeEach(async () => {
       }),
     );
     channel = await binding();
+    await ownDiscordAuthority(
+      db,
+      discordTextAuthority({
+        applicationId,
+        applicationRevision: app.revision,
+        botUserId,
+        guildId,
+        channelId: externalChannelId,
+        authorId: externalUserId,
+      }).owner,
+    );
   });
 });
 
@@ -219,6 +242,14 @@ it('erases owned application credentials and every dependent binding while other
       channelId: channel.channelId,
       agentId: channel.agentId,
       applicationRevision: app.revision,
+      discordAuthority: discordTextAuthority({
+        applicationId,
+        applicationRevision: app.revision,
+        botUserId,
+        guildId,
+        channelId: externalChannelId,
+        authorId: externalUserId,
+      }),
       principal: {
         userId: member,
         channelRevision: channel.revision,
@@ -441,6 +472,14 @@ it('erases guild owner metadata while preserving an application and other guilds
         channelId: channel.channelId,
         agentId: channel.agentId,
         applicationRevision: app.revision,
+        discordAuthority: discordTextAuthority({
+          applicationId,
+          applicationRevision: app.revision,
+          botUserId,
+          guildId,
+          channelId: externalChannelId,
+          authorId: externalUserId,
+        }),
         principal: {
           userId: admin,
           channelRevision: channel.revision,

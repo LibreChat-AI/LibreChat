@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   channelGatewayWirePolicySchema,
   channelStorageConfigSchema,
-  channelRunActorSchema,
+  channelRunAdmissionSchema,
   channelSnowflakeSchema,
   discordChannelConfigSchema,
 } from 'librechat-data-provider';
@@ -10,6 +10,7 @@ import type {
   ChannelRunActor,
   ChannelRunAdmission,
   ChannelRunView,
+  ChannelRunEffectContext,
   ChannelRunFence,
   ChannelLinkView,
   ChannelLinkTicket,
@@ -160,7 +161,7 @@ export class ChannelClient extends ServiceClient {
       !validId(run.admission?.externalChannelId) ||
       typeof run.admission?.externalThreadKey !== 'string' ||
       !run.admission.externalThreadKey.startsWith(run.admission.externalChannelId + ':') ||
-      !channelRunActorSchema.safeParse(run.admission.actor).success ||
+      !channelRunAdmissionSchema.safeParse(run.admission).success ||
       (run.admission.actor.provider ?? 'slack') !== this.provider.type
     )
       throw new Error('Channel run identity changed');
@@ -233,10 +234,14 @@ export class ChannelClient extends ServiceClient {
   yield(fence: ChannelRunFence, signal?: AbortSignal): Promise<null> {
     return this.runs(`/${encodeURIComponent(fence.runId)}/yield`, { fence }, signal, null);
   }
-  async prepare(fence: ChannelRunFence, signal?: AbortSignal): Promise<ResponsePreparation> {
+  async prepare(
+    fence: ChannelRunFence,
+    signal?: AbortSignal,
+    context?: ChannelRunEffectContext,
+  ): Promise<ResponsePreparation> {
     const result = await this.runs<ResponsePreparation>(
       `/${encodeURIComponent(fence.runId)}/response/prepare`,
-      { fence },
+      { ...context, fence },
       signal,
     );
     if (!result || typeof result !== 'object') throw new Error('Invalid Response preparation');

@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { DiscordAgentChannel } from 'librechat-data-provider';
 import type { SubmitDiscordInteraction, SubmitDiscordInspection } from './discordInbox';
+import { discordTextAuthority, ownDiscordAuthority } from './test-helpers';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { withRequiredTransaction } from '~/utils/transactions';
@@ -90,6 +91,7 @@ beforeEach(async () => {
       'DiscordReceipt',
       'DiscordReservation',
       'ChannelScope',
+      'ResourceLock',
       'ChannelIdentity',
       'ChannelRun',
       'ChannelLane',
@@ -469,7 +471,17 @@ it('fences consent replacement and run admission against inbox lease reclamation
       ),
     ).toBe(false);
     const runs = createChannelRunStorage(db);
+    const discordAuthority = discordTextAuthority({
+      applicationId,
+      applicationRevision,
+      botUserId,
+      guildId,
+      channelId: externalChannelId,
+      authorId: externalUserId,
+    });
+    await ownDiscordAuthority(db, discordAuthority.owner);
     const enrollment = {
+      discordAuthority,
       tenantId,
       channelId: channel.channelId,
       agentId: channel.agentId,

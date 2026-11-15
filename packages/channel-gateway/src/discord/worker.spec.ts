@@ -8,6 +8,7 @@ import type {
   ChannelDeliveryReceipt,
   ChannelRunSummary,
   ChannelRunView,
+  DiscordRunEffectAuthority,
   DiscordChannelServiceBundle,
 } from 'librechat-data-provider';
 import type { APIActionRowComponent, APIButtonComponent } from 'discord-api-types/v10';
@@ -27,6 +28,7 @@ import { ChannelClient } from '../client';
 import { loadConfig } from '../config';
 
 interface Mutation {
+  discordAuthority?: DiscordRunEffectAuthority;
   revision?: number;
   rendererVersion?: string;
   text?: string;
@@ -56,7 +58,7 @@ const summary = (url: string): ChannelRunSummary => ({
   session: { url },
 });
 
-function fixture() {
+function fixture(owned = false, thread = false) {
   const config = loadConfig({
     CHANNEL_SERVICE_TOKEN: 'service-token',
     CHANNEL_ID: 'channel-1',
@@ -107,6 +109,18 @@ function fixture() {
       input: 'private prompt',
     },
   };
+  if (thread)
+    state.admission = {
+      ...state.admission,
+      externalChannelId: '555',
+      externalThreadKey: '555:555',
+      externalMessageKey: '555:222',
+      discordDestination: {
+        kind: 'guild_thread',
+        parentChannelId: '111',
+        mappingRevision: 'thread-revision',
+      },
+    };
   const lease: Lease = {
     run: state,
     fence: { runId: state.runId, owner: 'worker-1', epoch: 1 },
@@ -211,9 +225,23 @@ function fixture() {
       if (method === 'GET') {
         const response = hooks.read?.(path);
         if (response) return response;
-        if (path.includes('/permissions/member/'))
-          return json({ permissions: path.endsWith('/333') ? '1024' : '68608' });
-        return json({ id: '111', guild_id: '456', type: 0 });
+        if (path.includes('/guilds/') && path.includes('/members/'))
+          return json({ user: { id: '333' } });
+        if (path.includes('/permissions/member/')) {
+          const botPermissions = thread
+            ? String(BigInt(1024 | 65536) | (BigInt(1) << BigInt(38)))
+            : '68608';
+          return json({ permissions: path.endsWith('/333') ? '1024' : botPermissions });
+        }
+        return thread
+          ? json({
+              id: '555',
+              guild_id: '456',
+              parent_id: '111',
+              type: 11,
+              thread_metadata: { archived: false, locked: false },
+            })
+          : json({ id: '111', guild_id: '456', type: 0 });
       }
       writes.push({ path, body, method, headers: new Headers(init?.headers) });
       if (hooks.write) return hooks.write();
@@ -240,7 +268,19 @@ function fixture() {
         coordinator,
       ),
   );
-  const provider = createDiscordWorkerProvider({ rates, createClient });
+  const provider = createDiscordWorkerProvider({
+    rates,
+    createClient,
+    ...(owned
+      ? {
+          owner: {
+            applicationId: '123',
+            applicationRevision: bundle.applicationRevision,
+            ownerId: 'a'.repeat(32),
+          },
+        }
+      : {}),
+  });
   const log: Logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
   const client = new ChannelClient(config, backend, { type: 'discord' });
   const worker = new ChannelWorker(config, client, provider, log);

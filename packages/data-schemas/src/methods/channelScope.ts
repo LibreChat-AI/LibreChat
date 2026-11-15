@@ -107,6 +107,7 @@ export async function touchChannelAuthority(
     applicationId?: string;
     guildId?: string;
     applicationRevision?: string;
+    botUserId?: string;
     /** Set only by new prompt admission from its immutable provider occurrence. */
     promptEventAtMs?: number;
     teamId?: string;
@@ -167,7 +168,8 @@ export async function touchChannelAuthority(
       !parent.discord ||
       parent.credentialMode !== 'per_user' ||
       parent.discord.applicationId !== authority.applicationId ||
-      parent.discord.guildId !== authority.guildId
+      parent.discord.guildId !== authority.guildId ||
+      (authority.botUserId !== undefined && parent.discord.botUserId !== authority.botUserId)
     )
       return false;
     if (
