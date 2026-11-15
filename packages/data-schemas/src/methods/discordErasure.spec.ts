@@ -12,6 +12,7 @@ import { createDiscordInstallStorage } from './discordInstall';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createDiscordGatewayStorage } from './discordGateway';
 import { createDiscordInstallationStorage } from './discord';
+import { createDiscordInboxErasure } from './discordReceipt';
 import { createDiscordInboxStorage } from './discordInbox';
 import { createDiscordRouteStorage } from './discordRoute';
 import { createChannelRunStorage } from './channelRun';
@@ -715,4 +716,149 @@ it('retires encrypted Gateway sessions and locks before removing their applicati
     expect((await gateway.load(replacement))?.checkpoints).toMatchObject([
       { encryptedSession: 'other-private-session' },
     ]);
+  }));
+
+it('drains orphaned private DM inbox payloads by their source account before deleting selection anchors and retains opaque dedup receipts', () =>
+  scope(async () => {
+    const seed = input();
+    const base = { ...seed, guildId: undefined };
+    await db.models.DiscordInbox.create([
+      {
+        ...base,
+        tenantId,
+        fingerprint: 'a'.repeat(64),
+        state: 'queued',
+        receivedAt: now,
+        purgeAt: new Date(now + 900000),
+        nextAttemptAt: now,
+        leaseEpoch: 0,
+        leaseExpiresAt: 0,
+        authorityWrites: 0,
+        dm: {
+          selectionId: 'selection',
+          selectionRevision: 'generation',
+          parentChannelId: externalChannelId,
+          confirmationEventId: '123456789012345678',
+          source: { applicationId, guildId, userId: member },
+        },
+      },
+      {
+        ...base,
+        eventId: '567890123456789013',
+        tenantId,
+        fingerprint: 'b'.repeat(64),
+        state: 'queued',
+        receivedAt: now,
+        purgeAt: new Date(now + 900000),
+        nextAttemptAt: now,
+        leaseEpoch: 0,
+        leaseExpiresAt: 0,
+        authorityWrites: 0,
+        dm: { source: { applicationId, guildId, userId: admin } },
+      },
+    ]);
+    const failure = jest
+      .spyOn(db.models.DiscordInbox.collection, 'deleteMany')
+      .mockRejectedValueOnce(new Error('private cleanup unavailable'));
+    await expect(users.deleteUserById(member)).rejects.toThrow('private cleanup unavailable');
+    failure.mockRestore();
+    expect(await db.models.DiscordInbox.countDocuments()).toBe(2);
+    expect((await users.deleteUserById(member)).deletedCount).toBe(1);
+    expect(await db.models.DiscordInbox.countDocuments()).toBe(1);
+    expect(await db.models.DiscordInbox.findOne().lean()).toMatchObject({
+      dm: { source: { userId: admin } },
+    });
+    expect(await db.models.DiscordReceipt.findOne({ eventId }).lean()).toMatchObject({
+      fingerprint: 'a'.repeat(64),
+    });
+  }));
+
+it('erases the DM inbox rows of an account addressed by the ObjectId createUser returns', () =>
+  scope(async () => {
+    // registerUser hands this ObjectId to the string-typed parameter when verification mail fails.
+    const created = (await users.createUser(
+      { email: 'registered@example.test', provider: 'local', tenantId },
+      undefined,
+      true,
+      true,
+    )) as { _id: mongoose.Types.ObjectId };
+    expect(created._id).toBeInstanceOf(mongoose.Types.ObjectId);
+    const row = {
+      ...input(),
+      guildId: undefined,
+      tenantId,
+      state: 'queued',
+      receivedAt: now,
+      purgeAt: new Date(now + 900000),
+      nextAttemptAt: now,
+      leaseEpoch: 0,
+      leaseExpiresAt: 0,
+      authorityWrites: 0,
+    };
+    await db.models.DiscordInbox.create([
+      {
+        ...row,
+        fingerprint: 'a'.repeat(64),
+        dm: { source: { applicationId, guildId, userId: created._id.toString() } },
+      },
+      {
+        ...row,
+        eventId: '567890123456789013',
+        fingerprint: 'b'.repeat(64),
+        dm: { source: { applicationId, guildId, userId: admin } },
+      },
+    ]);
+
+    await expect(users.deleteUserById(created._id as unknown as string)).resolves.toMatchObject({
+      deletedCount: 1,
+    });
+
+    expect(await db.models.User.exists({ _id: created._id })).toBeNull();
+    expect(await db.models.DiscordInbox.find().lean()).toMatchObject([
+      { dm: { source: { userId: admin } } },
+    ]);
+  }));
+
+it('erases no-guild restored DM rows by their real source guild while preserving other guilds and tenants', () =>
+  scope(async () => {
+    const row = {
+      ...input(),
+      guildId: undefined,
+      tenantId,
+      channelId: 'retired-channel',
+      fingerprint: 'c'.repeat(64),
+      state: 'queued',
+      receivedAt: now,
+      purgeAt: new Date(now + 900000),
+      nextAttemptAt: now,
+      leaseEpoch: 0,
+      leaseExpiresAt: 0,
+      authorityWrites: 0,
+    };
+    await db.models.DiscordInbox.create([
+      { ...row, dm: { source: { applicationId, guildId, userId: member } } },
+      {
+        ...row,
+        eventId: '567890123456789013',
+        dm: { source: { applicationId, guildId: '234567890123456790', userId: member } },
+      },
+      {
+        ...row,
+        eventId: '567890123456789014',
+        tenantId: 'another-org',
+        dm: { source: { applicationId, guildId, userId: member } },
+      },
+    ]);
+    await createDiscordInboxErasure(db, async () => {}).erase(
+      { kind: 'guild', tenantId, applicationId, guildId },
+      1,
+    );
+    expect(await db.models.DiscordInbox.countDocuments()).toBe(1);
+    expect(await db.models.DiscordReceipt.findOne({ eventId }).lean()).toMatchObject({
+      fingerprint: 'c'.repeat(64),
+    });
+    await scope(
+      async () => expect(await db.models.DiscordInbox.countDocuments()).toBe(1),
+      'another-org',
+    );
   }));

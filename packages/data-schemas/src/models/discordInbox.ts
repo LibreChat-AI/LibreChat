@@ -1,5 +1,9 @@
 import { Schema } from 'mongoose';
-import type { DiscordIngressAction, DiscordThreadReference } from 'librechat-data-provider';
+import type {
+  DiscordIngressAction,
+  DiscordThreadReference,
+  DiscordDmInboxReference,
+} from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 
@@ -14,7 +18,7 @@ interface DiscordInboxPayload {
   eventId: string;
   applicationId: string;
   applicationRevision: string;
-  guildId: string;
+  guildId?: string;
   externalChannelId: string;
   externalUserId: string;
   fingerprint: string;
@@ -39,6 +43,7 @@ interface DiscordInboxPayload {
 export interface DiscordInboxRecord extends DiscordInboxPayload {
   routing?: 'bound';
   thread?: DiscordThreadReference;
+  dm?: DiscordDmInboxReference;
   channelId: string;
   channelRevision: string;
   agentId: string;
@@ -46,6 +51,8 @@ export interface DiscordInboxRecord extends DiscordInboxPayload {
 /** No internal destination is invented before an owned client inspects the actual channel. */
 export interface DiscordInboxUnresolvedRecord extends DiscordInboxPayload {
   routing: 'inspection';
+  guildId: string;
+  dm?: never;
   installationId: string;
   installationRevision: string;
 }
@@ -53,6 +60,9 @@ export type DiscordInboxLeaseRecord = DiscordInboxRecord | DiscordInboxUnresolve
 
 function bound(this: { routing?: string }): boolean {
   return this.routing !== 'inspection';
+}
+function guild(this: { dm?: DiscordDmInboxReference }): boolean {
+  return !this.dm;
 }
 function inspection(this: { routing?: string }): boolean {
   return this.routing === 'inspection';
@@ -68,9 +78,10 @@ export function createDiscordInboxModel(
       eventId: { type: String, required: true },
       applicationId: { type: String, required: true },
       applicationRevision: { type: String, required: true },
-      guildId: { type: String, required: true },
+      guildId: { type: String, required: guild },
       routing: { type: String, enum: ['bound', 'inspection'] },
       thread: Schema.Types.Mixed,
+      dm: Schema.Types.Mixed,
       inspectionEpoch: Number,
       channelId: { type: String, required: bound },
       channelRevision: { type: String, required: bound },
@@ -120,6 +131,7 @@ export function createDiscordInboxModel(
     state: 1,
     leaseExpiresAt: 1,
   });
+  schema.index({ tenantId: 1, 'dm.source.userId': 1 });
   schema.index({ purgeAt: 1 }, { expireAfterSeconds: 0 });
   applyTenantIsolation(schema);
   return mongoose.model<DiscordInboxLeaseRecord>('DiscordInbox', schema);

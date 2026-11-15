@@ -21,6 +21,7 @@ import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { touchDiscordGatewayOwner } from './discordGateway';
+import { touchDiscordDmInbox } from './discordCommandScope';
 import { createAgentChannelModel } from '~/models/channel';
 import { touchChannelAuthority } from './channelScope';
 import { touchDiscordInstallation } from './discord';
@@ -108,6 +109,7 @@ export function createDiscordInboxResolutionStorage(
     if (record.routing !== 'inspection' && !record.thread && !textAsk) return null;
     if (
       textAsk &&
+      !record.dm &&
       !(await touchChannelAuthority(
         mongoose,
         {
@@ -124,6 +126,12 @@ export function createDiscordInboxResolutionStorage(
         },
         session,
       ))
+    )
+      return null;
+    if (
+      record.routing !== 'inspection' &&
+      record.dm &&
+      !(await touchDiscordDmInbox(mongoose, record, now, session))
     )
       return null;
     if (
@@ -161,6 +169,7 @@ export function createDiscordInboxResolutionStorage(
         if (!record || record.state !== 'processing' || record.inspectionEpoch === fence.epoch)
           return stale();
         if (
+          record.dm !== undefined ||
           (route.tenantId || undefined) !== tenant() ||
           source.applicationId !== record.applicationId ||
           source.guildId !== record.guildId ||
@@ -264,8 +273,8 @@ export function createDiscordInboxResolutionStorage(
           !discordGuildTextActorUsable(source) ||
           !parent ||
           source.applicationId !== record.applicationId ||
-          source.guildId !== record.guildId ||
-          source.channelId !== record.externalChannelId ||
+          source.guildId !== (record.dm?.source.guildId ?? record.guildId) ||
+          source.channelId !== (record.dm?.parentChannelId ?? record.externalChannelId) ||
           source.authorId !== record.externalUserId ||
           source.botUserId !== parent.discord?.botUserId
         )

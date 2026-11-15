@@ -396,3 +396,49 @@ it('normalizes versioned controls while preserving the source message for run ac
     reference: 'a'.repeat(43) + 'b'.repeat(43),
   });
 });
+
+it.each(['ask', 'status', 'cancel'] as const)(
+  'accepts a signed private %s only through the staged DM capability',
+  async (kind) => {
+    const submitDm = jest.fn(async () => 'accepted' as const);
+    await start({ submitDm });
+    const payload = {
+      ...dmEvent(),
+      data: {
+        ...event.data,
+        options: [
+          {
+            name: kind,
+            type: 1,
+            ...(kind === 'ask'
+              ? { options: [{ name: 'prompt', type: 3, value: ' private ' }] }
+              : {}),
+          },
+        ],
+      },
+    };
+    expect((await send(payload)).status).toBe(200);
+    expect(submitDm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'dm',
+        externalChannelId: event.channel_id,
+        externalUserId: event.member.user.id,
+        action: kind === 'ask' ? { kind, prompt: 'private' } : { kind },
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(submitDm).not.toHaveBeenCalledWith(
+      expect.objectContaining({ guildId: expect.anything() }),
+      expect.anything(),
+    );
+    expect(received).toEqual([]);
+  },
+);
+it('keeps private asks unavailable without staged composition and rejects DM link controls', async () => {
+  await start();
+  expect((await send({ ...dmEvent(), data: event.data })).status).toBe(400);
+  expect(
+    (await send({ ...dmEvent(), data: { ...event.data, options: [{ name: 'link', type: 1 }] } }))
+      .status,
+  ).toBe(400);
+});

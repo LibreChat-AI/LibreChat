@@ -154,7 +154,13 @@ export function createChannelFeedbackHost(
       });
       const { record, principal } = scope;
       const action = record.action;
-      if (action?.kind !== 'feedback' || !deps.storage.recordDiscordFeedback) return denied();
+      if (
+        record.dm ||
+        !record.guildId ||
+        action?.kind !== 'feedback' ||
+        !deps.storage.recordDiscordFeedback
+      )
+        return denied();
       const actor = {
         provider: 'discord' as const,
         tenantId: record.tenantId || '_',

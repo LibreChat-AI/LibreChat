@@ -11,6 +11,7 @@ import {
   PermissionTypes,
   Constants,
   channelConfigSchema,
+  discordRunControl,
 } from 'librechat-data-provider';
 import {
   createModels,
@@ -23,6 +24,9 @@ import {
   createDiscordGatewayStorage,
   createDiscordMessageStorage,
   createChannelRunStorage,
+  createDiscordInboxStorage,
+  createDiscordInboxResolutionStorage,
+  createDiscordCommandStorage,
   tenantStorage,
   runAsSystem,
   hashDiscordDmCode,
@@ -58,8 +62,11 @@ import { createChannelResponseProjection } from '../responses';
 import { createDiscordDmMessageService } from './dmMessages';
 import { createChannelExecutionAdapter } from '../execution';
 import { createAgentRunEnvelope } from '~/agents/envelope';
+import { createDiscordCommandExecutor } from './commands';
+import { createDiscordInboxHandlers } from './inboxHttp';
 import { createChannelAuthority } from '../authority';
 import { createDiscordRouteResolver } from './routes';
+import { createDiscordInboxService } from './inbox';
 import { createChannelHandlers } from '../service';
 import { createChannelRunHandlers } from '../runs';
 import { createDiscordDmHandlers } from './dmHttp';
@@ -103,14 +110,20 @@ beforeEach(async () => {
   });
 });
 
-async function fixture() {
-  const state = { enabled: true, visible: true, crashAfterBind: false, inferenceCreates: 0 };
+async function fixture(ordinary = true) {
+  const state = {
+    enabled: true,
+    gatewayEnabled: true,
+    visible: true,
+    crashAfterBind: false,
+    inferenceCreates: 0,
+  };
   const config = () =>
     channelConfigSchema.parse({
       enabled: true,
       discord: {
         enabled: true,
-        gateway: { enabled: true },
+        gateway: { enabled: state.gatewayEnabled },
         dm: { enabled: state.enabled },
       },
     });
@@ -266,9 +279,47 @@ async function fixture() {
       settings: async () => policy(),
     }),
   });
+  const resolver = createDiscordRouteResolver({
+    installations,
+    routes,
+    channels: methods,
+    enabled: async () => true,
+  });
+  const commandInbox = createDiscordInboxStorage(db);
+  const execute = createDiscordCommandExecutor({
+    channels: methods,
+    authority,
+    runs,
+    commands: createDiscordCommandStorage(db),
+    enabled: async () => true,
+    dmEnabled: async () => state.enabled,
+    publicBaseUrl: 'https://chat.example/prefix/',
+  });
+  const inboxService = createDiscordInboxService({
+    storage: commandInbox,
+    resolver,
+    encrypt: encryptCredential,
+    decrypt: decryptCredential,
+    execute,
+    retryDelayMs: async () => 1000,
+    dm: { selections, enabled: async () => state.enabled },
+    inspection: { storage: createDiscordInboxResolutionStorage(db), execute },
+  });
+  const inboxHandlers = createDiscordInboxHandlers({
+    service: inboxService,
+    serviceToken: () => token,
+  });
   const app = express();
   app.use(express.json());
   app.use((_req, _res, next) => tenantStorage.run({ tenantId }, next));
+  for (const [path, handler] of Object.entries({
+    dm: inboxHandlers.submitDm,
+    claim: inboxHandlers.claim,
+    resolve: inboxHandlers.resolve,
+    finish: inboxHandlers.finish,
+    defer: inboxHandlers.defer,
+  }))
+    app.post(`/api/channels/discord/service/inbox/${path}`, handler);
   app.post('/api/channels/discord/service/dm/select', dmHandlers.select);
   app.post('/api/channels/discord/service/dm/prepare', messages.prepare);
   app.post('/api/channels/discord/service/dm/message', messages.submit);
@@ -485,12 +536,6 @@ async function fixture() {
     LIBRECHAT_INTERNAL_URL: 'http://internal.test',
   });
   const control = new DiscordControlClient(connection, transport);
-  const resolver = createDiscordRouteResolver({
-    installations,
-    routes,
-    channels: methods,
-    enabled: async () => true,
-  });
   const webhook = createDiscordWebhook({
     capacity: policy().gateway.ingressConcurrency,
     policy: policy(),
@@ -500,6 +545,7 @@ async function fixture() {
       throw new Error('Unexpected guild submission');
     },
     select: control.select.bind(control),
+    submitDm: control.submitDm.bind(control),
     log: { info: () => {}, warn: () => {}, error: () => {} },
   });
   const signed = express();
@@ -560,24 +606,25 @@ async function fixture() {
     mentionsBot: false,
   };
   const rates = new DiscordRateCoordinator(policy().rateLimits);
-  await dispatchDiscordEvent(
-    {
-      owner,
-      policy: policy(),
-      application: {
-        ...owner,
-        botUserId: botId,
-        botToken: 'test-bot-token',
-        policy: policy().gateway,
+  if (ordinary)
+    await dispatchDiscordEvent(
+      {
+        owner,
+        policy: policy(),
+        application: {
+          ...owner,
+          botUserId: botId,
+          botToken: 'test-bot-token',
+          policy: policy().gateway,
+        },
+        rates,
+        runtime: new DiscordRuntimeClient(connection, transport),
+        gateway: new DiscordGatewayControlClient(connection, transport),
+        transport,
       },
-      rates,
-      runtime: new DiscordRuntimeClient(connection, transport),
-      gateway: new DiscordGatewayControlClient(connection, transport),
-      transport,
-    },
-    event,
-    new AbortController().signal,
-  );
+      event,
+      new AbortController().signal,
+    );
   const provider = createDiscordWorkerProvider({
     rates,
     owner,
@@ -604,6 +651,83 @@ async function fixture() {
       error: () => {},
     });
   return {
+    async command(
+      action: 'ask' | 'status' | 'cancel' | { reference: string; messageId: string },
+      id = snowflake(Date.now()),
+      channel = dmId,
+    ) {
+      const payload = JSON.stringify({
+        type: typeof action === 'string' ? 2 : 3,
+        id,
+        application_id: applicationId,
+        token: 'private-control-token',
+        version: 1,
+        context: 1,
+        authorizing_integration_owners: { '0': '0' },
+        channel_id: channel,
+        user: { id: actorId },
+        data:
+          typeof action === 'string'
+            ? {
+                id: '789012345678901234',
+                name: 'librechat',
+                type: 1,
+                options: [
+                  {
+                    name: action,
+                    type: 1,
+                    ...(action === 'ask'
+                      ? { options: [{ name: 'prompt', type: 3, value: 'A signed private prompt' }] }
+                      : {}),
+                  },
+                ],
+              }
+            : { component_type: 2, custom_id: discordRunControl('cancel', action.reference) },
+        ...(typeof action === 'string' ? {} : { message: { id: action.messageId } }),
+      });
+      const time = String(Math.floor(Date.now() / 1000));
+      return request(signed)
+        .post(`/discord/${applicationId}/interactions`)
+        .set('content-type', 'application/json')
+        .set('x-signature-timestamp', time)
+        .set(
+          'x-signature-ed25519',
+          sign(
+            null,
+            Buffer.concat([Buffer.from(time), Buffer.from(payload)]),
+            keys.privateKey,
+          ).toString('hex'),
+        )
+        .send(payload);
+    },
+    async reply() {
+      const job = await control.claim(applicationId, owner.ownerId);
+      if (!job) return null;
+      const delivery =
+        'inspection' in job
+          ? await control.resolve({
+              fence: job.fence,
+              owner,
+              source: await new DiscordClient(
+                {
+                  botToken: 'test-bot-token',
+                  timeoutMs: policy().requestTimeoutMs,
+                  maxResponseBytes: policy().maxResponseBytes,
+                },
+                transport,
+                rates,
+              ).inspectGuildTextActorSource({
+                applicationId,
+                botUserId: botId,
+                guildId: job.inspection.guildId,
+                channelId: job.inspection.externalChannelId,
+                authorId: job.inspection.externalUserId,
+              }),
+            })
+          : job;
+      if (delivery) await control.finish(delivery.fence, 'completed');
+      return delivery;
+    },
     state,
     paths,
     writes,
@@ -734,3 +858,142 @@ it.each(['revoked', 'expired', 'replaced'] as const)(
     expect(f.writes).toEqual([]);
   },
 );
+
+it('admits a signed DM ask through fresh source inspection and delivers the actual DM, then returns private status while DM execution is off', async () => {
+  const f = await fixture(false);
+  f.state.gatewayEnabled = false;
+  expect((await f.command('ask')).status).toBe(200);
+  const queued = await f.reply();
+  expect(queued?.reply.content).toContain('queued');
+  await scoped(async () => {
+    const row = await models.DiscordInbox.findOne().lean();
+    expect(row?.dm?.source.guildId).toBe(guildId);
+    expect(row).not.toHaveProperty('guildId');
+    expect(row).not.toHaveProperty('action');
+    expect((await models.ChannelRun.findOne().lean())?.admission).toMatchObject({
+      actor: { scope: 'dm' },
+      externalChannelId: dmId,
+      input: 'A signed private prompt',
+    });
+  });
+  await f.worker().tick(new AbortController().signal);
+  f.state.enabled = false;
+  expect((await f.command('status')).status).toBe(200);
+  const status = await f.reply();
+  expect(status?.reply.content).toContain('completed');
+  expect(status?.reply.actions?.[0]).toMatchObject({
+    url: expect.stringContaining('https://chat.example/prefix/c/'),
+  });
+  expect((await f.command('ask')).status).toBe(409);
+  expect(f.writes.some((write) => write.content === 'A private DM answer')).toBe(true);
+});
+it('cancels only the current selected DM generation and validates the exact Stop receipt', async () => {
+  const f = await fixture();
+  await scoped(async () => {
+    const run = await models.ChannelRun.findOne().lean();
+    await models.ChannelRun.updateOne(
+      { runId: run?.runId },
+      { $set: { progress: { externalMessageKey: `${dmId}:777`, outcome: 'confirmed' } } },
+    );
+    expect((await f.command({ reference: run!.runId, messageId: '778' })).status).toBe(200);
+    expect((await f.reply())?.reply.content).toContain('no active run');
+    expect((await models.ChannelRun.findOne().lean())?.cancellationRequested).toBe(false);
+    f.state.enabled = false;
+    expect((await f.command({ reference: run!.runId, messageId: '777' })).status).toBe(200);
+    expect((await f.reply())?.reply.content).toContain('Cancellation requested');
+    expect((await models.ChannelRun.findOne().lean())?.cancellationRequested).toBe(true);
+  });
+});
+it.each(['revoked', 'replaced', 'expired'] as const)(
+  'erases a queued private command payload after selection %s and never admits its prompt',
+  async (changed) => {
+    const f = await fixture(false);
+    expect((await f.command('ask')).status).toBe(200);
+    await scoped(async () => {
+      const selection = await models.DiscordDmSelection.findOne().lean();
+      let update: object = { state: 'revoked' };
+      if (changed === 'expired') update = { expiresAtMs: Date.now() - 1 };
+      if (changed === 'replaced') update = { revision: 'replacement' };
+      await models.DiscordDmSelection.updateOne(
+        { selectionId: selection?.selectionId },
+        { $set: update },
+      );
+    });
+    expect(await f.reply()).toBeNull();
+    await scoped(async () => {
+      expect(await models.ChannelRun.countDocuments()).toBe(0);
+      const row = await models.DiscordInbox.findOne()
+        .select('+action +encryptedToken +encryptedReply')
+        .lean();
+      expect(row?.state).toBe('failed');
+      expect(row).not.toHaveProperty('encryptedToken');
+      expect(row).not.toHaveProperty('action');
+    });
+  },
+);
+it('rejects physical events predating DM confirmation and mismatched actual DM channels', async () => {
+  const f = await fixture(false);
+  const selected = await scoped(() => models.DiscordDmSelection.findOne().lean());
+  expect((await f.command('ask', selected!.confirmationEventId)).status).toBe(409);
+  expect((await f.command('status', snowflake(Date.now()), '678901234567890124')).status).toBe(409);
+  await scoped(async () => expect(await models.DiscordInbox.countDocuments()).toBe(0));
+});
+
+it.each([
+  ['guildId', guildId],
+  ['eventId', 'invalid-restored-event'],
+  ['dm', null],
+  ['dm.source.userId', ownerId],
+  ['dm.source.guildId', '234567890123456790'],
+  ['dm.parentChannelId', '567890123456789013'],
+] as const)('fails closed on a restored mixed or changed DM scope %s', async (field, value) => {
+  const f = await fixture(false);
+  expect((await f.command('ask')).status).toBe(200);
+  await scoped(() =>
+    models.DiscordInbox.collection.updateOne({ applicationId }, { $set: { [field]: value } }),
+  );
+  expect(await f.reply()).toBeNull();
+  await scoped(async () => expect(await models.ChannelRun.countDocuments()).toBe(0));
+});
+it('refuses a signed prompt whose physical event predates the current native source consent', async () => {
+  const f = await fixture(false);
+  const event = snowflake(Date.now());
+  expect((await f.command('ask', event)).status).toBe(200);
+  await scoped(() =>
+    models.ChannelIdentity.updateOne(
+      { linkId: 'link' },
+      { $set: { discordActivatedAtMs: Date.now() + 1000 } },
+    ),
+  );
+  expect((await f.reply())?.reply.content).toContain('no longer authorized');
+  await scoped(async () => expect(await models.ChannelRun.countDocuments()).toBe(0));
+});
+
+it('keeps private review metadata available while DM execution is disabled and cannot cancel a superseded selection', async () => {
+  const f = await fixture();
+  await scoped(() =>
+    models.ChannelRun.updateOne(
+      {},
+      {
+        $set: {
+          state: 'requires_action',
+          execution: { responseId: 'resp_private', conversationId: 'private-conversation' },
+        },
+      },
+    ),
+  );
+  f.state.enabled = false;
+  expect((await f.command('status')).status).toBe(200);
+  expect((await f.reply())?.reply.actions?.[0]).toEqual({
+    label: 'Review in LibreChat',
+    url: 'https://chat.example/prefix/responses/resp_private/review',
+  });
+  await scoped(() =>
+    models.DiscordDmSelection.updateOne({}, { $set: { revision: 'new-generation' } }),
+  );
+  expect((await f.command('cancel')).status).toBe(200);
+  expect((await f.reply())?.reply.content).toContain('no active run');
+  await scoped(async () =>
+    expect((await models.ChannelRun.findOne().lean())?.cancellationRequested).toBe(false),
+  );
+});

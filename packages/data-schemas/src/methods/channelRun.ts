@@ -519,6 +519,7 @@ export function createChannelRunStorage(
                 channelId: input.channelId,
                 externalUserId: input.admission.actor.externalUserId,
                 externalChannelId: input.admission.externalChannelId,
+                admission: input.admission,
                 applicationRevision: input.applicationRevision,
               },
               input.discordInbox,

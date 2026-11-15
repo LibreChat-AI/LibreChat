@@ -1,4 +1,4 @@
-import { ChannelRunConflict } from '@librechat/data-schemas';
+import { discordCommandAdmission, ChannelRunConflict } from '@librechat/data-schemas';
 import {
   discordConfirmationControl,
   discordConfirmationParts,
@@ -32,6 +32,7 @@ export function createDiscordCommandExecutor(deps: {
   runs: Pick<ChannelRunStorage, 'admit'>;
   commands: DiscordCommandStorage;
   enabled: () => Promise<boolean>;
+  dmEnabled?: () => Promise<boolean>;
   publicBaseUrl?: string;
   feedback?: (
     record: DiscordInboxRecord,
@@ -94,14 +95,15 @@ export function createDiscordCommandExecutor(deps: {
       channel.revision !== record.channelRevision ||
       channel.agentId !== record.agentId ||
       channel.discord.applicationId !== record.applicationId ||
-      channel.discord.guildId !== record.guildId ||
+      channel.discord.guildId !== (record.dm?.source.guildId ?? record.guildId) ||
       channel.discord.externalChannelId !==
-        (record.thread?.parentChannelId ?? record.externalChannelId)
+        (record.dm?.parentChannelId ?? record.thread?.parentChannelId ?? record.externalChannelId)
     )
       return unavailable();
     const identity = channelExternalIdentity(channel, record.externalUserId);
     if (identity.provider !== 'discord') return unavailable();
     const action = record.action;
+    if (record.dm && ['link', 'confirm'].includes(action.kind)) return unavailable();
     if (action.kind === 'link') return link(identity, record, fence);
     if (action.kind === 'confirm') {
       const reference = discordConfirmationParts(action.reference);
@@ -125,19 +127,30 @@ export function createDiscordCommandExecutor(deps: {
         content: `Your account is linked. Send your prompt again with /librechat ask. ${disclosure}`,
       };
     }
-    const actor = {
-      provider: 'discord' as const,
-      applicationId: record.applicationId,
-      guildId: record.guildId,
-      externalUserId: record.externalUserId,
-    };
-    const principal = await deps.authority.resolvePrincipal(channel, actor);
-    if (!principal) return link(identity, record, fence);
+    const admission = discordCommandAdmission(
+      record,
+      action.kind === 'ask' ? action.prompt : 'control',
+    );
+    if (!admission) return unavailable();
+    const principal = await deps.authority.resolvePrincipal(
+      channel,
+      admission.actor,
+      record.dm ? admission : undefined,
+    );
+    if (!principal) return record.dm ? unavailable() : link(identity, record, fence);
     if (!(await deps.enabled())) return unavailable();
     if (action.kind === 'ask') {
+      if (record.dm && !(await deps.dmEnabled?.())) return unavailable();
       let usable = false;
+      if (native?.kind === 'dm')
+        usable = Boolean(
+          record.dm &&
+            native.source.channelId === record.dm.parentChannelId &&
+            discordGuildTextActorUsable(native.source),
+        );
       if (native?.kind === 'guild_text')
         usable =
+          !record.dm &&
           !record.thread &&
           native.source.channelId === record.externalChannelId &&
           discordGuildTextActorUsable(native.source);
@@ -155,7 +168,7 @@ export function createDiscordCommandExecutor(deps: {
         native.owner.applicationRevision !== record.applicationRevision ||
         native.source.applicationId !== record.applicationId ||
         native.source.botUserId !== channel.discord.botUserId ||
-        native.source.guildId !== record.guildId ||
+        native.source.guildId !== (record.dm?.source.guildId ?? record.guildId) ||
         native.source.authorId !== record.externalUserId
       )
         return unavailable();
@@ -169,30 +182,21 @@ export function createDiscordCommandExecutor(deps: {
             discordInbox: fence,
             discordAuthority: native,
             principal,
-            admission: {
-              actor,
-              eventId: record.eventId,
-              input: action.prompt,
-              ...(record.thread
-                ? { discordDestination: { kind: 'guild_thread' as const, ...record.thread } }
-                : {}),
-              externalChannelId: record.externalChannelId,
-              externalThreadKey: `${record.externalChannelId}:${record.thread ? record.externalChannelId : record.eventId}`,
-              externalMessageKey: `${record.externalChannelId}:${record.eventId}`,
-            },
+            admission,
           },
           now(),
         );
       } catch (error) {
         if (error instanceof ChannelRunConflict && error.code === 'invalid_transition')
           return {
-            content:
-              'This prompt is no longer authorized. Run /librechat link to confirm your account, then send a new /librechat ask.',
+            content: record.dm
+              ? 'This prompt is no longer authorized. Confirm your source guild account link and choose this agent in LibreChat again, then send a new /librechat ask.'
+              : 'This prompt is no longer authorized. Run /librechat link to confirm your account, then send a new /librechat ask.',
           };
         throw error;
       }
       return {
-        content: `Your prompt is queued. ${disclosure} Use /librechat status to check progress or /librechat cancel to stop the current run.`,
+        content: `Your prompt is queued. ${record.dm ? 'Replies are sent to this private DM.' : disclosure} Use /librechat status to check progress or /librechat cancel to stop the current run.`,
       };
     }
     const scope = { record, fence, principal };

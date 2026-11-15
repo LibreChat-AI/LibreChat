@@ -3,6 +3,7 @@ import {
   channelSnowflakeSchema,
   discordInboxFenceSchema,
   discordInboxSubmissionSchema,
+  discordDmInboxSubmissionSchema,
   discordInboxResolutionSchema,
 } from 'librechat-data-provider';
 import type { RequestHandler, Response } from 'express';
@@ -13,7 +14,7 @@ import { acceptsChannelServiceToken } from '../service';
 export function createDiscordInboxHandlers(deps: {
   service: DiscordInboxService;
   serviceToken: () => string | undefined;
-}): Record<'submit' | 'claim' | 'resolve' | 'finish' | 'defer', RequestHandler> {
+}): Record<'submitDm' | 'submit' | 'claim' | 'resolve' | 'finish' | 'defer', RequestHandler> {
   function handle<T>(
     schema: z.ZodType<T>,
     work: (input: T, res: Response) => Promise<void>,
@@ -35,6 +36,11 @@ export function createDiscordInboxHandlers(deps: {
   return {
     submit: handle(discordInboxSubmissionSchema, async (input, res) => {
       const result = await deps.service.submit(input);
+      if (result.ok) res.status(result.value.duplicate ? 200 : 201).json(result);
+      else res.status(result.error.code === 'capacity' ? 429 : 409).json(result);
+    }),
+    submitDm: handle(discordDmInboxSubmissionSchema, async (input, res) => {
+      const result = await deps.service.submitDm(input);
       if (result.ok) res.status(result.value.duplicate ? 200 : 201).json(result);
       else res.status(result.error.code === 'capacity' ? 429 : 409).json(result);
     }),

@@ -364,12 +364,12 @@ export async function retireAgentChannel(
       return record;
     });
     if (!deleting) return null;
-    if (deleting.type === 'discord')
-      await eraseDiscordDmPersistence(mongoose, { tenantId, channelId });
-    if (deleting.type === 'discord')
+    if (deleting.type === 'discord') {
       await createDiscordInboxErasure(mongoose, async (scope, transaction) => {
         await lockExistingChannelScope(mongoose, scope.tenantId, scope.channelId, transaction);
       }).erase({ kind: 'channel', tenantId, channelId }, erasureBatchSize);
+      await eraseDiscordDmPersistence(mongoose, { tenantId, channelId });
+    }
     if (deleting.type === 'discord')
       await eraseDiscordThreadRoutes(mongoose, { kind: 'channel', tenantId, channelId });
     await createChannelIdentityModel(mongoose).deleteMany({
