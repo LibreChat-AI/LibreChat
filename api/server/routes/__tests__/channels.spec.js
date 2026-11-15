@@ -51,9 +51,17 @@ jest.mock('~/server/services/Channels', () => {
   ];
   return {
     ...Object.fromEntries(
-      ['list', 'create', 'manifest', 'update', 'remove', 'bundle', 'getThread', 'putThread'].map(
-        (name) => [name, handler(name)],
-      ),
+      [
+        'list',
+        'create',
+        'manifest',
+        'update',
+        'remove',
+        'bundle',
+        'discordBundle',
+        'getThread',
+        'putThread',
+      ].map((name) => [name, handler(name)]),
     ),
     runs: Object.fromEntries(names.map((name) => [name, handler(name)])),
     identityHandlers: Object.fromEntries(

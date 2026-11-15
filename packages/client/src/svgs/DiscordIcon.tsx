@@ -1,12 +1,16 @@
 import React from 'react';
 import { JSX } from 'react/jsx-runtime';
 
-export default function DiscordIcon(): JSX.Element {
+export default function DiscordIcon({
+  className = 'h-6 w-6',
+}: {
+  className?: string;
+}): JSX.Element {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 1024 1024"
-      className="h-6 w-6"
+      className={className}
       aria-hidden="true"
     >
       <circle cx="512" cy="512" r="512" fill="#5865f2" />

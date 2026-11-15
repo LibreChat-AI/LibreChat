@@ -102,7 +102,7 @@ function OwnedLinks({ api, principalKey }: { api: ChannelIdentityClient; princip
                   <span className="relative shrink-0">
                     <span className="bg-surface-fixed flex size-7 items-center justify-center overflow-hidden rounded-md">
                       {link.identity.provider === 'discord' ? (
-                        <DiscordIcon />
+                        <DiscordIcon className="size-4" />
                       ) : (
                         <img src="assets/slack.svg" alt="" className="size-4" />
                       )}
