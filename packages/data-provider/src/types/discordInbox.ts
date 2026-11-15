@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { discordIngressActionSchema, discordInboxFenceSchema } from './discordIngress';
+import { discordGuildTextActorSourceSchema } from './discordMessage';
 import { discordGuildThreadSourceSchema } from './discordThread';
 import { discordGatewayOwnerSchema } from './discordGateway';
 import { channelSnowflakeSchema } from '../channelProvider';
@@ -92,7 +93,7 @@ export const discordInboxResolutionSchema = z
   .object({
     fence: discordInboxFenceSchema,
     owner: discordGatewayOwnerSchema,
-    source: discordGuildThreadSourceSchema.nullable(),
+    source: z.union([discordGuildThreadSourceSchema, discordGuildTextActorSourceSchema]).nullable(),
   })
   .strict()
   .refine((input) => input.fence.applicationId === input.owner.applicationId);

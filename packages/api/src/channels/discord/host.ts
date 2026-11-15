@@ -11,6 +11,7 @@ import type {
   DiscordInstallationStorage,
   DiscordRouteStorage,
   DiscordInboxStorage,
+  DiscordInboxResolutionStorage,
   DiscordGatewayStorage,
   DiscordRuntimeStorage,
   DiscordMessageStorage,
@@ -100,6 +101,7 @@ export function createDiscordChannelRuntime(
     installations: DiscordInstallationStorage;
     routes: DiscordRouteStorage;
     inbox: DiscordInboxStorage;
+    inboxResolution: DiscordInboxResolutionStorage;
     gateway: DiscordGatewayStorage;
     discovery: DiscordRuntimeStorage;
     messages: DiscordMessageStorage;
@@ -173,6 +175,7 @@ export function createDiscordChannelRuntime(
   });
   const inbox = createDiscordInboxService({
     storage: deps.inbox,
+    inspection: { storage: deps.inboxResolution, execute },
     resolver,
     execute,
     encrypt: encryptCredential,
