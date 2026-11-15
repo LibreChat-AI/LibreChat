@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto';
 import type {
   ChannelRunAdmission,
   DiscordInboxFence,
+  DiscordGatewayOwner,
   ChannelRunPrincipal,
   ChannelRunSnapshot,
   ChannelDeliveryPlan,
   ChannelDeliveryReceipt,
 } from 'librechat-data-provider';
+import type { DiscordMessageOccurrence } from './discordMessage';
 import type { ChannelRunRecord } from '~/models/channelRun';
 
 export interface ChannelLaneScope {
@@ -21,6 +23,7 @@ export interface ChannelRunEnrollment extends ChannelLaneScope {
   /** Verified application revision is a fence, never part of actor identity or payload hashes. */
   applicationRevision?: string;
   discordInbox?: DiscordInboxFence;
+  discordGateway?: { owner: DiscordGatewayOwner; occurrence: DiscordMessageOccurrence };
   workspaceId?: string;
   admission: ChannelRunAdmission;
 }
@@ -29,6 +32,7 @@ export class ChannelRunConflict extends Error {
   constructor(
     readonly code:
       | 'event_conflict'
+      | 'event_consumed'
       | 'stale_fence'
       | 'invalid_transition'
       | 'delivery_incomplete'

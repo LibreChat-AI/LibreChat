@@ -1350,6 +1350,8 @@ export const discordChannelConfigSchema = z
         maxApplications: z.number().int().min(1).max(1000).default(32),
         shardCount: z.number().int().min(1).max(128).default(1),
         messageContent: z.boolean().default(false),
+        // Never exceed the minimum occurrence-receipt retention, even after policy changes.
+        messageMaxAgeMs: z.number().int().min(1000).max(900_000).default(900_000),
         ownershipLeaseMs: z.number().int().min(5000).max(120_000).default(30_000),
         handshakeTimeoutMs: z.number().int().min(1000).max(30_000).default(10_000),
         readyTimeoutMs: z.number().int().min(1000).max(60_000).default(15_000),
