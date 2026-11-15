@@ -125,3 +125,4 @@ export * from './codeSetup';
 export * from './types/discord';
 
 export * from './types/discordIngress';
+export * from './types/discordInbox';

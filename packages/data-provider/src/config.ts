@@ -1317,6 +1317,7 @@ export const discordChannelConfigSchema = z
         leaseMs: z.number().int().min(5000).max(120_000).default(30_000),
         scanLimit: z.number().int().min(1).max(100).default(20),
         retentionMs: z.number().int().min(900_000).max(604_800_000).default(86_400_000),
+        retryDelayMs: z.number().int().min(100).max(60_000).default(1000),
       })
       .strict()
       .prefault({}),
