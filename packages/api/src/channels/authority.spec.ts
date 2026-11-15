@@ -1603,7 +1603,7 @@ it(
     const admitted = await post('runs').send(event()).expect(201);
     const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
     const fence = claimed.body.fence;
-    const route = `runs/${admitted.run.runId}/progress`;
+    const route = `runs/${admitted.body.runId}/progress`;
     await post(`${route}/plan`)
       .send({ fence, revision: 1, rendererVersion: 'test', text: 'Working' })
       .expect(200);
@@ -2005,6 +2005,9 @@ it(
     );
     const claimed = await call('runs/claim').send({ owner: 'worker' }).expect(200);
     const fence = claimed.body.fence;
+    await call(`runs/${admitted.run.runId}/advance`)
+      .send({ fence })
+      .expect(409, { error: 'execution_not_prepared' });
     const route = `runs/${admitted.run.runId}/progress`;
     await call(`${route}/plan`)
       .send({ fence, revision: 1, rendererVersion: 'discord-progress-v1', text: 'Working' })
