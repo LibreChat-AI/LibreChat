@@ -38,7 +38,13 @@ async function createExampleRun(input, { complex = true, stepDelayMs = 0 } = {})
         {
           agentId: input.identity.agentId,
           provider: Providers.OPENAI,
-          tools: [inspect],
+          ...(input.hostTools
+            ? {
+                tools: [],
+                graphTools: [inspect],
+                toolDefinitions: input.hostTools.toolDefinitions,
+              }
+            : { tools: [inspect] }),
           instructions: `${input.agent.instructions ?? ''}\nInspect the request using inspect_example, then explain the findings.`,
           clientOptions: {
             model: process.env.SDK_EXAMPLE_MODEL || 'gpt-4.1-mini',

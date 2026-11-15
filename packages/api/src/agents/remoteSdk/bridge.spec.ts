@@ -660,4 +660,118 @@ describe('remote SDK runtime bridge', () => {
       ).rejects.toThrow();
     },
   );
+  it('fails before tool execution when a factory omits required host schemas', async () => {
+    const runtime = await fixture();
+    const handle = jest.fn();
+    try {
+      const config = hostConfig();
+      config.graphConfig = {
+        type: 'standard',
+        llmConfig: { provider: Providers.OPENAI },
+        toolDefinitions: [{ name: 'inspect', description: 'Inspect' }],
+      };
+      config.customHandlers = { [GraphEvents.ON_TOOL_EXECUTE]: { handle } };
+      const run = await createRemoteSdkRun({ config, identity, remote: runtime.remote });
+      await expect(
+        run.processStream({ messages: [new HumanMessage('inspect')] }, invocation()),
+      ).rejects.toThrow('SDK runtime execution failed');
+      expect(handle).not.toHaveBeenCalled();
+    } finally {
+      await runtime.close();
+    }
+  });
+  it('executes authorized host tools and delivers a fast result before the batch settles', async () => {
+    const definitions = [
+      {
+        name: 'echo',
+        description: 'echo',
+        parameters: { type: 'object' as const, properties: { text: { type: 'string' as const } } },
+      },
+    ];
+    const createRun = async (input: RemoteSdkFactoryInput) => {
+      const run = await Run.create({
+        ...input.config,
+        tokenCounter: () => 1,
+        returnContent: true,
+        graphConfig: {
+          type: 'standard',
+          agents: [
+            {
+              agentId: input.identity.agentId,
+              provider: Providers.OPENAI,
+              tools: [],
+              toolDefinitions: input.hostTools?.toolDefinitions,
+            },
+          ],
+        },
+      });
+      run.Graph!.overrideTestModel(['tools'], 5, [
+        { id: 'fast', name: 'echo', args: { text: 'fast' }, type: 'tool_call' },
+        { id: 'slow', name: 'echo', args: { text: 'slow' }, type: 'tool_call' },
+      ]);
+      return run;
+    };
+    const runtime = await fixture(createRun);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let first!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      first = resolve;
+    });
+    let calls = 0;
+    try {
+      const config = hostConfig();
+      config.graphConfig = {
+        type: 'standard',
+        llmConfig: { provider: Providers.OPENAI },
+        toolDefinitions: definitions,
+      };
+      config.customHandlers = {
+        [GraphEvents.ON_TOOL_EXECUTE]: {
+          handle: async (_event, data) => {
+            const batch = data as import('@librechat/agents').ToolExecuteBatchRequest;
+            calls++;
+            expect(batch.agentId).toBe(identity.agentId);
+            expect(batch.userId).toBe(identity.userId);
+            batch.onResult?.({ toolCallId: 'fast', status: 'success', content: 'fast' });
+            await held;
+            batch.resolve([
+              { toolCallId: 'slow', status: 'success', content: 'slow' },
+              { toolCallId: 'fast', status: 'success', content: 'fast' },
+            ]);
+          },
+        },
+        [GraphEvents.ON_RUN_STEP_COMPLETED]: {
+          handle: async (_event, data) => {
+            if (JSON.stringify(data).includes('fast')) first();
+          },
+        },
+      };
+      const run = await createRemoteSdkRun({ config, identity, remote: runtime.remote });
+      const result = run.processStream({ messages: [new HumanMessage('tools')] }, invocation());
+      const completed = result.catch((error) => {
+        first();
+        throw error;
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          ready,
+          new Promise((_, reject) => {
+            timeout = setTimeout(() => reject(new Error('No early tool completion')), 5000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timeout);
+      }
+      release();
+      await completed;
+      expect(calls).toBe(1);
+    } finally {
+      release?.();
+      await runtime.close();
+    }
+  });
 });

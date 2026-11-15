@@ -150,6 +150,10 @@ export function createSdkPeer(
       // Hooks observe all earlier events and can reserve content slots for later ones.
       // Ordinary RPCs stay reentrant; replies above always bypass this barrier.
       if (frame.method === 'hook') queue = queue.then(dispatch);
+      else if (frame.method === 'tools')
+        queue = queue.then(() => {
+          void dispatch();
+        });
       else void dispatch();
       return;
     }
