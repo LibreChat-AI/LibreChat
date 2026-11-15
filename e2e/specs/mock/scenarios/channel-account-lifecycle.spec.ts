@@ -11,8 +11,16 @@ const SCENARIO = {
   dark: '@scenario:channel-confirmation-and-personal-withdrawal-dark',
 } as const;
 
-for (const mode of ['light', 'dark'] as const) {
-  test(`channel confirmation and personal withdrawal use current state (${mode}) ${SCENARIO[mode]}`, async ({
+const cases = (['slack', 'discord'] as const).flatMap((provider) =>
+  (['light', 'dark'] as const).map((mode) => ({ provider, mode })),
+);
+
+for (const { provider, mode } of cases) {
+  const scenario =
+    provider === 'slack'
+      ? SCENARIO[mode]
+      : `@scenario:discord-confirmation-and-personal-withdrawal-${mode}`;
+  test(`channel confirmation and personal withdrawal use current state (${provider}, ${mode}) ${scenario}`, async ({
     page,
     baseURL,
   }) => {
@@ -26,8 +34,14 @@ for (const mode of ['light', 'dark'] as const) {
         tenantId: '_',
         channelId: 'channel-browser',
         channelRevision: 'channel-revision',
-        teamId: 'Workspace T1',
-        externalUserId: 'U1',
+        ...(provider === 'discord'
+          ? {
+              provider,
+              applicationId: '123456789012345678',
+              guildId: '223456789012345678',
+              externalUserId: '323456789012345678',
+            }
+          : { teamId: 'Workspace T1', externalUserId: 'U1' }),
         agentId: 'Agent browser',
       },
       linkId: 'link-browser',
@@ -59,6 +73,16 @@ for (const mode of ['light', 'dark'] as const) {
     await page.waitForTimeout(400);
     expect(new URL(page.url()).pathname).toBe(new URL(appURL(baseURL, 'channels/link')).pathname);
     expect(page.url()).not.toContain(ticket);
+    if (provider === 'discord') {
+      await expect(
+        page.getByRole('heading', { name: 'Connect your account to Discord' }),
+      ).toBeVisible();
+      await expect(
+        page.getByText(
+          'Agent replies are visible to people with access to the Discord channel. Linking your account does not make those replies private.',
+        ),
+      ).toBeVisible();
+    }
     await page.getByRole('button', { name: 'Link account', exact: true }).click();
     await expect(page.locator('main img')).toBeVisible();
     await expect
@@ -68,7 +92,20 @@ for (const mode of ['light', 'dark'] as const) {
           .evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0),
       )
       .toBe(true);
-    await expect(page.getByRole('status')).toContainText('Back in Slack, confirm this account');
+    await expect(page.getByRole('status')).toContainText(
+      provider === 'discord'
+        ? 'Return to the original Discord channel'
+        : 'Back in Slack, confirm this account',
+    );
+    if (provider === 'discord') {
+      await expect(page.getByRole('link', { name: 'Open Discord server' })).toHaveAttribute(
+        'href',
+        'https://discord.com/channels/223456789012345678',
+      );
+      await expect(page.getByRole('status')).toContainText(
+        'Your earlier prompt will not run automatically.',
+      );
+    }
     state = 'active';
     // A real focus transition refetches the active query without remounting the route.
     await page.evaluate(() => window.dispatchEvent(new Event('blur')));
@@ -76,7 +113,9 @@ for (const mode of ['light', 'dark'] as const) {
     await expect(page.getByRole('status')).toHaveText('Active');
     expect(accepts).toBe(1);
     if (process.env.E2E_CHANNEL_VISUAL_PREFIX) {
-      await page.screenshot({ path: `${process.env.E2E_CHANNEL_VISUAL_PREFIX}-link-${mode}.png` });
+      await page.screenshot({
+        path: `${process.env.E2E_CHANNEL_VISUAL_PREFIX}-${provider}-link-${mode}.png`,
+      });
     }
     state = 'unavailable';
     await page.goto(appURL(baseURL, 'c/new'));
@@ -89,7 +128,7 @@ for (const mode of ['light', 'dark'] as const) {
     await expect(links.getByRole('status')).toHaveText('Unavailable');
     if (process.env.E2E_CHANNEL_VISUAL_PREFIX) {
       await page.screenshot({
-        path: `${process.env.E2E_CHANNEL_VISUAL_PREFIX}-settings-${mode}.png`,
+        path: `${process.env.E2E_CHANNEL_VISUAL_PREFIX}-${provider}-settings-${mode}.png`,
       });
     }
     await settings.getByRole('button', { name: /^Disconnect from agent / }).click();
@@ -118,7 +157,7 @@ for (const mode of ['light', 'dark'] as const) {
     await form.getByRole('heading', { name: 'Channels', exact: true }).scrollIntoViewIfNeeded();
     if (process.env.E2E_CHANNEL_VISUAL_PREFIX) {
       await page.screenshot({
-        path: `${process.env.E2E_CHANNEL_VISUAL_PREFIX}-builder-${mode}.png`,
+        path: `${process.env.E2E_CHANNEL_VISUAL_PREFIX}-${provider}-builder-${mode}.png`,
       });
     }
   });
