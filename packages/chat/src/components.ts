@@ -129,6 +129,8 @@ export { getMessageAriaLabel, getHeaderPrefixForScreenReader } from './component
 export { default as PhaseLabel, FOLD_EASING } from './components/parts/PhaseLabel';
 export { default as ToolGroupHeader } from './components/parts/group/Header';
 export type { ToolGroupHeaderProps } from './components/parts/group/Header';
+export { default as ToolGroupBody } from './components/parts/group/Body';
+export type { ToolGroupBodyProps } from './components/parts/group/Body';
 
 /** Parts: the leaf components and row classes tool cards share. */
 export { default as Stdout } from './components/parts/Stdout';
