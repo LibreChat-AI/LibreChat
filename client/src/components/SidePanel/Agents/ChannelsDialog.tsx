@@ -2,6 +2,7 @@ import { useId, useMemo, useState } from 'react';
 import { Search } from 'lucide-react';
 import {
   Button,
+  DiscordIcon,
   FilterInput,
   OGDialog,
   OGDialogTitle,
@@ -12,7 +13,7 @@ import type { ComponentType, ReactElement } from 'react';
 import type { TranslationKeys } from '~/hooks';
 import { useLocalize } from '~/hooks';
 
-export type ChannelKind = 'slack';
+export type ChannelKind = 'slack' | 'discord';
 
 interface ChannelOption {
   kind: ChannelKind;
@@ -33,6 +34,12 @@ const CHANNELS: ChannelOption[] = [
     icon: SlackLogo,
     name: 'com_ui_channels_slack',
     description: 'com_ui_channels_slack_description',
+  },
+  {
+    kind: 'discord',
+    icon: DiscordIcon,
+    name: 'com_ui_discord_title',
+    description: 'com_ui_discord_description',
   },
 ];
 

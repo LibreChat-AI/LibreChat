@@ -5,6 +5,7 @@ import { X, Info, Plus, Power, User, Users, Pencil, Link2Off, Settings } from 'l
 import {
   Alert,
   Button,
+  DiscordIcon,
   ControlCombobox,
   InfoHoverCard,
   Label,
@@ -25,6 +26,7 @@ import { channelErrorLabel } from '~/utils/channelErrors';
 import DeleteChannelDialog from './DeleteChannelDialog';
 import { ChannelHeaderIcon } from './ChannelDetails';
 import Loading from '~/components/Channels/Loading';
+import Discord from '~/components/Channels/Discord';
 import WorkspaceChannel from './WorkspaceChannel';
 import ChannelsDialog from './ChannelsDialog';
 import ChannelUsage from './ChannelUsage';
@@ -43,8 +45,22 @@ const modeLabels: Record<AgentChannel['credentialMode'], TranslationKeys> = {
   shared: 'com_ui_channel_link_shared',
 };
 
+const rowLabels: Record<ListedAgentChannel['type'], TranslationKeys> = {
+  slack: 'com_ui_channels_slack',
+  discord: 'com_ui_discord_title',
+  unavailable: 'com_ui_channels_unavailable',
+};
+
+/** Slack keeps the delete dialog's default wording; a new provider has to pick its own. */
+const deleteCopies: Record<ListedAgentChannel['type'], TranslationKeys | undefined> = {
+  slack: undefined,
+  discord: 'com_ui_discord_delete_confirm',
+  unavailable: 'com_ui_channels_unavailable_delete_confirm',
+};
+
 function RowIcon({ type }: { type: ListedAgentChannel['type'] }) {
-  if (type !== 'slack') {
+  if (type === 'discord') return <DiscordIcon />;
+  if (type === 'unavailable') {
     return <Link2Off className="text-text-secondary size-4" aria-hidden="true" />;
   }
   return <img src="assets/slack.svg" alt="" className="size-4" />;
@@ -554,13 +570,16 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
     },
   });
   const selected = channels.data?.find((channel) => channel.channelId === dialog);
-  // Only a Slack connection has a dialog here; a row of any other provider can only be deleted.
-  const managed = selected?.type === 'slack' ? selected : undefined;
+  // An unavailable connection has nothing to manage, so no dialog opens on it.
+  const managed = selected?.type === 'unavailable' ? undefined : selected;
   const connectionTitle =
     selected?.status === 'pending_install' &&
     (!selected.workspaceId || newWorkspaceConnection === selected.channelId)
       ? 'com_ui_channels_setup_title'
       : 'com_ui_channels_manage';
+  let dialogTitle: TranslationKeys = connectionTitle;
+  if (dialog === 'add') dialogTitle = 'com_ui_channels_add_slack';
+  if (dialog === 'discord') dialogTitle = 'com_ui_discord_title';
   return (
     <section aria-labelledby={`${id}-heading`} className="mb-3 flex flex-col gap-2">
       <div className="flex items-center justify-between gap-2">
@@ -618,7 +637,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                     'flex size-7 items-center justify-center overflow-hidden rounded-md',
                     // The fixed surface is white in every theme, which suits a brand mark but not a
                     // glyph drawn in a theme text color.
-                    channel.type !== 'slack' ? 'bg-surface-tertiary' : 'bg-surface-fixed',
+                    channel.type === 'unavailable' ? 'bg-surface-tertiary' : 'bg-surface-fixed',
                   )}
                 >
                   <RowIcon type={channel.type} />
@@ -632,13 +651,9 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
               </span>
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="text-text-primary truncate text-sm font-medium">
-                  {localize(
-                    channel.type !== 'slack'
-                      ? 'com_ui_channels_unavailable'
-                      : 'com_ui_channels_slack',
-                  )}
+                  {localize(rowLabels[channel.type])}
                 </span>
-                {channel.type !== 'slack' && (
+                {channel.type === 'unavailable' && (
                   <span className="text-text-secondary text-xs">
                     {localize('com_ui_channels_unavailable_description')}
                   </span>
@@ -655,10 +670,14 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                 />
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
-                {channel.type === 'slack' && (
+                {channel.type !== 'unavailable' && (
                   <div className="no-touch:opacity-0 grouped-focus-visible:opacity-100 flex items-center group-hover:opacity-100">
                     <RowAction
-                      label={channelActionLabel(channel, userId)}
+                      label={
+                        channel.type === 'discord'
+                          ? 'com_ui_discord_setup'
+                          : channelActionLabel(channel, userId)
+                      }
                       disabled={
                         channels.isError ||
                         channel.status === 'deleting' ||
@@ -667,38 +686,36 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                       onOpen={(button) => {
                         triggerRef.current = button;
                         setNewWorkspaceConnection(null);
-                        setDialog(channel.channelId);
+                        setDialog(channel.type === 'discord' ? 'discord' : channel.channelId);
                       }}
                     />
                   </div>
                 )}
-                {channel.createdBy === userId && channel.status !== 'deleting' && (
-                  <div className="no-touch:opacity-0 grouped-focus-visible:opacity-100 shrink-0 group-hover:opacity-100">
-                    <TooltipAnchor
-                      description={localize('com_ui_channels_delete_connection')}
-                      render={
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-xs"
-                          aria-label={localize('com_ui_channels_delete_connection')}
-                          onClick={(event) => {
-                            rowDeleteRef.current = event.currentTarget;
-                            removeRow.reset();
-                            setRowDelete(channel);
-                            setRowDeleteCopy(
-                              channel.type !== 'slack'
-                                ? 'com_ui_channels_unavailable_delete_confirm'
-                                : undefined,
-                            );
-                          }}
-                        >
-                          <X className="size-3.5" aria-hidden="true" />
-                        </Button>
-                      }
-                    />
-                  </div>
-                )}
+                {channel.createdBy === userId &&
+                  channel.status !== 'deleting' &&
+                  (channel.type !== 'discord' || channel.status !== 'active') && (
+                    <div className="no-touch:opacity-0 grouped-focus-visible:opacity-100 shrink-0 group-hover:opacity-100">
+                      <TooltipAnchor
+                        description={localize('com_ui_channels_delete_connection')}
+                        render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-xs"
+                            aria-label={localize('com_ui_channels_delete_connection')}
+                            onClick={(event) => {
+                              rowDeleteRef.current = event.currentTarget;
+                              removeRow.reset();
+                              setRowDelete(channel);
+                              setRowDeleteCopy(deleteCopies[channel.type]);
+                            }}
+                          >
+                            <X className="size-3.5" aria-hidden="true" />
+                          </Button>
+                        }
+                      />
+                    </div>
+                  )}
               </div>
             </li>
           ))}
@@ -718,8 +735,12 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
       <ChannelsDialog
         open={libraryOpen}
         onOpenChange={setLibraryOpen}
-        onSelect={() => {
+        onSelect={(kind) => {
           setLibraryOpen(false);
+          if (kind === 'discord') {
+            setDialog('discord');
+            return;
+          }
           create.reset();
           setCredentialMode('per_user');
           setWorkspaceId('');
@@ -759,9 +780,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
             >
               {dialog !== 'add' && managed && <ChannelHeaderIcon channel={managed} />}
               <div className="min-w-0 space-y-1">
-                <OGDialogTitle>
-                  {localize(dialog === 'add' ? 'com_ui_channels_add_slack' : connectionTitle)}
-                </OGDialogTitle>
+                <OGDialogTitle>{localize(dialogTitle)}</OGDialogTitle>
                 {dialog === 'add' && workspaces.isSuccess && !useWorkspace && (
                   <p id={`${id}-mode`} className="text-text-secondary text-sm">
                     {localize('com_ui_channel_link_mode')}
@@ -895,6 +914,11 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                   </div>
                 </div>
               )}
+              {dialog === 'discord' && (
+                <div className="overflow-y-auto px-6 pb-6">
+                  <Discord userId={userId} tenantId={tenantId} />
+                </div>
+              )}
               {managed &&
                 managed.createdBy === userId &&
                 agentId &&
@@ -925,7 +949,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                     }
                   />
                 ))}
-              {dialog !== 'add' && !selected && (
+              {dialog !== 'add' && dialog !== 'discord' && !selected && (
                 <p role="status">{localize('com_ui_channels_loading')}</p>
               )}
             </div>

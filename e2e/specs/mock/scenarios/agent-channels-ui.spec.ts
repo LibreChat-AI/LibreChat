@@ -88,6 +88,18 @@ async function openChannels(page: Page, kinds: Kind[]) {
   };
   const channels = kinds.map(make);
   const calls: Call[] = [];
+  const manifests: string[] = [];
+  const discordWrites: string[] = [];
+  // The page owns this observer and disposes it when the scenario fixture closes.
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (
+      pathname.startsWith('/api/channels/discord/') &&
+      !['GET', 'HEAD'].includes(request.method())
+    ) {
+      discordWrites.push(`${request.method()} ${pathname}`);
+    }
+  });
 
   await page.route(
     (url) => url.pathname === '/api/endpoints',
@@ -102,6 +114,16 @@ async function openChannels(page: Page, kinds: Kind[]) {
     (url) => url.pathname === '/api/channels/workspaces',
     (route) => route.fulfill({ json: { configured: false, canManage: false, workspaces: [] } }),
   );
+  if (kinds.includes('discord')) {
+    await page.route(
+      (url) => url.pathname === '/api/channels/discord/apps',
+      (route) => route.fulfill({ json: { applications: [] } }),
+    );
+    await page.route(
+      (url) => url.pathname === '/api/channels/discord/guilds',
+      (route) => route.fulfill({ json: { guilds: [] } }),
+    );
+  }
   const prefix = `/api/agents/${agent.id}/channels`;
   await page.route(
     (url) => url.pathname.startsWith(prefix),
@@ -113,6 +135,7 @@ async function openChannels(page: Page, kinds: Kind[]) {
         return route.fulfill({ json: channels });
       }
       if (method === 'GET' && rest[1] === 'manifest') {
+        manifests.push(request.url());
         return route.fulfill({ json: MANIFEST });
       }
       const channel = channels.find((item) => item.channelId === rest[0]);
@@ -145,7 +168,7 @@ async function openChannels(page: Page, kinds: Kind[]) {
     .locator('section')
     .filter({ has: page.getByRole('heading', { name: 'Channels', exact: true }) });
   await expect(section).toBeVisible({ timeout: 10_000 });
-  return { section, calls, cleanup: () => cleanupAgent(page, agent.id) };
+  return { section, calls, manifests, discordWrites, cleanup: () => cleanupAgent(page, agent.id) };
 }
 
 const rowOf = (section: Locator, index: number) => section.locator('li').nth(index);
@@ -362,30 +385,31 @@ test('a connection no provider serves is listed beside a working one and can onl
   }
 });
 
-test('a valid Discord connection offers neutral deletion without Slack management @scenario:discord-channel-row-offers-neutral-delete-only-without-slack-management', async ({
+test('an active Discord connection opens setup without generic deletion @scenario:active-discord-channel-opens-setup-without-generic-deletion', async ({
   page,
 }) => {
-  const { section, calls, cleanup } = await openChannels(page, ['discord']);
+  const { section, calls, manifests, discordWrites, cleanup } = await openChannels(page, [
+    'discord',
+  ]);
   try {
     const row = rowOf(section, 0);
-    await expect(row.getByText('Unavailable connection')).toBeVisible();
+    await expect(row.getByText('Discord', { exact: true })).toBeVisible();
     await expect(row.getByText('Slack', { exact: true })).toHaveCount(0);
-    await expect(
-      row.getByText('This connection cannot be managed here. You can still delete it.'),
-    ).toBeVisible();
+    await expect(row.getByText('Unavailable connection')).toHaveCount(0);
     await row.hover();
-    await expect(row.getByRole('button')).toHaveCount(1);
-    await row.getByRole('button', { name: 'Delete connection' }).click();
-    const remove = dialogNamed(page, 'Delete this connection?');
-    await expect(
-      remove.getByText(/removes the unavailable connection and everything saved for it/),
-    ).toBeVisible();
-    await expect(remove.getByText(/Slack/)).toHaveCount(0);
-    expect(calls).toHaveLength(0);
-    await remove.getByRole('button', { name: 'Delete', exact: true }).click();
-    await expect.poll(() => calls.length).toBe(1);
-    expect(calls[0]).toEqual({ method: 'DELETE', id: 'chan_discord', body: {} });
-    await expect(section.locator('li')).toHaveCount(0);
+    await expect(row.getByRole('button', { name: 'Delete connection' })).toHaveCount(0);
+    await expect(row.getByRole('button', { name: 'Set up Discord' })).toBeEnabled();
+    await row.getByRole('button', { name: 'Set up Discord' }).click();
+    const dialog = dialogNamed(page, 'Discord');
+    await expect(dialog.getByRole('heading', { name: 'Applications', exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Add application' })).toBeEnabled();
+    await expect(dialog.getByRole('heading', { name: 'Servers', exact: true })).toBeVisible();
+    expect(manifests).toEqual([]);
+    expect(discordWrites).toEqual([]);
+    expect(calls).toEqual([]);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(row.getByText('Discord', { exact: true })).toBeVisible();
   } finally {
     await cleanup();
   }
