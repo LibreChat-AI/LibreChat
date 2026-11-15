@@ -97,6 +97,12 @@ export async function eraseDiscordPersistenceForUser(
     await links.close();
   }
 
+  // Source metadata survives an overwritten or already-erased account-link row.
+  await erasure.erase(
+    { kind: 'dm_user', tenantId, userId: owner.userId },
+    options.erasureBatchSize,
+  );
+
   async function retireChannels(scope: { applicationId: string; guildId?: string }): Promise<void> {
     const bindings = channels
       .find({
@@ -131,15 +137,15 @@ export async function eraseDiscordPersistenceForUser(
 
   async function purgeGuild(guild: DiscordGuild): Promise<void> {
     await retireChannels(guild);
+    await erasure.erase(
+      { kind: 'guild', tenantId, applicationId: guild.applicationId, guildId: guild.guildId },
+      options.erasureBatchSize,
+    );
     await eraseDiscordDmPersistence(mongoose, {
       tenantId,
       applicationId: guild.applicationId,
       guildId: guild.guildId,
     });
-    await erasure.erase(
-      { kind: 'guild', tenantId, applicationId: guild.applicationId, guildId: guild.guildId },
-      options.erasureBatchSize,
-    );
     await eraseDiscordThreadRoutes(mongoose, {
       kind: 'guild',
       tenantId,

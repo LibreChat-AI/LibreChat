@@ -4,17 +4,17 @@ import { discordGuildTextActorSourceSchema } from './discordMessage';
 import { discordGuildThreadSourceSchema } from './discordThread';
 import { discordGatewayOwnerSchema } from './discordGateway';
 import { channelSnowflakeSchema } from '../channelProvider';
+import { discordDmSourceSchema } from './discordDm';
 
 const reference = z
   .string()
   .min(1)
   .max(128)
   .regex(/^[\w-]+$/);
-export const discordInboxSubmissionSchema = z
+const submission = z
   .object({
     applicationId: channelSnowflakeSchema,
     expectedApplicationRevision: reference,
-    guildId: channelSnowflakeSchema,
     externalChannelId: channelSnowflakeSchema,
     externalUserId: channelSnowflakeSchema,
     eventId: channelSnowflakeSchema,
@@ -22,6 +22,24 @@ export const discordInboxSubmissionSchema = z
     action: discordIngressActionSchema,
   })
   .strict();
+export const discordInboxSubmissionSchema = submission.extend({ guildId: channelSnowflakeSchema });
+/** Signed BOT_DM controls contain a physical DM destination, never a substituted guild. */
+export const discordDmInboxSubmissionSchema = submission
+  .extend({ scope: z.literal('dm') })
+  .refine((value) => ['ask', 'status', 'cancel', 'feedback'].includes(value.action.kind));
+export type DiscordDmInboxSubmission = z.infer<typeof discordDmInboxSubmissionSchema>;
+/** Server-derived source snapshot supports exact selection joins and independent privacy cleanup. */
+export const discordDmInboxReferenceSchema = z
+  .object({
+    selectionId: reference,
+    selectionRevision: reference,
+    parentChannelId: channelSnowflakeSchema,
+    confirmationEventId: channelSnowflakeSchema,
+    source: discordDmSourceSchema,
+  })
+  .strict()
+  .refine((value) => value.parentChannelId === value.source.externalChannelId);
+export type DiscordDmInboxReference = z.infer<typeof discordDmInboxReferenceSchema>;
 export type DiscordInboxSubmission = z.infer<typeof discordInboxSubmissionSchema>;
 const label = z.string().min(1).max(80);
 const button = z.union([
@@ -77,6 +95,7 @@ export const discordInboxInspectionSchema = z
         guildId: channelSnowflakeSchema,
         externalChannelId: channelSnowflakeSchema,
         externalUserId: channelSnowflakeSchema,
+        scope: z.literal('dm').optional(),
       })
       .strict(),
   })

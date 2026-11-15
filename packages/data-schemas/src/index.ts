@@ -262,7 +262,7 @@ export type {
 
 export type { DiscordIdentityWrite } from './methods/channelIdentity';
 
-export { createDiscordCommandStorage } from './methods/discordCommands';
+export { createDiscordCommandStorage, discordCommandAdmission } from './methods/discordCommands';
 export type {
   DiscordCommandStorage,
   DiscordCommandScope,

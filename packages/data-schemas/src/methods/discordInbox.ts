@@ -4,11 +4,13 @@ import {
   discordChannelConfigSchema,
   discordIngressActionSchema,
   discordInboxFenceSchema,
+  discordDmInboxReferenceSchema,
 } from 'librechat-data-provider';
 import type {
   DiscordInboxFence,
   DiscordChannelConfig,
   DiscordIngressAction,
+  DiscordDmInboxReference,
 } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { DiscordInboxRecord, DiscordInboxLeaseRecord } from '~/models/discordInbox';
@@ -17,6 +19,7 @@ import { createDiscordReceiptModel } from '~/models/discordReceipt';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { touchDiscordThreadBinding } from './discordThread';
+import { touchDiscordDmInbox } from './discordCommandScope';
 import { createChannelIndexGate } from './channelIndexes';
 import { touchChannelAuthority } from './channelScope';
 import { touchDiscordInstallation } from './discord';
@@ -31,7 +34,7 @@ interface DiscordInteractionPayload {
   eventId: string;
   applicationId: string;
   applicationRevision: string;
-  guildId: string;
+  guildId?: string;
   externalChannelId: string;
   externalUserId: string;
   action: DiscordIngressAction;
@@ -41,12 +44,14 @@ interface DiscordInteractionPayload {
 }
 export interface SubmitDiscordInteraction extends DiscordInteractionPayload {
   routing?: 'bound';
+  dm?: DiscordDmInboxReference;
   channelId: string;
   channelRevision: string;
   agentId: string;
 }
 export interface SubmitDiscordInspection extends DiscordInteractionPayload {
   routing: 'inspection';
+  guildId: string;
   installationId: string;
   installationRevision: string;
 }
@@ -55,7 +60,6 @@ const payload = z
     eventId: channelSnowflakeSchema,
     applicationId: channelSnowflakeSchema,
     applicationRevision: id,
-    guildId: channelSnowflakeSchema,
     externalChannelId: channelSnowflakeSchema,
     externalUserId: channelSnowflakeSchema,
     action: discordIngressActionSchema,
@@ -70,11 +74,20 @@ const submission: z.ZodType<SubmitDiscordInteraction | SubmitDiscordInspection> 
     channelId: id,
     channelRevision: id,
     agentId: id,
+    guildId: channelSnowflakeSchema,
+  }),
+  payload.extend({
+    routing: z.literal('bound').optional(),
+    channelId: id,
+    channelRevision: id,
+    agentId: id,
+    dm: discordDmInboxReferenceSchema,
   }),
   payload.extend({
     routing: z.literal('inspection'),
     installationId: id,
     installationRevision: id,
+    guildId: channelSnowflakeSchema,
   }),
 ]);
 export type DiscordInboxError =
@@ -160,7 +173,11 @@ export function createDiscordInboxStorage(
       | DiscordInboxLeaseRecord
       | ((SubmitDiscordInteraction | SubmitDiscordInspection) & { tenantId?: string }),
     session: ClientSession,
+    now: number,
   ): Promise<boolean> {
+    if (record.routing === 'inspection' && 'dm' in record) return false;
+    if ('dm' in record && record.dm !== undefined)
+      return touchDiscordDmInbox(mongoose, record, now, session);
     if (record.routing === 'inspection')
       return touchDiscordInstallation(
         mongoose,
@@ -224,7 +241,7 @@ export function createDiscordInboxStorage(
                   value: { eventId: previous.eventId, state: previous.state, duplicate: true },
                 }
               : failure('event_conflict');
-          if (!(await current({ ...parsed, tenantId }, session)))
+          if (!(await current({ ...parsed, tenantId }, session, now)))
             return failure('authority_changed');
           const erased = await receipts
             .findOne({ applicationId: parsed.applicationId, eventId: parsed.eventId })
@@ -331,7 +348,7 @@ export function createDiscordInboxStorage(
               .session(session)
               .lean();
             if (!candidate) return null;
-            if (!(await current(candidate, session))) {
+            if (!(await current(candidate, session, now))) {
               await expire(candidate, 'authority_changed', session);
               continue;
             }
@@ -413,7 +430,7 @@ export function createDiscordInboxStorage(
             .lean();
           if (!record) return failure('stale_fence');
           if (record.routing === 'inspection') return failure('authority_changed');
-          if (!(await current(record, session))) return failure('authority_changed');
+          if (!(await current(record, session, now))) return failure('authority_changed');
           if (record.state === 'reply') return { ok: true, value: record };
           const updated = await inbox
             .findOneAndUpdate(

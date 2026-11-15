@@ -3,11 +3,13 @@ import { tenantStorage } from '@librechat/data-schemas';
 import {
   discordInboxResolutionSchema,
   discordInboxSubmissionSchema,
+  discordDmInboxSubmissionSchema,
   discordPrivateReplySchema,
   discordGuildTextActorUsable,
 } from 'librechat-data-provider';
 import type {
   DiscordInboxSubmission,
+  DiscordDmInboxSubmission,
   DiscordInboxFence,
   DiscordInboxClaim,
   DiscordInboxDelivery,
@@ -17,6 +19,7 @@ import type {
 } from 'librechat-data-provider';
 import type {
   DiscordInboxStorage,
+  DiscordDmStorage,
   DiscordInboxRecord,
   DiscordInboxLeaseRecord,
   DiscordInboxResolutionStorage,
@@ -36,6 +39,7 @@ export interface DiscordInboxServiceDependencies {
   decrypt: (value: string) => Promise<string>;
   execute: (record: DiscordInboxRecord, fence: DiscordInboxFence) => Promise<DiscordPrivateReply>;
   retryDelayMs: () => Promise<number>;
+  dm?: { selections: Pick<DiscordDmStorage, 'currentReference'>; enabled: () => Promise<boolean> };
   inspection?: {
     storage: DiscordInboxResolutionStorage;
     threads?: Pick<DiscordThreadStorage, 'bind'>;
@@ -132,6 +136,59 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
           ),
       );
     },
+    async submitDm(input: DiscordDmInboxSubmission): ReturnType<DiscordInboxStorage['submit']> {
+      const parsed = discordDmInboxSubmissionSchema.parse(input);
+      const app = await deps.resolver.security(parsed.applicationId);
+      const changed = { ok: false as const, error: { code: 'authority_changed' as const } };
+      const dm = deps.dm;
+      if (!dm || !app || app.applicationRevision !== parsed.expectedApplicationRevision)
+        return changed;
+      return tenantStorage.run(
+        { tenantId: app.tenantId === '_' ? undefined : app.tenantId },
+        async () => {
+          if (parsed.action.kind === 'ask' && !(await dm.enabled())) return changed;
+          const selected = await dm.selections.currentReference(
+            {
+              applicationId: parsed.applicationId,
+              applicationRevision: app.applicationRevision,
+              externalUserId: parsed.externalUserId,
+              dmChannelId: parsed.externalChannelId,
+            },
+            now(),
+          );
+          if (!selected || BigInt(parsed.eventId) <= BigInt(selected.confirmationEventId))
+            return changed;
+          const expiresAt = discordInteractionExpiry(parsed.eventId);
+          const timestamp = now();
+          if (expiresAt <= timestamp || expiresAt > timestamp + 900000)
+            return { ok: false as const, error: { code: 'expired' as const } };
+          return deps.storage.submit(
+            {
+              applicationId: parsed.applicationId,
+              applicationRevision: app.applicationRevision,
+              eventId: parsed.eventId,
+              externalChannelId: parsed.externalChannelId,
+              externalUserId: parsed.externalUserId,
+              channelId: selected.source.channelId,
+              channelRevision: selected.source.channelRevision,
+              agentId: selected.source.agentId,
+              dm: {
+                selectionId: selected.selectionId,
+                selectionRevision: selected.revision,
+                parentChannelId: selected.source.externalChannelId,
+                confirmationEventId: selected.confirmationEventId,
+                source: selected.source,
+              },
+              action: parsed.action,
+              encryptedToken: await deps.encrypt(parsed.token),
+              tokenHash: createHash('sha256').update(parsed.token).digest('hex'),
+              expiresAt,
+            },
+            timestamp,
+          );
+        },
+      );
+    },
     async claim(applicationId: string, owner: string): Promise<DiscordInboxClaim | null> {
       return scope(
         applicationId,
@@ -149,8 +206,15 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
                 applicationRevision: record.applicationRevision,
                 expiresAt: record.expiresAt,
                 inspection: {
-                  guildId: record.guildId,
-                  externalChannelId: record.externalChannelId,
+                  guildId:
+                    record.routing !== 'inspection' && record.dm
+                      ? record.dm.source.guildId
+                      : record.guildId!,
+                  externalChannelId:
+                    record.routing !== 'inspection' && record.dm
+                      ? record.dm.parentChannelId
+                      : record.externalChannelId,
+                  ...(record.routing !== 'inspection' && record.dm ? { scope: 'dm' as const } : {}),
                   externalUserId: record.externalUserId,
                 },
               };
@@ -212,8 +276,8 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
                 record.thread ||
                 !discordGuildTextActorUsable(source) ||
                 source.applicationId !== record.applicationId ||
-                source.guildId !== record.guildId ||
-                source.channelId !== record.externalChannelId ||
+                source.guildId !== (record.dm?.source.guildId ?? record.guildId) ||
+                source.channelId !== (record.dm?.parentChannelId ?? record.externalChannelId) ||
                 source.authorId !== record.externalUserId
               )
                 return await unavailable();
@@ -221,7 +285,7 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
               if (!resolved.ok) return null;
               const reply = discordPrivateReplySchema.parse(
                 await inspection.execute(resolved.value, fence, {
-                  kind: 'guild_text',
+                  kind: resolved.value.dm ? 'dm' : 'guild_text',
                   owner,
                   source,
                 }),
@@ -234,6 +298,7 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
               return prepared.ok ? await delivery(prepared.value, fence) : null;
             }
             if (
+              record.dm !== undefined ||
               !source ||
               source.applicationId !== record.applicationId ||
               source.guildId !== record.guildId ||
@@ -243,7 +308,7 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
               return await unavailable();
             const parent = await deps.resolver.resolve({
               applicationId: record.applicationId,
-              guildId: record.guildId,
+              guildId: source.guildId,
               externalChannelId: source.parentChannelId,
               expectedApplicationRevision: record.applicationRevision,
             });

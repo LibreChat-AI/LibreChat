@@ -6,6 +6,9 @@ import type {
 import type { ClientSession } from 'mongoose';
 import type { DiscordInboxRecord, DiscordCancelResult } from '~/models/discordInbox';
 import type { ChannelRunRecord } from '~/models/channelRun';
+import { discordCommandAdmission } from './discordCommandScope';
+import { channelRunActorScope } from './channelProvider';
+export { discordCommandAdmission } from './discordCommandScope';
 import { touchChannelDestinationBinding } from './channelDestination';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 import { withRequiredTransaction } from '~/utils/transactions';
@@ -52,6 +55,8 @@ export async function touchDiscordCommandAuthority(
   now: number,
   session: ClientSession,
 ): Promise<boolean> {
+  const admission = discordCommandAdmission(record);
+  if (!admission) return false;
   return touchChannelDestinationBinding(
     mongoose,
     {
@@ -60,22 +65,7 @@ export async function touchDiscordCommandAuthority(
       agentId: record.agentId,
       applicationRevision: record.applicationRevision,
       principal,
-      admission: {
-        actor: {
-          provider: 'discord',
-          applicationId: record.applicationId,
-          guildId: record.guildId,
-          externalUserId: record.externalUserId,
-        },
-        eventId: record.eventId,
-        input: 'control',
-        externalChannelId: record.externalChannelId,
-        externalThreadKey: `${record.externalChannelId}:${record.thread ? record.externalChannelId : record.eventId}`,
-        externalMessageKey: `${record.externalChannelId}:${record.eventId}`,
-        ...(record.thread
-          ? { discordDestination: { kind: 'guild_thread', ...record.thread } }
-          : {}),
-      },
+      admission,
     },
     now,
     session,
@@ -115,6 +105,11 @@ export function createDiscordCommandStorage(
     );
   }
   function filter({ record, principal }: DiscordCommandScope) {
+    const admission = discordCommandAdmission(record);
+    if (!admission) throw new TypeError('Invalid Discord command scope');
+    let destination: object = { 'admission.discordDestination': { $exists: false } };
+    if (admission.discordDestination)
+      destination = { 'admission.discordDestination': admission.discordDestination };
     return {
       tenantId: record.tenantId || '_',
       channelId: record.channelId,
@@ -123,14 +118,11 @@ export function createDiscordCommandStorage(
       'principal.channelRevision': record.channelRevision,
       'principal.linkId': principal.linkId,
       'principal.linkRevision': principal.linkRevision,
-      'admission.actor.provider': 'discord',
-      'admission.actor.applicationId': record.applicationId,
-      'admission.actor.guildId': record.guildId,
+      ...channelRunActorScope(admission.actor),
       'admission.actor.externalUserId': record.externalUserId,
       'admission.externalChannelId': record.externalChannelId,
-      ...(record.thread
-        ? { 'admission.discordDestination': { kind: 'guild_thread', ...record.thread } }
-        : { 'admission.discordDestination': { $exists: false } }),
+      ...destination,
+      ...(record.dm ? { 'admission.externalThreadKey': admission.externalThreadKey } : {}),
     };
   }
   const project = (run: ChannelRunRecord): DiscordCommandRun => ({

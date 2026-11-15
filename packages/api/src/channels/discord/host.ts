@@ -182,9 +182,11 @@ export function createDiscordChannelRuntime(
     runs: deps.application.storage,
     feedback: createDiscordFeedbackHandler({ feedback: deps.feedback }),
     enabled,
+    dmEnabled: async () => (await deps.policy.read()).dm.enabled,
   });
   const inbox = createDiscordInboxService({
     storage: deps.inbox,
+    dm: { selections: deps.dm, enabled: async () => (await deps.policy.read()).dm.enabled },
     inspection: { storage: deps.inboxResolution, threads: deps.threads, execute },
     resolver,
     execute,

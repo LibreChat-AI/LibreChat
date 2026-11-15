@@ -7,6 +7,7 @@ import { withRequiredTransaction } from '~/utils/transactions';
 import { createChannelIndexGate } from './channelIndexes';
 
 export type DiscordInboxErasureScope = { tenantId?: string } & (
+  | { kind: 'dm_user'; userId: string }
   | { kind: 'application'; applicationId: string }
   | { kind: 'guild'; applicationId: string; guildId: string }
   | { kind: 'channel'; channelId: string }
@@ -35,17 +36,19 @@ export function createDiscordInboxErasure(
       channelStorageConfigSchema.shape.erasureBatchSize.parse(batchSize);
       const { kind } = scope;
       if (
-        !['application', 'guild', 'channel', 'actor'].includes(kind) ||
+        !['application', 'guild', 'channel', 'actor', 'dm_user'].includes(kind) ||
         ((kind === 'application' || kind === 'guild') &&
           (typeof scope.applicationId !== 'string' || !scope.applicationId)) ||
         ((kind === 'channel' || kind === 'actor') &&
           (typeof scope.channelId !== 'string' || !scope.channelId)) ||
         (kind === 'guild' && (typeof scope.guildId !== 'string' || !scope.guildId)) ||
+        (kind === 'dm_user' && (typeof scope.userId !== 'string' || !scope.userId)) ||
         (kind === 'actor' && (typeof scope.externalUserId !== 'string' || !scope.externalUserId))
       )
         throw new TypeError('Invalid Discord inbox erasure scope');
       let destination: object;
-      if (kind === 'application' || kind === 'guild')
+      if (kind === 'dm_user') destination = { 'dm.source.userId': scope.userId };
+      else if (kind === 'application' || kind === 'guild')
         destination = { applicationId: scope.applicationId };
       else if (kind === 'actor' && scope.applicationId && scope.guildId)
         destination = {
@@ -58,7 +61,17 @@ export function createDiscordInboxErasure(
       const filter = {
         tenantId: tenantId || { $in: [null, ''] },
         ...destination,
-        ...(kind === 'guild' ? { guildId: scope.guildId } : {}),
+        ...(kind === 'guild'
+          ? {
+              $or: [
+                { guildId: scope.guildId },
+                {
+                  'dm.source.guildId': scope.guildId,
+                  'dm.source.applicationId': scope.applicationId,
+                },
+              ],
+            }
+          : {}),
         ...(kind === 'actor' ? { externalUserId: scope.externalUserId } : {}),
       };
       const last = await inbox

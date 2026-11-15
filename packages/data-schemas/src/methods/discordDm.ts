@@ -1,4 +1,5 @@
 import { nanoid } from 'nanoid';
+import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   discordChannelConfigSchema,
@@ -64,6 +65,8 @@ export interface DiscordDmStorage {
   consume(input: DiscordDmConsume, now: number): Promise<DiscordDmResult<DiscordDmSelection>>;
   /** Null means no currently authorized, unexpired selection. Query failures propagate. */
   current(input: DiscordDmCurrent, now: number): Promise<DiscordDmSelection | null>;
+  /** Current explicit physical DM selection metadata, including while execution is disabled. */
+  currentReference(input: DiscordDmCurrent, now: number): Promise<DiscordDmSelection | null>;
   /** Exact canonical metadata for existing runs, including while DM execution is disabled. */
   reference(
     input: Omit<DiscordDmFence, 'applicationRevision'>,
@@ -214,6 +217,7 @@ export interface DiscordDmDestinationScope {
   admission: ChannelRunAdmission;
   applicationRevision: string;
   now: number;
+  expectedSource?: DiscordDmSource;
   /** Supplied only for a new prompt, decoded from its original physical event ID. */
   promptEventAtMs?: number;
 }
@@ -262,6 +266,7 @@ export async function touchDiscordDmDestination(
   const source = selected.source;
   if (!scope.principal) return false;
   if (
+    (scope.expectedSource !== undefined && !isDeepStrictEqual(source, scope.expectedSource)) ||
     source.channelId !== scope.channelId ||
     source.agentId !== scope.agentId ||
     source.userId !== scope.principal.userId ||
@@ -659,6 +664,11 @@ export function createDiscordDmStorage(
       const parsed = discordDmCurrentSchema.parse(input);
       clock(now);
       if (!(await policy()).enabled) return null;
+      return current(parsed, now);
+    },
+    async currentReference(input, now) {
+      const parsed = discordDmCurrentSchema.parse(input);
+      clock(now);
       return current(parsed, now);
     },
     async reference(input, now) {

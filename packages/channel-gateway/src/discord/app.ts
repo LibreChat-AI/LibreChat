@@ -196,7 +196,7 @@ export class DiscordGatewayApp {
                         },
                         inspectionSignal,
                       );
-                    if (!source)
+                    if (!source && job.inspection.scope !== 'dm')
                       source = await current.inspectGuildThreadSource(
                         {
                           applicationId: context.owner.applicationId,
