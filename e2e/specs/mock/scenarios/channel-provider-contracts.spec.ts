@@ -77,6 +77,11 @@ const LINK_REQUIRED = { error: 'channel_link_required' };
 const FORBIDDEN = { ok: false, error: { code: 'forbidden' } };
 const CHANGED = { ok: false, error: { code: 'changed' } };
 const COPY = { accepted: 'Back in Slack, confirm this account', active: 'Active' };
+const DISCORD_COPY = {
+  ...COPY,
+  accepted:
+    'Return to the original Discord channel and run /librechat link, then choose Confirm account. Your earlier prompt will not run automatically.',
+};
 const MAX = '18446744073709551615';
 
 /** Ids shared by the Slack and Discord fixtures, so that only the provider tells them apart. */
@@ -445,7 +450,7 @@ test.describe('Slack and Discord channel provider contracts', () => {
         try {
           await page.goto('about:blank');
           await page.goto(`${entry}#${synthetic}`);
-          await expect(page.getByRole('status')).toContainText(COPY[state]);
+          await expect(page.getByRole('status')).toContainText(DISCORD_COPY[state]);
           await expect(page.getByText('Channel agent', { exact: true })).toBeVisible();
           await page.getByText('Connection details').click();
           await expect(page.getByText(identity.externalUserId)).toBeVisible();

@@ -19,7 +19,7 @@ export const linkErrorKeys: Record<ChannelIdentityError, TranslationKeys> = {
   changed: 'com_ui_channel_link_changed',
   forbidden: 'com_ui_channel_link_forbidden',
   already_linked: 'com_ui_channel_link_exists',
-  confirmation_required: 'com_ui_channel_link_confirm_slack',
+  confirmation_required: 'com_ui_channel_link_confirm_provider',
   revoked: 'com_ui_channel_link_revoked',
   unavailable: 'com_ui_channel_link_error',
 };
@@ -41,6 +41,22 @@ const pageCopy = {
     title: 'com_ui_channel_link_unusable_title',
     description: 'com_ui_channel_link_unusable_description',
   },
+} as const;
+
+const discordPageCopy = {
+  pending: {
+    title: 'com_ui_channel_link_discord_title',
+    description: 'com_ui_channel_link_discord_description',
+  },
+  accepted: {
+    title: 'com_ui_channel_link_discord_finish_title',
+    description: 'com_ui_channel_link_discord_finish_description',
+  },
+  active: {
+    title: 'com_ui_channel_link_connected_title',
+    description: 'com_ui_channel_link_discord_connected_description',
+  },
+  unusable: pageCopy.unusable,
 } as const;
 
 const fatalErrors: ChannelIdentityError[] = ['invalid_ticket', 'expired', 'revoked', 'forbidden'];
@@ -145,6 +161,7 @@ function OwnedLink({
       ? accept.data.error.code
       : undefined;
   const error = result && !result.ok ? result.error.code : mutationError;
+  const isDiscord = data?.identity.provider === 'discord';
   const accepted = data?.state === 'accepted';
   const active = data?.state === 'active';
   const nextStep = accepted || active;
@@ -157,10 +174,13 @@ function OwnedLink({
     data?.state === 'revoked' ||
     data?.state === 'unavailable' ||
     (error != null && fatalErrors.includes(error));
-  let copy: (typeof pageCopy)[keyof typeof pageCopy] = pageCopy.pending;
-  if (unusable) copy = pageCopy.unusable;
-  else if (accepted || active) copy = pageCopy[data.state];
-  const canReturnToSlack = nextStep && !error && !preview.isError;
+  const providerCopy = isDiscord ? discordPageCopy : pageCopy;
+  let copy: { title: TranslationKeys; description: TranslationKeys } = data
+    ? providerCopy.pending
+    : { title: 'com_ui_channel_link_step_account', description: 'com_ui_channel_link_loading' };
+  if (unusable) copy = providerCopy.unusable;
+  else if (accepted || active) copy = providerCopy[data.state];
+  const canReturn = nextStep && !error && !preview.isError;
   const retryable =
     preview.isError ||
     (accept.isError && data?.state === 'pending') ||
@@ -179,7 +199,7 @@ function OwnedLink({
         </div>
         <section className="border-border-light bg-surface-secondary overflow-hidden rounded-2xl border shadow-sm">
           <div className="space-y-5 p-6 sm:p-7">
-            {!unusable && (
+            {!unusable && data && (
               <ol
                 className="text-text-secondary flex items-center gap-3 text-xs font-medium"
                 aria-label={localize('com_ui_channel_link_steps')}
@@ -201,7 +221,11 @@ function OwnedLink({
                   <span className="bg-surface-tertiary text-text-primary flex size-6 items-center justify-center rounded-full">
                     {active ? <Check className="size-3.5" aria-hidden="true" /> : '2'}
                   </span>
-                  {localize('com_ui_channel_link_step_slack')}
+                  {localize(
+                    isDiscord
+                      ? 'com_ui_channel_link_step_discord'
+                      : 'com_ui_channel_link_step_slack',
+                  )}
                 </li>
               </ol>
             )}
@@ -251,7 +275,11 @@ function OwnedLink({
             )}
             {accepted && (
               <Alert variant="info" role="status">
-                {localize('com_ui_channel_link_confirm_slack')}
+                {localize(
+                  isDiscord
+                    ? 'com_ui_channel_link_confirm_discord'
+                    : 'com_ui_channel_link_confirm_slack',
+                )}
               </Alert>
             )}
             {(data?.state === 'expired' || timedOut) && (
@@ -293,10 +321,20 @@ function OwnedLink({
                 {localize('com_ui_channel_link_accept')}
               </Button>
             )}
-            {canReturnToSlack && data.identity.provider === undefined && (
+            {canReturn && data && (
               <Button asChild size="lg" className="w-full">
-                <a href={`slack://open?team=${encodeURIComponent(data.identity.teamId)}`}>
-                  {localize('com_ui_channel_link_open_slack')}
+                <a
+                  href={
+                    data.identity.provider === 'discord'
+                      ? `https://discord.com/channels/${encodeURIComponent(data.identity.guildId)}`
+                      : `slack://open?team=${encodeURIComponent(data.identity.teamId)}`
+                  }
+                >
+                  {localize(
+                    isDiscord
+                      ? 'com_ui_channel_link_open_discord'
+                      : 'com_ui_channel_link_open_slack',
+                  )}
                   <ExternalLink className="size-4" aria-hidden="true" />
                 </a>
               </Button>
@@ -332,13 +370,27 @@ function OwnedLink({
                 </summary>
                 <dl className="text-text-secondary mt-4 grid gap-3 text-xs">
                   <div>
-                    <dt>{localize('com_ui_channel_link_workspace')}</dt>
+                    <dt>
+                      {localize(
+                        isDiscord
+                          ? 'com_ui_channel_link_discord_server'
+                          : 'com_ui_channel_link_workspace',
+                      )}
+                    </dt>
                     <dd className="text-text-primary mt-1 font-mono break-all">
-                      {data.identity.teamId}
+                      {data.identity.provider === 'discord'
+                        ? data.identity.guildId
+                        : data.identity.teamId}
                     </dd>
                   </div>
                   <div>
-                    <dt>{localize('com_ui_channel_link_actor')}</dt>
+                    <dt>
+                      {localize(
+                        isDiscord
+                          ? 'com_ui_channel_link_discord_actor'
+                          : 'com_ui_channel_link_actor',
+                      )}
+                    </dt>
                     <dd className="text-text-primary mt-1 font-mono break-all">
                       {data.identity.externalUserId}
                     </dd>
@@ -355,7 +407,10 @@ function OwnedLink({
           </div>
           <footer className="border-border-light bg-surface-primary text-text-secondary flex gap-2.5 border-t px-6 py-4 text-xs leading-5 sm:px-8">
             <ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <p>{localize('com_ui_channel_link_boundary')}</p>
+            <div>
+              {isDiscord && <p>{localize('com_ui_channel_link_discord_visibility')}</p>}
+              <p>{localize('com_ui_channel_link_boundary')}</p>
+            </div>
           </footer>
         </section>
       </div>
