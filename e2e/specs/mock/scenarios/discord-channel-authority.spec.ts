@@ -25,7 +25,7 @@ test('Discord authority preserves binding and fences linked admission @scenario:
     const [owner, user] = await Promise.all([world.member(tenantId), world.member(tenantId)]);
     const app = world.app();
     await inOrg(tenantId, async () => {
-      const { store, methods, identities, runs } = world;
+      const { store, methods, identities, runs, routes } = world;
       type Enrollment = Parameters<typeof runs.admit>[0];
       const configured = ok(await store.configureApplication({ actorId: owner, ...app }));
       const guildId = snowflake();
@@ -39,14 +39,14 @@ test('Discord authority preserves binding and fences linked admission @scenario:
         }),
       );
       const externalChannelId = snowflake();
-      const channel: DiscordAgentChannel = {
+      const candidate: DiscordAgentChannel = {
         type: 'discord',
         tenantId,
         channelId: world.channel(tenantId),
         agentId: randomUUID(),
         createdBy: owner,
         revision: randomUUID(),
-        status: 'active',
+        status: 'pending_install',
         credentialMode: 'per_user',
         installationId: installed.installationId,
         installationRevision: installed.revision,
@@ -58,10 +58,28 @@ test('Discord authority preserves binding and fences linked admission @scenario:
         },
       };
       const created = await methods.createAgentChannel({
-        ...channel,
+        ...candidate,
         applicationRevision: configured.revision,
       });
-      const metadata = await methods.getAgentChannelMetadata(channel.channelId);
+      const assigned = await routes.assign({
+        actorId: owner,
+        installationId: installed.installationId,
+        installationRevision: installed.revision,
+        applicationRevision: configured.revision,
+        externalChannelId,
+        channelId: candidate.channelId,
+        channelRevision: candidate.revision,
+      });
+      if (!assigned.ok) throw new Error(assigned.error.code);
+      const metadata = await methods.getAgentChannelMetadata(candidate.channelId);
+      if (!metadata || metadata.type !== 'discord')
+        throw new Error('Missing activated Discord channel');
+      const channel: DiscordAgentChannel = {
+        ...candidate,
+        status: 'active',
+        revision: metadata.revision,
+      };
+      expect(channel.revision).not.toBe(candidate.revision);
       const listed = await methods.listAgentChannels(channel.agentId);
       for (const view of [created, metadata, ...listed]) {
         if (!view) throw new Error('The public channel read returned no channel');
@@ -75,7 +93,7 @@ test('Discord authority preserves binding and fences linked admission @scenario:
             JSON.stringify(view).includes(credential),
           ),
         ).toBe(false);
-        expect(view).toMatchObject({ ...channel });
+        expect(view).toMatchObject({ ...(view === created ? candidate : channel) });
       }
       const privateView = await methods.getActiveAgentChannel(channel.channelId);
       expect(privateView?.applicationRevision).toBe(configured.revision);

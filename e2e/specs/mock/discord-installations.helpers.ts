@@ -10,6 +10,7 @@ import {
   createChannelRunStorage,
   withRequiredTransaction,
   touchDiscordInstallation,
+  createDiscordRouteStorage,
   createChannelIdentityStorage,
   createDiscordInstallationStorage,
 } from '@librechat/data-schemas';
@@ -25,11 +26,10 @@ import { closeAccount, openAccount } from './channels.helpers';
 import { getMongoUri, withMongo } from './db';
 
 /**
- * No Discord route is enabled in this slice, so the callers under test are the exported storage and
- * admission fence. They run against the harness database with real accounts, real transactions and
- * the real account fences, and every document is read back raw. Credentials are disposable random
- * strings that no assertion prints. Enabled with E2E_CHANNELS=true against a MongoDB that supports
- * transactions.
+ * These tests exercise exported storage and admission directly against the harness database, with
+ * real accounts, transactions and account fences. Every document is read back raw. Credentials are
+ * disposable random strings that no assertion prints. Enabled with E2E_CHANNELS=true against a
+ * MongoDB that supports transactions.
  */
 
 type Row = Document | null;
@@ -120,6 +120,7 @@ async function open() {
     methods: createMethods(mongo),
     identities: createChannelIdentityStorage(mongo),
     runs: createChannelRunStorage(mongo),
+    routes: createDiscordRouteStorage(mongo),
     channel(tenantId: string): string {
       const channelId = `discord-e2e-${randomUUID()}`;
       made.channels.push({ tenantId, channelId });
@@ -160,7 +161,7 @@ async function open() {
       );
       await withMongo(async (db) => {
         for (const { tenantId, channelId } of made.channels) {
-          for (const name of ['agentchannels', 'channelruns', 'channellanes'])
+          for (const name of ['agentchannels', 'channelruns', 'channellanes', 'discordroutes'])
             await db.collection(name).deleteMany({ tenantId, channelId });
           await db
             .collection('channelidentities')

@@ -5,6 +5,7 @@ import type { ChannelIdentityRecord } from '~/models/channelIdentity';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { createDiscordInstallationStorage } from './discord';
+import { createDiscordRouteStorage } from './discordRoute';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
 import { createModels } from '~/models';
@@ -97,6 +98,7 @@ beforeEach(async () => {
       'AgentChannel',
       'DiscordApplication',
       'DiscordGuild',
+      'DiscordRoute',
       'ChannelIdentity',
       'ChannelRun',
       'ChannelLane',
@@ -143,7 +145,27 @@ beforeEach(async () => {
     };
   });
 });
-const create = () => channels.createAgentChannel({ ...channel, applicationRevision });
+const create = async () => {
+  const candidate = await channels.createAgentChannel({
+    ...channel,
+    status: 'pending_install',
+    applicationRevision,
+  });
+  const assigned = await createDiscordRouteStorage(db).assign({
+    actorId: owner,
+    installationId: channel.installationId,
+    installationRevision: channel.installationRevision,
+    applicationRevision,
+    externalChannelId: channel.discord.externalChannelId,
+    channelId: channel.channelId,
+    channelRevision: channel.revision,
+  });
+  if (!assigned.ok) throw new Error(assigned.error.code);
+  const current = await channels.getAgentChannelMetadata(channel.channelId);
+  if (!current || current.type !== 'discord') throw new Error('Missing Discord channel');
+  channel = current;
+  return candidate;
+};
 
 it('keeps credentials application-owned and returns authority only in private service reads', () =>
   scope(async () => {
@@ -330,18 +352,28 @@ it('rejects delivery destinations outside the immutable channel binding', () =>
 it('batches installation and owner reads across a page of Discord channels', () =>
   scope(async () => {
     await create();
-    await channels.createAgentChannel({ ...channel, channelId: 'second', applicationRevision });
+    channel = {
+      ...channel,
+      channelId: 'second',
+      discord: { ...channel.discord, externalChannelId: '789012345678901234' },
+    };
+    await create();
     const apps = jest.spyOn(db.models.DiscordApplication.collection, 'find');
     const guilds = jest.spyOn(db.models.DiscordGuild.collection, 'find');
     const owners = jest.spyOn(db.models.User.collection, 'find');
+    const routes = jest.spyOn(db.models.DiscordRoute.collection, 'find');
     try {
-      expect(await channels.listAgentChannels('agent')).toHaveLength(2);
+      const page = await channels.listAgentChannels('agent');
+      expect(page).toHaveLength(2);
+      expect(page.every((record) => record.status === 'active')).toBe(true);
       expect(apps).toHaveBeenCalledTimes(1);
       expect(guilds).toHaveBeenCalledTimes(1);
       expect(owners).toHaveBeenCalledTimes(1);
+      expect(routes).toHaveBeenCalledTimes(1);
     } finally {
       apps.mockRestore();
       guilds.mockRestore();
       owners.mockRestore();
+      routes.mockRestore();
     }
   }));

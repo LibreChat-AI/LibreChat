@@ -24,6 +24,7 @@ import { createCodeEnvironmentModel } from './codeEnvironment';
 import { createSkillDeletionModel } from './skillDeletion';
 import { createAgentCategoryModel } from './agentCategory';
 import { createResponseScopeModel } from './responseScope';
+import { createDiscordRouteModel } from './discordRoute';
 import { createChannelScopeModel } from './channelScope';
 import { createResourceLockModel } from './resourceLock';
 import { createStoredResponseModel } from './response';
@@ -86,6 +87,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AgentChannel: ReturnType<typeof createAgentChannelModel>;
   DiscordApplication: ReturnType<typeof createDiscordApplicationModel>;
   DiscordGuild: ReturnType<typeof createDiscordGuildModel>;
+  DiscordRoute: ReturnType<typeof createDiscordRouteModel>;
   ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
   ChannelScope: ReturnType<typeof createChannelScopeModel>;
   ChannelRun: ReturnType<typeof createChannelRunModel>;
@@ -153,6 +155,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AgentChannel: createAgentChannelModel(mongoose),
     DiscordApplication: createDiscordApplicationModel(mongoose),
     DiscordGuild: createDiscordGuildModel(mongoose),
+    DiscordRoute: createDiscordRouteModel(mongoose),
     ChannelIdentity: createChannelIdentityModel(mongoose),
     ChannelScope: createChannelScopeModel(mongoose),
     ChannelRun: createChannelRunModel(mongoose),

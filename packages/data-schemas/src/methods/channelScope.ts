@@ -6,10 +6,12 @@ import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createDiscordApplicationModel } from '~/models/discord';
 import { createChannelScopeModel } from '~/models/channelScope';
+import { createDiscordRouteModel } from '~/models/discordRoute';
 import { touchChannelOwnerAdmission } from './channelOwner';
 import { touchSlackWorkspace } from './slackWorkspaceScope';
 import { createSlackRouteModel } from '~/models/slackRoute';
 import { createAgentChannelModel } from '~/models/channel';
+import { touchDiscordRoute } from './discordRouteScope';
 import { touchDiscordInstallation } from './discord';
 
 export function assertChannelTenant(tenantId: string | undefined): void {
@@ -180,6 +182,19 @@ export async function touchChannelAuthority(
       ))
     )
       return false;
+    if (
+      !(await touchDiscordRoute(
+        mongoose,
+        {
+          tenantId: parent.tenantId,
+          installationId: parent.installationId,
+          externalChannelId: parent.discord.externalChannelId,
+          channelId: authority.channelId,
+        },
+        session,
+      ))
+    )
+      return false;
   } else if (parent.workspaceId) {
     if (
       parent.credentialMode !== 'per_user' ||
@@ -308,6 +323,10 @@ export async function retireAgentChannel(
       await closeChannelScope(mongoose, tenantId, channelId, session);
       await createSlackRouteModel(mongoose).deleteMany(
         { tenantId: tenantId || { $in: [null, ''] }, channelId },
+        { session },
+      );
+      await createDiscordRouteModel(mongoose).deleteMany(
+        { tenantId: tenantId ?? null, channelId },
         { session },
       );
       return record;

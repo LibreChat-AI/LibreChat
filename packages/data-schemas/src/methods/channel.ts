@@ -13,6 +13,7 @@ import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { createDiscordRouteModel } from '~/models/discordRoute';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { touchSlackWorkspace } from './slackWorkspaceScope';
 import { createChannelIndexGate } from './channelIndexes';
@@ -105,7 +106,7 @@ export function createAgentChannelMethods(
         },
       })
       .read('primary');
-    const [guilds, apps] = await Promise.all([
+    const [guilds, apps, routes] = await Promise.all([
       createDiscordGuildModel(mongoose)
         .find({
           installationId: { $in: active.map((record) => record.installationId) },
@@ -114,6 +115,11 @@ export function createAgentChannelMethods(
         .read('primary')
         .lean(),
       (includeCredentials ? appQuery.select('+encryptedBotToken') : appQuery).lean(),
+      createDiscordRouteModel(mongoose)
+        .find({ channelId: { $in: active.map((record) => record.channelId) } })
+        .select('tenantId installationId externalChannelId channelId')
+        .read('primary')
+        .lean(),
     ]);
     const owners = [...guilds, ...apps].filter((record) =>
       mongoose.isValidObjectId(record.createdBy),
@@ -155,13 +161,16 @@ export function createAgentChannelMethods(
       );
     const guildById = new Map(guilds.map((guild) => [guild.installationId, guild]));
     const appById = new Map(apps.map((app) => [app.applicationId, app]));
+    const routeByChannel = new Map(routes.map((route) => [route.channelId, route]));
     return records.map((record) => {
       if (record.type !== 'discord' || record.status !== 'active') return record;
       const guild = guildById.get(record.installationId);
       const app = appById.get(record.discord?.applicationId);
+      const route = routeByChannel.get(record.channelId);
       if (
         !guild ||
         !app ||
+        !route ||
         !record.discord?.externalChannelId ||
         record.credentialMode !== 'per_user' ||
         guild.applicationId !== record.discord.applicationId ||
@@ -170,6 +179,9 @@ export function createAgentChannelMethods(
         app.botUserId !== record.discord.botUserId ||
         (guild.tenantId || undefined) !== (record.tenantId || undefined) ||
         (app.tenantId || undefined) !== (record.tenantId || undefined) ||
+        (route.tenantId || undefined) !== (record.tenantId || undefined) ||
+        route.installationId !== record.installationId ||
+        route.externalChannelId !== record.discord.externalChannelId ||
         !ownerActive(guild) ||
         !ownerActive(app) ||
         (includeCredentials && !app.encryptedBotToken)
