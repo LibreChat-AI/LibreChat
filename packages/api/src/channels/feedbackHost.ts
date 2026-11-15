@@ -1,4 +1,5 @@
 import { channelConfigSchema } from 'librechat-data-provider';
+import { discordCommandAdmission } from '@librechat/data-schemas';
 import type {
   AgentChannelMethods,
   ChannelFeedbackStorage,
@@ -65,7 +66,9 @@ export function createChannelFeedbackHost(
     return actor.provider === 'discord'
       ? channel.type === 'discord' &&
           channel.discord.applicationId === actor.applicationId &&
-          channel.discord.guildId === actor.guildId
+          channel.discord.guildId ===
+            (actor.scope === 'dm' ? actor.sourceGuildId : actor.guildId) &&
+          (actor.scope !== 'dm' || channel.discord.externalChannelId === actor.parentChannelId)
       : channel.type === 'slack' && channel.slack?.teamId === actor.teamId;
   }
   async function authorizedPolicy(
@@ -154,23 +157,37 @@ export function createChannelFeedbackHost(
       });
       const { record, principal } = scope;
       const action = record.action;
-      if (
-        record.dm ||
-        !record.guildId ||
-        action?.kind !== 'feedback' ||
-        !deps.storage.recordDiscordFeedback
-      )
-        return denied();
-      const actor = {
+      if (action?.kind !== 'feedback' || !deps.storage.recordDiscordFeedback) return denied();
+      const admission = discordCommandAdmission(record);
+      if (!admission || admission.actor.provider !== 'discord') return denied();
+      const common = {
         provider: 'discord' as const,
         tenantId: record.tenantId || '_',
         channelId: record.channelId,
         channelRevision: record.channelRevision,
         agentId: record.agentId,
         applicationId: record.applicationId,
-        guildId: record.guildId,
         principalId: principal.userId,
       };
+      let actor: ChannelFeedbackActor & { principalId: string };
+      if (record.dm)
+        actor = {
+          ...common,
+          scope: 'dm',
+          selectionId: record.dm.selectionId,
+          selectionRevision: record.dm.selectionRevision,
+          sourceGuildId: record.dm.source.guildId,
+          parentChannelId: record.dm.parentChannelId,
+          confirmationEventId: record.dm.confirmationEventId,
+          externalChannelId: record.externalChannelId,
+          externalUserId: record.externalUserId,
+          linkId: principal.linkId || '',
+          linkRevision: principal.linkRevision || '',
+        };
+      else {
+        if (admission.actor.scope === 'dm') return denied();
+        actor = { ...common, guildId: admission.actor.guildId };
+      }
       const policy = await authorizedPolicy(actor);
       if (!policy) return denied();
       const source = await deps.storage.readReplySource(

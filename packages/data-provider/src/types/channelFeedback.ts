@@ -1,7 +1,10 @@
+import { z } from 'zod';
 import type {
   SlackChannelExternalIdentity,
   DiscordChannelExternalIdentity,
 } from './channelIdentity';
+import { channelSnowflakeSchema } from '../channelProvider';
+import { discordDmFenceSchema } from './discordDm';
 
 export type ChannelRating = 'thumbsUp' | 'thumbsDown';
 
@@ -35,8 +38,47 @@ interface ChannelReplyMappingBase {
   centralTraceExportEnabled: boolean;
 }
 
+export const discordDmFeedbackScopeSchema = z
+  .object({
+    scope: z.literal('dm'),
+    selectionId: discordDmFenceSchema.shape.selectionId,
+    selectionRevision: discordDmFenceSchema.shape.revision,
+    sourceGuildId: channelSnowflakeSchema,
+    parentChannelId: channelSnowflakeSchema,
+    confirmationEventId: channelSnowflakeSchema,
+  })
+  .strict();
+export function isDiscordFeedbackScope(
+  value: Partial<z.infer<typeof discordDmFeedbackScopeSchema>> & {
+    guildId?: string;
+    teamId?: string;
+  },
+): boolean {
+  if (value.teamId !== undefined) return false;
+  const fields = {
+    scope: value.scope,
+    selectionId: value.selectionId,
+    selectionRevision: value.selectionRevision,
+    sourceGuildId: value.sourceGuildId,
+    parentChannelId: value.parentChannelId,
+    confirmationEventId: value.confirmationEventId,
+  };
+  return value.scope === 'dm'
+    ? value.guildId === undefined && discordDmFeedbackScopeSchema.safeParse(fields).success
+    : Object.values(fields).every((field) => field === undefined) &&
+        channelSnowflakeSchema.safeParse(value.guildId).success;
+}
+export type DiscordDmFeedbackScope = z.infer<typeof discordDmFeedbackScopeSchema>;
+type GuildFeedbackScope = { guildId: string } & { [K in keyof DiscordDmFeedbackScope]?: never };
+type DmFeedbackScope = DiscordDmFeedbackScope & { guildId?: never };
 export type SlackChannelReplyMapping = ChannelReplyMappingBase & {
   provider?: never;
+  scope?: never;
+  selectionId?: never;
+  selectionRevision?: never;
+  sourceGuildId?: never;
+  parentChannelId?: never;
+  confirmationEventId?: never;
   teamId: string;
   applicationId?: never;
   guildId?: never;
@@ -45,16 +87,17 @@ export type SlackChannelReplyMapping = ChannelReplyMappingBase & {
   linkId?: never;
   linkRevision?: never;
 };
-export type DiscordChannelReplyMapping = ChannelReplyMappingBase & {
+type DiscordReplyMappingBase = ChannelReplyMappingBase & {
   provider: 'discord';
   teamId?: never;
   applicationId: string;
-  guildId: string;
   externalChannelId: string;
   externalUserId: string;
   linkId: string;
   linkRevision: string;
 };
+export type DiscordChannelReplyMapping = DiscordReplyMappingBase &
+  (GuildFeedbackScope | DmFeedbackScope);
 export type ChannelReplyMapping = SlackChannelReplyMapping | DiscordChannelReplyMapping;
 
 export interface DiscordFeedbackEvent {
@@ -91,8 +134,16 @@ export interface ChannelFeedbackView {
 }
 
 export type ChannelFeedbackActor =
-  | Omit<SlackChannelExternalIdentity, 'externalUserId'>
-  | Omit<DiscordChannelExternalIdentity, 'externalUserId'>;
+  | (Omit<SlackChannelExternalIdentity, 'externalUserId'> & { scope?: never })
+  | (Omit<DiscordChannelExternalIdentity, 'externalUserId'> & GuildFeedbackScope)
+  | (Omit<DiscordChannelExternalIdentity, 'externalUserId' | 'guildId'> &
+      DmFeedbackScope & {
+        externalChannelId: string;
+        externalUserId: string;
+        principalId: string;
+        linkId: string;
+        linkRevision: string;
+      });
 
 export type ChannelFeedbackError =
   | 'invalid_reaction'

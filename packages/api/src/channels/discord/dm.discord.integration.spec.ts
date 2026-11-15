@@ -24,6 +24,7 @@ import {
   createDiscordGatewayStorage,
   createDiscordMessageStorage,
   createChannelRunStorage,
+  createChannelFeedbackStorage,
   createDiscordInboxStorage,
   createDiscordInboxResolutionStorage,
   createDiscordCommandStorage,
@@ -31,7 +32,7 @@ import {
   runAsSystem,
   hashDiscordDmCode,
 } from '@librechat/data-schemas';
-import type { StoredResponseRecord, ResponseOwner } from '@librechat/data-schemas';
+import type { StoredResponseRecord, ResponseOwner, AppConfig } from '@librechat/data-schemas';
 import type { DiscordGatewayMessage } from 'librechat-data-provider';
 import type { ErrorRequestHandler } from 'express';
 import type { Response as AgentResponse } from '~/agents/responses/types';
@@ -46,6 +47,7 @@ import {
 } from '~/agents/responses/background';
 import { DiscordGatewayControlClient } from '../../../../channel-gateway/src/discord/ownership';
 import { createDiscordWorkerProvider } from '../../../../channel-gateway/src/discord/worker';
+import { createDiscordFeedbackHandler, createDiscordFeedbackProjection } from './feedback';
 import { DiscordRuntimeClient } from '../../../../channel-gateway/src/discord/discovery';
 import { dispatchDiscordEvent } from '../../../../channel-gateway/src/discord/dispatch';
 import { DiscordRateCoordinator } from '../../../../channel-gateway/src/discord/rates';
@@ -55,15 +57,19 @@ import { DiscordClient } from '../../../../channel-gateway/src/discord/client';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { ChannelWorker } from '../../../../channel-gateway/src/worker';
 import { ChannelClient } from '../../../../channel-gateway/src/client';
+import { createChannelApplicationPolicy } from '../applicationPolicy';
 import { loadConfig } from '../../../../channel-gateway/src/config';
+import { getLangfuseDestinationId } from '~/langfuse/destinations';
 import { createChannelResponseCredentials } from '../credentials';
 import { createDiscordDmMessageHandlers } from './dmMessageHttp';
 import { createChannelResponseProjection } from '../responses';
 import { createDiscordDmMessageService } from './dmMessages';
 import { createChannelExecutionAdapter } from '../execution';
+import { createChannelFeedbackHost } from '../feedbackHost';
 import { createAgentRunEnvelope } from '~/agents/envelope';
 import { createDiscordCommandExecutor } from './commands';
 import { createDiscordInboxHandlers } from './inboxHttp';
+import { sendFeedbackScore } from '~/langfuse/feedback';
 import { createChannelAuthority } from '../authority';
 import { createDiscordRouteResolver } from './routes';
 import { createDiscordInboxService } from './inbox';
@@ -93,6 +99,8 @@ const publicKey = keys.publicKey
   .toString('hex');
 const snowflake = (at: number) => String((BigInt(at - 1420070400000) << BigInt(22)) + BigInt(1));
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId }, work);
+const originalEnv = { ...process.env };
+const destinationId = getLangfuseDestinationId('https://langfuse.invalid', 'fixture-project');
 let mongo: MongoMemoryReplSet;
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
@@ -103,7 +111,17 @@ afterAll(async () => {
   await db.disconnect();
   await mongo?.stop();
 });
+afterEach(() => {
+  jest.restoreAllMocks();
+  process.env = { ...originalEnv };
+});
 beforeEach(async () => {
+  Object.assign(process.env, {
+    LANGFUSE_PUBLIC_KEY: 'fixture-public',
+    LANGFUSE_SECRET_KEY: 'fixture-secret',
+    LANGFUSE_PROJECT_ID: 'fixture-project',
+    LANGFUSE_BASE_URL: 'https://langfuse.invalid',
+  });
   await runAsSystem(async () => {
     for (const collection of Object.values(db.connection.collections))
       await collection.deleteMany({});
@@ -159,6 +177,32 @@ async function fixture(ordinary = true) {
     isPrincipalActive: (id) => methods.isAgentTriggerPrincipalActive(id),
     getAgentPermissions: async () => PermissionBits.VIEW,
   });
+  const scores: { id: string; timestamp: string; value: number }[] = [];
+  jest.spyOn(global, 'fetch').mockImplementation(async (input, init) => {
+    expect(new URL(String(input)).hostname).toBe('langfuse.invalid');
+    scores.push(JSON.parse(String(init?.body)));
+    return new Response(null, { status: 200 });
+  });
+  const feedbackPolicy = createChannelApplicationPolicy({
+    readAppConfig: async () =>
+      ({
+        interfaceConfig: { feedback: true },
+        endpoints: { agents: { channels: config() } },
+      }) as AppConfig,
+    findUser: methods.findUser,
+    isPrincipalActive: methods.isAgentTriggerPrincipalActive,
+  });
+  const feedbackStorage = createChannelFeedbackStorage(db);
+  const feedback = createChannelFeedbackHost({
+    channels: methods,
+    storage: feedbackStorage,
+    getPolicy: feedbackPolicy.feedbackPolicy,
+    sendScore: sendFeedbackScore,
+    maxConflictRetries: 5,
+    exportTimeoutMs: 1000,
+    exportLeaseMs: 10000,
+    exportRetryMs: 1000,
+  });
   const credentials = createChannelResponseCredentials({
     storage: runs,
     responses,
@@ -210,6 +254,20 @@ async function fixture(ordinary = true) {
       responseJSON: JSON.stringify(response),
     });
     if (!result.ok) throw new Error('Inference publication failed');
+    await models.Message.create({
+      tenantId: record.tenantId,
+      user: record.userId,
+      conversationId: current.conversationId,
+      messageId: record.responseId,
+      isCreatedByUser: false,
+      isTemporary: false,
+      sender: 'Agent',
+      endpoint: 'agents',
+      text: 'A private DM answer',
+      langfuseSampled: true,
+      langfuseDestinationIds: [destinationId],
+      langfuseCentralTraceExportEnabled: true,
+    });
   }
   const background = createBackgroundResponseService({
     storage: responses,
@@ -252,6 +310,10 @@ async function fixture(ordinary = true) {
     guard: handlers.service,
     resolvePrincipal: authority.resolvePrincipal,
     responseCredential: credentials.provision,
+    feedbackEnabled: createDiscordFeedbackProjection({
+      storage: feedbackStorage,
+      getPolicy: feedbackPolicy.feedbackPolicy,
+    }),
     advance: execution.advance,
     retireForAuthorityLoss: execution.retireForAuthorityLoss,
   });
@@ -293,6 +355,7 @@ async function fixture(ordinary = true) {
     commands: createDiscordCommandStorage(db),
     enabled: async () => true,
     dmEnabled: async () => state.enabled,
+    feedback: createDiscordFeedbackHandler({ feedback }),
     publicBaseUrl: 'https://chat.example/prefix/',
   });
   const inboxService = createDiscordInboxService({
@@ -378,7 +441,7 @@ async function fixture(ordinary = true) {
     res.sendStatus(500);
   };
   app.use(fail);
-  const writes: { method: string; path: string; content?: string }[] = [];
+  const writes: { method: string; path: string; content?: string; components?: object[] }[] = [];
   const paths: string[] = [];
   let nextMessage = 700;
   const transport: typeof fetch = Object.assign(
@@ -401,7 +464,12 @@ async function fixture(ordinary = true) {
           return Response.json({ id: parentId, guild_id: guildId, type: 0 });
         }
         const body = init?.body ? JSON.parse(String(init.body)) : {};
-        writes.push({ method, path: url.pathname, content: body.content });
+        writes.push({
+          method,
+          path: url.pathname,
+          content: body.content,
+          components: body.components,
+        });
         if (method === 'DELETE') return new Response(null, { status: 204 });
         return Response.json({
           id: method === 'PATCH' ? url.pathname.split('/').at(-1) : String(++nextMessage),
@@ -652,9 +720,14 @@ async function fixture(ordinary = true) {
     });
   return {
     async command(
-      action: 'ask' | 'status' | 'cancel' | { reference: string; messageId: string },
+      action:
+        | 'ask'
+        | 'status'
+        | 'cancel'
+        | { reference: string; messageId: string; rating?: 'thumbsUp' | 'thumbsDown' },
       id = snowflake(Date.now()),
       channel = dmId,
+      actor = actorId,
     ) {
       const payload = JSON.stringify({
         type: typeof action === 'string' ? 2 : 3,
@@ -665,7 +738,7 @@ async function fixture(ordinary = true) {
         context: 1,
         authorizing_integration_owners: { '0': '0' },
         channel_id: channel,
-        user: { id: actorId },
+        user: { id: actor },
         data:
           typeof action === 'string'
             ? {
@@ -682,7 +755,10 @@ async function fixture(ordinary = true) {
                   },
                 ],
               }
-            : { component_type: 2, custom_id: discordRunControl('cancel', action.reference) },
+            : {
+                component_type: 2,
+                custom_id: discordRunControl(action.rating ?? 'cancel', action.reference),
+              },
         ...(typeof action === 'string' ? {} : { message: { id: action.messageId } }),
       });
       const time = String(Math.floor(Date.now() / 1000));
@@ -728,6 +804,8 @@ async function fixture(ordinary = true) {
       if (delivery) await control.finish(delivery.fence, 'completed');
       return delivery;
     },
+    feedback,
+    scores,
     state,
     paths,
     writes,
@@ -997,3 +1075,133 @@ it('keeps private review metadata available while DM execution is disabled and c
     expect((await models.ChannelRun.findOne().lean())?.cancellationRequested).toBe(false),
   );
 });
+
+it('records signed private feedback only for the actual confirmed answer and replaces one stable score without replay', async () => {
+  const f = await fixture();
+  await f.worker().tick(new AbortController().signal);
+  const run = await scoped(() => models.ChannelRun.findOne().lean());
+  const receipt = run!.receipts.find(
+    (receipt) =>
+      receipt.outcome === 'confirmed' &&
+      run!.plan?.parts.some(
+        (part) =>
+          part.operationId === receipt.operationId &&
+          part.kind === 'message' &&
+          part.required &&
+          !part.traceUrl,
+      ),
+  );
+  expect(receipt?.externalMessageKey).toMatch(new RegExp(`^${dmId}:`));
+  expect(
+    JSON.stringify(f.writes.find((write) => write.content === 'A private DM answer')?.components),
+  ).toContain(`lc1:u:${run!.runId}`);
+  f.state.enabled = false;
+  const action = {
+    reference: run!.runId,
+    messageId: receipt!.externalMessageKey!.split(':')[1],
+    rating: 'thumbsUp' as const,
+  };
+  const event = snowflake(Date.now());
+  expect((await f.command(action, event)).status).toBe(200);
+  expect((await f.reply())?.reply).toEqual({ content: 'Feedback received.' });
+  await scoped(async () => expect(await f.feedback.flush(tenantId, 10)).toBe(1));
+  expect(f.scores[0]).toMatchObject({ value: 1 });
+  expect((await f.command(action, event)).status).toBe(200);
+  expect(await f.reply()).toBeNull();
+  expect((await f.command({ ...action, rating: 'thumbsDown' })).status).toBe(200);
+  expect((await f.reply())?.reply.content).toBe('Feedback received.');
+  await scoped(async () => {
+    expect(await f.feedback.flush(tenantId, 10)).toBe(1);
+    expect(await models.ChannelFeedback.countDocuments()).toBe(1);
+    expect((await models.ChannelFeedback.findOne().lean())?.mapping).toMatchObject({
+      scope: 'dm',
+      sourceGuildId: guildId,
+      parentChannelId: parentId,
+      externalChannelId: dmId,
+      selectionId: run!.admission.actor.selectionId,
+    });
+    expect((await models.ChannelFeedback.findOne().lean())?.mapping).not.toHaveProperty('guildId');
+  });
+  expect(f.scores[1]).toMatchObject({
+    id: f.scores[0].id,
+    timestamp: f.scores[0].timestamp,
+    value: 0,
+  });
+});
+it.each(['message', 'run', 'optional', 'unconfirmed', 'selection', 'actor'] as const)(
+  'denies private feedback with changed %s authority or a non-answer receipt',
+  async (changed) => {
+    const f = await fixture();
+    await f.worker().tick(new AbortController().signal);
+    const run = await scoped(() => models.ChannelRun.findOne().lean());
+    const receipt = run!.receipts.find((receipt) => receipt.outcome === 'confirmed');
+    const action = {
+      reference: changed === 'run' ? 'other-run' : run!.runId,
+      messageId: changed === 'message' ? '999' : receipt!.externalMessageKey!.split(':')[1],
+      rating: 'thumbsUp' as const,
+    };
+    if (changed === 'optional')
+      await scoped(() =>
+        models.ChannelRun.updateOne(
+          { runId: run!.runId },
+          { $set: { 'plan.parts.$[].required': false } },
+        ),
+      );
+    if (changed === 'unconfirmed')
+      await scoped(() =>
+        models.ChannelRun.updateOne(
+          { runId: run!.runId },
+          { $set: { 'receipts.$[].outcome': 'unknown' } },
+        ),
+      );
+    if (changed === 'selection')
+      await scoped(() =>
+        models.DiscordDmSelection.updateOne({}, { $set: { revision: 'replacement' } }),
+      );
+    const result = await f.command(
+      action,
+      snowflake(Date.now()),
+      dmId,
+      changed === 'actor' ? '345678901234567891' : actorId,
+    );
+    if (changed === 'actor') expect(result.status).toBe(409);
+    else {
+      expect(result.status).toBe(200);
+      expect((await f.reply())?.reply.content).toContain('unavailable');
+    }
+    await scoped(async () => {
+      expect(await models.ChannelFeedback.countDocuments()).toBe(0);
+      expect(await models.ChannelFeedbackEvent.countDocuments()).toBe(0);
+    });
+    expect(f.scores).toEqual([]);
+  },
+);
+
+it.each(['revoked', 'replaced'] as const)(
+  'does not export a private vote after the selected source is %s',
+  async (changed) => {
+    const f = await fixture();
+    await f.worker().tick(new AbortController().signal);
+    const run = await scoped(() => models.ChannelRun.findOne().lean());
+    const receipt = run!.receipts.find((receipt) => receipt.outcome === 'confirmed');
+    expect(
+      (
+        await f.command({
+          reference: run!.runId,
+          messageId: receipt!.externalMessageKey!.split(':')[1],
+          rating: 'thumbsUp',
+        })
+      ).status,
+    ).toBe(200);
+    expect((await f.reply())?.reply.content).toBe('Feedback received.');
+    await scoped(async () => {
+      await models.DiscordDmSelection.updateOne(
+        {},
+        { $set: changed === 'revoked' ? { state: 'revoked' } : { revision: 'replacement' } },
+      );
+      await f.feedback.flush(tenantId, 10);
+      expect((await models.ChannelFeedback.findOne().lean())?.exportStatus).toBe('pending');
+    });
+    expect(f.scores).toEqual([]);
+  },
+);

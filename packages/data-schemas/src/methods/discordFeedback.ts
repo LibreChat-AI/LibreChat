@@ -6,6 +6,7 @@ import type {
   ChannelFeedbackVote,
 } from 'librechat-data-provider';
 import type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
+import type { DiscordInboxRecord } from '~/models/discordInbox';
 import type { DiscordCommandScope } from './discordCommands';
 import {
   createChannelReplyModel,
@@ -26,7 +27,7 @@ import {
   channelFeedbackProviderFilter,
   isLaterChannelFeedbackEvent,
 } from './channelFeedbackProtocol';
-import { touchDiscordCommandAuthority } from './discordCommands';
+import { discordCommandAdmission, touchDiscordCommandAuthority } from './discordCommands';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 import { createChannelIndexGate } from './channelIndexes';
 import { touchDiscordInbox } from './discordInboxScope';
@@ -36,6 +37,20 @@ const failure = (
   code: 'forbidden' | 'event_conflict',
 ): ChannelFeedbackResult<ChannelFeedbackView> => ({ ok: false, error: { code } });
 
+function matchesScope(record: DiscordInboxRecord, mapping: DiscordChannelReplyMapping): boolean {
+  if (!discordCommandAdmission(record)) return false;
+  return record.dm
+    ? mapping.scope === 'dm' &&
+        mapping.selectionId === record.dm.selectionId &&
+        mapping.selectionRevision === record.dm.selectionRevision &&
+        mapping.sourceGuildId === record.dm.source.guildId &&
+        mapping.parentChannelId === record.dm.parentChannelId &&
+        mapping.confirmationEventId === record.dm.confirmationEventId &&
+        record.dm.source.userId === mapping.principalId &&
+        record.dm.source.linkId === mapping.linkId &&
+        record.dm.source.linkRevision === mapping.linkRevision
+    : mapping.scope === undefined && mapping.guildId === record.guildId;
+}
 /** One occurrence, one replaceable vote slot and one existing durable export ledger. */
 export function createDiscordFeedbackRecorder(
   mongoose: typeof import('mongoose'),
@@ -60,7 +75,7 @@ export function createDiscordFeedbackRecorder(
       mapping.channelRevision !== record.channelRevision ||
       mapping.agentId !== record.agentId ||
       mapping.applicationId !== record.applicationId ||
-      mapping.guildId !== record.guildId ||
+      !matchesScope(record, mapping) ||
       mapping.externalChannelId !== record.externalChannelId ||
       mapping.externalUserId !== record.externalUserId ||
       mapping.principalId !== principal.userId ||
@@ -101,20 +116,32 @@ export function createDiscordFeedbackRecorder(
           action?.kind !== 'feedback' ||
           action.reference !== mapping.runId ||
           `${current.externalChannelId}:${action.messageId}` !== mapping.externalMessageKey ||
-          current.guildId !== mapping.guildId ||
+          !matchesScope(current, mapping) ||
           current.channelRevision !== mapping.channelRevision ||
           current.agentId !== mapping.agentId ||
           current.externalChannelId !== mapping.externalChannelId ||
           !channelSnowflakeSchema.safeParse(action.messageId).success
         )
           throw new ChannelFeedbackAuthorityError();
+        const sourceScope =
+          mapping.scope === 'dm'
+            ? {
+                scope: mapping.scope,
+                selectionId: mapping.selectionId,
+                selectionRevision: mapping.selectionRevision,
+                sourceGuildId: mapping.sourceGuildId,
+                parentChannelId: mapping.parentChannelId,
+                confirmationEventId: mapping.confirmationEventId,
+                externalChannelId: mapping.externalChannelId,
+              }
+            : mapping.guildId;
         const key = digest([
           'discord',
           mapping.tenantId,
           mapping.channelId,
           mapping.channelRevision,
           mapping.applicationId,
-          mapping.guildId,
+          sourceScope,
           mapping.runId,
           mapping.externalUserId,
         ]);
@@ -130,7 +157,7 @@ export function createDiscordFeedbackRecorder(
             'discord',
             mapping.channelRevision,
             mapping.applicationId,
-            mapping.guildId,
+            sourceScope,
             mapping.agentId,
             mapping.runId,
             mapping.principalId,

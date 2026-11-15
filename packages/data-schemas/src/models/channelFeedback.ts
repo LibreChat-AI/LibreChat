@@ -1,5 +1,5 @@
 import { Schema } from 'mongoose';
-import { channelSnowflakeSchema } from 'librechat-data-provider';
+import { channelSnowflakeSchema, isDiscordFeedbackScope } from 'librechat-data-provider';
 import type {
   ChannelReplyMapping,
   ChannelFeedbackEvent,
@@ -62,6 +62,12 @@ function mappingSchema(): Schema<ChannelReplyRecord> {
       },
       applicationId: String,
       guildId: String,
+      scope: String,
+      selectionId: String,
+      selectionRevision: String,
+      sourceGuildId: String,
+      parentChannelId: String,
+      confirmationEventId: String,
       externalChannelId: String,
       externalUserId: String,
       linkId: String,
@@ -85,8 +91,8 @@ function mappingSchema(): Schema<ChannelReplyRecord> {
   schema.pre('validate', function () {
     if (this.provider === 'discord') {
       if (
-        this.teamId !== undefined ||
-        ![this.applicationId, this.guildId, this.externalChannelId, this.externalUserId].every(
+        !isDiscordFeedbackScope(this) ||
+        ![this.applicationId, this.externalChannelId, this.externalUserId].every(
           (value) => channelSnowflakeSchema.safeParse(value).success,
         ) ||
         !this.linkId ||
@@ -95,6 +101,12 @@ function mappingSchema(): Schema<ChannelReplyRecord> {
         this.invalidate('provider', 'Invalid Discord feedback source');
     } else if (
       [
+        'scope',
+        'selectionId',
+        'selectionRevision',
+        'sourceGuildId',
+        'parentChannelId',
+        'confirmationEventId',
         'applicationId',
         'guildId',
         'externalChannelId',
