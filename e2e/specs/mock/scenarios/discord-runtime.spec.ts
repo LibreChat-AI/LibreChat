@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { discordRunControl } from 'librechat-data-provider';
+import { Constants, discordRunControl } from 'librechat-data-provider';
 import type { DiscordPrivateReply } from 'librechat-data-provider';
 import { createDiscordAcceptance, acceptDiscordInBrowser } from '../discord.helpers';
 import { expect, test } from '../fixtures';
@@ -47,7 +47,7 @@ test.describe('real Discord backend runtime', () => {
       expect((await fixture.linkState(actor))?.state).toBe('active');
       expect((await fixture.send(earlier.input)).status).toBe(200);
       expect(await fixture.runs()).toHaveLength(0);
-      const marker = `Discord confirmed ${randomUUID()}`;
+      const marker = `discord-confirmed-${randomUUID()}`;
       const fresh = fixture.event(actor, 'ask', `E2E_REPLY:${marker}`);
       for (let retry = 0; retry < 2; retry++) {
         const ack = await fixture.send(fresh);
@@ -96,9 +96,13 @@ test.describe('real Discord backend runtime', () => {
       // Both external actors deliberately link the same LibreChat account.
       await fixture.link(first);
       await fixture.link(second);
-      const firstMarker = `First actor ${randomUUID()} <@${fixture.botUserId}>`;
-      const secondMarker = `Second actor ${randomUUID()}`;
-      const a = await fixture.command(first, 'ask', `E2E_REPLY:${firstMarker}`);
+      const firstMarker = `first-actor-${randomUUID()}`;
+      const secondMarker = `second-actor-${randomUUID()}`;
+      const a = await fixture.command(
+        first,
+        'ask',
+        `E2E_REPLY:${firstMarker}<@${fixture.botUserId}>`,
+      );
       const b = await fixture.command(second, 'ask', `E2E_REPLY:${secondMarker}`);
       await expect
         .poll(async () => (await fixture.runs()).map((run) => run.state), { timeout: 60000 })
@@ -109,15 +113,21 @@ test.describe('real Discord backend runtime', () => {
       expect(firstRun.principal.userId).toBe(secondRun.principal.userId);
       expect(firstRun.laneId).not.toBe(secondRun.laneId);
       expect(firstRun.execution?.conversationId).not.toBe(secondRun.execution?.conversationId);
-      expect(firstRun.execution?.parentMessageId).not.toBe(secondRun.execution?.responseId);
-      expect(secondRun.execution?.parentMessageId).not.toBe(firstRun.execution?.responseId);
+      expect(firstRun.execution?.parentMessageId).toBe(Constants.NO_PARENT);
+      expect(secondRun.execution?.parentMessageId).toBe(Constants.NO_PARENT);
       for (const run of runs) {
         expect(run.admission.externalChannelId).toBe(fixture.externalChannelId);
         expect(run.receipts.every((receipt) => receipt.outcome === 'confirmed')).toBe(true);
         expect(run.execution?.apiKeyId).toBeTruthy();
         expect((await fixture.response(run.execution!.responseId!))?.status).toBe('completed');
       }
-      expect(fixture.writes.some((write) => write.content.includes('First actor'))).toBe(true);
+      expect(
+        fixture.writes.some(
+          (write) =>
+            write.content.includes(firstMarker) &&
+            write.content.includes(`<@\u200b${fixture.botUserId}>`),
+        ),
+      ).toBe(true);
       expect(fixture.writes.some((write) => write.content.includes(secondMarker))).toBe(true);
       for (const write of fixture.writes) {
         expect(write.channelId).toBe(fixture.externalChannelId);
@@ -131,7 +141,9 @@ test.describe('real Discord backend runtime', () => {
       const status: DiscordPrivateReply = (await fixture.command(second, 'status')).reply;
       expect(status.content).toContain('completed');
       const link = status.actions?.find((action) => 'url' in action);
-      if (link && 'url' in link) expect(link.url).not.toContain(firstRun.execution!.conversationId);
+      expect(link).toMatchObject({
+        url: new URL(`/c/${secondRun.execution!.conversationId}`, baseURL).href,
+      });
       const slow = await fixture.command(first, 'ask', `E2E_EMPTY_SLOW_REPLY:${randomUUID()}`);
       await expect
         .poll(
