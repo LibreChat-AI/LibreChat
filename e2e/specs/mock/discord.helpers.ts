@@ -109,6 +109,8 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
   const writes: DiscordWrite[] = [];
   const logs: string[] = [];
   const unexpected: string[] = [];
+  // Cleanup is kept apart from `writes`, which the guild scenarios pin field by field.
+  const deletes: { channelId: string; id: string; createdIn?: string }[] = [];
   const messages = new Map<string, DiscordWrite>();
   let agentId = '';
   let running: Promise<void> | undefined;
@@ -291,7 +293,9 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
       const target = path.match(/^\/api\/v10\/channels\/(\d+)\/messages(?:\/\d+)?$/)?.[1];
       if (target && [externalChannelId, dmChannelId, otherDmChannelId].includes(target)) {
         if (req.method === 'DELETE') {
-          messages.delete(path.split('/').at(-1)!);
+          const id = path.split('/').at(-1)!;
+          deletes.push({ channelId: target, id, createdIn: messages.get(id)?.channelId });
+          messages.delete(id);
           res.writeHead(204).end();
           return;
         }
@@ -616,11 +620,18 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
       );
       return rows.some((row) => row.codeHash === hashDiscordDmCode(code));
     }
-    /** Names every retained surface holding the secret verbatim, so a failure never prints it. */
+    /**
+     * Names every observable surface holding the secret verbatim, so a failure never prints it:
+     * gateway log events (the gateway logger receives event codes only), the Discord output and the
+     * retained Discord, Channel and response rows. The isolated API server's own output is not
+     * observable from the test, so it is not covered.
+     */
     async function leaks(secret: string): Promise<string[]> {
       const found: string[] = [];
-      if (logs.some((entry) => entry.includes(secret))) found.push('gateway logs');
-      if (JSON.stringify([writes, [...privateReplies.values()], unexpected]).includes(secret))
+      if (logs.some((entry) => entry.includes(secret))) found.push('gateway log events');
+      if (
+        JSON.stringify([writes, deletes, [...privateReplies.values()], unexpected]).includes(secret)
+      )
         found.push('discord output');
       const retained = Object.keys(db.models).filter((key) =>
         /^(Discord|Channel)|^StoredResponse$/.test(key),
@@ -650,6 +661,7 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
           'binding.id': { $regex: `^${channelId}/` },
         }),
         writes: writes.length,
+        deletes: deletes.length,
       }));
     }
     return {
@@ -681,6 +693,7 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
       feedback,
       runs: retainedRuns,
       writes,
+      deletes,
       unexpected,
       messages,
       privateReplies,

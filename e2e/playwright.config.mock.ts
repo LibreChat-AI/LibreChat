@@ -218,11 +218,18 @@ const baseEnv = {
     ? {
         E2E_DISCORD_SERVICE_TOKEN: channelServiceToken,
         /** Answer feedback controls need one configured score destination. The loopback port is
-         *  closed, so eligibility is real while nothing is ever exported. */
+         *  closed, so eligibility is real while nothing is ever exported. The fan-out and tracing
+         *  switches are pinned so an inherited developer environment can neither route traces and
+         *  scores to a real collector nor turn off the tracing the controls depend on.
+         *  LANGFUSE_BASE_URL outranks LANGFUSE_HOST and LANGFUSE_BASEURL, so those need no pin. */
         LANGFUSE_PUBLIC_KEY: 'e2e-discord-public',
         LANGFUSE_SECRET_KEY: 'e2e-discord-secret',
         LANGFUSE_PROJECT_ID: 'e2e-discord-project',
         LANGFUSE_BASE_URL: 'http://127.0.0.1:1',
+        LANGFUSE_FANOUT_ENABLED: 'false',
+        LANGFUSE_FANOUT_COLLECTOR_URL: '',
+        LANGFUSE_TRACING_ENABLED: 'true',
+        LANGFUSE_SAMPLE_RATE: '1',
       }
     : {}),
   CONFIG_PATH: configPath,
