@@ -13,6 +13,7 @@ import type {
   DiscordInboxStorage,
   DiscordGatewayStorage,
   DiscordRuntimeStorage,
+  DiscordMessageStorage,
   DiscordGatewayStoragePolicy,
   DiscordCommandStorage,
 } from '@librechat/data-schemas';
@@ -28,8 +29,10 @@ import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceAdminGuard } from '../workspaceRuntime';
 import { createDiscordRuntimeHandlers } from './discoveryHttp';
 import { createDiscordGatewayHandlers } from './gatewayHttp';
+import { createDiscordMessageHandlers } from './messageHttp';
 import { createDiscordCommandExecutor } from './commands';
 import { createDiscordRuntimeService } from './discovery';
+import { createDiscordMessageService } from './messages';
 import { createDiscordBindingService } from './bindings';
 import { createDiscordInboxHandlers } from './inboxHttp';
 import { createDiscordGatewayService } from './gateway';
@@ -50,6 +53,7 @@ export interface DiscordChannelRuntime {
   inbox: ReturnType<typeof createDiscordInboxHandlers>;
   gateway: ReturnType<typeof createDiscordGatewayHandlers>;
   discovery: ReturnType<typeof createDiscordRuntimeHandlers>;
+  messages: ReturnType<typeof createDiscordMessageHandlers>;
 }
 
 /** Read the canonical tenant policy on each authorization boundary, including disabled teardown. */
@@ -86,6 +90,7 @@ export function createDiscordChannelRuntime(
     inbox: DiscordInboxStorage;
     gateway: DiscordGatewayStorage;
     discovery: DiscordRuntimeStorage;
+    messages: DiscordMessageStorage;
     commands: DiscordCommandStorage;
     application: Pick<ChannelApplicationAuthority, 'authority' | 'storage'>;
     access: ChannelApplicationAuthorityDependencies['access'];
@@ -159,6 +164,16 @@ export function createDiscordChannelRuntime(
     retryDelayMs: async () => (await deps.policy.read()).inbox.retryDelayMs,
   });
   return {
+    messages: createDiscordMessageHandlers({
+      serviceToken: deps.serviceToken,
+      service: createDiscordMessageService({
+        ...deps,
+        resolver,
+        authority: deps.application.authority,
+        runs: deps.application.storage,
+        settings: deps.policy.read,
+      }),
+    }),
     discovery: createDiscordRuntimeHandlers({
       serviceToken: deps.serviceToken,
       service: createDiscordRuntimeService({ storage: deps.discovery, settings: deps.policy.read }),

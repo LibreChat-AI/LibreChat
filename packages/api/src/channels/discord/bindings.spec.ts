@@ -13,6 +13,7 @@ import {
   createDiscordCommandStorage,
   createDiscordGatewayStorage,
   createDiscordRuntimeStorage,
+  createDiscordMessageStorage,
   createChannelIdentityStorage,
   createChannelRunStorage,
   tenantStorage,
@@ -463,6 +464,7 @@ it('composes binding permissions, protected routing, and policy changes around t
     commands: createDiscordCommandStorage(db),
     gateway: createDiscordGatewayStorage(db, policy.ownership),
     discovery: createDiscordRuntimeStorage(db),
+    messages: createDiscordMessageStorage(db),
     application: { authority, storage: createChannelRunStorage(db) },
     policy,
     access,
@@ -480,6 +482,13 @@ it('composes binding permissions, protected routing, and policy changes around t
   app.get('/host/security/:applicationId', runtime.routes.security);
   app.post('/host/inbox/claim', runtime.inbox.claim);
   app.post('/host/gateway/acquire', runtime.gateway.acquire);
+  app.post('/host/messages', runtime.messages.submit);
+  await request(app).post('/host/messages').send({}).expect(401);
+  await request(app)
+    .post('/host/messages')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .send({})
+    .expect(400);
   app.get('/host/runtime/bootstrap', runtime.discovery.bootstrap);
   app.get('/host/runtime/applications', runtime.discovery.applications);
   app.post('/host/gateway/bootstrap', runtime.gateway.bootstrap);
