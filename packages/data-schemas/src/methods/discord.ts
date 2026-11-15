@@ -6,7 +6,9 @@ import type { DiscordApplicationRecord } from '~/models/discord';
 import { createDiscordApplicationModel, createDiscordGuildModel } from '~/models/discord';
 import { prepareChannelOwnerAdmission, touchChannelOwnerAdmission } from './channelOwner';
 import { getTenantId, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { createDiscordReservationModel } from '~/models/discordReservation';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { reserveDiscordApplication } from './discordReservation';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseScopeKeys } from './responseScope';
@@ -189,6 +191,7 @@ export function createDiscordInstallationStorage(
   const ensureIndexes = createChannelIndexGate(() => [
     applications,
     guilds,
+    createDiscordReservationModel(mongoose),
     createUserModel(mongoose),
     createResponseScopeModel(mongoose),
   ]);
@@ -242,6 +245,8 @@ export function createDiscordInstallationStorage(
             throw new TypeError('New Discord applications require encrypted credentials');
           if (current && !(await activeOwner(mongoose, current.createdBy, tenantId, session)))
             return failure('principal_unavailable');
+          if (!(await reserveDiscordApplication(mongoose, input.applicationId, session)))
+            return failure('application_unavailable');
           const revision = nanoid();
           if (current) {
             const saved = await applications

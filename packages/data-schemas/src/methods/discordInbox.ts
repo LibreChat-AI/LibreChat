@@ -13,6 +13,7 @@ import type {
 import type { ClientSession } from 'mongoose';
 import type { DiscordInboxRecord } from '~/models/discordInbox';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { createDiscordReceiptModel } from '~/models/discordReceipt';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createChannelIndexGate } from './channelIndexes';
@@ -109,7 +110,8 @@ export function createDiscordInboxStorage(
   getPolicy: () => Promise<Partial<DiscordChannelConfig['inbox']>> = async () => ({}),
 ): DiscordInboxStorage {
   const inbox = createDiscordInboxModel(mongoose);
-  const ensureIndexes = createChannelIndexGate(() => [inbox]);
+  const receipts = createDiscordReceiptModel(mongoose);
+  const ensureIndexes = createChannelIndexGate(() => [inbox, receipts]);
   const policy = async () => discordChannelConfigSchema.shape.inbox.parse(await getPolicy());
   const tenant = () => {
     const value = getTenantId();
@@ -198,6 +200,12 @@ export function createDiscordInboxStorage(
               : failure('event_conflict');
           if (!(await current({ ...parsed, tenantId }, session)))
             return failure('authority_changed');
+          const erased = await receipts
+            .findOne({ applicationId: parsed.applicationId, eventId: parsed.eventId })
+            .session(session)
+            .lean();
+          if (erased)
+            return failure(erased.fingerprint === fingerprint ? 'expired' : 'event_conflict');
           const filter = {
             tenantId: tenantId ?? null,
             applicationId: parsed.applicationId,
@@ -208,9 +216,17 @@ export function createDiscordInboxStorage(
           const actorCount = await inbox
             .countDocuments({ ...filter, externalUserId: parsed.externalUserId })
             .session(session);
+          const channelCount = await inbox
+            .countDocuments({
+              ...filter,
+              guildId: parsed.guildId,
+              externalChannelId: parsed.externalChannelId,
+            })
+            .session(session);
           if (
             applicationCount >= limits.maxPendingPerApplication ||
-            actorCount >= limits.maxPendingPerActor
+            actorCount >= limits.maxPendingPerActor ||
+            channelCount >= limits.maxPendingPerChannel
           )
             return failure('capacity');
           await inbox.create(
