@@ -29,6 +29,10 @@ jest.mock(
 
 jest.mock('~/server/services/DiscordChannels', () => ({
   messages: { submit: (_req, res) => res.sendStatus(401) },
+  dmMessages: require('@librechat/api').createDiscordDmMessageHandlers({
+    service: {},
+    serviceToken: () => 'private-service-token-for-discord-route-test',
+  }),
   dm: {
     select: (_req, res) => res.sendStatus(401),
     list: (_req, res) => res.sendStatus(204),
@@ -62,12 +66,18 @@ jest.mock('~/server/services/DiscordChannels', () => ({
     security: (_req, res) => res.sendStatus(401),
     resolve: (_req, res) => res.sendStatus(401),
   },
-  inbox: Object.fromEntries(
-    ['submit', 'claim', 'resolve', 'finish', 'defer'].map((name) => [
-      name,
-      (_req, res) => res.sendStatus(401),
-    ]),
-  ),
+  inbox: {
+    submitDm: require('@librechat/api').createDiscordInboxHandlers({
+      service: {},
+      serviceToken: () => 'private-service-token-for-discord-route-test',
+    }).submitDm,
+    ...Object.fromEntries(
+      ['submit', 'claim', 'resolve', 'finish', 'defer'].map((name) => [
+        name,
+        (_req, res) => res.sendStatus(401),
+      ]),
+    ),
+  },
 }));
 
 const savedTrust = process.env.TRUST_TENANT_HEADER;
@@ -121,3 +131,19 @@ it('mounts private Gateway message admission without a browser authentication by
   const response = await request(server()).post('/api/channels/discord/service/messages').send({});
   expect(response.status).toBe(401);
 });
+
+it.each(['/service/dm/prepare', '/service/dm/message', '/service/inbox/dm'])(
+  'protects the mounted DM endpoint %s with the service token before validating input',
+  async (path) => {
+    const target = `/api/channels/discord${path}`;
+    const app = server();
+    await request(app).post(target).send({}).expect(401);
+    await request(app).post(target).set('Authorization', 'Bearer admin').send({}).expect(401);
+    const response = await request(app)
+      .post(target)
+      .set('Authorization', 'Bearer private-service-token-for-discord-route-test')
+      .send({})
+      .expect(400);
+    expect(response.headers['cache-control']).toBe('no-store');
+  },
+);
