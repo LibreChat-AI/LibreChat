@@ -11,6 +11,7 @@ import {
   projectStoredResponseMessage,
   saveForegroundResponseInputs,
   requireResponseStorageWrite,
+  withResponsePersistenceErrors,
   loadForegroundResponseHistory,
 } from './foreground';
 import {
@@ -294,6 +295,46 @@ it('returns 404 for a foreign tenant or erased conversation without disclosing s
       .get('/' + responseId)
       .expect(404);
   }));
+
+it.each([
+  null,
+  'private-corrupt-content',
+  { privateField: 'private-corrupt-content' },
+  { type: 42 },
+  { type: 'text', text: { privateField: 'private-corrupt-content' } },
+])('fails closed with a safe 503 for malformed stored history %p', (part) =>
+  scoped(async () => {
+    await save(result());
+    // Bypass schema validation to reproduce corrupt or incompatible stored data.
+    const damaged = await mongoose.models.Message.collection.updateOne(
+      { user: owner.userId, tenantId: owner.tenantId, messageId: responseId },
+      { $set: { content: [part] } },
+    );
+    expect(damaged.matchedCount).toBe(1);
+
+    const app = express();
+    app.get(
+      '/',
+      withResponsePersistenceErrors(async (_req, res) => {
+        const history = await loadForegroundResponseHistory(
+          { conversationId, userId: owner.userId, previousResponseId: responseId },
+          db,
+        );
+        res.json(history);
+      }),
+    );
+    const read = await request(app).get('/').expect(503);
+    expect(read.body).toEqual({
+      error: {
+        message: 'Response storage is unavailable. Please try again.',
+        type: 'server_error',
+        code: 'response_storage_unavailable',
+        param: null,
+      },
+    });
+    expect(JSON.stringify(read.body)).not.toContain('private-corrupt-content');
+  }),
+);
 
 it('maps storage outages to a safe 503 and never returns an empty successful history', async () => {
   const failure = new Error('Authorization: Bearer private-secret');
