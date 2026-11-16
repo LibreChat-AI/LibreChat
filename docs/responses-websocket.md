@@ -34,7 +34,11 @@ ordinary agent ACL, admission, execution, accounting and cancellation path.
 Authentication is refreshed from the original credential; credential revocation
 or an authorization change takes effect through the same checks as HTTP.
 Handshake request identifiers and idempotency keys are not reused across turns.
-A disconnected client aborts its active foreground execution.
+A disconnected client aborts its active foreground execution. Raw socket errors
+are owned throughout upgrade admission and handoff. Agents with model streaming
+disabled keep that setting; their completed JSON response is projected into the
+same item, content and terminal event lifecycle. A successful HTTP delivery that
+ends without a terminal response is reported as a transport failure.
 
 The latest completed `store:false` turn can be referenced with
 `previous_response_id` on that connection. Its cached input, output and historical

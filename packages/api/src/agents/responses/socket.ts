@@ -4,10 +4,18 @@ import { StringDecoder } from 'node:string_decoder';
 import { responsesProtocolSchema } from 'librechat-data-provider';
 import type { IncomingMessage, RequestListener, Server } from 'node:http';
 import type { RequestHandler } from 'express';
+import type { Duplex } from 'node:stream';
 import type { ServerRequest } from '~/types/http';
 import { sendResponsesErrorResponse } from './service';
+import { responseSnapshotEvents } from './snapshot';
 import { dispatchResponseHttp } from './adapter';
 import { responseTenantId } from './scope';
+
+function guardSocketErrors(socket: Duplex): void {
+  const onError = () => socket.destroy();
+  socket.on('error', onError);
+  socket.once('close', () => socket.off('error', onError));
+}
 
 export const RESPONSE_SOCKET_PATH = '/api/agents/v1/responses';
 type Limits = z.infer<typeof responsesProtocolSchema>['websocket'];
@@ -152,9 +160,14 @@ export function installResponseSockets(deps: {
   const pendingSockets = new Set<import('node:stream').Duplex>();
   const upgrade = (req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer) => {
     if (req.url?.split('?')[0] !== path) {
-      if (deps.server.listenerCount('upgrade') === 1) socket.destroy();
+      if (deps.server.listenerCount('upgrade') === 1) {
+        guardSocketErrors(socket);
+        socket.destroy();
+      }
       return;
     }
+    // Node's HTTP error listener is gone after upgrade; ws has not taken ownership yet.
+    guardSocketErrors(socket);
     if (stopping) {
       socket.destroy();
       return;
@@ -321,7 +334,27 @@ export function installResponseSockets(deps: {
           let completed: z.infer<typeof terminal> | undefined;
           let pending = '';
           let failure = '';
+          let terminalSent = false;
           const decoder = new StringDecoder('utf8');
+          const forward = async (data: unknown) => {
+            if (data && typeof data === 'object' && 'response' in data) {
+              const response = terminal.safeParse(data.response);
+              if (response.success) {
+                if (previous != null) response.data.previous_response_id = previous;
+                Reflect.set(data, 'response', response.data);
+                if (
+                  'type' in data &&
+                  ['response.completed', 'response.failed', 'response.incomplete'].includes(
+                    String(data.type),
+                  )
+                ) {
+                  terminalSent = true;
+                  if (data.type === 'response.completed') completed = response.data;
+                }
+              }
+            }
+            await send(data);
+          };
           const call = dispatchResponseHttp({
             application: deps.application,
             maxBufferedBytes: limits.maxBufferedBytes,
@@ -333,7 +366,7 @@ export function installResponseSockets(deps: {
             onBody: async (chunk, result) => {
               if (!result.contentType.includes('text/event-stream')) {
                 failure += decoder.write(chunk);
-                if (Buffer.byteLength(failure) > limits.maxMessageBytes)
+                if (Buffer.byteLength(failure) > limits.maxBufferedBytes)
                   throw new Error('Responses error frame too large');
                 return;
               }
@@ -350,23 +383,22 @@ export function installResponseSockets(deps: {
                   .map((line) => line.slice(5).trimStart())
                   .join('\n');
                 if (!text || text === '[DONE]') continue;
-                const data: unknown = JSON.parse(text);
-                if (data && typeof data === 'object' && 'response' in data) {
-                  const response = terminal.safeParse(data.response);
-                  if (response.success) {
-                    if (previous != null) response.data.previous_response_id = previous;
-                    Reflect.set(data, 'response', response.data);
-                    if ('type' in data && data.type === 'response.completed')
-                      completed = response.data;
-                  }
-                }
-                await send(data);
+                await forward(JSON.parse(text));
               }
             },
           });
           abort = call.abort;
           try {
             const result = await call.done;
+            failure += decoder.end();
+            if (result.status < 400) {
+              if (result.contentType.includes('application/json')) {
+                for (const event of responseSnapshotEvents(JSON.parse(failure)))
+                  await forward(event);
+              }
+              if (!terminalSent)
+                throw new Error('Responses delivery ended without a terminal event');
+            }
             if (result.status >= 400) {
               let code = 'response_failed';
               let message = 'Response request failed.';

@@ -3,6 +3,7 @@ import WebSocket from 'ws';
 import express from 'express';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
+import { connect as connectTcp } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import {
   responseSocketToolNames,
@@ -22,6 +23,7 @@ async function fixture(
     maxQueuedTurns?: number;
     tenantMaxQueuedTurns?: number;
     tenantMaxMessageBytes?: number;
+    admissionDelayMs?: number;
   } = {},
 ) {
   const app = express();
@@ -36,10 +38,24 @@ async function fixture(
   const cancellation = new Promise<void>((resolve) => {
     cancelled = resolve;
   });
+  let admissionEntered!: () => void;
+  let admissionClosed!: () => void;
+  const admissionStarted = new Promise<void>((resolve) => {
+    admissionEntered = resolve;
+  });
+  const admissionEnded = new Promise<void>((resolve) => {
+    admissionClosed = resolve;
+  });
   const inputs: unknown[] = [];
   let seq = 0;
   app.use(express.json());
-  app.use((req, res, next) => {
+  app.use(async (req, res, next) => {
+    if (req.method === 'GET' && options.admissionDelayMs) {
+      res.once('close', admissionClosed);
+      admissionEntered();
+      await new Promise((resolve) => setTimeout(resolve, options.admissionDelayMs));
+      if (res.destroyed) return;
+    }
     if (req.headers.authorization !== 'Bearer fixture' || !authorized) {
       res.status(401).json({ error: { code: 'unauthorized', message: 'Unauthorized' } });
       return;
@@ -78,6 +94,24 @@ async function fixture(
       res.status(404).json({ error: { code: 'response_not_found', message: 'Not found' } });
       return;
     }
+    if (req.body.input === 'json') {
+      inputs.push(req.body.input);
+      res.json({
+        id: `r${++seq}`,
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            id: 'json-message',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'JSON completion', annotations: [] }],
+          },
+        ],
+      });
+      return;
+    }
     inputs.push(req.body.input);
     predecessors.push(req.body.previous_response_id);
     replayNames.push([...responseSocketToolNames(req)]);
@@ -90,6 +124,10 @@ async function fixture(
     res.write(
       `event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: `r${seq + 1}`, status: 'in_progress', output: [] } })}\n\n`,
     );
+    if (req.body.input === 'empty-stream') {
+      res.end();
+      return;
+    }
     if (req.body.input === 'wait') {
       res.once('close', cancelled);
       return;
@@ -129,6 +167,8 @@ async function fixture(
     connect,
     url,
     inputs,
+    admissionStarted,
+    admissionEnded,
     replayNames,
     predecessors,
     receivedHeaders,
@@ -474,6 +514,52 @@ it('refuses persisted fallback with store:false and allows ordinary lookup with 
       ).error?.code,
     ).toBe('response_storage_unavailable');
     expect(f.predecessors).toEqual(['stored-response']);
+  } finally {
+    await f.stop();
+  }
+});
+
+it('owns raw TCP errors while an asynchronous upgrade admission is pending', async () => {
+  const f = await fixture({ admissionDelayMs: 100, maxConnections: 1 });
+  try {
+    const url = new URL(f.url);
+    const raw = connectTcp({ host: url.hostname, port: Number(url.port) });
+    raw.on('error', () => {});
+    await once(raw, 'connect');
+    raw.write(
+      `GET ${url.pathname} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer invalid\r\n\r\n`,
+    );
+    await f.admissionStarted;
+    raw.resetAndDestroy();
+    await f.admissionEnded;
+    const ws = await f.connect();
+    expect((await response(ws, { input: 'still serving' })).type).toBe('response.completed');
+  } finally {
+    await f.stop();
+  }
+});
+it('delivers non-streaming JSON completions and preserves their history', async () => {
+  const f = await fixture();
+  try {
+    const ws = await f.connect();
+    const events: string[] = [];
+    ws.on('message', (raw) => events.push(replySchema.parse(JSON.parse(raw.toString())).type));
+    const first = await response(ws, { input: 'json' });
+    expect(first.type).toBe('response.completed');
+    expect(events).toContain('response.output_text.delta');
+    await response(ws, { previous_response_id: first.response?.id, input: 'next' });
+    expect(JSON.stringify(f.inputs[1])).toContain('JSON completion');
+  } finally {
+    await f.stop();
+  }
+});
+it('fails a successful HTTP stream that ends without a terminal response', async () => {
+  const f = await fixture();
+  try {
+    const ws = await f.connect();
+    expect((await response(ws, { input: 'empty-stream' })).error?.code).toBe(
+      'response_unavailable',
+    );
   } finally {
     await f.stop();
   }
