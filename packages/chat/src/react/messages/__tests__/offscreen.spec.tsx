@@ -156,6 +156,48 @@ describe('rows far from the viewport', () => {
     expect(resumed.observed).toEqual(new Set([a, getByTestId('b')]));
   });
 
+  it('keeps every row laid out until the last of several overlapping consumers is done', () => {
+    const { getByTestId } = render(
+      <Thread>
+        <Row id="a" />
+        <Row id="b" />
+      </Thread>,
+    );
+    const a = getByTestId('a');
+    act(() => live()[0].report([{ target: a, isIntersecting: false }]));
+
+    /** A second export started before the first finished. */
+    const resumeFirst = revealOffscreenRows();
+    const resumeSecond = revealOffscreenRows();
+    expect(live()).toHaveLength(0);
+
+    resumeFirst();
+    expect(live()).toHaveLength(0);
+    expect(a.hasAttribute(OFFSCREEN_ROW_ATTRIBUTE)).toBe(false);
+
+    /** One consumer finishing twice must not stand in for the other. */
+    resumeFirst();
+    expect(live()).toHaveLength(0);
+
+    resumeSecond();
+    expect(live()).toHaveLength(1);
+    expect(live()[0].observed).toEqual(new Set([a, getByTestId('b')]));
+  });
+
+  it('watches nothing when a consumer finishes after the thread has unmounted', () => {
+    const { unmount } = render(
+      <Thread>
+        <Row id="a" />
+      </Thread>,
+    );
+    const resume = revealOffscreenRows();
+
+    unmount();
+    resume();
+
+    expect(live()).toHaveLength(0);
+  });
+
   it('leaves a row alone outside a thread that watches its rows', () => {
     const { getByTestId } = render(<Row id="lone" />);
     expect(MockIntersectionObserver.instances).toHaveLength(0);

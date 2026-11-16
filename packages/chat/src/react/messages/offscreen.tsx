@@ -45,7 +45,8 @@ const activeRevealers = new Set<() => () => void>();
 /**
  * Lays out every row of every thread again and returns the function that resumes skipping. A
  * consumer that clones the thread (screenshot export) needs this: a clone has no remembered
- * size, so a skipped row would be copied at its fallback height.
+ * size, so a skipped row would be copied at its fallback height. Calls may overlap; skipping
+ * resumes once every one of them has called its result.
  */
 export function revealOffscreenRows(): () => void {
   const resumes = Array.from(activeRevealers, (reveal) => reveal());
@@ -89,13 +90,34 @@ export function useOffscreenRows(scrollableRef: RefObject<HTMLElement | null>): 
         row.removeAttribute(OFFSCREEN_ROW_ATTRIBUTE);
       }
     };
+    /**
+     * Consumers overlap: a second export can start before the first has finished cloning. The
+     * rows stay laid out until the last of them is done, and one that finishes after the thread
+     * has unmounted has nothing left to resume.
+     */
+    let reveals = 0;
+    let mounted = true;
     const reveal = () => {
-      unwatch();
-      return watch;
+      if (reveals === 0) {
+        unwatch();
+      }
+      reveals += 1;
+      let resumed = false;
+      return () => {
+        if (resumed) {
+          return;
+        }
+        resumed = true;
+        reveals -= 1;
+        if (reveals === 0 && mounted) {
+          watch();
+        }
+      };
     };
     watch();
     activeRevealers.add(reveal);
     return () => {
+      mounted = false;
       activeRevealers.delete(reveal);
       unwatch();
     };
