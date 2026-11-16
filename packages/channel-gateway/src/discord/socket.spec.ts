@@ -6,6 +6,7 @@ import { WebSocketManager, WebSocketShardEvents } from '@discordjs/ws';
 import type { AddressInfo } from 'node:net';
 import type { DiscordGatewayDriverOptions } from './socket';
 import { createDiscordGatewayDriver, createOwnedIdentifyThrottler } from './socket';
+import { DiscordIdentifyRefusal } from './recovery';
 import { DiscordRateCoordinator } from './rates';
 
 function options(): DiscordGatewayDriverOptions {
@@ -212,16 +213,21 @@ describe('published Discord SDK binding before READY', () => {
           setTimeout(() => socket.send(JSON.stringify({ op: 9, d: false })), 50);
       });
     });
+    let reported = limit;
     const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () =>
       Response.json({
         url: `ws://127.0.0.1:${port}`,
         shards: 1,
-        ...(limit === 'absent' ? {} : { session_start_limit: limit }),
+        ...(reported === 'absent' ? {} : { session_start_limit: reported }),
       }),
     );
     return {
       seen,
       transport,
+      /** What the next session reads, such as the budget Discord restores when its window resets. */
+      report: (next: unknown) => {
+        reported = next;
+      },
       firstIdentify,
       close: async () => {
         for (const client of server.clients) client.terminate();
@@ -356,20 +362,60 @@ describe('published Discord SDK binding before READY', () => {
   ])('refuses %s before any socket opens', async (_name, limit) => {
     const remote = await gateway({}, limit);
     const driver = createDiscordGatewayDriver(bounded(), remote.transport);
-    await expect(driver.connect()).rejects.toThrow('Invalid Discord gateway metadata');
+    const refusal = await driver.connect().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    // A typed refusal, so the owner can hold the next session instead of retrying at once.
+    expect(refusal).toBeInstanceOf(DiscordIdentifyRefusal);
+    expect(refusal).toMatchObject({ reason: 'invalid' });
     expect(remote.seen).toEqual({ connections: 0, identifies: 0 });
     await driver.destroy().catch(() => undefined);
     await remote.close();
   });
 
-  test('a budget below the shard count fails at connect without opening a socket', async () => {
+  test('a budget below the shard count is refused at connect without opening a socket', async () => {
     const remote = await gateway(
       {},
       { total: 1000, remaining: 0, reset_after: 3_600_000, max_concurrency: 1 },
     );
     const driver = createDiscordGatewayDriver(bounded(), remote.transport);
-    await expect(driver.connect()).rejects.toThrow('Not enough sessions remaining');
+    const refusal = await driver.connect().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(refusal).toBeInstanceOf(DiscordIdentifyRefusal);
+    expect(refusal).toMatchObject({ reason: 'exhausted' });
     expect(remote.seen).toEqual({ connections: 0, identifies: 0 });
+    await driver.destroy().catch(() => undefined);
+    await remote.close();
+  });
+
+  test('a spent budget costs one REST read per session and no socket or IDENTIFY, until the window resets', async () => {
+    const remote = await gateway(
+      { ready: true },
+      { total: 1000, remaining: 0, reset_after: 3_600_000, max_concurrency: 1 },
+    );
+    const outcomes: unknown[] = [];
+    for (let session = 0; session < 4; session++) {
+      const driver = createDiscordGatewayDriver(bounded(), remote.transport);
+      outcomes.push(
+        await driver.connect().then(
+          () => 'connected',
+          (error: unknown) => error,
+        ),
+      );
+      await driver.destroy().catch(() => undefined);
+    }
+    expect(outcomes).toHaveLength(4);
+    for (const outcome of outcomes) expect(outcome).toMatchObject({ reason: 'exhausted' });
+    expect(remote.transport).toHaveBeenCalledTimes(4);
+    expect(remote.seen).toEqual({ connections: 0, identifies: 0 });
+    // Discord restores the budget. One remaining is enough for the one shard: exactly one IDENTIFY.
+    remote.report({ total: 1000, remaining: 1, reset_after: 86_400_000, max_concurrency: 1 });
+    const driver = createDiscordGatewayDriver(bounded(), remote.transport);
+    await expect(driver.connect()).resolves.toBeUndefined();
+    expect(remote.seen).toEqual({ connections: 1, identifies: 1 });
     await driver.destroy().catch(() => undefined);
     await remote.close();
   });

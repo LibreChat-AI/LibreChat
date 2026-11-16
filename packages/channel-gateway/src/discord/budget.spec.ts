@@ -1,6 +1,10 @@
 import type { IIdentifyThrottler } from '@discordjs/ws';
 import type { DiscordIdentifyBudget } from './budget';
-import { createDiscordIdentifyBudget, readDiscordGatewayInformation } from './budget';
+import {
+  assertDiscordGatewayInformation,
+  createDiscordIdentifyBudget,
+  readDiscordGatewayInformation,
+} from './budget';
 import { DiscordGatewayFailure, DiscordIdentifyRefusal } from './recovery';
 import { createOwnedIdentifyThrottler } from './socket';
 
@@ -60,6 +64,29 @@ describe('Discord gateway metadata', () => {
       readDiscordGatewayInformation(value);
     } catch (error) {
       expect(error).toMatchObject({ reason: 'invalid' });
+    }
+  });
+
+  test('the REST boundary accepts a readable body and refuses any other with a typed refusal that echoes nothing', () => {
+    expect(() =>
+      assertDiscordGatewayInformation(Buffer.from(JSON.stringify(information()))),
+    ).not.toThrow();
+    const bodies = [
+      'private-not-json',
+      '[]',
+      'null',
+      JSON.stringify(information({ remaining: 'private-5' })),
+    ];
+    for (const body of bodies) {
+      let failure: unknown;
+      try {
+        assertDiscordGatewayInformation(Buffer.from(body));
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(DiscordIdentifyRefusal);
+      expect(failure).toMatchObject({ reason: 'invalid' });
+      expect((failure as Error).message).not.toMatch(/private/);
     }
   });
 });

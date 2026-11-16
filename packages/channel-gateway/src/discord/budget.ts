@@ -27,12 +27,12 @@ export function readDiscordGatewayInformation(value: unknown): DiscordGatewayInf
   return parsed.data;
 }
 
-/** Throws before the SDK sees metadata it would read as unlimited. The body is never echoed. */
+/** Refuses before the SDK sees metadata it would read as unlimited. The body is never echoed. */
 export function assertDiscordGatewayInformation(bytes: Buffer): void {
   try {
     readDiscordGatewayInformation(JSON.parse(bytes.toString()));
   } catch {
-    throw new Error('Invalid Discord gateway metadata');
+    throw new DiscordIdentifyRefusal('invalid');
   }
 }
 

@@ -10,7 +10,7 @@ import {
   createDiscordIdentifyBudget,
   readDiscordGatewayInformation,
 } from './budget';
-import { DiscordGatewayFailure } from './recovery';
+import { DiscordGatewayFailure, DiscordIdentifyRefusal } from './recovery';
 import { DiscordRateCoordinator } from './rates';
 import { boundedBody } from '../transport';
 
@@ -254,7 +254,16 @@ export function createDiscordGatewayDriver(
     options.heartbeat?.(shardId, latency),
   );
   return {
-    connect: () => manager.connect(),
+    // The SDK makes the same comparison inside `connect`, but throws an untyped error, and the owner
+    // must tell a spent budget from an ordinary failure. Nothing is opened while the budget is spent.
+    connect: async () => {
+      const { session_start_limit: limit } = readDiscordGatewayInformation(
+        await manager.fetchGatewayInformation(),
+      );
+      if (limit.remaining < options.policy.shardCount)
+        throw new DiscordIdentifyRefusal('exhausted');
+      await manager.connect();
+    },
     // Closing a shard that is waiting for READY can start a second close on the same socket inside
     // the SDK, and the first never settles. The wait is bounded so shutdown cannot hang on it.
     destroy: async () => {
