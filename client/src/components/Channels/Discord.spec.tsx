@@ -1,8 +1,8 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
 import { QueryKeys, dataService } from 'librechat-data-provider';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query';
 import type {
   DiscordApplicationPage,
   DiscordApplication,
@@ -1398,15 +1398,21 @@ const sections = [
     heading: 'com_ui_discord_apps',
     added: 'Support',
     cursors: () => jest.mocked(dataService.getDiscordApps).mock.calls.map(([cursor]) => cursor),
-    serve: (page: (cursor: string) => Promise<{ next?: string }>) =>
-      jest
+    serve: (
+      page: (cursor: string) => Promise<{ next?: string }>,
+      reads: (read: number) => Promise<void> = () => Promise.resolve(),
+    ) => {
+      let read = 0;
+      return jest
         .mocked(dataService.getDiscordApps)
-        .mockImplementation(
-          async (cursor): Promise<DiscordApplicationPage> =>
-            cursor
-              ? { applications: cursor === 'c2' ? [second] : [], ...(await page(cursor)) }
-              : { applications: [app], next: 'c2' },
-        ),
+        .mockImplementation(async (cursor): Promise<DiscordApplicationPage> => {
+          if (cursor) {
+            return { applications: cursor === 'c2' ? [second] : [], ...(await page(cursor)) };
+          }
+          await reads((read += 1));
+          return { applications: [app], next: 'c2' };
+        });
+    },
   },
   {
     name: 'servers',
@@ -1414,15 +1420,19 @@ const sections = [
     heading: 'com_ui_discord_guilds',
     added: 'Support server',
     cursors: () => jest.mocked(dataService.getDiscordGuilds).mock.calls.map(([cursor]) => cursor),
-    serve: (page: (cursor: string) => Promise<{ next?: string }>) =>
-      jest
+    serve: (
+      page: (cursor: string) => Promise<{ next?: string }>,
+      reads: (read: number) => Promise<void> = () => Promise.resolve(),
+    ) => {
+      let read = 0;
+      return jest
         .mocked(dataService.getDiscordGuilds)
-        .mockImplementation(
-          async (cursor): Promise<DiscordGuildPage> =>
-            cursor
-              ? { guilds: cursor === 'c2' ? [other] : [], ...(await page(cursor)) }
-              : { guilds: [guild], next: 'c2' },
-        ),
+        .mockImplementation(async (cursor): Promise<DiscordGuildPage> => {
+          if (cursor) return { guilds: cursor === 'c2' ? [other] : [], ...(await page(cursor)) };
+          await reads((read += 1));
+          return { guilds: [guild], next: 'c2' };
+        });
+    },
   },
 ] as const;
 /** A browser drops focus from a control that disables itself; jsdom keeps it, so move it to the page. */
@@ -1595,4 +1605,97 @@ test('blocks the retry and moves focus to Cancel when the reread shows the serve
   await waitFor(() => expect(alert).toHaveTextContent('com_ui_discord_disconnect_stale'));
   expect(confirm()).toBeDisabled();
   await waitFor(() => expect(cancel()).toHaveFocus());
+});
+
+/** What a returning window does to every active query: a stale one is read again. */
+const refocus = () =>
+  act(async () => {
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+  });
+const failsOnce = () => {
+  let failing = true;
+  return async () => {
+    if (failing) {
+      failing = false;
+      throw new Error('network');
+    }
+    return {};
+  };
+};
+const failsRead =
+  (...which: number[]) =>
+  async (read: number) => {
+    if (which.includes(read)) throw new Error('network');
+  };
+
+test.each(sections)(
+  'retries by rereading, not by fetching the next page, when a reread failed after a failed $name page was cleared',
+  async ({ more, added, cursors, serve }) => {
+    /** Reads, in order: the first load, an independent reread that succeeds, one that fails, the Retry. */
+    serve(failsOnce(), failsRead(3));
+    const { user } = await page();
+    await user.click(screen.getByRole('button', { name: more }));
+    await loadFailure();
+    await refocus();
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    await waitFor(() => expect(screen.getByRole('button', { name: more })).toHaveFocus());
+    await refocus();
+    const failure = await loadFailure();
+    expect(failure).not.toHaveFocus();
+    await user.click(retryOf(failure));
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    expect(cursors()).toEqual([undefined, 'c2', undefined, undefined, undefined]);
+    expect(screen.queryByText(added)).toBeNull();
+    expect(screen.getByRole('button', { name: more })).toBeVisible();
+    await waitFor(() => expect(appsHeading()).toHaveFocus());
+  },
+);
+
+test.each(sections)(
+  'retries by rereading when a reread fails while a failed $name page is still showing',
+  async ({ more, added, cursors, serve }) => {
+    serve(failsOnce(), failsRead(2));
+    const { user } = await page();
+    await user.click(screen.getByRole('button', { name: more }));
+    await loadFailure();
+    await refocus();
+    await waitFor(() => expect(cursors()).toHaveLength(3));
+    await user.click(retryOf(await loadFailure()));
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    expect(cursors()).toEqual([undefined, 'c2', undefined, undefined]);
+    expect(screen.queryByText(added)).toBeNull();
+  },
+);
+
+test.each(sections)(
+  'keeps retrying only the failed $name page while it keeps failing',
+  async ({ more, added, cursors, serve }) => {
+    let failures = 2;
+    serve(async () => {
+      if (failures-- > 0) throw new Error('network');
+      return {};
+    });
+    const { user } = await page();
+    await user.click(screen.getByRole('button', { name: more }));
+    await user.click(retryOf(await loadFailure()));
+    await waitFor(() => expect(cursors()).toHaveLength(3));
+    await user.click(retryOf(await loadFailure()));
+    expect(await screen.findByText(added)).toBeVisible();
+    expect(cursors()).toEqual([undefined, 'c2', 'c2', 'c2']);
+  },
+);
+
+test('does not carry a failed page from one account into the next account retry', async () => {
+  const [{ more, cursors, serve }] = sections;
+  serve(async () => {
+    throw new Error('network');
+  }, failsRead(2));
+  const { user, client, rerender } = await page();
+  await user.click(screen.getByRole('button', { name: more }));
+  await loadFailure();
+  rerender(nextAccount(client));
+  await user.click(retryOf(await loadFailure()));
+  expect(await screen.findByText('Engineering')).toBeVisible();
+  expect(cursors()).toEqual([undefined, 'c2', undefined, undefined]);
 });

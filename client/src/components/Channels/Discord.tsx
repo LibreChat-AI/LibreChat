@@ -197,7 +197,6 @@ function Setup({
   const localize = useLocalize();
   const id = useId();
   const client = useQueryClient();
-  const failedNextPage = useRef({ apps: false, guilds: false });
   const [editor, setEditor] = useAtom(editorAtom);
   const [confirm, setConfirm] = useAtom(confirmAtom);
   const [flow, setFlow] = useAtom(flowAtom);
@@ -237,7 +236,6 @@ function Setup({
   }, [client, principalKey]);
   const refresh = useCallback(async () => {
     await cancelReads();
-    failedNextPage.current = { apps: false, guilds: false };
     await Promise.all([
       client.invalidateQueries([QueryKeys.discordApps, principalKey]),
       client.invalidateQueries([QueryKeys.discordGuilds, principalKey]),
@@ -518,18 +516,22 @@ function Setup({
   });
   const mutationError = save.error || connect.error || cancel.error;
   const commandAppId = commands.variables?.applicationId;
+  /** A failed next page is retried alone; a failed reread, even right after one, is read again. The query
+   * records how its last fetch started and every later fetch replaces that, so nothing here can go stale. */
+  const failedNextPage = (key: readonly unknown[]) =>
+    client.getQueryState(key)?.fetchMeta?.fetchMore?.direction === 'forward';
   const retry = (target: HTMLButtonElement | null = null) => {
     setRestore((current) => current ?? { trigger: target });
-    if (apps.isError)
-      void (failedNextPage.current.apps ? apps.fetchNextPage() : apps.refetch()).then((result) => {
-        failedNextPage.current.apps = result.isError && failedNextPage.current.apps;
-      });
-    if (guilds.isError)
-      void (failedNextPage.current.guilds ? guilds.fetchNextPage() : guilds.refetch()).then(
-        (result) => {
-          failedNextPage.current.guilds = result.isError && failedNextPage.current.guilds;
-        },
-      );
+    if (apps.isError) {
+      void (failedNextPage([QueryKeys.discordApps, principalKey])
+        ? apps.fetchNextPage()
+        : apps.refetch());
+    }
+    if (guilds.isError) {
+      void (failedNextPage([QueryKeys.discordGuilds, principalKey])
+        ? guilds.fetchNextPage()
+        : guilds.refetch());
+    }
   };
   return (
     <div className="space-y-4">
@@ -809,10 +811,7 @@ function Setup({
           disabled={disabled || apps.isFetchingNextPage}
           onClick={(event) => {
             setRestore({ trigger: event.currentTarget });
-            failedNextPage.current.apps = true;
-            void apps.fetchNextPage().then((result) => {
-              failedNextPage.current.apps = result.isError;
-            });
+            void apps.fetchNextPage();
           }}
         >
           {localize('com_ui_discord_more_apps')}
@@ -876,10 +875,7 @@ function Setup({
           disabled={disabled || guilds.isFetchingNextPage}
           onClick={(event) => {
             setRestore({ trigger: event.currentTarget, servers: true });
-            failedNextPage.current.guilds = true;
-            void guilds.fetchNextPage().then((result) => {
-              failedNextPage.current.guilds = result.isError;
-            });
+            void guilds.fetchNextPage();
           }}
         >
           {localize('com_ui_discord_more_guilds')}
