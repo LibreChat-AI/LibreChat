@@ -1311,6 +1311,22 @@ export const sharedSlackGatewayWirePolicySchema = sharedSlackGatewayPolicySchema
 /** Discord transport and installation policy. Secrets remain in organization storage. */
 export const discordChannelConfigSchema = z
   .object({
+    /** Preview only public assistant answer text, using the existing worker edit cadence. */
+    streaming: z
+      .object({
+        mode: z.enum(['status', 'partial']).default('status'),
+        maxPreviewChars: z.number().int().min(128).max(1800).default(1400),
+      })
+      .strict()
+      .prefault({}),
+    /** Zero preserves inline delivery. Larger replies may be one complete Markdown document. */
+    longReply: z
+      .object({
+        inlineParts: z.number().int().min(0).max(100).default(0),
+        maxAttachmentBytes: z.number().int().min(1024).max(1_048_576).default(1_048_576),
+      })
+      .strict()
+      .prefault({}),
     dm: z
       .object({
         enabled: z.boolean().default(false),

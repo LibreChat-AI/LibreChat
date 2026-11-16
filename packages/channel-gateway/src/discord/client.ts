@@ -35,6 +35,8 @@ export interface DiscordClientOptions {
 export interface DiscordMessage {
   content: string;
   components?: APIActionRowComponent<APIButtonComponent>[];
+  /** Generated answer document only; no URL, file path or model-provided filename is accepted. */
+  document?: string;
 }
 export interface DiscordMessageReceipt {
   externalMessageKey: string;
@@ -117,14 +119,18 @@ export class DiscordClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     let response: Response;
+    let body: string | FormData | undefined;
+    const headers: Record<string, string> = { Authorization: `Bot ${this.options.botToken}` };
+    if (payload instanceof FormData) body = payload;
+    else {
+      headers['Content-Type'] = 'application/json';
+      body = payload ? JSON.stringify(payload) : undefined;
+    }
     try {
       response = await this.transport(this.base + path, {
         method,
-        headers: {
-          Authorization: `Bot ${this.options.botToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: payload ? JSON.stringify(payload) : undefined,
+        headers,
+        body,
         redirect: 'error',
         signal: AbortSignal.any([
           AbortSignal.timeout(this.options.timeoutMs),
@@ -372,20 +378,55 @@ export class DiscordClient {
     signal?: AbortSignal,
   ): Promise<DiscordMessageReceipt> {
     if (!operationId) throw new TypeError('Missing Discord operation identity');
-    return this.receipt(
-      await this.request(
-        'POST',
-        `/channels/${this.id(channelId)}/messages`,
-        {
-          ...this.message(message),
-          allowed_mentions: noMentions,
-          nonce: discordNonce(operationId),
-          enforce_nonce: true,
-        },
-        signal,
-      ),
-      channelId,
+    const { document, ...content } = this.message(message);
+    const payload = {
+      ...content,
+      allowed_mentions: noMentions,
+      nonce: discordNonce(operationId),
+      enforce_nonce: true,
+    };
+    let request: object = payload;
+    if (document !== undefined) {
+      if (!document || Buffer.byteLength(document) > 1_048_576)
+        throw new TypeError('Invalid Discord document');
+      const multipart = new FormData();
+      multipart.set(
+        'payload_json',
+        JSON.stringify({
+          ...payload,
+          attachments: [{ id: 0, filename: 'reply.md', description: 'Complete agent reply' }],
+        }),
+      );
+      multipart.set(
+        'files[0]',
+        new Blob([document], { type: 'text/markdown; charset=utf-8' }),
+        'reply.md',
+      );
+      request = multipart;
+    }
+    const result = await this.request(
+      'POST',
+      `/channels/${this.id(channelId)}/messages`,
+      request,
+      signal,
     );
+    if (
+      document !== undefined &&
+      !z
+        .object({
+          attachments: z
+            .array(
+              z.object({
+                filename: z.literal('reply.md'),
+                size: z.literal(Buffer.byteLength(document)),
+              }),
+            )
+            .length(1),
+        })
+        .safeParse(result).success
+    )
+      throw new DiscordWriteError('unknown');
+    return this.receipt(result, channelId);
   }
   async editMessage(
     channelId: string,
@@ -393,6 +434,8 @@ export class DiscordClient {
     message: DiscordMessage,
     signal?: AbortSignal,
   ): Promise<DiscordMessageReceipt> {
+    if (message.document !== undefined)
+      throw new TypeError('Discord document edits are unsupported');
     return this.receipt(
       await this.request(
         'PATCH',

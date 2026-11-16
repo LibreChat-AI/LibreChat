@@ -285,3 +285,58 @@ describe('shared Discord client rate admission', () => {
     expect(transport).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('complete Discord answer documents', () => {
+  test('uploads Markdown through the same nonce-protected message operation', async () => {
+    const document = 'Hello 😀 @everyone';
+    const f = fixture(async () =>
+      Response.json({
+        id: '456',
+        channel_id: '123',
+        attachments: [{ filename: 'reply.md', size: Buffer.byteLength(document) }],
+      }),
+    );
+    await f.client.createMessage(
+      '123',
+      { content: 'Complete reply attached.', document },
+      'run:part:1',
+    );
+    const init = f.transport.mock.calls[0][1]!;
+    expect(new Headers(init.headers).get('Content-Type')).toBeNull();
+    const body = init.body;
+    expect(body).toBeInstanceOf(FormData);
+    if (!(body instanceof FormData)) throw new Error('Missing multipart body');
+    const metadata = JSON.parse(String(body.get('payload_json')));
+    expect(metadata).toMatchObject({
+      nonce: discordNonce('run:part:1'),
+      enforce_nonce: true,
+      allowed_mentions: { parse: [], replied_user: false },
+      attachments: [{ id: 0, filename: 'reply.md' }],
+    });
+    expect(metadata).not.toHaveProperty('document');
+    const file = body.get('files[0]');
+    if (!(file instanceof Blob)) throw new Error('Missing document');
+    expect(await file.text()).toBe(document);
+  });
+  test.each([{ attachments: [] }, { attachments: [{ filename: 'reply.md', size: 1 }] }])(
+    'does not confirm missing or incomplete attachment %j',
+    async ({ attachments }) => {
+      const f = fixture(async () => Response.json({ id: '456', channel_id: '123', attachments }));
+      await expect(
+        f.client.createMessage('123', { content: 'Reply', document: 'answer' }, 'operation'),
+      ).rejects.toMatchObject({ outcome: 'unknown' });
+      expect(f.transport).toHaveBeenCalledTimes(1);
+    },
+  );
+  test('rejects unbounded documents before a transport effect', async () => {
+    const f = fixture(async () => Response.json({}));
+    await expect(
+      f.client.createMessage(
+        '123',
+        { content: 'Reply', document: 'x'.repeat(1048577) },
+        'operation',
+      ),
+    ).rejects.toThrow('Invalid Discord document');
+    expect(f.transport).not.toHaveBeenCalled();
+  });
+});

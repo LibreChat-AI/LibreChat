@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ButtonStyle, ComponentType } from 'discord-api-types/v10';
 import {
   channelSnowflakeSchema,
@@ -24,10 +25,15 @@ import type { ChannelBundle } from '../types';
 import type { DiscordClient } from './client';
 import {
   discordRendererVersion,
+  discordDocumentRendererVersion,
+  renderDiscordDocumentPlan,
+  discordAnswerFits,
+  readDiscordDocumentPresentation,
   discordLegacyRendererVersion,
   discordSessionRendererVersion,
   readDiscordFeedbackPresentation,
   renderDiscordPlan,
+  renderDiscordPreview,
   discordPlanRevision,
   sanitizeDiscordMentions,
 } from './render';
@@ -74,7 +80,11 @@ function validateAddress(run: ChannelRunView): void {
   addressKey(run.admission.externalMessageKey, channel);
 }
 
-const presentationVersions = [discordRendererVersion, discordSessionRendererVersion];
+const presentationVersions = [
+  discordRendererVersion,
+  discordSessionRendererVersion,
+  discordDocumentRendererVersion,
+];
 const rendererVersions = [...presentationVersions, discordLegacyRendererVersion];
 /** Discord rejects a link button URL longer than this, while a message link may be longer. */
 const buttonUrlMax = 512;
@@ -91,7 +101,7 @@ function sessionURL(run: ChannelRunView): string | undefined {
 const fitsButton = (url: string) => url.length <= buttonUrlMax && new URL(url).href === url;
 
 /**
- * Only a v3 plan offers the link, on its last answer part, and only from the run view that
+ * A v3 or document plan offers the link on its last answer part, only from the run view that
  * delivery/begin just authorized. The URL is never read from the persisted plan.
  */
 function sessionButton(
@@ -107,7 +117,7 @@ function sessionButton(
     last = parts[index];
     break;
   }
-  return renderer === discordSessionRendererVersion &&
+  return [discordSessionRendererVersion, discordDocumentRendererVersion].includes(renderer) &&
     last?.operationId === part.operationId &&
     url !== undefined &&
     fitsButton(url)
@@ -118,6 +128,9 @@ function sessionButton(
 function validatePart(part: ChannelDeliveryPart, renderer: string): void {
   if (
     part.kind !== 'message' ||
+    (renderer === discordDocumentRendererVersion &&
+      part.traceUrl === undefined &&
+      part.presentation?.format !== discordDocumentRendererVersion) ||
     (part.presentation !== undefined && !presentationVersions.includes(renderer)) ||
     part.artifactId !== undefined ||
     !part.text ||
@@ -125,6 +138,11 @@ function validatePart(part: ChannelDeliveryPart, renderer: string): void {
   )
     throw new Error('Unsupported Discord delivery part');
   if (part.presentation) {
+    const document = readDiscordDocumentPresentation(part);
+    if (document && renderer !== discordDocumentRendererVersion)
+      throw new Error('Invalid Discord document renderer');
+    if (renderer === discordDocumentRendererVersion && !document)
+      throw new Error('Missing Discord document presentation');
     readDiscordFeedbackPresentation(part);
     if (!part.required || part.traceUrl !== undefined)
       throw new Error('Invalid Discord feedback placement');
@@ -175,6 +193,9 @@ function assertBinding(
       validatePart(part, run.plan.rendererVersion);
       if (!part.operationId.startsWith(`${run.runId}:`))
         throw new Error('Discord operation identity changed');
+      const document = readDiscordDocumentPresentation(part);
+      if (document && part.operationId !== `${run.runId}:discord:0`)
+        throw new Error('Invalid Discord document source');
       const feedbackRun = readDiscordFeedbackPresentation(part);
       if (
         feedbackRun !== undefined &&
@@ -188,22 +209,31 @@ function assertBinding(
   }
 }
 
-export function discordProgressText(run: ChannelRunView): string {
+export function discordProgressText(run: ChannelRunView, bundle?: ChannelBundle): string {
   if (terminalSnapshot(run)) {
-    if (run.snapshot?.status === 'completed') return 'Completed.';
-    if (run.snapshot?.status === 'cancelled') return 'Cancelled.';
-    return 'Failed.';
+    if (run.snapshot?.status === 'completed')
+      return 'The agent finished. Delivery is not confirmed yet. If the reply does not arrive, use /librechat status to open the saved session.';
+    if (run.snapshot?.status === 'cancelled')
+      return 'Stopped. Actions already completed may still have taken effect.';
+    return 'The agent could not finish this request. Sending the result...';
   }
   if (run.snapshot?.recovery === 'execution_state_unavailable')
     return (
       (run.cancellationRequested ? 'Cancellation requested. ' : '') +
       'The execution status is unavailable, possibly after a restart. Completion is not confirmed. Check the result before retrying actions that may already have run. Ask an administrator to reconcile this request if the status stays unavailable.'
     );
-  if (run.cancellationRequested) return 'Cancellation requested.';
+  if (run.cancellationRequested) return 'Stop requested. Waiting for the agent to confirm.';
   if (run.snapshot?.status === 'requires_action')
     return pendingReview(run)
-      ? 'Your input is needed. Use /librechat status to open your private review in LibreChat.'
-      : 'Waiting for input. The review action is unavailable or expired.';
+      ? 'Your input is needed. Select Review request to view it privately, or use /librechat status.'
+      : 'Waiting for input. The review is unavailable or has expired. Use /librechat status to check.';
+  if (
+    bundle?.channel.type === 'discord' &&
+    'discord' in bundle &&
+    bundle.discord.streaming.mode === 'partial' &&
+    run.snapshot?.previewText?.trim()
+  )
+    return `Draft reply, still working:\n\n${renderDiscordPreview(run.snapshot.previewText, bundle.discord.streaming.maxPreviewChars)}`;
   return 'Working...';
 }
 
@@ -327,23 +357,48 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
         throw new Error('Missing terminal Discord snapshot');
       let text = snapshot.text;
       if (snapshot.status === 'failed')
-        text = 'Something went wrong while talking to the agent. Please try again.';
-      else if (snapshot.status === 'cancelled') text = 'This request was cancelled.';
+        text =
+          'The agent could not finish this request. Use /librechat status to check the saved session before retrying, since some actions may already have run.';
+      else if (snapshot.status === 'cancelled')
+        text = 'This request was stopped. Actions already completed may still have taken effect.';
       else if (!text.trim()) text = 'The agent finished without a text reply.';
       if (snapshot.artifacts?.length || snapshot.artifactsUnavailable)
-        text += '\n\nAttachments are unavailable in Discord. The text answer is preserved.';
+        text +=
+          '\n\nAttachments are unavailable in Discord. Use /librechat status to open the saved session.';
       const url = sessionURL(run);
       const link = url && traceText(url).length <= 2000 ? url : undefined;
-      const plan = renderDiscordPlan({ runId: run.runId, text }, bundle.delivery.maxDeliveryParts, {
-        shorten: true,
-        spare: link !== undefined,
-        session: url !== undefined && fitsButton(url),
-        feedback:
-          snapshot.status === 'completed' &&
-          !run.cancellationRequested &&
-          run.feedbackEnabled === true,
-      });
-      if (link && plan.parts.length < bundle.delivery.maxDeliveryParts)
+      const feedback =
+        snapshot.status === 'completed' &&
+        !run.cancellationRequested &&
+        run.feedbackEnabled === true;
+      const document =
+        snapshot.status === 'completed' &&
+        snapshot.text.trim() &&
+        bundle.discord.longReply.inlineParts > 0 &&
+        Buffer.byteLength(snapshot.text) <= bundle.discord.longReply.maxAttachmentBytes;
+      const useDocument =
+        document &&
+        !discordAnswerFits(
+          text,
+          Math.min(bundle.delivery.maxDeliveryParts, bundle.discord.longReply.inlineParts),
+        );
+      const plan = useDocument
+        ? renderDiscordDocumentPlan(
+            { runId: run.runId, text: snapshot.text },
+            feedback,
+            !!(snapshot.artifacts?.length || snapshot.artifactsUnavailable),
+          )
+        : renderDiscordPlan({ runId: run.runId, text }, bundle.delivery.maxDeliveryParts, {
+            shorten: true,
+            spare: link !== undefined,
+            session: url !== undefined && fitsButton(url),
+            feedback,
+          });
+      if (
+        link &&
+        plan.parts.length < bundle.delivery.maxDeliveryParts &&
+        !(useDocument && fitsButton(link))
+      )
         plan.parts.push({
           operationId: `${run.runId}:trace:0`,
           kind: 'message',
@@ -375,6 +430,16 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
           current.presentation?.payload !== part.presentation?.payload
         )
           throw new Error('Discord delivery source changed');
+        const document = readDiscordDocumentPresentation(part);
+        const documentText = document ? run.snapshot?.text : undefined;
+        if (
+          document &&
+          (run.snapshot?.status !== 'completed' ||
+            documentText === undefined ||
+            Buffer.byteLength(documentText) !== document.bytes ||
+            createHash('sha256').update(documentText).digest('hex') !== document.sha256)
+        )
+          throw new Error('Discord document source changed');
         const feedbackRun = readDiscordFeedbackPresentation(part);
         const buttons: APIButtonComponent[] =
           feedbackRun !== undefined &&
@@ -406,7 +471,11 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
         const currentClient = await writableClient(run, bundle, signal);
         return currentClient.createMessage(
           run.admission.externalChannelId,
-          { content: part.text, ...(components ? { components } : {}) },
+          {
+            content: part.text,
+            ...(components ? { components } : {}),
+            ...(documentText ? { document: documentText } : {}),
+          },
           part.operationId,
           signal,
         );
@@ -430,6 +499,16 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
               {
                 type: ComponentType.ActionRow,
                 components: [
+                  ...(pendingReview(run)
+                    ? [
+                        {
+                          type: ComponentType.Button as const,
+                          style: ButtonStyle.Primary as const,
+                          label: 'Review request',
+                          custom_id: discordRunControl('review', run.runId),
+                        },
+                      ]
+                    : []),
                   {
                     type: ComponentType.Button,
                     style: ButtonStyle.Danger,

@@ -44,7 +44,7 @@ export interface WorkerProvider {
   maxProgressLength: number;
   validateAddress(run: ChannelRunView): void;
   assertBinding(run: ChannelRunView, bundle: ChannelBundle): void;
-  progressText(run: ChannelRunView): string;
+  progressText(run: ChannelRunView, bundle: ChannelBundle): string;
   makePlan(run: ChannelRunView, bundle: ChannelBundle): ChannelDeliveryPlan;
   supportsRenderer(version: string): boolean;
   /** Validate persisted presentation before delivery/begin, then write only after it is durable. */
