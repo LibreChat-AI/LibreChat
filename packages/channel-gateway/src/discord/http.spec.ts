@@ -6,6 +6,7 @@ import type { DiscordDmConsume } from 'librechat-data-provider';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import type { DiscordWebhookDependencies } from './http';
+import type { DiscordObservation } from './observe';
 import { createDiscordWebhook } from './http';
 
 const keys = generateKeyPairSync('ed25519');
@@ -441,4 +442,153 @@ it('keeps private asks unavailable without staged composition and rejects DM lin
     (await send({ ...dmEvent(), data: { ...event.data, options: [{ name: 'link', type: 1 }] } }))
       .status,
   ).toBe(400);
+});
+
+describe('Discord ingress observation', () => {
+  let observed: DiscordObservation[];
+  const outcomes = () =>
+    observed.flatMap((item) => (item.type === 'ingress' ? [item.outcome] : []));
+  const acks = () => observed.flatMap((item) => (item.type === 'ack' ? [item.durationMs] : []));
+  const watch = (overrides: Partial<DiscordWebhookDependencies> = {}) =>
+    start({ observe: (observation) => observed.push(observation), ...overrides });
+  beforeEach(() => {
+    observed = [];
+  });
+
+  it('names the outcome of every guild branch and times each matched response once', async () => {
+    await watch();
+    const guild = (changes: object) => ({ ...event, ...changes });
+    const requests: [string, () => Promise<Response>, number][] = [
+      ['accepted', () => send(), 200],
+      ['ping', () => send({ type: 1 }), 200],
+      ['bad_signature', () => send(event, { signature: '0'.repeat(128) }), 401],
+      ['bad_payload', () => send('not json'), 400],
+      ['bad_payload', () => send(event, { contentType: 'text/plain' }), 400],
+      ['bad_context', () => send({ type: 1, application_id: '999999999999999999' }), 400],
+      ['bad_context', () => send(guild({ member: undefined })), 400],
+      ['unsupported', () => send(guild({ data: { ...event.data, name: 'other' } })), 400],
+    ];
+    for (const [, request, status] of requests) expect((await request()).status).toBe(status);
+    submit = async () => 'conflict';
+    expect((await send()).status).toBe(409);
+    submit = async () => 'capacity';
+    expect((await send()).status).toBe(429);
+    expect(outcomes()).toEqual([...requests.map(([outcome]) => outcome), 'conflict', 'capacity']);
+    expect(acks()).toHaveLength(outcomes().length);
+    for (const duration of acks()) {
+      expect(Number.isFinite(duration)).toBe(true);
+      expect(duration).toBeGreaterThanOrEqual(0);
+      expect(duration).toBeLessThan(2000);
+    }
+  });
+
+  it('counts a route miss without an acknowledgement time', async () => {
+    await watch();
+    expect((await send(event, { path: '/discord/invalid/interactions' })).status).toBe(404);
+    expect((await fetch(`${base}/discord/${applicationId}/interactions`)).status).toBe(404);
+    expect(outcomes()).toEqual(['not_found', 'not_found']);
+    expect(acks()).toEqual([]);
+    expect((await fetch(`${base}/livez`)).status).toBe(200);
+    expect((await fetch(`${base}/readyz`)).status).toBe(200);
+    expect(outcomes()).toHaveLength(2);
+  });
+
+  it('separates every private selection and private ask result', async () => {
+    let result: 'accepted' | 'conflict' | 'capacity' = 'accepted';
+    await watch({ select: async () => result, submitDm: async () => result });
+    const ask = { ...dmEvent(), data: event.data };
+    const statuses = { accepted: 200, conflict: 409, capacity: 429 };
+    for (result of ['accepted', 'conflict', 'capacity'] as const) {
+      expect((await send(dmEvent())).status).toBe(200);
+      expect((await send(ask)).status).toBe(statuses[result]);
+    }
+    expect((await send({ ...dmEvent(), guild_id: guildId })).status).toBe(400);
+    expect((await send({ ...dmEvent(), data: { ...event.data, options: [] } })).status).toBe(400);
+    expect(outcomes()).toEqual([
+      'accepted',
+      'accepted',
+      'conflict',
+      'conflict',
+      'capacity',
+      'capacity',
+      'bad_context',
+      'unsupported',
+    ]);
+  });
+
+  it('reports the transport outcomes once, including a response sent after the deadline', async () => {
+    let release!: () => void;
+    let failed!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      failed = resolve;
+    });
+    security = () =>
+      new Promise((resolve) => {
+        release = () => resolve(app);
+      });
+    await watch({
+      capacity: 1,
+      policy: { ...deps.policy, interactionTimeoutMs: 100 },
+      log: { ...deps.log, warn: () => failed() },
+    });
+    expect((await send()).status).toBe(503);
+    expect((await send()).status).toBe(503);
+    expect(outcomes()).toEqual(['deadline', 'at_capacity']);
+    expect(acks()[0]).toBeGreaterThanOrEqual(80);
+    expect(acks()[1]).toBeLessThan(80);
+    release();
+    await finished;
+    expect(outcomes()).toEqual(['deadline', 'at_capacity']);
+    expect(acks()).toHaveLength(2);
+  });
+
+  it('names oversize and unavailable control planes', async () => {
+    await watch();
+    expect((await send({ value: 'x'.repeat(5000) })).status).toBe(413);
+    security = async () => {
+      throw new Error('private upstream failure');
+    };
+    expect((await send()).status).toBe(503);
+    expect(outcomes()).toEqual(['too_large', 'unavailable']);
+    expect(acks()).toHaveLength(2);
+  });
+
+  it('never lets a throwing observer change a response or the capacity it holds', async () => {
+    await watch({
+      capacity: 1,
+      observe: () => {
+        throw new Error('sink unavailable');
+      },
+    });
+    for (let index = 0; index < 3; index++) {
+      const response = await send();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ type: 5, data: { flags: 64 } });
+    }
+    expect((await send({ type: 1 }, { signature: '0'.repeat(128) })).status).toBe(401);
+    expect(received).toHaveLength(3);
+  });
+
+  it('carries no identifier, token or payload text', async () => {
+    await watch();
+    await send();
+    await send(event, { signature: '0'.repeat(128) });
+    await send(event, { path: '/discord/invalid/interactions' });
+    const text = JSON.stringify(observed);
+    for (const secret of [
+      event.token,
+      applicationId,
+      guildId,
+      event.id,
+      event.channel_id,
+      event.member.user.id,
+      'Hello',
+    ])
+      expect(text).not.toContain(secret);
+    for (const item of observed) {
+      expect(Object.keys(item).sort()).toEqual(
+        item.type === 'ack' ? ['durationMs', 'type'] : ['outcome', 'type'],
+      );
+    }
+  });
 });
