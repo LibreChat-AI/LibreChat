@@ -54,19 +54,38 @@ const empty = { applicationId: '', name: '', botToken: '', clientSecret: '' };
 type Fields = typeof empty;
 type Attempt = { popup: Window; flowId?: string; cancelling: boolean };
 
+/** Safe codes only; error messages are never shown, and unknown codes stay unconfirmed. */
 function errorLabel(error: unknown): TranslationKeys {
-  if (error instanceof Error) {
-    if ('status' in error && error.status === 403) return 'com_ui_discord_admin';
-    if ('status' in error && error.status === 404) return 'com_ui_discord_disabled';
-    if ('code' in error && error.code === 'transactions_unavailable')
+  if (!(error instanceof Error)) return 'com_ui_discord_error';
+  if ('status' in error && error.status === 403) return 'com_ui_discord_admin';
+  if ('status' in error && error.status === 404) return 'com_ui_discord_disabled';
+  if (!('code' in error)) return 'com_ui_discord_error';
+  switch (error.code) {
+    case 'transactions_unavailable':
       return 'com_ui_channels_transaction_required';
-    if (
-      'code' in error &&
-      (error.code === 'application_changed' || error.code === 'installation_changed')
-    )
+    case 'application_changed':
+    case 'installation_changed':
+    case 'guild_changed':
       return 'com_ui_discord_changed';
+    case 'provider_refused':
+      return 'com_ui_discord_refused';
+    case 'unsupported_installation':
+      return 'com_ui_discord_code_grant';
+    case 'application_in_use':
+      return 'com_ui_discord_in_use';
+    case 'missing_permissions':
+      return 'com_ui_discord_permissions';
+    case 'invalid_grant':
+      return 'com_ui_discord_unconfirmed';
+    case 'rate_limited':
+      return 'com_ui_discord_rate_limited';
+    case 'provider_unavailable':
+      return 'com_ui_discord_provider_unavailable';
+    case 'timeout':
+      return 'com_ui_discord_timeout';
+    default:
+      return 'com_ui_discord_error';
   }
-  return 'com_ui_discord_error';
 }
 
 /** A fresh feature store and form belong to exactly one signed-in account. */

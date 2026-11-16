@@ -406,39 +406,108 @@ test('registers commands only after explicit action using current revision and m
   expect(dataService.getDiscordGuilds).toHaveBeenCalledTimes(2);
 });
 
-test.each(['application_changed', 'rate_limited', 'provider_refused'])(
-  'refetches and explicitly retries registration after safe failure %s',
+test.each([
+  ['application_changed', 'com_ui_discord_changed'],
+  ['rate_limited', 'com_ui_discord_rate_limited'],
+  ['provider_refused', 'com_ui_discord_refused'],
+])('refetches and explicitly retries registration after safe failure %s', async (code, label) => {
+  jest
+    .mocked(dataService.registerDiscordCommands)
+    .mockRejectedValueOnce(Object.assign(new Error('private provider payload'), { code }));
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
+  expect(await screen.findByText(label)).toBeVisible();
+  expect(screen.queryByText(/private provider payload/)).toBeNull();
+  expect(dataService.registerDiscordCommands).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button', { name: 'com_ui_discord_commands_named' })).toBeDisabled();
+  jest
+    .mocked(dataService.getDiscordApps)
+    .mockResolvedValue({ applications: [{ ...app, revision: 'app-r2' }] });
+  await user.click(await screen.findByRole('button', { name: 'com_ui_refresh' }));
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'com_ui_discord_commands_named' })).toBeEnabled(),
+  );
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
+  await waitFor(() =>
+    expect(jest.mocked(dataService.registerDiscordCommands).mock.calls[1][0]).toEqual({
+      applicationId: app.applicationId,
+      expectedRevision: 'app-r2',
+      manifestVersion: '2',
+    }),
+  );
+});
+
+test.each([
+  ['transactions_unavailable', 'com_ui_channels_transaction_required'],
+  ['application_changed', 'com_ui_discord_changed'],
+  ['installation_changed', 'com_ui_discord_changed'],
+  ['guild_changed', 'com_ui_discord_changed'],
+  ['provider_refused', 'com_ui_discord_refused'],
+  ['unsupported_installation', 'com_ui_discord_code_grant'],
+  ['application_in_use', 'com_ui_discord_in_use'],
+  ['missing_permissions', 'com_ui_discord_permissions'],
+  ['invalid_grant', 'com_ui_discord_unconfirmed'],
+  ['rate_limited', 'com_ui_discord_rate_limited'],
+  ['provider_unavailable', 'com_ui_discord_provider_unavailable'],
+  ['timeout', 'com_ui_discord_timeout'],
+])('explains safe code %s with its own state instead of the generic one', async (code, label) => {
+  jest
+    .mocked(dataService.registerDiscordCommands)
+    .mockRejectedValueOnce(Object.assign(new Error('private provider payload'), { code }));
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
+  expect(await screen.findByText(label)).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_error')).toBeNull();
+  expect(screen.queryByText(/private provider payload/)).toBeNull();
+});
+
+test.each(['unavailable', 'unrecognized_code'])(
+  'keeps the generic unconfirmed state for the %s code',
   async (code) => {
     jest
       .mocked(dataService.registerDiscordCommands)
       .mockRejectedValueOnce(Object.assign(new Error('private provider payload'), { code }));
     const { user } = await page();
     await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
-    expect(
-      await screen.findByText(
-        code === 'application_changed' ? 'com_ui_discord_changed' : 'com_ui_discord_error',
-      ),
-    ).toBeVisible();
+    expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
     expect(screen.queryByText(/private provider payload/)).toBeNull();
-    expect(dataService.registerDiscordCommands).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('button', { name: 'com_ui_discord_commands_named' })).toBeDisabled();
-    jest
-      .mocked(dataService.getDiscordApps)
-      .mockResolvedValue({ applications: [{ ...app, revision: 'app-r2' }] });
-    await user.click(await screen.findByRole('button', { name: 'com_ui_refresh' }));
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'com_ui_discord_commands_named' })).toBeEnabled(),
-    );
-    await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
-    await waitFor(() =>
-      expect(jest.mocked(dataService.registerDiscordCommands).mock.calls[1][0]).toEqual({
-        applicationId: app.applicationId,
-        expectedRevision: 'app-r2',
-        manifestVersion: '2',
-      }),
-    );
   },
 );
+
+test.each([
+  [403, 'com_ui_discord_admin'],
+  [404, 'com_ui_discord_disabled'],
+])('keeps HTTP status %s ahead of a provider code', async (status, label) => {
+  jest.mocked(dataService.registerDiscordCommands).mockRejectedValueOnce(
+    Object.assign(new Error('private provider payload'), {
+      status,
+      code: 'provider_refused',
+    }),
+  );
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
+  expect(await screen.findByText(label)).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_refused')).toBeNull();
+});
+
+test.each([
+  ['provider_refused', 'com_ui_discord_refused'],
+  ['unsupported_installation', 'com_ui_discord_code_grant'],
+  ['application_in_use', 'com_ui_discord_in_use'],
+])('explains %s after a credential save without echoing the credential', async (code, label) => {
+  jest
+    .mocked(dataService.configureDiscordApplication)
+    .mockRejectedValueOnce(Object.assign(new Error('Bot private-bot-token refused'), { code }));
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
+  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-bot-token');
+  await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+  expect(await screen.findByText(label)).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_error')).toBeNull();
+  expect(screen.queryByText(/private-bot-token/)).toBeNull();
+  expect(screen.getByLabelText('com_ui_discord_bot_token')).toHaveValue('');
+  expect(await screen.findByRole('button', { name: 'com_ui_refresh' })).toBeVisible();
+});
 
 test('clears old registration success when credentials rotate and uses the refreshed app revision', async () => {
   const { user } = await page();
