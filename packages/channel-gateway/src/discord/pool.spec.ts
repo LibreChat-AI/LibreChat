@@ -1,3 +1,5 @@
+import { discordChannelConfigSchema } from 'librechat-data-provider';
+import { DiscordGatewayFailure } from './recovery';
 import { runDiscordApplications } from './pool';
 
 const first = { applicationId: '123456789012345678', applicationRevision: 'revision' };
@@ -116,4 +118,129 @@ it('retries a discovery failure without retaining raw errors or abandoning resid
   expect(scans).toBe(2);
   expect(log.warn).toHaveBeenCalledWith('discord_application_discovery_unavailable');
   expect(JSON.stringify(log.warn.mock.calls)).not.toContain('private credential');
+});
+
+const recoveryPolicy = (
+  overrides: Partial<
+    ReturnType<typeof discordChannelConfigSchema.parse>['gateway']['recovery']
+  > = {},
+) => ({
+  ...policy,
+  recovery: discordChannelConfigSchema.parse({
+    gateway: {
+      recovery: {
+        fatalRetryMinMs: 1000,
+        fatalRetryMaxMs: 4000,
+        resetAfterMs: 1000,
+        retryMaxMs: 1000,
+        ...overrides,
+      },
+    },
+  }).gateway.recovery,
+});
+
+it('quarantines fatal sessions with exponential delay capped independently of discovery polling', async () => {
+  let clock = 0;
+  const starts: number[] = [];
+  await runDiscordApplications(
+    {
+      policy: recoveryPolicy(),
+      log,
+      now: () => clock,
+      discover: async () => {
+        clock += 500;
+        if (clock > 12500) controller.abort();
+        return { applications: [first] };
+      },
+      start: async () => {
+        starts.push(clock);
+        throw new DiscordGatewayFailure('configuration');
+      },
+    },
+    controller.signal,
+  );
+  expect(starts).toEqual([500, 1500, 3500, 7500, 11500]);
+  expect(log.warn).toHaveBeenCalledWith('discord_application_quarantined');
+});
+
+it('immediately retries a new credential revision while other quarantines stay isolated', async () => {
+  let scans = 0;
+  let clock = 0;
+  const starts: string[] = [];
+  await runDiscordApplications(
+    {
+      policy: { ...recoveryPolicy(), maxApplications: 2 },
+      log,
+      now: () => clock,
+      discover: async () => {
+        clock += 100;
+        scans++;
+        if (scans === 4) controller.abort();
+        return {
+          applications: [
+            { ...first, applicationRevision: scans >= 2 ? 'rotated' : 'revision' },
+            second,
+          ],
+        };
+      },
+      start: async (owner) => {
+        starts.push(owner.applicationId + ':' + owner.applicationRevision);
+        throw new DiscordGatewayFailure('credentials');
+      },
+    },
+    controller.signal,
+  );
+  expect(starts.filter((id) => id.startsWith(first.applicationId))).toEqual([
+    first.applicationId + ':revision',
+    first.applicationId + ':rotated',
+  ]);
+  expect(starts.filter((id) => id.startsWith(second.applicationId))).toHaveLength(1);
+});
+
+it('backs off transient failures with bounded jitter and resets after a verified healthy session', async () => {
+  let clock = 0;
+  const starts: number[] = [];
+  await runDiscordApplications(
+    {
+      policy: recoveryPolicy(),
+      log,
+      now: () => clock,
+      random: () => 1,
+      discover: async () => {
+        clock += 100;
+        if (clock > 1000) controller.abort();
+        return { applications: [first] };
+      },
+      start: async () => {
+        starts.push(clock);
+        throw new DiscordGatewayFailure('dispatch', starts.length === 3 ? 1000 : 0);
+      },
+    },
+    controller.signal,
+  );
+  expect(starts).toEqual([100, 200, 400, 500, 700]);
+});
+
+it('bounds tracked failures and releases absent applications only after a complete discovery scan', async () => {
+  let scans = 0;
+  const starts: string[] = [];
+  await runDiscordApplications(
+    {
+      policy: recoveryPolicy({ maxTrackedApplications: 1 }),
+      log,
+      now: () => 0,
+      discover: async () => {
+        scans++;
+        if (scans === 2) throw new Error('private discovery diagnostic');
+        if (scans > 5) controller.abort();
+        return { applications: scans <= 3 ? [first, second] : [second] };
+      },
+      start: async (owner) => {
+        starts.push(owner.applicationId);
+        throw new DiscordGatewayFailure('configuration');
+      },
+    },
+    controller.signal,
+  );
+  expect(starts).toEqual([first.applicationId, second.applicationId]);
 });

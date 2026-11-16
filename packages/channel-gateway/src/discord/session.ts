@@ -68,6 +68,7 @@ export async function runDiscordSession(
   );
   try {
     if (await gateway.start(signal)) await gateway.closed;
+    if (gateway.failure) throw gateway.failure;
   } catch (error) {
     if (!signal.aborted) throw error;
   } finally {

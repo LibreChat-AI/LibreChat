@@ -171,3 +171,22 @@ it('never reacquires or starts the socket when the outer lease has already been 
   expect(f.calls.some((path) => path.endsWith('/load'))).toBe(false);
   expect(f.destroy).not.toHaveBeenCalled();
 });
+
+it.each([4004, 4010, 4011, 4012, 4013, 4014])(
+  'propagates fatal close %i to the application supervisor after cleanup',
+  async (code) => {
+    const f = fixture();
+    const result = runDiscordSession(
+      { ...f, owner, policy, dispatch: async () => {} },
+      f.controller.signal,
+    ).catch((error: unknown) => error);
+    const driver = await f.connected.promise;
+    driver.closed(code, 0);
+    await expect(result).resolves.toMatchObject({
+      fatal: true,
+      reason: code === 4004 ? 'credentials' : 'configuration',
+    });
+    expect(f.destroy).toHaveBeenCalledTimes(1);
+    expect(f.calls.some((path) => path.endsWith('/release'))).toBe(false);
+  },
+);

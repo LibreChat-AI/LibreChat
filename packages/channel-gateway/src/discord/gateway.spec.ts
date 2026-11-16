@@ -13,6 +13,7 @@ import type {
   DiscordGatewayReady,
 } from './socket';
 import type { Logger } from '../types';
+import { DiscordGatewayFailure } from './recovery';
 import { OwnedDiscordGateway } from './gateway';
 
 function deferred<T>() {
@@ -204,6 +205,29 @@ function fixture(
 describe('owned Discord Gateway sessions', () => {
   beforeEach(() => jest.useFakeTimers({ now: 1_700_000_000_000 }));
   afterEach(() => jest.useRealTimers());
+  test('retains credential failures from SDK discovery and measures only verified session lifetime', async () => {
+    const rejected = fixture();
+    rejected.hooks.connect = async () => {
+      throw new DiscordGatewayFailure('credentials');
+    };
+    await expect(rejected.start()).rejects.toMatchObject({
+      reason: 'credentials',
+      fatal: true,
+      healthyForMs: 0,
+    });
+    expect(rejected.destroy).toHaveBeenCalledTimes(1);
+    const running = fixture();
+    await expect(running.start()).resolves.toBe(true);
+    jest.setSystemTime(Date.now() + 2000);
+    running.drivers[0].closed(4014, 0);
+    await running.gateway.closed;
+    expect(running.gateway.failure).toMatchObject({
+      reason: 'configuration',
+      fatal: true,
+      healthyForMs: 2000,
+    });
+  });
+
   test('requires both enablement flags without claiming ownership', async () => {
     const store = shared();
     const gateway = new OwnedDiscordGateway(
