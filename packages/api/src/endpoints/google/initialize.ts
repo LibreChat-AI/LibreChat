@@ -15,6 +15,7 @@ import {
   resolveHeaders,
 } from '~/utils';
 import { resolveEndpointRuntime } from '~/types';
+import { getGoogleTokenConfig } from './pricing';
 import { getGoogleConfig } from './llm';
 
 /**
@@ -133,5 +134,13 @@ export async function initializeGoogle(
     result.llmConfig._lc_stream_delay = clientOptions.streamRate;
   }
 
-  return result;
+  const model = result.llmConfig.model;
+  const rates =
+    typeof model === 'string' ? getGoogleTokenConfig(model, googleConfig?.tokenConfig) : undefined;
+  if (typeof model !== 'string' || !rates) {
+    return result;
+  }
+  // The Developer API SDK reports model IDs without its optional models/ prefix.
+  const reportedModel = model.replace(/^models\//, '');
+  return { ...result, endpointTokenConfig: { [model]: rates, [reportedModel]: rates } };
 }
