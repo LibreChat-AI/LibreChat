@@ -236,6 +236,13 @@ export interface ItemReferenceParam {
   id: string;
 }
 
+/** Client-carried context expanded by authenticated HTTP admission before execution. */
+export interface CompactionItemParam {
+  type: 'compaction';
+  id?: string;
+  encrypted_content: string;
+}
+
 /** Union of all input item types */
 export type InputItem =
   | SystemMessageItemParam
@@ -245,7 +252,8 @@ export type InputItem =
   | FunctionCallItemParam
   | FunctionCallOutputItemParam
   | ReasoningItemParam
-  | ItemReferenceParam;
+  | ItemReferenceParam
+  | CompactionItemParam;
 
 /* =============================================================================
  * OUTPUT ITEMS (in response)

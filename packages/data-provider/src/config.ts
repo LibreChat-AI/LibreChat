@@ -1886,11 +1886,40 @@ export const subagentActivityConfigSchema = z.object({
 
 export type TSubagentActivityConfig = z.infer<typeof subagentActivityConfigSchema>;
 
+/** Limits for the optional public Responses transports. Existing deployments opt in. */
+export const responsesProtocolSchema = z.object({
+  compaction: z
+    .object({
+      enabled: z.boolean().default(false),
+      maxItemBytes: z
+        .number()
+        .int()
+        .min(1024)
+        .max(16 * 1024 * 1024)
+        .default(1024 * 1024),
+      maxInputBytes: z
+        .number()
+        .int()
+        .min(1024)
+        .max(16 * 1024 * 1024)
+        .default(4 * 1024 * 1024),
+      maxClockSkewMs: z.number().int().min(0).max(300000).default(30000),
+      maxAgeMs: z
+        .number()
+        .int()
+        .min(1000)
+        .max(30 * 86400000)
+        .default(86400000),
+    })
+    .prefault({}),
+});
+
 export const agentsEndpointSchema = baseEndpointSchema
   .omit({ baseURL: true })
   .merge(
     z.object({
       /* agents specific */
+      responses: responsesProtocolSchema.optional(),
       /** Trusted server-side SDK modules. Unconfigured runtimes cannot execute. */
       sdkRuntimes: z
         .record(
