@@ -44,7 +44,7 @@ const modeLabels: Record<AgentChannel['credentialMode'], TranslationKeys> = {
 };
 
 function RowIcon({ type }: { type: ListedAgentChannel['type'] }) {
-  if (type === 'unavailable') {
+  if (type !== 'slack') {
     return <Link2Off className="text-text-secondary size-4" aria-hidden="true" />;
   }
   return <img src="assets/slack.svg" alt="" className="size-4" />;
@@ -554,8 +554,8 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
     },
   });
   const selected = channels.data?.find((channel) => channel.channelId === dialog);
-  // An unavailable connection has nothing to manage, so no dialog opens on it.
-  const managed = selected?.type === 'unavailable' ? undefined : selected;
+  // Only a Slack connection has a dialog here; a row of any other provider can only be deleted.
+  const managed = selected?.type === 'slack' ? selected : undefined;
   const connectionTitle =
     selected?.status === 'pending_install' &&
     (!selected.workspaceId || newWorkspaceConnection === selected.channelId)
@@ -618,7 +618,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                     'flex size-7 items-center justify-center overflow-hidden rounded-md',
                     // The fixed surface is white in every theme, which suits a brand mark but not a
                     // glyph drawn in a theme text color.
-                    channel.type === 'unavailable' ? 'bg-surface-tertiary' : 'bg-surface-fixed',
+                    channel.type !== 'slack' ? 'bg-surface-tertiary' : 'bg-surface-fixed',
                   )}
                 >
                   <RowIcon type={channel.type} />
@@ -633,12 +633,12 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="text-text-primary truncate text-sm font-medium">
                   {localize(
-                    channel.type === 'unavailable'
+                    channel.type !== 'slack'
                       ? 'com_ui_channels_unavailable'
                       : 'com_ui_channels_slack',
                   )}
                 </span>
-                {channel.type === 'unavailable' && (
+                {channel.type !== 'slack' && (
                   <span className="text-text-secondary text-xs">
                     {localize('com_ui_channels_unavailable_description')}
                   </span>
@@ -655,7 +655,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                 />
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
-                {channel.type !== 'unavailable' && (
+                {channel.type === 'slack' && (
                   <div className="no-touch:opacity-0 grouped-focus-visible:opacity-100 flex items-center group-hover:opacity-100">
                     <RowAction
                       label={channelActionLabel(channel, userId)}
@@ -687,7 +687,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                             removeRow.reset();
                             setRowDelete(channel);
                             setRowDeleteCopy(
-                              channel.type === 'unavailable'
+                              channel.type !== 'slack'
                                 ? 'com_ui_channels_unavailable_delete_confirm'
                                 : undefined,
                             );
