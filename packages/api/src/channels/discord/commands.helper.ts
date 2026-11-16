@@ -28,6 +28,7 @@ import type {
   DiscordAgentChannel,
 } from 'librechat-data-provider';
 import type { DiscordInboxRecord } from '@librechat/data-schemas';
+import type { DiscordObservation } from './observe';
 import { createDiscordCommandExecutor } from './commands';
 import { encryptCredential } from '~/crypto/credentials';
 import { createChannelAuthority } from '../authority';
@@ -58,6 +59,7 @@ let installations: ReturnType<typeof createDiscordInstallationStorage>;
 let inbox: ReturnType<typeof createDiscordInboxStorage>;
 let runs: ReturnType<typeof createChannelRunStorage>;
 let authority: ReturnType<typeof createChannelAuthority>;
+const observations: DiscordObservation[] = [];
 let execute: ReturnType<typeof createDiscordCommandExecutor>;
 let channel: DiscordAgentChannel;
 let applicationRevision: string;
@@ -165,6 +167,7 @@ afterAll(async () => {
   await mongo?.stop();
 });
 beforeEach(async () => {
+  observations.length = 0;
   now = Date.now();
   sequence = 0;
   enabled = allowed = true;
@@ -282,6 +285,7 @@ beforeEach(async () => {
     publicBaseUrl: 'https://chat.example/prefix/',
   });
   execute = createDiscordCommandExecutor({
+    observe: (event) => observations.push(event),
     channels,
     authority,
     runs,
@@ -296,6 +300,7 @@ export function setAllowed(value: boolean) {
   allowed = value;
 }
 export {
+  observations,
   keys,
   db,
   tenantId,

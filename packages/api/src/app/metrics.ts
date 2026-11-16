@@ -4,9 +4,11 @@ import { Registry, collectDefaultMetrics, Counter, Gauge, Histogram } from 'prom
 import { logger, setAgentEventActorReceiptMetricObserver } from '@librechat/data-schemas';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { Mongoose } from 'mongoose';
+import type { DiscordObserver, DiscordObservation } from '~/channels/discord/observe';
 import type { AgentStartupMilestone, AgentStartupResult } from '~/agents/phases';
 import type { LocatorTraversalFailure } from '../protection/diagnostics';
 import { agentStartupMilestones, agentStartupResults } from '~/agents/phases';
+import { createDiscordMetrics } from '~/channels/discord/metrics';
 
 const PATH_NORMALIZATIONS: [RegExp, string][] = [
   [/^(\/api\/insights(?:\/access)?)\/?$/, '$1'],
@@ -296,7 +298,14 @@ export function reportLocatorTraversalFailure(failure: LocatorTraversalFailure):
   observeLocatorTraversal(failure);
 }
 
+let discordObserver: DiscordObserver = () => undefined;
+
+export function recordDiscordObservation(event: DiscordObservation): void {
+  discordObserver(event);
+}
+
 const resetMetricRecorders = (): void => {
+  discordObserver = () => undefined;
   observeLocatorTraversal = () => undefined;
   openIDUserLookupMetrics = {
     recordLookup: () => undefined,
@@ -544,6 +553,7 @@ export function createMetrics(options: MetricsOptions = {}): PrometheusMetrics {
   }
 
   const registry = new Registry();
+  discordObserver = createDiscordMetrics(registry);
   collectDefaultMetrics({ register: registry });
 
   observeLocatorTraversal = () => undefined;

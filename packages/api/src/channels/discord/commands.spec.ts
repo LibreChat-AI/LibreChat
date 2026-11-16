@@ -1,6 +1,7 @@
 import type { DiscordInboxRecord } from '@librechat/data-schemas';
 import {
   db,
+  observations,
   tenantId,
   owner,
   other,
@@ -257,4 +258,26 @@ it('requires owned fresh actor source proof for signed asks even after account c
     expect(await allRuns()).toHaveLength(0);
     expect((await execute(job.record, job.fence, observed)).content).toContain('queued');
     expect(await allRuns()).toHaveLength(1);
+  }));
+
+it('observes native consent and command outcomes without retaining prompt or identity labels', () =>
+  scope(async () => {
+    await linked();
+    await invoke({ kind: 'ask', prompt: 'metrics-private-prompt' });
+    expect(observations).toEqual([
+      { type: 'command', action: 'link', outcome: 'link_required' },
+      { type: 'command', action: 'link', outcome: 'confirm_required' },
+      { type: 'command', action: 'confirm', outcome: 'linked' },
+      { type: 'command', action: 'ask', outcome: 'queued' },
+    ]);
+    setAllowed(false);
+    await invoke({ kind: 'ask', prompt: 'metrics-private-denied' });
+    expect(observations.at(-1)).toEqual({ type: 'command', action: 'ask', outcome: 'unavailable' });
+    for (const secret of [
+      owner,
+      externalUserId,
+      'metrics-private-prompt',
+      'metrics-private-denied',
+    ])
+      expect(JSON.stringify(observations)).not.toContain(secret);
   }));
