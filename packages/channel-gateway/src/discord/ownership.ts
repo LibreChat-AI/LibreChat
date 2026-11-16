@@ -1,5 +1,6 @@
 import {
   discordGatewayOwnerSchema,
+  discordCredentialStateSchema,
   discordGatewayBatchSchema,
   discordGatewayBootstrapSchema,
   discordGuildRemovalTargetSchema,
@@ -8,6 +9,7 @@ import {
 } from 'librechat-data-provider';
 import type {
   DiscordGatewayOwner,
+  DiscordCredentialState,
   DiscordGatewayBatch,
   DiscordGatewayBootstrap,
   DiscordGuildRemovalTarget,
@@ -20,6 +22,21 @@ import { ServiceClient, ServiceError, boundedBody } from '../transport';
 export class DiscordGatewayControlClient extends ServiceClient {
   constructor(connection: ServiceConnection, transport: typeof fetch = fetch) {
     super({ ...connection, CHANNEL_TENANT_ID: undefined }, transport);
+  }
+  async observeCredentials(
+    owner: DiscordGatewayOwner,
+    state: DiscordCredentialState,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const response = await this.raw(
+      '/api/channels/discord/service/gateway/observeCredentials',
+      {
+        owner: discordGatewayOwnerSchema.parse(owner),
+        state: discordCredentialStateSchema.parse(state),
+      },
+      signal,
+    );
+    return this.confirmed(response);
   }
   async prepareGuildRemoval(
     owner: DiscordGatewayOwner,
@@ -93,6 +110,9 @@ export class DiscordGatewayControlClient extends ServiceClient {
     leaseMs?: number,
   ): Promise<boolean> {
     const response = await this.call(path, owner, batch, signal, leaseMs);
+    return this.confirmed(response);
+  }
+  private async confirmed(response: Response): Promise<boolean> {
     if (response.status === 204) return true;
     if (response.status === 409) {
       await boundedBody(response, 65536);
