@@ -17,6 +17,48 @@ const AUTH_ROUTE = /\/(?:login|register|forgot-password|reset-password|verify|oa
 const URL_ATTRIBUTE =
   /^(?:data-)?(?:href|src|url|uri|action|formaction|poster|cite|background|data|xlink:href)$/i;
 const URL_SPAN_ATTRIBUTE = /url|uri|href|referr?er|^http\.target$|location/i;
+const HEADER_SPAN_ATTRIBUTE = /^http\.(?:request|response)\.header\.(.+)$/i;
+const CREDENTIAL_HEADER = /authorization|cookie|apikey|token|signature/i;
+const BODY_SPAN_ATTRIBUTE = /^http\.(?:request|response)\.body$/i;
+const CREDENTIAL_ROUTES = [
+  /\/oauth\/(?:google|facebook|openid|github|discord|apple|saml)(?:\/callback)?\/?$/i,
+  /\/api\/(?:auth|keys|api-keys)(?:\/|$)/i,
+  /\/api\/user\/(?:verify|email)(?:\/|$)/i,
+  /\/api\/user\/(?:plugins|delete)\/?$/i,
+  /\/api\/admin\/(?:login|oauth|config)(?:\/|$)/i,
+  /\/api\/admin\/langfuse\/connection(?:\/|$)/i,
+  /\/api\/admin\/skills\/sync\/credentials(?:\/|$)/i,
+  /\/api\/admin\/code-environments\/[^/]+\/pairings\/?$/i,
+  /\/api\/mcp\/(?:oauth|servers)(?:\/|$)/i,
+  /\/api\/mcp\/[^/]+\/oauth(?:\/|$)/i,
+  /\/api\/actions\/[^/]+\/oauth(?:\/|$)/i,
+  /\/api\/(?:agents|assistants\/v[12])\/actions(?:\/|$)/i,
+  /\/api\/pull-requests\/oauth(?:\/|$)/i,
+  /\/api\/code-environments\/pairings\/?$/i,
+  /\/api\/code-environments\/setup\/(?:start|poll|cancel|complete)\/?$/i,
+  /\/api\/channels\/workspaces\/(?:apps|oauth)(?:\/|$)/i,
+  /\/api\/channels\/workspaces\/connect\/?$/i,
+  /\/api\/channels\/links\/(?:preview|accept)\/?$/i,
+  /\/api\/agents\/[^/]+\/channels\/[^/]+\/?$/i,
+];
+
+/** Match the request URL, not the current page, so buffered auth calls stay protected. */
+export function isCredentialRequest(attributes: SpanAttributes): boolean {
+  const requestUrl = attributes['http.url'];
+  if (typeof requestUrl !== 'string') return false;
+  try {
+    let pathname = new URL(requestUrl, 'https://librechat.invalid').pathname;
+    try {
+      pathname = decodeURIComponent(pathname);
+    } catch {
+      // A malformed parameter must not hide an otherwise recognizable credential route.
+    }
+    // A deployment can mount LibreChat below a base path before these route segments.
+    return CREDENTIAL_ROUTES.some((route) => route.test(pathname));
+  } catch {
+    return false;
+  }
+}
 
 export function isReplayRouteAllowed(pathname: string): boolean {
   try {
@@ -149,21 +191,34 @@ export function createReplayPrivacyPlugin(getPathname: () => string): ReplayPlug
   };
 }
 
-/** The SDK calls this hook at export time, including for spans buffered before a route change. */
-export function sanitizeSpanAttributes(attributes: SpanAttributes): SpanAttributes {
+/** Remove credential headers and protected bodies before export, including buffered spans. */
+export function sanitizeSpanAttributes(
+  attributes: SpanAttributes,
+  redactBody = false,
+): SpanAttributes {
+  const removeBody = redactBody || isCredentialRequest(attributes);
   return Object.fromEntries(
-    Object.entries(attributes).map(([key, value]) => {
-      if (URL_SPAN_ATTRIBUTE.test(key)) {
-        if (/(?:^|\.)query$|(?:^|\.)fragment$/i.test(key)) return [key, ''];
-        if (typeof value === 'string') return [key, sanitizeTelemetryUrl(value)];
-        if (Array.isArray(value)) {
-          return [
-            key,
-            value.map((entry) => (typeof entry === 'string' ? sanitizeTelemetryUrl(entry) : entry)),
-          ];
+    Object.entries(attributes)
+      .filter(([key]) => {
+        if (removeBody && BODY_SPAN_ATTRIBUTE.test(key)) return false;
+        const header = HEADER_SPAN_ATTRIBUTE.exec(key)?.[1];
+        // The SDK lowercases header names and replaces hyphens with underscores.
+        return !header || !CREDENTIAL_HEADER.test(header.replace(/[-_]/g, ''));
+      })
+      .map(([key, value]) => {
+        if (URL_SPAN_ATTRIBUTE.test(key)) {
+          if (/(?:^|\.)query$|(?:^|\.)fragment$/i.test(key)) return [key, ''];
+          if (typeof value === 'string') return [key, sanitizeTelemetryUrl(value)];
+          if (Array.isArray(value)) {
+            return [
+              key,
+              value.map((entry) =>
+                typeof entry === 'string' ? sanitizeTelemetryUrl(entry) : entry,
+              ),
+            ];
+          }
         }
-      }
-      return [key, typeof value === 'string' ? sanitizeUrlReferences(value) : value];
-    }),
+        return [key, typeof value === 'string' ? sanitizeUrlReferences(value) : value];
+      }),
   );
 }
