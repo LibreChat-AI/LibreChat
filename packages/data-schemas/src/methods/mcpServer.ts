@@ -7,7 +7,9 @@ import {
 } from 'librechat-data-provider';
 import type { Model, RootFilterQuery, Types } from 'mongoose';
 import type { MCPOptions } from 'librechat-data-provider';
+import type { TokenQueries } from '~/postgres/auth/tokenQueries';
 import type { MCPServerDocument } from '../types';
+import { createMongoTokenQueries } from '~/postgres/auth/tokenQueries';
 import { permissionBitSupersets } from './aclEntry';
 import logger from '~/config/winston';
 
@@ -52,6 +54,7 @@ function generateServerNameFromTitle(title: string): string {
 }
 
 export interface MCPServerDeps {
+  tokenQueries?: Pick<TokenQueries, 'findMCPTokenUserIds'>;
   /** Returns resource IDs solely owned by the given user. From createAclEntryMethods. */
   getSoleOwnedResourceIds: (
     userObjectId: Types.ObjectId,
@@ -440,17 +443,11 @@ export function createMCPServerMethods(
     serverName: string,
     tenantId?: string,
   ): Promise<string[]> {
-    const Token = mongoose.models.Token;
-    if (!Token) {
-      return [];
-    }
-    const identifier = `mcp:${serverName}`;
-    /** Server names are unique per tenant, so a tenantless owner only matches tenantless tokens. */
-    const userIds = await Token.distinct('userId', {
-      tenantId: tenantId ?? null,
-      identifier: { $in: [identifier, `${identifier}:client`, `${identifier}:refresh`] },
+    return (deps.tokenQueries ?? createMongoTokenQueries(mongoose)).findMCPTokenUserIds({
+      serverName,
+      tenantId,
+      scope: 'exact',
     });
-    return userIds.map(String);
   }
 
   /** Principals holding view access on the server, used to find users it was shared with. */

@@ -3,9 +3,9 @@ const { resolve, dirname } = require('node:path');
 const { runInNewContext } = require('node:vm');
 
 describe.each(['index', 'experimental'])('%s entrypoint lifecycle wiring', (entrypoint) => {
-  it.each([false, true])(
+  it.each(['none', 'favorites', 'authentication'])(
     'retains the original startup error and cleans up (persistence failure: %s)',
-    async (failFavorites) => {
+    async (failure) => {
       const file = resolve(__dirname, `${entrypoint}.js`);
       const events = [];
       const errors = [];
@@ -23,7 +23,7 @@ describe.each(['index', 'experimental'])('%s entrypoint lifecycle wiring', (entr
       );
       const closeFavorites = async () => {
         events.push('close');
-        if (failFavorites) {
+        if (failure === 'favorites') {
           throw new Error('close failure');
         }
       };
@@ -45,10 +45,16 @@ describe.each(['index', 'experimental'])('%s entrypoint lifecycle wiring', (entr
         {
           seedDatabase: async () => {},
           sweepOrphanedPreviews: async () => {},
+          initializeAuthentication: async (config) => {
+            events.push('authentication');
+            expect(config.persistence.favorites).toBe('postgres');
+            if (failure === 'authentication') throw bootError;
+          },
+          closeAuthentication: async () => events.push('close-authentication'),
           initializeFavorites: async (config) => {
             events.push('initialize');
             expect(config.persistence.favorites).toBe('postgres');
-            if (failFavorites) {
+            if (failure === 'favorites') {
               throw bootError;
             }
           },
@@ -121,12 +127,13 @@ describe.each(['index', 'experimental'])('%s entrypoint lifecycle wiring', (entr
         { filename: file },
       );
       await new Promise((resolve) => setImmediate(resolve));
-      expect(events[0]).toBe('initialize');
+      expect(events[0]).toBe('authentication');
+      expect(events).toContain('close-authentication');
       expect(events).toContain('close');
       expect(events).toContain('exit:1');
       const last = errors[errors.length - 1];
       expect(last[last.length - 1]).toBe(bootError);
-      if (failFavorites) {
+      if (failure !== 'none') {
         expect(events).not.toContain('config');
       } else {
         expect(tasks.get('favorites persistence')).toBe(closeFavorites);

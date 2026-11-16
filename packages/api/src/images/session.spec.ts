@@ -51,6 +51,24 @@ describe('storeOpenIdSession', () => {
     expect(deps.deleteSession).toHaveBeenCalledWith({ refreshToken: 'old-refresh' });
   });
 
+  it('does not revoke the previous session when storing its replacement fails', async () => {
+    const failure = new Error('authentication storage unavailable');
+    deps.upsertSession.mockRejectedValueOnce(failure);
+
+    await expect(
+      storeOpenIdSession(
+        {
+          userId: 'user-id',
+          refreshToken: 'new-refresh',
+          previousRefreshToken: 'old-refresh',
+        },
+        deps,
+      ),
+    ).rejects.toBe(failure);
+
+    expect(deps.deleteSession).not.toHaveBeenCalled();
+  });
+
   it('does not create a durable session without a refresh token', async () => {
     await expect(storeOpenIdSession({ userId: 'user-id' }, deps)).resolves.toBe(false);
     expect(deps.upsertSession).not.toHaveBeenCalled();

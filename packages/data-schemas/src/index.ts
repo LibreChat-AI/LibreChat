@@ -141,6 +141,7 @@ export {
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
 } from './types/triggerDelivery';
 export type * from './types';
+export { PasskeyConflictError } from './types/passkey';
 export type * from './methods';
 export {
   AUDIT_ACTIONS,
@@ -210,3 +211,14 @@ export * from './postgres/migrations';
 export * from './postgres/favorite';
 export * from './postgres/import';
 export * from './postgres/mongo';
+
+export * from './postgres/auth/backend';
+export * from './postgres/auth/schema';
+export * from './postgres/auth/import';
+export * from './postgres/auth/mongo';
+export type {
+  TokenQueries,
+  MCPTokenSelection,
+  MCPTokenGeneration,
+  MCPAuthorityTokenRecord,
+} from './postgres/auth/tokenQueries';

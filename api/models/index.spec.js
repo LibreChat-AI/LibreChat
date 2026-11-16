@@ -1,4 +1,7 @@
 jest.mock('@librechat/data-schemas', () => ({
+  createMongoAuthenticationMethods:
+    jest.requireActual('@librechat/data-schemas').createMongoAuthenticationMethods,
+  createPostgresAuthenticationBackend: jest.fn(),
   createPostgresFavoriteBackend: jest.fn(),
   createMethods: jest.fn((_mongoose, deps) => ({ ...deps.toolFavorites })),
   createToolFavoriteMethods: jest.fn(() => ({
@@ -10,6 +13,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('../../packages/api/src/app/persistence'),
+  ...jest.requireActual('../../packages/api/src/app/authentication'),
   createFavoriteRuntime: jest.fn(
     jest.requireActual('../../packages/api/src/app/persistence').createFavoriteRuntime,
   ),

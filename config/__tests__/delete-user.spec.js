@@ -51,11 +51,22 @@ const mockMongoFavorites = {
   cancelUserToolFavoriteDeletion: jest.fn(),
 };
 
+const mockMongoAuthentication = {
+  SessionError: Error,
+  deleteAllUserSessions: jest.fn(async () => ({ deletedCount: 2 })),
+  deletePasskeysByUser: jest.fn(async () => ({ deletedCount: 1 })),
+};
+
 jest.mock('../connect', () => jest.fn(async () => undefined));
 jest.mock('mongoose', () => ({ disconnect: jest.fn(async () => undefined) }));
 jest.mock('@librechat/data-schemas', () => ({
   createModels: () => new Proxy({}, { get: (_target, prop) => mockModelFor(prop) }),
-  createMethods: (_mongoose, deps) => ({ ...mockMethods, ...deps.toolFavorites }),
+  createMethods: (_mongoose, deps) => ({
+    ...mockMethods,
+    ...deps.toolFavorites,
+    ...deps.authentication,
+  }),
+  createMongoAuthenticationMethods: () => mockMongoAuthentication,
   createToolFavoriteMethods: () => mockMongoFavorites,
   runAsSystem: (operation) => operation(),
   tenantStorage: mockTenantStorage,
@@ -163,6 +174,17 @@ describe('Delete user CLI', () => {
     process.argv = originalArgv;
     logSpy.mockRestore();
     jest.restoreAllMocks();
+  });
+
+  it('uses the selected authentication methods during erasure and closes captured references', async () => {
+    let deleteSessions;
+    mockEraseUserData.mockImplementationOnce(async (_params, deps) => {
+      deleteSessions = deps.deleteAllUserSessions;
+      expect(await deleteSessions(USER_ID)).toEqual({ deletedCount: 2 });
+    });
+    expect(await runCli()).toBe(0);
+    expect(mockMongoAuthentication.deleteAllUserSessions).toHaveBeenCalledWith(USER_ID);
+    await expect(deleteSessions(USER_ID)).rejects.toThrow('not initialized');
   });
 
   it('initializes the injected favorites methods and closes captured references on exit', async () => {

@@ -1,6 +1,7 @@
 import { Document, Types } from 'mongoose';
 
 export interface IToken extends Document {
+  __v?: number;
   userId: Types.ObjectId;
   email?: string;
   type?: string;
@@ -14,7 +15,7 @@ export interface IToken extends Document {
 }
 
 export interface TokenCreateData {
-  userId: Types.ObjectId | string;
+  userId: string | { toString(): string };
   email?: string;
   type?: string;
   scope?: string;
@@ -25,7 +26,7 @@ export interface TokenCreateData {
 }
 
 export interface TokenQuery {
-  userId?: Types.ObjectId | string;
+  userId?: string | { toString(): string };
   token?: string;
   email?: string | null;
   type?: string | null;
@@ -48,4 +49,38 @@ export interface TokenUpdateData {
 
 export interface TokenDeleteResult {
   deletedCount?: number;
+}
+
+/** Storage-neutral token returned by database methods. */
+export interface TokenRecord {
+  _id: string;
+  userId: string;
+  email?: string;
+  type?: string;
+  scope?: string;
+  identifier?: string;
+  token: string;
+  createdAt: Date;
+  expiresAt: Date;
+  metadata?: Record<string, unknown>;
+  tenantId?: string;
+}
+
+export interface TokenFindOptions {
+  sort?: Partial<
+    Record<
+      | '_id'
+      | 'userId'
+      | 'email'
+      | 'type'
+      | 'scope'
+      | 'identifier'
+      | 'token'
+      | 'createdAt'
+      | 'expiresAt'
+      | 'tenantId',
+      1 | -1
+    >
+  >;
+  projection?: Partial<Record<keyof TokenRecord, 0 | 1>>;
 }

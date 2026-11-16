@@ -1,4 +1,5 @@
 import path from 'path';
+import type { AuthenticationRuntime } from '@librechat/api';
 import { applyRuntimeEnv } from './runtimeEnv';
 
 type TUser = { email: string; password: string };
@@ -21,28 +22,34 @@ export default async function cleanupUser(user: TUser) {
   registerBackendAlias();
   /* eslint-disable @typescript-eslint/no-require-imports */
   const { connectDb } = require('@librechat/backend/db/connect');
+  const { findUser, deleteConvos, deleteMessages } = require('@librechat/backend/models');
+  const { User, Balance, Transaction, AclEntry, Group } = require('@librechat/backend/db/models');
+  const mongoose = require('mongoose');
+  const { createAuthenticationRuntime, getPersistenceConfig } = require('@librechat/api');
   const {
-    findUser,
-    deleteConvos,
-    deleteMessages,
-    deleteAllUserSessions,
-  } = require('@librechat/backend/models');
-  const {
-    User,
-    Balance,
-    Transaction,
-    AclEntry,
-    Token,
-    Group,
-  } = require('@librechat/backend/db/models');
+    createMongoAuthenticationMethods,
+    createPostgresAuthenticationBackend,
+    runAsSystem,
+  } = require('@librechat/data-schemas');
+  const loadCustomConfig = require('@librechat/backend/server/services/Config/loadCustomConfig');
   /* eslint-enable @typescript-eslint/no-require-imports */
 
   const { email } = user;
   let db: DatabaseConnection | undefined;
+  let authentication: AuthenticationRuntime | undefined;
   try {
     console.log('🤖: global teardown has been started');
     db = await connectDb();
     console.log('🤖:  ✅  Connected to Database');
+    const runtime: AuthenticationRuntime = createAuthenticationRuntime(
+      createMongoAuthenticationMethods(mongoose),
+      process.env,
+      createPostgresAuthenticationBackend,
+    );
+    authentication = runtime;
+    await runtime.initialize(
+      getPersistenceConfig(await loadCustomConfig(false, { storageSelection: true })),
+    );
 
     const foundUser = await findUser({ email });
     if (!foundUser) {
@@ -54,7 +61,7 @@ export default async function cleanupUser(user: TUser) {
     console.log('🤖:  ✅  Found user in Database');
 
     // Delete all conversations & associated messages
-    const { deletedCount, messages } = await deleteConvos(userId, {}).catch((error) => {
+    const { deletedCount, messages } = await deleteConvos(userId, {}).catch((error: unknown) => {
       if (error instanceof Error && error.message.includes('Conversation not found')) {
         console.log('🤖:  ⚠️  No conversations found for user');
         return { deletedCount: 0, messages: { deletedCount: 0 } };
@@ -74,12 +81,12 @@ export default async function cleanupUser(user: TUser) {
     }
 
     // Delete all user sessions
-    await deleteAllUserSessions(userId.toString());
+    await runtime.methods.deleteAllUserSessions(userId.toString());
 
     // Delete user, balance, transactions, tokens, ACL entries, and remove from groups
     await Balance.deleteMany({ user: userId });
     await Transaction.deleteMany({ user: userId });
-    await Token.deleteMany({ userId: userId });
+    await runAsSystem(() => runtime.methods.deleteTokens({ userId: userId.toString() }));
     await AclEntry.deleteMany({ principalId: userId });
     const userIdStr = userId.toString();
     await Group.updateMany({ memberIds: userIdStr }, { $pullAll: { memberIds: [userIdStr] } });
@@ -89,6 +96,11 @@ export default async function cleanupUser(user: TUser) {
   } catch (error) {
     console.error('Error:', error);
   } finally {
+    try {
+      await authentication?.close();
+    } catch (error) {
+      console.error('Error closing authentication storage:', error);
+    }
     try {
       await db?.connection.close();
     } catch (error) {

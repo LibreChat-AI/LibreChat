@@ -660,15 +660,7 @@ const deleteMCPServerController = async (req, res, uninstallOAuthMCP) => {
         includeHidden: true,
       },
     );
-    const tokenIdentifier = `mcp:${serverName}`;
-    const getTokenUserIds = () =>
-      mongoose.models.Token
-        ? mongoose.models.Token.distinct('userId', {
-            identifier: {
-              $in: [tokenIdentifier, `${tokenIdentifier}:client`, `${tokenIdentifier}:refresh`],
-            },
-          })
-        : Promise.resolve([]);
+    const getTokenUserIds = () => db.findMCPTokenUserIds({ serverName, scope: 'context' });
     const getAclEntries = () =>
       existingConfig?.dbId && mongoose.models.AclEntry
         ? mongoose.models.AclEntry.find({

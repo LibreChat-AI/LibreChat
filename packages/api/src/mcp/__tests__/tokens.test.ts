@@ -1,6 +1,5 @@
-import { Types } from 'mongoose';
 import { decryptV2 } from '@librechat/data-schemas';
-import type { TokenMethods, IToken } from '@librechat/data-schemas';
+import type { TokenMethods, TokenRecord } from '@librechat/data-schemas';
 import { MCPTokenStorage } from '~/mcp/oauth/tokens';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -102,18 +101,21 @@ describe('MCPTokenStorage', () => {
         client_secret: 'test-secret',
       };
 
-      const metadata = new Map([
-        ['serverUrl', 'https://test.example.com'],
-        ['state', 'test-state'],
-      ]);
+      const metadata = {
+        serverUrl: 'https://test.example.com',
+        state: 'test-state',
+      };
 
-      const mockToken: IToken = {
-        userId: new Types.ObjectId(userId),
+      const mockToken: TokenRecord = {
+        _id: '000000001111111133333333',
+        userId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 3600000),
         type: 'mcp_oauth_client',
         identifier: `${identifier}:client`,
         token: 'encrypted-token',
         metadata,
-      } as IToken;
+      };
 
       mockFindToken.mockResolvedValue(mockToken);
       mockDecryptV2.mockResolvedValue(JSON.stringify(clientInfo));
@@ -138,12 +140,15 @@ describe('MCPTokenStorage', () => {
         client_id: 'test-client-id',
       };
 
-      const mockToken: IToken = {
-        userId: new Types.ObjectId(userId),
+      const mockToken: TokenRecord = {
+        _id: '000000001111111133333333',
+        userId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 3600000),
         type: 'mcp_oauth_client',
         identifier: `${identifier}:client`,
         token: 'encrypted-token',
-      } as IToken;
+      };
 
       mockFindToken.mockResolvedValue(mockToken);
       mockDecryptV2.mockResolvedValue(JSON.stringify(clientInfo));
@@ -169,13 +174,16 @@ describe('MCPTokenStorage', () => {
         state: 'test-state',
       };
 
-      const mockToken: IToken = {
-        userId: new Types.ObjectId(userId),
+      const mockToken: TokenRecord = {
+        _id: '000000001111111133333333',
+        userId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 3600000),
         type: 'mcp_oauth_client',
         identifier: `${identifier}:client`,
         token: 'encrypted-token',
-        metadata: metadata as unknown, // runtime check
-      } as IToken;
+        metadata,
+      };
 
       mockFindToken.mockResolvedValue(mockToken);
       mockDecryptV2.mockResolvedValue(JSON.stringify(clientInfo));

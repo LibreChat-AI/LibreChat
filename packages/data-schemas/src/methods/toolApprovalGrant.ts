@@ -5,6 +5,8 @@ import type {
   ToolApprovalGrantScope,
   ToolApprovalGrantBinding,
 } from 'librechat-data-provider';
+import type { TokenQueries } from '~/postgres/auth/tokenQueries';
+import { createMongoTokenQueries } from '~/postgres/auth/tokenQueries';
 
 interface StoredGrant {
   agentId: string;
@@ -38,6 +40,7 @@ function epochGenerations(revocation?: string): readonly [number, number] | unde
 
 export function createToolApprovalGrantMethods(
   mongoose: typeof import('mongoose'),
+  tokenQueries: Pick<TokenQueries, 'getMCPTokenGenerations'> = createMongoTokenQueries(mongoose),
 ): ToolApprovalGrantStorage {
   async function readGrants(
     scope: ToolApprovalGrantScope,
@@ -82,31 +85,21 @@ export function createToolApprovalGrantMethods(
     ]);
     const [records, tokens] = await Promise.all([
       recordsQuery,
-      identities.length === 0
-        ? Promise.resolve([])
-        : mongoose.models.Token.find({
-            userId: scope.userId,
-            tenantId: scope.tenantId ?? null,
-            $or: identities.map(({ type, identifier }) => ({ type, identifier })),
-          })
-            .select('type identifier metadata.credential_set_id -_id')
-            .lean<
-              Array<{
-                type: string;
-                identifier: string;
-                metadata?: { credential_set_id?: string };
-              }>
-            >({ flattenMaps: true }),
+      tokenQueries.getMCPTokenGenerations({
+        userId: scope.userId,
+        tenantId: scope.tenantId,
+        serverNames: servers,
+      }),
     ]);
     const identityKey = (type: string, identifier: string) => JSON.stringify([type, identifier]);
     const owners = new Map(
       identities.map(({ server, type, identifier }) => [identityKey(type, identifier), server]),
     );
-    const generations = new Map<string, Set<string | undefined>>();
+    const generations = new Map<string, Set<unknown>>();
     for (const token of tokens) {
       const server = owners.get(identityKey(token.type, token.identifier));
       if (!server) continue;
-      const values = generations.get(server) ?? new Set<string | undefined>();
+      const values = generations.get(server) ?? new Set<unknown>();
       values.add(token.metadata?.credential_set_id);
       generations.set(server, values);
     }

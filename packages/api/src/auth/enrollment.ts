@@ -3,7 +3,7 @@ import {
   CREDENTIAL_RETIREMENT_INCOMPLETE_CODE,
   TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE,
 } from 'librechat-data-provider';
-import type { TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
+import type { SessionRecord, TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { TwoFactorEnrollmentDependencies, StoredTwoFactorAccount } from './twoFactor';
 import type { UserDocumentId } from '~/auth/verification';
@@ -80,10 +80,10 @@ export interface EnrollmentControllerDependencies
     user: StoredTwoFactorAccount;
     backupCode: string;
   }) => Promise<boolean>;
-  findSession: (
-    query: { userId: string; refreshToken: string },
-    options: { lean: false },
-  ) => Promise<RotatableSession | null>;
+  findSession: (query: {
+    userId: string;
+    refreshToken: string;
+  }) => Promise<RotatableSession | null>;
   deleteSession: (query: { sessionId: string }) => Promise<unknown>;
   deleteAllUserSessions: (input: { userId: string }) => Promise<object>;
   clearCloudFrontCookies: typeof clearCloudFrontCookies;
@@ -367,7 +367,7 @@ export function createEnrollmentControllers(
       /** Neither lookup needs the other's result, so they start together. */
       const [user, session] = await Promise.all([
         deps.getUserById(userId, CANCEL_ENROLLMENT_PROJECTION),
-        refreshToken ? deps.findSession({ userId, refreshToken }, { lean: false }) : null,
+        refreshToken ? deps.findSession({ userId, refreshToken }) : null,
       ]);
       /** Cleared before any fallible write, so a failure cannot leave the credential in the browser. */
       clearSessionCookies(res, user ?? {}, userId, deps);
@@ -403,10 +403,7 @@ export function createEnrollmentControllers(
 }
 
 /** The refresh session the confirming tab holds, rotated rather than replaced. */
-export interface RotatableSession {
-  _id: { toString(): string };
-  expiration: Date;
-}
+export type RotatableSession = SessionRecord;
 
 export interface OptInConfirmationDependencies
   extends Pick<
@@ -478,7 +475,7 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
       const refreshToken = req.cookies?.refreshToken;
       const [user, session] = await Promise.all([
         deps.getUserById(userId, OPT_IN_CONFIRMATION_PROJECTION),
-        refreshToken ? deps.findSession({ userId, refreshToken }, { lean: false }) : null,
+        refreshToken ? deps.findSession({ userId, refreshToken }) : null,
       ]);
       const secretSource = user?.pendingTotpSecret ?? user?.totpSecret;
       if (!user || !secretSource) {

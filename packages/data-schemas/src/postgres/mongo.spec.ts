@@ -50,6 +50,29 @@ describe('CLI Mongo favorite snapshots', () => {
       toolFavoriteSchema.set('autoSearchIndex', previous.autoSearchIndex);
     }
   });
+  it('pins existing-source snapshots to primary/majority and owned staging to primary/local', async () => {
+    const find = jest.spyOn(database.Collection.prototype, 'find');
+    const store = createMongoFavoriteStore(database);
+    try {
+      expect(await rows(store.source())).toEqual([]);
+      expect(find.mock.calls[0][1]).toMatchObject({
+        readPreference: 'primary',
+        readConcern: { level: 'majority' },
+      });
+      const staging = await store.stage();
+      try {
+        expect(await rows(staging.source())).toEqual([]);
+        expect(find.mock.calls[1][1]).toMatchObject({
+          readPreference: 'primary',
+          readConcern: { level: 'local' },
+        });
+      } finally {
+        await staging.discard();
+      }
+    } finally {
+      find.mockRestore();
+    }
+  });
   it('uses the data-schema collection name and preserves raw documents and indexes', async () => {
     const metadata = new mongoose.Mongoose();
     metadata.set('autoCreate', false);

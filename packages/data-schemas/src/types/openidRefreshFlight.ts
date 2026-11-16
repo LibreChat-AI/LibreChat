@@ -70,5 +70,21 @@ export interface OpenIDRefreshFlightQuery {
 
 export interface OpenIDRefreshFlightAcquireResult {
   acquired: boolean;
-  flight: IOpenIDRefreshFlight | null;
+  flight: FlightRecord | null;
+}
+
+export interface FlightRecord {
+  _id: string;
+  key: string;
+  ownerId: string;
+  status: OpenIDRefreshFlightStatus;
+  encryptedResult?: string;
+  errorMessage?: string;
+  deliveryId?: string;
+  deliveryExpiresAt?: Date;
+  revocationRequestedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+  lockExpiresAt: Date;
+  expiresAt: Date;
 }

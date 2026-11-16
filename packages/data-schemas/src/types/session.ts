@@ -7,6 +7,14 @@ export interface ISession extends Document {
   tenantId?: string;
 }
 
+export interface SessionRecord {
+  _id: string;
+  user: string;
+  refreshTokenHash: string;
+  expiration: Date;
+  tenantId?: string;
+}
+
 export interface CreateSessionOptions {
   expiration?: Date;
   /** Duration in milliseconds for session expiry. Default: 7 days */
@@ -25,6 +33,7 @@ export interface SessionSearchParams {
 }
 
 export interface SessionQueryOptions {
+  /** Compatibility option; results are always plain records. */
   lean?: boolean;
 }
 
@@ -39,7 +48,7 @@ export interface DeleteAllSessionsOptions {
 }
 
 export interface SessionResult {
-  session: Partial<ISession>;
+  session: SessionRecord;
   refreshToken: string;
 }
 

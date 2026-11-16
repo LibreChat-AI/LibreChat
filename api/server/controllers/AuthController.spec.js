@@ -2769,13 +2769,10 @@ describe('refreshController – LibreChat path', () => {
       twoFASetupRequired: true,
       tempToken: 'setup-token',
     });
-    expect(findSession).toHaveBeenCalledWith(
-      {
-        userId: 'local-user-id',
-        refreshToken: expect.any(String),
-      },
-      { lean: false },
-    );
+    expect(findSession).toHaveBeenCalledWith({
+      userId: 'local-user-id',
+      refreshToken: expect.any(String),
+    });
     expect(setAuthTokens).not.toHaveBeenCalled();
     expect(deleteSession).toHaveBeenCalledWith({ sessionId: 'session-id' });
     expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');

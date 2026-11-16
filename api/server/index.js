@@ -79,6 +79,8 @@ const {
   getRoleByName,
   seedDatabase,
   initializeFavorites,
+  initializeAuthentication,
+  closeAuthentication,
   closeFavorites,
   listAllConfigs,
   recordAuditEntry,
@@ -259,8 +261,13 @@ const startServer = async () => {
   runAsSystem(sweepOrphanedPreviews).catch((err) => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
-  await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
+  const persistenceConfig = await loadCustomConfig(false, { storageSelection: true });
+  await Promise.all([
+    initializeAuthentication(persistenceConfig),
+    initializeFavorites(persistenceConfig),
+  ]);
   registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
+  registerShutdownTask('authentication persistence', closeAuthentication, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
   await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
   registerBackgroundTaskShutdown({
@@ -623,7 +630,7 @@ const startServer = async () => {
  * `experimental.js`.
  */
 startServer().catch(async (err) => {
-  await closeFavorites().catch(() => undefined);
+  await Promise.allSettled([closeFavorites(), closeAuthentication()]);
   logger.error('Failed to start server:', err);
   process.exit(1);
 });
