@@ -14,7 +14,7 @@ export interface SdkSocket {
   once(event: 'close' | 'error', listener: () => void): this;
 }
 
-export type SdkRpc = (method: string, data: unknown) => Promise<unknown>;
+export type SdkRpc = (method: string, data: unknown, timeoutMs?: number) => Promise<unknown>;
 export type SdkFrame =
   | { type: 'call'; id: string; method: string; data: unknown }
   | { type: 'result'; id: string; data: unknown; failed?: boolean }
@@ -150,6 +150,10 @@ export function createSdkPeer(
       // Hooks observe all earlier events and can reserve content slots for later ones.
       // Ordinary RPCs stay reentrant; replies above always bypass this barrier.
       if (frame.method === 'hook') queue = queue.then(dispatch);
+      else if (frame.method === 'tools')
+        queue = queue.then(() => {
+          void dispatch();
+        });
       else void dispatch();
       return;
     }
@@ -170,13 +174,14 @@ export function createSdkPeer(
         socket.close(1011);
       });
   });
-  const call: SdkRpc = async (method, data) => {
+  const call: SdkRpc = async (method, data, timeoutMs = options.timeoutMs) => {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw failure();
     const id = randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(failure());
-      }, options.timeoutMs);
+      }, timeoutMs);
       timer.unref();
       pending.set(id, {
         resolve: (value) => {

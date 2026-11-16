@@ -203,3 +203,21 @@ describe('shared message body typography', () => {
     expect(body).toMatch(/max-width:\s*none/);
   });
 });
+
+describe('shared streaming effects', () => {
+  it.each(['result-thinking', 'result-streaming', 'data-lc-fade', 'lc-dot-breathe', 'lc-fade-in'])(
+    'ships %s in the package and removes the app duplicate',
+    (hook) => {
+      expect(parts).toContain(hook);
+      expect(appStyles).not.toContain(hook);
+    },
+  );
+
+  it('ships the fade and waiting-dot reduced-motion overrides', () => {
+    expect(reducedMotion).toContain('[data-lc-fade]');
+    expect(reducedMotion).toContain('.submitting .result-thinking:empty:last-child:after');
+    expect(parts).toContain('animation-delay: var(--lc-delay, 0ms)');
+    expect(parts).toContain('@supports not (selector(:has(*)))');
+    expect(parts).toContain('background-color: rgb(var(--text-primary))');
+  });
+});

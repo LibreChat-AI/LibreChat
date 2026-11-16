@@ -459,4 +459,103 @@ describe('live SDK recovery', () => {
       next.close();
     }
   });
+  it.each(['approve', 'edit', 'reject'] as const)(
+    'resumes native host-tool %s and recovers without repeating the effect',
+    async (decision) => {
+      const runtime = await fixture(async (input) => {
+        const run = await Run.create({
+          ...input.config,
+          tokenCounter: () => 1,
+          returnContent: true,
+          graphConfig: {
+            type: 'standard',
+            compileOptions: input.compileOptions,
+            agents: [
+              {
+                agentId: input.identity.agentId,
+                provider: Providers.OPENAI,
+                tools: [],
+                toolDefinitions: input.hostTools?.toolDefinitions,
+              },
+            ],
+          },
+        });
+        run.Graph!.overrideTestModel(['host tool'], 5, [
+          { id: 'host-inspect', name: 'inspect', args: {}, type: 'tool_call' },
+        ]);
+        return run;
+      });
+      let effects = 0;
+      try {
+        const hooks = new HookRegistry();
+        hooks.register('PreToolUse', { hooks: [async () => ({ decision: 'ask' })] });
+        const config: RunConfig = {
+          ...hostConfig(async () => undefined),
+          hooks,
+          humanInTheLoop: { enabled: true },
+          graphConfig: {
+            type: 'standard',
+            llmConfig: { provider: Providers.OPENAI },
+            compileOptions: { checkpointer: new MemorySaver() },
+            toolDefinitions: [
+              {
+                name: 'inspect',
+                description: 'Inspect',
+                parameters: { type: 'object', properties: {} },
+              },
+            ],
+          },
+          customHandlers: {
+            [GraphEvents.ON_TOOL_EXECUTE]: {
+              handle: async (_event, data) => {
+                const batch = data as import('@librechat/agents').ToolExecuteBatchRequest;
+                effects++;
+                if (decision === 'edit') expect(batch.toolCalls[0].args.value).toBe('edited');
+                runtime.drop();
+                batch.resolve([
+                  {
+                    toolCallId: 'host-inspect',
+                    status: 'success',
+                    content: 'host inspection complete',
+                  },
+                ]);
+              },
+            },
+          },
+        };
+        const run = await createRemoteSdkRun({ config, identity, remote: runtime.remote });
+        const invocation = {
+          version: 'v2' as const,
+          configurable: { thread_id: identity.conversationId },
+        };
+        await run.processStream({ messages: [new HumanMessage('inspect')] }, invocation);
+        expect(run.getInterrupt()?.payload.type).toBe('tool_approval');
+        expect(effects).toBe(0);
+        const restored = await createRemoteSdkRun({
+          config,
+          identity,
+          remote: runtime.remote,
+          resumeState: {
+            content: run.Graph!.getContentParts() ?? [],
+            steps: run.Graph!.createRunStepResumeState().steps.map((e) => e.step),
+          },
+        });
+        await restored.resume(
+          {
+            'host-inspect': {
+              type: decision,
+              ...(decision === 'edit' ? { updatedInput: { value: 'edited' } } : {}),
+              ...(decision === 'reject' ? { reason: 'declined' } : {}),
+            },
+          },
+          invocation,
+        );
+        expect(effects).toBe(decision === 'reject' ? 0 : 1);
+        expect(runtime.createRun).toHaveBeenCalledTimes(2);
+        expect(runtime.connections()).toBeGreaterThanOrEqual(decision === 'reject' ? 2 : 3);
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
 });

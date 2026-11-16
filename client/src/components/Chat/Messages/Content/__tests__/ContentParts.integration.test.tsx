@@ -179,7 +179,6 @@ jest.mock('../Parts', () => ({
   ),
   EmptyText: () => <div data-testid="empty-text" />,
   Reasoning: () => <div data-testid="reasoning" />,
-  ReasoningCompact: () => <div data-testid="compact-reasoning" />,
   Summary: () => <div data-testid="summary" />,
   SteerPart: () => <div data-testid="steer" />,
   Text: jest.fn(({ text }: { text?: string }) => <div data-testid="text">{text}</div>),
@@ -2160,7 +2159,11 @@ describe('ContentParts — live activity fold', () => {
     });
 
     expect(screen.queryByTestId('activity-phase-card')).toBeNull();
-    expect(screen.getByTestId('compact-reasoning')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^com_ui_thinking\b/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(screen.getByText('Weighing the refs.')).toBeVisible();
   });
 
   it('holds the block at one row from a thought through the calls that follow it', () => {

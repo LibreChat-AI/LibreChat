@@ -162,7 +162,7 @@ adapters and unverified behaviors remain release gates for products that depend 
 | Model/PII/provider-text protection                          | Remote execution is blocked when these host policies are active             | A supported host policy adapter is required before protected deployments can enable remote execution.                                                 |
 | Stream circuit breakers and tool-policy hooks               | Forwarded to the worker; hook failure stops execution                       | Domain tools must also authorize signed caller identity; trusted factories must retain the supplied adapters.                                         |
 | Agent-builder model, parameters, tools, capabilities        | Name/instructions/identity are passed; worker owns the graph/model/tools    | Other builder settings are not automatically applied. A runtime capability/configuration contract is needed to make controls authoritative.           |
-| Host MCP, web/code/browser tools, user tool credentials     | Not automatically available inside the worker                               | Supply authorized runtime tools today; shared host-tool adapters remain missing.                                                                      |
+| Host MCP, web/code/browser tools, user tool credentials     | Authorized root-agent schema tools execute through host RPC                 | Host credentials remain local; child-agent authorization and broader host-service parity remain separate integrations.                                |
 | Uploaded files, generated artifacts, download authorization | Message data can cross the wire                                             | Host file services, sandbox storage, and artifact authorization do not have remote adapters; attachment/file parity is not established.               |
 | Live steering and mid-stream preemption                     | Not integrated                                                              | A remote execution-control adapter and acceptance tests are required.                                                                                 |
 | Foreground/nested/detached subagents                        | Worker may construct its own SDK graph                                      | Native configured compositions are rejected; detached child checkpoint threads/context/usage sinks are not integrated.                                |
@@ -175,3 +175,32 @@ adapters and unverified behaviors remain release gates for products that depend 
 Do not enable a workflow on the assumption that a native chat control is honored remotely. Its
 required rows must be implemented and verified first. Keep this matrix current as adapters land;
 transport success alone is insufficient to mark a product migration complete.
+
+### Host tool execution
+
+With SDK 4.2.4+, a host agent's schema tools bind to its existing authenticated tool handler.
+The bridge negotiates `hostTools: 1` before starting the worker; an older worker cannot silently
+ignore required host tools. Factories install `input.hostTools.toolDefinitions` on the matching
+SDK agent; supplied config already contains the execution handler. Missing definitions fail
+before graph execution. Worker-owned direct tools may use `graphTools` alongside host schemas.
+
+Tool-policy hooks and approve/edit/reject remain native SDK behavior. Host execution uses the
+signed root identity and host invocation configuration; runtime payloads cannot provide host
+credentials or choose an unbound tool. Incremental receipts retain the SDK's early-completion
+gate. Result and session-refresh callbacks are acknowledged before the final RPC settles, on
+success or failure. Recovery replays wire frames without re-invoking the host handler.
+
+Child-agent execution subjects are explicitly rejected until the host can authorize their
+registered tool ownership. Uploaded file authorization, model/PII policy, steering, accounting
+and tracing adapters retain the limitations in the matrix above. A tool reference does not
+itself grant access to domain data; the existing host tool implementation must authorize it.
+
+Host tool execution uses `maxRunMs` for its RPC lifetime. `rpcTimeoutMs` continues to bound
+control, checkpoint and notification RPCs; a healthy long-running tool must not fail solely
+because it exceeds that shorter control timeout. The run's cancellation/deadline still aborts
+both sides cooperatively.
+
+Caller-owned function tools (`clientDelegatedToolNames`) are not host tools. Remote SDK
+execution rejects that configuration until an explicit ownership/continuation adapter is
+available; their schemas must never be reinterpreted as permission to execute on the host.
+Native Responses execution without a remote SDK binding retains its existing behavior.

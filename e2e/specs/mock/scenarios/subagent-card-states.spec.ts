@@ -7,7 +7,7 @@ import {
   deleteConversations,
   deleteMessagesByConversation,
 } from '../db';
-import { getAccessToken } from '../helpers';
+import { getAccessToken, isTransparentColor } from '../helpers';
 import { getE2EUser } from '../../../setup/user';
 
 const NO_PARENT = '00000000-0000-0000-0000-000000000000';
@@ -102,12 +102,26 @@ test('a subagent card shows a visible focus outline to keyboard users and opens 
     expect(await card.evaluate((element) => element.matches(':focus-visible'))).toBe(true);
     const outline = await card.evaluate((element) => {
       const style = getComputedStyle(element);
-      return { style: style.outlineStyle, width: style.outlineWidth, color: style.outlineColor };
+      return { style: style.outlineStyle, width: style.outlineWidth };
     });
     expect(outline.style).toBe('solid');
     expect(parseFloat(outline.width)).toBeGreaterThanOrEqual(2);
+    /**
+     * The card eases its colors, the outline's among them, so the outline starts at the card's
+     * text color and takes a moment to reach the theme's. Read at once it is still on its way:
+     * wait for it to settle on the color the app gives every focus outline.
+     */
+    const themeOutline = await page.evaluate(() => {
+      const probe = document.createElement('span');
+      probe.style.color = 'rgb(var(--focus-outline))';
+      document.body.append(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      return color;
+    });
     /** A transparent outline is the hidden state a control draws when it owns its own ring. */
-    expect(outline.color).not.toMatch(/,\s*0\)$/);
+    expect(isTransparentColor(themeOutline)).toBe(false);
+    await expect(card).toHaveCSS('outline-color', themeOutline);
 
     await page.keyboard.press('Enter');
     const panel = childActivityPanel(page);

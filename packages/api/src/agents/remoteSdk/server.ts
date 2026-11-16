@@ -2,7 +2,13 @@ import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import { createServer } from 'node:http';
 import WebSocket, { WebSocketServer } from 'ws';
-import { Run, HookRegistry, HOOK_EVENTS, GraphEvents } from '@librechat/agents';
+import {
+  Run,
+  createHostToolBindings,
+  HookRegistry,
+  HOOK_EVENTS,
+  GraphEvents,
+} from '@librechat/agents';
 import type { EventHandler, AggregatedHookResult, HookOutput } from '@librechat/agents';
 import type { Duplex } from 'node:stream';
 import type { Server } from 'node:http';
@@ -12,6 +18,7 @@ import type { SdkAgentIdentity } from './identity';
 import { createRuntimeRecovery, recoveryClaimSchema } from './recovery/server';
 import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { RECOVERY_HEADER_BYTES } from './recovery/socket';
+import { createWorkerToolService } from './hostTools';
 import { RemoteSdkCheckpointer } from './checkpoint';
 import { createSdkPeer } from './peer';
 
@@ -35,6 +42,14 @@ const claimSchema = z.object({
   exp: z.number(),
 });
 const startSchema = z.object({
+  hostTools: z
+    .array(
+      z.object({
+        reference: z.string().min(1),
+        definition: z.object({ name: z.string().min(1) }).passthrough(),
+      }),
+    )
+    .optional(),
   operation: z.enum(['start', 'resume']),
   input: z.object({ messages: z.array(z.unknown()) }).passthrough(),
   resume: z.unknown().optional(),
@@ -233,6 +248,10 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
           if (!running) active.delete(controller);
         };
         transport.once('close', cleanup);
+        const workerTools = createWorkerToolService({
+          call: (method, data) =>
+            peer.call(method, data, method === 'tools' ? limits.maxRunMs : undefined),
+        });
         const peer = createSdkPeer(transport, {
           ...limits,
           timeoutMs: limits.rpcTimeoutMs,
@@ -242,6 +261,9 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
             throw new Error('Unexpected runtime frame');
           },
           onCall: async (method, data) => {
+            if (method === 'capabilities') return { hostTools: 1 };
+            if (method === 'tool.result') return workerTools.accept(data);
+            if (method === 'tool.session') return workerTools.accept(data, 'session');
             if (method !== 'run' || started) throw new Error('SDK execution already admitted');
             started = true;
             const request = startSchema.parse(data) as RemoteSdkStart;
@@ -305,13 +327,21 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                   ],
                 });
             }
+            const hostTools = request.hostTools?.length
+              ? createHostToolBindings({
+                  identity,
+                  tools: request.hostTools,
+                  service: workerTools.service,
+                })
+              : undefined;
             const execute = async () => {
               await recovered?.begin();
               const run = await options.createRun({
                 identity,
+                hostTools,
                 config: {
                   runId: identity.runId,
-                  customHandlers: handlers,
+                  customHandlers: { ...handlers, ...hostTools?.customHandlers },
                   hooks,
                   humanInTheLoop: request.humanInTheLoop,
                   streamLimits: request.streamLimits,
@@ -328,6 +358,15 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                 run.Graph?.defaultAgentId !== identity.agentId
               )
                 throw new Error('SDK runtime run identity mismatch');
+              if (hostTools) {
+                const names = new Set(
+                  run.Graph.agentContexts
+                    .get(identity.agentId)
+                    ?.toolDefinitions?.map((t) => t.name),
+                );
+                if (hostTools.toolDefinitions.some((t) => !names.has(t.name)))
+                  throw new Error('SDK runtime omitted required host tools');
+              }
               const callerOptions = {
                 ...request.options,
                 version: 'v2' as const,

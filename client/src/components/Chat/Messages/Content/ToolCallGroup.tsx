@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
+import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
 import { ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
-import { Tools, Constants, ContentTypes, isOpaqueReasoning } from 'librechat-data-provider';
 import {
   LoneGroupContext,
   SoleToolContext,
@@ -32,20 +32,21 @@ import {
   ToolAuthWarningContext,
   useExpandCollapse,
   ToolGroupHeader,
+  ToolGroupBody,
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { ToolMeta } from '@librechat/chat';
 import type { PartWithIndex } from './ParallelContent';
 import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { cn, getPartKeyIndex, hasPendingAuthInPart } from '~/utils';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { MCPAppViews } from '~/components/MCPUIResource';
+import { cn, hasPendingAuthInPart } from '~/utils';
 import { HeaderActionSlotContext } from './slot';
 import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
+import { AttachmentGroup } from './Parts';
 import SearchVerticals from './verticals';
 
 interface ToolCallGroupProps {
@@ -729,73 +730,18 @@ export default function ToolCallGroup({
                   >
                     <LoneGroupContext.Provider value={count === 1 && !hasReasoning}>
                       <SoleToolContext.Provider value={!hasReasoning && (phaseSole ?? count === 1)}>
-                        <div className="flex flex-col py-0.5">
-                          {parts.map(({ part, idx }) => {
-                            if (part.type === ContentTypes.THINK) {
-                              const think = part.think;
-                              const reasoning =
-                                typeof think === 'string' ? think : (think?.value ?? '');
-                              /** A detached-subagent projection carries an empty THINK
-                               *  part flagged `reasoning_unavailable`, and encrypted
-                               *  reasoning has no readable text; `Part` renders both as a
-                               *  `ReasoningMarker`. `ReasoningCompact` would show the
-                               *  encoded payload or return null, so the marker has to
-                               *  keep going through the standalone path or it vanishes
-                               *  the moment its call joins a group. */
-                              if (
-                                (reasoning.trim() === '' && part.reasoning_unavailable === true) ||
-                                isOpaqueReasoning(reasoning)
-                              ) {
-                                return renderPart(
-                                  part,
-                                  idx,
-                                  isLast && idx === lastContentIdx,
-                                  handleToolExpand,
-                                );
-                              }
-                              /** `lastContentIdx` is the tail of this body, and every
-                               *  settled phase body has one. Only the group that holds
-                               *  the message's cursor has a thought still being written,
-                               *  the rule `PartWithContext` applies to a lone thought. */
-                              const streaming = isSubmitting && isLast && idx === lastContentIdx;
-                              /** Mirrors the standalone `Reasoning` path: the authored
-                               *  label wins, generic text is only a fallback. */
-                              const generatedLabel = part.reasoning_label?.trim();
-                              const label =
-                                generatedLabel ||
-                                (streaming
-                                  ? localize('com_ui_thinking')
-                                  : localize('com_ui_thoughts'));
-                              return (
-                                <ReasoningCompact
-                                  key={`reasoning-${idx}`}
-                                  partKeyIndex={getPartKeyIndex(part, idx)}
-                                  reasoning={reasoning}
-                                  label={label}
-                                  showThinking={showThinking}
-                                  isStreaming={streaming}
-                                />
-                              );
-                            }
-                            return (
-                              <div
-                                key={`tool-${getPartKeyIndex(part, idx)}`}
-                                className={cn(
-                                  isSubmitting &&
-                                    smoothStreaming &&
-                                    'animate-in fade-in-0 slide-in-from-top-1 duration-200 motion-reduce:animate-none',
-                                )}
-                              >
-                                {renderPart(
-                                  part,
-                                  idx,
-                                  isLast && idx === lastContentIdx,
-                                  handleToolExpand,
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
+                        <ToolGroupBody
+                          parts={parts}
+                          isSubmitting={isSubmitting}
+                          isLast={isLast}
+                          showThinking={showThinking}
+                          smoothStreaming={smoothStreaming}
+                          lastContentIdx={lastContentIdx}
+                          thinkingLabel={localize('com_ui_thinking')}
+                          thoughtsLabel={localize('com_ui_thoughts')}
+                          renderPart={renderPart}
+                          onToolExpand={handleToolExpand}
+                        />
                       </SoleToolContext.Provider>
                     </LoneGroupContext.Provider>
                   </GeneratedToolLabelContext.Provider>
