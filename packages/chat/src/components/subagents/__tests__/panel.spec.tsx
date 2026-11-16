@@ -319,10 +319,14 @@ jest.mock('../followed', () => ({
     threadId,
     agentId,
     followed,
+    controls,
+    onCancelControl,
   }: {
     threadId: string;
     agentId?: string;
     followed: { isLoading: boolean };
+    controls?: Array<{ controlId?: string; status: string }>;
+    onCancelControl?: (controlId: string) => void;
   }) {
     const { useContext } = jest.requireActual<typeof import('react')>('react');
     const { TaskContentScopeContext } = jest.requireActual<
@@ -336,7 +340,19 @@ jest.mock('../followed', () => ({
         data-agent={agentId}
         data-loading={String(followed.isLoading)}
         data-receipt-scope={JSON.stringify(scope)}
-      />
+        data-controls={(controls ?? []).map((control) => control.status).join(',')}
+      >
+        {onCancelControl != null &&
+          (controls ?? []).map((control) => (
+            <button
+              key={control.controlId}
+              type="button"
+              onClick={() => onCancelControl(control.controlId ?? '')}
+            >
+              {`withdraw-${control.controlId}`}
+            </button>
+          ))}
+      </div>
     );
   },
 }));
@@ -4880,6 +4896,43 @@ describe('SubagentThreadPanel', () => {
 
       expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
       expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
+    });
+
+    it('hands the conversation the guidance still waiting on the child, and withdraws it', () => {
+      mockUseSubagentThreadQuery.mockReturnValue({
+        data: {
+          ...completedView,
+          status: 'running',
+          turns: completedTurns,
+          controlReceipts: [
+            {
+              invocationId: 'invocation-1',
+              controlId: 'control-1',
+              action: 'steer',
+              status: 'accepted',
+              createdAt: '2026-11-16T13:42:38.000Z',
+              updatedAt: '2026-11-16T13:42:38.000Z',
+              message: 'Check the release notes too.',
+            },
+          ],
+        },
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+      mockUseThreadChat.mockReturnValue(followedChat({ isFollowing: true, status: 'streaming' }));
+
+      mount();
+
+      expect(screen.getByTestId('followed-thread')).toHaveAttribute('data-controls', 'accepted');
+      fireEvent.click(screen.getByRole('button', { name: 'withdraw-control-1' }));
+
+      expect(mockControlMutate).toHaveBeenCalledTimes(1);
+      expect(mockControlMutate.mock.calls[0][0]).toMatchObject({
+        parentConversationId: 'parent-conversation',
+        threadId: 'child-thread',
+        command: { taskId: 'task', action: 'cancel_message', controlId: 'control-1' },
+      });
     });
 
     it('follows nothing for a foreground child, which has no thread of its own', () => {

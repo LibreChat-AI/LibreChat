@@ -1752,6 +1752,13 @@ export default function SubagentThreadPanel({
                 threadId={threadId}
                 followed={followed}
                 agentId={taskView?.agentId ?? foregroundAgentId}
+                controls={activity.controls}
+                controlsTruncated={activity.controlsTruncated}
+                onCancelControl={
+                  controlAvailable && !controlPending
+                    ? (controlId) => submitControl('cancel_message', controlId)
+                    : undefined
+                }
               />
             ) : (
               activityPanel

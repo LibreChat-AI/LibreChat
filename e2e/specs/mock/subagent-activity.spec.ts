@@ -683,4 +683,110 @@ test.describe('subagent chat retained-history parity', () => {
       }
     }
   });
+
+  test('guidance the child has not taken yet waits after the last row and can be withdrawn', async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const label = `history-withdrawn-${Date.now().toString(36)}-${testInfo.retry}`;
+    const gates = history.control(label);
+    const createdAgentIds: string[] = [];
+    let primaryError: unknown;
+    try {
+      await page.addInitScript(() => localStorage.setItem('autoExpandTools', 'false'));
+      await page.goto('/c/new');
+      const token = await getAccessToken(page);
+      const worker = await createAgent(
+        page,
+        token,
+        uniqueAgentName('E2E History Worker'),
+        { enabled: true, allowSelf: true },
+        [history.TOOL_NAME],
+      );
+      createdAgentIds.push(worker.id);
+      await selectAgent(page, worker.name!);
+      const sent = await sendMessageAndWaitForCompletion(page, history.prompt(label, 'self'));
+      expect(sent.ok()).toBeTruthy();
+      await expect(page).toHaveURL(/\/c\/(?!new(?:\/|$))[^/]+$/);
+      const conversationId = decodeURIComponent(new URL(page.url()).pathname.split('/')[2]);
+      await gates.wait('ready', { timeoutMs: 45_000 });
+
+      const surface = await openHistoryChild(page, label);
+      await assertHistoryCalls(surface, label);
+
+      /** The child is held before its next tool boundary, so the guidance stays waiting. */
+      const threadPath = await historyThreadPath(page, token, conversationId, label);
+      const [threadEndpoint, query] = threadPath.split('?');
+      const marker = `END_OF_PARENT_GUIDANCE_${label}`;
+      const controlled = await requestJson<{ receipt: { status: string } }>(page, {
+        path: `${threadEndpoint}/control`,
+        token,
+        method: 'POST',
+        body: {
+          taskId: new URLSearchParams(query).get('taskId'),
+          invocationId: `history-withdrawn-guidance-${label}`,
+          action: 'steer',
+          message: `Check the release notes as well. ${marker}`,
+        },
+      });
+      expect(controlled.receipt.status).toBe('accepted');
+
+      const waiting = surface.locator('[data-steer-render]').filter({ hasText: marker });
+      await expect(waiting).toHaveCount(1, { timeout: 20_000 });
+      const lastCall = historyRows(surface, label).last();
+      expect(
+        await waiting.evaluate(
+          (node, row) =>
+            row != null &&
+            Boolean(row.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING),
+          await lastCall.elementHandle(),
+        ),
+        'waiting guidance sits after everything the child has done',
+      ).toBe(true);
+
+      const withdraw = surface.getByRole('button', { name: 'Withdraw', exact: true });
+      await expect(withdraw).toHaveCount(1);
+      const withdrawn = page.waitForResponse(
+        (response) =>
+          response.request().method() === 'POST' &&
+          new URL(response.url()).pathname.endsWith('/control') &&
+          (response.request().postDataJSON() as { action?: string } | null)?.action ===
+            'cancel_message',
+      );
+      await withdraw.click();
+      expect((await withdrawn).ok()).toBeTruthy();
+      await expect(withdraw).toHaveCount(0, { timeout: 20_000 });
+
+      /** Withdrawn guidance is never taken: the child finishes without it in its reply. */
+      await gates.signal('advance');
+      await gates.wait('live', { timeoutMs: 15_000 });
+      await gates.signal('complete');
+      await gates.wait('done', { timeoutMs: 10_000 });
+      const completed = history.completionText(label);
+      await expect(surface.getByText(completed, { exact: true })).toHaveCount(1, {
+        timeout: 20_000,
+      });
+      await expect(surface.locator('[data-lc-fade]')).toHaveCount(0, { timeout: 20_000 });
+      const remaining = await waiting.count();
+      if (remaining > 0) {
+        const placement = await steerPlacement(waiting.first(), history.liveText(label), completed);
+        expect(placement.after, 'a withdrawn receipt stays out of the reply').toBe(false);
+      }
+    } catch (error) {
+      primaryError = error;
+      throw error;
+    } finally {
+      try {
+        await gates.release();
+        if (primaryError == null && (await gates.has('ready'))) {
+          await gates.wait('done', { timeoutMs: 10_000 });
+        }
+        if (await gates.has('done')) await rm(gates.directory, { recursive: true, force: true });
+      } finally {
+        for (const agentId of createdAgentIds.reverse()) {
+          await cleanupAgent(page, agentId);
+        }
+      }
+    }
+  });
 });

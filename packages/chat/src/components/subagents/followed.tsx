@@ -1,12 +1,16 @@
-import { useMemo } from 'react';
-import { useLocalize } from '@librechat/client';
+import { useRef, useMemo, useCallback } from 'react';
+import { cn, useLocalize } from '@librechat/client';
 import { EModelEndpoint } from 'librechat-data-provider';
-import type { TConversation } from 'librechat-data-provider';
+import type { TConversation, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
+import type { ChildActivity } from '../../react/subagents/adapters';
+import type { ChatScreenMessagesSlots } from '../pane/messages';
 import type { FollowedChat } from '../../react/follow';
 import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
 import { ToolContentQueryContext } from '../../react/parts/disclosure';
 import { useSubagentsHost } from '../../react/subagents/host';
+import { getMessageRowWidthClass } from '../messages/width';
+import { SubagentControlHistory } from './transcript';
 import FollowedThread from '../pane/Followed';
 
 /**
@@ -20,7 +24,15 @@ export type FollowedChildThreadProps = {
   followed: FollowedChat;
   /** The agent the child runs as, which its replies are drawn for. */
   agentId?: string;
+  /** The guidance sent to the task, as the task's durable view reports it. */
+  controls?: ChildActivity['controls'];
+  /** Earlier guidance than `controls` holds exists. */
+  controlsTruncated?: boolean;
+  /** Withdraws guidance the child has not taken yet; absent while it cannot be withdrawn. */
+  onCancelControl?: (controlId: string) => void;
 };
+
+const noControls: NonNullable<ChildActivity['controls']> = [];
 
 /**
  * A subagent's child thread drawn as a conversation: main chat's message list over the thread's
@@ -31,6 +43,9 @@ export default function FollowedChildThread({
   threadId,
   followed,
   agentId,
+  controls = noControls,
+  controlsTruncated = false,
+  onCancelControl,
 }: FollowedChildThreadProps): ReactElement {
   const localize = useLocalize();
   const host = useSubagentsHost();
@@ -43,6 +58,47 @@ export default function FollowedChildThread({
         ...(agentId != null && { agent_id: agentId }),
       }) as TConversation,
     [threadId, agentId],
+  );
+  /** Every part the thread shows, which is where an applied steer already appears. */
+  const shown = useMemo(
+    () =>
+      followed.messages.flatMap((message) =>
+        (message.content ?? []).filter((part): part is TMessageContentParts => part != null),
+      ),
+    [followed.messages],
+  );
+  /** The panel hands a new handler on every render; the list's tail should not redraw for that. */
+  const cancel = useRef(onCancelControl);
+  cancel.current = onCancelControl;
+  const withdraw = useCallback((controlId: string) => cancel.current?.(controlId), []);
+  const canWithdraw = onCancelControl != null;
+  /**
+   * Guidance the child has not taken yet has no place in the thread: it sits after the last row,
+   * where main chat draws its own pending steers, in the same column. Once the child takes it,
+   * the stream places it in the reply and it leaves this list.
+   */
+  const slots = useMemo<ChatScreenMessagesSlots>(
+    () => ({
+      renderPendingSteers: ({ fullWidth }) =>
+        controls.length === 0 && !controlsTruncated ? null : (
+          <div
+            data-subagent-pending-guidance
+            className={cn('mx-auto min-w-0 px-4', getMessageRowWidthClass({ fullWidth }))}
+          >
+            <SubagentControlHistory
+              controls={controls}
+              content={shown}
+              onCancelControl={canWithdraw ? withdraw : undefined}
+            />
+            {controlsTruncated && (
+              <div className="text-text-secondary mb-3 text-xs italic">
+                {localize('com_ui_subagent_control_history_truncated')}
+              </div>
+            )}
+          </div>
+        ),
+    }),
+    [canWithdraw, controls, controlsTruncated, localize, shown, withdraw],
   );
   if (followed.isLoading && followed.messages.length === 0) {
     return (
@@ -70,6 +126,7 @@ export default function FollowedChildThread({
             index={SUBAGENT_THREAD_PANE}
             followed={followed}
             conversation={conversation}
+            slots={slots}
           />
         </div>
       </ToolContentQueryContext.Provider>

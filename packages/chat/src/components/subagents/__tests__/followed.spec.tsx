@@ -3,15 +3,16 @@
  */
 import { useContext } from 'react';
 import { Provider, createStore } from 'jotai';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
-import type { TMessage } from 'librechat-data-provider';
+import type { TMessage, SubagentControlReceipt } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
 import type { ConversationSeenSource } from '../../../react/messages/host';
 import type { ToolContentQuery } from '../../../react/parts/disclosure';
 import type { SubagentsHost } from '../../../react/subagents/host';
 import type { ChatContract } from '../../../react/chat/contract';
+import type { FollowedChildThreadProps } from '../followed';
 import type { FollowedChat } from '../../../react/follow';
 import { MessagesHostProvider, useMessagesHost } from '../../../react/messages/host';
 import { ToolContentQueryContext } from '../../../react/parts/disclosure';
@@ -102,7 +103,29 @@ const partsHost = createMessagePartsHost({
   ),
 });
 
-const mount = (followed: FollowedChat, host: Partial<SubagentsHost> = {}) => {
+const guidance = (overrides: Partial<SubagentControlReceipt> = {}): SubagentControlReceipt => ({
+  invocationId: 'invocation-1',
+  controlId: 'control-1',
+  action: 'steer',
+  status: 'accepted',
+  createdAt: '2026-11-16T13:42:38.000Z',
+  updatedAt: '2026-11-16T13:42:38.000Z',
+  message: 'Check the release notes too.',
+  ...overrides,
+});
+
+/** The app's steer bubble, reduced to its words and its receipt state. */
+const renderSteer: SubagentsHost['renderSteer'] = ({ steer, receiptState }) => (
+  <div data-testid="guidance" data-receipt={receiptState ?? ''}>
+    {steer}
+  </div>
+);
+
+const mount = (
+  followed: FollowedChat,
+  host: Partial<SubagentsHost> = {},
+  props: Partial<FollowedChildThreadProps> = {},
+) => {
   const queryClient = new QueryClient();
   /** The tail of the branch on screen is read from the cache the followed chat writes. */
   queryClient.setQueryData([QueryKeys.messages, 'child-thread'], followed.messages);
@@ -130,6 +153,7 @@ const mount = (followed: FollowedChat, host: Partial<SubagentsHost> = {}) => {
                   threadId="child-thread"
                   followed={followed}
                   agentId="agent-1"
+                  {...props}
                 />
               </MessagePartsHostProvider>
             </MessagesHostProvider>
@@ -195,5 +219,77 @@ describe('FollowedChildThread', () => {
 
     expect(seen.seenSource).not.toBe(pageSeenSource);
     expect(seen.pendingTurn).toBe(false);
+  });
+
+  describe('guidance sent to the child', () => {
+    it('draws guidance the child has not taken yet after the last row, with a way to withdraw it', () => {
+      const onCancelControl = jest.fn();
+      mount(followedChat(), { renderSteer }, { controls: [guidance()], onCancelControl });
+
+      const waiting = screen.getByTestId('guidance');
+      expect(waiting).toHaveTextContent('Check the release notes too.');
+      expect(waiting).toHaveAttribute('data-receipt', 'delivered');
+      const lastRow = screen.getAllByTestId('row').pop() as HTMLElement;
+      expect(
+        lastRow.compareDocumentPosition(waiting) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Withdraw' }));
+      expect(onCancelControl).toHaveBeenCalledWith('control-1');
+    });
+
+    it('does not draw a receipt for guidance the reply already shows where the child took it', () => {
+      const taken: TMessage = {
+        ...reply,
+        content: [
+          { type: ContentTypes.TEXT, text: 'Checking.' },
+          {
+            type: ContentTypes.STEER,
+            [ContentTypes.STEER]: 'Check the release notes too.',
+            steerId: 'control-1',
+          },
+        ] as TMessage['content'],
+      };
+      mount(
+        followedChat({ messages: [brief, taken] }),
+        { renderSteer },
+        { controls: [guidance({ status: 'applied' })], onCancelControl: jest.fn() },
+      );
+
+      expect(screen.queryByTestId('guidance')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Withdraw' })).toBeNull();
+    });
+
+    it('offers no withdrawal while the task cannot be controlled', () => {
+      mount(followedChat(), { renderSteer }, { controls: [guidance()] });
+
+      expect(screen.getByTestId('guidance')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Withdraw' })).toBeNull();
+    });
+
+    it('says why guidance was refused', () => {
+      mount(
+        followedChat(),
+        { renderSteer },
+        { controls: [guidance({ status: 'rejected', reason: 'task_completed' })] },
+      );
+
+      expect(screen.getByTestId('guidance')).toHaveAttribute('data-receipt', '');
+      expect(
+        screen.getByText('The task completed before this command applied.'),
+      ).toBeInTheDocument();
+    });
+
+    it('says when earlier guidance is not shown', () => {
+      mount(followedChat(), { renderSteer }, { controlsTruncated: true });
+
+      expect(screen.getByText('Earlier control activity is not shown.')).toBeInTheDocument();
+    });
+
+    it('adds nothing after the last row when no guidance was sent', () => {
+      mount(followedChat(), { renderSteer });
+
+      expect(document.querySelector('[data-subagent-pending-guidance]')).toBeNull();
+    });
   });
 });
