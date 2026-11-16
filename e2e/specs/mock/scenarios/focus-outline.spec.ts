@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
-import { NEW_CHAT_PATH } from '../helpers';
+import { NEW_CHAT_PATH, isTransparentColor } from '../helpers';
 
 /**
  * The app-wide keyboard focus outline and the shared primitives' focus ring, the `focus-outline`
@@ -145,7 +145,7 @@ async function keyboardFocusRing(page: Page): Promise<string> {
   const shadow = await probe.evaluate((node) => getComputedStyle(node).boxShadow);
   /** Tailwind lists transparent offset and shadow layers beside the ring; the ring is the opaque one. */
   const layers = shadow.match(/rgba?\([^)]*\)/g) ?? [];
-  return layers.find((color) => !/,\s*0\)$/.test(color)) ?? shadow;
+  return layers.find((color) => !isTransparentColor(color)) ?? shadow;
 }
 
 async function openChat(page: Page, appearance: Appearance, definition?: { name: string }) {

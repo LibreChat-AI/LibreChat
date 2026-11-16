@@ -73,7 +73,7 @@ export default function Content({ activeTab, query, ctx }: ContentProps) {
             {entries.map((e) => {
               const Cmp = e.Component;
               return (
-                <div key={e.id} className="px-4 py-3">
+                <div key={e.id} data-settings-row className="px-4 py-3 empty:hidden">
                   <Cmp />
                 </div>
               );

@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Part,
   Text,
+  Reasoning,
   MessageRow,
   MentionPopover,
   ChatScreen,
@@ -33,10 +34,13 @@ import {
   MessagePartIndex,
   StreamHostProvider,
   ChatSurfaceProvider,
+  SteerHostProvider,
   MessagesHostProvider,
   MessagePartsHostProvider,
   ParentSubagentsProvider,
+  emptyToolCallChrome,
 } from '@librechat/chat/react';
+import { createSteerHost } from '../src/__fixtures__/steerHost';
 import type {
   ChatEvent,
   TMessage,
@@ -213,6 +217,7 @@ const host: MessagePartsHost = {
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, () => undefined],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 const messagesHost: MessagesHost = {
@@ -246,6 +251,7 @@ const messagesHost: MessagesHost = {
   }),
   renderMessageIcon: () => null,
   useMaximizeChatSpace: () => false,
+  useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
   useAgentsMap: () => undefined,
   renderMessageBody: () => null,
@@ -670,16 +676,18 @@ describe('a consumer rendering subagent activity', () => {
       <I18nextProvider i18n={i18n}>
         <QueryClientProvider client={new QueryClient()}>
           <ChatContext.Provider value={contract}>
-            <MessagesHostProvider host={threadHost}>
-              <MessagePartsHostProvider host={host}>
-                <MessagesView
-                  messages={messages}
-                  messagesTree={messages}
-                  showScrollButton={false}
-                  maximizeChatSpace={false}
-                />
-              </MessagePartsHostProvider>
-            </MessagesHostProvider>
+            <SteerHostProvider host={createSteerHost()}>
+              <MessagesHostProvider host={threadHost}>
+                <MessagePartsHostProvider host={host}>
+                  <MessagesView
+                    messages={messages}
+                    messagesTree={messages}
+                    showScrollButton={false}
+                    maximizeChatSpace={false}
+                  />
+                </MessagePartsHostProvider>
+              </MessagesHostProvider>
+            </SteerHostProvider>
           </ChatContext.Provider>
         </QueryClientProvider>
       </I18nextProvider>,
@@ -743,14 +751,42 @@ describe('a consumer styled by the published stylesheet alone', () => {
     const statusRule = declaredFor(screen.getByText('Woke up'));
     expect(statusRule.match(/var\(--font-size-base, 1rem\)/g)).toHaveLength(2);
 
-    expect(declaredFor(screen.getByTestId('stream-elapsed'))).toMatch(/animation:[^;]*\bshimmer\b/);
-    expect(stylesheet).toMatch(/@keyframes shimmer\s*\{/);
-    expect(stylesheet).toMatch(/@keyframes shimmer-rtl\s*\{/);
+    const band = screen.getByTestId('stream-elapsed').querySelector('.shimmer-band');
+    expect(band && declaredFor(band)).toMatch(/animation:[^;]*\bshimmer-band\b/);
+    expect(stylesheet).toMatch(/@keyframes shimmer-band\s*\{/);
+    expect(stylesheet).toMatch(/@keyframes shimmer-copy\s*\{/);
     expect(stylesheet).toMatch(/html\.high-contrast\s*\{[^}]*--shimmer-dip-alpha: 1/);
 
     const icon = screen.getByRole('button', { name: 'Remove report.pdf' }).querySelector('svg');
     const iconRule = declaredFor(icon as SVGElement);
     expect(iconRule).toContain('width: 1rem');
     expect(iconRule).toContain('height: 1rem');
+  });
+
+  it('opens and fades a streaming thought from the shipped rules, as plain text', () => {
+    const streaming: MessagePartsHost = {
+      ...host,
+      useMessage: () => ({ messageId: 'reply-1', isSubmitting: true, isLatestMessage: true }),
+      useSmoothStreaming: () => true,
+    };
+    render(
+      <I18nextProvider i18n={i18n}>
+        <MessagePartsHostProvider host={streaming}>
+          <Reasoning reasoning="Checking the manifest. Reading the lockfile." isLast />
+        </MessagePartsHostProvider>
+      </I18nextProvider>,
+    );
+
+    /** The peek's edge fade and the panel's grid-rows motion are the package's, not the app's. */
+    const peek = screen.getByTestId('streaming-thought-peek');
+    expect(declaredFor(peek.firstElementChild as Element)).toMatch(/mask-image/);
+    const panel = document.querySelector('.part-expand') as Element;
+    expect(declaredFor(panel)).toMatch(/grid-template-rows:\s*0fr/);
+    expect(declaredFor(panel)).toMatch(/transition:[^;]*\.01ms/);
+
+    /** This host supplies no streaming renderer, so the opened thought is the text as it is. */
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_thinking' }));
+    expect(screen.getByText('Checking the manifest. Reading the lockfile.')).toBeInTheDocument();
+    expect(document.querySelector('[data-lc-fade]')).toBeNull();
   });
 });

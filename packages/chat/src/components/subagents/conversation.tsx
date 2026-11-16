@@ -16,6 +16,7 @@ import type { ChildConversationTurn } from '../../react/subagents/adapters';
 import type { ToolContentQuery } from '../../react/parts/disclosure';
 import type { TaskContentScope } from '../../react/subagents/scope';
 import type { TurnAuthor } from '../../react/subagents/author';
+import { AskAnswerHostProvider, useAskAnswerHost, useLiveAskPauses } from '../../react/parts/ask';
 import { isAbnormalTerminalStatus, isLiveSubagentStatus } from '../../react/subagents/status';
 import { SubagentActivityContent, SubagentStatus, getActivityContent } from './transcript';
 import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
@@ -455,48 +456,55 @@ export default function SubagentConversation({
 }): ReactNode {
   const { maximizeChatSpace: fullWidth } = useChatSurface();
   const parentChat = useContext(ChatContext);
+  const saveDrafts = useAskAnswerHost();
+  const liveAskPauses = useLiveAskPauses();
   const host = useMessagePartsHost();
   const contentHost = useSubagentsHost().useChildPartsHost(host);
   const Message = recovery == null ? ChildMessage : RecoveredChildMessage;
   return (
     <ChatContext.Provider value={interactive ? parentChat : null}>
-      <MessagePartsHostProvider host={contentHost}>
-        <div className="flex flex-col gap-6 py-4" data-subagent-conversation>
-          {turns.map((turn) => (
-            <section
-              key={turn.taskId}
-              className="flex flex-col gap-4"
-              data-subagent-thread-turn={turn.taskId}
-            >
-              <div className="px-4">
-                <TriggerMessage turn={turn} fullWidth={fullWidth} parentAuthor={parentAuthor} />
-              </div>
-              <div className="px-4">
-                <Message
-                  turn={turn}
-                  recovery={recovery}
-                  author={author}
-                  conversationId={conversationId}
-                  fullWidth={fullWidth}
-                  state={stateByTask?.get(turn.taskId) ?? 'ready'}
-                  onCancelControl={
-                    onCancelControl == null || turn.taskId !== controllableTaskId
-                      ? undefined
-                      : (controlId) => onCancelControl(turn.taskId, controlId)
-                  }
-                  toolContentQuery={toolContentQueries?.get(turn.taskId)}
-                  detailState={detailStateByTask?.get(turn.taskId)}
-                  onLoadDetails={
-                    turn.activity.activityTruncated !== true || onLoadTurnDetails == null
-                      ? undefined
-                      : () => onLoadTurnDetails(turn.taskId)
-                  }
-                />
-              </div>
-            </section>
-          ))}
-        </div>
-      </MessagePartsHostProvider>
+      <AskAnswerHostProvider
+        saveDrafts={saveDrafts}
+        liveAskPauses={interactive ? liveAskPauses : null}
+      >
+        <MessagePartsHostProvider host={contentHost}>
+          <div className="flex flex-col gap-6 py-4" data-subagent-conversation>
+            {turns.map((turn) => (
+              <section
+                key={turn.taskId}
+                className="flex flex-col gap-4"
+                data-subagent-thread-turn={turn.taskId}
+              >
+                <div className="px-4">
+                  <TriggerMessage turn={turn} fullWidth={fullWidth} parentAuthor={parentAuthor} />
+                </div>
+                <div className="px-4">
+                  <Message
+                    turn={turn}
+                    recovery={recovery}
+                    author={author}
+                    conversationId={conversationId}
+                    fullWidth={fullWidth}
+                    state={stateByTask?.get(turn.taskId) ?? 'ready'}
+                    onCancelControl={
+                      onCancelControl == null || turn.taskId !== controllableTaskId
+                        ? undefined
+                        : (controlId) => onCancelControl(turn.taskId, controlId)
+                    }
+                    toolContentQuery={toolContentQueries?.get(turn.taskId)}
+                    detailState={detailStateByTask?.get(turn.taskId)}
+                    onLoadDetails={
+                      turn.activity.activityTruncated !== true || onLoadTurnDetails == null
+                        ? undefined
+                        : () => onLoadTurnDetails(turn.taskId)
+                    }
+                  />
+                </div>
+              </section>
+            ))}
+          </div>
+        </MessagePartsHostProvider>
+      </AskAnswerHostProvider>
     </ChatContext.Provider>
   );
 }

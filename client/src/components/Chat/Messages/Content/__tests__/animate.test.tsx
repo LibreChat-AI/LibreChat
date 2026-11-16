@@ -1,13 +1,9 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import { render } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import type { FadePlugin } from '../animate';
 import {
-  splitWords,
-  beginRun,
-  endRun,
-  classifyValue,
-  createFadeState,
   createFadePlugin,
   AnimatedText,
   FADE_DURATION_MS,
@@ -15,6 +11,13 @@ import {
   FADE_STAGGER_MAX_MS,
   FADE_HYDRATION_THRESHOLD,
 } from '../animate';
+import {
+  splitWords,
+  beginRun,
+  endRun,
+  classifyValue,
+  createFadeState,
+} from '../../../../../../../packages/chat/src/components/fade';
 
 let nowSpy: jest.SpyInstance<number, []>;
 let mockedNow = 0;
@@ -146,8 +149,13 @@ describe('classifyValue', () => {
 
 describe('createFadePlugin', () => {
   const renderMarkdown = (fade: FadePlugin, content: string) => (
-    /** @ts-ignore */
-    <ReactMarkdown rehypePlugins={[fade.plugin]}>{content}</ReactMarkdown>
+    <ReactMarkdown
+      rehypePlugins={
+        [fade.plugin] satisfies NonNullable<ComponentProps<typeof ReactMarkdown>['rehypePlugins']>
+      }
+    >
+      {content}
+    </ReactMarkdown>
   );
 
   it('wraps words in fade spans on first render, including inline formatting', () => {

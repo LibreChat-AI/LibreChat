@@ -10,7 +10,9 @@ interface SectionProps {
 
 export default function Section({ heading, icon, danger, children }: SectionProps) {
   return (
-    <section className="mb-7">
+    /* A row whose component has nothing to show draws no box, so a section whose rows are all
+       like that, such as accounts that are not available, draws no heading over an empty gap. */
+    <section className="mb-7 hidden has-[[data-settings-row]:not(:empty)]:block">
       <h3
         className={cn(
           'mb-1 flex items-center gap-1.5 px-1 text-xs font-medium tracking-wide uppercase',

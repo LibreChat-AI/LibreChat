@@ -227,7 +227,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 describe('a group profile hides a librechat.yaml MCP server', () => {

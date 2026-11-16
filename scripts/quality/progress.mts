@@ -25,7 +25,15 @@ export class FunctionProgressReporter implements Reporter {
 
   private readonly output: string;
   private readonly staticMutants: boolean;
+  /** Selected functions only, for owner lookup: a module-scope mutant must fall back to
+   * `moduleOwners`, never match a function by an accidentally wide bounding box. */
+  private readonly owners: FunctionProgress[];
+  /** Every tracked bucket for rendering and counts: functions plus, once a module-scope mutant
+   * actually needs one, that file's `<module>` entry (added lazily, so a run with none keeps
+   * reporting exactly its selected functions). */
   private readonly functions: FunctionProgress[];
+  private readonly moduleOwners: Map<string, FunctionProgress>;
+  private readonly addedModuleOwners = new Set<FunctionProgress>();
   private readonly planned = new Map<string, { owner: FunctionProgress; static: boolean }>();
   private readonly results = new Map<string, Readonly<MutantResult>>();
   private readonly started = Date.now();
@@ -41,9 +49,27 @@ export class FunctionProgressReporter implements Reporter {
     this.staticMutants = !options.ignoreStatic;
     this.output = dirname(options.jsonReporter.fileName);
     const targets: Target[] = JSON.parse(readFileSync(`${this.output}/functions.json`, 'utf8'));
-    this.functions = targets.flatMap(({ file, functions }) =>
+    this.owners = targets.flatMap(({ file, functions }) =>
       functions.map((fn) => ({ ...fn, file, ids: [] })),
     );
+    // A module-scope mutant (e.g. a schema or constant) has no entry in `functions`; give every
+    // target file a `<module>` catch-all bucket here so it still has somewhere to report.
+    this.moduleOwners = new Map(
+      targets.map(({ file }) => [
+        resolve(file),
+        {
+          file,
+          function: '<module>',
+          line: 0,
+          column: 0,
+          // Looked up by file only (never by containment), so this location is unused; kept to
+          // satisfy the shared `FunctionProgress` shape.
+          location: { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } },
+          ids: [],
+        },
+      ]),
+    );
+    this.functions = [...this.owners];
     writeFileSync(`${this.output}/progress.jsonl`, '');
     this.render();
     this.timer = setInterval(() => this.render(), 30000);
@@ -63,7 +89,7 @@ export class FunctionProgressReporter implements Reporter {
         column: mutant.location.start.column + 1,
       };
       const end = { line: mutant.location.end.line + 1, column: mutant.location.end.column + 1 };
-      const owner = this.functions
+      let owner: FunctionProgress | undefined = this.owners
         .filter(
           (fn) =>
             resolve(fn.file) === resolve(mutant.fileName) &&
@@ -74,7 +100,17 @@ export class FunctionProgressReporter implements Reporter {
           (a, b) =>
             compare(b.location.start, a.location.start) || compare(a.location.end, b.location.end),
         )[0];
-      if (!owner) throw new Error(`No selected function owns mutant ${mutant.id}`);
+      if (!owner) {
+        // A mutant whose file is not one of our targets at all is a real planning divergence,
+        // not a module-scope mutant: fail loudly rather than silently dropping it.
+        owner = this.moduleOwners.get(resolve(mutant.fileName));
+        if (!owner)
+          throw new Error(`No selected function or module target owns mutant ${mutant.id}`);
+        if (!this.addedModuleOwners.has(owner)) {
+          this.addedModuleOwners.add(owner);
+          this.functions.push(owner);
+        }
+      }
       owner.ids.push(mutant.id);
       this.planned.set(mutant.id, { owner, static: mutant.static === true });
     }

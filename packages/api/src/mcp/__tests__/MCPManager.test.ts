@@ -7491,6 +7491,40 @@ describe('MCPManager', () => {
       expect(clearRecoveryState).toHaveBeenCalledTimes(3);
     });
 
+    it.each(['server', 'user'] as const)(
+      'fences agent-scoped creation during %s teardown',
+      async (scope) => {
+        mockAppConnections({ has: jest.fn().mockResolvedValue(false) });
+        (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue({
+          type: 'streamable-http',
+          url: 'https://mcp.example.com/mcp',
+          headers: { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' },
+        });
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const context = { connections: new Map(), pending: new Map() };
+        (MCPConnectionFactory.create as jest.Mock).mockReset();
+        (MCPConnectionFactory.create as jest.Mock).mockImplementation(async () => {
+          const connection = newUserConnection();
+          if (scope === 'server') {
+            await manager.disconnectUserConnection(userId, serverName, { reason: 'lifecycle' });
+          } else {
+            await manager.disconnectUserConnections(userId, { reason: 'lifecycle' });
+          }
+          return connection;
+        });
+        await expect(
+          manager.getUserConnection({
+            serverName,
+            user: mockUser,
+            requestBody: { agentId: 'agent_child' },
+            requestScopedConnections: context,
+          }),
+        ).rejects.toThrow('Connection creation was cancelled during teardown');
+        expect(context.connections.size).toBe(0);
+        expect(context.pending.size).toBe(0);
+      },
+    );
+
     it('fails a creation that a lifecycle teardown keeps cancelling on every attempt', async () => {
       mockAppConnections({ has: jest.fn().mockResolvedValue(false) });
       (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue({

@@ -87,6 +87,20 @@ function tailwindDefault(variable) {
 }
 
 describe('LibreChat Tailwind preset', () => {
+  it('ships the phase ticker animation properties without changing transition easing', async () => {
+    const css = await generate([
+      'animation-ease-fold',
+      'animation-fill-forwards',
+      'fill-mode-forwards',
+    ]);
+
+    expect(rule(css, 'animation-ease-fold')).toBe(
+      'animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);',
+    );
+    expect(rule(css, 'animation-fill-forwards')).toBe('animation-fill-mode: forwards;');
+    expect(rule(css, 'animation-fill-forwards')).toBe(rule(css, 'fill-mode-forwards'));
+  });
+
   it('owns the loading-dot delay with a zero-delay fallback for plain preset consumers', async () => {
     const css = await generate(['animate-loading-dot']);
 

@@ -23,14 +23,14 @@ services:
     container_name: chat-mongodb
     ports:  # Uncomment this to access mongodb from outside docker, not safe in deployment
       - 27018:27017
-    image: mongo
+    image: docker.io/library/mongo
     restart: always
     volumes:
       - ./data-node:/data/db
     command: mongod --noauth
   meilisearch:
     container_name: chat-meilisearch
-    image: getmeili/meilisearch:v1.7.3
+    image: docker.io/getmeili/meilisearch:v1.7.3
     ports: # Uncomment this to access meilisearch from outside docker
       - 7700:7700 # if exposing these ports, make sure your master key is not the default value
     env_file:
@@ -41,7 +41,7 @@ services:
     volumes:
       - ./meili_data_v1.7:/meili_data
   vectordb:
-    image: pgvector/pgvector:0.8.0-pg15-trixie
+    image: docker.io/pgvector/pgvector:0.8.0-pg15-trixie
     environment:
       POSTGRES_DB: mydatabase
       POSTGRES_USER: myuser

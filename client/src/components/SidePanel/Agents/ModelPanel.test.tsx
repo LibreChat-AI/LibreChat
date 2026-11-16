@@ -416,6 +416,36 @@ describe('ModelPanel', () => {
     },
   );
 
+  it('clears the parameters and spins the reset icon one turn on every press', () => {
+    const formRef: React.MutableRefObject<UseFormReturn<AgentForm> | null> = { current: null };
+    const { getByRole, container } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        defaultModelParameters={{ temperature: 0.5 }}
+        formRef={formRef}
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+    const reset = getByRole('button', { name: /com_ui_reset_var/ });
+    const icon = () => reset.querySelector('svg');
+
+    expect(icon()).not.toHaveClass('animate-reset-spin');
+    const first = icon();
+
+    fireEvent.click(reset);
+    expect(formRef.current?.getValues('model_parameters')).toEqual({});
+    expect(icon()).toHaveClass('animate-reset-spin');
+    expect(icon()).not.toBe(first);
+
+    const afterFirst = icon();
+    fireEvent.click(reset);
+    expect(icon()).toHaveClass('animate-reset-spin');
+    expect(icon()).not.toBe(afterFirst);
+    expect(container.querySelectorAll('.animate-reset-spin')).toHaveLength(1);
+  });
+
   it('prunes a saved model_parameters value once its endpoint drops the matching param', async () => {
     mockStartupConfig.mockReturnValue({
       endpointsDropParamsMap: { [EModelEndpoint.openAI]: ['topP'] },

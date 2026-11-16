@@ -3,6 +3,7 @@ const {
   reportLocatorTraversalFailure,
   isEnabled,
   GenerationJobManager,
+  createBackgroundChildAbortGuard,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
   announceStoppedReply,
@@ -622,6 +623,12 @@ router.get('/chat/status/:conversationId', async (req, res) => {
  * @access Private
  * @description Mounted before chatRouter to bypass buildEndpointOption middleware
  */
+router.post(
+  '/chat/abort',
+  createBackgroundChildAbortGuard({
+    getJob: (streamId) => GenerationJobManager.getJob(streamId),
+  }),
+);
 router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
   logger.debug(`[AgentStream] ========== ABORT ENDPOINT HIT ==========`);
   logger.debug(`[AgentStream] Method: ${req.method}, Path: ${req.path}`);

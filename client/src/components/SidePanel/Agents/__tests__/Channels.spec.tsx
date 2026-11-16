@@ -61,13 +61,21 @@ function renderChannels({
   wrapInForm = false,
   userId = 'admin-1',
   tenantId = 'tenant-a',
+  isAdmin = false,
 } = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     logger: { log: () => {}, warn: () => {}, error: () => {} },
   });
   const submit = jest.fn((event) => event.preventDefault());
-  const component = <Channels agentId={agentId || undefined} userId={userId} tenantId={tenantId} />;
+  const component = (
+    <Channels
+      agentId={agentId || undefined}
+      userId={userId}
+      tenantId={tenantId}
+      isAdmin={isAdmin}
+    />
+  );
   const view = render(
     <QueryClientProvider client={client}>
       {wrapInForm ? (
@@ -96,11 +104,16 @@ async function chooseBot(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('combobox', { name: 'com_ui_channels_slack_bot' }));
   await user.click(await screen.findByRole('option', { name: /Engineering/ }));
 }
+async function next(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('button', { name: 'com_ui_continue' }));
+}
+
 async function openAdd(user: ReturnType<typeof userEvent.setup>) {
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'com_ui_channels_add' })).toBeEnabled(),
   );
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_add' }));
+  await user.click(await screen.findByRole('button', { name: /com_ui_channels_slack/ }));
 }
 beforeEach(() => {
   jest
@@ -132,25 +145,102 @@ test('unsaved Agent shows a disabled row without fetching', () => {
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
   expect(dataService.listAgentChannels).not.toHaveBeenCalled();
 });
+test('each connection is a row: the Slack mark with a status dot, the name, and its actions', async () => {
+  jest
+    .mocked(dataService.listAgentChannels)
+    .mockResolvedValue([
+      pending,
+      { ...pending, channelId: 'channel-2', status: 'active', revision: 'r2' },
+    ]);
+  renderChannels();
+  const rows = await screen.findAllByRole('listitem');
+  expect(rows).toHaveLength(2);
+
+  rows.forEach((row) => {
+    expect(row.querySelector('img')).toHaveAttribute('src', 'assets/slack.svg');
+    expect(within(row).getByText('com_ui_channels_slack')).toBeInTheDocument();
+  });
+
+  // The state is the dot on the mark; its words stay for assistive technology only.
+  expect(rows[0].querySelector('.bg-status-warning')).toBeInTheDocument();
+  expect(rows[1].querySelector('.bg-status-success')).toBeInTheDocument();
+  /** Only the active state is left to the dot; a state that needs an action is named on the row. */
+  expect(within(rows[0]).getByText('com_ui_channels_pending')).not.toHaveClass('sr-only');
+  expect(within(rows[1]).getByText('com_ui_channels_active')).toHaveClass('sr-only');
+
+  // Every row's action waits for hover or focus, like the X.
+  const setup = within(rows[0]).getByRole('button', { name: 'com_ui_channels_setup' });
+  const manage = within(rows[1]).getByRole('button', { name: 'com_ui_channels_manage' });
+  expect(setup.parentElement).toHaveClass('no-touch:opacity-0', 'group-hover:opacity-100');
+  expect(manage.parentElement).toHaveClass('no-touch:opacity-0', 'group-hover:opacity-100');
+
+  // The action and the X sit together in one tight group.
+  const group = setup.closest('div.gap-0\\.5')!;
+  expect(group).toBeInTheDocument();
+  expect(group).toContainElement(
+    within(rows[0]).getByRole('button', { name: 'com_ui_channels_delete_connection' }),
+  );
+
+  // Every row has the delete X, revealed on hover like the Tools rows.
+  rows.forEach((row) => {
+    const remove = within(row).getByRole('button', { name: 'com_ui_channels_delete_connection' });
+    expect(remove.parentElement).toHaveClass('no-touch:opacity-0', 'group-hover:opacity-100');
+  });
+});
+test('the row X deletes a connection only after a confirmation dialog', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
+  renderChannels();
+  const row = (await screen.findAllByRole('listitem'))[0];
+
+  await user.click(within(row).getByRole('button', { name: 'com_ui_channels_delete_connection' }));
+  const confirm = await screen.findByRole('dialog', { name: 'com_ui_channels_delete_title' });
+  expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
+
+  await user.click(within(confirm).getByRole('button', { name: 'com_ui_cancel' }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('dialog', { name: 'com_ui_channels_delete_title' }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
+
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([]);
+  await user.click(within(row).getByRole('button', { name: 'com_ui_channels_delete_connection' }));
+  const again = await screen.findByRole('dialog', { name: 'com_ui_channels_delete_title' });
+  await user.click(within(again).getByRole('button', { name: 'com_ui_delete' }));
+  await waitFor(() =>
+    expect(dataService.deleteAgentChannel).toHaveBeenCalledWith('agent-1', 'channel-1'),
+  );
+  await waitFor(() => expect(screen.queryAllByRole('listitem')).toHaveLength(0));
+});
+test('the add step is a clean choice: cards, one way out, no intro text and no corner close', async () => {
+  const user = userEvent.setup();
+  renderChannels();
+  await openAdd(user);
+
+  const dialog = await screen.findByRole('dialog', { name: 'com_ui_channels_add_slack' });
+  expect(within(dialog).queryByRole('button', { name: 'Close' })).not.toBeInTheDocument();
+  expect(within(dialog).getByRole('button', { name: 'com_ui_cancel' })).toBeInTheDocument();
+  expect(screen.queryByText('com_ui_channels_manual_help')).not.toBeInTheDocument();
+  expect(
+    within(dialog).getByRole('radiogroup', { name: 'com_ui_channel_link_mode' }),
+  ).toBeVisible();
+  expect(within(dialog).getAllByRole('radio')).toHaveLength(2);
+});
 test('Add opens without creating; Escape returns focus and resets mode', async () => {
   const user = userEvent.setup();
   renderChannels();
   expect(screen.queryByText('com_ui_channels_shared_notice')).not.toBeInTheDocument();
   await openAdd(user);
-  expect(screen.getByRole('button', { name: 'com_ui_channel_link_per_user' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
-  await user.click(screen.getByRole('button', { name: 'com_ui_channel_link_shared' }));
+  expect(screen.getByRole('radio', { name: 'com_ui_channel_link_per_user' })).toBeChecked();
+  await user.click(screen.getByRole('radio', { name: 'com_ui_channel_link_shared' }));
   expect(dataService.createAgentChannel).not.toHaveBeenCalled();
   await user.keyboard('{Escape}');
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   expect(screen.getByRole('button', { name: 'com_ui_channels_add' })).toHaveFocus();
   await openAdd(user);
-  expect(screen.getByRole('button', { name: 'com_ui_channel_link_per_user' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
+  expect(screen.getByRole('radio', { name: 'com_ui_channel_link_per_user' })).toBeChecked();
 });
 test.each(['per_user', 'shared'] as const)(
   'Continue creates %s then activation keeps credentials write-only',
@@ -163,16 +253,17 @@ test.each(['per_user', 'shared'] as const)(
     const { client, submit } = renderChannels({ wrapInForm: true });
     await openAdd(user);
     if (mode === 'shared')
-      await user.click(screen.getByRole('button', { name: 'com_ui_channel_link_shared' }));
+      await user.click(screen.getByRole('radio', { name: 'com_ui_channel_link_shared' }));
     await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
     await waitFor(() =>
       expect(dataService.createAgentChannel).toHaveBeenCalledWith('agent-1', mode),
     );
-    expect(
-      (await screen.findByText('com_ui_channels_manifest', { selector: 'summary' })).closest(
-        'details',
-      ),
-    ).toHaveAttribute('open');
+    const toggle = await screen.findByRole('button', {
+      name: 'com_ui_channels_manifest_fallback',
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByLabelText('com_ui_channels_manifest')).toHaveValue(
       JSON.stringify(manifest, null, 2),
     );
@@ -180,6 +271,7 @@ test.each(['per_user', 'shared'] as const)(
     expect(
       screen.queryByRole('link', { name: 'com_ui_channels_download_manifest' }),
     ).not.toBeInTheDocument();
+    await next(user);
     await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123{Enter}');
     expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveAttribute('type', 'password');
     await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
@@ -187,6 +279,7 @@ test.each(['per_user', 'shared'] as const)(
     jest
       .mocked(dataService.listAgentChannels)
       .mockResolvedValue([{ ...pending, status: 'active' }]);
+    await next(user);
     await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
     await waitFor(() =>
       expect(dataService.activateAgentChannel).toHaveBeenCalledWith('agent-1', 'channel-1', {
@@ -212,19 +305,193 @@ test('pending setup is resumable and closing clears secrets', async () => {
   await screen.findByText('com_ui_channels_pending');
   expect(screen.queryByLabelText('com_ui_channels_bot_token')).not.toBeInTheDocument();
   await openConnection(user);
+  await next(user);
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
   await user.keyboard('{Escape}');
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   await openConnection(user);
+  await next(user);
   expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
   expect(screen.getByLabelText(/com_ui_channels_signing_secret/)).toHaveValue('');
   expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
+});
+test('setup is three steps: create the app, add credentials, review and activate', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
+  renderChannels();
+  await openConnection(user);
+  const dialog = await screen.findByRole('dialog');
+
+  const labels = ['com_ui_channels_step_create', 'com_ui_channels_step_credentials'];
+  const current = () =>
+    within(dialog).getByText(/com_ui_channels_step_/, { selector: '[aria-current]' });
+  expect(current()).toHaveTextContent('com_ui_channels_step_create');
+  labels.forEach((label) => expect(within(dialog).getByText(label)).toBeInTheDocument());
+  expect(within(dialog).getByText('com_ui_channels_step_activate')).toBeInTheDocument();
+
+  // 1: the app, with Slack's own create screen prefilled from the manifest
+  expect(
+    await within(dialog).findByRole('heading', { name: 'com_ui_channels_install_step' }),
+  ).toBeInTheDocument();
+  // What to do in Slack, in order, then the manifest as the fallback.
+  const todo = within(dialog)
+    .getAllByRole('listitem')
+    .map((item) => item.textContent);
+  expect(todo).toEqual(
+    expect.arrayContaining([
+      'com_ui_channels_create_step_workspace',
+      'com_ui_channels_create_step_install',
+    ]),
+  );
+  // The manifest is only the fallback, so it starts collapsed.
+  expect(
+    within(dialog).getByRole('button', { name: 'com_ui_channels_manifest_fallback' }),
+  ).toHaveAttribute('aria-expanded', 'false');
+  // The bar starts empty on the first step, then half, then full.
+  const bar = within(dialog).getByRole('progressbar', { name: 'com_ui_channels_setup_progress' });
+  expect(bar).toHaveAttribute('aria-valuenow', '0');
+  expect(bar.firstElementChild).toHaveClass('transition-all', 'duration-500', 'ease-out');
+  const create = within(dialog).getByRole('link', { name: /com_ui_channels_create_in_slack/ });
+  expect(create.getAttribute('href')).toContain(
+    'https://api.slack.com/apps?new_app=1&manifest_json=',
+  );
+  expect(create).toHaveAttribute('rel', 'noopener noreferrer');
+  expect(within(dialog).queryByLabelText('com_ui_channels_manifest')).not.toBeInTheDocument();
+  await user.click(
+    within(dialog).getByRole('button', { name: 'com_ui_channels_manifest_fallback' }),
+  );
+  expect(await within(dialog).findByLabelText('com_ui_channels_manifest')).toBeInTheDocument();
+  expect(within(dialog).queryByLabelText('com_ui_channels_bot_token')).not.toBeInTheDocument();
+
+  // The navigation lives in the dialog footer, bottom right, not inside the step.
+  const proceed = within(dialog).getByRole('button', { name: 'com_ui_continue' });
+  expect(proceed.parentElement).toHaveClass('sm:justify-end');
+  expect(proceed).toHaveClass('flex-1');
+  expect(within(dialog).queryByRole('button', { name: 'com_ui_back' })).not.toBeInTheDocument();
+
+  // 2: credentials, which survive going back and forward
+  await next(user);
+  expect(bar).toHaveAttribute('aria-valuenow', '50');
+  expect(current()).toHaveTextContent('com_ui_channels_step_credentials');
+  expect(within(dialog).getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
+  // Each field previews the shape of its value before typing.
+  expect(within(dialog).getByLabelText('com_ui_channels_app_id')).toHaveAttribute(
+    'placeholder',
+    'com_ui_channels_app_id_example',
+  );
+  expect(within(dialog).getByLabelText('com_ui_channels_bot_token')).toHaveAttribute(
+    'placeholder',
+    'com_ui_channels_bot_token_example',
+  );
+  await user.type(within(dialog).getByLabelText('com_ui_channels_app_id'), 'A123');
+  await user.type(within(dialog).getByLabelText('com_ui_channels_bot_token'), 'test-token');
+  await user.click(within(dialog).getByRole('button', { name: 'com_ui_back' }));
+  expect(
+    within(dialog).getByRole('button', { name: 'com_ui_channels_manifest_fallback' }),
+  ).toBeInTheDocument();
+  await next(user);
+  expect(within(dialog).getByLabelText('com_ui_channels_app_id')).toHaveValue('A123');
+
+  // 3: a review that never shows the token, then the one action that sends it
+  await next(user);
+  expect(bar).toHaveAttribute('aria-valuenow', '100');
+  expect(current()).toHaveTextContent('com_ui_channels_step_activate');
+  expect(
+    within(dialog).getByRole('heading', { name: 'com_ui_channels_review_step' }),
+  ).toBeInTheDocument();
+  expect(within(dialog).getByText('A123')).toBeInTheDocument();
+  expect(within(dialog).queryByText('test-token')).not.toBeInTheDocument();
+  await user.click(within(dialog).getByRole('button', { name: 'com_ui_channels_activate' }));
+  await waitFor(() =>
+    expect(dataService.activateAgentChannel).toHaveBeenCalledWith('agent-1', 'channel-1', {
+      slack: { appId: 'A123', botToken: 'test-token' },
+    }),
+  );
+});
+test('secrets use the masked secret field: hidden by default, revealable, never copyable', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
+  renderChannels();
+  await openConnection(user);
+  await next(user);
+
+  const token = screen.getByLabelText('com_ui_channels_bot_token');
+  const secret = screen.getByLabelText(/com_ui_channels_signing_secret/);
+  expect(token).toHaveAttribute('type', 'password');
+  expect(secret).toHaveAttribute('type', 'password');
+  expect(screen.getByLabelText('com_ui_channels_app_id')).not.toHaveAttribute('type', 'password');
+  expect(screen.queryByRole('button', { name: 'Copy to clipboard' })).not.toBeInTheDocument();
+
+  const reveal = screen.getAllByRole('button', { name: 'Show secret' });
+  expect(reveal).toHaveLength(2);
+  await user.click(reveal[0]);
+  expect(token).toHaveAttribute('type', 'text');
+  expect(secret).toHaveAttribute('type', 'password');
+});
+test('a failed activation returns to the credentials step with the error shown', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
+  jest.mocked(dataService.activateAgentChannel).mockRejectedValueOnce(new Error('private-error'));
+  renderChannels();
+  await openConnection(user);
+  await next(user);
+  await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
+  await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
+  await next(user);
+  await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
+
+  expect(await screen.findByText('com_ui_channels_action_error')).toBeInTheDocument();
+  expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
+  expect(screen.getByLabelText('com_ui_channels_app_id')).toHaveValue('A123');
+});
+test('the connection dialog shows the Slack mark with a status dot, and one way to close', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
+  renderChannels();
+  await openConnection(user);
+  const dialog = await screen.findByRole('dialog');
+
+  const details = within(dialog).getByRole('button', {
+    name: 'com_ui_channels_connection_details',
+  });
+  expect(details.querySelector('img')).toHaveAttribute('src', 'assets/slack.svg');
+  expect(details.querySelector('.bg-status-warning')).toBeInTheDocument();
+
+  // Opening the dialog focuses the dialog itself, so the icon's card does not open on its own.
+  expect(dialog).toHaveFocus();
+  expect(details).not.toHaveFocus();
+
+  // Hovering the mark reveals the status and IDs; they are not on the page itself.
+  expect(within(dialog).queryByText('channel-1')).not.toBeInTheDocument();
+  await user.hover(details);
+  expect(await screen.findByText('channel-1')).toBeInTheDocument();
+  expect(screen.getByText('com_ui_channels_status_label')).toBeInTheDocument();
+
+  // A borderless list whose rows share one layout and one value style; the card is the only edge.
+  const list = screen.getByText('channel-1').closest('dl')!;
+  expect(list).toHaveClass('text-sm');
+  expect(list).not.toHaveClass('border');
+  expect(list.className).not.toContain('divide-');
+  const rows = Array.from(list.children);
+  expect(rows).toHaveLength(3);
+  rows.forEach((row) => {
+    expect(row).toHaveClass('flex', 'justify-between', 'py-1', 'leading-5');
+    expect(row.querySelector('dd')).toHaveClass('text-text-primary', 'text-end');
+  });
+
+  // The corner close is the only dismissal: setup has Back and Continue, not a second Cancel.
+  expect(within(dialog).queryByRole('button', { name: 'com_ui_cancel' })).not.toBeInTheDocument();
+  expect(within(dialog).getByRole('button', { name: 'Close' })).toBeInTheDocument();
+  expect(within(dialog).queryByRole('separator')).not.toBeInTheDocument();
 });
 test('manifest is a read-only definition without editing or download controls', async () => {
   const user = userEvent.setup();
   jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
   renderChannels();
   await openConnection(user);
+  await user.click(
+    await screen.findByRole('button', { name: 'com_ui_channels_manifest_fallback' }),
+  );
   const field = await screen.findByLabelText('com_ui_channels_manifest');
   expect(field).toHaveAttribute('readonly');
   await user.type(field, 'changed');
@@ -250,9 +517,13 @@ test('active credentials require disabling before replacement', async () => {
     .mocked(dataService.listAgentChannels)
     .mockResolvedValue([{ ...pending, status: 'disabled', revision: 'r1' }]);
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_disable' }));
+  expect(dataService.disableAgentChannel).not.toHaveBeenCalled();
+  const confirm = screen.getByRole('dialog', { name: 'com_ui_channels_disable_title' });
+  await user.click(within(confirm).getByRole('button', { name: 'com_ui_channels_disable' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   await openConnection(user, 'disabled');
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_setup' }));
+  await next(user);
   expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
 });
 test.each(['per_user', 'shared'] as const)(
@@ -270,35 +541,38 @@ test.each(['per_user', 'shared'] as const)(
     renderChannels();
     await openConnection(user, 'active');
     const dialog = screen.getByRole('dialog');
-    const type = within(dialog).getByText('com_ui_channels_connection_type').closest('div')!;
+    // The details live behind the icon beside the title until it is hovered or focused.
+    expect(within(dialog).queryByText('channel-1')).not.toBeInTheDocument();
+    await user.hover(
+      within(dialog).getByRole('button', { name: 'com_ui_channels_connection_details' }),
+    );
+    const type = (await screen.findByText('com_ui_channels_connection_type')).closest('div')!;
     expect(
       within(type).getByText(
         credentialMode === 'shared' ? 'com_ui_channel_link_shared' : 'com_ui_channel_link_per_user',
       ),
     ).toBeInTheDocument();
-    expect(within(dialog).getByText('channel-1')).toHaveClass('font-mono', 'text-end');
-    expect(within(dialog).getByText('channel-1').closest('div')).toHaveClass('justify-between');
+    expect(screen.getByText('channel-1')).toHaveClass('font-mono', 'text-end');
+    expect(screen.getByText('channel-1').closest('div')).toHaveClass('justify-between');
     expect(
       within(dialog).queryByText('com_ui_channels_manifest_description'),
     ).not.toBeInTheDocument();
     expect(within(dialog).queryByText('com_ui_channels_gateway_required')).not.toBeInTheDocument();
-    expect(within(dialog).getByText('T123')).toHaveClass('font-mono');
-    expect(within(dialog).getByText('A123')).toBeInTheDocument();
+    expect(screen.getByText('T123')).toHaveClass('font-mono');
+    expect(screen.getByText('A123')).toBeInTheDocument();
     expect(await within(dialog).findByLabelText('com_ui_channels_manifest')).toHaveValue(
       JSON.stringify(manifest, null, 2),
     );
     expect(
-      within(dialog)
-        .getByText('com_ui_channels_manifest', { selector: 'summary' })
-        .closest('details'),
-    ).toHaveAttribute('open');
+      within(dialog).getByRole('button', { name: 'com_ui_channels_manifest' }),
+    ).toHaveAttribute('aria-expanded', 'false');
     expect(dataService.getAgentChannelManifest).toHaveBeenCalledWith('agent-1', 'channel-1');
     expect(within(dialog).queryByLabelText('com_ui_channels_bot_token')).not.toBeInTheDocument();
-    const remove = within(dialog).getByRole('button', { name: 'com_ui_delete' });
-    expect(remove).toHaveClass('bg-surface-destructive');
-    expect(remove.parentElement).toHaveClass('sm:justify-between');
-    expect(remove.parentElement!.firstElementChild).toBe(remove);
+    // Deleting happens from the list row's X, not from inside this dialog.
+    expect(within(dialog).queryByRole('button', { name: 'com_ui_delete' })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole('button', { name: 'com_ui_done' })).not.toBeInTheDocument();
+    // The first Escape dismisses the details card, the second the dialog.
+    await user.keyboard('{Escape}');
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(dataService.disableAgentChannel).not.toHaveBeenCalled();
@@ -322,7 +596,7 @@ test('manifest failure in Manage can retry without hiding connection controls', 
     JSON.stringify(manifest, null, 2),
   );
 });
-test('mode/delete confirmations replace setup and discard secrets; mode requires revision', async () => {
+test('setup hides the identity control', async () => {
   const user = userEvent.setup();
   jest
     .mocked(dataService.listAgentChannels)
@@ -330,30 +604,28 @@ test('mode/delete confirmations replace setup and discard secrets; mode requires
   renderChannels();
   await openConnection(user, 'disabled');
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_setup' }));
+  await next(user);
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
-  await user.click(screen.getByRole('button', { name: 'com_ui_channel_link_change_mode' }));
-  expect(screen.queryByLabelText('com_ui_channels_bot_token')).not.toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: 'com_ui_delete' }));
+  const dialog = screen.getByRole('dialog');
+  // Setup replaces the manage body, so the identity control is not there while it is open.
   expect(
-    screen.queryByRole('group', { name: 'com_ui_channel_link_mode_confirm' }),
+    within(dialog).queryByRole('button', { name: 'com_ui_channel_link_change_mode' }),
   ).not.toBeInTheDocument();
-  await user.click(
-    within(screen.getByRole('group', { name: 'com_ui_channels_delete_confirm' })).getByRole(
-      'button',
-      { name: 'com_ui_cancel' },
-    ),
-  );
-  expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
-  await user.click(screen.getByRole('button', { name: 'com_ui_channels_setup' }));
-  expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
+});
+test('the identity control opens cards for a disabled connection and saves the new mode', async () => {
+  const user = userEvent.setup();
+  jest
+    .mocked(dataService.listAgentChannels)
+    .mockResolvedValue([{ ...pending, status: 'disabled', revision: 'r1' }]);
+  renderChannels();
+  await openConnection(user, 'disabled');
   await user.click(screen.getByRole('button', { name: 'com_ui_channel_link_change_mode' }));
+  const group = screen.getByRole('radiogroup', { name: 'com_ui_channel_link_mode' });
+  const save = screen.getByRole('button', { name: 'com_ui_save' });
+  expect(save).toBeDisabled();
+  await user.click(within(group).getByRole('radio', { name: 'com_ui_channel_link_shared' }));
   expect(dataService.changeAgentChannelMode).not.toHaveBeenCalled();
-  await user.click(
-    within(screen.getByRole('group', { name: 'com_ui_channel_link_mode_confirm' })).getByRole(
-      'button',
-      { name: 'com_ui_channel_link_switch_shared' },
-    ),
-  );
+  await user.click(save);
   await waitFor(() =>
     expect(dataService.changeAgentChannelMode).toHaveBeenCalledWith(
       'agent-1',
@@ -363,18 +635,79 @@ test('mode/delete confirmations replace setup and discard secrets; mode requires
     ),
   );
 });
-test.each(['active', 'pending_install'] as const)(
-  '%s connection has no mode control',
-  async (status) => {
-    const user = userEvent.setup();
-    jest.mocked(dataService.listAgentChannels).mockResolvedValue([{ ...pending, status }]);
-    renderChannels();
-    await openConnection(user, status);
-    expect(
-      screen.queryByRole('button', { name: 'com_ui_channel_link_change_mode' }),
-    ).not.toBeInTheDocument();
-  },
-);
+test('an active connection must be disabled before its identity can change', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([{ ...pending, status: 'active' }]);
+  renderChannels();
+  await openConnection(user, 'active');
+  await user.click(screen.getByRole('button', { name: 'com_ui_channel_link_change_mode' }));
+  const confirm = screen.getByRole('dialog', { name: 'com_ui_channels_mode_disable_title' });
+  expect(within(confirm).getByText('com_ui_channels_mode_disable_first')).toBeInTheDocument();
+  expect(
+    within(confirm).getByRole('button', { name: 'com_ui_channels_mode_disable_confirm' }),
+  ).toHaveClass('bg-surface-destructive');
+  expect(
+    screen.queryByRole('radiogroup', { name: 'com_ui_channel_link_mode' }),
+  ).not.toBeInTheDocument();
+  expect(dataService.changeAgentChannelMode).not.toHaveBeenCalled();
+  expect(dataService.disableAgentChannel).not.toHaveBeenCalled();
+});
+test('confirming the disable from the identity control lands directly on the cards', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([{ ...pending, status: 'active' }]);
+  renderChannels();
+  await openConnection(user, 'active');
+  await user.click(screen.getByRole('button', { name: 'com_ui_channel_link_change_mode' }));
+  jest
+    .mocked(dataService.listAgentChannels)
+    .mockResolvedValue([{ ...pending, status: 'disabled', revision: 'r1' }]);
+  const confirm = screen.getByRole('dialog', { name: 'com_ui_channels_mode_disable_title' });
+  await user.click(
+    within(confirm).getByRole('button', { name: 'com_ui_channels_mode_disable_confirm' }),
+  );
+  await waitFor(() => expect(dataService.disableAgentChannel).toHaveBeenCalled());
+  const group = await screen.findByRole('radiogroup', { name: 'com_ui_channel_link_mode' });
+  expect(within(group).getByRole('radio', { name: 'com_ui_channel_link_per_user' })).toBeChecked();
+  expect(screen.getByRole('button', { name: 'com_ui_save' })).toBeDisabled();
+});
+test.each([
+  ['per_user', true],
+  ['shared', false],
+] as const)('an active %s connection explains how to use the bot in Slack', async (mode, link) => {
+  const user = userEvent.setup();
+  jest
+    .mocked(dataService.listAgentChannels)
+    .mockResolvedValue([{ ...pending, status: 'active', credentialMode: mode }]);
+  renderChannels();
+  await openConnection(user, 'active');
+  const dialog = screen.getByRole('dialog');
+  expect(
+    await within(dialog).findByRole('heading', { name: 'com_ui_channels_usage_title' }),
+  ).toBeInTheDocument();
+  expect(within(dialog).getByText('com_ui_channels_usage_channel')).toBeInTheDocument();
+  expect(within(dialog).getByText('com_ui_channels_usage_dm')).toBeInTheDocument();
+  expect(!!within(dialog).queryByText('com_ui_channels_usage_link')).toBe(link);
+});
+test.each([true, false])('the gateway note is shown to admins only (admin=%s)', async (isAdmin) => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([{ ...pending, status: 'active' }]);
+  renderChannels({ isAdmin });
+  await openConnection(user, 'active');
+  const dialog = screen.getByRole('dialog');
+  await within(dialog).findByRole('heading', { name: 'com_ui_channels_usage_title' });
+  expect(
+    !!within(dialog).queryByRole('button', { name: 'com_ui_channels_gateway_admin_note' }),
+  ).toBe(isAdmin);
+});
+test('a pending connection has no identity control', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
+  renderChannels();
+  await openConnection(user, 'pending_install');
+  expect(
+    screen.queryByRole('button', { name: 'com_ui_channel_link_change_mode' }),
+  ).not.toBeInTheDocument();
+});
 test('list/manifest/activation errors can retry without exposing backend details; signing secret optional', async () => {
   const user = userEvent.setup();
   jest
@@ -393,9 +726,11 @@ test('list/manifest/activation errors can retry without exposing backend details
   await user.click(await screen.findByRole('button', { name: 'com_ui_channels_retry' }));
   await openConnection(user);
   await user.click(await screen.findByRole('button', { name: 'com_ui_channels_retry' }));
-  await screen.findByText('com_ui_channels_manifest', { selector: 'summary' });
+  await screen.findByRole('button', { name: 'com_ui_channels_manifest_fallback' });
+  await next(user);
   await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
+  await next(user);
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
   await screen.findByText('com_ui_channels_action_error');
   expect(screen.getByText('com_ui_channels_activation_retry')).toBeInTheDocument();
@@ -403,6 +738,7 @@ test('list/manifest/activation errors can retry without exposing backend details
   expect(screen.queryByText('private-error')).not.toBeInTheDocument();
   expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
+  await next(user);
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
   await waitFor(() =>
     expect(dataService.activateAgentChannel).toHaveBeenLastCalledWith('agent-1', 'channel-1', {
@@ -438,17 +774,20 @@ describe('asynchronous deletion refresh', () => {
       .mockResolvedValueOnce([{ ...pending, status: 'deleting' }])
       .mockResolvedValue([]);
     renderChannels();
-    await openConnection(user);
-    await user.click(screen.getByRole('button', { name: 'com_ui_delete' }));
+    await user.click(
+      await screen.findByRole('button', { name: 'com_ui_channels_delete_connection' }),
+    );
     expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
     await user.click(
-      within(screen.getByRole('group', { name: 'com_ui_channels_delete_confirm' })).getByRole(
+      within(screen.getByRole('dialog', { name: 'com_ui_channels_delete_title' })).getByRole(
         'button',
         { name: 'com_ui_delete' },
       ),
     );
     await screen.findByText('com_ui_channels_deleting');
-    expect(screen.getByRole('button', { name: 'com_ui_channels_manage' })).toBeDisabled();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'com_ui_channels_manage' })).toBeDisabled(),
+    );
     await advance(2000);
     await waitFor(() =>
       expect(screen.queryByText('com_ui_channels_deleting')).not.toBeInTheDocument(),
@@ -552,17 +891,19 @@ test('requires the signing secret advertised by a webhook manifest before activa
   });
   renderChannels();
   await openConnection(user);
+  await next(user);
   await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
-  const activate = screen.getByRole('button', { name: 'com_ui_channels_activate' });
-  expect(activate).toBeDisabled();
+  const proceed = screen.getByRole('button', { name: 'com_ui_continue' });
+  expect(proceed).toBeDisabled();
   const signing = screen.getByLabelText(/com_ui_channels_signing_secret/);
   expect(signing).toBeRequired();
   expect(screen.getByText('com_ui_channels_signing_secret_required')).toBeInTheDocument();
   expect(screen.queryByText('com_ui_channels_signing_secret_optional')).not.toBeInTheDocument();
   await user.type(signing, 'test-secret');
-  expect(activate).toBeEnabled();
-  await user.click(activate);
+  expect(proceed).toBeEnabled();
+  await user.click(proceed);
+  await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
   expect(dataService.activateAgentChannel).toHaveBeenCalledWith('agent-1', 'channel-1', {
     slack: { appId: 'A123', botToken: 'test-token', signingSecret: 'test-secret' },
   });
@@ -574,10 +915,14 @@ test('does not send credentials when the installation manifest is unavailable', 
   jest.mocked(dataService.getAgentChannelManifest).mockRejectedValue(new Error('offline'));
   renderChannels();
   await openConnection(user);
+  await next(user);
   await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
   await user.type(screen.getByLabelText(/com_ui_channels_signing_secret/), 'test-secret');
-  expect(screen.getByRole('button', { name: 'com_ui_channels_activate' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
+  expect(
+    screen.queryByRole('button', { name: 'com_ui_channels_activate' }),
+  ).not.toBeInTheDocument();
   expect(dataService.activateAgentChannel).not.toHaveBeenCalled();
 });
 
@@ -594,12 +939,15 @@ test('a late operation for A cannot close B or discard B credentials', async () 
   );
   renderChannels();
   await user.click((await screen.findAllByRole('button', { name: 'com_ui_channels_setup' }))[0]);
+  await next(user);
   await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'A-token');
+  await next(user);
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
   await user.keyboard('{Escape}');
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   await user.click(screen.getAllByRole('button', { name: 'com_ui_channels_setup' })[1]);
+  await next(user);
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'B-token');
   await act(async () => {
     finish({ ...pending, status: 'active' });
@@ -627,9 +975,11 @@ test('the actual activation adapter prevents credential-bearing failures reachin
   const { client } = renderChannels();
   try {
     await openConnection(user);
+    await next(user);
     await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
     await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
     await user.type(screen.getByLabelText(/com_ui_channels_signing_secret/), 'test-secret');
+    await next(user);
     await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
     await screen.findByText('com_ui_channels_action_error');
     await user.keyboard('{Escape}');
@@ -658,6 +1008,7 @@ test('switching owner isolates channel caches and discards the old credential fo
   jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
   const mounted = renderChannels();
   await openConnection(user);
+  await next(user);
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'Owner-A-secret');
   jest
     .mocked(dataService.listAgentChannels)
@@ -669,6 +1020,7 @@ test('switching owner isolates channel caches and discards the old credential fo
   );
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   await openConnection(user);
+  await next(user);
   expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
   expect(dataService.getAgentChannelManifest).toHaveBeenLastCalledWith('agent-1', 'channel-2');
   expect(
@@ -697,9 +1049,11 @@ test.each(['success', 'failure', 'pending-close'] as const)(
       );
     const { client } = renderChannels();
     await openConnection(user);
+    await next(user);
     await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
     await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'one-use-token');
     await user.type(screen.getByLabelText(/com_ui_channels_signing_secret/), 'one-use-secret');
+    await next(user);
     await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
     await waitFor(() => expect(dataService.activateAgentChannel).toHaveBeenCalledTimes(1));
     const cached = client.getMutationCache().find<AgentChannel | void, Error, 'activate'>({
@@ -740,12 +1094,15 @@ test('a completed closed operation cannot close a new dialog for the same channe
   );
   renderChannels();
   await openConnection(user);
+  await next(user);
   await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'old-operation-token');
+  await next(user);
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
   await waitFor(() => expect(dataService.activateAgentChannel).toHaveBeenCalledTimes(1));
   await user.keyboard('{Escape}');
   await openConnection(user);
+  await next(user);
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'new-dialog-token');
   await act(async () => finish({ ...pending, status: 'active' }));
   expect(screen.getByRole('dialog')).toBeInTheDocument();
@@ -785,8 +1142,10 @@ test('the activation adapter preserves only the approved setup code and clears c
   const { client } = renderChannels();
   try {
     await openConnection(user);
+    await next(user);
     await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
     await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
+    await next(user);
     await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'com_ui_channels_transaction_required',
@@ -1502,7 +1861,7 @@ describe('organization workspace connections', () => {
       screen.queryByRole('button', { name: 'com_ui_channels_manual_app' }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'com_ui_channel_link_shared' }),
+      screen.queryByRole('radio', { name: 'com_ui_channel_link_shared' }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText('com_ui_channels_workspace_identity')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
@@ -1570,7 +1929,7 @@ describe('organization workspace connections', () => {
     await openAdd(user);
     expect(screen.getByRole('status')).toHaveTextContent('com_ui_channels_loading');
     expect(
-      screen.queryByRole('button', { name: 'com_ui_channel_link_shared' }),
+      screen.queryByRole('radio', { name: 'com_ui_channel_link_shared' }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
     await act(async () => finish({ configured: true, canManage: true, workspaces: [workspace] }));
@@ -1595,7 +1954,7 @@ describe('organization workspace connections', () => {
       }
       await screen.findByText('com_ui_channels_workspace_load_error');
       expect(
-        screen.queryByRole('button', { name: 'com_ui_channel_link_shared' }),
+        screen.queryByRole('radio', { name: 'com_ui_channel_link_shared' }),
       ).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
       expect(screen.queryByText('private-error')).not.toBeInTheDocument();
@@ -1605,7 +1964,7 @@ describe('organization workspace connections', () => {
       await user.click(screen.getByRole('button', { name: 'com_ui_retry' }));
       await screen.findByRole('combobox', { name: 'com_ui_channels_slack_bot' });
       expect(
-        screen.queryByRole('button', { name: 'com_ui_channel_link_shared' }),
+        screen.queryByRole('radio', { name: 'com_ui_channel_link_shared' }),
       ).not.toBeInTheDocument();
       expect(dataService.createAgentChannel).not.toHaveBeenCalled();
     },

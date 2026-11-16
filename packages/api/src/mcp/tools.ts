@@ -33,6 +33,7 @@ export function createMCPStructuredTool(
 ): DynamicStructuredTool<unknown> {
   const tool = new DynamicStructuredTool({
     ...fields,
+    description: fields.description || `${fields.name} tool`,
     func: async (input, runManager, config) => {
       const invocation = config as typeof config & {
         toolCall?: { id?: string };

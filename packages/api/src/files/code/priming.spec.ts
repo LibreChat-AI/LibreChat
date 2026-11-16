@@ -4,6 +4,7 @@ import { FileContext } from 'librechat-data-provider';
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
 import {
   selectCodeFiles,
+  createCodeFileUploadRef,
   getCodeFileLocation,
   getCodeFileContextLine,
   appendCodeFileContextLine,
@@ -630,5 +631,41 @@ describe('setMissingCodeFilesContext', () => {
     expect(map).toEqual({ execute_code: 'files' });
     setMissingCodeFilesContext(map, 'note');
     expect(Object.values(map)).toEqual(['files', 'note']);
+  });
+});
+
+describe('createCodeFileUploadRef', () => {
+  it('stamps only the completed upload and preserves its route, resource identity and receipt name', () => {
+    const before = Date.now();
+    const ref = createCodeFileUploadRef({
+      sourceRef: {
+        kind: 'skill',
+        id: 'shared-skill',
+        version: 7,
+        storage_session_id: 'old',
+        file_id: 'old',
+        provisionedAt: 1,
+      },
+      uploaded: {
+        storage_session_id: 'fresh-session',
+        file_id: 'fresh-id',
+        filename: 'stored.csv',
+      },
+      sandboxFilename: 'requested.csv',
+      executionProfile: 'stateful',
+      executionRouteKey: 'stateful:worker',
+    });
+    expect(ref).toMatchObject({
+      kind: 'skill',
+      id: 'shared-skill',
+      version: 7,
+      storage_session_id: 'fresh-session',
+      file_id: 'fresh-id',
+      sandboxFilename: 'stored.csv',
+      executionProfile: 'stateful',
+      executionRouteKey: 'stateful:worker',
+    });
+    expect(ref.provisionedAt).toBeGreaterThanOrEqual(before);
+    expect(ref.provisionedAt).toBeLessThanOrEqual(Date.now());
   });
 });
