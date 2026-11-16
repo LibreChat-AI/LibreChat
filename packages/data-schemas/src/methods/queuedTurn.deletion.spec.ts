@@ -12,11 +12,15 @@ jest.mock('~/config/winston', () => ({
   debug: jest.fn(),
 }));
 
-const models = createModels(mongoose);
-const methods = createMethods(mongoose);
+let models: ReturnType<typeof createModels>;
+let methods: ReturnType<typeof createMethods>;
 let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
+  // Created in the hook so that a failing model factory fails these tests instead of the whole
+  // suite at import, which mutation testing reports as a runtime error.
+  models = createModels(mongoose);
+  methods = createMethods(mongoose);
   mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   await Promise.all(Object.values(models).map((model) => model.init()));
