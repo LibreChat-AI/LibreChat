@@ -24,6 +24,7 @@ import type {
 } from 'librechat-data-provider';
 import type { DiscordInboxRecord } from '@librechat/data-schemas';
 import type { DiscordInboxServiceDependencies } from './inbox';
+import type { DiscordObservation } from './observe';
 import { createDiscordInboxService, discordInteractionExpiry } from './inbox';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createDiscordInboxHandlers } from './inboxHttp';
@@ -44,6 +45,7 @@ const unwrap = <T>(result: { ok: true; value: T } | { ok: false; error: { code: 
   if (!result.ok) throw new Error(result.error.code);
   return result.value;
 };
+const observations: DiscordObservation[] = [];
 let mongo: MongoMemoryReplSet;
 let installations: ReturnType<typeof createDiscordInstallationStorage>;
 let storage: ReturnType<typeof createDiscordInboxStorage>;
@@ -73,6 +75,7 @@ function input(overrides: Partial<DiscordInboxSubmission> = {}): DiscordInboxSub
 function mount(instance = service) {
   const handlers = createDiscordInboxHandlers({
     service: instance,
+    observe: (event) => observations.push(event),
     serviceToken: () => serviceToken,
   });
   app = express();
@@ -90,6 +93,7 @@ afterAll(async () => {
   await mongo?.stop();
 });
 beforeEach(async () => {
+  observations.length = 0;
   now = Date.now();
   eventId = ((BigInt(now - 10) - BigInt(1420070400000)) << BigInt(22)).toString();
   enabled = true;
@@ -174,6 +178,7 @@ beforeEach(async () => {
   });
   execute = async () => ({ content: 'Accepted.' });
   deps = {
+    observe: (event) => observations.push(event),
     storage,
     resolver,
     encrypt: encryptCredential,
@@ -733,4 +738,55 @@ describe('owned guild text prompt preflight', () => {
     );
     expect(effect).toHaveBeenCalledTimes(2);
   });
+});
+
+it('observes actual submission deduplication, claim age and successful state transitions without identities', async () => {
+  await request(app)
+    .post('/submit')
+    .set('authorization', `Bearer ${serviceToken}`)
+    .send(input())
+    .expect(201);
+  await request(app)
+    .post('/submit')
+    .set('authorization', `Bearer ${serviceToken}`)
+    .send(input())
+    .expect(200);
+  now += 250;
+  const claimed = await service.claim(applicationId, 'metrics-worker');
+  expect(claimed).not.toBeNull();
+  const fence = claimed!.fence;
+  expect(await service.defer(fence, now + 1000)).toBe(true);
+  expect(await service.defer(fence, now + 1000)).toBe(false);
+  now += 1001;
+  const reclaimed = await service.claim(applicationId, 'metrics-worker');
+  expect(reclaimed).not.toBeNull();
+  now = reclaimed!.expiresAt;
+  expect(await service.finish(reclaimed!.fence, 'expired')).toBe(true);
+  expect(observations).toEqual([
+    { type: 'submission', kind: 'interaction', result: 'accepted' },
+    { type: 'submission', kind: 'interaction', result: 'duplicate' },
+    { type: 'queue', seconds: 0.25 },
+    { type: 'inbox', event: 'deferred' },
+    { type: 'queue', seconds: 1.251 },
+    { type: 'inbox', event: 'expired' },
+  ]);
+  for (const secret of [applicationId, guildId, externalUserId, token])
+    expect(JSON.stringify(observations)).not.toContain(secret);
+});
+
+it('preserves a committed submission when the optional observer throws', async () => {
+  const handlers = createDiscordInboxHandlers({
+    service,
+    serviceToken: () => serviceToken,
+    observe: () => {
+      throw new Error('Broken metrics backend');
+    },
+  });
+  app.post('/metrics-failure', handlers.submit);
+  await request(app)
+    .post('/metrics-failure')
+    .set('authorization', `Bearer ${serviceToken}`)
+    .send(input())
+    .expect(201);
+  expect(unwrap(await service.submit(input())).duplicate).toBe(true);
 });
