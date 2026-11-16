@@ -75,6 +75,20 @@ async function page() {
   );
   return { ...view, client, user: userEvent.setup() };
 }
+/** A rotation whose save is rejected, settled and ready to be dismissed with Refresh. */
+async function failedSave() {
+  jest
+    .mocked(dataService.configureDiscordApplication)
+    .mockRejectedValueOnce(Object.assign(new Error('safe'), { code: 'unsupported_installation' }));
+  const view = await page();
+  const trigger = screen.getByRole('button', { name: 'com_ui_discord_rotate_named' });
+  await view.user.click(trigger);
+  await view.user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-bot-token');
+  await view.user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+  expect(await screen.findByText('com_ui_discord_code_grant')).toBeVisible();
+  await waitFor(() => expect(trigger).toBeEnabled());
+  return { ...view, trigger };
+}
 beforeEach(() => {
   jest.spyOn(dataService, 'getDiscordApps').mockResolvedValue({
     applications: [app],
@@ -355,6 +369,65 @@ test('refreshes an uncertain credential update before reopening a current revisi
       expectedRevision: 'app-r2',
     }),
   );
+});
+
+test('returns focus to the editor trigger only after the refresh settles', async () => {
+  const { user, trigger } = await failedSave();
+  const reads = deferred<{ applications: DiscordApplication[] }>();
+  jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
+  await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
+  await waitFor(() => expect(trigger).toBeDisabled());
+  expect(trigger).not.toHaveFocus();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_app_create' })).toBeDisabled();
+  expect(screen.queryByLabelText('com_ui_discord_bot_token')).toBeNull();
+  await act(async () => reads.resolve({ applications: [{ ...app, revision: 'app-r2' }] }));
+  await waitFor(() => expect(trigger).toBeEnabled());
+  await waitFor(() => expect(trigger).toHaveFocus());
+});
+
+test('moves focus to the load failure when the refresh cannot reconcile, then back after a retry', async () => {
+  const { user, trigger } = await failedSave();
+  jest.mocked(dataService.getDiscordApps).mockRejectedValueOnce(new Error('network'));
+  await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
+  const failure = (await screen.findByText('com_ui_discord_error')).closest(
+    '[role="alert"]',
+  ) as HTMLElement;
+  await waitFor(() => expect(failure).toHaveFocus());
+  expect(trigger).toBeDisabled();
+  expect(trigger).not.toHaveFocus();
+  await user.click(within(failure).getByRole('button', { name: 'com_ui_retry' }));
+  await waitFor(() => expect(trigger).toBeEnabled());
+  await waitFor(() => expect(trigger).toHaveFocus());
+});
+
+test('falls back to the applications heading when the refreshed list no longer has the trigger', async () => {
+  const { user, trigger } = await failedSave();
+  jest.mocked(dataService.getDiscordApps).mockResolvedValueOnce({ applications: [] });
+  await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
+  await waitFor(() => expect(trigger).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: 'com_ui_discord_apps' })).toHaveFocus(),
+  );
+});
+
+test('does not move focus in the next account when the previous account refresh settles', async () => {
+  const { user, trigger, client, rerender } = await failedSave();
+  const reads = deferred<{ applications: DiscordApplication[] }>();
+  jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
+  await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
+  await waitFor(() => expect(dataService.getDiscordApps).toHaveBeenCalledTimes(3));
+  expect(trigger).toBeDisabled();
+  rerender(
+    <QueryClientProvider client={client}>
+      <Discord userId="next-admin" tenantId="other-org" />
+    </QueryClientProvider>,
+  );
+  const next = await screen.findByRole('button', { name: 'com_ui_discord_rotate_named' });
+  await waitFor(() => expect(next).toBeEnabled());
+  await act(async () => reads.resolve({ applications: [app] }));
+  expect(next).toBeEnabled();
+  expect(next).not.toHaveFocus();
+  expect(document.body).toHaveFocus();
 });
 
 test('registers commands only after explicit action using current revision and metadata-only variables', async () => {

@@ -55,6 +55,7 @@ describe('OAuthError', () => {
     ['discord_rate_limited', 'com_ui_discord_rate_limited'],
     ['discord_provider_unavailable', 'com_ui_discord_provider_unavailable'],
     ['discord_timeout', 'com_ui_discord_provider_unavailable'],
+    ['discord_transactions_unavailable', 'com_ui_channels_transaction_required'],
   ])('explains the Discord callback code %s with an actionable message', (code, key) => {
     renderAt(`/oauth/error?error=${code}&flow=flow-a`);
     expect(screen.getByText(key)).toBeInTheDocument();

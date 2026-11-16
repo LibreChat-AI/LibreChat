@@ -155,6 +155,8 @@ function Setup({
   const restoreEditorFocus = useRef(false);
   const disconnectTrigger = useRef<HTMLButtonElement | null>(null);
   const guildHeading = useRef<HTMLHeadingElement | null>(null);
+  const appsHeading = useRef<HTMLHeadingElement | null>(null);
+  const loadFailure = useRef<HTMLDivElement | null>(null);
   const busy = useIsMutating({ mutationKey: [MutationKeys.discordSetup, principalKey] }) > 0;
   const apps = useInfiniteQuery(
     [QueryKeys.discordApps, principalKey],
@@ -250,6 +252,11 @@ function Setup({
     ...lifecycle,
     mutationKey: [MutationKeys.discordSetup, principalKey, 'cancel'],
     mutationFn: dataService.cancelDiscordInstall,
+  });
+  /** Tracked like a write: `busy` keeps every control disabled until the reads have refetched. */
+  const reconcile = useMutation({
+    mutationKey: [MutationKeys.discordSetup, principalKey, 'reconcile'],
+    mutationFn: refresh,
   });
   const disconnect = useMutation({
     ...lifecycle,
@@ -381,11 +388,17 @@ function Setup({
     if (editor) setFocus(editor === 'new' ? 'applicationId' : 'botToken');
   }, [editor, setFocus]);
   useEffect(() => {
-    if (restoreEditorFocus.current && !editor && ready && !busy) {
-      editorTrigger.current?.focus();
+    if (!restoreEditorFocus.current || editor || busy) return;
+    if (ready) {
+      const trigger = editorTrigger.current;
+      if (trigger?.isConnected && !trigger.disabled) trigger.focus();
+      else appsHeading.current?.focus();
       restoreEditorFocus.current = false;
+    } else if (apps.isError || guilds.isError) {
+      const failure = loadFailure.current;
+      if (failure && !failure.contains(document.activeElement)) failure.focus();
     }
-  }, [editor, ready, busy]);
+  }, [editor, ready, busy, apps.isError, guilds.isError]);
   const edit = (app: DiscordApplication | 'new', trigger: HTMLButtonElement) => {
     editorTrigger.current = trigger;
     save.reset();
@@ -437,7 +450,7 @@ function Setup({
         </p>
       )}
       {(apps.isError || guilds.isError) && (
-        <Alert variant="error">
+        <Alert ref={loadFailure} tabIndex={-1} variant="error">
           {localize(errorLabel(apps.error || guilds.error))}
           <Button type="button" variant="outline" onClick={retry}>
             {localize('com_ui_retry')}
@@ -458,7 +471,7 @@ function Setup({
               save.reset();
               connect.reset();
               cancel.reset();
-              void refresh();
+              reconcile.mutate();
             }}
           >
             {localize('com_ui_refresh')}
@@ -492,7 +505,9 @@ function Setup({
         </div>
       )}
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold">{localize('com_ui_discord_apps')}</h3>
+        <h3 ref={appsHeading} tabIndex={-1} className="text-sm font-semibold">
+          {localize('com_ui_discord_apps')}
+        </h3>
         <Button
           type="button"
           variant="outline"

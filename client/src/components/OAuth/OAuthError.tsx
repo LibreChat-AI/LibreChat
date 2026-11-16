@@ -57,6 +57,8 @@ export default function OAuthError() {
       case 'discord_provider_unavailable':
       case 'discord_timeout':
         return localize('com_ui_discord_provider_unavailable');
+      case 'discord_transactions_unavailable':
+        return localize('com_ui_channels_transaction_required');
       case 'missing_code':
         return localize('com_ui_oauth_error_missing_code');
       case 'missing_state':
