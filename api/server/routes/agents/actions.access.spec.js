@@ -271,6 +271,26 @@ describe('Action writes and agent-mediated MCP access', () => {
     }
   });
 
+  it('preserves OAuth tokens when the agent disappears before the database write reads it', async () => {
+    const action = await createOAuthAction();
+    const updateAgent = db.updateAgent;
+    const write = jest.spyOn(db, 'updateAgent').mockImplementationOnce(async (...args) => {
+      await mongoose.models.Agent.deleteOne({ id: agent.id });
+      return updateAgent(...args);
+    });
+    try {
+      const response = await updateOAuthAction(action.action_id, {
+        ...oauthMetadata,
+        domain: 'https://new.example.test',
+      });
+      expect(response.status).toBe(409);
+      expect(await mongoose.models.Token.countDocuments({ userId: actorId })).toBe(2);
+      expect((await mongoose.models.Action.findById(action._id)).metadata).toEqual(action.metadata);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
   it.each([false, true])(
     'invalidates OAuth tokens before publishing metadata only when the target changes: %s',
     async (targetChanged) => {
