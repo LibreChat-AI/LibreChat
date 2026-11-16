@@ -226,6 +226,26 @@ export type ProviderAgentChannel = SlackAgentChannel | DiscordAgentChannel;
 
 export type AgentChannel = ProviderAgentChannel;
 
+/**
+ * A stored row no provider of this build serves, such as one restored from another build or written
+ * before rows carried a provider. Its owner can still see and delete it, and nothing else is offered
+ * or exposed. It is never stored as this type: only the list and deletion responses produce it.
+ */
+export interface UnavailableAgentChannel
+  extends Omit<AgentChannelBase, 'credentialMode' | 'status'> {
+  type: 'unavailable';
+  status: 'disabled' | 'deleting';
+  credentialMode?: never;
+  discord?: never;
+  installationId?: never;
+  installationRevision?: never;
+  workspaceId?: never;
+  slack?: never;
+}
+
+/** One row of an owner's channel list: a channel a provider serves, or one only deletion can act on. */
+export type ListedAgentChannel = AgentChannel | UnavailableAgentChannel;
+
 export interface ActivateAgentChannel {
   slack: {
     appId: string;
