@@ -1,9 +1,15 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
-import { dataService } from 'librechat-data-provider';
+import { QueryKeys, dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
-import type { DiscordApplication, DiscordGuild, DiscordConnect } from 'librechat-data-provider';
+import type {
+  DiscordApplicationPage,
+  DiscordApplication,
+  DiscordGuildPage,
+  DiscordConnect,
+  DiscordGuild,
+} from 'librechat-data-provider';
 import { OAUTH_SETTLED_CHANNEL } from '~/data-provider/PullRequest/signIn';
 import Discord, { DiscordSettings } from './Discord';
 
@@ -54,10 +60,12 @@ const connectResponse: DiscordConnect = {
 const popup = { opener: null, closed: false, location: { href: '' }, close: jest.fn() };
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 async function page() {
   const client = new QueryClient({
@@ -1038,7 +1046,7 @@ async function failedDisconnect(user: User, held?: () => Promise<{ guilds: Disco
   await waitFor(() => expect(view.confirm()).toBeDisabled());
   if (held) jest.mocked(dataService.getDiscordGuilds).mockImplementationOnce(held);
   await act(async () => reject(Object.assign(new Error('safe'), { code: 'rate_limited' })));
-  const alert = await within(view.dialog).findByRole('alert');
+  const [alert] = await within(view.dialog).findAllByRole('alert');
   return { ...view, alert };
 }
 const headingOf = (name: string) => screen.getByRole('heading', { name });
@@ -1286,4 +1294,305 @@ test('does not carry the reason into the next account', async () => {
   await screen.findByRole('button', { name: 'com_ui_discord_connect_named' });
   expect(screen.queryByText('com_ui_discord_oauth_refused')).toBeNull();
   expect(screen.queryByText('com_ui_discord_unconfirmed')).toBeNull();
+});
+
+const second: DiscordApplication = { ...app, applicationId: '423456789012345678', name: 'Support' };
+const other: DiscordGuild = {
+  ...guild,
+  installationId: 'installation-2',
+  guildName: 'Support server',
+};
+const silent = { log: () => {}, warn: () => {}, error: () => {} };
+const appsHeading = () => screen.getByRole('heading', { name: 'com_ui_discord_apps' });
+const retryOf = (alert: HTMLElement) => within(alert).getByRole('button', { name: 'com_ui_retry' });
+const loadFailure = async () =>
+  (await screen.findByText('com_ui_discord_error')).closest('[role="alert"]') as HTMLElement;
+const nextAccount = (client: QueryClient) => (
+  <QueryClientProvider client={client}>
+    <Discord userId="next-admin" tenantId="other-org" />
+  </QueryClientProvider>
+);
+/** A first load whose read fails once, so the page opens on its load failure. */
+async function unreadable(read: 'apps' | 'guilds') {
+  const failing =
+    read === 'apps'
+      ? jest.mocked(dataService.getDiscordApps)
+      : jest.mocked(dataService.getDiscordGuilds);
+  failing.mockRejectedValueOnce(new Error('network'));
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    logger: silent,
+  });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Discord userId="admin" tenantId="org" />
+    </QueryClientProvider>,
+  );
+  return { ...view, client, user: userEvent.setup(), failure: await loadFailure() };
+}
+
+test.each(['apps', 'guilds'] as const)(
+  'moves focus to the applications heading once an initial load succeeds on retry (%s read failed)',
+  async (read) => {
+    const { user, failure } = await unreadable(read);
+    await user.click(retryOf(failure));
+    expect(await screen.findByText('Engineering')).toBeVisible();
+    await waitFor(() => expect(appsHeading()).toHaveFocus());
+  },
+);
+
+test('returns focus to the load failure when an initial retry fails again, then to the heading', async () => {
+  const { user, failure } = await unreadable('apps');
+  const again = deferred<DiscordApplicationPage>();
+  jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(again.promise);
+  await user.click(retryOf(failure));
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+  await act(async () => again.reject(new Error('network')));
+  const repeated = await loadFailure();
+  await waitFor(() => expect(repeated).toHaveFocus());
+  await user.click(retryOf(repeated));
+  expect(await screen.findByText('Engineering')).toBeVisible();
+  await waitFor(() => expect(appsHeading()).toHaveFocus());
+});
+
+test('leaves focus alone when the user moved on while an initial retry waited', async () => {
+  const { user, failure } = await unreadable('apps');
+  const reads = deferred<DiscordApplicationPage>();
+  jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
+  await user.click(retryOf(failure));
+  const link = screen.getByRole('link', { name: 'com_ui_discord_developer_portal' });
+  link.focus();
+  await act(async () => reads.resolve({ applications: [app] }));
+  expect(await screen.findByText('Engineering')).toBeVisible();
+  expect(link).toHaveFocus();
+  expect(appsHeading()).not.toHaveFocus();
+});
+
+test('does not move focus in the next account when an initial retry settles after the switch', async () => {
+  const { user, failure, client, rerender } = await unreadable('apps');
+  const reads = deferred<DiscordApplicationPage>();
+  jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
+  await user.click(retryOf(failure));
+  rerender(nextAccount(client));
+  expect(await screen.findByText('Engineering')).toBeVisible();
+  await act(async () => reads.resolve({ applications: [app] }));
+  expect(appsHeading()).not.toHaveFocus();
+  expect(document.body).toHaveFocus();
+});
+
+test('does not touch the document when the view unmounts before an initial retry settles', async () => {
+  const { user, failure, unmount } = await unreadable('apps');
+  const reads = deferred<DiscordApplicationPage>();
+  jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
+  await user.click(retryOf(failure));
+  unmount();
+  await act(async () => reads.resolve({ applications: [app] }));
+  expect(document.body).toHaveFocus();
+});
+
+/** Both sections page the same way: the first page names a cursor, `page` answers the rest. */
+const sections = [
+  {
+    name: 'applications',
+    more: 'com_ui_discord_more_apps',
+    heading: 'com_ui_discord_apps',
+    added: 'Support',
+    cursors: () => jest.mocked(dataService.getDiscordApps).mock.calls.map(([cursor]) => cursor),
+    serve: (page: (cursor: string) => Promise<{ next?: string }>) =>
+      jest
+        .mocked(dataService.getDiscordApps)
+        .mockImplementation(
+          async (cursor): Promise<DiscordApplicationPage> =>
+            cursor
+              ? { applications: cursor === 'c2' ? [second] : [], ...(await page(cursor)) }
+              : { applications: [app], next: 'c2' },
+        ),
+  },
+  {
+    name: 'servers',
+    more: 'com_ui_discord_more_guilds',
+    heading: 'com_ui_discord_guilds',
+    added: 'Support server',
+    cursors: () => jest.mocked(dataService.getDiscordGuilds).mock.calls.map(([cursor]) => cursor),
+    serve: (page: (cursor: string) => Promise<{ next?: string }>) =>
+      jest
+        .mocked(dataService.getDiscordGuilds)
+        .mockImplementation(
+          async (cursor): Promise<DiscordGuildPage> =>
+            cursor
+              ? { guilds: cursor === 'c2' ? [other] : [], ...(await page(cursor)) }
+              : { guilds: [guild], next: 'c2' },
+        ),
+  },
+] as const;
+/** A browser drops focus from a control that disables itself; jsdom keeps it, so move it to the page. */
+const dropsFocus = () =>
+  act(() => {
+    const sink = document.createElement('div');
+    sink.tabIndex = -1;
+    document.body.append(sink);
+    sink.focus();
+    sink.remove();
+  });
+
+test.each(sections)(
+  'keeps focus on Load more $name while pages remain, then moves to the heading after the last page',
+  async ({ more, heading, added, serve }) => {
+    const reads = deferred<{ next?: string }>();
+    serve((cursor) => (cursor === 'c2' ? reads.promise : Promise.resolve({})));
+    const { user } = await page();
+    const button = screen.getByRole('button', { name: more });
+    await user.click(button);
+    await waitFor(() => expect(button).toBeDisabled());
+    dropsFocus();
+    expect(document.body).toHaveFocus();
+    await act(async () => reads.resolve({ next: 'c3' }));
+    expect(await screen.findByText(added)).toBeVisible();
+    await waitFor(() => expect(button).toHaveFocus());
+    await user.click(button);
+    await waitFor(() => expect(screen.queryByRole('button', { name: more })).toBeNull());
+    await waitFor(() => expect(screen.getByRole('heading', { name: heading })).toHaveFocus());
+  },
+);
+
+test.each(sections)(
+  'focuses the load failure when the next $name page fails and retries only that page',
+  async ({ more, heading, cursors, serve }) => {
+    let failing = true;
+    serve(async (cursor) => {
+      if (cursor === 'c2' && failing) {
+        failing = false;
+        throw new Error('network');
+      }
+      return {};
+    });
+    const { user } = await page();
+    await user.click(screen.getByRole('button', { name: more }));
+    const failure = await loadFailure();
+    await waitFor(() => expect(failure).toHaveFocus());
+    await user.click(retryOf(failure));
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    await waitFor(() => expect(screen.getByRole('heading', { name: heading })).toHaveFocus());
+    expect(cursors()).toEqual([undefined, 'c2', 'c2']);
+  },
+);
+
+test.each(sections)(
+  'leaves focus alone when the user moved on while Load more $name waited',
+  async ({ more, added, serve }) => {
+    const reads = deferred<{ next?: string }>();
+    serve((cursor) => (cursor === 'c2' ? reads.promise : Promise.resolve({})));
+    const { user } = await page();
+    const button = screen.getByRole('button', { name: more });
+    await user.click(button);
+    await waitFor(() => expect(button).toBeDisabled());
+    dropsFocus();
+    const link = screen.getByRole('link', { name: 'com_ui_discord_developer_portal' });
+    link.focus();
+    await act(async () => reads.resolve({ next: 'c3' }));
+    expect(await screen.findByText(added)).toBeVisible();
+    expect(link).toHaveFocus();
+    expect(button).not.toHaveFocus();
+  },
+);
+
+test('does not move focus in the next account when Load more settles after the switch', async () => {
+  const [{ more, serve }] = sections;
+  const reads = deferred<{ next?: string }>();
+  serve((cursor) => (cursor === 'c2' ? reads.promise : Promise.resolve({})));
+  const { user, client, rerender } = await page();
+  const button = screen.getByRole('button', { name: more });
+  await user.click(button);
+  await waitFor(() => expect(button).toBeDisabled());
+  dropsFocus();
+  jest.mocked(dataService.getDiscordApps).mockResolvedValue({ applications: [app] });
+  rerender(nextAccount(client));
+  expect(await screen.findByText('Engineering')).toBeVisible();
+  await act(async () => reads.resolve({ next: 'c3' }));
+  expect(appsHeading()).not.toHaveFocus();
+  expect(document.body).toHaveFocus();
+});
+
+test('does not touch the document when the view unmounts before Load more settles', async () => {
+  const [{ more, serve }] = sections;
+  const reads = deferred<{ next?: string }>();
+  serve((cursor) => (cursor === 'c2' ? reads.promise : Promise.resolve({})));
+  const { user, unmount } = await page();
+  const button = screen.getByRole('button', { name: more });
+  await user.click(button);
+  await waitFor(() => expect(button).toBeDisabled());
+  dropsFocus();
+  unmount();
+  await act(async () => reads.resolve({ next: 'c3' }));
+  expect(document.body).toHaveFocus();
+});
+
+const unread = () => Promise.reject(new Error('network'));
+const hintOf = async (dialog: HTMLElement) =>
+  (await within(dialog).findByText('com_ui_discord_disconnect_unread')).closest(
+    '[role="alert"]',
+  ) as HTMLElement;
+
+test('shows why Disconnect is unavailable when the reads behind a failed disconnect fail', async () => {
+  const { user } = await page();
+  const { dialog, alert, confirm } = await failedDisconnect(user, unread);
+  const hint = await hintOf(dialog);
+  expect(within(hint).getByRole('button', { name: 'com_ui_retry' })).toBeEnabled();
+  expect(confirm()).toBeDisabled();
+  expect(alert).toHaveFocus();
+});
+
+test('shows a background read failure inside the open confirmation without taking focus from Cancel', async () => {
+  const { user, client } = await page();
+  const { dialog, confirm, cancel } = await openConfirmation(user);
+  expect(cancel()).toHaveFocus();
+  jest.mocked(dataService.getDiscordGuilds).mockRejectedValueOnce(new Error('network'));
+  await act(async () => {
+    await client.invalidateQueries([QueryKeys.discordGuilds, JSON.stringify(['org', 'admin'])]);
+  });
+  expect(await hintOf(dialog)).toBeVisible();
+  expect(confirm()).toBeDisabled();
+  expect(cancel()).toHaveFocus();
+});
+
+test('retries only the failed read from the confirmation and returns focus to Cancel', async () => {
+  const { user } = await page();
+  const { dialog, confirm, cancel } = await failedDisconnect(user, unread);
+  const hint = await hintOf(dialog);
+  const appReads = jest.mocked(dataService.getDiscordApps).mock.calls.length;
+  await user.click(within(hint).getByRole('button', { name: 'com_ui_retry' }));
+  await waitFor(() =>
+    expect(within(dialog).queryByText('com_ui_discord_disconnect_unread')).toBeNull(),
+  );
+  expect(jest.mocked(dataService.getDiscordApps).mock.calls.length).toBe(appReads);
+  await waitFor(() => expect(confirm()).toBeEnabled());
+  await waitFor(() => expect(cancel()).toHaveFocus());
+});
+
+test('keeps the hint, the disabled action and focus inside the confirmation when the retry fails', async () => {
+  const { user } = await page();
+  const { dialog, confirm } = await failedDisconnect(user, unread);
+  const hint = await hintOf(dialog);
+  const pageFailure = await loadFailure();
+  const reads = jest.mocked(dataService.getDiscordGuilds).mock.calls.length;
+  jest.mocked(dataService.getDiscordGuilds).mockRejectedValueOnce(new Error('network'));
+  await user.click(within(hint).getByRole('button', { name: 'com_ui_retry' }));
+  await waitFor(() =>
+    expect(jest.mocked(dataService.getDiscordGuilds).mock.calls.length).toBeGreaterThan(reads),
+  );
+  await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
+  expect(within(dialog).getByText('com_ui_discord_disconnect_unread')).toBeVisible();
+  expect(confirm()).toBeDisabled();
+  expect(pageFailure).not.toHaveFocus();
+});
+
+test('blocks the retry and moves focus to Cancel when the reread shows the server changed', async () => {
+  const { user } = await page();
+  const { dialog, alert, confirm, cancel } = await failedDisconnect(user, unread);
+  const hint = await hintOf(dialog);
+  jest.mocked(dataService.getDiscordGuilds).mockResolvedValue(guilds(changed));
+  await user.click(within(hint).getByRole('button', { name: 'com_ui_retry' }));
+  await waitFor(() => expect(alert).toHaveTextContent('com_ui_discord_disconnect_stale'));
+  expect(confirm()).toBeDisabled();
+  await waitFor(() => expect(cancel()).toHaveFocus());
 });

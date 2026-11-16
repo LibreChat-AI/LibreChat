@@ -93,6 +93,7 @@
   "com_ui_discord_disconnect_named": "Disconnect {{0}}",
   "com_ui_discord_disconnect": "Disconnect server",
   "com_ui_discord_disconnect_stale": "This server changed. Close this dialog to see its current state.",
+  "com_ui_discord_disconnect_unread": "The current state of this server could not be loaded, so it cannot be disconnected yet. Retry loading it, or cancel.",
   "com_ui_discord_disconnect_confirm": "Disconnect this server? Its channel bindings will stop accepting new requests. Reconnecting will require new bindings and personal consent.",
   "com_ui_discord_more_guilds": "Load more servers",
   "com_ui_discord_developer_portal": "Open Discord Developer Portal",

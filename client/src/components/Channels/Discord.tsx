@@ -91,6 +91,15 @@ function errorLabel(error: unknown): TranslationKeys {
   }
 }
 
+const controls =
+  'a[href],button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])';
+
+/** Whether the user put focus on a control of their own, which a waiting restore must not take back. */
+function movedOn(trigger: HTMLButtonElement | null): boolean {
+  const active = document.activeElement;
+  return active instanceof HTMLElement && active !== trigger && active.matches(controls);
+}
+
 /** The last bot-token observation, or null when it is absent, legacy or malformed. */
 function observation(
   app: DiscordApplication,
@@ -206,6 +215,8 @@ function Setup({
   const guildHeading = useRef<HTMLHeadingElement | null>(null);
   const appsHeading = useRef<HTMLHeadingElement | null>(null);
   const loadFailure = useRef<HTMLDivElement | null>(null);
+  const readHint = useRef<HTMLDivElement | null>(null);
+  const cancelButton = useRef<HTMLButtonElement | null>(null);
   const busy = useIsMutating({ mutationKey: [MutationKeys.discordSetup, principalKey] }) > 0;
   const apps = useInfiniteQuery(
     [QueryKeys.discordApps, principalKey],
@@ -466,16 +477,20 @@ function Setup({
   }, [editor, setFocus]);
   useEffect(() => {
     if (!restore || editor || busy || flow) return;
+    const { trigger, servers } = restore;
     if (ready) {
-      const { trigger, servers } = restore;
-      if (trigger?.isConnected && !trigger.disabled) trigger.focus();
-      else (servers ? guildHeading : appsHeading).current?.focus();
+      if (!movedOn(trigger)) {
+        if (trigger?.isConnected && !trigger.disabled) trigger.focus();
+        else (servers ? guildHeading : appsHeading).current?.focus();
+      }
       setRestore(null);
     } else if (apps.isError || guilds.isError) {
-      const failure = loadFailure.current;
-      if (failure && !failure.contains(document.activeElement)) failure.focus();
+      /** Behind an open confirmation the page-level error is unreachable: its hint is the visible one. */
+      const failure = (confirm ? readHint : loadFailure).current;
+      if (failure && !failure.contains(document.activeElement) && !movedOn(trigger))
+        failure.focus();
     }
-  }, [restore, setRestore, editor, ready, busy, flow, apps.isError, guilds.isError]);
+  }, [restore, setRestore, confirm, editor, ready, busy, flow, apps.isError, guilds.isError]);
   const edit = (app: DiscordApplication | 'new', trigger: HTMLButtonElement) => {
     editorTrigger.current = trigger;
     save.reset();
@@ -503,7 +518,8 @@ function Setup({
   });
   const mutationError = save.error || connect.error || cancel.error;
   const commandAppId = commands.variables?.applicationId;
-  const retry = () => {
+  const retry = (target: HTMLButtonElement | null = null) => {
+    setRestore((current) => current ?? { trigger: target });
     if (apps.isError)
       void (failedNextPage.current.apps ? apps.fetchNextPage() : apps.refetch()).then((result) => {
         failedNextPage.current.apps = result.isError && failedNextPage.current.apps;
@@ -529,7 +545,7 @@ function Setup({
       {(apps.isError || guilds.isError) && (
         <Alert ref={loadFailure} tabIndex={-1} variant="error">
           {localize(errorLabel(apps.error || guilds.error))}
-          <Button type="button" variant="outline" onClick={retry}>
+          <Button type="button" variant="outline" onClick={() => retry()}>
             {localize('com_ui_retry')}
           </Button>
         </Alert>
@@ -791,7 +807,8 @@ function Setup({
           type="button"
           variant="outline"
           disabled={disabled || apps.isFetchingNextPage}
-          onClick={() => {
+          onClick={(event) => {
+            setRestore({ trigger: event.currentTarget });
             failedNextPage.current.apps = true;
             void apps.fetchNextPage().then((result) => {
               failedNextPage.current.apps = result.isError;
@@ -857,7 +874,8 @@ function Setup({
           type="button"
           variant="outline"
           disabled={disabled || guilds.isFetchingNextPage}
-          onClick={() => {
+          onClick={(event) => {
+            setRestore({ trigger: event.currentTarget, servers: true });
             failedNextPage.current.guilds = true;
             void guilds.fetchNextPage().then((result) => {
               failedNextPage.current.guilds = result.isError;
@@ -900,8 +918,16 @@ function Setup({
               {localize(stale ? 'com_ui_discord_disconnect_stale' : errorLabel(disconnect.error))}
             </Alert>
           )}
+          {confirm !== null && (apps.isError || guilds.isError) && (
+            <Alert ref={readHint} tabIndex={-1} variant="warning">
+              <p>{localize('com_ui_discord_disconnect_unread')}</p>
+              <Button type="button" variant="outline" onClick={() => retry(cancelButton.current)}>
+                {localize('com_ui_retry')}
+              </Button>
+            </Alert>
+          )}
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={disconnect.isLoading}>
+            <AlertDialogCancel ref={cancelButton} disabled={disconnect.isLoading}>
               {localize('com_ui_cancel')}
             </AlertDialogCancel>
             <AlertDialogAction asChild>
