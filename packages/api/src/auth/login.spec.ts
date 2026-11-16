@@ -35,7 +35,6 @@ function makeDeps(overrides: Partial<LoginDependencies> = {}): LoginDependencies
     clearCloudFrontCookies: jest.fn(),
     generate2FATempToken: jest.fn().mockReturnValue('2fa-temp-token'),
     setAuthTokens: jest.fn().mockResolvedValue('jwt-token'),
-    defaultAuthMethod: 'local',
     ...overrides,
   };
 }
@@ -62,7 +61,7 @@ describe('createLoginController authMethod', () => {
   describe('the two-factor challenge branch', () => {
     it('carries the overriding auth method into the 2FA challenge token', async () => {
       const generate2FATempToken = jest.fn().mockReturnValue('2fa-temp-token');
-      const deps = makeDeps({ generate2FATempToken, defaultAuthMethod: 'ldap' });
+      const deps = makeDeps({ generate2FATempToken });
       const controller = createLoginController(deps);
       const user = makeUser({ twoFactorEnabled: true });
       const req = { user, authMethod: 'passkey' } as unknown as Parameters<typeof controller>[0];
@@ -75,9 +74,9 @@ describe('createLoginController authMethod', () => {
       expect(res.json).toHaveBeenCalledWith({ twoFAPending: true, tempToken: '2fa-temp-token' });
     });
 
-    it('falls back to the controller default auth method when nothing overrides it', async () => {
+    it("falls back to 'local' when nothing set req.authMethod", async () => {
       const generate2FATempToken = jest.fn().mockReturnValue('2fa-temp-token');
-      const deps = makeDeps({ generate2FATempToken, defaultAuthMethod: 'ldap' });
+      const deps = makeDeps({ generate2FATempToken });
       const controller = createLoginController(deps);
       const user = makeUser({ twoFactorEnabled: true });
       const req = { user } as unknown as Parameters<typeof controller>[0];
@@ -85,12 +84,12 @@ describe('createLoginController authMethod', () => {
 
       await controller(req, res);
 
-      expect(generate2FATempToken).toHaveBeenCalledWith('user-1', 'ldap');
+      expect(generate2FATempToken).toHaveBeenCalledWith('user-1', 'local');
     });
 
     it('does not mint a 2FA challenge when the account has no second factor enabled', async () => {
       const generate2FATempToken = jest.fn().mockReturnValue('2fa-temp-token');
-      const deps = makeDeps({ generate2FATempToken, defaultAuthMethod: 'ldap' });
+      const deps = makeDeps({ generate2FATempToken });
       const controller = createLoginController(deps);
       const user = makeUser({ twoFactorEnabled: false });
       const req = { user } as unknown as Parameters<typeof controller>[0];
@@ -110,7 +109,7 @@ describe('createLoginController authMethod', () => {
     });
 
     it('carries the overriding auth method into the enrollment setup token', async () => {
-      const deps = makeDeps({ defaultAuthMethod: 'ldap' });
+      const deps = makeDeps();
       const controller = createLoginController(deps);
       const user = makeUser({ twoFactorEnabled: false, provider: 'local' });
       const req = { user, authMethod: 'passkey' } as unknown as Parameters<typeof controller>[0];
@@ -123,8 +122,8 @@ describe('createLoginController authMethod', () => {
       expect(decoded.authMethod).toBe('passkey');
     });
 
-    it('falls back to the controller default auth method when nothing overrides it', async () => {
-      const deps = makeDeps({ defaultAuthMethod: 'ldap' });
+    it("falls back to 'local' when nothing set req.authMethod", async () => {
+      const deps = makeDeps();
       const controller = createLoginController(deps);
       const user = makeUser({ twoFactorEnabled: false, provider: 'local' });
       const req = { user } as unknown as Parameters<typeof controller>[0];
@@ -134,14 +133,14 @@ describe('createLoginController authMethod', () => {
 
       const tempToken = (res.json as jest.Mock).mock.calls[0][0].tempToken;
       const decoded = jwt.decode(tempToken) as jwt.JwtPayload;
-      expect(decoded.authMethod).toBe('ldap');
+      expect(decoded.authMethod).toBe('local');
     });
   });
 
   describe('the completed-login branch', () => {
     it('records the overriding auth method on the minted session', async () => {
       const setAuthTokens = jest.fn().mockResolvedValue('jwt-token');
-      const deps = makeDeps({ setAuthTokens, defaultAuthMethod: 'ldap' });
+      const deps = makeDeps({ setAuthTokens });
       const controller = createLoginController(deps);
       const user = makeUser({ twoFactorEnabled: false, provider: 'local' });
       const req = { user, authMethod: 'passkey' } as unknown as Parameters<typeof controller>[0];
@@ -155,6 +154,25 @@ describe('createLoginController authMethod', () => {
         null,
         req,
         expect.objectContaining({ authMethod: 'passkey' }),
+      );
+    });
+
+    it("records 'local' on the minted session when nothing set req.authMethod", async () => {
+      const setAuthTokens = jest.fn().mockResolvedValue('jwt-token');
+      const deps = makeDeps({ setAuthTokens });
+      const controller = createLoginController(deps);
+      const user = makeUser({ twoFactorEnabled: false, provider: 'local' });
+      const req = { user } as unknown as Parameters<typeof controller>[0];
+      const res = mockResponse();
+
+      await controller(req, res);
+
+      expect(setAuthTokens).toHaveBeenCalledWith(
+        'user-1',
+        res,
+        null,
+        req,
+        expect.objectContaining({ authMethod: 'local' }),
       );
     });
   });

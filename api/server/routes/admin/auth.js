@@ -33,7 +33,7 @@ const {
   isEmailDomainAllowed,
   createFindProviderSessionBinding,
 } = require('@librechat/api');
-const { localLoginController } = require('~/server/controllers/auth/LoginController');
+const { loginController } = require('~/server/controllers/auth/LoginController');
 const { hasCapability, requireCapability } = require('~/server/middleware/roles/capabilities');
 const { createOAuthHandler } = require('~/server/controllers/auth/oauth');
 const {
@@ -204,7 +204,7 @@ router.post(
   tenantContextMiddleware,
   requireAdminAccess,
   setBalanceConfig,
-  localLoginController,
+  loginController,
 );
 
 router.get('/verify', middleware.requireJwtAuth, requireAdminAccess, (req, res) => {

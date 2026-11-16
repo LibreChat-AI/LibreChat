@@ -83,7 +83,7 @@ jest.mock('~/server/services/OpenIDRefreshRecovery', () => ({
   sendOpenIDAuthResponse: jest.fn(),
 }));
 jest.mock('~/server/controllers/auth/LoginController', () => ({
-  localLoginController: jest.fn(),
+  loginController: jest.fn(),
 }));
 jest.mock('~/server/middleware/roles/capabilities', () => ({
   hasCapability: jest.fn(async () => true),

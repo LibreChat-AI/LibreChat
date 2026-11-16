@@ -68,7 +68,7 @@ jest.mock('@librechat/api', () => {
 
 const mockAdminLoginController = jest.fn((req, res) => res.status(200).end());
 jest.mock('~/server/controllers/auth/LoginController', () => ({
-  localLoginController: (...args) => mockAdminLoginController(...args),
+  loginController: (...args) => mockAdminLoginController(...args),
 }));
 
 jest.mock('~/server/middleware/roles/capabilities', () => ({

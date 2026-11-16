@@ -18,6 +18,7 @@ const requireLdapAuth = (req, res, next) =>
         return res.status(404).send(info);
       }
       req.user = user;
+      req.authMethod = 'ldap';
       next();
     })(req, res, next);
   });
