@@ -1,5 +1,6 @@
 import {
   discordRendererVersion,
+  discordSessionRendererVersion,
   renderDiscordPlan,
   sanitizeDiscordMentions,
   discordPlanRevision,
@@ -133,6 +134,38 @@ describe('Discord answer rendering', () => {
     expect(plan.parts[0].required).toBe(true);
     expect(plan.parts[0].text.length).toBeLessThanOrEqual(2000);
     expect(readDiscordFeedbackPresentation(plan.parts[0])).toBe('run');
+  });
+  test('stamps the session version only for a shortened answer that fills the whole budget', () => {
+    const long = { runId: 'run', text: 'x'.repeat(7000) };
+    const plain = renderDiscordPlan(long, 1, { shorten: true });
+    const stamped = renderDiscordPlan(long, 1, { shorten: true, session: true });
+    expect(plain.rendererVersion).toBe(discordRendererVersion);
+    expect(stamped.rendererVersion).toBe(discordSessionRendererVersion);
+    expect(stamped.parts).toEqual(plain.parts);
+    expect(stamped.revision).toBe(discordPlanRevision(stamped));
+    expect(stamped.revision).not.toBe(plain.revision);
+    expect(renderDiscordPlan(long, 1, { shorten: true, session: true })).toEqual(stamped);
+    expect(renderDiscordPlan(long, 3, { shorten: true, session: true }).rendererVersion).toBe(
+      discordSessionRendererVersion,
+    );
+    const withControls = renderDiscordPlan(long, 1, {
+      shorten: true,
+      session: true,
+      feedback: true,
+    });
+    expect(readDiscordFeedbackPresentation(withControls.parts[0])).toBe('run');
+    expect(withControls.rendererVersion).toBe(discordSessionRendererVersion);
+  });
+  test('does not stamp a complete answer or a plan with a part left for the link', () => {
+    const complete = { runId: 'run', text: 'x'.repeat(2000) };
+    expect(renderDiscordPlan(complete, 1, { shorten: true, session: true }).rendererVersion).toBe(
+      discordRendererVersion,
+    );
+    const long = { runId: 'run', text: 'x'.repeat(7000) };
+    expect(
+      renderDiscordPlan(long, 2, { shorten: true, spare: true, session: true }).rendererVersion,
+    ).toBe(discordRendererVersion);
+    expect(() => renderDiscordPlan(long, 1, { session: true })).toThrow('delivery budget');
   });
   test('a spare part changes nothing unless shortening is requested', () => {
     const text = { runId: 'run', text: 'x'.repeat(2001) };
