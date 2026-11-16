@@ -140,13 +140,20 @@ function fixture(
   store = shared(),
   applicationId = '123',
   botUserId = '456',
-  policy: { shardCount?: number; maxQueuedEvents?: number } = {},
+  policy: {
+    shardCount?: number;
+    maxQueuedEvents?: number;
+    handshakeTimeoutMs?: number;
+    readyTimeoutMs?: number;
+  } = {},
   ownerId?: string,
   observe?: (observation: DiscordApplicationObservation) => void,
 ) {
   const hooks: {
     dispatch?: (event: DiscordGatewayEvent, signal: AbortSignal) => Promise<void>;
     connect?: () => Promise<void>;
+    /** A Gateway that never answers: connecting never settles and no shard ever gets READY. */
+    silent?: boolean;
     ready?: DiscordGatewayReady;
     replay?: DiscordGatewayDispatch;
   } = {};
@@ -169,6 +176,7 @@ function fixture(
       },
       createDriver(options) {
         drivers.push(options);
+        if (hooks.silent) return { destroy, connect: () => new Promise<void>(() => undefined) };
         return {
           destroy,
           async connect() {
@@ -766,6 +774,65 @@ describe('owned Discord Gateway IDENTIFY refusal', () => {
   );
 });
 
+describe('owned Discord Gateway startup bound', () => {
+  beforeEach(() => jest.useFakeTimers({ now: 1_700_000_000_000 }));
+  afterEach(() => jest.useRealTimers());
+  const stages = { handshakeTimeoutMs: 1000, readyTimeoutMs: 2000 };
+
+  test('stops a startup that never reaches READY after the time its own stage timeouts allow', async () => {
+    const f = fixture(shared(), '123', '456', stages);
+    f.hooks.silent = true;
+    const started = f.start();
+    const outcome = jest.fn();
+    void started.catch(outcome);
+    // The REST read, the socket and HELLO may each take the handshake timeout, and READY its own.
+    await jest.advanceTimersByTimeAsync(4999);
+    expect(outcome).not.toHaveBeenCalled();
+    expect(f.log.warn).not.toHaveBeenCalledWith('discord_gateway_start_timeout');
+    await jest.advanceTimersByTimeAsync(1);
+    await expect(started).rejects.toMatchObject({ reason: 'failed', fatal: false });
+    expect(f.log.warn).toHaveBeenCalledWith('discord_gateway_start_timeout');
+    expect(f.destroy).toHaveBeenCalledTimes(1);
+    expect(f.store.locks.size).toBe(0);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test('gives every further shard Discord spacing for its IDENTIFY on top', async () => {
+    const f = fixture(shared(), '123', '456', { ...stages, shardCount: 3 });
+    f.hooks.silent = true;
+    const started = f.start();
+    const outcome = jest.fn();
+    void started.catch(outcome);
+    await jest.advanceTimersByTimeAsync(5000 + 2 * 6500 - 1);
+    expect(outcome).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    await expect(started).rejects.toMatchObject({ reason: 'failed' });
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test('a startup that reaches READY keeps no deadline behind', async () => {
+    const f = fixture(shared(), '123', '456', stages);
+    await expect(f.start()).resolves.toBe(true);
+    await jest.advanceTimersByTimeAsync(9000);
+    expect(f.log.warn).not.toHaveBeenCalledWith('discord_gateway_start_timeout');
+    expect(f.destroy).not.toHaveBeenCalled();
+    await f.gateway.stop();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test('shutdown during the wait ends it without a timeout and without a failure', async () => {
+    const f = fixture(shared(), '123', '456', stages);
+    f.hooks.silent = true;
+    const started = f.start();
+    await jest.advanceTimersByTimeAsync(1000);
+    f.controller.abort();
+    await expect(started).resolves.toBe(false);
+    expect(f.gateway.failure).toBeUndefined();
+    expect(f.log.warn).not.toHaveBeenCalledWith('discord_gateway_start_timeout');
+    expect(jest.getTimerCount()).toBe(0);
+  });
+});
+
 describe('owned Discord Gateway against a real Gateway socket', () => {
   test('a Gateway that never answers an IDENTIFY stops the session after exactly one IDENTIFY', async () => {
     const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -815,6 +882,61 @@ describe('owned Discord Gateway against a real Gateway socket', () => {
     expect(seen.identifies).toBe(1);
     expect(log.warn).toHaveBeenCalledWith('discord_gateway_identify_refused:retry');
     expect(log.warn).not.toHaveBeenCalledWith('discord_gateway_start_timeout');
+    expect(store.locks.size).toBe(0);
+    for (const client of server.clients) client.terminate();
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  test('a Gateway that never says HELLO is stopped at the deadline instead of being retried forever', async () => {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await once(server, 'listening');
+    const { port } = server.address() as AddressInfo;
+    const seen = { connections: 0, identifies: 0 };
+    server.on('connection', (socket) => {
+      seen.connections++;
+      socket.on('message', (raw) => {
+        if (JSON.parse(String(raw)).op === 2) seen.identifies++;
+      });
+    });
+    const transport: typeof fetch = async () =>
+      Response.json({
+        url: `ws://127.0.0.1:${port}`,
+        shards: 1,
+        session_start_limit: {
+          total: 1000,
+          remaining: 999,
+          reset_after: 86_400_000,
+          max_concurrency: 1,
+        },
+      });
+    const store = shared();
+    const log: Logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const gateway = new OwnedDiscordGateway(
+      {
+        applicationId: '123',
+        applicationRevision: 'revision-1',
+        botUserId: '456',
+        botToken: 'private-bot-token',
+      },
+      {
+        ...store,
+        log,
+        dispatch: async () => undefined,
+        createDriver: (options) => createDiscordGatewayDriver(options, transport),
+      },
+      { enabled: true, gateway: { enabled: true, handshakeTimeoutMs: 1000, readyTimeoutMs: 1000 } },
+    );
+    const startedAt = Date.now();
+    await expect(gateway.start(new AbortController().signal)).rejects.toMatchObject({
+      reason: 'failed',
+    });
+    const elapsed = Date.now() - startedAt;
+    // 3 x 1000 + 1000 ms. Without the deadline the SDK would reconnect every 1.5 s for as long as it ran.
+    expect(elapsed).toBeGreaterThanOrEqual(3900);
+    expect(elapsed).toBeLessThan(7000);
+    expect(seen.connections).toBeGreaterThanOrEqual(2);
+    expect(seen.identifies).toBe(0);
+    expect(log.warn).toHaveBeenCalledWith('discord_gateway_start_timeout');
     expect(store.locks.size).toBe(0);
     for (const client of server.clients) client.terminate();
     await new Promise((resolve) => server.close(resolve));

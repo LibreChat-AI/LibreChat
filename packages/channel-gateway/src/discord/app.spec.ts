@@ -562,9 +562,23 @@ describe('a Gateway session that fails while its application stays owned', () =>
       recovery,
     },
   });
+  // One startup attempt may take 3 x 1000 + 1000 ms: the REST read, the socket, HELLO and READY.
+  const startupPolicy = discordChannelConfigSchema.parse({
+    enabled: true,
+    gateway: {
+      enabled: true,
+      pollIntervalMs: 100,
+      ownershipLeaseMs: 5000,
+      maxApplications: 1,
+      handshakeTimeoutMs: 1000,
+      readyTimeoutMs: 1000,
+      recovery,
+    },
+  });
   jest.setTimeout(20_000);
 
-  function harness() {
+  function harness(options: { silent?: boolean } = {}) {
+    const policy = options.silent ? startupPolicy : heldPolicy;
     const startedAt = Date.now();
     const marks: { path: string; at: number; revision?: string }[] = [];
     const warns: string[] = [];
@@ -592,7 +606,7 @@ describe('a Gateway session that fails while its application stays owned', () =>
           applicationRevision: body.owner.applicationRevision,
           botUserId: '456',
           botToken: 'private-token',
-          policy: heldPolicy.gateway,
+          policy: policy.gateway,
         });
       if (path.endsWith('/gateway/load'))
         return Response.json({
@@ -617,17 +631,18 @@ describe('a Gateway session that fails while its application stays owned', () =>
       if (path.endsWith('/inbox/finish')) return new Response(null, { status: 204 });
       throw new Error('Unexpected service request ' + path);
     };
-    // Every attempt is closed by Discord with 4014 (a disallowed intent), a fatal Gateway stop.
+    // Every attempt is closed by Discord with 4014 (a disallowed intent), a fatal Gateway stop, or,
+    // when silent, never answers at all.
     const createDriver = (driver: DiscordGatewayDriverOptions) => ({
       async connect() {
-        driver.closed(4014, 0);
+        if (!options.silent) driver.closed(4014, 0);
         await new Promise<void>(() => undefined);
       },
       destroy: async () => undefined,
     });
     const app = new DiscordGatewayApp(
       config,
-      heldPolicy,
+      policy,
       {
         info: () => undefined,
         warn: (event: string) => void warns.push(event),
@@ -708,6 +723,38 @@ describe('a Gateway session that fails while its application stays owned', () =>
       'revision-b',
     ]);
     expect(h.after('/gateway/release').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('stops a Gateway that never answers at its startup deadline, keeping the lease and the REST workers', async () => {
+    const h = harness({ silent: true });
+    const running = h.app.run(controller.signal);
+    await h.waitForSessions(1);
+    const waitingSince = Date.now();
+    h.queueReply();
+    while (!h.warns.includes('discord_gateway_start_timeout')) {
+      if (Date.now() - waitingSince > 10_000) throw new Error('The startup never timed out');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const waited = Date.now() - waitingSince;
+    const [first] = h.sessions();
+    // The session gave up at 3 x 1000 + 1000 ms, and nothing else about the application stopped.
+    expect(waited).toBeGreaterThanOrEqual(3800);
+    expect(waited).toBeLessThan(6000);
+    const during = (mark: { at: number }) => mark.at > first.at && mark.at < first.at + waited;
+    expect(h.after('/inbox/claim').filter(during).length).toBeGreaterThanOrEqual(25);
+    expect(h.after('/inbox/finish').filter(during)).toHaveLength(1);
+    expect(h.after('/gateway/acquire')).toHaveLength(1);
+    expect(h.after('/gateway/release')).toHaveLength(0);
+    // The failure is transient, so the next session comes after the short poll based delay.
+    await h.waitForSessions(2);
+    expect(h.warns).toContain('discord_application_runtime_unavailable');
+    expect(h.warns).not.toContain('discord_application_quarantined');
+    const abortedAt = Date.now();
+    controller.abort();
+    await running;
+    expect(Date.now() - abortedAt).toBeLessThan(1500);
+    expect(h.after('/gateway/acquire')).toHaveLength(1);
+    expect(h.after('/gateway/release')).toHaveLength(1);
   });
 
   it('stops promptly during a hold and releases the lease exactly once', async () => {

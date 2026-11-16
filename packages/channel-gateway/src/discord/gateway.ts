@@ -11,6 +11,7 @@ import type { DiscordApplicationObservation } from './observe';
 import type { DiscordGatewayStopReason } from './recovery';
 import type { Logger } from '../types';
 import { DiscordGatewayFailure, DiscordIdentifyRefusal } from './recovery';
+import { DISCORD_IDENTIFY_SPACING_MS } from './budget';
 import { createDiscordGatewayDriver } from './socket';
 import { safeDiscordObserver } from './observe';
 
@@ -393,7 +394,13 @@ export class OwnedDiscordGateway {
       };
       this.driver = (this.deps.createDriver ?? createDiscordGatewayDriver)(options);
       const connected = this.driver.connect();
-      if (!(await this.stage(connected))) return false;
+      // The SDK retries a Gateway that never answers on its own, spending IDENTIFY budget each time.
+      const deadline = setTimeout(() => {
+        this.deps.log.warn('discord_gateway_start_timeout');
+        void this.stop('failed');
+      }, this.startupDeadlineMs());
+      const staged = await this.stage(connected).finally(() => clearTimeout(deadline));
+      if (!staged) return false;
       this.assertOwned();
       if (
         this.sessions.size !== this.policy.shardCount ||
@@ -413,6 +420,14 @@ export class OwnedDiscordGateway {
       await this.stop(error instanceof DiscordGatewayFailure ? error.reason : 'failed');
       throw this.failure ?? new DiscordGatewayFailure('failed');
     }
+  }
+  /**
+   * One startup attempt may take as long as its own stage timeouts allow: the REST read, the socket,
+   * HELLO and READY, plus Discord's spacing for every further shard (worst case one identify bucket).
+   */
+  private startupDeadlineMs(): number {
+    const { handshakeTimeoutMs, readyTimeoutMs, shardCount } = this.policy;
+    return handshakeTimeoutMs * 3 + readyTimeoutMs + DISCORD_IDENTIFY_SPACING_MS * (shardCount - 1);
   }
   private async stage<T>(work: Promise<T>): Promise<{ value: T } | null> {
     const result = await Promise.race([

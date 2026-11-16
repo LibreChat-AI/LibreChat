@@ -2,6 +2,9 @@ import { z } from 'zod';
 import type { WebSocketManager } from '@discordjs/ws';
 import { DiscordIdentifyRefusal } from './recovery';
 
+/** Discord allows one IDENTIFY per concurrency bucket every 5 seconds, and the SDK throttle adds up to 1.5 seconds of jitter. */
+export const DISCORD_IDENTIFY_SPACING_MS = 6500;
+
 /** What Discord reports for the bot. A budget that cannot be read exactly proves nothing, so it is refused. */
 const gatewayInformationSchema = z.object({
   url: z.string().min(1),
