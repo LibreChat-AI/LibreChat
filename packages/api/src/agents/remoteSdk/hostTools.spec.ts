@@ -167,6 +167,7 @@ it.each([true, false])(
             await new Promise<void>((resolve) =>
               batch.signal!.addEventListener('abort', () => resolve(), { once: true }),
             );
+            await held;
             batch.toolCalls[0].runtimeSessionHint = 'cancelled-session';
             batch.reject(new Error('cancelled'));
           } else {
@@ -209,21 +210,15 @@ it.each([true, false])(
       );
       await started;
       workerCall.abort();
-      // Must settle before the uncooperative handler is released or the tools RPC expires.
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          operation,
-          new Promise<never>((_resolve, reject) => {
-            timeout = setTimeout(
-              () => reject(new Error('Cancellation did not settle promptly')),
-              500,
-            );
-          }),
-        ]);
-      } finally {
-        clearTimeout(timeout);
-      }
+      let settled = false;
+      void Promise.resolve(operation).then(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(settled).toBe(false);
+      expect(hostSignal?.aborted).toBe(true);
+      release();
+      await operation;
       expect(hostSignal?.aborted).toBe(true);
       expect(hostRun.signal.aborted).toBe(false);
       expect(resolve).not.toHaveBeenCalled();

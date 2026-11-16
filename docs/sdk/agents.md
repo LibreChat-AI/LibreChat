@@ -134,7 +134,11 @@ Transport limits on each `remote` registration are `connectTimeoutMs` (10000), `
 (60000), `maxRunMs` (600000), `maxFrameBytes` (1048576), and `maxBufferedBytes` (4194304).
 Checkpoint history lists preserve filters/cursors with a protocol page cap of 32 entries.
 Unresolved secret environment references fail closed rather than becoming signing keys.
-Oversized events/checkpoints/results fail closed; raise limits explicitly for larger workloads.
+Individual events/checkpoints remain bounded by `maxFrameBytes`. Final content/messages/state
+are transferred in ordered chunks; their total serialized snapshot is bounded by `maxBufferedBytes`.
+The terminal receipt is accepted only after the complete snapshot arrives. Oversized payloads fail
+closed; raise limits explicitly for larger workloads. Live step inspection and reconnect projections
+read the same canonical step objects as the streamed event handlers.
 Worker admission limits are configurable through `createRemoteSdkServer` options. Authorization
 receives an abort signal; pending authorizations count against admission until they settle, even
 after disconnect, and shutdown aborts/closes pending handshakes. Honor that signal in async policy
@@ -201,13 +205,17 @@ because it exceeds that shorter control timeout. The run's cancellation/deadline
 both sides cooperatively.
 
 Worker tool-call cancellation is scoped to its RPC, including calls still queued behind events.
-The host combines that signal with the run signal, stops awaiting an unresponsive handler, and
-reconciles current session state before replying. Late results are suppressed; cancellation cannot
-undo side effects or force noncooperative tool code to stop. Session changes made after cancellation
-has settled are not part of that invocation. Cancellation frames use the same recovery journal as
-other traffic and are delivered after reattachment, subject to the configured recovery limits.
-Upgrade host and worker together: host-tool capability 2 is required on both sides, and mixed
-versions reject host-tool runs before execution. Runs without host tools retain their existing path.
+The host combines that signal with the run signal and waits for the handler's actual async cleanup
+before reconciling session state and replying. Late results are suppressed. A Stop request propagates
+immediately, but execution ownership is retained until cleanup drains; noncooperative tool code cannot
+be forcibly stopped or truthfully reported as drained. RPC deadlines still bound wire waits; session
+notifications cannot be delivered after the connection/deadline is lost. Cancellation frames use the
+same recovery journal as other traffic and are delivered after reattachment, subject to its limits.
+
+Upgrade host and worker together: transport capability 2 is required for every remote run, and
+host-tool capability 2 is additionally required for host tools. Incompatible releases reject before
+invoking the runtime factory. The saved registration protocol remains version 1; the negotiated
+transport capability independently versions its frames.
 
 Caller-owned function tools (`clientDelegatedToolNames`) are not host tools. Remote SDK
 execution rejects that configuration until an explicit ownership/continuation adapter is

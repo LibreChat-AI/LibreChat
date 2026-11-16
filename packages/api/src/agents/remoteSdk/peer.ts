@@ -26,6 +26,7 @@ export type SdkFrame =
   | { type: 'cancel'; id: string }
   | { type: 'result'; id: string; data: unknown; failed?: boolean }
   | { type: 'event'; name: string; data: unknown; metadata?: Record<string, unknown> }
+  | { type: 'snapshot'; data: unknown }
   | { type: 'done'; data: unknown }
   | { type: 'error' };
 
@@ -49,6 +50,7 @@ const frameSchema = z.discriminatedUnion('type', [
     data: z.unknown(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   }),
+  z.object({ type: z.literal('snapshot'), data: z.unknown() }),
   z.object({ type: z.literal('done'), data: z.unknown() }),
   z.object({ type: z.literal('error') }),
 ]);

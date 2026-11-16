@@ -24,6 +24,7 @@ const recovery = redis
         maxBatchBytes: 4194304,
       }),
       maxDisconnectMs: 15000,
+      ownerId: process.env.SDK_RUNTIME_OWNER_ID,
     }
   : undefined;
 const runtime = createRemoteSdkServer({

@@ -97,50 +97,44 @@ export function createHostToolService(options: {
     });
     // Install rejection handling before invoking a handler that may reject synchronously.
     void result.catch(() => undefined);
-    let cancel!: (error: Error) => void;
-    const cancelled = new Promise<never>((_resolve, reject) => {
-      cancel = reject;
-    });
-    void cancelled.catch(() => undefined);
-    const abort = () => cancel(new Error('Host tool invocation cancelled'));
+    const abort = () => reject(new Error('Host tool invocation cancelled'));
     signal.addEventListener('abort', abort, { once: true });
     try {
-      const handling = Promise.resolve(
-        options.handler.handle(
-          GraphEvents.ON_TOOL_EXECUTE,
-          {
-            toolCalls: request.calls.map((c) => c.call),
-            userId: options.identity.userId,
-            agentId: options.identity.agentId,
-            configurable: options.configurable,
-            metadata: options.metadata,
-            callerCapabilityProjection: request.callerCapabilityProjection,
-            signal,
-            resolve,
-            reject,
-            ...(envelope.incremental
-              ? {
-                  onResult: (value: ToolExecuteResult) => {
-                    if (!active || signal.aborted) return;
-                    if (!ids.has(value.toolCallId))
-                      throw new Error('Invalid incremental tool receipt');
-                    const notice = options.peer.call('tool.result', {
-                      id: envelope.id,
-                      result: value,
-                    });
-                    void notice.catch(() => undefined);
-                    notifications.push(notice);
-                  },
-                }
-              : {}),
-          },
-          options.metadata,
-          options.graph,
-        ),
+      await options.handler.handle(
+        GraphEvents.ON_TOOL_EXECUTE,
+        {
+          toolCalls: request.calls.map((c) => c.call),
+          userId: options.identity.userId,
+          agentId: options.identity.agentId,
+          configurable: options.configurable,
+          metadata: options.metadata,
+          callerCapabilityProjection: request.callerCapabilityProjection,
+          signal,
+          resolve,
+          reject,
+          ...(envelope.incremental
+            ? {
+                onResult: (value: ToolExecuteResult) => {
+                  if (!active || signal.aborted) return;
+                  if (!ids.has(value.toolCallId))
+                    throw new Error('Invalid incremental tool receipt');
+                  const notice = options.peer.call('tool.result', {
+                    id: envelope.id,
+                    result: value,
+                  });
+                  void notice.catch(() => undefined);
+                  notifications.push(notice);
+                },
+              }
+            : {}),
+        },
+        options.metadata,
+        options.graph,
       );
-      // A handler may ignore cancellation or never call resolve/reject. Stop waiting on it,
-      // but reconcile session state and acknowledge notifications before settling the RPC.
-      const results = await Promise.race([handling.then(() => result), cancelled]);
+      // Handler settlement is the drain boundary: async cancellation cleanup may refresh
+      // sessions. Never publish a final receipt while that cleanup is still running.
+      signal.throwIfAborted();
+      const results = await result;
       active = false;
       await Promise.all(notifications);
       signal.throwIfAborted();

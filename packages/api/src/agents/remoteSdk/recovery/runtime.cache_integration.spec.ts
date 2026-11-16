@@ -91,7 +91,7 @@ function hostConfig(handle: () => Promise<void>) {
     },
   };
 }
-async function fixture(makeRun = factory) {
+async function fixture(makeRun = factory, ownerId?: string) {
   const createRun = jest.fn(makeRun);
   const errors: unknown[] = [];
   const journalPrefix = `${prefix}:${randomUUID()}`;
@@ -116,7 +116,7 @@ async function fixture(makeRun = factory) {
       secret,
       createRun,
       authorize: () => true,
-      recovery: { journal, maxDisconnectMs: 5000 },
+      recovery: { journal, maxDisconnectMs: 5000, ownerId },
       onError: (error) => errors.push(error),
     });
   let runtime = makeRuntime();
@@ -170,7 +170,12 @@ async function fixture(makeRun = factory) {
     remote: {
       url: `ws://127.0.0.1:${(proxy.address() as AddressInfo).port}/sdk`,
       secret,
-      recovery: { maxDisconnectMs: 5000, retryDelayMs: 20, maxJournalBytes: 16777216 },
+      recovery: {
+        maxDisconnectMs: 5000,
+        retryDelayMs: 20,
+        maxJournalBytes: 16777216,
+        ...(ownerId ? { routes: { [ownerId]: `ws://127.0.0.1:${port}/sdk` } } : {}),
+      },
     },
     close: async () => {
       for (const socket of sockets) socket.destroy();
@@ -656,4 +661,131 @@ describe('live SDK recovery', () => {
       }
     },
   );
+});
+
+it('reconnects directly to the allowlisted owner when the front door is unavailable', async () => {
+  const runtime = await fixture(factory, 'worker-a');
+  let dropped = false;
+  try {
+    const run = await createRemoteSdkRun({
+      identity,
+      remote: runtime.remote,
+      config: hostConfig(async () => {
+        if (dropped) return;
+        dropped = true;
+        runtime.offline(true);
+        runtime.drop();
+      }),
+    });
+    const result = await run.processStream(
+      { messages: [new HumanMessage('go')] },
+      { version: 'v2', configurable: { thread_id: identity.conversationId } },
+    );
+    expect(JSON.stringify(result)).toContain(text);
+    expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    expect(runtime.connections()).toBe(1);
+    expect(runtime.errors).toEqual([]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+it('serializes terminal replay admission and cannot evict a replacement session', async () => {
+  const journal = createRedisRuntimeJournal(redis, {
+    prefix,
+    retentionMs: 60000,
+    leaseMs: 3000,
+    maxFrames: 100,
+    maxBytes: 100000,
+    maxBatchFrames: 10,
+    maxBatchBytes: 10000,
+  });
+  const recovery = createRuntimeRecovery({
+    journal,
+    maxDisconnectMs: 5000,
+    maxFrameBytes: 10000,
+    maxBufferedBytes: 20000,
+    ownerId: 'worker-a',
+  });
+  const claim = { sessionId: randomUUID(), after: 0, resume: false };
+  try {
+    const first = await recovery.prepare(identity, 'thread', claim);
+    await first.begin();
+    await first.complete('completed');
+    first.dispose();
+    const [a, b] = await Promise.all([
+      recovery.prepare(identity, 'thread', { ...claim, resume: true }),
+      recovery.prepare(identity, 'thread', { ...claim, resume: true }),
+    ]);
+    expect(a).toBe(b);
+    await expect(
+      recovery.prepare({ ...identity, userId: 'foreign' }, 'thread', claim),
+    ).rejects.toThrow('identity');
+    await expect(
+      recovery.prepare(identity, 'thread', { ...claim, ownerId: 'worker-b' }),
+    ).rejects.toThrow('owner');
+    a.dispose();
+    const replacement = await recovery.prepare(identity, 'thread', { ...claim, resume: true });
+    a.dispose();
+    expect(await recovery.prepare(identity, 'thread', claim)).toBe(replacement);
+    recovery.close();
+    await expect(recovery.prepare(identity, 'thread', claim)).rejects.toThrow('closed');
+  } finally {
+    recovery.close();
+  }
+});
+
+it('rejects unallowlisted owner identities before invoking a graph', async () => {
+  const runtime = await fixture(factory, 'worker-a');
+  try {
+    const run = await createRemoteSdkRun({
+      identity,
+      config: hostConfig(async () => undefined),
+      remote: { ...runtime.remote, recovery: { ...runtime.remote.recovery, routes: {} } },
+    });
+    await expect(
+      run.processStream(
+        { messages: [] },
+        { version: 'v2', configurable: { thread_id: identity.conversationId } },
+      ),
+    ).rejects.toThrow();
+    expect(runtime.createRun).not.toHaveBeenCalled();
+  } finally {
+    await runtime.close();
+  }
+});
+
+it('does not publish a session admitted concurrently with shutdown', async () => {
+  const journal = createRedisRuntimeJournal(redis, {
+    prefix,
+    retentionMs: 60000,
+    leaseMs: 3000,
+    maxFrames: 100,
+    maxBytes: 100000,
+    maxBatchFrames: 10,
+    maxBatchBytes: 10000,
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const read = journal.read.bind(journal);
+  journal.read = async (...args) => {
+    await held;
+    return read(...args);
+  };
+  const recovery = createRuntimeRecovery({
+    journal,
+    maxDisconnectMs: 5000,
+    maxFrameBytes: 10000,
+    maxBufferedBytes: 20000,
+  });
+  const admission = recovery.prepare(identity, 'thread', {
+    sessionId: randomUUID(),
+    after: 0,
+    resume: false,
+  });
+  recovery.close();
+  release();
+  await expect(admission).rejects.toThrow('closed');
 });
