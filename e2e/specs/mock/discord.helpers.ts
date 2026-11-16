@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import mongoose from 'mongoose';
+import { Registry } from 'prom-client';
 import { expect } from '@playwright/test';
 import {
   createModels,
@@ -23,11 +24,15 @@ import type {
   DiscordPrivateReply,
 } from 'librechat-data-provider';
 import type { ChannelRunRecord } from '@librechat/data-schemas';
-import { DiscordGatewayApp } from '../../../packages/channel-gateway/src/discord/app';
+import type { DiscordGateway, DiscordGatewayMessage } from './discord.gateway';
+import { createDiscordTelemetry } from '../../../packages/channel-gateway/src/discord/observe';
 import { DiscordRuntimeClient } from '../../../packages/channel-gateway/src/discord/discovery';
+import { DiscordGatewayApp } from '../../../packages/channel-gateway/src/discord/app';
+import { DiscordHealth } from '../../../packages/channel-gateway/src/discord/health';
 import { loadBootstrap } from '../../../packages/channel-gateway/src/config';
 import { getPrimaryE2EUser } from '../../setup/users.mock';
 import { loginAdmin } from './content-filters.helpers';
+import { createDiscordGateway } from './discord.gateway';
 import { getMongoUri } from './db';
 
 let ordinal = 0;
@@ -68,10 +73,31 @@ interface DiscordWrite {
   }[];
 }
 
-/** Real HTTP/runtime and persistence. Only Discord's external HTTP service is a fixture. */
-export async function createDiscordAcceptance(request: APIRequestContext, baseURL: string) {
+export interface DiscordAcceptanceOptions {
+  /**
+   * Starts the real Gateway SDK against a local Discord Gateway fixture. The isolated backend must
+   * opt in as well (E2E_DISCORD_NATIVE=true turns its `gateway.enabled` on). The two are checked
+   * against each other, so a signed only scenario can never open a socket by accident.
+   */
+  native?: boolean;
+}
+export type NativeMessage = DiscordGatewayMessage;
+export type NativeThreadKind = 'public' | 'archived' | 'private';
+/** View Channel, Read Message History and Send Messages in Threads: what the bot needs in a thread. */
+const botThreadPermissions = String(BigInt(1024) | BigInt(65536) | (BigInt(1) << BigInt(38)));
+
+/**
+ * Real HTTP/runtime and persistence. Only Discord's external HTTP service is a fixture, and with
+ * `native` its WebSocket Gateway too.
+ */
+export async function createDiscordAcceptance(
+  request: APIRequestContext,
+  baseURL: string,
+  options: DiscordAcceptanceOptions = {},
+) {
   if (process.env.E2E_DISCORD_CHANNELS !== 'true')
     throw new Error('Discord backend acceptance requires E2E_DISCORD_CHANNELS=true');
+  const native = options.native === true;
   const uri = getMongoUri();
   if (!/\/(LibreChat-e2e|lc_verify_[A-Za-z0-9_]+)(?:\?|$)/.test(uri))
     throw new Error('Discord acceptance requires a disposable E2E database');
@@ -118,10 +144,17 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
   let discordServer: ReturnType<typeof createServer> | undefined;
   const runIds = new Set<string>();
   const conversationIds = new Set<string>();
+  let gateway: DiscordGateway | undefined;
+  /** Threads the Discord REST fixture knows. Anything else under /channels is an unexpected read. */
+  const threads = new Map<
+    string,
+    { id: string; parentId: string; type: 11 | 12; archived: boolean; members: Set<string> }
+  >();
 
   async function close() {
     controller.abort();
     await running?.catch(() => undefined);
+    await gateway?.close();
     for (const server of [appServer, discordServer]) {
       server?.closeAllConnections();
       if (server?.listening)
@@ -243,6 +276,7 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
         }),
       );
     });
+    if (native) gateway = await createDiscordGateway({ applicationId, botUserId, botToken });
     discordServer = createServer(async (req, res) => {
       const path = new URL(req.url || '/', 'http://fixture').pathname;
       const chunks: Buffer[] = [];
@@ -289,9 +323,60 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
         res.end(JSON.stringify({ id: externalChannelId, guild_id: guildId, type: 0 }));
         return;
       }
+      if (path === '/api/v10/gateway/bot' && gateway) {
+        res.end(
+          JSON.stringify({
+            url: gateway.url,
+            shards: 1,
+            session_start_limit: {
+              total: 1000,
+              remaining: 1000,
+              reset_after: 86_400_000,
+              max_concurrency: 1,
+            },
+          }),
+        );
+        return;
+      }
+      // A thread is read as Discord answers it: its own channel object, each user's permissions
+      // there, and exact membership of a private thread (404 for a user who has not joined).
+      const read = path.match(
+        /^\/api\/v10\/channels\/(\d+)(?:\/(permissions\/member|thread-members)\/(\d+))?$/,
+      );
+      const known = read && req.method === 'GET' ? threads.get(read[1]) : undefined;
+      if (read && known) {
+        const [, , relation, userId] = read;
+        if (!relation) {
+          res.end(
+            JSON.stringify({
+              id: known.id,
+              guild_id: guildId,
+              parent_id: known.parentId,
+              type: known.type,
+              thread_metadata: { archived: known.archived, locked: false },
+            }),
+          );
+          return;
+        }
+        if (relation === 'permissions/member') {
+          res.end(
+            JSON.stringify({ permissions: userId === botUserId ? botThreadPermissions : '1024' }),
+          );
+          return;
+        }
+        if (userId === botUserId || known.members.has(userId)) {
+          res.end(JSON.stringify({ id: known.id, user_id: userId }));
+          return;
+        }
+        res.writeHead(404).end('{}');
+        return;
+      }
       // Every write records the channel it was actually sent to, so a stray DM or guild write is visible.
       const target = path.match(/^\/api\/v10\/channels\/(\d+)\/messages(?:\/\d+)?$/)?.[1];
-      if (target && [externalChannelId, dmChannelId, otherDmChannelId].includes(target)) {
+      if (
+        target &&
+        ([externalChannelId, dmChannelId, otherDmChannelId].includes(target) || threads.has(target))
+      ) {
         if (req.method === 'DELETE') {
           const id = path.split('/').at(-1)!;
           deletes.push({ channelId: target, id, createdIn: messages.get(id)?.channelId });
@@ -328,7 +413,9 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
     const runtime = new DiscordRuntimeClient(bootstrap.config);
     const settings = await runtime.bootstrap();
     expect(settings.discord.enabled).toBe(true);
-    expect(settings.discord.gateway.enabled).toBe(false);
+    // The backend's own policy decides whether the Gateway may run. A scenario that disagrees with
+    // it fails here, before any session could start.
+    expect(settings.discord.gateway.enabled).toBe(native);
     const transport: typeof fetch = Object.assign(
       async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         const url = new URL(String(input));
@@ -346,6 +433,9 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
       },
       fetch,
     );
+    // The real health registry reads the real SDK's READY and heartbeats, so it is also the fence
+    // that says the native session is verified and messages will be queued rather than dropped.
+    const health = native ? new DiscordHealth(settings.discord.health) : undefined;
     const app = new DiscordGatewayApp(
       bootstrap.config,
       settings.discord,
@@ -355,6 +445,8 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
         error: (code) => logs.push(code),
       },
       transport,
+      undefined,
+      health && { telemetry: createDiscordTelemetry({ registry: new Registry(), health }), health },
     );
     appServer = createServer((req, res) => {
       void app.http(req, res);
@@ -365,12 +457,24 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
     running = app.run(controller.signal);
     const ingress = `http://127.0.0.1:${(appServer.address() as AddressInfo).port}/discord/${applicationId}/interactions`;
     await expect.poll(() => logs.includes('discord_gateway_ready'), { timeout: 20000 }).toBe(true);
+    if (health) {
+      try {
+        await expect.poll(() => health.snapshot().native.healthy, { timeout: 30000 }).toBe(1);
+      } catch (cause) {
+        throw new Error(
+          `Discord native session never became healthy: ${JSON.stringify({ events: logs.slice(-12), gateway: gateway?.seen })}`,
+          { cause },
+        );
+      }
+    }
 
+    /** A signed guild interaction, in the bound channel unless a thread or channel is named. */
     function event(
       actor: string,
       action: 'ask' | 'link' | 'status' | 'cancel',
       prompt = '',
       component?: string | { reference: string; messageId: string },
+      channel = externalChannelId,
     ): NativeEvent {
       const id = snowflake();
       const token = `interaction-${id}`;
@@ -386,13 +490,13 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
           context: 0,
           authorizing_integration_owners: { '0': guildId },
           guild_id: guildId,
-          channel_id: externalChannelId,
+          channel_id: channel,
           member: { user: { id: actor } },
           ...(component
             ? {
                 message: {
                   id: typeof component === 'string' ? snowflake() : component.messageId,
-                  channel_id: externalChannelId,
+                  channel_id: channel,
                 },
               }
             : {}),
@@ -465,8 +569,9 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
       action: 'ask' | 'link' | 'status' | 'cancel',
       prompt = '',
       component?: string | { reference: string; messageId: string },
+      channel = externalChannelId,
     ) {
-      return acknowledged(event(actor, action, prompt, component));
+      return acknowledged(event(actor, action, prompt, component, channel));
     }
     async function retainedRuns(): Promise<ChannelRunRecord[]> {
       const retained = await scoped(() =>
@@ -645,6 +750,15 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
     async function inboxRow(eventId: string) {
       return scoped(() => models.DiscordInbox.findOne({ applicationId, eventId }).lean());
     }
+    /**
+     * The API's durable fence for one native message: `admitted` once it started a run, `ignored` once
+     * it was consumed without one. A message the Gateway drops before the API never gets a receipt.
+     */
+    async function receipt(messageId: string) {
+      return scoped(() =>
+        models.DiscordMessageReceipt.findOne({ applicationId, messageId }).lean(),
+      );
+    }
     async function feedback() {
       return scoped(() => models.ChannelFeedback.find({ 'mapping.channelId': channelId }).lean());
     }
@@ -663,6 +777,81 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
         writes: writes.length,
         deletes: deletes.length,
       }));
+    }
+    /**
+     * A thread under the bound channel by default, in the state the REST fixture reports it: public,
+     * archived (refused, never reopened) or private (only the listed members have joined).
+     */
+    function thread(
+      kind: NativeThreadKind,
+      settings: { parentId?: string; members?: string[] } = {},
+    ): string {
+      const id = snowflake();
+      threads.set(id, {
+        id,
+        parentId: settings.parentId ?? externalChannelId,
+        type: kind === 'private' ? 12 : 11,
+        archived: kind === 'archived',
+        members: new Set(settings.members ?? []),
+      });
+      return id;
+    }
+    function deliver(message: Omit<DiscordGatewayMessage, 'id'>): NativeMessage {
+      if (!gateway) throw new Error('Native Discord acceptance requires { native: true }');
+      const sent = { ...message, id: snowflake() };
+      gateway.dispatch(sent);
+      return sent;
+    }
+    /** Messages as the real Gateway delivers them. Each call is a new Discord message with its own ID. */
+    const nativeMessages = {
+      /** Mentions the bot, so Discord keeps the content even without the Message Content intent. */
+      mention: (actor: string, prompt: string, channelId = externalChannelId, channelType = 0) =>
+        deliver({
+          authorId: actor,
+          channelId,
+          guildId,
+          content: `<@${botUserId}> ${prompt}`,
+          mentions: [botUserId],
+          channelType,
+        }),
+      /** No mention: under this policy Discord delivers the message with its content stripped. */
+      plain: (actor: string, content: string, channelId = externalChannelId, channelType = 0) =>
+        deliver({ authorId: actor, channelId, guildId, content, channelType }),
+      /**
+       * A reply to one of the bot's messages. Discord lists the bot in `mentions` when the reply pings
+       * it, so the content is delivered, but the text names no one: an implicit mention.
+       */
+      reply: (
+        actor: string,
+        content: string,
+        replyToMessageId: string,
+        channelId = externalChannelId,
+      ) =>
+        deliver({
+          authorId: actor,
+          channelId,
+          guildId,
+          content,
+          mentions: [botUserId],
+          replyToMessageId,
+          channelType: 0,
+        }),
+      /** A plain message in a physical DM, which names no guild. */
+      dm: (actor: string, content: string, channelId = dmChannelId) =>
+        deliver({ authorId: actor, channelId, content, channelType: 1 }),
+      /** The same Discord message again, as after a reconnect: same ID, a new sequence number. */
+      redeliver(message: NativeMessage) {
+        if (!gateway) throw new Error('Native Discord acceptance requires { native: true }');
+        gateway.dispatch(message);
+      },
+    };
+    /** Ends the session as a deployment stop does, then reports what the Gateway fixture saw. */
+    async function stopNative() {
+      if (!gateway) throw new Error('Native Discord acceptance requires { native: true }');
+      controller.abort();
+      await running?.catch(() => undefined);
+      await expect.poll(() => gateway?.seen.closes.length, { timeout: 15000 }).toBeGreaterThan(0);
+      return gateway.lifecycle();
     }
     return {
       applicationId,
@@ -683,6 +872,11 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
       dmCommand,
       dmSelect,
       link,
+      thread,
+      native: nativeMessages,
+      stopNative,
+      /** The real health registry's view, present only for a native session. */
+      health: () => health?.snapshot(),
       issueDmCode,
       dmSelections,
       revokeDmSelection,
@@ -690,6 +884,7 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
       leaks,
       footprint,
       inboxRow,
+      receipt,
       feedback,
       runs: retainedRuns,
       writes,

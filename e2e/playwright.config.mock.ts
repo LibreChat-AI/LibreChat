@@ -200,6 +200,7 @@ if (!externalCodeBaseUrl) {
 const channelAcceptance = process.env.E2E_CHANNELS === 'true';
 const discordAcceptance = process.env.E2E_DISCORD_CHANNELS === 'true';
 const channelsAcceptance = channelAcceptance || discordAcceptance;
+const discordNative = discordAcceptance && process.env.E2E_DISCORD_NATIVE === 'true';
 const channelServiceToken = channelsAcceptance
   ? process.env.E2E_CHANNEL_SERVICE_TOKEN ||
     (discordAcceptance ? process.env.E2E_DISCORD_SERVICE_TOKEN : undefined) ||
@@ -315,7 +316,7 @@ function writeRuntimeMockConfig() {
             discord: {
               enabled: true,
               dm: { enabled: true },
-              gateway: { enabled: false, pollIntervalMs: 100 },
+              gateway: { enabled: discordNative, pollIntervalMs: 100 },
             },
           }
         : {}),
