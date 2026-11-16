@@ -141,6 +141,61 @@ it('keeps unsupported providers out of Slack service and setup endpoints', async
   expect(await tenantStorage.run({ tenantId }, () => db.getAgentChannel(id))).toBeNull();
 });
 
+/** Rewrites the stored provider as a build or backup that tagged rows differently would leave it. */
+async function restoreProvider(channelId: string, provider: 'unsupported-provider' | 'typeless') {
+  await mongoose.models.AgentChannel.collection.updateOne(
+    { channelId },
+    provider === 'typeless' ? { $unset: { type: '' } } : { $set: { type: provider } },
+  );
+}
+
+it.each(['unsupported-provider', 'typeless'] as const)(
+  'lists a %s row as unavailable beside working ones, with no provider detail',
+  async (provider) => {
+    const served = await createChannel();
+    await activation(served).expect(200);
+    const restored = await createChannel();
+    await activation(restored).expect(200);
+    await restoreProvider(restored, provider);
+
+    const listed = await request(app).get('/ui/agent-test/channels').expect(200);
+    const rows = new Map(listed.body.map((row: { channelId: string }) => [row.channelId, row]));
+    expect([...rows.keys()].sort()).toEqual([served, restored].sort());
+    expect(rows.get(served)).toMatchObject({
+      type: 'slack',
+      slack: { teamId: 'TTEST', appId: 'ATEST', botUserId: 'UTEST' },
+    });
+    // The stored row is active, but nothing serves it, so it is listed as unavailable and disabled.
+    expect(rows.get(restored)).toEqual({
+      channelId: restored,
+      tenantId,
+      agentId: 'agent-test',
+      createdBy: owner,
+      type: 'unavailable',
+      status: 'disabled',
+      revision: expect.any(String),
+    });
+    expect(JSON.stringify(listed.body)).not.toMatch(/xoxb-|encrypted/);
+    expect(deps.logError).not.toHaveBeenCalled();
+  },
+);
+
+it('answers a deletion still draining for a row no provider serves', async () => {
+  const id = await createChannel();
+  await activation(id).expect(200);
+  await restoreProvider(id, 'unsupported-provider');
+  await mongoose.models.ChannelRun.collection.insertOne({
+    channelId: id,
+    tenantId,
+    state: 'queued',
+  });
+
+  const response = await request(app).delete(`/ui/agent-test/channels/${id}`).expect(202);
+  expect(response.body).toMatchObject({ channelId: id, type: 'unavailable', status: 'deleting' });
+  expect(JSON.stringify(response.body)).not.toMatch(/xoxb-|encrypted|slack/);
+  expect(deps.logError).not.toHaveBeenCalled();
+});
+
 it('rejects creator changes and unsupported credential modes before activation', async () => {
   await request(app)
     .post('/ui/agent-test/channels')
