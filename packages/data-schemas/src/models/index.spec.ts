@@ -8,7 +8,13 @@ describe('index build diagnostics', () => {
   const instance = new mongoose.Mongoose();
   instance.set('autoIndex', false);
   instance.set('autoCreate', false);
-  const models = createModels(instance);
+  let models: ReturnType<typeof createModels>;
+
+  beforeAll(() => {
+    // Created in the hook so that a failing model factory fails these tests instead of the whole
+    // suite at import, which mutation testing reports as a runtime error.
+    models = createModels(instance);
+  });
 
   afterEach(() => jest.restoreAllMocks());
 
