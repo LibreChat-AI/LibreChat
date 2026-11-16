@@ -7,8 +7,10 @@ import {
   createModels,
   tenantStorage,
   supportsTransactions,
+  createChannelRunStorage,
   withRequiredTransaction,
   touchDiscordInstallation,
+  createChannelIdentityStorage,
   createDiscordInstallationStorage,
 } from '@librechat/data-schemas';
 import type {
@@ -111,10 +113,18 @@ async function open() {
     actors: [] as string[],
     users: [] as string[],
     orgs: [] as string[],
+    channels: [] as Array<{ tenantId: string; channelId: string }>,
   };
   return {
     store: createDiscordInstallationStorage(mongo),
     methods: createMethods(mongo),
+    identities: createChannelIdentityStorage(mongo),
+    runs: createChannelRunStorage(mongo),
+    channel(tenantId: string): string {
+      const channelId = `discord-e2e-${randomUUID()}`;
+      made.channels.push({ tenantId, channelId });
+      return channelId;
+    },
     app() {
       const id = { applicationId: snowflake(), botUserId: snowflake() };
       made.apps.push(id.applicationId);
@@ -149,6 +159,17 @@ async function open() {
         tenants.map((tenantId) => scopeKey(id, tenantId)),
       );
       await withMongo(async (db) => {
+        for (const { tenantId, channelId } of made.channels) {
+          for (const name of ['agentchannels', 'channelruns', 'channellanes'])
+            await db.collection(name).deleteMany({ tenantId, channelId });
+          await db
+            .collection('channelidentities')
+            .deleteMany({ tenantId, 'identity.channelId': channelId });
+          const _id = createHash('sha256')
+            .update(JSON.stringify([tenantId || '_', channelId]))
+            .digest('hex');
+          await db.collection<{ _id: string }>('channelscopes').deleteOne({ _id });
+        }
         await db.collection(GUILDS).deleteMany({ applicationId: { $in: made.apps } });
         await db.collection(APPS).deleteMany({ applicationId: { $in: made.apps } });
         const ids = made.users.map((id) => new ObjectId(id));
