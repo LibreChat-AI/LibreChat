@@ -42,14 +42,16 @@ import {
   ErrorTypes,
   Permissions,
   EModelEndpoint,
+  EImageOutputType,
   EToolResources,
   FileContext,
   FileSources,
   PermissionTypes,
   AgentCapabilities,
   configSchema,
+  setFileConfigRegexCompiler,
 } from 'librechat-data-provider';
-import type { IMongoFile } from '@librechat/data-schemas';
+import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
 import type { Agent, TFile, FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~/types';
 import type { ResolveLinkedInstructions } from '../instructions/linked';
@@ -147,6 +149,7 @@ import { selectCodeFiles } from '~/files/code/priming';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
 import { canAgentGraphPause } from '../hitl/admission';
+import { configureFileConfigRegexEngine } from '../../files/regexEngine';
 
 const realUtils = jest.requireActual<typeof import('~/utils')>('~/utils');
 
@@ -5490,6 +5493,74 @@ describe('initializeAgent — authorized run file snapshots', () => {
     result.agent.endpoint = EModelEndpoint.openAI;
     return result;
   }
+
+  it('hydrates TXT, Office and subsequent TXT through cached production MIME policy before inspection', async () => {
+    const { assertModelBoundContent } = jest.requireActual<
+      typeof import('../../middleware/modelBoundContent')
+    >('../../middleware/modelBoundContent');
+    const officeMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    const config: AppConfig = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: EImageOutputType.PNG,
+      fileConfig: {
+        endpoints: {
+          openAI: {
+            supportedMimeTypes: ['text/plain', officeMime],
+            defaultLLMDeliveryPath: { fallback: 'text' as const },
+          },
+        },
+      },
+      filters: {
+        messages: {
+          pii: {
+            starterPatterns: [],
+            customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
+          },
+        },
+      },
+    };
+    configureFileConfigRegexEngine();
+    try {
+      let cachedPolicy;
+      for (const type of ['text/plain', officeMime, 'text/plain']) {
+        const { agent, req, loadTools, db } = setup();
+        agent.tools = [];
+        req.config = config;
+        const file = Object.freeze(
+          inputFile({
+            type,
+            filename: type === officeMime ? 'context.docx' : 'context.txt',
+            text: 'safe extracted text',
+            llmDeliveryPath: 'text',
+          }),
+        );
+        const result = await initializeAgent(
+          {
+            req,
+            agent,
+            loadTools,
+            authorizedRunFiles: [file],
+            allowedProviders: new Set([Providers.OPENAI]),
+          },
+          db,
+        );
+        expect(result.requestAttachments).toHaveLength(1);
+        expect(result.requestAttachments[0].text).toBe('safe extracted text');
+        expect(() =>
+          assertModelBoundContent({ filters: config.filters, agents: [result as never] }),
+        ).not.toThrow();
+        cachedPolicy ??= result.deliveryRouting.fileConfig;
+        expect(result.deliveryRouting.fileConfig).toBe(cachedPolicy);
+        expect(file.filepath).toBe('/uploads/current.pdf');
+        expect(db.getFiles).not.toHaveBeenCalled();
+        expect(db.getConvoFiles).not.toHaveBeenCalled();
+        expect(db.getToolFilesByIds).not.toHaveBeenCalled();
+      }
+    } finally {
+      setFileConfigRegexCompiler((pattern) => new RegExp(pattern));
+    }
+  });
 
   it.each([undefined, 'Extracted document contents'])(
     'advertises a queued file before tool execution with extracted text %p',

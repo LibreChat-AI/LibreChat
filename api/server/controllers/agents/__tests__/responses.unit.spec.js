@@ -1398,6 +1398,81 @@ describe('createResponse controller', () => {
   });
 
   describe('content filtering', () => {
+    it.each([
+      { description: 'data:application/pdf;base64,c2VjcmV0' },
+      {
+        parameters: {
+          type: 'object',
+          properties: { payload: { description: 'data:application/pdf;base64,c2VjcmV0' } },
+        },
+      },
+      {
+        parameters: {
+          type: 'object',
+          properties: { payload: { type: 'input_file', file_id: 'unresolved' } },
+        },
+      },
+    ])('rejects opaque caller tools in the final post-merge file check: %j', async (fields) => {
+      const api = require('@librechat/api');
+      const real = jest.requireActual('@librechat/api');
+      req.config.filters = {
+        files: {
+          pii: {
+            starterPatterns: [],
+            fields: ['content', 'extracted_text'],
+            uninspectable: 'block',
+          },
+        },
+      };
+      const primary = {
+        id: 'agent-123',
+        model: 'claude-3',
+        model_parameters: {},
+        toolRegistry: {},
+        deliveryRouting: real.resolveTurnDeliveryRouting({ agent: { provider: 'anthropic' } }),
+        requestAttachments: [
+          {
+            file_id: 'file-context',
+            type: 'text/plain',
+            text: 'safe file text',
+            llmDeliveryPath: 'text',
+          },
+        ],
+      };
+      api.initializeAgent.mockResolvedValueOnce(primary);
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'Hello',
+          stream: false,
+          tools: [{ type: 'function', name: 'caller', ...fields }],
+        },
+      });
+      api.createClientToolHandoff.mockImplementationOnce(real.createClientToolHandoff);
+      api.assertModelBoundContent.mockImplementation(real.assertModelBoundContent);
+      api.isContentFilterError.mockImplementation(real.isContentFilterError);
+      try {
+        await createResponse(req, res);
+        expect(primary.toolDefinitions).toEqual([expect.objectContaining({ name: 'caller' })]);
+        expect(api.assertModelBoundContent).toHaveBeenLastCalledWith(
+          expect.objectContaining({ agents: [primary] }),
+        );
+        expect(api.createRun).not.toHaveBeenCalled();
+        expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+          res,
+          400,
+          expect.any(String),
+          'invalid_request',
+          'content_filter_uninspectable',
+        );
+      } finally {
+        api.assertModelBoundContent.mockReset();
+        api.isContentFilterError.mockImplementation(
+          (error) => error?.code === 'content_filter_block',
+        );
+      }
+    });
+
     it('replaces a blocked agent-derived conversation title before persistence', async () => {
       const api = require('@librechat/api');
       const db = require('~/models');
