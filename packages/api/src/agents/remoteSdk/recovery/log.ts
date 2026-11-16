@@ -18,30 +18,34 @@ export function createJournalRecoveryLog(options: {
 }): RecoveryLog {
   let head = options.head;
   const { journal, session, lease } = options;
-  return {
-    head: () => head,
-    append: async (id, payload) => {
-      if (!lease) throw new Error('SDK recovery journal is read only');
+  const appendBatch = async (id: string, payloads: string[]) => {
+    if (!lease) throw new Error('SDK recovery journal is read only');
+    let terminal: Exclude<RuntimeJournalState, 'open'> | undefined;
+    for (const payload of payloads) {
       const entry = JSON.parse(payload) as { kind: string; payload: string };
-      const frame =
-        entry.kind === 'data'
-          ? (JSON.parse(entry.payload) as {
-              type?: string;
-              data?: { interrupt?: { $sdk?: string } };
-            })
-          : undefined;
-      let terminal: Exclude<RuntimeJournalState, 'open'> | undefined;
-      if (frame?.type === 'error') terminal = 'failed';
-      if (frame?.type === 'done') {
+      if (entry.kind !== 'data') continue;
+      if (terminal) throw new Error('SDK frames follow a terminal receipt');
+      const frame = JSON.parse(entry.payload) as {
+        type?: string;
+        data?: { interrupt?: { $sdk?: string } };
+      };
+      if (frame.type === 'error') terminal = 'failed';
+      if (frame.type === 'done')
         terminal =
           frame.data?.interrupt != null && frame.data.interrupt.$sdk !== 'undefined'
             ? 'paused'
             : 'completed';
-      }
-      const range = journalValue(await journal.append(session, lease, id, [payload], terminal));
-      head = range.last;
-      return range.last;
-    },
+    }
+    const range = journalValue(await journal.append(session, lease, id, payloads, terminal));
+    head = range.last;
+    return range;
+  };
+  return {
+    head: () => head,
+    maxBatchFrames: journal.maxBatchBytes ? journal.maxBatchFrames : 1,
+    maxBatchBytes: journal.maxBatchBytes,
+    appendBatch,
+    append: async (id, payload) => (await appendBatch(id, [payload])).last,
     read: async (after) => {
       const page = journalValue(await journal.read(session, after, journal.maxBatchFrames));
       head = page.head;

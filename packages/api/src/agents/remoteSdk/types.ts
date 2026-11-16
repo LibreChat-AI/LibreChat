@@ -10,6 +10,8 @@ import type {
 import type { SdkAgentIdentity } from './identity';
 
 export interface RemoteSdkRecoveryOptions {
+  /** Operator-allowlisted direct worker routes, keyed by stable owner identity. */
+  routes?: Record<string, string>;
   maxDisconnectMs: number;
   retryDelayMs: number;
   maxJournalBytes: number;
@@ -50,6 +52,7 @@ export type SdkRunInput = Parameters<SdkRun['processStream']>[0];
 export type SdkRunOptions = Parameters<SdkRun['processStream']>[1];
 export type SdkEventData = Parameters<EventHandler['handle']>[1];
 export interface RemoteSdkStart {
+  transportVersion: 2;
   hostTools?: HostToolDescriptor[];
   operation: 'start' | 'resume';
   input: IState;

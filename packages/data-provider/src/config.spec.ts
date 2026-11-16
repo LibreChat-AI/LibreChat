@@ -3554,7 +3554,14 @@ describe('remote SDK runtime configuration', () => {
       retryDelayMs: 250,
       maxJournalBytes: 67108864,
     });
+    const routed = agentsEndpointSchema.parse(
+      remote({ routes: { 'worker-a': 'wss://worker-a.internal/sdk' } }),
+    )?.sdkRuntimes?.test;
+    expect(routed && 'remote' in routed ? routed.remote.recovery?.routes : undefined).toEqual({
+      'worker-a': 'wss://worker-a.internal/sdk',
+    });
     for (const recovery of [
+      { routes: { 'worker-a': 'https://worker-a.internal/sdk' } },
       { maxDisconnectMs: 0 },
       { maxDisconnectMs: 60000 },
       { retryDelayMs: -1 },

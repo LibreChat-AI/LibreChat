@@ -13,8 +13,8 @@ import {
   MemorySaver,
   HookRegistry,
 } from '@librechat/agents';
+import type { RunConfig, ToolCallRequest, ToolExecuteBatchRequest } from '@librechat/agents';
 import type { AddressInfo, Socket } from 'node:net';
-import type { RunConfig } from '@librechat/agents';
 import type { RedisTestClient } from '../../../stream/__tests__/helpers/redis';
 import type { RemoteSdkFactoryInput } from '../types';
 import {
@@ -91,7 +91,7 @@ function hostConfig(handle: () => Promise<void>) {
     },
   };
 }
-async function fixture(makeRun = factory) {
+async function fixture(makeRun = factory, ownerId?: string) {
   const createRun = jest.fn(makeRun);
   const errors: unknown[] = [];
   const journalPrefix = `${prefix}:${randomUUID()}`;
@@ -116,7 +116,7 @@ async function fixture(makeRun = factory) {
       secret,
       createRun,
       authorize: () => true,
-      recovery: { journal, maxDisconnectMs: 5000 },
+      recovery: { journal, maxDisconnectMs: 5000, ownerId },
       onError: (error) => errors.push(error),
     });
   let runtime = makeRuntime();
@@ -170,7 +170,12 @@ async function fixture(makeRun = factory) {
     remote: {
       url: `ws://127.0.0.1:${(proxy.address() as AddressInfo).port}/sdk`,
       secret,
-      recovery: { maxDisconnectMs: 5000, retryDelayMs: 20, maxJournalBytes: 16777216 },
+      recovery: {
+        maxDisconnectMs: 5000,
+        retryDelayMs: 20,
+        maxJournalBytes: 16777216,
+        ...(ownerId ? { routes: { [ownerId]: `ws://127.0.0.1:${port}/sdk` } } : {}),
+      },
     },
     close: async () => {
       for (const socket of sockets) socket.destroy();
@@ -180,6 +185,104 @@ async function fixture(makeRun = factory) {
   };
 }
 describe('live SDK recovery', () => {
+  it('replays worker tool cancellation across a disconnect without repeating the invocation', async () => {
+    const workerCall = new AbortController();
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const resolveTool = jest.fn();
+    const rejectTool = jest.fn();
+    const toolCall: ToolCallRequest = { id: 'cancelled-call', name: 'inspect', args: {} };
+    const runtime = await fixture(async (input) => {
+      const run = await Run.create({
+        ...input.config,
+        tokenCounter: () => 1,
+        returnContent: true,
+        graphConfig: {
+          type: 'standard',
+          agents: [
+            {
+              agentId: input.identity.agentId,
+              provider: Providers.OPENAI,
+              tools: [],
+              toolDefinitions: input.hostTools?.toolDefinitions,
+            },
+          ],
+        },
+      });
+      run.processStream = async () => {
+        await input.config.customHandlers![GraphEvents.ON_TOOL_EXECUTE].handle(
+          GraphEvents.ON_TOOL_EXECUTE,
+          {
+            toolCalls: [toolCall],
+            signal: workerCall.signal,
+            agentId: identity.agentId,
+            resolve: resolveTool,
+            reject: rejectTool,
+          },
+        );
+        return [];
+      };
+      return run;
+    });
+    let calls = 0;
+    let hostSignal: AbortSignal | undefined;
+    try {
+      const config: RunConfig = {
+        ...hostConfig(async () => undefined),
+        graphConfig: {
+          type: 'standard',
+          llmConfig: { provider: Providers.OPENAI },
+          toolDefinitions: [{ name: 'inspect', description: 'Inspect' }],
+        },
+        customHandlers: {
+          [GraphEvents.ON_TOOL_EXECUTE]: {
+            handle: async (_event, data) => {
+              const batch = data as ToolExecuteBatchRequest;
+              calls++;
+              hostSignal = batch.signal;
+              batch.toolCalls[0].codeSessionContext = { session_id: 'retained-session' };
+              started();
+              await new Promise<void>((resolve) =>
+                batch.signal!.addEventListener('abort', () => resolve(), { once: true }),
+              );
+              batch.reject(new Error('cancelled'));
+            },
+          },
+        },
+      };
+      const run = await createRemoteSdkRun({ config, identity, remote: runtime.remote });
+      const completion = run.processStream(
+        { messages: [] },
+        {
+          version: 'v2',
+          configurable: { thread_id: identity.conversationId },
+        },
+      );
+      void completion.catch(() => undefined);
+      await ready;
+      runtime.offline(true);
+      runtime.drop();
+      await delay(50);
+      workerCall.abort();
+      await delay(50);
+      expect(hostSignal?.aborted).toBe(false);
+      runtime.offline(false);
+      await completion;
+      expect(hostSignal?.aborted).toBe(true);
+      expect(calls).toBe(1);
+      expect(runtime.createRun).toHaveBeenCalledTimes(1);
+      expect(runtime.connections()).toBeGreaterThan(1);
+      expect(resolveTool).not.toHaveBeenCalled();
+      expect(rejectTool).toHaveBeenCalledTimes(1);
+      expect(toolCall.codeSessionContext?.session_id).toBe('retained-session');
+    } finally {
+      runtime.offline(false);
+      workerCall.abort();
+      await runtime.close();
+    }
+  });
   it('runs a real SDK graph through the negotiated durable channel', async () => {
     const runtime = await fixture();
     try {
@@ -558,4 +661,131 @@ describe('live SDK recovery', () => {
       }
     },
   );
+});
+
+it('reconnects directly to the allowlisted owner when the front door is unavailable', async () => {
+  const runtime = await fixture(factory, 'worker-a');
+  let dropped = false;
+  try {
+    const run = await createRemoteSdkRun({
+      identity,
+      remote: runtime.remote,
+      config: hostConfig(async () => {
+        if (dropped) return;
+        dropped = true;
+        runtime.offline(true);
+        runtime.drop();
+      }),
+    });
+    const result = await run.processStream(
+      { messages: [new HumanMessage('go')] },
+      { version: 'v2', configurable: { thread_id: identity.conversationId } },
+    );
+    expect(JSON.stringify(result)).toContain(text);
+    expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    expect(runtime.connections()).toBe(1);
+    expect(runtime.errors).toEqual([]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+it('serializes terminal replay admission and cannot evict a replacement session', async () => {
+  const journal = createRedisRuntimeJournal(redis, {
+    prefix,
+    retentionMs: 60000,
+    leaseMs: 3000,
+    maxFrames: 100,
+    maxBytes: 100000,
+    maxBatchFrames: 10,
+    maxBatchBytes: 10000,
+  });
+  const recovery = createRuntimeRecovery({
+    journal,
+    maxDisconnectMs: 5000,
+    maxFrameBytes: 10000,
+    maxBufferedBytes: 20000,
+    ownerId: 'worker-a',
+  });
+  const claim = { sessionId: randomUUID(), after: 0, resume: false };
+  try {
+    const first = await recovery.prepare(identity, 'thread', claim);
+    await first.begin();
+    await first.complete('completed');
+    first.dispose();
+    const [a, b] = await Promise.all([
+      recovery.prepare(identity, 'thread', { ...claim, resume: true }),
+      recovery.prepare(identity, 'thread', { ...claim, resume: true }),
+    ]);
+    expect(a).toBe(b);
+    await expect(
+      recovery.prepare({ ...identity, userId: 'foreign' }, 'thread', claim),
+    ).rejects.toThrow('identity');
+    await expect(
+      recovery.prepare(identity, 'thread', { ...claim, ownerId: 'worker-b' }),
+    ).rejects.toThrow('owner');
+    a.dispose();
+    const replacement = await recovery.prepare(identity, 'thread', { ...claim, resume: true });
+    a.dispose();
+    expect(await recovery.prepare(identity, 'thread', claim)).toBe(replacement);
+    recovery.close();
+    await expect(recovery.prepare(identity, 'thread', claim)).rejects.toThrow('closed');
+  } finally {
+    recovery.close();
+  }
+});
+
+it('rejects unallowlisted owner identities before invoking a graph', async () => {
+  const runtime = await fixture(factory, 'worker-a');
+  try {
+    const run = await createRemoteSdkRun({
+      identity,
+      config: hostConfig(async () => undefined),
+      remote: { ...runtime.remote, recovery: { ...runtime.remote.recovery, routes: {} } },
+    });
+    await expect(
+      run.processStream(
+        { messages: [] },
+        { version: 'v2', configurable: { thread_id: identity.conversationId } },
+      ),
+    ).rejects.toThrow();
+    expect(runtime.createRun).not.toHaveBeenCalled();
+  } finally {
+    await runtime.close();
+  }
+});
+
+it('does not publish a session admitted concurrently with shutdown', async () => {
+  const journal = createRedisRuntimeJournal(redis, {
+    prefix,
+    retentionMs: 60000,
+    leaseMs: 3000,
+    maxFrames: 100,
+    maxBytes: 100000,
+    maxBatchFrames: 10,
+    maxBatchBytes: 10000,
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const read = journal.read.bind(journal);
+  journal.read = async (...args) => {
+    await held;
+    return read(...args);
+  };
+  const recovery = createRuntimeRecovery({
+    journal,
+    maxDisconnectMs: 5000,
+    maxFrameBytes: 10000,
+    maxBufferedBytes: 20000,
+  });
+  const admission = recovery.prepare(identity, 'thread', {
+    sessionId: randomUUID(),
+    after: 0,
+    resume: false,
+  });
+  recovery.close();
+  release();
+  await expect(admission).rejects.toThrow('closed');
 });

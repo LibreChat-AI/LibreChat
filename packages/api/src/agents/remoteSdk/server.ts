@@ -20,6 +20,7 @@ import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { RECOVERY_HEADER_BYTES } from './recovery/socket';
 import { createWorkerToolService } from './hostTools';
 import { RemoteSdkCheckpointer } from './checkpoint';
+import { sendSnapshot } from './snapshot';
 import { createSdkPeer } from './peer';
 
 const identitySchema = z
@@ -42,6 +43,7 @@ const claimSchema = z.object({
   exp: z.number(),
 });
 const startSchema = z.object({
+  transportVersion: z.literal(2),
   hostTools: z
     .array(
       z.object({
@@ -249,8 +251,8 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         };
         transport.once('close', cleanup);
         const workerTools = createWorkerToolService({
-          call: (method, data) =>
-            peer.call(method, data, method === 'tools' ? limits.maxRunMs : undefined),
+          call: (method, data, _timeoutMs, signal) =>
+            peer.call(method, data, method === 'tools' ? limits.maxRunMs : undefined, signal),
         });
         const peer = createSdkPeer(transport, {
           ...limits,
@@ -261,7 +263,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
             throw new Error('Unexpected runtime frame');
           },
           onCall: async (method, data) => {
-            if (method === 'capabilities') return { hostTools: 1 };
+            if (method === 'capabilities') return { transportVersion: 2, hostTools: 2 };
             if (method === 'tool.result') return workerTools.accept(data);
             if (method === 'tool.session') return workerTools.accept(data, 'session');
             if (method !== 'run' || started) throw new Error('SDK execution already admitted');
@@ -383,9 +385,9 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                     )
                   : await run.processStream(request.input, callerOptions);
               outcome = run.getInterrupt() ? 'paused' : 'completed';
-              peer.send({
-                type: 'done',
-                data: {
+              await sendSnapshot(
+                peer,
+                {
                   content,
                   messages: run.getRunMessages(),
                   state: {
@@ -403,7 +405,9 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                   haltReason: run.getHaltReason(),
                   runSteps: run.Graph?.createRunStepResumeState(),
                 },
-              });
+                limits,
+                recovered ? () => recovered.socket.flush() : undefined,
+              );
             };
             running = true;
             void execute()

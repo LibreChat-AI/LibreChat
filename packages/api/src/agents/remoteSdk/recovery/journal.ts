@@ -38,6 +38,7 @@ export interface RuntimeJournalPage {
 export interface RuntimeJournal {
   readonly leaseMs: number;
   readonly maxBatchFrames: number;
+  readonly maxBatchBytes?: number;
   /** Privileged lifecycle cleanup; callers must authenticate deletion authority before storage access. */
   purge(session: RuntimeJournalSession): Promise<RuntimeJournalResult<null>>;
   create(

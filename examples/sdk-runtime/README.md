@@ -49,10 +49,13 @@ Enable the opt-in recovery configuration below to reattach the same live Run and
 events without repeating execution. Approval resumes rebuild a
 fresh worker Run against host-owned checkpoints, without sharing database credentials.
 
-Remote runtimes execute their own operator-installed tools. The bridge deliberately does not
-forward host provider credentials, MCP tokens, tool registries, or arbitrary host tool-execution
-requests. Configure domain data access inside the trusted worker and authorize it using the
-signed caller identity. Host policy hooks still gate SDK tool execution.
+Remote runtimes can execute their own operator-installed tools and the saved root agent's
+authorized host schema tools. Install `input.hostTools.toolDefinitions` on the SDK agent as the
+examples do; the supplied SDK handler dispatches those tools on the host. Provider credentials
+and MCP tokens remain host-owned. Configure worker-owned domain access separately and authorize
+it using the signed caller identity. Host policy hooks still gate SDK tool execution.
+Host-tool capability 2 requires matching host and worker upgrades and propagates per-invocation
+cancellation without closing the run's socket; older versions fail before host-tool execution.
 
 ## Measuring transport overhead
 
@@ -78,9 +81,9 @@ Enable `remote.recovery: {}` in the host registration, then start the example wi
 Both sides must run the new bridge version. The worker owns this Redis connection; it never
 receives the LibreChat database credentials. `SDK_RUNTIME_JOURNAL_PREFIX` separates deployments.
 
-The production API is `createRemoteSdkServer({recovery:{journal,maxDisconnectMs}, ...})`.
+The production API is `createRemoteSdkServer({recovery:{journal,maxDisconnectMs,ownerId}, ...})`.
 `createRedisRuntimeJournal(redis, limits)` accepts an operator-owned Redis-compatible `eval`
-client and explicit prefix, retention, lease, frame, byte and batch limits. The example values
+client (optionally `evalsha` to avoid resending Lua on every operation) and explicit prefix, retention, lease, frame, byte and batch limits. The example values
 are illustrative: choose retention and Redis persistence/replication for your data policy.
 The host YAML defaults are a 15-second disconnect window, 250-ms retry delay and 64-MiB
 request-local outgoing journal. Keep both sides' disconnect windows aligned and shorter than
@@ -92,8 +95,29 @@ A completed/paused terminal result is committed atomically with its terminal jou
 then published. It can replay after a worker restart. A restart of an **in-flight** graph instead
 replays committed output and fails safely once the old lease expires: arbitrary side effects
 cannot be resumed safely by retrying execution. Live reconnect requires routing to the same
-worker process. Host process restart adoption and cross-worker live execution migration are
+worker process. For a worker pool, set each worker's stable `SDK_RUNTIME_OWNER_ID` and configure
+operator-owned direct routes on the host:
+
+```yaml
+recovery:
+  routes:
+    worker-a: wss://worker-a.internal/sdk
+    worker-b: wss://worker-b.internal/sdk
+```
+
+The initial connection may use the pool URL. After its authenticated ready handshake, the host
+reconnects directly to that allowlisted owner, binding the owner ID in the signed reconnect claim.
+A worker cannot supply an arbitrary destination; missing routes, missing owner identities with a
+route map, and mismatched owners fail closed. Owner identities and routes must remain stable for
+the lifetime of a session. A route must identify one worker, not another balanced pool. Single-worker
+deployments can omit both the identity and map. Host process restart adoption and cross-worker live execution migration are
 not supported. The existing host checkpointer still supports explicit approval continuation.
+
+Recovery batches queued frames within the configured journal byte/frame limits, persists cumulative
+ACKs separately from control-frame dispatch, and uses EVALSHA with a NOSCRIPT-only fallback when
+supported. Writes still commit before publication; cancellation does not wait behind ACK writes.
+Final snapshots use bounded ordered chunks and an atomic terminal receipt, including offline
+completion/replay. The host's `maxBufferedBytes` bounds snapshot reassembly as well as queued traffic.
 
 Journal keys retain sensitive event/checkpoint data until their TTL; delivery acknowledgements
 do not delete history. Operators must restrict and encrypt Redis access, configure durability,

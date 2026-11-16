@@ -1913,6 +1913,15 @@ export const agentsEndpointSchema = baseEndpointSchema
                     secret: z.string().min(1),
                     recovery: z
                       .object({
+                        routes: z
+                          .record(
+                            z.string().min(1).max(128),
+                            z
+                              .string()
+                              .url()
+                              .regex(/^wss?:\/\//),
+                          )
+                          .optional(),
                         maxDisconnectMs: z.number().int().min(100).max(120000).default(15000),
                         retryDelayMs: z.number().int().min(10).max(10000).default(250),
                         maxJournalBytes: z

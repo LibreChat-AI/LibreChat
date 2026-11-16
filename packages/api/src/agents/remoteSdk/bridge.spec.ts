@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import WebSocket from 'ws';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'node:crypto';
+import WebSocket, { WebSocketServer } from 'ws';
 import { tool } from '@librechat/agents/langchain/tools';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
@@ -19,6 +19,7 @@ import type { RemoteSdkServerOptions } from './server';
 import type { RemoteSdkFactoryInput } from './types';
 import { createRemoteSdkServer } from './server';
 import { createRemoteSdkRun } from './client';
+import { createSdkPeer } from './peer';
 
 const secret = 'sdk-runtime-test-secret-at-least-32-characters';
 const identity = {
@@ -696,6 +697,45 @@ describe('remote SDK runtime bridge', () => {
       await runtime.close();
     }
   });
+  it('rejects workers without cancellable host tools before sending a run', async () => {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const methods: string[] = [];
+    server.on('connection', (socket) =>
+      createSdkPeer(socket, {
+        maxFrameBytes: 65536,
+        maxBufferedBytes: 131072,
+        timeoutMs: 2000,
+        onClose: () => undefined,
+        onFrame: async () => undefined,
+        onCall: async (method) => {
+          methods.push(method);
+          return { hostTools: 1 };
+        },
+      }),
+    );
+    try {
+      const config = hostConfig();
+      config.graphConfig = {
+        type: 'standard',
+        llmConfig: { provider: Providers.OPENAI },
+        toolDefinitions: [{ name: 'inspect' }],
+      };
+      config.customHandlers = { [GraphEvents.ON_TOOL_EXECUTE]: { handle: jest.fn() } };
+      const run = await createRemoteSdkRun({
+        config,
+        identity,
+        remote: { url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, secret },
+      });
+      await expect(run.processStream({ messages: [] }, invocation())).rejects.toThrow(
+        'SDK runtime execution failed',
+      );
+      expect(methods).toEqual(['capabilities']);
+    } finally {
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
   it('executes authorized host tools and delivers a fast result before the batch settles', async () => {
     const definitions = [
       {
@@ -795,4 +835,282 @@ describe('remote SDK runtime bridge', () => {
       await runtime.close();
     }
   });
+});
+
+it('transfers a terminal snapshot larger than a frame without repeating tool effects', async () => {
+  const diagnostics: string[] = [];
+  let workerRun: Awaited<ReturnType<typeof Run.create>> | undefined;
+  let workerContent: unknown;
+  let workerMessages: unknown;
+  let effects = 0;
+  let largestEvent = 0;
+  const runtime = await fixture(
+    async (input) => {
+      const run = await Run.create({
+        ...input.config,
+        returnContent: true,
+        tokenCounter: () => 1,
+        graphConfig: {
+          type: 'standard',
+          agents: [
+            {
+              agentId: input.identity.agentId,
+              provider: Providers.OPENAI,
+              tools: [],
+              maxToolResultChars: 50000,
+              toolDefinitions: input.hostTools?.toolDefinitions,
+            },
+          ],
+        },
+      });
+      run.Graph!.overrideTestModel(['tool'], 5, [
+        { id: 'large', name: 'inspect', args: {}, type: 'tool_call' },
+      ]);
+      const original = run.processStream.bind(run);
+      run.processStream = async (...args) => {
+        const content = await original(...args);
+        workerContent = content;
+        workerMessages = run.getRunMessages();
+        return content;
+      };
+      workerRun = run;
+      return run;
+    },
+    { maxFrameBytes: 20000, onError: (error) => diagnostics.push(String(error)) },
+  );
+  try {
+    const config = hostConfig();
+    config.graphConfig = {
+      type: 'standard',
+      llmConfig: { provider: Providers.OPENAI },
+      toolDefinitions: [{ name: 'inspect' }],
+    };
+    config.customHandlers = Object.fromEntries(
+      Object.values(GraphEvents).map((event) => [
+        event,
+        {
+          handle: async (_event: string, data: unknown) => {
+            largestEvent = Math.max(largestEvent, Buffer.byteLength(JSON.stringify(data)));
+          },
+        },
+      ]),
+    );
+    config.customHandlers[GraphEvents.ON_TOOL_EXECUTE] = {
+      handle: async (_event, data) => {
+        effects++;
+        const batch = data as import('@librechat/agents').ToolExecuteBatchRequest;
+        batch.resolve([{ toolCallId: 'large', status: 'success', content: 'x'.repeat(12000) }]);
+      },
+    };
+    const run = await createRemoteSdkRun({
+      config,
+      identity,
+      remote: { ...runtime.remote, maxFrameBytes: 20000 },
+    });
+    await expect(
+      run.processStream({ messages: [new HumanMessage('go')] }, invocation()),
+    ).resolves.toBeDefined();
+    expect(effects).toBe(1);
+    expect(largestEvent).toBeLessThan(20000);
+    expect(
+      JSON.stringify({ content: workerContent, messages: workerMessages }).length,
+    ).toBeGreaterThan(20000);
+    expect(workerRun).toBeDefined();
+  } finally {
+    await runtime.close();
+  }
+});
+
+it('exposes the same active run steps through native inspection and streamed events', async () => {
+  let start!: () => void;
+  const started = new Promise<void>((resolve) => {
+    start = resolve;
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const seen: unknown[] = [];
+  const runtime = await fixture(async (input) => {
+    const run = await Run.create({
+      ...input.config,
+      returnContent: true,
+      tokenCounter: () => 1,
+      graphConfig: {
+        type: 'standard',
+        agents: [
+          {
+            agentId: input.identity.agentId,
+            provider: Providers.OPENAI,
+            tools: [],
+            toolDefinitions: input.hostTools?.toolDefinitions,
+          },
+        ],
+      },
+    });
+    run.Graph!.overrideTestModel(['tool'], 5, [
+      { id: 'held', name: 'inspect', args: {}, type: 'tool_call' },
+    ]);
+    return run;
+  });
+  try {
+    const config = hostConfig();
+    config.graphConfig = {
+      type: 'standard',
+      llmConfig: { provider: Providers.OPENAI },
+      toolDefinitions: [{ name: 'inspect' }],
+    };
+    config.customHandlers = {
+      [GraphEvents.ON_RUN_STEP]: {
+        handle: async (_event, data) => {
+          seen.push(data);
+        },
+      },
+      [GraphEvents.ON_TOOL_EXECUTE]: {
+        handle: async (_event, data) => {
+          const batch = data as import('@librechat/agents').ToolExecuteBatchRequest;
+          start();
+          await held;
+          batch.resolve([{ toolCallId: 'held', status: 'success', content: 'finished' }]);
+        },
+      },
+    };
+    const run = await createRemoteSdkRun({ config, identity, remote: runtime.remote });
+    const completion = run.processStream({ messages: [new HumanMessage('go')] }, invocation());
+    await started;
+    expect(seen.length).toBeGreaterThan(0);
+    expect(run.Graph!.getRunSteps()).toEqual(seen);
+    expect(run.Graph!.contentData).toEqual(seen);
+    expect(run.Graph!.getContentParts()!.length).toBeGreaterThan(0);
+    release();
+    await completion;
+  } finally {
+    release();
+    await runtime.close();
+  }
+});
+
+it('retains host execution ownership until cancelled host-tool cleanup actually drains', async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const controller = new AbortController();
+  const runtime = await fixture(async (input) => {
+    const run = await Run.create({
+      ...input.config,
+      returnContent: true,
+      tokenCounter: () => 1,
+      graphConfig: {
+        type: 'standard',
+        agents: [
+          {
+            agentId: input.identity.agentId,
+            provider: Providers.OPENAI,
+            tools: [],
+            toolDefinitions: input.hostTools?.toolDefinitions,
+          },
+        ],
+      },
+    });
+    run.processStream = async () => {
+      await input.config.customHandlers![GraphEvents.ON_TOOL_EXECUTE].handle(
+        GraphEvents.ON_TOOL_EXECUTE,
+        {
+          toolCalls: [{ id: 'held', name: 'inspect', args: {} }],
+          agentId: identity.agentId,
+          signal: input.signal,
+          resolve: () => undefined,
+          reject: () => undefined,
+        },
+      );
+      return [];
+    };
+    return run;
+  });
+  let hostSignal: AbortSignal | undefined;
+  let settled = false;
+  try {
+    const config = hostConfig();
+    config.graphConfig = {
+      type: 'standard',
+      llmConfig: { provider: Providers.OPENAI },
+      toolDefinitions: [{ name: 'inspect' }],
+    };
+    config.customHandlers = {
+      [GraphEvents.ON_TOOL_EXECUTE]: {
+        handle: async (_event, data) => {
+          const batch = data as import('@librechat/agents').ToolExecuteBatchRequest;
+          hostSignal = batch.signal;
+          started();
+          await held;
+          batch.reject(new Error('cancelled'));
+        },
+      },
+    };
+    const run = await createRemoteSdkRun({ config, identity, remote: runtime.remote });
+    const completion = run
+      .processStream({ messages: [] }, { ...invocation(), signal: controller.signal })
+      .catch((error: Error) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await ready;
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(hostSignal?.aborted).toBe(true);
+    expect(settled).toBe(false);
+    release();
+    expect(await completion).toMatchObject({ name: 'AbortError' });
+  } finally {
+    release();
+    await runtime.close();
+  }
+});
+
+it('rejects an old host transport before constructing the worker graph', async () => {
+  const createRun = jest.fn(factory);
+  const runtime = await fixture(createRun);
+  const socket = new WebSocket(runtime.remote.url, {
+    headers: { Authorization: `Bearer ${signedToken()}` },
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve);
+      socket.once('error', reject);
+    });
+    const peer = createSdkPeer(socket, {
+      maxFrameBytes: 65536,
+      maxBufferedBytes: 131072,
+      timeoutMs: 2000,
+      onClose: () => undefined,
+      onFrame: async () => undefined,
+      onCall: async () => null,
+    });
+    await expect(
+      peer.call('run', {
+        operation: 'start',
+        input: { messages: [] },
+        options: {
+          configurable: {
+            thread_id: identity.conversationId,
+            run_id: identity.runId,
+            user_id: identity.userId,
+          },
+        },
+        handlers: [],
+        hooks: [],
+        checkpoint: false,
+        agent: { id: identity.agentId },
+      }),
+    ).rejects.toThrow();
+    expect(createRun).not.toHaveBeenCalled();
+  } finally {
+    socket.terminate();
+    await runtime.close();
+  }
 });
