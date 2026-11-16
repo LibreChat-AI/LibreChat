@@ -29,6 +29,7 @@ import type { ChannelFeedbackRuntime } from '../feedbackRuntime';
 import type { DiscordManagementPrincipal } from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { SafeErrorMetadata } from '~/utils/errors';
+import type { ChannelRunDependencies } from '../runs';
 import type { DiscordObserver } from './observe';
 import { createDiscordBindingHandlers, createDiscordRouteHandlers } from './bindingHttp';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
@@ -46,6 +47,7 @@ import { createDiscordBindingService } from './bindings';
 import { createDiscordInboxHandlers } from './inboxHttp';
 import { createDiscordGatewayService } from './gateway';
 import { createDiscordProviderClient } from './client';
+import { createDiscordReviewHandler } from './review';
 import { createDiscordRouteResolver } from './routes';
 import { createDiscordInboxService } from './inbox';
 import { createDiscordDmHandlers } from './dmHttp';
@@ -108,6 +110,7 @@ export function createDiscordPolicyReader(
 export function createDiscordChannelRuntime(
   deps: SlackWorkspaceAdminDependencies & {
     observe?: DiscordObserver;
+    interactive?: ChannelRunDependencies['interactive'];
     channels: AgentChannelMethods;
     installations: DiscordInstallationStorage;
     routes: DiscordRouteStorage;
@@ -183,6 +186,16 @@ export function createDiscordChannelRuntime(
     publicBaseUrl: deps.publicBaseUrl || 'http://localhost:3080',
     runs: deps.application.storage,
     feedback: createDiscordFeedbackHandler({ feedback: deps.feedback }),
+    review: deps.interactive
+      ? createDiscordReviewHandler({
+          commands: deps.commands,
+          interactive: deps.interactive,
+          resolvePrincipal: deps.application.authority.resolvePrincipal,
+          encrypt: encryptCredential,
+          decrypt: decryptCredential,
+          publicBaseUrl: deps.publicBaseUrl || 'http://localhost:3080',
+        })
+      : undefined,
     enabled,
     dmEnabled: async () => (await deps.policy.read()).dm.enabled,
   });

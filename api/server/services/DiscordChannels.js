@@ -24,6 +24,7 @@ const { getEffectivePermissions } = require('./PermissionService');
 const { getAppConfig } = require('./Config');
 const application = require('./ChannelAuthority');
 const { recordDiscordFeedback } = require('./Channels');
+const { readInteractiveReview, submitInteractiveReview } = require('./Responses');
 const db = require('~/models');
 
 const policy = createDiscordPolicyReader(getAppConfig);
@@ -37,6 +38,7 @@ module.exports = createDiscordChannelRuntime({
   threads: createDiscordThreadStorage(mongoose, policy.threads),
   commands: createDiscordCommandStorage(mongoose),
   feedback: { recordDiscordFeedback },
+  interactive: { readInteractiveReview, submitInteractiveReview },
   gateway: createDiscordGatewayStorage(mongoose, policy.ownership),
   discovery: createDiscordRuntimeStorage(mongoose),
   messages: createDiscordMessageStorage(mongoose),

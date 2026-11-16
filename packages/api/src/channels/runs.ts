@@ -282,6 +282,9 @@ export async function hasChannelRunAuthority(
   if (
     run.errorCode === 'channel_authority_changed' ||
     channel.status !== 'active' ||
+    run.channelId !== channel.channelId ||
+    run.agentId !== channel.agentId ||
+    run.tenantId !== (channel.tenantId || '_') ||
     run.workspaceId !== channel.workspaceId
   )
     return false;
@@ -446,13 +449,20 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       res.status(403).json({ error: 'channel_action_forbidden' });
       return;
     }
-    const principal = await deps.resolvePrincipal(channel, actor);
     if (
-      !principal ||
-      principal.userId !== run.principal.userId ||
-      principal.channelRevision !== revision ||
-      principal.linkId !== run.principal.linkId ||
-      principal.linkRevision !== run.principal.linkRevision
+      !(await hasAuthority(channel, run)) ||
+      (channel.type === 'discord' &&
+        !(await deps.storage.authorizeDestination(
+          {
+            tenantId: channel.tenantId,
+            channelId: channel.channelId,
+            agentId: channel.agentId,
+            applicationRevision: channel.applicationRevision,
+            principal: run.principal,
+            admission: run.admission,
+          },
+          now(),
+        )))
     ) {
       res.status(403).json({ error: 'channel_authority_changed' });
       return;

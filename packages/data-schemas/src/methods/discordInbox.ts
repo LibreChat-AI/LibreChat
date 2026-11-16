@@ -135,6 +135,8 @@ const erase = {
   commandResult: '',
   leaseOwner: '',
 };
+// Completed private review cards retain only their bounded encrypted decision context.
+const eraseAll = { ...erase, encryptedReview: '' };
 const pending = ['queued', 'processing', 'reply'];
 
 /** Persist before acknowledging Discord. Claim/reply writes are fenced and safely reclaimable. */
@@ -208,7 +210,7 @@ export function createDiscordInboxStorage(
       },
       {
         $set: { state: 'failed', result, leaseExpiresAt: 0 },
-        $unset: erase,
+        $unset: eraseAll,
       },
       { session },
     );
@@ -326,7 +328,7 @@ export function createDiscordInboxStorage(
                 expiresAt: { $lte: now },
                 state: { $in: pending },
               },
-              { $set: { state: 'failed', result: 'expired', leaseExpiresAt: 0 }, $unset: erase },
+              { $set: { state: 'failed', result: 'expired', leaseExpiresAt: 0 }, $unset: eraseAll },
               { session },
             );
           // A blocked actor scope is excluded whole and, up to scanLimit scopes, not charged to the
@@ -494,7 +496,7 @@ export function createDiscordInboxStorage(
           : { ...live, ...(result === 'completed' ? { state: 'reply' } : {}) };
       const matched = await inbox.updateOne(filter, {
         $set: { state: result === 'completed' ? 'done' : 'failed', result, leaseExpiresAt: 0 },
-        $unset: erase,
+        $unset: result === 'completed' ? erase : eraseAll,
       });
       return matched.matchedCount === 1;
     },

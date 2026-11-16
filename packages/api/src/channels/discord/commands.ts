@@ -6,18 +6,20 @@ import {
   discordThreadUsable,
 } from 'librechat-data-provider';
 import type {
+  AgentChannelMethods,
+  ChannelRunStorage,
+  DiscordCommandStorage,
+  DiscordInboxRecord,
+  DiscordCommandScope,
+  AgentChannelRecord,
+} from '@librechat/data-schemas';
+import type {
   DiscordInboxFence,
   DiscordNativeAuthority,
   DiscordPrivateReply,
   DiscordChannelExternalIdentity,
   ChannelRunPrincipal,
 } from 'librechat-data-provider';
-import type {
-  AgentChannelMethods,
-  ChannelRunStorage,
-  DiscordCommandStorage,
-  DiscordInboxRecord,
-} from '@librechat/data-schemas';
 import type { DiscordObserver, DiscordCommandOutcome } from './observe';
 import type { ChannelAuthority } from '../authority';
 import { channelExternalIdentity } from '../authority';
@@ -37,6 +39,11 @@ export function createDiscordCommandExecutor(deps: {
     record: DiscordInboxRecord,
     fence: DiscordInboxFence,
     principal: ChannelRunPrincipal,
+  ) => Promise<DiscordPrivateReply>;
+  review?: (
+    scope: DiscordCommandScope,
+    channel: AgentChannelRecord,
+    runId?: string,
   ) => Promise<DiscordPrivateReply>;
   now?: () => number;
   observe?: DiscordObserver;
@@ -149,15 +156,15 @@ export function createDiscordCommandExecutor(deps: {
       action.kind === 'ask' ? action.prompt : 'control',
     );
     if (!admission) return unavailable(record);
-    const principal = await deps.authority.resolvePrincipal(
-      channel,
-      admission.actor,
-      record.dm ? admission : undefined,
-    );
-    if (!principal) return record.dm ? unavailable(record) : link(identity, record, fence);
+    const principal = await deps.authority.resolvePrincipal(channel, admission.actor, admission);
+    if (!principal)
+      return record.dm || action.kind === 'review' || action.kind === 'decide'
+        ? unavailable(record)
+        : link(identity, record, fence);
     if (!(await deps.enabled())) return unavailable(record);
-    if (action.kind === 'ask') {
-      if (record.dm && !(await deps.dmEnabled?.())) return unavailable(record);
+    if (['ask', 'status', 'review', 'decide'].includes(action.kind)) {
+      if (action.kind === 'ask' && record.dm && !(await deps.dmEnabled?.()))
+        return unavailable(record);
       let usable = false;
       if (native?.kind === 'dm')
         usable = Boolean(
@@ -189,6 +196,9 @@ export function createDiscordCommandExecutor(deps: {
         native.source.authorId !== record.externalUserId
       )
         return unavailable(record);
+    }
+    if (action.kind === 'ask') {
+      if (!native) return unavailable(record);
       try {
         await deps.runs.admit(
           {
@@ -207,23 +217,27 @@ export function createDiscordCommandExecutor(deps: {
         if (error instanceof ChannelRunConflict && error.code === 'invalid_transition')
           return reply(record, 'conflict', {
             content: record.dm
-              ? 'This prompt is no longer authorized. Confirm your source guild account link and choose this agent in LibreChat again, then send a new /librechat ask.'
+              ? 'This prompt is no longer authorized. Reconnect your server account and choose this agent in LibreChat again, then send a new /librechat ask.'
               : 'This prompt is no longer authorized. Run /librechat link to confirm your account, then send a new /librechat ask.',
           });
         throw error;
       }
       return reply(record, 'queued', {
-        content: `Your prompt is queued. ${record.dm ? 'Replies are sent to this private DM.' : disclosure} Use /librechat status to check progress or /librechat cancel to stop the current run.`,
+        content: `Your request is queued. ${record.dm ? 'Replies are sent to this private DM.' : disclosure} Use /librechat status to check progress or /librechat cancel to stop the current request.`,
       });
     }
     const scope = { record, fence, principal };
+    if (action.kind === 'review' || action.kind === 'decide')
+      return deps.review
+        ? reply(record, 'reported', await deps.review(scope, channel))
+        : unavailable(record);
     if (action.kind === 'cancel') {
       const result = await deps.commands.cancel(scope, now());
       if (!result.ok) return unavailable(record);
       return reply(record, result.value.cancelled ? 'cancelled' : 'no_active_run', {
         content: result.value.cancelled
-          ? 'Cancellation requested for your run.'
-          : 'There is no active run to cancel in this channel.',
+          ? 'Stop requested. Waiting for the agent to confirm.'
+          : 'There is no active request to stop here.',
       });
     }
     if (action.kind === 'feedback')
@@ -234,18 +248,20 @@ export function createDiscordCommandExecutor(deps: {
     if (!latest.ok) return unavailable(record);
     if (!latest.value)
       return reply(record, 'no_retained_run', {
-        content: 'You have no retained run in this channel.',
+        content: 'You have no recent requests here.',
       });
     const run = latest.value;
+    if (run.state === 'requires_action' && deps.review)
+      return reply(record, 'reported', await deps.review(scope, channel, run.runId));
     const labels = {
       queued: 'queued',
       executing: 'running',
-      requires_action: 'waiting for your review in LibreChat',
+      requires_action: 'waiting for your review',
       delivering: 'sending its answer',
       delivered: 'completed',
       failed: 'failed',
       cancelled: 'cancelled',
-      blocked: 'waiting for delivery reconciliation',
+      blocked: 'waiting for delivery confirmation',
     };
     let path: string | undefined;
     if (run.state === 'requires_action' && run.responseId)
@@ -253,8 +269,8 @@ export function createDiscordCommandExecutor(deps: {
     else if (run.conversationId) path = `c/${encodeURIComponent(run.conversationId)}`;
     return reply(record, 'reported', {
       content: run.cancellationRequested
-        ? 'Cancellation has been requested for your run.'
-        : `Your latest run is ${labels[run.state]}.`,
+        ? 'Stop requested. Waiting for the agent to confirm.'
+        : `Your latest request is ${labels[run.state]}.`,
       ...(base && path
         ? {
             actions: [

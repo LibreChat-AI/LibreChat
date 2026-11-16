@@ -31,7 +31,16 @@ export type DiscordObservation =
   | { type: 'queue'; seconds: number }
   | {
       type: 'command';
-      action: 'ask' | 'link' | 'confirm' | 'status' | 'cancel' | 'feedback' | 'other';
+      action:
+        | 'ask'
+        | 'link'
+        | 'confirm'
+        | 'status'
+        | 'cancel'
+        | 'feedback'
+        | 'review'
+        | 'decide'
+        | 'other';
       outcome: DiscordCommandOutcome;
     };
 export type DiscordObserver = (observation: DiscordObservation) => void;

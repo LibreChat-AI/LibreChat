@@ -49,6 +49,13 @@ export function discordInteractionAction(event: DiscordInteraction): DiscordIngr
   return null;
 }
 
+/** Update only a Discord-signed private decision card; public review entry always creates a private reply. */
+function privateAcknowledgement(event: DiscordInteraction, action: DiscordIngressAction) {
+  if (event.type === 3 && action.kind === 'decide' && ((event.message?.flags ?? 0) & 64) === 64)
+    return { type: 6 };
+  return { type: 5, data: { flags: 64 } };
+}
+
 export interface DiscordWebhookDependencies {
   policy: Pick<
     DiscordChannelConfig,
@@ -156,7 +163,10 @@ export function createDiscordWebhook(
           event.type === 3 && event.data.component_type === 2
             ? parseDiscordControl(event.data.custom_id, event.message?.id)
             : discordInteractionAction(event);
-        if (action && ['ask', 'status', 'cancel', 'feedback'].includes(action.kind)) {
+        if (
+          action &&
+          ['ask', 'status', 'cancel', 'feedback', 'review', 'decide'].includes(action.kind)
+        ) {
           if (!deps.submitDm)
             return {
               status: 400,
@@ -178,7 +188,7 @@ export function createDiscordWebhook(
           );
           signal.throwIfAborted();
           return result === 'accepted'
-            ? { status: 200, body: { type: 5, data: { flags: 64 } }, outcome: result }
+            ? { status: 200, body: privateAcknowledgement(event, action), outcome: result }
             : {
                 status: result === 'capacity' ? 429 : 409,
                 body: { error: 'interaction_not_accepted' },
@@ -281,7 +291,7 @@ export function createDiscordWebhook(
           body: { error: 'interaction_not_accepted' },
           outcome: result,
         };
-      return { status: 200, body: { type: 5, data: { flags: 64 } }, outcome: 'accepted' };
+      return { status: 200, body: privateAcknowledgement(event, action), outcome: 'accepted' };
     },
   });
 }
