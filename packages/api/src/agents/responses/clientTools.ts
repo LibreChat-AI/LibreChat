@@ -405,8 +405,8 @@ export interface ClientToolHandoff {
   toolDefinitions: LCTool[];
   /**
    * The caller's `function` entries that reached the model. Hosted entries the
-   * server ignores are absent, and `strict` is dropped because the run has no
-   * way to enforce it -- so echoing this on the response describes the tools
+   * server ignores are absent, and `strict: false` is reported because the run has no
+   * way to enforce strict generation -- so echoing this on the response describes the tools
    * the run actually ran with rather than the request's ask.
    */
   appliedTools: FunctionTool[];
@@ -486,7 +486,12 @@ export function createClientToolHandoff({
     toolDefinitions,
     appliedTools: (tools ?? [])
       .filter((tool): tool is FunctionTool => isFunctionTool(tool) && names.has(tool.name))
-      .map(({ strict: _strict, ...applied }) => applied),
+      .map(({ strict: _strict, ...applied }) => ({
+        ...applied,
+        description: applied.description ?? null,
+        parameters: applied.parameters ?? EMPTY_PARAMETERS,
+        strict: false,
+      })),
     clientToolNames: names,
     wrapRunStep: (delegate) => createClientToolRunStepHandler({ delegate, clientToolNames: names }),
     wrapToolExecute: (delegate, onDeferred) =>
