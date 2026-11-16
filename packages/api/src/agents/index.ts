@@ -2,6 +2,7 @@ export * from './avatars';
 export * from './attachments';
 export * from './chain';
 export * from './callerCapabilities';
+export * from './certification';
 export * from './client';
 export * from './config';
 export * from './checkpointer';

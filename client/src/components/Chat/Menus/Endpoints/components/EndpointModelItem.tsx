@@ -8,6 +8,7 @@ import type { Endpoint } from '~/common';
 import { resolveProviderIcon } from '~/hooks/Endpoint/useProviderIcon';
 import { createEndpointIcon } from '~/hooks/Endpoint/useEndpoints';
 import { useModelSelectorContext } from '../ModelSelectorContext';
+import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import { CustomMenuItem as MenuItem } from '../CustomMenu';
 import useActiveItem from '../useActiveItem';
 import { useLocalize } from '~/hooks';
@@ -40,7 +41,8 @@ function EndpointModelItemComponent({
   setSize,
 }: EndpointModelItemProps) {
   const localize = useLocalize();
-  const { handleSelectModel, selectedValues, endpointsConfig } = useModelSelectorContext();
+  const { handleSelectModel, selectedValues, endpointsConfig, agentsMap } =
+    useModelSelectorContext();
   const {
     endpoint: selectedEndpoint,
     model: selectedModel,
@@ -53,6 +55,8 @@ function EndpointModelItemComponent({
 
   let modelName = modelId;
   const avatarUrl = endpoint?.modelIcons?.[modelId ?? ''] || null;
+  const isCertifiedAgent =
+    isAgentsEndpoint(endpoint.value) && agentsMap?.[modelId ?? '']?.is_certified === true;
 
   // Use custom names if available
   if (endpoint && modelId && isAgentsEndpoint(endpoint.value) && endpoint.agentNames?.[modelId]) {
@@ -124,7 +128,13 @@ function EndpointModelItemComponent({
     >
       <div className="flex w-full min-w-0 items-center gap-2 px-1 py-1">
         {renderAvatar()}
-        <span className="truncate">{modelName}</span>
+        <span className={cn('min-w-0 truncate', !isCertifiedAgent && 'flex-1')}>{modelName}</span>
+        {isCertifiedAgent && (
+          <>
+            <CertifiedIcon />
+            <span className="flex-1" aria-hidden="true" />
+          </>
+        )}
         {isGlobal && <EarthIcon className="text-surface-submit ms-1 size-4" />}
       </div>
       <button

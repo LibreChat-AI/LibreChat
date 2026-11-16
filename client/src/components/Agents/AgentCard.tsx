@@ -7,6 +7,7 @@ import AgentContact, { resolveAgentContact } from './AgentContact';
 import { getPlainDescription } from '~/components/ui/Description';
 import { cn, renderAgentAvatar } from '~/utils';
 import AgentCategoryBadge from './Category';
+import CertifiedIcon from './CertifiedIcon';
 import { useLocalize } from '~/hooks';
 
 interface AgentCardProps {
@@ -155,10 +156,12 @@ const AgentCard = memo(
             layout
             layoutId={agentMorphId('title', agent.id)}
             id={titleId}
-            className="text-text-primary mt-4 line-clamp-2 text-lg leading-6 font-semibold break-words"
+            aria-label={name}
+            className="text-text-primary mt-4 flex min-w-0 items-center gap-1.5 text-lg leading-6 font-semibold"
             {...shared}
           >
-            {name}
+            <span className="line-clamp-2 min-w-0">{name}</span>
+            {agent.is_certified === true && <CertifiedIcon className="pointer-events-auto" />}
           </motion.h2>
 
           {/* The blurb is the same copy the dialog shows in full, so it is

@@ -13,6 +13,8 @@ type MessageRowProps = {
   message?: TMessage;
   label: string;
   hoverLabel?: string | null;
+  /** Rendered right after the author name, e.g. a certified agent's badge. */
+  labelAdornment?: ReactNode;
   icon: ReactNode;
   children: ReactNode;
   footer: ReactNode;
@@ -53,10 +55,14 @@ function renderAuthorHeader({
   icon,
   label,
   hoverLabel,
+  labelAdornment,
   headerPrefix,
   timestamp,
   align,
-}: Pick<MessageRowProps, 'icon' | 'label' | 'hoverLabel' | 'headerPrefix' | 'timestamp'> & {
+}: Pick<
+  MessageRowProps,
+  'icon' | 'label' | 'hoverLabel' | 'labelAdornment' | 'headerPrefix' | 'timestamp'
+> & {
   align: 'start' | 'end';
 }) {
   return (
@@ -72,6 +78,9 @@ function renderAuthorHeader({
       </span>
       <span className="sr-only">{headerPrefix}</span>
       <HeaderLabel label={label} hoverLabel={hoverLabel} />
+      {labelAdornment != null && (
+        <span className="-ms-1 flex shrink-0 items-center select-text">{labelAdornment}</span>
+      )}
       {align === 'start' && (
         <MessageTimestamp value={timestamp} className="ms-auto shrink-0 font-normal" />
       )}
@@ -85,6 +94,7 @@ export default function MessageRow({
   icon,
   label,
   hoverLabel,
+  labelAdornment,
   footer,
   children,
   timestamp,
@@ -172,6 +182,7 @@ export default function MessageRow({
             icon,
             label,
             hoverLabel,
+            labelAdornment,
             headerPrefix,
             timestamp,
             align: isCreatedByUser ? 'end' : 'start',

@@ -50,6 +50,7 @@ export type AgentManagementResponse = Omit<
   id: string;
   provider: string;
   model: string | null;
+  is_certified: boolean;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -99,6 +100,16 @@ export type AgentManagementError = {
     details?: Array<{ path: Array<string | number>; message: string }>;
   };
 };
+
+export function stripAgentCertificationFromPayload(body: unknown): unknown {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return body;
+  }
+
+  const payload: Record<string, unknown> = { ...body };
+  delete payload.is_certified;
+  return payload;
+}
 
 /**
  * Agent Management accepts the browser-supported configuration fields, but unlike the
@@ -189,6 +200,7 @@ export const agentManagementResponseSchema: z.ZodType<AgentManagementResponse> =
     id: z.string().min(1),
     provider: z.string(),
     model: z.string().nullable(),
+    is_certified: z.boolean(),
     version: z.number().int().nonnegative(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
@@ -278,6 +290,7 @@ export function projectAgentManagementResponse(
     id: source.id,
     provider: source.provider,
     model: source.model,
+    is_certified: source.is_certified === true,
     version: getVersion(source),
     createdAt: toTimestamp(source.createdAt),
     updatedAt: toTimestamp(source.updatedAt),

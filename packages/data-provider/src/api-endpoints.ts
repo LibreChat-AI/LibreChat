@@ -427,6 +427,8 @@ export const mcp = {
 export const mcpServer = (serverName: string) => `${BASE_URL}/api/mcp/servers/${serverName}`;
 
 export const revertAgentVersion = (agent_id: string) => `${agents({ path: `${agent_id}/revert` })}`;
+export const agentCertification = (agent_id: string) =>
+  `${agents({ path: `${encodeURIComponent(agent_id)}/certification` })}`;
 
 export const files = () => `${BASE_URL}/api/files`;
 export const fileUpload = () => `${BASE_URL}/api/files`;

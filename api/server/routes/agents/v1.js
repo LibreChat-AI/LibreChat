@@ -1,9 +1,11 @@
 const express = require('express');
-const { generateCheckAccess } = require('@librechat/api');
+const { logger, SystemCapabilities } = require('@librechat/data-schemas');
+const { generateCheckAccess, createAgentCertificationHandler } = require('@librechat/api');
 const { PermissionTypes, Permissions, PermissionBits } = require('librechat-data-provider');
 const { configMiddleware, canAccessAgentResource } = require('~/server/middleware');
+const { requireCapability } = require('~/server/middleware/roles/capabilities');
 const v1 = require('~/server/controllers/agents/v1');
-const { getRoleByName } = require('~/models');
+const { getRoleByName, setAgentCertification } = require('~/models');
 const actions = require('./actions');
 const tools = require('./tools');
 
@@ -166,6 +168,22 @@ router.post(
   }),
   configMiddleware,
   v1.revertAgentVersion,
+);
+
+/**
+ * Certifies or uncertifies an agent (manage:agents required, and
+ * `interface.agentCertification.enabled` in librechat.yaml).
+ * @route PUT /agents/:id/certification
+ * @param {string} req.params.id - Agent identifier.
+ * @param {boolean} req.body.is_certified - The new certification state.
+ * @returns {{ id: string, is_certified: boolean }} 200 - success response - application/json
+ */
+router.put(
+  '/:id/certification',
+  checkAgentAccess,
+  requireCapability(SystemCapabilities.MANAGE_AGENTS),
+  configMiddleware,
+  createAgentCertificationHandler({ setAgentCertification, logger }),
 );
 
 /**

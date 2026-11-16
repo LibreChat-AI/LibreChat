@@ -1099,6 +1099,10 @@ export function createAgentMethods(
     searchParameter: FilterQuery<IAgent>,
     versionIndex: number,
   ) => Promise<IAgent>;
+  setAgentCertification: (
+    id: string,
+    isCertified: boolean,
+  ) => Promise<{ id: string; is_certified: boolean } | null>;
   countPromotedAgents: () => Promise<number>;
   addAgentResourceFile: ({
     agent_id,
@@ -1241,7 +1245,7 @@ export function createAgentMethods(
         agentData.skills_enabled = false;
       }
     }
-    const { author: _author, ...versionData } = agentData;
+    const { author: _author, is_certified: _isCertified, ...versionData } = agentData;
     const timestamp = new Date();
     const initialAgentData = {
       ...agentData,
@@ -1473,6 +1477,7 @@ export function createAgentMethods(
     if (currentAgent) {
       const currentObject = currentAgent.toObject() as unknown as Record<string, unknown>;
       const { __v, _id, id: __id, versions, author: _author, ...versionData } = currentObject;
+      delete versionData.is_certified;
       const { $push, $pull, $addToSet, $unset, ...directUpdates } = updateData;
 
       /** Self-heal: drop allowlist ids whose skill no longer exists in the
@@ -2077,6 +2082,7 @@ export function createAgentMethods(
       category: 1,
       support_contact: 1,
       is_promoted: 1,
+      is_certified: 1,
     };
 
     if (includeSkillConfig) {
@@ -2664,6 +2670,7 @@ export function createAgentMethods(
     delete revertToVersion.versions;
     delete revertToVersion.author;
     delete revertToVersion.updatedBy;
+    delete revertToVersion.is_certified;
 
     /** Version snapshots can predate skill deletions; restoring one verbatim
      *  would resurrect dangling allowlist ids that scope the catalog to
@@ -2731,6 +2738,26 @@ export function createAgentMethods(
   }
 
   /**
+   * Sets central certification without creating a version, so history never carries it and a
+   * revert cannot restore it. Returns `null` when no agent matches the id in the current tenant.
+   */
+  async function setAgentCertification(
+    id: string,
+    isCertified: boolean,
+  ): Promise<{ id: string; is_certified: boolean } | null> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    const updated = await Agent.findOneAndUpdate(
+      { id },
+      { $set: { is_certified: isCertified } },
+      { new: true, projection: { id: 1, is_certified: 1 } },
+    ).lean<IAgent>();
+    if (!updated) {
+      return null;
+    }
+    return { id: updated.id, is_certified: updated.is_certified === true };
+  }
+
+  /**
    * Counts the number of promoted agents.
    */
   async function countPromotedAgents(): Promise<number> {
@@ -2778,6 +2805,7 @@ export function createAgentMethods(
     deleteAgent,
     deleteUserAgents,
     revertAgentVersion,
+    setAgentCertification,
     countPromotedAgents,
     addAgentResourceFile,
     getListAgentsByAccess,

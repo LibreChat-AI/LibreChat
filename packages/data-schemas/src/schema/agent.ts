@@ -162,6 +162,11 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
       default: false,
       index: true,
     },
+    is_certified: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     /** MCP server names extracted from tools for efficient querying */
     mcpServerNames: {
       type: [String],

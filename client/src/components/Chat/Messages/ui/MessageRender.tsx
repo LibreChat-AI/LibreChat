@@ -21,6 +21,7 @@ import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
+import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import SubRow from '~/components/Chat/Messages/SubRow';
 import { MessageContext } from '~/Providers';
 import WakeupRow from './WakeupRow';
@@ -172,6 +173,11 @@ const MessageRender = memo(function MessageRender({
       id={msg.messageId}
       icon={<MessageIcon iconData={iconData} assistant={assistant} agent={agent} />}
       label={messageLabel ?? ''}
+      labelAdornment={
+        !msg.isCreatedByUser && agent?.is_certified === true && !hasConfiguredSender ? (
+          <CertifiedIcon />
+        ) : undefined
+      }
       hoverLabel={getHeaderHoverLabel(
         hasConfiguredSender,
         agent?.model,

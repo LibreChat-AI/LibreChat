@@ -31,6 +31,7 @@ import DescriptionWords from './DescriptionWords';
 import { cn, renderAgentAvatar } from '~/utils';
 import ResetApprovals from './ResetApprovals';
 import AgentCategoryBadge from './Category';
+import CertifiedIcon from './CertifiedIcon';
 import CopyLink from './CopyLink';
 
 interface AgentDetailContentProps {
@@ -313,9 +314,13 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                     focusOutline="hidden"
                     ref={titleRef}
                     tabIndex={-1}
-                    className="text-2xl leading-tight font-semibold break-words sm:text-3xl"
+                    aria-label={agent.name?.trim() || localize('com_ui_agent')}
+                    className="flex min-w-0 items-center gap-2 text-2xl leading-tight font-semibold sm:text-3xl"
                   >
-                    {agent.name?.trim() || localize('com_ui_agent')}
+                    <span className="min-w-0 truncate">
+                      {agent.name?.trim() || localize('com_ui_agent')}
+                    </span>
+                    {agent.is_certified === true && <CertifiedIcon />}
                   </OGDialogTitle>
                 </motion.div>
                 {/* Sanitized markup can carry blocks of its own, so the rich branch is a

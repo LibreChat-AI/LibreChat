@@ -24,6 +24,7 @@ import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
+import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import { showThinkingAtom } from '~/store/showThinking';
 import SubRow from '~/components/Chat/Messages/SubRow';
 import { AuthorContext } from '~/Providers';
@@ -172,6 +173,11 @@ const ContentRender = memo(function ContentRender({
       id={msg.messageId}
       icon={author.icon}
       label={author.label}
+      labelAdornment={
+        !msg.isCreatedByUser && agent?.is_certified === true && !hasConfiguredSender ? (
+          <CertifiedIcon />
+        ) : undefined
+      }
       hoverLabel={getHeaderHoverLabel(
         hasConfiguredSender,
         agent?.model,

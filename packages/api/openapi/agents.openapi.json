@@ -170,6 +170,15 @@
               "minLength": 1,
               "maxLength": 512
             }
+          },
+          {
+            "in": "query",
+            "name": "is_certified",
+            "description": "When true, return only centrally certified agents.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "responses": {
@@ -3832,6 +3841,10 @@
               "string",
               "null"
             ]
+          },
+          "is_certified": {
+            "type": "boolean",
+            "description": "Whether this agent is centrally certified."
           },
           "id": {
             "type": "string",

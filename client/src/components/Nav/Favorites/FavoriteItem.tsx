@@ -4,6 +4,7 @@ import type { Agent, TModelSpec, TEndpointsConfig } from 'librechat-data-provide
 import type { FavoriteModel } from '~/store/favorites';
 import SpecIcon from '~/components/Chat/Menus/Endpoints/components/SpecIcon';
 import UnpinButton from '~/components/Conversations/UnpinButton';
+import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import MinimalIcon from '~/components/Endpoints/MinimalIcon';
 import { useFavorites, useLocalize } from '~/hooks';
 import { renderAgentAvatar } from '~/utils';
@@ -142,9 +143,17 @@ export default function FavoriteItem(props: FavoriteItemProps) {
       onKeyDown={handleKeyDown}
       data-testid="favorite-item"
     >
-      <div className="flex flex-1 items-center truncate pe-6">
+      <div className="flex min-w-0 flex-1 items-center pe-6">
         {renderIcon()}
-        <span className="truncate">{name}</span>
+        {props.type === 'agent' && props.item.is_certified === true ? (
+          <>
+            <span className="ms-0 min-w-0 truncate">{name}</span>
+            <CertifiedIcon className="ms-1.5" />
+            <span className="flex-1" aria-hidden="true" />
+          </>
+        ) : (
+          <span className="min-w-0 flex-1 truncate">{name}</span>
+        )}
       </div>
 
       {/* Inset by the same 4px the 28px control leaves above and below it in a

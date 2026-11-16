@@ -9,6 +9,7 @@ import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { getIconEndpoint, getEntity, getModelSpec } from '~/utils';
 import { useLocalize, useAuthContext, useGreeting } from '~/hooks';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import AgentContact from '~/components/Agents/AgentContact';
 import ConvoIcon from '~/components/Endpoints/ConvoIcon';
 
@@ -175,7 +176,9 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
             )}
           </div>
           {name ? (
-            <div className="flex flex-col items-center gap-0 p-2">
+            <div
+              className={`flex items-center p-2 ${getTextSizeClass(name)} ${selectedAgent?.is_certified === true ? 'flex-row gap-2' : 'flex-col gap-0'}`}
+            >
               <SplitText
                 key={`split-text-${name}`}
                 text={name}
@@ -189,6 +192,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
                 rootMargin="0px"
                 onLineCountChange={handleLineCountChange}
               />
+              {selectedAgent?.is_certified === true && <CertifiedIcon />}
             </div>
           ) : (
             <SplitText

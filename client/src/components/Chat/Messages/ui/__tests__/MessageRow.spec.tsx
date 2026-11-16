@@ -300,4 +300,27 @@ describe('MessageRow', () => {
 
     expect(screen.getByLabelText('Assistant message')).toHaveClass('max-w-full');
   });
+
+  it('renders a label adornment right after the author name', () => {
+    render(
+      <MessageRow
+        id="message-1"
+        label="Certified Agent"
+        labelAdornment={<span role="img" aria-label="Certified" />}
+        icon={<span data-testid="message-icon" />}
+        footer={<div data-testid="message-actions" />}
+        ariaLabel="Assistant message"
+        isCreatedByUser={false}
+      >
+        {MESSAGE_BODY}
+      </MessageRow>,
+    );
+
+    const heading = screen.getByRole('heading', { level: 2 });
+    const name = screen.getByText('Certified Agent');
+    const badge = screen.getByRole('img', { name: 'Certified' });
+    expect(heading).toContainElement(badge);
+    expect(name.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(badge.parentElement?.previousElementSibling).toBe(name);
+  });
 });

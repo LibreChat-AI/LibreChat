@@ -764,9 +764,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           model: 'gpt-4',
           avatar: { filepath: 'avatars/managed.png', source: 'local' },
           conversation_starters: ['Help me get started'],
+          is_certified: true,
         });
 
       expect(createdResponse.status).toBe(201);
+      expect(createdResponse.body.is_certified).toBe(false);
       expect(createdResponse.body).toEqual(
         expect.objectContaining({
           id: expect.stringMatching(/^agent_/),
@@ -836,6 +838,14 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         },
       );
 
+      await tenantStorage.run(
+        { tenantId },
+        () =>
+          Agent.updateOne(
+            { id: createdResponse.body.id, tenantId },
+            { $set: { is_certified: true } },
+          ),
+      );
       const updatedResponse = await request(app)
         .patch(`/api/agents/v1/agents/${createdResponse.body.id}`)
         .set('Authorization', 'Bearer valid-token')
@@ -843,6 +853,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           name: 'Updated Managed Agent',
           avatar: null,
           conversation_starters: [],
+          is_certified: false,
         });
 
       expect(updatedResponse.status).toBe(200);
@@ -851,6 +862,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           id: createdResponse.body.id,
           name: 'Updated Managed Agent',
           description: 'Description that remains unchanged',
+          is_certified: true,
           avatar: null,
           conversation_starters: [],
           version: 2,
@@ -877,6 +889,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(created.tenantId).toBe(tenantId);
       expect(created.author.toString()).toBe(userId);
       expect(created.name).toBe('Updated Managed Agent');
+      expect(created.is_certified).toBe(true);
       expect(created.description).toBe('Description that remains unchanged');
       expect(created.avatar).toBeNull();
       expect(created.conversation_starters).toEqual([]);
@@ -1479,6 +1492,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         provider: 'azureOpenAI',
         model: 'gpt-5.5',
         author: mockReq.user.id,
+        is_certified: true,
         model_parameters: {
           useResponsesApi: true,
           temperature: 0.7,
@@ -1493,6 +1507,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.status).toHaveBeenCalledWith(200);
       const response = mockRes.json.mock.calls[0][0];
       expect(response.model_parameters).toEqual({ useResponsesApi: true });
+      expect(response.is_certified).toBe(true);
       expect(response.model_parameters.temperature).toBeUndefined();
       expect(response.model_parameters.apiKey).toBeUndefined();
     });
@@ -3583,6 +3598,38 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       listSpy.mockRestore();
     });
 
+    test('filters the list to certified agents alongside category and search', async () => {
+      const listSpy = jest.spyOn(db, 'getListAgentsByAccess').mockResolvedValue({
+        object: 'list',
+        data: [],
+        first_id: null,
+        last_id: null,
+        has_more: false,
+        after: null,
+      });
+      mockReq.query = {
+        category: 'productivity',
+        search: 'support',
+        is_certified: 'true',
+      };
+
+      try {
+        await getListAgentsHandler(mockReq, mockRes);
+
+        expect(listSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            otherParams: expect.objectContaining({
+              category: 'productivity',
+              is_certified: true,
+              $or: expect.any(Array),
+            }),
+          }),
+        );
+      } finally {
+        listSpy.mockRestore();
+      }
+    });
+
     test('lets a manage:agents role discover unshared agents by search', async () => {
       await db.grantCapability({
         principalType: PrincipalType.ROLE,
@@ -3881,6 +3928,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           'description',
           'edges',
           'id',
+          'is_certified',
           'isEditable',
           'is_promoted',
           'name',
@@ -3898,6 +3946,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           author: userA.toString(),
           category: 'general',
           is_promoted: true,
+          is_certified: false,
           tools: ['execute_code'],
           edges: [{ from: agentA1.id, to: agentA2.id }],
           subagents: { enabled: true, agent_ids: [agentA2.id] },
@@ -6314,6 +6363,29 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
     });
 
     describe('duplicateAgentHandler', () => {
+      test('does not copy certification to the duplicate', async () => {
+        const source = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Certified source',
+          provider: 'openai',
+          model: 'gpt-4',
+          is_certified: true,
+        });
+
+        mockReq.params = { id: source.id };
+
+        await duplicateAgentHandler(mockReq, mockRes);
+
+        const duplicateId = mockRes.json.mock.calls[0][0].agent.id;
+        const [original, duplicate] = await Promise.all([
+          Agent.findOne({ id: source.id }).lean(),
+          Agent.findOne({ id: duplicateId }).lean(),
+        ]);
+        expect(original.is_certified).toBe(true);
+        expect(duplicate.is_certified).toBe(false);
+      });
+
       test('copies the link verbatim, with no extra ACL check on the write', async () => {
         const { groupId } = await createPromptGroupFixture();
         // No VIEW grant: duplication must succeed regardless.

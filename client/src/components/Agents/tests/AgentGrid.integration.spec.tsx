@@ -15,6 +15,7 @@ jest.mock('librechat-data-provider', () => {
   return { ...actual, dataService: { ...actual.dataService, getMarketplaceAgents: jest.fn() } };
 });
 jest.mock('~/hooks', () => ({
+  useAgentCertification: () => ({ enabled: true, description: 'Certified', canManage: false }),
   useLocalize: () => (key: string) => key,
   useAgentCategories: () => ({ categories: [] }),
 }));
@@ -54,7 +55,15 @@ const page = (agents: t.Agent[], after?: string): t.AgentListResponse => ({
   has_more: after != null,
   after,
 });
-function Harness({ searchQuery = '', mine }: { searchQuery?: string; mine?: 0 | 1 }) {
+function Harness({
+  searchQuery = '',
+  mine,
+  certified,
+}: {
+  searchQuery?: string;
+  mine?: 0 | 1;
+  certified?: boolean;
+}) {
   const scrollElementRef = useRef<HTMLDivElement>(null);
   return (
     <div ref={scrollElementRef} data-testid="viewport">
@@ -62,6 +71,7 @@ function Harness({ searchQuery = '', mine }: { searchQuery?: string; mine?: 0 | 
         category="all"
         searchQuery={searchQuery}
         mine={mine}
+        certified={certified}
         scrollElementRef={scrollElementRef}
       />
     </div>
@@ -117,9 +127,25 @@ describe('AgentGrid pagination', () => {
         </QueryClientProvider>,
       );
     });
+
     expect(screen.getByRole('button', { name: 'Agent 0' })).toBeInTheDocument();
     expect(screen.queryByRole('status', { name: 'com_agents_loading' })).not.toBeInTheDocument();
     expect(marketplace).toHaveBeenCalledTimes(2);
+  });
+
+  it('includes certification in the marketplace query scope', async () => {
+    marketplace.mockResolvedValueOnce(page([]));
+    render(
+      <QueryClientProvider client={client}>
+        <Harness certified searchQuery="invoice" />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(marketplace).toHaveBeenCalledWith(
+        expect.objectContaining({ is_certified: true, search: 'invoice' }),
+      ),
+    );
   });
 
   it('fills the visible viewport with skeletons and refits them when it changes', async () => {

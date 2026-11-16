@@ -28,6 +28,7 @@ const {
   resolvePullRequestCapabilities,
   resolvePreLoginAppConfig,
   withSafePolicyLinks,
+  getAgentCertificationStartupConfig,
 } = require('@librechat/api');
 const {
   DEFAULT_MCP_APP_CSP_LIMITS,
@@ -275,6 +276,12 @@ router.get('/', async function (req, res) {
 
     const endpointsDropParamsMap = getEndpointsDropParamsMap(appConfig?.endpoints);
 
+    /** Started before the Langfuse check so the two capability reads overlap. */
+    const certificationAccessPromise = getAgentCertificationStartupConfig(
+      { hasCapability, logger },
+      appConfig,
+      req.user,
+    );
     const balanceConfig = getBalanceConfig(appConfig);
     const cloudFront = buildCloudFrontStartupConfig();
     const langfuseFanoutEnabled = isLangfuseFanoutEnabled();
@@ -311,10 +318,13 @@ router.get('/', async function (req, res) {
       }
     }
 
+    const certificationAccess = await certificationAccessPromise;
+
     /** @type {TStartupConfig} */
     const payload = {
       ...preLoginPayload,
       ...publicSharePayload,
+      ...certificationAccess,
       ...buildPostLoginPayload(appConfig),
       ...getConversationTitleCapabilities(appConfig?.interfaceConfig),
       conversationListLimits,

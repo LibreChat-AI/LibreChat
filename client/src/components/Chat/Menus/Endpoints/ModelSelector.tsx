@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { TooltipAnchor } from '@librechat/client';
-import { getConfigDefaults } from 'librechat-data-provider';
+import { EModelEndpoint, getConfigDefaults } from 'librechat-data-provider';
 import type { ModelSelectorProps } from '~/common';
 import {
   renderModelSpecs,
@@ -11,6 +11,7 @@ import {
 import { ModelSelectorProvider, useModelSelectorContext } from './ModelSelectorContext';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
 import { ModelSelectorChatProvider } from './ModelSelectorChatContext';
+import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import { getSelectedIcon, getDisplayValue } from './utils';
 import { CustomMenu as Menu } from './CustomMenu';
 import DialogManager from './DialogManager';
@@ -41,6 +42,11 @@ function ModelSelectorContent() {
     onOpenChange,
     keyDialogEndpoint,
   } = useModelSelectorContext();
+  const selectedIsCertifiedAgent =
+    !selectedValues.modelSpec &&
+    selectedValues.endpoint === EModelEndpoint.agents &&
+    selectedValues.model != null &&
+    agentsMap?.[selectedValues.model]?.is_certified === true;
 
   const selectedIcon = useMemo(
     () =>
@@ -82,6 +88,7 @@ function ModelSelectorContent() {
             </div>
           )}
           <span className="truncate text-start">{selectedDisplayValue}</span>
+          {selectedIsCertifiedAgent && <CertifiedIcon static />}
         </button>
       }
     />
@@ -89,36 +96,37 @@ function ModelSelectorContent() {
 
   return (
     <div className="relative flex max-w-[60vw] min-w-0 flex-col items-center gap-2 sm:max-w-xs">
-      <Menu
-        values={selectedValues}
-        onValuesChange={(values: Record<string, any>) => {
-          setSelectedValues({
-            endpoint: values.endpoint || '',
-            model: values.model || '',
-            modelSpec: values.modelSpec || '',
-          });
-        }}
-        onSearch={(value) => setSearchValue(value)}
-        combobox={<input id="model-search" placeholder=" " />}
-        comboboxLabel={localize('com_endpoint_search_models')}
-        trigger={trigger}
-      >
-        {searchResults ? (
-          renderSearchResults(searchResults, localize, searchValue)
-        ) : (
-          <>
-            {/* Render ungrouped modelSpecs (no group field) */}
-            {renderModelSpecs(
-              modelSpecs?.filter((spec) => !spec.group) || [],
-              selectedValues.modelSpec || '',
+      <div className="flex w-full min-w-0 items-center gap-1">
+        <div className="min-w-0 flex-1">
+          <Menu
+            values={selectedValues}
+            onValuesChange={(values: Record<string, any>) => {
+              setSelectedValues({
+                endpoint: values.endpoint || '',
+                model: values.model || '',
+                modelSpec: values.modelSpec || '',
+              });
+            }}
+            onSearch={(value) => setSearchValue(value)}
+            combobox={<input id="model-search" placeholder=" " />}
+            comboboxLabel={localize('com_endpoint_search_models')}
+            trigger={trigger}
+          >
+            {searchResults ? (
+              renderSearchResults(searchResults, localize, searchValue)
+            ) : (
+              <>
+                {renderModelSpecs(
+                  modelSpecs?.filter((spec) => !spec.group) || [],
+                  selectedValues.modelSpec || '',
+                )}
+                {renderEndpoints(mappedEndpoints ?? [])}
+                {renderCustomGroups(modelSpecs || [], mappedEndpoints ?? [])}
+              </>
             )}
-            {/* Render endpoints (will include grouped specs matching endpoint names) */}
-            {renderEndpoints(mappedEndpoints ?? [])}
-            {/* Render custom groups (specs with group field not matching any endpoint) */}
-            {renderCustomGroups(modelSpecs || [], mappedEndpoints ?? [])}
-          </>
-        )}
-      </Menu>
+          </Menu>
+        </div>
+      </div>
       <DialogManager
         keyDialogOpen={keyDialogOpen}
         onOpenChange={onOpenChange}

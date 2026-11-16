@@ -3183,6 +3183,14 @@ export const interfaceSchema = z
         retryDelaysMs: z.array(z.number().int().min(0).max(600_000)).max(20).optional(),
       })
       .optional(),
+    /** Central certification of agents. Off hides every badge, the marketplace filter and the
+     *  admin control; `description` replaces the badge's default tooltip text. */
+    agentCertification: z
+      .object({
+        enabled: z.boolean().optional(),
+        description: z.string().trim().max(300).optional(),
+      })
+      .optional(),
     fileSearch: z.boolean().optional(),
     fileCitations: z.boolean().optional(),
     traceViewer: traceViewerSchema.optional(),
@@ -3403,6 +3411,9 @@ export const interfaceSchema = z
     },
     marketplace: {
       use: false,
+    },
+    agentCertification: {
+      enabled: false,
     },
     mcpServers: {
       use: true,
@@ -3632,6 +3643,9 @@ export type TStartupConfig = {
    *  `POST /prompts/sync` route requires in addition to Langfuse settings access. Gates the
    *  "Sync prompts" action in the connection tab; absent (falsy) for an older server. */
   langfusePromptManageAccess?: boolean;
+  /** Whether this user holds `manage:agents` while `interface.agentCertification` is enabled,
+   *  which is what `PUT /agents/:id/certification` requires. Absent when certification is off. */
+  canManageAgentCertification?: boolean;
   insightsEnabled?: boolean;
   /** Whether pull requests are active (on unless turned off, with a token and a repository scope);
    *  the header does not ask for a pull request without it. */

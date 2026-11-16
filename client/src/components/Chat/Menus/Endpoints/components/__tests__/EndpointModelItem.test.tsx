@@ -9,12 +9,14 @@ let mockSelectedValues: SelectedValues;
 const mockEndpointsConfig = {
   OpenRouter: { order: 1, providerId: ProviderId.openrouter },
 } as unknown as TEndpointsConfig;
+let mockAgentsMap: Record<string, { is_certified?: boolean }> | undefined;
 
 jest.mock('~/components/Chat/Menus/Endpoints/ModelSelectorContext', () => ({
   useModelSelectorContext: () => ({
     handleSelectModel: mockHandleSelectModel,
     selectedValues: mockSelectedValues,
     endpointsConfig: mockEndpointsConfig,
+    agentsMap: mockAgentsMap,
   }),
 }));
 
@@ -31,6 +33,7 @@ jest.mock('~/components/Chat/Menus/Endpoints/CustomMenu', () => {
 });
 
 jest.mock('~/hooks', () => ({
+  useAgentCertification: () => ({ enabled: true, description: 'Certified', canManage: false }),
   useLocalize: () => (key: string) => key,
 }));
 
@@ -61,6 +64,7 @@ const baseEndpoint: Endpoint = {
 describe('EndpointModelItem', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAgentsMap = undefined;
   });
 
   it('renders checkmark when model and endpoint match with no active spec', () => {
@@ -141,5 +145,16 @@ describe('EndpointModelItem', () => {
       );
       expect(screen.queryByRole('img', { name: 'OpenAI', hidden: true })).not.toBeInTheDocument();
     });
+  });
+
+  it('shows the certification badge next to certified agent options', () => {
+    mockSelectedValues = { endpoint: 'agents', model: 'agent-1', modelSpec: '' };
+    mockAgentsMap = { 'agent-1': { is_certified: true } };
+    renderItem({
+      modelId: 'agent-1',
+      endpoint: { ...baseEndpoint, value: 'agents', label: 'Agents' },
+    });
+
+    expect(screen.getByRole('img', { name: 'com_ui_certified_agent' })).toBeInTheDocument();
   });
 });

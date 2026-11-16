@@ -2,12 +2,13 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { useSearchParams, useParams, useNavigate } from 'react-router-dom';
 import type t from 'librechat-data-provider';
+import { useAgentCertification, useDocumentTitle, useHasAccess, useLocalize } from '~/hooks';
 import { useGetEndpointsQuery, useGetAgentCategoriesQuery } from '~/data-provider';
 import SortDropdown, { SORT_OPTIONS, DEFAULT_SORT_OPTION } from './SortDropdown';
-import { useDocumentTitle, useHasAccess, useLocalize } from '~/hooks';
 import MarketplaceAdminSettings from './MarketplaceAdminSettings';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
+import CertifiedFilterToggle from './CertifiedFilterToggle';
 import { SidePanelGroup } from '~/components/SidePanel';
 import MineFilterToggle from './MineFilterToggle';
 import CategoryTabs from './CategoryTabs';
@@ -33,6 +34,9 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
       : DEFAULT_SORT_OPTION;
   }, [searchParams]);
   const mine: 0 | 1 = searchParams.get('mine') === '1' ? 1 : 0;
+  const { enabled: certificationEnabled } = useAgentCertification();
+  /** A shared `?is_certified=true` link keeps nothing filtered once the feature is off. */
+  const certified = certificationEnabled && searchParams.get('is_certified') === 'true';
 
   useDocumentTitle(`${localize('com_agents_marketplace')} | LibreChat`);
   useGetEndpointsQuery();
@@ -108,6 +112,16 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
     setSearchParams(params);
   };
 
+  const handleCertifiedChange = (checked: boolean) => {
+    const params = new URLSearchParams(searchParams);
+    if (checked) {
+      params.set('is_certified', 'true');
+    } else {
+      params.delete('is_certified');
+    }
+    setSearchParams(params);
+  };
+
   const hasAccessToMarketplace = useHasAccess({
     permissionType: PermissionTypes.MARKETPLACE,
     permission: Permissions.USE,
@@ -146,13 +160,21 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
               <MarketplaceAdminSettings />
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 pb-3">
-              <div className="min-w-0 flex-1 basis-full lg:basis-0">
-                <CategoryTabs
-                  categories={categoriesQuery.data || []}
-                  activeTab={activeCategory}
-                  isLoading={categoriesQuery.isLoading}
-                  onChange={handleTabChange}
-                />
+              <div className="flex min-w-0 flex-1 basis-full items-center gap-1.5 lg:basis-0">
+                <div className="min-w-0 flex-1">
+                  <CategoryTabs
+                    categories={categoriesQuery.data || []}
+                    activeTab={activeCategory}
+                    isLoading={categoriesQuery.isLoading}
+                    onChange={handleTabChange}
+                  />
+                </div>
+                {certificationEnabled && (
+                  <CertifiedFilterToggle
+                    checked={certified}
+                    onCheckedChange={handleCertifiedChange}
+                  />
+                )}
               </div>
               <div className="ms-auto flex shrink-0 items-center gap-1.5">
                 <MineFilterToggle checked={mine === 1} onCheckedChange={handleMineChange} />
@@ -176,6 +198,7 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
               scrollElementRef={scrollContainerRef}
               sort={sort}
               mine={mine}
+              certified={certified}
             />
           </div>
         </main>

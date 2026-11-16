@@ -34,6 +34,7 @@ interface ControlComboboxProps {
   selectPlaceholder?: string;
   isCollapsed: boolean;
   SelectIcon?: React.ReactNode;
+  selectedRightAdornment?: React.ReactNode;
   containerClassName?: string;
   iconClassName?: string;
   showCarat?: boolean;
@@ -86,6 +87,7 @@ function ControlCombobox({
   containerClassName,
   isCollapsed,
   SelectIcon,
+  selectedRightAdornment,
   showCarat,
   className,
   disabled,
@@ -115,6 +117,7 @@ function ControlCombobox({
     value: option.value as string | undefined,
     label: option.label,
     icon: option.icon,
+    rightAdornment: option.rightAdornment,
   });
 
   const combobox = Ariakit.useComboboxStore({
@@ -212,7 +215,7 @@ function ControlCombobox({
   return (
     <div
       className={cn(
-        'flex w-full items-center justify-center px-1',
+        'flex w-full items-center justify-center gap-1 px-1',
         variant === 'field' && 'px-0',
         containerClassName,
       )}
@@ -232,7 +235,11 @@ function ControlCombobox({
           'bg-surface-secondary flex items-center justify-center gap-2 rounded-full',
           'text-text-primary hover:bg-surface-tertiary',
           'border-border-control border',
-          isCollapsed ? 'h-9 w-9' : 'h-9 w-full rounded-xl px-3 py-2 text-sm',
+          isCollapsed
+            ? 'h-9 w-9'
+            : selectedRightAdornment != null
+              ? 'h-9 min-w-0 flex-1 rounded-xl px-3 py-2 text-sm'
+              : 'h-9 w-full rounded-xl px-3 py-2 text-sm',
           variant === 'field' && cn(fieldControl, 'hover:bg-surface-hover justify-start'),
           className,
         )}
@@ -243,13 +250,19 @@ function ControlCombobox({
         {!isCollapsed && (
           <>
             <span
-              className="grow truncate text-start"
+              className={cn('truncate text-start', selectedRightAdornment == null && 'grow')}
               title={(displayValue != null ? displayValue : selectedValue) || undefined}
             >
               {displayValue != null
                 ? displayValue || selectPlaceholder
                 : selectedValue || selectPlaceholder}
             </span>
+            {selectedRightAdornment != null && (
+              <>
+                <span className="flex shrink-0 items-center">{selectedRightAdornment}</span>
+                <span className="grow" aria-hidden="true" />
+              </>
+            )}
             {SelectIcon != null && iconSide === 'right' && (
               <div className={selectIconClassName}>{SelectIcon}</div>
             )}
@@ -311,7 +324,7 @@ function ControlCombobox({
               itemSize={ROW_HEIGHT * remScale}
               overscan={5}
             >
-              {({ value, icon, label, ...item }) => (
+              {({ value, icon, label, rightAdornment, ...item }) => (
                 <Ariakit.ComboboxItem
                   key={item.id}
                   {...item}
@@ -325,7 +338,17 @@ function ControlCombobox({
                   {icon != null && iconSide === 'left' && (
                     <div className={optionIconClassName}>{icon}</div>
                   )}
-                  <span className="grow truncate text-start">{label}</span>
+                  <span
+                    className={cn('min-w-0 truncate text-start', rightAdornment == null && 'grow')}
+                  >
+                    {label}
+                  </span>
+                  {rightAdornment != null && (
+                    <>
+                      <span className="ms-1.5 flex shrink-0 items-center">{rightAdornment}</span>
+                      <span className="grow" aria-hidden="true" />
+                    </>
+                  )}
                   {icon != null && iconSide === 'right' && (
                     <div className={optionIconClassName}>{icon}</div>
                   )}

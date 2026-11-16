@@ -5,10 +5,13 @@ import type { AgentForm } from '~/common';
 import { ResolvedProviderIcon } from '~/components/Endpoints/ResolvedProviderIcon';
 import AgentCategorySelector from './AgentCategorySelector';
 import { useLocalize, useAgentCapabilities } from '~/hooks';
+import { useGetAgentByIdQuery } from '~/data-provider';
+import AgentCertification from './AgentCertification';
 import { useAgentFileEntries } from './Tools/hooks';
 import { useAgentPanelContext } from '~/Providers';
 import { useProviderIcon } from '~/hooks/Endpoint';
 import ToolsSection from './Tools/ToolsSection';
+import { isEphemeralAgent } from '~/common';
 import { validateEmail, cn } from '~/utils';
 import Instructions from './Instructions';
 import FileContext from './FileContext';
@@ -39,6 +42,9 @@ export default function AgentConfig({
   const agent = useWatch({ control, name: 'agent' });
   const agent_id = useWatch({ control, name: 'id' });
   const { contextFiles } = useAgentFileEntries();
+  /** Not a form field: the certification mutation patches this cached view directly. */
+  const { data: savedAgent } = useGetAgentByIdQuery(agent_id);
+  const isCertified = savedAgent?.is_certified === true;
 
   const providerValue = typeof provider === 'string' ? provider : provider?.value;
   const { provider: providerId, imageURL } = useProviderIcon({
@@ -170,6 +176,11 @@ export default function AgentConfig({
 
       {/* CONVERSATION STARTERS */}
       <Starters />
+
+      {/* CERTIFICATION — admin-only, saved independently of the form */}
+      {agent_id && !isEphemeralAgent(agent_id) && (
+        <AgentCertification agentId={agent_id} isCertified={isCertified} />
+      )}
 
       {/* SUPPORT CONTACT */}
       <div className="mb-3 flex flex-col">

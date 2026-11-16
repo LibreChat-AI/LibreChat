@@ -59,6 +59,7 @@ export interface IAgent extends Omit<Document, 'model'> {
   category: string;
   support_contact?: ISupportContact;
   is_promoted?: boolean;
+  is_certified?: boolean;
   /** MCP server names extracted from tools for efficient querying */
   mcpServerNames?: string[];
   /** Per-tool configuration (defer_loading, allowed_callers, run_in_background, describe_intent) */
