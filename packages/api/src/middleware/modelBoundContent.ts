@@ -70,6 +70,7 @@ import { extractMessageContent, snapshotExternalMessages } from '../protection/a
 import { ContentTraversalLimitError } from '../protection/adapters/nested';
 import { ContentFilterError, isContentFilterError } from './contentFilter';
 import { createConfiguredContentInspector } from '../protection/runtime';
+import { projectAgentFileInspection } from '../protection/metadata';
 import { aggregateAuditFindingsSync } from '../protection/audit';
 
 export type ModelBoundProviderAttribution = 'user' | 'model' | 'tool' | 'synthetic';
@@ -3879,7 +3880,7 @@ function inspectModelBoundContent(
     }
     assertInspectableFileInput(
       input.filters,
-      omitResolvedCanonicalFileLocators(agent, agentFilesById, {
+      omitResolvedCanonicalFileLocators(projectAgentFileInspection(agent), agentFilesById, {
         onTraversalFailure: input.onTraversalFailure,
         messageCount: input.storedMessages?.length ?? 0,
       }),
