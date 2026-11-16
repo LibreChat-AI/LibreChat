@@ -4,10 +4,12 @@ import type { Server } from 'node:http';
 import type { SocketConnection } from './socket';
 import { loadBootstrap, resolveGatewayConfig } from './config';
 import { DiscordRuntimeClient } from './discord/discovery';
+import { createDiscordTelemetry } from './discord/observe';
 import { ChannelWorker, recoveryEvent } from './worker';
 import { runSharedWorkers } from './shared/worker';
 import { WorkspaceClient } from './shared/client';
 import { DiscordGatewayApp } from './discord/app';
+import { DiscordHealth } from './discord/health';
 import { SharedGatewayApp } from './shared/app';
 import { assertSlackBundle } from './types';
 import { ServiceError } from './transport';
@@ -44,10 +46,20 @@ async function main(): Promise<void> {
     let application: GatewayApp | SharedGatewayApp | DiscordGatewayApp;
     let startWorker: () => Promise<void>;
     let startSocket: (() => Promise<SocketConnection>) | undefined;
+    const registry = new Registry();
+    collectDefaultMetrics({ register: registry, prefix: 'channel_gateway_' });
     if (bootstrap.mode === 'discord') {
       const client = new DiscordRuntimeClient(bootstrap.config);
       const settings = await client.bootstrap(controller.signal);
-      const discord = new DiscordGatewayApp(bootstrap.config, settings.discord, logger);
+      const health = new DiscordHealth(settings.discord.health);
+      const discord = new DiscordGatewayApp(
+        bootstrap.config,
+        settings.discord,
+        logger,
+        fetch,
+        undefined,
+        { telemetry: createDiscordTelemetry({ registry, health }), health },
+      );
       application = discord;
       startWorker = () => discord.run(controller.signal);
     } else if (bootstrap.mode === 'shared') {
@@ -68,8 +80,6 @@ async function main(): Promise<void> {
           connectSocket(runtime, boundApp, bundle.channel.slack.appId, logger, controller.signal);
       startWorker = () => new ChannelWorker(runtime, client, slack, logger).run(controller.signal);
     }
-    const registry = new Registry();
-    collectDefaultMetrics({ register: registry, prefix: 'channel_gateway_' });
     const httpRequests = new Counter({
       name: 'channel_gateway_http_requests_total',
       help: 'Gateway HTTP requests by bounded outcome',
