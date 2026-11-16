@@ -9,7 +9,11 @@ jest.mock('~/cache', () => ({
   tokenConfigCache: jest.fn(() => ({ get: (key: string) => mockCacheGet(key) })),
 }));
 
-import { resolveTokenConfigMap, createTokenConfigController } from './tokenConfig';
+import {
+  resolveTokenConfigMap,
+  createTokenConfigController,
+  getGoogleBillingConfig,
+} from './tokenConfig';
 import { createLoadConfigModels } from './config/models';
 import { createModelsService } from './config/service';
 import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from './keys';
@@ -29,6 +33,33 @@ function appConfigWith(custom: unknown[], contextCost = true): AppConfig {
 
 describe('resolveTokenConfigMap', () => {
   beforeEach(() => mockCacheGet.mockReset().mockResolvedValue(null));
+
+  it.each([false, true])(
+    'keeps Developer and Cloud estimates distinct with googleUsesVertex=%s',
+    async (googleUsesVertex) => {
+      const model = 'gemini-4-hydrogen';
+      const map = await resolveTokenConfigMap(
+        {
+          appConfig: appConfigWith([]),
+          modelsConfig: { google: [model] },
+          userId: 'user-1',
+          googleUsesVertex,
+          googleLocation: 'eu',
+        },
+        deps,
+      );
+      expect(map.google[model]).toMatchObject({
+        prompt: googleUsesVertex ? 1.65 : 1.5,
+        completion: googleUsesVertex ? 8.25 : 7.5,
+        cacheRead: googleUsesVertex ? 0.0825 : 0.075,
+      });
+      expect(map.vertexai[model]).toMatchObject({
+        prompt: 1.65,
+        completion: 8.25,
+        cacheRead: 0.0825,
+      });
+    },
+  );
 
   it('shows native Google rate overrides without replacing the model context window', async () => {
     const appConfig = appConfigWith([]);
@@ -187,7 +218,10 @@ describe('scoped token config controller', () => {
     else process.env.ENDPOINTS = originalEndpoints;
   });
 
-  function setup(endpoint?: unknown) {
+  function setup(
+    endpoint?: unknown,
+    googleBillingConfig?: ReturnType<typeof getGoogleBillingConfig>,
+  ) {
     const config = appConfigWith([
       {
         name: 'Selected',
@@ -218,6 +252,7 @@ describe('scoped token config controller', () => {
     const controller = createTokenConfigController({
       ...deps,
       getRequestModelsConfig: service.getRequestModelsConfig,
+      googleBillingConfig,
     });
     const req = {
       user: { id: 'user-1', tenantId: 'tenant-1' },
@@ -237,6 +272,42 @@ describe('scoped token config controller', () => {
       loadAsyncEndpoints,
     };
   }
+
+  it('discovers native Vertex models through Google while preserving its pricing identity', async () => {
+    const test = setup(
+      'vertexai',
+      getGoogleBillingConfig({ GOOGLE_KEY: 'developer-key', GOOGLE_LOC: 'eu' }),
+    );
+    test.loadAsyncEndpoints.mockResolvedValue({ google: { userProvide: false } });
+    await test.controller(test.req, test.http);
+    expect(test.res.status).not.toHaveBeenCalled();
+    expect(test.res.json).toHaveBeenCalledWith({
+      vertexai: expect.objectContaining({
+        'gemini-4-hydrogen': expect.objectContaining({
+          prompt: 1.65,
+          completion: 8.25,
+          cacheRead: 0.0825,
+        }),
+      }),
+    });
+    expect(test.req.query.endpoint).toBe('vertexai');
+  });
+
+  it('keeps an exact custom Vertex name on its own model catalog and rates', async () => {
+    const test = setup('vertexai');
+    test.req.config?.endpoints?.custom?.push({
+      name: 'vertexai',
+      apiKey: 'custom-key',
+      baseURL: 'https://custom.example/v1',
+      models: { fetch: false, default: ['custom-model'] },
+      tokenConfig: { 'custom-model': { prompt: 3, completion: 6, context: 32000 } },
+    });
+    await test.controller(test.req, test.http);
+    expect(test.res.json).toHaveBeenCalledWith({
+      vertexai: { 'custom-model': { prompt: 3, completion: 6, context: 32000 } },
+    });
+    expect(test.loadAsyncEndpoints).not.toHaveBeenCalled();
+  });
 
   it('discovers only the selected endpoint and skips unrelated token-cache and credential reads', async () => {
     const test = setup('Selected');
@@ -318,3 +389,19 @@ describe('scoped token config controller', () => {
     expect(mockCacheGet.mock.calls[0][0].startsWith(SCOPED_TOKEN_CONFIG_KEY_PREFIX)).toBe(true);
   });
 });
+
+it.each([
+  [undefined, true],
+  ['', true],
+  [' ', true],
+  ['developer-key', false],
+  ['user_provided', false],
+] as const)(
+  'resolves billing identity from injected Google key configuration %s',
+  (GOOGLE_KEY, googleUsesVertex) => {
+    expect(getGoogleBillingConfig({ GOOGLE_KEY, GOOGLE_LOC: 'eu' })).toEqual({
+      googleUsesVertex,
+      googleLocation: 'eu',
+    });
+  },
+);
