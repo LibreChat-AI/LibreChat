@@ -11,6 +11,7 @@ import {
   DISCORD_COMMAND_MANIFEST_VERSION,
   channelSnowflakeSchema,
   configureDiscordApplicationSchema,
+  discordCredentialHealthSchema,
   dataService,
   MutationKeys,
   QueryKeys,
@@ -38,6 +39,7 @@ import type {
   ConfigureDiscordApplication,
   DiscordApplicationPage,
   RegisterDiscordCommands,
+  DiscordCredentialState,
   DiscordApplication,
   DiscordGuild,
 } from 'librechat-data-provider';
@@ -83,6 +85,43 @@ function errorLabel(error: unknown): TranslationKeys {
     default:
       return 'com_ui_discord_error';
   }
+}
+
+/** The last bot-token observation, or null when it is absent, legacy or malformed. */
+function observation(
+  app: DiscordApplication,
+): { state: DiscordCredentialState; checked: Date } | null {
+  const health = discordCredentialHealthSchema.safeParse(app.credentialHealth);
+  if (!health.success) return null;
+  const checked = new Date(health.data.checkedAt);
+  return Number.isNaN(checked.getTime()) ? null : { state: health.data.state, checked };
+}
+
+/** An absolute server time, never aged against the browser clock. */
+function CredentialHealth({ app }: { app: DiscordApplication }) {
+  const localize = useLocalize();
+  const health = observation(app);
+  let key: TranslationKeys = 'com_ui_discord_health_unknown';
+  if (health) {
+    key =
+      health.state === 'valid' ? 'com_ui_discord_health_valid' : 'com_ui_discord_health_invalid';
+  }
+  return (
+    <div className="space-y-0.5 text-xs">
+      <p
+        role="status"
+        className={health?.state === 'invalid' ? 'text-text-destructive' : 'text-text-secondary'}
+      >
+        {localize(key)}
+      </p>
+      {health && (
+        <p className="text-text-secondary">
+          {localize('com_ui_discord_health_checked')}{' '}
+          <time dateTime={health.checked.toISOString()}>{health.checked.toLocaleString()}</time>
+        </p>
+      )}
+    </div>
+  );
 }
 
 /** A fresh feature store and form belong to exactly one signed-in account. */
@@ -632,6 +671,7 @@ function Setup({
           >
             <p className="text-sm font-medium">{app.name || app.applicationId}</p>
             <p className="text-text-secondary text-xs break-all">{app.applicationId}</p>
+            <CredentialHealth app={app} />
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"

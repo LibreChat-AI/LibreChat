@@ -1,9 +1,14 @@
 import type { DiscordApplication, DiscordGuild } from 'librechat-data-provider';
 import { DISCORD_COMMAND_MANIFEST_VERSION } from 'librechat-data-provider';
+import translations from '../../../../client/src/locales/en/translation.json';
 import { expect, test } from '../fixtures';
 import { openSidebar } from './sidebar';
 
 test.use({ viewport: { width: 1280, height: 860 }, hasTouch: false, isMobile: false });
+
+/** Server epoch times of the last bot-token observation before and after the credential update. */
+const observedBefore = Date.UTC(2026, 10, 15, 9, 30);
+const observedAfter = Date.UTC(2026, 10, 16, 8, 0);
 
 test('Discord setup recovers, replaces credentials and confirms disconnection independently of Slack @scenario:discord-settings-recovery-and-management', async ({
   page,
@@ -17,6 +22,7 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
     revision: 'app-r1',
     createdBy: 'browser-admin',
     authorityWrites: 0,
+    credentialHealth: { state: 'invalid', checkedAt: observedBefore },
   };
   let guild: DiscordGuild = {
     applicationId: app.applicationId,
@@ -56,7 +62,11 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
     }
     if (method === 'PUT' && path.endsWith('/apps')) {
       writes.push({ method, path, body: request.postDataJSON() });
-      app = { ...app, revision: 'app-r2' };
+      app = {
+        ...app,
+        revision: 'app-r2',
+        credentialHealth: { state: 'valid', checkedAt: observedAfter },
+      };
       return route.fulfill({ json: app });
     }
     if (method === 'POST' && path.endsWith('/commands')) {
@@ -96,6 +106,10 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   await expect(discord.getByLabel('Interactions endpoint URL')).toHaveValue(
     `https://gateway.example/discord/${app.applicationId}/interactions`,
   );
+  await expect(discord.getByText(translations.com_ui_discord_health_invalid)).toBeVisible();
+  await expect(
+    discord.locator(`time[datetime="${new Date(observedBefore).toISOString()}"]`),
+  ).toBeVisible();
   const update = discord.getByRole('button', {
     name: 'Update credentials for Browser application',
   });
@@ -105,6 +119,11 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   await discord.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(
     discord.getByText('Application saved. Credentials are never returned.'),
+  ).toBeVisible();
+  await expect(discord.getByText(translations.com_ui_discord_health_valid)).toBeVisible();
+  await expect(discord.getByText(translations.com_ui_discord_health_invalid)).toHaveCount(0);
+  await expect(
+    discord.locator(`time[datetime="${new Date(observedAfter).toISOString()}"]`),
   ).toBeVisible();
   expect(writes[0]).toMatchObject({
     method: 'PUT',

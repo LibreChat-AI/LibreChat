@@ -430,6 +430,103 @@ test('does not move focus in the next account when the previous account refresh 
   expect(document.body).toHaveFocus();
 });
 
+const checkedAt = Date.UTC(2026, 10, 16, 7, 45, 12);
+const observed = (credentialHealth: unknown) =>
+  ({ ...app, credentialHealth }) as unknown as DiscordApplication;
+
+test.each([
+  ['valid', 'com_ui_discord_health_valid'],
+  ['invalid', 'com_ui_discord_health_invalid'],
+])('shows the %s bot token observation with its last checked time', async (state, key) => {
+  jest
+    .mocked(dataService.getDiscordApps)
+    .mockResolvedValue({ applications: [observed({ state, checkedAt })] });
+  await page();
+  expect(screen.getByText(key)).toBeVisible();
+  expect(screen.getByText('com_ui_discord_health_checked', { exact: false })).toBeVisible();
+  const time = screen.getByText(new Date(checkedAt).toLocaleString());
+  expect(time.tagName).toBe('TIME');
+  expect(time).toHaveAttribute('datetime', new Date(checkedAt).toISOString());
+});
+
+test.each([
+  ['absent', undefined],
+  ['empty', {}],
+  ['an unrecognized state', { state: 'degraded', checkedAt }],
+  ['a missing time', { state: 'valid' }],
+  ['a fractional time', { state: 'valid', checkedAt: 1.5 }],
+  ['a negative time', { state: 'invalid', checkedAt: -1 }],
+  ['a time outside the date range', { state: 'valid', checkedAt: Number.MAX_SAFE_INTEGER }],
+  ['extra fields', { state: 'valid', checkedAt, probe: true }],
+  ['a bare string', 'valid'],
+  ['null', null],
+])('shows unknown for %s without a time', async (_name, credentialHealth) => {
+  jest
+    .mocked(dataService.getDiscordApps)
+    .mockResolvedValue({ applications: [observed(credentialHealth)] });
+  await page();
+  expect(screen.getByText('com_ui_discord_health_unknown')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_health_valid')).toBeNull();
+  expect(screen.queryByText('com_ui_discord_health_invalid')).toBeNull();
+  expect(document.querySelector('time')).toBeNull();
+});
+
+test('replaces the observation once updated credentials are saved', async () => {
+  jest
+    .mocked(dataService.getDiscordApps)
+    .mockResolvedValue({ applications: [observed({ state: 'invalid', checkedAt })] });
+  const { user } = await page();
+  expect(screen.getByText('com_ui_discord_health_invalid')).toBeVisible();
+  const later = checkedAt + 3_600_000;
+  jest.mocked(dataService.getDiscordApps).mockResolvedValue({
+    applications: [{ ...observed({ state: 'valid', checkedAt: later }), revision: 'app-r2' }],
+  });
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
+  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-bot-token');
+  await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+  expect(await screen.findByText('com_ui_discord_health_valid')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_health_invalid')).toBeNull();
+  expect(screen.getByText(new Date(later).toLocaleString())).toHaveAttribute(
+    'datetime',
+    new Date(later).toISOString(),
+  );
+});
+
+test('reconciles the observation when a failed save is dismissed with Refresh', async () => {
+  jest
+    .mocked(dataService.getDiscordApps)
+    .mockResolvedValue({ applications: [observed({ state: 'valid', checkedAt })] });
+  const { user, trigger } = await failedSave();
+  expect(screen.getByText('com_ui_discord_health_valid')).toBeVisible();
+  jest.mocked(dataService.getDiscordApps).mockResolvedValue({
+    applications: [observed({ state: 'invalid', checkedAt: checkedAt + 1000 })],
+  });
+  await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
+  expect(await screen.findByText('com_ui_discord_health_invalid')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_health_valid')).toBeNull();
+  await waitFor(() => expect(trigger).toHaveFocus());
+});
+
+test('never shows the previous account observation to the next account', async () => {
+  jest
+    .mocked(dataService.getDiscordApps)
+    .mockResolvedValue({ applications: [observed({ state: 'valid', checkedAt })] });
+  const { client, rerender } = await page();
+  expect(screen.getByText('com_ui_discord_health_valid')).toBeVisible();
+  const next = deferred<{ applications: DiscordApplication[] }>();
+  jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(next.promise);
+  rerender(
+    <QueryClientProvider client={client}>
+      <Discord userId="next-admin" tenantId="other-org" />
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_health_valid')).toBeNull());
+  expect(document.querySelector('time')).toBeNull();
+  await act(async () => next.resolve({ applications: [app] }));
+  expect(await screen.findByText('com_ui_discord_health_unknown')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_health_valid')).toBeNull();
+});
+
 type User = ReturnType<typeof userEvent.setup>;
 type Dismissal = { origin: HTMLElement; dismiss: () => Promise<void> };
 /** The reads that follow an operation have settled, so the next refetch is the dismissal's own. */
