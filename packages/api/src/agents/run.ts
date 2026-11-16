@@ -2299,6 +2299,7 @@ export async function createRun({
   initialSessions,
   summarizationConfig,
   summarizeOnly = false,
+  summarizeFullWindow = false,
   compactionSemanticIndex,
   initialSummary,
   modelCallbacks,
@@ -2378,6 +2379,8 @@ export async function createRun({
    * primary agent only; a chained or delegated agent never runs.
    */
   summarizeOnly?: boolean;
+  /** Standalone compaction summarizes its explicit window, with no live UI tail to retain. */
+  summarizeFullWindow?: boolean;
   /** Bounded, source-addressed navigation guidance derived with provider messages. */
   compactionSemanticIndex?: CompactionSemanticIndex;
   /** Cross-run summary from formatAgentMessages, forwarded to AgentContext */
@@ -2620,7 +2623,9 @@ export async function createRun({
 
     const modelParameters = normalizeAgentModelParameters(agent.model_parameters);
     const shapedSummarization = shapeSummarizationConfig(
-      agent.summarization ?? summarizationConfig,
+      summarizeOnly && summarizeFullWindow && agent === agents[0]
+        ? { ...(agent.summarization ?? summarizationConfig), retainRecent: { turns: 0 } }
+        : (agent.summarization ?? summarizationConfig),
       provider as string,
       selfModel,
       appConfig,
