@@ -102,11 +102,16 @@ export function discordPlanRevision(
     .digest('hex');
 }
 
-/** Discord counts UTF-16 units; iteration by code point avoids splitting surrogate pairs. */
+/**
+ * Discord counts UTF-16 units; iteration by code point avoids splitting surrogate pairs.
+ * `spare` leaves one part free only when the answer has to be shortened, so the caller can still
+ * append an optional part within `maxParts`. A complete answer is never shortened for it, and a
+ * one part budget keeps its required answer part.
+ */
 export function renderDiscordPlan(
   input: DiscordRenderInput,
   maxParts: number,
-  options: { shorten?: boolean; feedback?: boolean } = {},
+  options: { shorten?: boolean; feedback?: boolean; spare?: boolean } = {},
 ): DiscordTextPlan {
   if (!input.runId || !Number.isSafeInteger(maxParts) || maxParts < 1 || maxParts > 100)
     throw new TypeError('Invalid Discord delivery budget');
@@ -118,7 +123,7 @@ export function renderDiscordPlan(
     chunks = splitText(source, maxParts, false);
   } catch (error) {
     if (!(error instanceof DiscordRenderLimitError) || !options.shorten) throw error;
-    chunks = splitText(source, maxParts, true);
+    chunks = splitText(source, options.spare ? Math.max(1, maxParts - 1) : maxParts, true);
   }
   const plan: ChannelDeliveryPlan = {
     revision: '',

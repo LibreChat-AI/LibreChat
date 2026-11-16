@@ -64,6 +64,39 @@ describe('Discord answer rendering', () => {
     expect(controls.parts.slice(1).every((part) => part.presentation === undefined)).toBe(true);
     expect(controls.parts.map((part) => part.text)).toEqual(plain.parts.map((part) => part.text));
   });
+  test('leaves one part free only when the answer has to be shortened', () => {
+    const complete = { runId: 'run', text: 'x'.repeat(4000) };
+    expect(renderDiscordPlan(complete, 2, { shorten: true, spare: true })).toEqual(
+      renderDiscordPlan(complete, 2, { shorten: true }),
+    );
+    const long = { runId: 'run', text: 'x'.repeat(7000) };
+    const full = renderDiscordPlan(long, 3, { shorten: true });
+    const spare = renderDiscordPlan(long, 3, { shorten: true, spare: true });
+    expect(full.parts).toHaveLength(3);
+    expect(spare.parts).toHaveLength(2);
+    expect(spare.parts.slice(0, -1).map((part) => part.text)).toEqual(
+      full.parts.slice(0, 1).map((part) => part.text),
+    );
+    expect(spare.parts.at(-1)?.text.length).toBeLessThanOrEqual(2000);
+    expect(spare.parts.at(-1)?.text).toMatch(/The full answer remains in the saved execution\.$/);
+    expect(spare.parts.every((part) => part.required)).toBe(true);
+    expect(spare.revision).toBe(discordPlanRevision(spare));
+    expect(renderDiscordPlan(long, 3, { shorten: true, spare: true })).toEqual(spare);
+  });
+  test('keeps the only part of a one part budget when a spare part is requested', () => {
+    const long = { runId: 'run', text: '😀'.repeat(2500) };
+    const plan = renderDiscordPlan(long, 1, { shorten: true, spare: true, feedback: true });
+    expect(plan).toEqual(renderDiscordPlan(long, 1, { shorten: true, feedback: true }));
+    expect(plan.parts).toHaveLength(1);
+    expect(plan.parts[0].required).toBe(true);
+    expect(plan.parts[0].text.length).toBeLessThanOrEqual(2000);
+    expect(readDiscordFeedbackPresentation(plan.parts[0])).toBe('run');
+  });
+  test('a spare part changes nothing unless shortening is requested', () => {
+    const text = { runId: 'run', text: 'x'.repeat(2001) };
+    expect(() => renderDiscordPlan(text, 1, { spare: true })).toThrow('delivery budget');
+    expect(renderDiscordPlan(text, 2, { spare: true })).toEqual(renderDiscordPlan(text, 2));
+  });
   test.each(['bad:run', 'x'.repeat(81)])(
     'rejects unsupported feedback run identity %s',
     (runId) => {
