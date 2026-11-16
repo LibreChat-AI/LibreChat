@@ -322,7 +322,7 @@ test('a connection no provider serves is listed beside a working one and can onl
     const row = rowOf(section, 1);
     await expect(row.getByText('Unavailable connection')).toBeVisible();
     await expect(
-      row.getByText("This version can't run it. You can still delete it."),
+      row.getByText('This connection cannot be managed here. You can still delete it.'),
     ).toBeVisible();
     await expect(row.getByText('Slack', { exact: true })).toHaveCount(0);
     await row.hover();
