@@ -602,4 +602,85 @@ test.describe('subagent chat retained-history parity', () => {
       }
     });
   }
+
+  test('late open draws a steer the child already took where it took it, ahead of what came after', async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const label = `history-steered-${Date.now().toString(36)}-${testInfo.retry}`;
+    const gates = history.control(label);
+    const createdAgentIds: string[] = [];
+    let primaryError: unknown;
+    try {
+      await page.addInitScript(() => localStorage.setItem('autoExpandTools', 'false'));
+      await page.goto('/c/new');
+      const token = await getAccessToken(page);
+      const worker = await createAgent(
+        page,
+        token,
+        uniqueAgentName('E2E History Worker'),
+        { enabled: true, allowSelf: true },
+        [history.TOOL_NAME],
+      );
+      createdAgentIds.push(worker.id);
+      await selectAgent(page, worker.name!);
+      const sent = await sendMessageAndWaitForCompletion(page, history.prompt(label, 'self'));
+      expect(sent.ok()).toBeTruthy();
+      await expect(page).toHaveURL(/\/c\/(?!new(?:\/|$))[^/]+$/);
+      const conversationId = decodeURIComponent(new URL(page.url()).pathname.split('/')[2]);
+      await gates.wait('ready', { timeoutMs: 45_000 });
+
+      /** Guidance goes in, and the child takes it and keeps working, all before anyone opens
+       *  the panel. Nothing was listening while it happened. */
+      const threadPath = await historyThreadPath(page, token, conversationId, label);
+      const [threadEndpoint, query] = threadPath.split('?');
+      const marker = `END_OF_PARENT_GUIDANCE_${label}`;
+      const controlled = await requestJson<{ receipt: { status: string } }>(page, {
+        path: `${threadEndpoint}/control`,
+        token,
+        method: 'POST',
+        body: {
+          taskId: new URLSearchParams(query).get('taskId'),
+          invocationId: `history-early-guidance-${label}`,
+          action: 'steer',
+          message: `Check the release notes as well. ${marker}`,
+        },
+      });
+      expect(controlled.receipt.status).toBe('accepted');
+      await gates.signal('advance');
+      await gates.wait('live', { timeoutMs: 15_000 });
+
+      const surface = await openHistoryChild(page, label);
+      const steer = surface.locator('[data-steer-render]').filter({ hasText: marker });
+      await expect(steer).toHaveCount(1, { timeout: 20_000 });
+      await assertHistoryCalls(surface, label, history.CALL_COUNT + 1);
+      expect(await gates.has('done'), 'the steer is placed while the child still runs').toBe(false);
+
+      await gates.signal('complete');
+      await gates.wait('done', { timeoutMs: 10_000 });
+      const live = history.liveText(label);
+      const completed = history.completionText(label);
+      await expect(surface.getByText(completed, { exact: true })).toHaveCount(1, {
+        timeout: 20_000,
+      });
+      await expect(surface.locator('[data-lc-fade]')).toHaveCount(0, { timeout: 20_000 });
+      /** After the work it interrupted and before the work that followed it, never at the end. */
+      expect(await steerPlacement(steer, live, completed)).toEqual({ before: true, after: true });
+    } catch (error) {
+      primaryError = error;
+      throw error;
+    } finally {
+      try {
+        await gates.release();
+        if (primaryError == null && (await gates.has('ready'))) {
+          await gates.wait('done', { timeoutMs: 10_000 });
+        }
+        if (await gates.has('done')) await rm(gates.directory, { recursive: true, force: true });
+      } finally {
+        for (const agentId of createdAgentIds.reverse()) {
+          await cleanupAgent(page, agentId);
+        }
+      }
+    }
+  });
 });
