@@ -13,7 +13,7 @@ import { cleanupAgent, openAgentBuilder, uniqueAgentName } from '../agents.helpe
 test.use({ viewport: { width: 1280, height: 860 }, hasTouch: false, isMobile: false });
 
 type Channel = Record<string, unknown>;
-type Kind = 'active' | 'pending' | 'disabled' | 'unavailable';
+type Kind = 'active' | 'pending' | 'disabled' | 'unavailable' | 'discord';
 type Call = { method: string; id: string; body: Record<string, unknown> };
 
 const MANIFEST = {
@@ -63,6 +63,21 @@ async function openChannels(page: Page, kinds: Kind[]) {
     };
     // The list reports a row no provider serves with its identity and a disabled status only.
     if (kind === 'unavailable') return { ...identity, type: 'unavailable', status: 'disabled' };
+    if (kind === 'discord')
+      return {
+        ...identity,
+        type: 'discord',
+        status: 'active',
+        credentialMode: 'per_user',
+        installationId: 'discord-installation',
+        installationRevision: 'discord-installation-revision',
+        discord: {
+          applicationId: '111',
+          guildId: '222',
+          botUserId: '333',
+          externalChannelId: '444',
+        },
+      };
     return {
       ...identity,
       type: 'slack',
@@ -342,6 +357,35 @@ test('a connection no provider serves is listed beside a working one and can onl
     await expect(section.locator('li')).toHaveCount(1);
     await expect(section.getByText('Unavailable connection')).toHaveCount(0);
     await expect(rowOf(section, 0).getByText('Slack', { exact: true })).toBeVisible();
+  } finally {
+    await cleanup();
+  }
+});
+
+test('a valid Discord connection offers neutral deletion without Slack management @scenario:discord-channel-row-offers-neutral-delete-only-without-slack-management', async ({
+  page,
+}) => {
+  const { section, calls, cleanup } = await openChannels(page, ['discord']);
+  try {
+    const row = rowOf(section, 0);
+    await expect(row.getByText('Unavailable connection')).toBeVisible();
+    await expect(row.getByText('Slack', { exact: true })).toHaveCount(0);
+    await expect(
+      row.getByText('This connection cannot be managed here. You can still delete it.'),
+    ).toBeVisible();
+    await row.hover();
+    await expect(row.getByRole('button')).toHaveCount(1);
+    await row.getByRole('button', { name: 'Delete connection' }).click();
+    const remove = dialogNamed(page, 'Delete this connection?');
+    await expect(
+      remove.getByText(/removes the unavailable connection and everything saved for it/),
+    ).toBeVisible();
+    await expect(remove.getByText(/Slack/)).toHaveCount(0);
+    expect(calls).toHaveLength(0);
+    await remove.getByRole('button', { name: 'Delete', exact: true }).click();
+    await expect.poll(() => calls.length).toBe(1);
+    expect(calls[0]).toEqual({ method: 'DELETE', id: 'chan_discord', body: {} });
+    await expect(section.locator('li')).toHaveCount(0);
   } finally {
     await cleanup();
   }
