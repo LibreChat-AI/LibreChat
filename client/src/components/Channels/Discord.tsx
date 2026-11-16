@@ -50,6 +50,8 @@ const editorAtom = atom<DiscordApplication | 'new' | null>(null);
 const confirmAtom = atom<DiscordGuild | null>(null);
 const flowAtom = atom<'pending' | 'cancelling' | 'failed' | null>(null);
 const openAtom = atom(false);
+/** Set when a dismissal removes the control the user was on; focus returns to `trigger` once the reads settle. */
+const restoreAtom = atom<{ trigger: HTMLButtonElement | null } | null>(null);
 const empty = { applicationId: '', name: '', botToken: '', clientSecret: '' };
 type Fields = typeof empty;
 type Attempt = { popup: Window; flowId?: string; cancelling: boolean };
@@ -147,12 +149,15 @@ function Setup({
   const [editor, setEditor] = useAtom(editorAtom);
   const [confirm, setConfirm] = useAtom(confirmAtom);
   const [flow, setFlow] = useAtom(flowAtom);
+  const [restore, setRestore] = useAtom(restoreAtom);
   const attempt = useRef<Attempt | null>(null);
   const submission = useRef<ConfigureDiscordApplication | null>(null);
   const mounted = useRef(true);
   const deadline = useRef<ReturnType<typeof setTimeout>>();
   const editorTrigger = useRef<HTMLButtonElement | null>(null);
-  const restoreEditorFocus = useRef(false);
+  const commandTrigger = useRef<HTMLButtonElement | null>(null);
+  const connectTrigger = useRef<HTMLButtonElement | null>(null);
+  const flowAlert = useRef<HTMLDivElement | null>(null);
   const disconnectTrigger = useRef<HTMLButtonElement | null>(null);
   const guildHeading = useRef<HTMLHeadingElement | null>(null);
   const appsHeading = useRef<HTMLHeadingElement | null>(null);
@@ -188,6 +193,13 @@ function Setup({
   const reveal = useCallback((node: HTMLDivElement | null) => {
     node?.focus();
   }, []);
+  const revealFlow = useCallback(
+    (node: HTMLDivElement | null) => {
+      flowAlert.current = node;
+      reveal(node);
+    },
+    [reveal],
+  );
   // No optimistic cache writes: all pages reconcile after success, rejection or an uncertain response.
   const lifecycle = { onMutate: cancelReads, onError: cancelReads, onSettled: refresh };
   const save = useMutation({
@@ -207,7 +219,7 @@ function Setup({
     onSuccess: () => {
       if (mounted.current) {
         form.reset(empty);
-        restoreEditorFocus.current = true;
+        setRestore({ trigger: editorTrigger.current });
         setEditor(null);
       }
     },
@@ -286,7 +298,7 @@ function Setup({
       if (!mounted.current || attempt.current !== current) return;
       if (error instanceof Error && 'code' in error && error.code === 'invalid_state') {
         finish();
-        void refresh();
+        reconcile.mutate();
         return;
       }
       current.cancelling = false;
@@ -312,8 +324,13 @@ function Setup({
       if (current?.flowId) void dataService.cancelDiscordInstall(current.flowId).catch(() => {});
     };
   }, [finish, refresh, setFlow]);
-  const start = (applicationId: string, installationId?: string) => {
+  const start = (
+    applicationId: string,
+    installationId: string | undefined,
+    trigger: HTMLButtonElement,
+  ) => {
     if (attempt.current) return;
+    connectTrigger.current = trigger;
     connect.reset();
     cancel.reset();
     const popup = window.open('', '_blank');
@@ -388,17 +405,17 @@ function Setup({
     if (editor) setFocus(editor === 'new' ? 'applicationId' : 'botToken');
   }, [editor, setFocus]);
   useEffect(() => {
-    if (!restoreEditorFocus.current || editor || busy) return;
+    if (!restore || editor || busy || flow) return;
     if (ready) {
-      const trigger = editorTrigger.current;
+      const { trigger } = restore;
       if (trigger?.isConnected && !trigger.disabled) trigger.focus();
       else appsHeading.current?.focus();
-      restoreEditorFocus.current = false;
+      setRestore(null);
     } else if (apps.isError || guilds.isError) {
       const failure = loadFailure.current;
       if (failure && !failure.contains(document.activeElement)) failure.focus();
     }
-  }, [editor, ready, busy, apps.isError, guilds.isError]);
+  }, [restore, setRestore, editor, ready, busy, flow, apps.isError, guilds.isError]);
   const edit = (app: DiscordApplication | 'new', trigger: HTMLButtonElement) => {
     editorTrigger.current = trigger;
     save.reset();
@@ -466,12 +483,16 @@ function Setup({
             disabled={busy}
             onClick={() => {
               form.reset(empty);
-              restoreEditorFocus.current = editor !== null;
+              setRestore({
+                trigger:
+                  editor !== null || save.error ? editorTrigger.current : connectTrigger.current,
+              });
               setEditor(null);
               save.reset();
               connect.reset();
               cancel.reset();
               reconcile.mutate();
+              flowAlert.current?.focus();
             }}
           >
             {localize('com_ui_refresh')}
@@ -481,7 +502,7 @@ function Setup({
       {save.isSuccess && <p role="status">{localize('com_ui_discord_saved')}</p>}
       {flow && (
         <Alert
-          ref={flow === 'failed' ? reveal : undefined}
+          ref={flow === 'failed' ? revealFlow : undefined}
           tabIndex={flow === 'failed' ? -1 : undefined}
           variant={flow === 'failed' ? 'warning' : 'info'}
         >
@@ -492,7 +513,11 @@ function Setup({
             type="button"
             variant="outline"
             disabled={flow === 'cancelling'}
-            onClick={() => (attempt.current ? void retire(attempt.current) : finish())}
+            onClick={() => {
+              setRestore({ trigger: connectTrigger.current });
+              if (attempt.current) void retire(attempt.current);
+              else finish();
+            }}
           >
             {localize('com_ui_cancel')}
           </Button>
@@ -587,7 +612,7 @@ function Setup({
               disabled={busy}
               onClick={() => {
                 form.reset(empty);
-                restoreEditorFocus.current = true;
+                setRestore({ trigger: editorTrigger.current });
                 setEditor(null);
               }}
             >
@@ -625,7 +650,7 @@ function Setup({
                 aria-label={localize('com_ui_discord_connect_named', {
                   0: app.name || app.applicationId,
                 })}
-                onClick={() => start(app.applicationId)}
+                onClick={(event) => start(app.applicationId, undefined, event.currentTarget)}
               >
                 {localize('com_ui_discord_connect')}
               </Button>
@@ -639,13 +664,14 @@ function Setup({
                   0: app.name || app.applicationId,
                 })}
                 aria-busy={commandAppId === app.applicationId && commands.isLoading}
-                onClick={() =>
+                onClick={(event) => {
+                  commandTrigger.current = event.currentTarget;
                   commands.mutate({
                     applicationId: app.applicationId,
                     expectedRevision: app.revision,
                     manifestVersion: DISCORD_COMMAND_MANIFEST_VERSION,
-                  })
-                }
+                  });
+                }}
               >
                 {localize(
                   commandAppId === app.applicationId && commands.isLoading
@@ -669,8 +695,9 @@ function Setup({
                     variant="outline"
                     disabled={busy}
                     onClick={() => {
+                      setRestore({ trigger: commandTrigger.current });
                       commands.reset();
-                      void refresh();
+                      reconcile.mutate();
                     }}
                   >
                     {localize('com_ui_refresh')}
@@ -738,7 +765,9 @@ function Setup({
                 variant="outline"
                 disabled={disabled}
                 aria-label={localize('com_ui_discord_reconnect_named', { 0: guild.guildName })}
-                onClick={() => start(guild.applicationId, guild.installationId)}
+                onClick={(event) =>
+                  start(guild.applicationId, guild.installationId, event.currentTarget)
+                }
               >
                 {localize('com_ui_discord_reconnect')}
               </Button>

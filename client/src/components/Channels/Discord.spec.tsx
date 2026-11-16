@@ -430,6 +430,199 @@ test('does not move focus in the next account when the previous account refresh 
   expect(document.body).toHaveFocus();
 });
 
+type User = ReturnType<typeof userEvent.setup>;
+type Dismissal = { origin: HTMLElement; dismiss: () => Promise<void> };
+/** The reads that follow an operation have settled, so the next refetch is the dismissal's own. */
+const readsSettled = () =>
+  waitFor(() => expect(dataService.getDiscordApps).toHaveBeenCalledTimes(2));
+async function failedCommand(user: User): Promise<Dismissal> {
+  jest
+    .mocked(dataService.registerDiscordCommands)
+    .mockRejectedValueOnce(Object.assign(new Error('safe'), { code: 'rate_limited' }));
+  const origin = screen.getByRole('button', { name: 'com_ui_discord_commands_named' });
+  await user.click(origin);
+  const alert = (await screen.findByText('com_ui_discord_rate_limited')).closest(
+    '[role="alert"]',
+  ) as HTMLElement;
+  const refresh = within(alert).getByRole('button', { name: 'com_ui_refresh' });
+  await waitFor(() => expect(refresh).toBeEnabled());
+  await readsSettled();
+  return { origin, dismiss: () => user.click(refresh) };
+}
+async function cancelledAuthorization(user: User): Promise<Dismissal> {
+  const origin = screen.getByRole('button', { name: 'com_ui_discord_connect_named' });
+  await user.click(origin);
+  await waitFor(() => expect(popup.location.href).toBe(connectResponse.url));
+  await readsSettled();
+  const cancel = screen.getByRole('button', { name: 'com_ui_cancel' });
+  return { origin, dismiss: () => user.click(cancel) };
+}
+async function failedAuthorization(user: User): Promise<Dismissal> {
+  jest
+    .mocked(dataService.connectDiscordGuild)
+    .mockRejectedValueOnce(Object.assign(new Error('safe'), { code: 'application_changed' }));
+  const origin = screen.getByRole('button', { name: 'com_ui_discord_connect_named' });
+  await user.click(origin);
+  const failure = (await screen.findByText('com_ui_discord_changed')).closest(
+    '[role="alert"]',
+  ) as HTMLElement;
+  const refresh = within(failure).getByRole('button', { name: 'com_ui_refresh' });
+  await waitFor(() => expect(refresh).toBeEnabled());
+  await readsSettled();
+  return {
+    origin,
+    dismiss: async () => {
+      await user.click(refresh);
+      await user.click(await screen.findByRole('button', { name: 'com_ui_cancel' }));
+    },
+  };
+}
+const dismissals: [string, (user: User) => Promise<Dismissal>][] = [
+  ['a failed command registration', failedCommand],
+  ['a cancelled authorization', cancelledAuthorization],
+  ['a failed authorization', failedAuthorization],
+];
+
+test.each(dismissals)(
+  'returns focus to the originating control only after %s settles',
+  async (_name, arrange) => {
+    const { user } = await page();
+    const { origin, dismiss } = await arrange(user);
+    const reads = deferred<{ applications: DiscordApplication[] }>();
+    jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
+    await dismiss();
+    await waitFor(() => expect(origin).toBeDisabled());
+    expect(origin).not.toHaveFocus();
+    await act(async () => reads.resolve({ applications: [app] }));
+    await waitFor(() => expect(origin).toBeEnabled());
+    await waitFor(() => expect(origin).toHaveFocus());
+  },
+);
+
+test.each(dismissals)(
+  'moves focus to the load failure when the reads fail after %s, then back after a retry',
+  async (_name, arrange) => {
+    const { user } = await page();
+    const { origin, dismiss } = await arrange(user);
+    jest.mocked(dataService.getDiscordApps).mockRejectedValueOnce(new Error('network'));
+    await dismiss();
+    const failure = (await screen.findByText('com_ui_discord_error')).closest(
+      '[role="alert"]',
+    ) as HTMLElement;
+    await waitFor(() => expect(failure).toHaveFocus());
+    expect(origin).toBeDisabled();
+    expect(origin).not.toHaveFocus();
+    await user.click(within(failure).getByRole('button', { name: 'com_ui_retry' }));
+    await waitFor(() => expect(origin).toBeEnabled());
+    await waitFor(() => expect(origin).toHaveFocus());
+  },
+);
+
+test.each(dismissals)(
+  'falls back to the applications heading when the refreshed list no longer has the control after %s',
+  async (_name, arrange) => {
+    const { user } = await page();
+    const { origin, dismiss } = await arrange(user);
+    jest.mocked(dataService.getDiscordApps).mockResolvedValueOnce({ applications: [] });
+    await dismiss();
+    await waitFor(() => expect(origin).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'com_ui_discord_apps' })).toHaveFocus(),
+    );
+  },
+);
+
+test.each(dismissals)(
+  'does not move focus in the next account when the previous account settles after %s',
+  async (_name, arrange) => {
+    const { user, client, rerender } = await page();
+    const { origin, dismiss } = await arrange(user);
+    const reads = deferred<{ applications: DiscordApplication[] }>();
+    jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
+    await dismiss();
+    await waitFor(() => expect(dataService.getDiscordApps).toHaveBeenCalledTimes(3));
+    expect(origin).toBeDisabled();
+    rerender(
+      <QueryClientProvider client={client}>
+        <Discord userId="next-admin" tenantId="other-org" />
+      </QueryClientProvider>,
+    );
+    const next = await screen.findByRole('button', { name: 'com_ui_discord_connect_named' });
+    await waitFor(() => expect(next).toBeEnabled());
+    await act(async () => reads.resolve({ applications: [app] }));
+    expect(next).toBeEnabled();
+    expect(next).not.toHaveFocus();
+    expect(document.body).toHaveFocus();
+  },
+);
+
+test('does not touch the document when the view unmounts before a command refresh settles', async () => {
+  const { user, unmount } = await page();
+  const { dismiss } = await failedCommand(user);
+  const reads = deferred<{ applications: DiscordApplication[] }>();
+  jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
+  await dismiss();
+  await waitFor(() => expect(dataService.getDiscordApps).toHaveBeenCalledTimes(3));
+  unmount();
+  await act(async () => reads.resolve({ applications: [app] }));
+  expect(document.body).toHaveFocus();
+});
+
+test('keeps focus on a failed cancellation and restores it only once the retry succeeds', async () => {
+  jest.mocked(dataService.cancelDiscordInstall).mockRejectedValueOnce(new Error('network'));
+  const { user } = await page();
+  const origin = screen.getByRole('button', { name: 'com_ui_discord_connect_named' });
+  await user.click(origin);
+  await waitFor(() => expect(popup.location.href).toBe(connectResponse.url));
+  await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
+  const failed = (await screen.findByText('com_ui_discord_unconfirmed')).closest(
+    '[role="alert"]',
+  ) as HTMLElement;
+  await waitFor(() => expect(failed).toHaveFocus());
+  expect(origin).toBeDisabled();
+  expect(origin).not.toHaveFocus();
+  await user.click(within(failed).getByRole('button', { name: 'com_ui_cancel' }));
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_unconfirmed')).toBeNull());
+  await waitFor(() => expect(origin).toBeEnabled());
+  await waitFor(() => expect(origin).toHaveFocus());
+});
+
+test('returns focus to the reconnect control after a cancelled reconnection', async () => {
+  const { user } = await page();
+  const origin = screen.getByRole('button', { name: 'com_ui_discord_reconnect_named' });
+  await user.click(origin);
+  await waitFor(() => expect(popup.location.href).toBe(connectResponse.url));
+  expect(dataService.connectDiscordGuild).toHaveBeenCalledWith(
+    app.applicationId,
+    guild.installationId,
+  );
+  await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_pending')).toBeNull());
+  await waitFor(() => expect(origin).toBeEnabled());
+  await waitFor(() => expect(origin).toHaveFocus());
+});
+
+test('returns focus to the editor trigger when a failed save is dismissed after its editor was cancelled', async () => {
+  const { user, trigger } = await failedSave();
+  await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
+  await waitFor(() => expect(screen.queryByLabelText('com_ui_discord_bot_token')).toBeNull());
+  await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_code_grant')).toBeNull());
+  await waitFor(() => expect(trigger).toBeEnabled());
+  await waitFor(() => expect(trigger).toHaveFocus());
+});
+
+test('moves focus to the remaining authorization notice when a failed connection is dismissed', async () => {
+  const { user } = await page();
+  const { origin } = await failedAuthorization(user);
+  await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
+  const remaining = (await screen.findByText('com_ui_discord_unconfirmed')).closest(
+    '[role="alert"]',
+  ) as HTMLElement;
+  await waitFor(() => expect(remaining).toHaveFocus());
+  expect(origin).toBeDisabled();
+});
+
 test('registers commands only after explicit action using current revision and metadata-only variables', async () => {
   const pending = deferred<{
     applicationId: string;

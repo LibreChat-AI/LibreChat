@@ -59,13 +59,21 @@ async function openDiscord(page: Page) {
 }
 
 for (const theme of themes) {
-  test(`Discord keeps a failed save in view and Refresh returns keyboard focus to its trigger (${theme}) @scenario:discord-failed-save-keyboard-recovery-${theme}`, async ({
+  test(`Discord keeps failures in view and keyboard dismissals return focus to the originating control (${theme}) @scenario:discord-failed-save-keyboard-recovery-${theme}`, async ({
     page,
   }) => {
+    test.setTimeout(90000);
     let current = app;
     let failing = true;
+    let connectFails = false;
     const writes: Record<string, unknown>[] = [];
     await page.addInitScript((mode) => localStorage.setItem('color-theme', mode), theme);
+    /** The authorization popup navigates to Discord: serve a stub so nothing leaves the machine. */
+    await page
+      .context()
+      .route('https://discord.com/**', (route) =>
+        route.fulfill({ status: 200, contentType: 'text/html', body: '<p>Discord stub</p>' }),
+      );
     await page.route('**/api/channels/workspaces**', (route) =>
       route.fulfill({ status: 404, json: { message: 'Unavailable' } }),
     );
@@ -97,6 +105,26 @@ for (const theme of themes) {
         }
         current = { ...current, revision: 'app-r3' };
         return route.fulfill({ json: current });
+      }
+      if (method === 'POST' && path.endsWith('/commands')) {
+        return route.fulfill({ status: 429, json: { ok: false, error: { code: 'rate_limited' } } });
+      }
+      if (method === 'POST' && path.endsWith('/connect')) {
+        return connectFails
+          ? route.fulfill({
+              status: 409,
+              json: { ok: false, error: { code: 'application_changed' } },
+            })
+          : route.fulfill({
+              json: {
+                url: `https://discord.com/oauth2/authorize?client_id=${app.applicationId}`,
+                flowId: 'browser-flow',
+                expiresInSeconds: 600,
+              },
+            });
+      }
+      if (method === 'DELETE' && path.endsWith('/attempts/browser-flow')) {
+        return route.fulfill({ json: true });
       }
       return route.fulfill({ status: 400, json: { message: 'Unexpected request' } });
     });
@@ -143,6 +171,68 @@ for (const theme of themes) {
     expect(writes).toHaveLength(2);
     expect(writes[0]).toMatchObject({ expectedRevision: 'app-r1' });
     expect(writes[1]).toMatchObject({ expectedRevision: 'app-r2', botToken: token });
+    /** A saved credential still returns focus to its trigger once the reads settle. */
+    await expect(update).toBeFocused();
+
+    /** A rejected command registration: its notice takes focus and Refresh hands it back to Register. */
+    const register = discord.getByRole('button', {
+      name: 'Register or update /librechat commands for Browser application',
+    });
+    await register.focus();
+    await page.keyboard.press('Enter');
+    const limited = discord
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_rate_limited });
+    await expect(limited).toBeInViewport({ ratio: 1 });
+    await expect(limited).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(limited.getByRole('button', { name: 'Refresh', exact: true })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(limited).toHaveCount(0);
+    await expect.soft(register, 'Refresh returns focus to Register').toBeFocused();
+
+    /** A pending authorization: Cancel removes its own control and focus goes back to Connect. */
+    const connect = discord.getByRole('button', {
+      name: 'Connect a server for Browser application',
+    });
+    await expect(connect).toBeEnabled();
+    await connect.focus();
+    await page.keyboard.press('Enter');
+    const pending = discord
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_pending });
+    await expect(pending).toBeVisible();
+    await pending.getByRole('button', { name: 'Cancel', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(pending).toHaveCount(0);
+    await expect.soft(connect, 'Cancel returns focus to Connect').toBeFocused();
+
+    /** A rejected connection leaves two notices: dismissing the first hands focus to the second. */
+    connectFails = true;
+    await expect(connect).toBeEnabled();
+    await connect.focus();
+    await page.keyboard.press('Enter');
+    const changed = discord
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_changed });
+    const unconfirmed = discord
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_unconfirmed });
+    await expect(changed).toBeVisible();
+    await expect(unconfirmed).toBeVisible();
+    await changed.getByRole('button', { name: 'Refresh', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(changed).toHaveCount(0);
+    await expect.soft(unconfirmed, 'the remaining notice takes focus').toBeFocused();
+    const dismiss = unconfirmed.getByRole('button', { name: 'Cancel', exact: true });
+    await page.keyboard.press('Tab');
+    await expect.soft(dismiss, 'Tab from the notice reaches Cancel').toBeFocused();
+    await dismiss.focus();
+    await page.keyboard.press('Enter');
+    await expect(unconfirmed).toHaveCount(0);
+    await expect
+      .soft(connect, 'Cancel returns focus to Connect after a failed connection')
+      .toBeFocused();
   });
 
   test(`Discord callback failures land on a localized, actionable page (${theme}) @scenario:discord-oauth-landing-failures-${theme}`, async ({
