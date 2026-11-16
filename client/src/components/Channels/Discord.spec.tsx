@@ -441,12 +441,9 @@ test.each([
   ['transactions_unavailable', 'com_ui_channels_transaction_required'],
   ['application_changed', 'com_ui_discord_changed'],
   ['installation_changed', 'com_ui_discord_changed'],
-  ['guild_changed', 'com_ui_discord_changed'],
   ['provider_refused', 'com_ui_discord_refused'],
   ['unsupported_installation', 'com_ui_discord_code_grant'],
   ['application_in_use', 'com_ui_discord_in_use'],
-  ['missing_permissions', 'com_ui_discord_permissions'],
-  ['invalid_grant', 'com_ui_discord_unconfirmed'],
   ['rate_limited', 'com_ui_discord_rate_limited'],
   ['provider_unavailable', 'com_ui_discord_provider_unavailable'],
   ['timeout', 'com_ui_discord_timeout'],
@@ -507,6 +504,62 @@ test.each([
   expect(screen.queryByText(/private-bot-token/)).toBeNull();
   expect(screen.getByLabelText('com_ui_discord_bot_token')).toHaveValue('');
   expect(await screen.findByRole('button', { name: 'com_ui_refresh' })).toBeVisible();
+});
+
+test('moves focus to a failed save so a scrolled form cannot hide it', async () => {
+  jest
+    .mocked(dataService.configureDiscordApplication)
+    .mockRejectedValueOnce(Object.assign(new Error('safe'), { code: 'unsupported_installation' }));
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
+  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-bot-token');
+  await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+  const alert = (await screen.findByText('com_ui_discord_code_grant')).closest('[role="alert"]');
+  await waitFor(() => expect(alert).toHaveFocus());
+  expect(
+    within(alert as HTMLElement).getByRole('button', { name: 'com_ui_refresh' }),
+  ).toBeVisible();
+});
+
+test('moves focus to a failed command registration beside its application', async () => {
+  jest
+    .mocked(dataService.registerDiscordCommands)
+    .mockRejectedValueOnce(Object.assign(new Error('safe'), { code: 'rate_limited' }));
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
+  const alert = (await screen.findByText('com_ui_discord_rate_limited')).closest('[role="alert"]');
+  await waitFor(() => expect(alert).toHaveFocus());
+});
+
+test('moves focus to a failed authorization but leaves a pending one alone', async () => {
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_connect_named' }));
+  const pending = (await screen.findByText('com_ui_discord_pending')).closest('[role="alert"]');
+  expect(pending).not.toHaveFocus();
+  await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_pending')).toBeNull());
+  jest.mocked(window.open).mockReturnValue(null);
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_connect_named' }));
+  const failed = (await screen.findByText('com_ui_discord_unconfirmed')).closest('[role="alert"]');
+  await waitFor(() => expect(failed).toHaveFocus());
+});
+
+test('moves focus to the alert when the callback settles a pending authorization as failed', async () => {
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_connect_named' }));
+  await waitFor(() => expect(popup.location.href).toBe(connectResponse.url));
+  const pending = screen.getByText('com_ui_discord_pending').closest('[role="alert"]');
+  expect(pending).not.toHaveFocus();
+  act(() =>
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: OAUTH_SETTLED_CHANNEL,
+        newValue: JSON.stringify({ outcome: 'failed', flowId: connectResponse.flowId }),
+      }),
+    ),
+  );
+  const failed = (await screen.findByText('com_ui_discord_unconfirmed')).closest('[role="alert"]');
+  await waitFor(() => expect(failed).toHaveFocus());
 });
 
 test('clears old registration success when credentials rotate and uses the refreshed app revision', async () => {

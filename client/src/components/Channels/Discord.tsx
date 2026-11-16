@@ -65,7 +65,6 @@ function errorLabel(error: unknown): TranslationKeys {
       return 'com_ui_channels_transaction_required';
     case 'application_changed':
     case 'installation_changed':
-    case 'guild_changed':
       return 'com_ui_discord_changed';
     case 'provider_refused':
       return 'com_ui_discord_refused';
@@ -73,10 +72,6 @@ function errorLabel(error: unknown): TranslationKeys {
       return 'com_ui_discord_code_grant';
     case 'application_in_use':
       return 'com_ui_discord_in_use';
-    case 'missing_permissions':
-      return 'com_ui_discord_permissions';
-    case 'invalid_grant':
-      return 'com_ui_discord_unconfirmed';
     case 'rate_limited':
       return 'com_ui_discord_rate_limited';
     case 'provider_unavailable':
@@ -187,6 +182,10 @@ function Setup({
       client.invalidateQueries([QueryKeys.agentChannels]),
     ]);
   }, [client, principalKey, cancelReads]);
+  /** A failure answers a user action: focusing it scrolls a long dialog to it and keeps keyboard users oriented. */
+  const reveal = useCallback((node: HTMLDivElement | null) => {
+    node?.focus();
+  }, []);
   // No optimistic cache writes: all pages reconcile after success, rejection or an uncertain response.
   const lifecycle = { onMutate: cancelReads, onError: cancelReads, onSettled: refresh };
   const save = useMutation({
@@ -446,7 +445,7 @@ function Setup({
         </Alert>
       )}
       {Boolean(mutationError) && (
-        <Alert variant="error">
+        <Alert ref={reveal} tabIndex={-1} variant="error">
           {localize(errorLabel(mutationError))}
           <Button
             type="button"
@@ -468,7 +467,11 @@ function Setup({
       )}
       {save.isSuccess && <p role="status">{localize('com_ui_discord_saved')}</p>}
       {flow && (
-        <Alert variant={flow === 'failed' ? 'warning' : 'info'}>
+        <Alert
+          ref={flow === 'failed' ? reveal : undefined}
+          tabIndex={flow === 'failed' ? -1 : undefined}
+          variant={flow === 'failed' ? 'warning' : 'info'}
+        >
           <p>
             {localize(flow === 'failed' ? 'com_ui_discord_unconfirmed' : 'com_ui_discord_pending')}
           </p>
@@ -644,7 +647,7 @@ function Setup({
                   <p role="status">{localize('com_ui_discord_commands_success')}</p>
                 )}
               {commandAppId === app.applicationId && commands.isError && (
-                <Alert variant="error">
+                <Alert ref={reveal} tabIndex={-1} variant="error">
                   <p>{localize(errorLabel(commands.error))}</p>
                   <Button
                     type="button"

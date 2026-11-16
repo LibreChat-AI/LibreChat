@@ -317,6 +317,46 @@ test('reconciles an uncertain write and requires an explicit status check before
   expect(dataService.bindDiscordChannel).toHaveBeenCalledTimes(1);
 });
 
+test.each([
+  ['provider_refused', 'com_ui_discord_binding_refused'],
+  ['rate_limited', 'com_ui_discord_rate_limited'],
+  ['provider_unavailable', 'com_ui_discord_provider_unavailable'],
+  ['timeout', 'com_ui_discord_provider_unavailable'],
+  ['unsupported_installation', 'com_ui_discord_code_grant'],
+])('explains provider code %s and still requires a status check', async (code, label) => {
+  jest
+    .mocked(dataService.bindDiscordChannel)
+    .mockRejectedValueOnce(
+      Object.assign(new Error('Bot private-token refused'), { code, status: 409 }),
+    );
+  const { user } = await page();
+  await ready();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' }));
+  expect(await screen.findByText(label)).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_binding_uncertain')).toBeNull();
+  expect(screen.getByText('com_ui_discord_binding_check_help')).toBeVisible();
+  expect(screen.queryByText(/private-token/)).toBeNull();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' })).toBeDisabled();
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'com_ui_discord_binding_check' })).toHaveFocus(),
+  );
+  expect(dataService.bindDiscordChannel).toHaveBeenCalledTimes(1);
+});
+
+test.each(['binding_uncertain', 'unavailable', 'unrecognized_code'])(
+  'keeps the uncertain wording for the %s code',
+  async (code) => {
+    jest
+      .mocked(dataService.bindDiscordChannel)
+      .mockRejectedValueOnce(Object.assign(new Error('safe'), { code }));
+    const { user } = await page();
+    await ready();
+    await user.click(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' }));
+    expect(await screen.findByText('com_ui_discord_binding_uncertain')).toBeVisible();
+    expect(screen.getByText('com_ui_discord_binding_check_help')).toBeVisible();
+  },
+);
+
 test('keeps controls disabled when an uncertain write cannot be reconciled', async () => {
   const { user } = await page();
   await ready();
