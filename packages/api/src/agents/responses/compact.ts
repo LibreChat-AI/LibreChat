@@ -8,6 +8,7 @@ import type { CompactionItemParam } from './types';
 import type { ServerRequest } from '~/types/http';
 import { sendResponsesErrorResponse, validateInputToolExchanges } from './service';
 import { createPrivateTextCipher } from '~/protection/private/crypto';
+import { resolveRequestTenantId } from '~/middleware/tenant';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { responseTenantId } from './scope';
 
@@ -49,7 +50,10 @@ function options(req: Request) {
 }
 function owner(req: Request) {
   const user = (req as ServerRequest).user;
-  return { userId: String(user?.id ?? ''), tenantId: responseTenantId(user?.tenantId) ?? '' };
+  return {
+    userId: String(user?.id ?? ''),
+    tenantId: responseTenantId(resolveRequestTenantId(req as ServerRequest)) ?? '',
+  };
 }
 
 /** Only the admitted compact route can request summarize-only execution. */
@@ -76,6 +80,12 @@ export function responseRunOperation(req: Request): ResponseRunOperation {
       ) {
         const error = new Error('Compaction is disabled for this agent.');
         throw Object.assign(error, { status: 409, code: 'compaction_unavailable' });
+      }
+      if (params.agent?.sdk_runtime != null) {
+        throw Object.assign(new Error('Compaction is unavailable for SDK runtimes.'), {
+          status: 409,
+          code: 'compaction_unavailable',
+        });
       }
       return {
         ...params,
@@ -162,11 +172,26 @@ export function createResponseCompaction(deps: {
       );
     const config = options(req);
     const input: unknown[] = [];
+    let inputBytes = 2; // JSON array brackets. Count UTF-8 bytes once per appended item.
+    const append = (item: unknown) => {
+      inputBytes += Buffer.byteLength(JSON.stringify(item) ?? 'null') + (input.length ? 1 : 0);
+      if (inputBytes > config.maxInputBytes) return false;
+      input.push(item);
+      return true;
+    };
+    const tooLarge = () =>
+      sendResponsesErrorResponse(
+        res,
+        413,
+        'Compacted input exceeds the configured limit.',
+        'invalid_request',
+        'request_too_large',
+      );
     let encryption: PrivateTextCipher | undefined;
     try {
       for (const item of body.input) {
         if (!item || typeof item !== 'object' || item.type !== 'compaction') {
-          input.push(item);
+          if (!append(item)) return void tooLarge();
           continue;
         }
         if (!config.enabled) throw new Error('disabled');
@@ -201,13 +226,14 @@ export function createResponseCompaction(deps: {
         )
           throw new Error('scope');
         // A summary remains lower-trust conversation data, never an instruction or authority grant.
-        input.push({
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'output_text', text: restored.summary }],
-        });
-        if (Buffer.byteLength(JSON.stringify(input)) > config.maxInputBytes)
-          throw new Error('size');
+        if (
+          !append({
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: restored.summary }],
+          })
+        )
+          return void tooLarge();
       }
     } catch {
       return void sendResponsesErrorResponse(
@@ -218,14 +244,6 @@ export function createResponseCompaction(deps: {
         'invalid_compaction',
       );
     }
-    if (Buffer.byteLength(JSON.stringify(input)) > config.maxInputBytes)
-      return void sendResponsesErrorResponse(
-        res,
-        413,
-        'Compacted input exceeds the configured limit.',
-        'invalid_request',
-        'request_too_large',
-      );
     req.body = { ...body, input };
     next();
   };

@@ -93,6 +93,28 @@ for (const stream of [false, true]) {
       });
       expect(invalid.status()).toBe(400);
       expect(await invalid.text()).not.toContain('Tuesday');
+      // A runtime binding must fail before any provider/worker execution.
+      await withMongo(async (db) => {
+        await db
+          .collection('agents')
+          .updateOne(
+            { id: agent.id },
+            { $set: { sdk_runtime: { id: 'unsupported-runtime', protocolVersion: 1 } } },
+          );
+      });
+      const beforeRuntime = await request.get('http://127.0.0.1:8889/__e2e/requests');
+      const beforeRequests = await beforeRuntime.json();
+      const unsupported = await request.post('/api/agents/v1/responses/compact', {
+        headers: remote,
+        data: { model: agent.id, input: 'Summarize without executing a runtime' },
+      });
+      expect(unsupported.status(), await unsupported.text()).toBe(409);
+      expect((await unsupported.json()).error.code).toBe('compaction_unavailable');
+      const afterRuntime = await request.get('http://127.0.0.1:8889/__e2e/requests');
+      expect(await afterRuntime.json()).toEqual(beforeRequests);
+      await withMongo(async (db) => {
+        await db.collection('agents').updateOne({ id: agent.id }, { $unset: { sdk_runtime: '' } });
+      });
       await withMongo(async (db) => {
         await db
           .collection('agents')

@@ -1200,6 +1200,30 @@ describe('createResponse controller', () => {
     );
   });
 
+  it.each([
+    { id: 'local-sdk', protocolVersion: 1 },
+    { id: 'remote-sdk', protocolVersion: 1 },
+  ])('rejects SDK runtime %p before compaction initializes or executes it', async (sdk_runtime) => {
+    const api = require('@librechat/api');
+    const db = require('~/models');
+    req.config.endpoints.agents.responses = { compaction: { enabled: true } };
+    const agent = await db.getAgent();
+    db.getAgent.mockResolvedValueOnce({ ...agent, sdk_runtime });
+    const compact = jest
+      .requireActual('@librechat/api')
+      .createResponseCompaction({ create: createResponse, getKey: () => 'ab'.repeat(32) });
+    await compact.create(req, res, jest.fn());
+    expect(api.initializeAgent).not.toHaveBeenCalled();
+    expect(api.createRun).not.toHaveBeenCalled();
+    expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+      res,
+      409,
+      expect.any(String),
+      'invalid_request',
+      'compaction_unavailable',
+    );
+  });
+
   it('continues a stored response ID in its owner-scoped conversation', async () => {
     const api = require('@librechat/api');
     const db = require('~/models');

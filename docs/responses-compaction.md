@@ -20,7 +20,9 @@ content-protection, model configuration, execution lifecycle, billing and
 summarization paths. It is a summarize-only operation: tool loading, code/file
 resources, skills and subagent graph initialization are excluded. It cannot
 start a background run or continue a stored response. Compaction requires
-summarization to be enabled for the selected agent/deployment.
+summarization to be enabled for the selected agent/deployment. Agents with an
+`sdk_runtime` binding are rejected before initialization: custom/remote runtime
+protocols do not yet enforce the required summarize-only operation.
 
 The shared summarizer normally retains recent live turns for the UI. Standalone
 compaction has no separate live tail, so it summarizes the explicit window.
@@ -39,7 +41,7 @@ and pass through current content protection before reaching the model.
 Compaction does not persist a transcript (`store:false`). Its client-carried
 state uses authenticated AES-GCM encryption under a key derived specifically
 for Responses compaction from the deployment's `CREDS_KEY`. Authentication binds
-it to the original user, tenant and agent. Current API authorization is still
+it to the original user, effective request tenant and agent. Current API authorization is still
 required at replay time. Tampering, expiry, another principal/agent, or key
 rotation prevents replay. All replicas that accept these items need the same
 credential key and synchronized clocks (bounded skew is configurable); malformed keys fail before model work. Existing credential and

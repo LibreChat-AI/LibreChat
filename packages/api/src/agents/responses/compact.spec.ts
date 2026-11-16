@@ -2,7 +2,7 @@ import express from 'express';
 import request from 'supertest';
 import { createResponseCompaction, responseRunOperation } from './compact';
 const key = 'ab'.repeat(32);
-function fixture() {
+function fixture(config: { maxInputBytes?: number } = {}) {
   let now = 10000;
   let activeKey = key;
   let summary = true;
@@ -33,14 +33,20 @@ function fixture() {
     },
   });
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '4mb' }));
   app.use((req, _res, next) => {
     Object.assign(req, {
       user: {
         id: req.headers['x-owner'] ?? 'owner',
-        tenantId: req.headers['x-tenant'] ?? 'tenant',
+        tenantId:
+          req.headers['x-tenant'] === 'none' ? undefined : (req.headers['x-tenant'] ?? 'tenant'),
       },
-      config: { endpoints: { agents: { responses: { compaction: { enabled, maxAgeMs: 1000 } } } } },
+      tenantId: req.headers['x-request-tenant'],
+      config: {
+        endpoints: {
+          agents: { responses: { compaction: { enabled, maxAgeMs: 1000, ...config } } },
+        },
+      },
     });
     next();
   });
@@ -223,4 +229,83 @@ it.each([
     .post('/responses')
     .send({ model: 'agent', input: compact.body.output });
   expect(result.status).toBe(expected);
+});
+
+it.each(['none', 'credential-tenant'])(
+  'binds effective request tenants with user tenant %s',
+  async (userTenant) => {
+    const f = fixture();
+    const compact = await request(f.app)
+      .post('/compact')
+      .set('x-tenant', userTenant)
+      .set('x-request-tenant', 'request-a')
+      .send({ model: 'agent', input: 'context' })
+      .expect(200);
+    for (const tenant of ['request-a', 'request-b']) {
+      const replay = await request(f.app)
+        .post('/responses')
+        .set('x-tenant', userTenant)
+        .set('x-request-tenant', tenant)
+        .send({ model: 'agent', input: compact.body.output })
+        .expect(tenant === 'request-a' ? 200 : 400);
+      if (tenant === 'request-b') expect(replay.body.error.code).toBe('invalid_compaction');
+      else expect(replay.body.input).toHaveLength(1);
+    }
+  },
+);
+
+it('bounds mixed expanded UTF-8 input including ordinary items and separators', async () => {
+  const f = fixture({ maxInputBytes: 1024 });
+  const compact = await request(f.app)
+    .post('/compact')
+    .send({ model: 'agent', input: 'context' })
+    .expect(200);
+  const restored = {
+    type: 'message',
+    role: 'assistant',
+    content: [{ type: 'output_text', text: 'Tuesday launch; notify support first.' }],
+  };
+  const ordinary = { type: 'message', role: 'user', content: '🦊'.repeat(40) };
+  const input = [compact.body.output[0], ordinary];
+  const expected = [restored, ordinary];
+  while (Buffer.byteLength(JSON.stringify([...expected, ordinary])) <= 1024) {
+    input.push(ordinary);
+    expected.push(ordinary);
+  }
+  await request(f.app).post('/responses').send({ model: 'agent', input }).expect(200);
+  const rejected = await request(f.app)
+    .post('/responses')
+    .send({ model: 'agent', input: [...input, ordinary] })
+    .expect(413);
+  expect(rejected.body.error.code).toBe('request_too_large');
+});
+
+it('expands repeated valid items with linear serialization work', async () => {
+  const f = fixture();
+  const compact = await request(f.app)
+    .post('/compact')
+    .send({ model: 'agent', input: 'context' })
+    .expect(200);
+  const stringify = JSON.stringify;
+  let serialized = 0;
+  const spy = jest
+    .spyOn(JSON, 'stringify')
+    .mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+      const value = stringify(...args);
+      serialized += value?.length ?? 0;
+      return value;
+    });
+  try {
+    const input = Array.from({ length: 1000 }, () => compact.body.output[0]);
+    const result = await request(f.app)
+      .post('/responses')
+      .send({ model: 'agent', input })
+      .expect(200);
+    expect(result.body.input).toHaveLength(1000);
+    // Includes client request encoding and the final response, not just expansion internals.
+    const wireBytes = stringify(input).length + stringify(result.body).length;
+    expect(serialized).toBeLessThan(wireBytes * 4);
+  } finally {
+    spy.mockRestore();
+  }
 });
