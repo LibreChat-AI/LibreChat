@@ -198,6 +198,63 @@ describe('getGoogleConfig', () => {
     });
   });
 
+  describe('maxOutputTokens above the model limit', () => {
+    const credentials = {
+      [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+    };
+    const vertexCredentials = {
+      [AuthKeys.GOOGLE_SERVICE_KEY]: {
+        project_id: 'test-project',
+        client_email: 'test@test-project.iam.gserviceaccount.com',
+        private_key: 'test-private-key',
+      },
+    };
+
+    it('caps an explicit value at the current Gemini limit', () => {
+      const result = getGoogleConfig(credentials, {
+        modelOptions: { model: 'gemini-2.5-pro', maxOutputTokens: 128000 },
+      });
+      expect(result.llmConfig).toHaveProperty('maxOutputTokens', 65535);
+    });
+
+    it('caps an explicit value at the image model limit', () => {
+      const result = getGoogleConfig(credentials, {
+        modelOptions: { model: 'gemini-2.5-flash-image', maxOutputTokens: 65535 },
+      });
+      expect(result.llmConfig).toHaveProperty('maxOutputTokens', 32768);
+    });
+
+    it('caps the value on Vertex AI', () => {
+      const result = getGoogleConfig(vertexCredentials, {
+        modelOptions: { model: 'gemini-2.5-flash', maxOutputTokens: 128000 },
+      });
+      expect(result.provider).toBe(Providers.VERTEXAI);
+      expect(result.llmConfig).toHaveProperty('maxOutputTokens', 65535);
+    });
+
+    it('caps an addParams value', () => {
+      const result = getGoogleConfig(credentials, {
+        modelOptions: { model: 'gemini-2.5-pro' },
+        addParams: { maxOutputTokens: 100000 },
+      });
+      expect(result.llmConfig).toHaveProperty('maxOutputTokens', 65535);
+    });
+
+    it('keeps a value above 8192 for a model name without a known limit', () => {
+      const result = getGoogleConfig(credentials, {
+        modelOptions: { model: 'gemini-flash-latest', maxOutputTokens: 32000 },
+      });
+      expect(result.llmConfig).toHaveProperty('maxOutputTokens', 32000);
+    });
+
+    it('caps a model name without a known limit at 65535', () => {
+      const result = getGoogleConfig(credentials, {
+        modelOptions: { model: 'gemini-flash-latest', maxOutputTokens: 128000 },
+      });
+      expect(result.llmConfig).toHaveProperty('maxOutputTokens', 65535);
+    });
+  });
+
   describe('Empty String Handling (Issue Fix)', () => {
     it('should remove empty string maxOutputTokens from config', () => {
       const credentials = {
