@@ -4,7 +4,7 @@
 # MongoDB, also add docker-compose.mongo-replica.yml; read the existing-data
 # conversion instructions before applying it to an existing database.
 # Slack app credentials are registered by organization admins in LibreChat, not in .env.
-# Setup: https://www.librechat.ai/docs/features/agent_channels
+# Setup: https://www.librechat.ai/docs/features/discord_channels#docker-compose
 services:
   api:
     environment:
