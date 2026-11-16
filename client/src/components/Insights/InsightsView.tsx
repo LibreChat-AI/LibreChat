@@ -1007,6 +1007,7 @@ export default function InsightsView() {
               disabled={agentItems.length <= 1 && displayedAgentIds.length > 0}
               showSelectedValues
               showItemCheckboxes
+              virtualized={agentItems.length > 10}
               searchPlaceholder={
                 agentItems.length > 10 ? localize('com_insights_search_agents') : undefined
               }
@@ -1123,7 +1124,7 @@ export default function InsightsView() {
       </header>
       <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
         <div className="flex w-full min-w-0 flex-col gap-3 px-8 pt-8 pb-4">
-          {insights.isLoading && <LoadingState message={localize('com_insights_loading')} />}
+          {insights.isFetching && <LoadingState message={localize('com_insights_loading')} />}
           {insights.isError && (
             <Panel className="flex items-center gap-2">
               <AlertCircle className="text-status-error size-4" />
@@ -1134,14 +1135,14 @@ export default function InsightsView() {
               </span>
             </Panel>
           )}
-          {data?.selectionRequired && (
+          {data?.selectionRequired && !insights.isPreviousData && (
             <Panel>
               <p className="text-text-secondary text-sm">
                 {localize('com_insights_select_agents_to_load')}
               </p>
             </Panel>
           )}
-          {data && !data.selectionRequired && (
+          {data && !data.selectionRequired && !insights.isPreviousData && (
             <>
               <p className="text-text-secondary text-sm">
                 {localize('com_insights_last_used')}{' '}

@@ -48,6 +48,7 @@ const mockUseInsightsQuery = jest.fn(
     data?: TInsightsResponse;
     isLoading: boolean;
     isFetching: boolean;
+    isPreviousData?: boolean;
     isError?: boolean;
     error: Error | null;
     params: TInsightsParams;
@@ -226,6 +227,25 @@ describe('InsightsView agent selection', () => {
       error: null,
       params,
     }));
+  });
+
+  it('keeps agent choices available but hides previous statistics while a new selection loads', () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: insightsData,
+      isLoading: false,
+      isFetching: true,
+      isPreviousData: true,
+      error: null,
+      params,
+    }));
+    renderView('/insights?agentIds=agent-2');
+    expect(lastQueryParams().agentIds).toEqual(['agent-2']);
+    expect(screen.getByRole('combobox')).toHaveTextContent('Beta');
+    expect(screen.getByText('com_insights_loading')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'com_insights_models' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'com_insights_total_messages' }),
+    ).not.toBeInTheDocument();
   });
 
   it('redirects a direct visit and disables statistics loading when startup disables Insights', () => {
@@ -588,7 +608,7 @@ describe('InsightsView agent selection', () => {
     await user.keyboard('{Escape}');
     await user.click(screen.getByText('com_insights_all_agents:12'));
     expect(screen.getByRole('textbox', { name: 'com_insights_search_agents' })).toHaveValue('');
-    expect(screen.getAllByRole('option')).toHaveLength(12);
+    expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-setsize', '12');
   });
 
   it('clears every agent without committing the empty selection', async () => {

@@ -1,5 +1,6 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Check, Search } from 'lucide-react';
+import { SelectRenderer } from '@ariakit/react-components/select/select-renderer';
 import {
   Select,
   SelectArrow,
@@ -10,6 +11,8 @@ import {
   SelectPopover,
   SelectProvider,
 } from '@ariakit/react';
+import type { SelectRendererBaseItemProps } from '@ariakit/react-components/select/select-renderer';
+import useRemScale from '~/hooks/useRemScale';
 import './AnimatePopover.css';
 import { JSX } from 'react/jsx-runtime';
 import { cn, disabledFillClasses } from '~/utils';
@@ -57,6 +60,8 @@ interface MultiSelectProps<T extends string> {
   disabled?: boolean;
   showSelectedValues?: boolean;
   showItemCheckboxes?: boolean;
+  /** Window large lists while keeping search and keyboard access to every option. */
+  virtualized?: boolean;
   onOpenChange?: (open: boolean) => void;
 }
 
@@ -104,14 +109,19 @@ export default function MultiSelect<T extends string>({
   disabled = false,
   showSelectedValues = false,
   showItemCheckboxes = false,
+  virtualized = false,
   onOpenChange,
 }: MultiSelectProps<T>): JSX.Element {
   const selectRef = useRef<HTMLButtonElement>(null);
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const visibleItems = items.filter((item) =>
-    getItemLabel(item).toLowerCase().includes(search.trim().toLowerCase()),
-  );
+  const remScale = useRemScale();
+  const visibleItems = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return items
+      .filter((item) => getItemLabel(item).toLowerCase().includes(needle))
+      .map((item) => ({ value: getItemValue(item), label: getItemLabel(item) }));
+  }, [items, search]);
 
   const handleValueChange = (values: T[]) => {
     setSelectedValues(values);
@@ -128,6 +138,52 @@ export default function MultiSelect<T extends string>({
     if (onOpenChange) {
       onOpenChange(open);
     }
+  };
+
+  const renderOption = ({
+    value,
+    label,
+    ...props
+  }: Partial<SelectRendererBaseItemProps> & { value: T; label: string }) => {
+    const isCurrentItemSelected = selectedValues.includes(value);
+    const defaultContent = (
+      <>
+        {showItemCheckboxes ? (
+          <span
+            aria-hidden="true"
+            className={cn(
+              'border-border-xheavy flex size-4 shrink-0 items-center justify-center rounded-sm border',
+              isCurrentItemSelected && 'bg-surface-inverted text-text-inverted',
+            )}
+          >
+            {isCurrentItemSelected && <Check className="size-3.5" strokeWidth={2} />}
+          </span>
+        ) : (
+          <SelectItemCheck className="text-text-primary me-0.5" />
+        )}
+        <span className="truncate">{label}</span>
+      </>
+    );
+    return (
+      <SelectItem
+        key={value}
+        {...props}
+        value={value}
+        aria-label={label}
+        className={cn(
+          'flex items-center gap-2 rounded-lg px-2 py-1.5 hover:cursor-pointer',
+          'scroll-m-1 outline-hidden transition-colors',
+          'hover:bg-surface-hover',
+          'data-[active-item]:bg-surface-active',
+          'w-full min-w-0 text-sm',
+          itemClassName,
+        )}
+      >
+        {renderItemContent
+          ? (renderItemContent(value, defaultContent, isCurrentItemSelected) as React.JSX.Element)
+          : (defaultContent as React.JSX.Element)}
+      </SelectItem>
+    );
   };
 
   return (
@@ -204,52 +260,18 @@ export default function MultiSelect<T extends string>({
             {popoverHeader}
           </div>
           <SelectList className="min-h-0 overflow-y-auto overscroll-contain">
-            {visibleItems.map((item) => {
-              const value = getItemValue(item);
-              const label = getItemLabel(item);
-              const isCurrentItemSelected = selectedValues.includes(value);
-              const defaultContent = (
-                <>
-                  {showItemCheckboxes ? (
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        'border-border-xheavy flex size-4 shrink-0 items-center justify-center rounded-sm border',
-                        isCurrentItemSelected && 'bg-surface-inverted text-text-inverted',
-                      )}
-                    >
-                      {isCurrentItemSelected && <Check className="size-3.5" strokeWidth={2} />}
-                    </span>
-                  ) : (
-                    <SelectItemCheck className="text-text-primary me-0.5" />
-                  )}
-                  <span className="truncate">{label}</span>
-                </>
-              );
-              return (
-                <SelectItem
-                  key={value}
-                  value={value}
-                  aria-label={label}
-                  className={cn(
-                    'flex items-center gap-2 rounded-lg px-2 py-1.5 hover:cursor-pointer',
-                    'scroll-m-1 outline-hidden transition-colors',
-                    'hover:bg-surface-hover',
-                    'data-[active-item]:bg-surface-active',
-                    'w-full min-w-0 text-sm',
-                    itemClassName,
-                  )}
-                >
-                  {renderItemContent
-                    ? (renderItemContent(
-                        value,
-                        defaultContent,
-                        isCurrentItemSelected,
-                      ) as React.JSX.Element)
-                    : (defaultContent as React.JSX.Element)}
-                </SelectItem>
-              );
-            })}
+            {virtualized ? (
+              <SelectRenderer
+                items={visibleItems}
+                value={selectedValues[0] ?? ''}
+                estimatedItemSize={32 * remScale}
+                overscan={5}
+              >
+                {renderOption}
+              </SelectRenderer>
+            ) : (
+              visibleItems.map(renderOption)
+            )}
           </SelectList>
           {visibleItems.length === 0 && searchEmptyText && (
             <div role="status" className="text-text-secondary px-4 py-3 text-sm">
