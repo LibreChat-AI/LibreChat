@@ -355,13 +355,16 @@ it('uses one application owner for bot delivery while the optional Gateway socke
   });
 });
 
+const observe = (body: object) =>
+  request(server())
+    .post('/observeCredentials')
+    .auth('private-service-'.repeat(3), { type: 'bearer' })
+    .send(body);
+const health = () =>
+  scoped(async () => (await installs.readApplication(applicationId))?.credentialHealth);
+
 it('records only authenticated owner-fenced credential states with a server timestamp', async () => {
-  const app = server();
-  const send = (body: object) =>
-    request(app)
-      .post('/observeCredentials')
-      .auth('private-service-'.repeat(3), { type: 'bearer' })
-      .send(body);
+  const send = (body: object) => observe({ sequence: 1, ...body });
   expect((await send({ owner: current(), state: 'invalid' })).status).toBe(409);
   await service.acquire(current(), 30000);
   for (const extra of [{ checkedAt: 1 }, { tenantId: 'foreign' }, { error: 'private-token' }]) {
@@ -379,8 +382,75 @@ it('records only authenticated owner-fenced credential states with a server time
     expect(record?.revision).toBe(revision);
   });
   expect(
-    (await send({ owner: { ...current(), applicationRevision: 'stale' }, state: 'valid' })).status,
+    (
+      await send({
+        owner: { ...current(), applicationRevision: 'stale' },
+        state: 'valid',
+        sequence: 2,
+      })
+    ).status,
   ).toBe(409);
   await service.release(current());
-  expect((await send({ owner: current(), state: 'valid' })).status).toBe(409);
+  expect((await send({ owner: current(), state: 'valid', sequence: 2 })).status).toBe(409);
+});
+
+it('rejects a missing or malformed sequence before it reaches storage', async () => {
+  await service.acquire(current(), 30000);
+  const before = await health();
+  const spy = jest.spyOn(storage, 'observeCredentials');
+  const body = { owner: current(), state: 'invalid' };
+  expect((await observe(body)).status).toBe(400);
+  for (const sequence of [0, -1, 1.5, '1', null, true, [1], {}, 2 ** 53, 1e308])
+    expect((await observe({ ...body, sequence })).status).toBe(400);
+  expect((await observe({ ...body, sequence: 1, sequences: [1] })).status).toBe(400);
+  expect(spy).not.toHaveBeenCalled();
+  expect(await health()).toEqual(before);
+  spy.mockRestore();
+  for (const sequence of [undefined, 0, -1, 1.5, NaN])
+    await expect(
+      service.observeCredentials(current(), 'invalid', sequence as number),
+    ).rejects.toThrow();
+  expect(await health()).toEqual(before);
+  expect((await observe({ ...body, sequence: Number.MAX_SAFE_INTEGER })).status).toBe(204);
+  expect((await health())?.state).toBe('invalid');
+});
+
+it('acknowledges an older or repeated observation without changing the record or exposing the fence', async () => {
+  await service.acquire(current(), 30000);
+  const send = (state: string, sequence: number) => observe({ owner: current(), state, sequence });
+  expect((await send('invalid', 5)).status).toBe(204);
+  const winner = await health();
+  expect(winner?.state).toBe('invalid');
+  for (const [state, sequence] of [
+    ['valid', 4],
+    ['valid', 5],
+    ['invalid', 1],
+  ] as const)
+    expect((await send(state, sequence)).status).toBe(204);
+  expect(await health()).toEqual(winner);
+  expect((await send('valid', 6)).status).toBe(204);
+  expect((await health())?.state).toBe('valid');
+  const views = await scoped(async () =>
+    JSON.stringify([
+      await installs.readApplication(applicationId),
+      await installs.listApplications(),
+      await installs.lookupApplication(applicationId),
+    ]),
+  );
+  expect(views).not.toContain('credentialFence');
+  expect(views).not.toContain('sequence');
+});
+
+it('keeps a late older observation from a lost owner out while the new owner starts fresh', async () => {
+  const first = current();
+  const second = { ...current(), ownerId: 'b'.repeat(32) };
+  await service.acquire(first, 30000);
+  expect((await observe({ owner: first, state: 'invalid', sequence: 40 })).status).toBe(204);
+  await service.release(first);
+  expect(await service.acquire(second, 30000)).toBe(true);
+  expect((await observe({ owner: second, state: 'valid', sequence: 1 })).status).toBe(204);
+  const fresh = await health();
+  expect(fresh?.state).toBe('valid');
+  expect((await observe({ owner: first, state: 'invalid', sequence: 99 })).status).toBe(409);
+  expect(await health()).toEqual(fresh);
 });

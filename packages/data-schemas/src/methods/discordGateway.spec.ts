@@ -16,6 +16,10 @@ const applicationId = '123456789012345678';
 const botUserId = '234567890123456789';
 const scoped = <T>(work: () => Promise<T>, value = tenantId) =>
   tenantStorage.run({ tenantId: value }, work);
+const sequence = () => {
+  let value = 0;
+  return () => (value += 1);
+};
 const owner = (applicationRevision: string, id = 'a') => ({
   applicationId,
   applicationRevision,
@@ -369,27 +373,28 @@ it('grants exactly the requested current duration and refreshes idempotent acqui
 it('records credential observations only for the current leased revision and resets them on rotation', () =>
   scoped(async () => {
     const current = owner(revision);
+    const next = sequence();
     const initial = await installs.readApplication(applicationId);
     expect(initial?.credentialHealth).toEqual({ state: 'valid', checkedAt: expect.any(Number) });
-    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    expect(await storage.observeCredentials(current, 'invalid', next())).toBe(false);
     await storage.acquire(current, 30000);
     const before = Date.now();
-    expect(await storage.observeCredentials(current, 'invalid')).toBe(true);
+    expect(await storage.observeCredentials(current, 'invalid', next())).toBe(true);
     const invalid = await installs.readApplication(applicationId);
     expect(invalid?.revision).toBe(revision);
     expect(invalid?.credentialHealth?.state).toBe('invalid');
     expect(invalid?.credentialHealth?.checkedAt).toBeGreaterThanOrEqual(before);
     expect(invalid?.credentialHealth?.checkedAt).toBeLessThanOrEqual(Date.now());
-    expect(await storage.observeCredentials(owner(revision, 'b'), 'valid')).toBe(false);
+    expect(await storage.observeCredentials(owner(revision, 'b'), 'valid', next())).toBe(false);
     await scoped(async () => {
-      expect(await storage.observeCredentials(current, 'valid')).toBe(false);
+      expect(await storage.observeCredentials(current, 'valid', next())).toBe(false);
     }, 'foreign');
     expect((await installs.readApplication(applicationId))?.credentialHealth).toEqual(
       invalid?.credentialHealth,
     );
-    expect(await storage.observeCredentials(current, 'valid')).toBe(true);
+    expect(await storage.observeCredentials(current, 'valid', next())).toBe(true);
     expect((await installs.readApplication(applicationId))?.credentialHealth?.state).toBe('valid');
-    await storage.observeCredentials(current, 'invalid');
+    await storage.observeCredentials(current, 'invalid', next());
     const changed = await installs.configureApplication({
       actorId: userId,
       applicationId,
@@ -399,27 +404,28 @@ it('records credential observations only for the current leased revision and res
       encryptedBotToken: 'rotated-token',
     });
     expect(changed.ok).toBe(true);
-    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    expect(await storage.observeCredentials(current, 'invalid', next())).toBe(false);
     expect((await installs.readApplication(applicationId))?.credentialHealth?.state).toBe('valid');
   }));
 it('does not persist credential observations after lease release, expiry, owner deletion or policy disablement', () =>
   scoped(async () => {
     const current = owner(revision);
+    const next = sequence();
     await storage.acquire(current, 30000);
     await storage.release(current);
-    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    expect(await storage.observeCredentials(current, 'invalid', next())).toBe(false);
     await storage.acquire(current, 30000);
     await createResourceLockModel(db).updateOne(
       { key: `discord:gateway:${applicationId}` },
       { $set: { expiresAt: new Date(0) } },
     );
-    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    expect(await storage.observeCredentials(current, 'invalid', next())).toBe(false);
     await storage.acquire(current, 30000);
     settings = null;
-    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    expect(await storage.observeCredentials(current, 'invalid', next())).toBe(false);
     settings = { ownershipLeaseMs: 30000, shardCount: 2 };
     await createUserModel(db).deleteOne({ _id: userId });
-    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    expect(await storage.observeCredentials(current, 'invalid', next())).toBe(false);
     expect((await installs.readApplication(applicationId))?.credentialHealth?.state).toBe('valid');
   }));
 
@@ -450,9 +456,10 @@ it('projects legacy and malformed credential metadata as unknown without exposin
 it('fences a concurrent old-owner observation against rotation', () =>
   scoped(async () => {
     const current = owner(revision);
+    const next = sequence();
     await storage.acquire(current, 30000);
     const [, changed] = await Promise.all([
-      storage.observeCredentials(current, 'invalid'),
+      storage.observeCredentials(current, 'invalid', next()),
       installs.configureApplication({
         actorId: userId,
         applicationId,
@@ -464,5 +471,187 @@ it('fences a concurrent old-owner observation against rotation', () =>
     ]);
     expect(changed.ok).toBe(true);
     expect((await installs.readApplication(applicationId))?.credentialHealth?.state).toBe('valid');
-    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    expect(await storage.observeCredentials(current, 'invalid', next())).toBe(false);
+  }));
+
+const recorded = async () => (await installs.readApplication(applicationId))?.credentialHealth;
+const gate = () => {
+  let open: () => void = () => undefined;
+  const closed = new Promise<void>((resolve) => (open = resolve));
+  return { open, closed };
+};
+// A request held before it touches the database, as a stalled server side retry would be.
+const held = (closed: Promise<void>) =>
+  createDiscordGatewayStorage(db, async () => {
+    await closed;
+    return settings;
+  });
+
+it('keeps the newest observation when an older write reaches the database late', () =>
+  scoped(async () => {
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    const stalled = gate();
+    const older = held(stalled.closed).observeCredentials(current, 'valid', 1);
+    expect(await storage.observeCredentials(current, 'invalid', 2)).toBe(true);
+    const winner = await recorded();
+    expect(winner?.state).toBe('invalid');
+    stalled.open();
+    expect(await older).toBe(true);
+    expect(await recorded()).toEqual(winner);
+  }));
+it('treats older and repeated observations as successful no-ops that leave the record untouched', () =>
+  scoped(async () => {
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    expect(await storage.observeCredentials(current, 'invalid', 5)).toBe(true);
+    const winner = await recorded();
+    expect(winner?.state).toBe('invalid');
+    for (const [state, value] of [
+      ['valid', 4],
+      ['valid', 5],
+      ['invalid', 5],
+      ['valid', 1],
+    ] as const) {
+      expect(await storage.observeCredentials(current, state, value)).toBe(true);
+      expect(await recorded()).toEqual(winner);
+    }
+    expect(await storage.observeCredentials(current, 'valid', 6)).toBe(true);
+    const next = await recorded();
+    expect(next?.state).toBe('valid');
+    expect(next?.checkedAt).toBeGreaterThanOrEqual(winner!.checkedAt);
+  }));
+it.each(['release', 'expiry'] as const)(
+  'starts a new owner from its first observation after %s and keeps the old owner forbidden',
+  (end) =>
+    scoped(async () => {
+      const first = owner(revision, 'a');
+      const second = owner(revision, 'b');
+      await storage.acquire(first, 30000);
+      expect(await storage.observeCredentials(first, 'invalid', 7)).toBe(true);
+      if (end === 'release') await storage.release(first);
+      else
+        await createResourceLockModel(db).updateOne(
+          { key: `discord:gateway:${applicationId}` },
+          { $set: { expiresAt: new Date(0) } },
+        );
+      expect(await storage.acquire(second, 30000)).toBe(true);
+      expect(await storage.observeCredentials(second, 'valid', 1)).toBe(true);
+      const current = await recorded();
+      expect(current?.state).toBe('valid');
+      expect(await storage.observeCredentials(first, 'invalid', 99)).toBe(false);
+      expect(await recorded()).toEqual(current);
+      expect(await storage.observeCredentials(second, 'invalid', 1)).toBe(true);
+      expect(await recorded()).toEqual(current);
+      expect(await storage.observeCredentials(second, 'invalid', 2)).toBe(true);
+      expect((await recorded())?.state).toBe('invalid');
+    }),
+);
+it('rejects a missing or malformed sequence and never writes without one', () =>
+  scoped(async () => {
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    const before = await recorded();
+    const write = storage.observeCredentials as (...input: unknown[]) => Promise<boolean>;
+    for (const bad of [
+      0,
+      -1,
+      1.5,
+      NaN,
+      Infinity,
+      2 ** 53,
+      Number.MAX_SAFE_INTEGER + 2,
+      '1',
+      null,
+      undefined,
+      {},
+      [1],
+      true,
+    ])
+      await expect(write(current, 'invalid', bad)).rejects.toThrow();
+    await expect(write(current, 'invalid')).rejects.toThrow();
+    expect(await recorded()).toEqual(before);
+    expect(await storage.observeCredentials(current, 'invalid', Number.MAX_SAFE_INTEGER)).toBe(
+      true,
+    );
+    expect((await recorded())?.state).toBe('invalid');
+  }));
+it('keeps the highest sequence whatever order the writes commit in', () =>
+  scoped(async () => {
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    const writes = Array.from({ length: 5 }, (_, index) => ({
+      state: index % 2 ? ('invalid' as const) : ('valid' as const),
+      value: index + 1,
+    }));
+    const gates = writes.map(gate);
+    const pending = writes.map(({ state, value }, index) =>
+      held(gates[index].closed).observeCredentials(current, state, value),
+    );
+    const order = [4, 2, 0, 3, 1];
+    gates[order[0]].open();
+    expect(await pending[order[0]]).toBe(true);
+    const winner = await recorded();
+    expect(winner?.state).toBe(writes[4].state);
+    for (const index of order.slice(1)) {
+      gates[index].open();
+      expect(await pending[index]).toBe(true);
+      expect(await recorded()).toEqual(winner);
+    }
+    const raw = await createDiscordApplicationModel(db).collection.findOne({ applicationId });
+    expect(raw?.credentialFence?.sequence).toBe(5);
+  }));
+it('converges on the highest sequence when the writes race inside transactions', () =>
+  scoped(async () => {
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    const writes = Array.from({ length: 8 }, (_, index) => ({
+      state: index % 2 ? ('invalid' as const) : ('valid' as const),
+      value: index + 1,
+    }));
+    const arrival = [5, 1, 7, 0, 3, 6, 2, 4];
+    await Promise.all(
+      arrival.map((index) =>
+        storage.observeCredentials(current, writes[index].state, writes[index].value),
+      ),
+    );
+    expect((await recorded())?.state).toBe(writes[7].state);
+    const raw = await createDiscordApplicationModel(db).collection.findOne({ applicationId });
+    expect(raw?.credentialFence?.sequence).toBe(8);
+  }));
+it('keeps ordering metadata private while persisting it beside the health record', () =>
+  scoped(async () => {
+    const current = owner(revision, 'c');
+    await storage.acquire(current, 30000);
+    expect(await storage.observeCredentials(current, 'invalid', 3)).toBe(true);
+    const raw = await createDiscordApplicationModel(db).collection.findOne({ applicationId });
+    expect(raw?.credentialFence).toEqual({ holder: `${revision}:${current.ownerId}`, sequence: 3 });
+    const publicViews = JSON.stringify([
+      await installs.readApplication(applicationId),
+      await installs.listApplications(),
+      await installs.lookupApplication(applicationId),
+    ]);
+    for (const hidden of ['credentialFence', 'sequence', current.ownerId, `${revision}:`])
+      expect(publicViews).not.toContain(hidden);
+    expect(publicViews).toContain('"credentialHealth"');
+  }));
+it('does not let ordering metadata of a rotated revision block the next owner', () =>
+  scoped(async () => {
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    expect(await storage.observeCredentials(current, 'invalid', 41)).toBe(true);
+    const changed = await installs.configureApplication({
+      actorId: userId,
+      applicationId,
+      botUserId,
+      publicKey: 'a'.repeat(64),
+      expectedRevision: revision,
+      encryptedBotToken: 'rotated-token',
+    });
+    if (!changed.ok) throw new Error('Rotation unavailable');
+    await storage.release(current);
+    const rotated = owner(changed.value.revision, 'c');
+    expect(await storage.acquire(rotated, 30000)).toBe(true);
+    expect(await storage.observeCredentials(rotated, 'invalid', 1)).toBe(true);
+    expect((await recorded())?.state).toBe('invalid');
   }));

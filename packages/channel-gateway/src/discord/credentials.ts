@@ -4,7 +4,12 @@ import { discordCredentialObservation } from './observe';
 
 interface CredentialReporterOptions {
   owner: DiscordGatewayOwner;
-  write(owner: DiscordGatewayOwner, state: DiscordCredentialState): Promise<boolean>;
+  /** `sequence` counts this reporter's attempts; the server ignores a write that is not newer. */
+  write(
+    owner: DiscordGatewayOwner,
+    state: DiscordCredentialState,
+    sequence: number,
+  ): Promise<boolean>;
   /** Reuse the configured observation lifetime to bound repeated writes and outage retries. */
   intervalMs: number;
   now?: () => number;
@@ -16,6 +21,7 @@ export class DiscordCredentialReporter {
   private readonly now: () => number;
   private pending?: DiscordCredentialState;
   private attempt?: { state: DiscordCredentialState; at: number };
+  private sequence = 0;
   private running?: Promise<void>;
   private closed = false;
 
@@ -62,7 +68,7 @@ export class DiscordCredentialReporter {
         continue;
       this.attempt = { state, at };
       try {
-        if (!(await this.options.write(this.owner, state))) {
+        if (!(await this.options.write(this.owner, state, (this.sequence += 1)))) {
           this.closed = true;
           this.pending = undefined;
         }

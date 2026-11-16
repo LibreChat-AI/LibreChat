@@ -75,7 +75,7 @@ describe('lease-scoped credential reporter', () => {
     for (let index = 0; index < 1000; index++) reporter.observe(valid);
     await settle();
     expect(write).toHaveBeenCalledTimes(1);
-    expect(write).toHaveBeenLastCalledWith(owner, 'valid');
+    expect(write).toHaveBeenLastCalledWith(owner, 'valid', 1);
     clock(1099);
     reporter.observe(valid);
     await settle();
@@ -86,7 +86,7 @@ describe('lease-scoped credential reporter', () => {
     expect(write).toHaveBeenCalledTimes(2);
     reporter.observe(invalid);
     await settle();
-    expect(write).toHaveBeenLastCalledWith(owner, 'invalid');
+    expect(write).toHaveBeenLastCalledWith(owner, 'invalid', 3);
     clock(100000);
     await reporter.close();
     expect(write).toHaveBeenCalledTimes(3);
@@ -113,8 +113,8 @@ describe('lease-scoped credential reporter', () => {
     finish(true);
     await closing;
     expect(write.mock.calls).toEqual([
-      [owner, 'valid'],
-      [owner, 'invalid'],
+      [owner, 'valid', 1],
+      [owner, 'invalid', 2],
     ]);
   });
 
@@ -144,8 +144,8 @@ describe('lease-scoped credential reporter', () => {
     reporter.observe(valid);
     await reporter.close();
     expect(write.mock.calls).toEqual([
-      [owner, 'valid'],
-      [owner, 'valid'],
+      [owner, 'valid', 1],
+      [owner, 'valid', 2],
     ]);
   });
 

@@ -64,36 +64,53 @@ it('propagates outages safely and distinguishes a lost lease without replaying w
   expect(await client.renew(owner, 30000)).toBe(false);
   expect(await client.load(owner)).toBeNull();
 });
-it('reports credential observations using only the current owner and closed state', async () => {
+it('reports credential observations using only the current owner, closed state and sequence', async () => {
   const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
     async () => new Response(null, { status: 204 }),
   );
   const client = new DiscordGatewayControlClient(connection, transport);
-  expect(await client.observeCredentials(owner, 'invalid')).toBe(true);
+  expect(await client.observeCredentials(owner, 'invalid', 1)).toBe(true);
   expect(transport).toHaveBeenCalledWith(
     'http://internal/prefix/api/channels/discord/service/gateway/observeCredentials',
     expect.objectContaining({
       method: 'POST',
       redirect: 'error',
-      body: JSON.stringify({ owner, state: 'invalid' }),
+      body: JSON.stringify({ owner, state: 'invalid', sequence: 1 }),
       headers: {
         Authorization: `Bearer ${connection.CHANNEL_SERVICE_TOKEN}`,
         'Content-Type': 'application/json',
       },
     }),
   );
-  expect(await client.observeCredentials(owner, 'valid')).toBe(true);
+  expect(await client.observeCredentials(owner, 'valid', 2)).toBe(true);
   transport.mockImplementation(async () => Response.json({ error: 'stale' }, { status: 409 }));
-  expect(await client.observeCredentials(owner, 'invalid')).toBe(false);
+  expect(await client.observeCredentials(owner, 'invalid', 3)).toBe(false);
   transport.mockImplementation(async () =>
     Response.json({ error: 'private-database-content' }, { status: 503 }),
   );
-  await expect(client.observeCredentials(owner, 'invalid')).rejects.toThrow('HTTP 503');
+  await expect(client.observeCredentials(owner, 'invalid', 4)).rejects.toThrow('HTTP 503');
   expect(transport).toHaveBeenCalledTimes(4);
 });
 it('does not transmit an invalid credential observation owner', async () => {
   const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>();
   const client = new DiscordGatewayControlClient(connection, transport);
-  await expect(client.observeCredentials({ ...owner, ownerId: '' }, 'invalid')).rejects.toThrow();
+  await expect(
+    client.observeCredentials({ ...owner, ownerId: '' }, 'invalid', 1),
+  ).rejects.toThrow();
   expect(transport).not.toHaveBeenCalled();
+});
+it('does not transmit a credential observation without a safe positive integer sequence', async () => {
+  const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
+    async () => new Response(null, { status: 204 }),
+  );
+  const client = new DiscordGatewayControlClient(connection, transport);
+  const observe = client.observeCredentials.bind(client) as (
+    ...input: unknown[]
+  ) => Promise<boolean>;
+  for (const sequence of [0, -1, 1.5, NaN, Infinity, 2 ** 53, '1', null, undefined, {}])
+    await expect(observe(owner, 'invalid', sequence)).rejects.toThrow();
+  await expect(observe(owner, 'invalid')).rejects.toThrow();
+  expect(transport).not.toHaveBeenCalled();
+  expect(await observe(owner, 'invalid', Number.MAX_SAFE_INTEGER)).toBe(true);
+  expect(transport).toHaveBeenCalledTimes(1);
 });

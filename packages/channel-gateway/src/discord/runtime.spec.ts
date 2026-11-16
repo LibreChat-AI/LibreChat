@@ -6,6 +6,7 @@ import { ApplicationFlags, GatewayDispatchEvents } from 'discord-api-types/v10';
 import {
   discordChannelConfigSchema,
   discordCredentialStateSchema,
+  discordCredentialSequenceSchema,
   discordGatewayOwnerSchema,
 } from 'librechat-data-provider';
 import type { DiscordCredentialState, DiscordGatewayOwner } from 'librechat-data-provider';
@@ -125,13 +126,14 @@ function compose(
   const drivers: DiscordGatewayDriverOptions[] = [];
   const calls: string[] = [];
   const credentials: { owner: DiscordGatewayOwner; state: DiscordCredentialState }[] = [];
+  const sequences: number[] = [];
   const transport: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const path = url.pathname;
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
     calls.push(path);
     if (path.endsWith('/gateway/observeCredentials')) {
-      expect(Object.keys(body).sort()).toEqual(['owner', 'state']);
+      expect(Object.keys(body).sort()).toEqual(['owner', 'sequence', 'state']);
       expect(new Headers(init?.headers).get('authorization')).toBe(
         `Bearer ${config.CHANNEL_SERVICE_TOKEN}`,
       );
@@ -139,6 +141,7 @@ function compose(
         owner: discordGatewayOwnerSchema.parse(body.owner),
         state: discordCredentialStateSchema.parse(body.state),
       });
+      sequences.push(discordCredentialSequenceSchema.parse(body.sequence));
       await options.credentialWrite?.();
       return world.credentialStatus === 204
         ? new Response(null, { status: 204 })
@@ -333,6 +336,7 @@ function compose(
     drivers,
     calls,
     credentials,
+    sequences,
     send,
     get,
     url,
@@ -374,6 +378,7 @@ describe('Discord health and metrics in the running app', () => {
     f.drivers[0].closed(4004, 0);
     await f.until(async () => f.credentials.length === 2, 'recorded rejected credential');
     expect(f.credentials[1]).toEqual({ ...f.credentials[0], state: 'invalid' });
+    expect(f.sequences).toEqual([1, 2]);
     expect((await f.get('/readyz')).status).toBe(200);
     controller.abort();
     await running;
@@ -408,6 +413,19 @@ describe('Discord health and metrics in the running app', () => {
     await running;
     expect(f.credentials).toHaveLength(1);
     expect(f.credentials[0].state).toBe('valid');
+  });
+
+  it('numbers a new owner from its first observation after a revision change', async () => {
+    const f = compose({ gateway: true });
+    const running = f.run();
+    await f.until(async () => f.credentials.length === 1, 'the first owner credential');
+    f.world.revision = 'revision-b';
+    await f.until(async () => f.credentials.length === 2, 'the second owner credential');
+    expect(f.credentials[1].owner.applicationRevision).toBe('revision-b');
+    expect(f.credentials[1].owner.ownerId).not.toBe(f.credentials[0].owner.ownerId);
+    expect(f.sequences).toEqual([1, 1]);
+    controller.abort();
+    await running;
   });
 
   it('counts signed HTTP outcomes and acknowledgement time, and keeps an idle application unknown', async () => {

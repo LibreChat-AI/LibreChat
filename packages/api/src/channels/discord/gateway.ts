@@ -2,6 +2,7 @@ import { tenantStorage } from '@librechat/data-schemas';
 import {
   discordGatewayOwnerSchema,
   discordCredentialStateSchema,
+  discordCredentialSequenceSchema,
   discordGatewayBatchSchema,
   discordGatewaySessionSchema,
   discordGatewayBootstrapSchema,
@@ -21,7 +22,12 @@ import type {
 import type { DiscordGatewayStorage, DiscordInstallationStorage } from '@librechat/data-schemas';
 
 export interface DiscordGatewayService {
-  observeCredentials(owner: DiscordGatewayOwner, state: DiscordCredentialState): Promise<boolean>;
+  /** An observation that is not newer than the recorded one succeeds without changing it. */
+  observeCredentials(
+    owner: DiscordGatewayOwner,
+    state: DiscordCredentialState,
+    sequence: number,
+  ): Promise<boolean>;
   prepareGuildRemoval(
     owner: DiscordGatewayOwner,
     guildId: string,
@@ -68,9 +74,10 @@ export function createDiscordGatewayService(deps: {
     return next && JSON.stringify(next.gateway) === JSON.stringify(policy.gateway);
   };
   return {
-    observeCredentials: (owner, state) => {
+    observeCredentials: async (owner, state, sequence) => {
       const parsed = discordCredentialStateSchema.parse(state);
-      return scoped(owner, false, () => deps.storage.observeCredentials(owner, parsed));
+      const ordinal = discordCredentialSequenceSchema.parse(sequence);
+      return scoped(owner, false, () => deps.storage.observeCredentials(owner, parsed, ordinal));
     },
     prepareGuildRemoval: (owner, guildId) => {
       channelSnowflakeSchema.parse(guildId);
