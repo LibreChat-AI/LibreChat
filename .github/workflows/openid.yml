@@ -1,0 +1,55 @@
+name: OpenID Keycloak
+
+on:
+  pull_request:
+    paths:
+      - 'api/**'
+      - 'client/**'
+      - 'packages/**'
+      - 'e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.nvmrc'
+      - '.github/workflows/openid.yml'
+      - '!**.md'
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openid-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  keycloak:
+    name: Keycloak (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [browser, protocol]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+      - run: npm ci
+      - run: npx tsc -p e2e/openid/tsconfig.json
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e:prepare
+      - run: npm run e2e:openid:keycloak -- --project=${{ matrix.suite }}
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: keycloak-${{ matrix.suite }}-results
+          path: e2e/openid/.test-results/
+          include-hidden-files: true
+          retention-days: 7
