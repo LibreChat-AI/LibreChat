@@ -39,6 +39,7 @@ import type {
   ConfigureDiscordApplication,
   DiscordApplicationPage,
   RegisterDiscordCommands,
+  DiscordOAuthErrorCode,
   DiscordCredentialState,
   DiscordApplication,
   DiscordGuild,
@@ -46,12 +47,15 @@ import type {
 import type { InfiniteData } from '@tanstack/react-query';
 import type { TranslationKeys } from '~/hooks';
 import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
+import { discordCallbackLabels } from '~/components/OAuth/discord';
 import { useAuthContext, useLocalize } from '~/hooks';
 
 const editorAtom = atom<DiscordApplication | 'new' | null>(null);
 const confirmAtom = atom<DiscordGuild | null>(null);
 const flowAtom = atom<'pending' | 'cancelling' | 'failed' | null>(null);
 const openAtom = atom(false);
+/** Why the callback failed, when its notice named an approved code; it explains the failed notice and nothing else. */
+const reasonAtom = atom<DiscordOAuthErrorCode | null>(null);
 /** Set when a dismissal removes the control the user was on; focus returns to `trigger` once the reads settle. */
 const restoreAtom = atom<{ trigger: HTMLButtonElement | null; servers?: boolean } | null>(null);
 const empty = { applicationId: '', name: '', botToken: '', clientSecret: '' };
@@ -188,6 +192,7 @@ function Setup({
   const [editor, setEditor] = useAtom(editorAtom);
   const [confirm, setConfirm] = useAtom(confirmAtom);
   const [flow, setFlow] = useAtom(flowAtom);
+  const [reason, setReason] = useAtom(reasonAtom);
   const [restore, setRestore] = useAtom(restoreAtom);
   const attempt = useRef<Attempt | null>(null);
   const submission = useRef<ConfigureDiscordApplication | null>(null);
@@ -322,8 +327,11 @@ function Setup({
     clearTimeout(deadline.current);
     attempt.current?.popup.close();
     attempt.current = null;
-    if (mounted.current) setFlow(null);
-  }, [setFlow]);
+    if (mounted.current) {
+      setFlow(null);
+      setReason(null);
+    }
+  }, [setFlow, setReason]);
   const retire = async (current: Attempt) => {
     current.cancelling = true;
     current.popup.close();
@@ -349,7 +357,10 @@ function Setup({
     const stop = watchOAuthSettlements((notice) => {
       if (!attempt.current?.flowId || notice.flowId !== attempt.current.flowId) return;
       finish();
-      if (notice.outcome === 'failed') setFlow('failed');
+      if (notice.outcome === 'failed') {
+        setReason(notice.errorCode ?? null);
+        setFlow('failed');
+      }
       void refresh();
     });
     return () => {
@@ -362,7 +373,7 @@ function Setup({
       current?.popup.close();
       if (current?.flowId) void dataService.cancelDiscordInstall(current.flowId).catch(() => {});
     };
-  }, [finish, refresh, setFlow]);
+  }, [finish, refresh, setFlow, setReason]);
   const start = (
     applicationId: string,
     installationId: string | undefined,
@@ -372,6 +383,7 @@ function Setup({
     connectTrigger.current = trigger;
     connect.reset();
     cancel.reset();
+    setReason(null);
     const popup = window.open('', '_blank');
     if (!popup) {
       setFlow('failed');
@@ -554,6 +566,7 @@ function Setup({
           tabIndex={flow === 'failed' ? -1 : undefined}
           variant={flow === 'failed' ? 'warning' : 'info'}
         >
+          {flow === 'failed' && reason && <p>{localize(discordCallbackLabels[reason])}</p>}
           <p>
             {localize(flow === 'failed' ? 'com_ui_discord_unconfirmed' : 'com_ui_discord_pending')}
           </p>

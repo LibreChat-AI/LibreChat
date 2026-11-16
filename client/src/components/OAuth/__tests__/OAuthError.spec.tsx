@@ -60,7 +60,11 @@ describe('OAuthError', () => {
     renderAt(`/oauth/error?error=${code}&flow=flow-a`);
     expect(screen.getByText(key)).toBeInTheDocument();
     expect(screen.queryByText('com_ui_oauth_error_generic')).toBeNull();
-    expect(mockAnnounce).toHaveBeenCalledWith({ outcome: 'failed', flowId: 'flow-a' });
+    expect(mockAnnounce).toHaveBeenCalledWith({
+      outcome: 'failed',
+      flowId: 'flow-a',
+      errorCode: code,
+    });
   });
 
   it.each([
@@ -80,5 +84,28 @@ describe('OAuthError', () => {
     );
     expect(screen.getByText('com_ui_discord_oauth_refused')).toBeInTheDocument();
     expect(screen.queryByText(/private-token/)).toBeNull();
+  });
+
+  it.each([
+    'discord_unavailable',
+    'discord_principal_unavailable',
+    'discord_malformed_response',
+    'discord_response_too_large',
+    'discord_unrecognized_code',
+    'slack_workspace_in_use',
+    'callback_failed',
+  ])('announces no failure code for %s', (code) => {
+    renderAt(`/oauth/error?error=${code}&flow=flow-a`);
+    expect(mockAnnounce).toHaveBeenCalledWith({ outcome: 'failed', flowId: 'flow-a' });
+    expect(mockAnnounce.mock.calls[0][0]).not.toHaveProperty('errorCode');
+  });
+
+  it('announces only the approved code, never provider text carried in the redirect', () => {
+    renderAt(
+      '/oauth/error?error=discord_provider_refused&flow=flow-a&error_description=Bot%20private-token%20refused',
+    );
+    const [notice] = mockAnnounce.mock.calls[0];
+    expect(Object.keys(notice).sort()).toEqual(['errorCode', 'flowId', 'outcome']);
+    expect(JSON.stringify(notice)).not.toContain('private-token');
   });
 });

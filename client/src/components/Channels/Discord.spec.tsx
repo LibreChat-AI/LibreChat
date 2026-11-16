@@ -1173,3 +1173,117 @@ test('does not touch the document when the view unmounts before the reads behind
   await act(async () => reads.resolve(guilds(guild)));
   expect(document.body).toHaveFocus();
 });
+
+const settle = (notice: Record<string, unknown>) =>
+  act(() =>
+    window.dispatchEvent(
+      new StorageEvent('storage', { key: OAUTH_SETTLED_CHANNEL, newValue: JSON.stringify(notice) }),
+    ),
+  );
+async function pendingAuthorization(user: User) {
+  const origin = screen.getByRole('button', { name: 'com_ui_discord_connect_named' });
+  await user.click(origin);
+  await waitFor(() => expect(popup.location.href).toBe(connectResponse.url));
+  return origin;
+}
+const failedNotice = async () =>
+  (await screen.findByText('com_ui_discord_unconfirmed')).closest('[role="alert"]') as HTMLElement;
+const refused = {
+  outcome: 'failed',
+  flowId: connectResponse.flowId,
+  errorCode: 'discord_provider_refused',
+};
+
+test.each([
+  ['discord_provider_refused', 'com_ui_discord_oauth_refused'],
+  ['discord_missing_permissions', 'com_ui_discord_permissions'],
+  ['discord_guild_changed', 'com_ui_discord_guild_changed'],
+  ['discord_timeout', 'com_ui_discord_provider_unavailable'],
+  ['discord_transactions_unavailable', 'com_ui_channels_transaction_required'],
+])(
+  'shows why the callback failed beside the unconfirmed recovery wording (%s)',
+  async (code, key) => {
+    const { user } = await page();
+    await pendingAuthorization(user);
+    settle({ outcome: 'failed', flowId: connectResponse.flowId, errorCode: code });
+    const notice = await failedNotice();
+    expect(within(notice).getByText(key)).toBeVisible();
+    expect(within(notice).getByRole('button', { name: 'com_ui_cancel' })).toBeEnabled();
+    await waitFor(() => expect(notice).toHaveFocus());
+    expect(screen.queryByText('com_ui_discord_refused')).toBeNull();
+  },
+);
+
+test.each([
+  ['an old notice without a code', { outcome: 'failed' }],
+  ['a code outside the approved set', { outcome: 'failed', errorCode: 'provider_secret_detail' }],
+  ['a management only code', { outcome: 'failed', errorCode: 'provider_refused' }],
+])('keeps only the unconfirmed wording for %s', async (_name, extra) => {
+  const { user } = await page();
+  await pendingAuthorization(user);
+  settle({ flowId: connectResponse.flowId, ...extra });
+  const notice = await failedNotice();
+  expect(notice.querySelectorAll('p')).toHaveLength(1);
+  expect(notice).toHaveTextContent('com_ui_discord_unconfirmed');
+});
+
+test('ignores a coded failure for another flow and keeps the pending authorization', async () => {
+  const { user } = await page();
+  await pendingAuthorization(user);
+  settle({ ...refused, flowId: 'other-flow' });
+  expect(screen.getByText('com_ui_discord_pending')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_unconfirmed')).toBeNull();
+  expect(screen.queryByText('com_ui_discord_oauth_refused')).toBeNull();
+});
+
+test('never treats a code carried on a success notice as a failure', async () => {
+  const { user } = await page();
+  await pendingAuthorization(user);
+  settle({ outcome: 'succeeded', flowId: connectResponse.flowId, errorCode: 'discord_forbidden' });
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_pending')).toBeNull());
+  expect(screen.queryByText('com_ui_discord_unconfirmed')).toBeNull();
+  expect(screen.queryByText('com_ui_discord_admin')).toBeNull();
+});
+
+test('refreshes the server reads after a coded failure settles', async () => {
+  const { user } = await page();
+  await pendingAuthorization(user);
+  const before = jest.mocked(dataService.getDiscordGuilds).mock.calls.length;
+  settle(refused);
+  await failedNotice();
+  await waitFor(() =>
+    expect(jest.mocked(dataService.getDiscordGuilds).mock.calls.length).toBeGreaterThan(before),
+  );
+});
+
+test('clears the reason when the notice is dismissed and for the next attempt', async () => {
+  const { user } = await page();
+  const origin = await pendingAuthorization(user);
+  settle(refused);
+  const notice = await failedNotice();
+  expect(within(notice).getByText('com_ui_discord_oauth_refused')).toBeVisible();
+  await user.click(within(notice).getByRole('button', { name: 'com_ui_cancel' }));
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_unconfirmed')).toBeNull());
+  expect(screen.queryByText('com_ui_discord_oauth_refused')).toBeNull();
+  await waitFor(() => expect(origin).toBeEnabled());
+  jest.mocked(window.open).mockReturnValue(null);
+  await user.click(origin);
+  const next = await failedNotice();
+  expect(next.querySelectorAll('p')).toHaveLength(1);
+  expect(screen.queryByText('com_ui_discord_oauth_refused')).toBeNull();
+});
+
+test('does not carry the reason into the next account', async () => {
+  const { user, client, rerender } = await page();
+  await pendingAuthorization(user);
+  settle(refused);
+  expect(within(await failedNotice()).getByText('com_ui_discord_oauth_refused')).toBeVisible();
+  rerender(
+    <QueryClientProvider client={client}>
+      <Discord userId="next-admin" tenantId="other-org" />
+    </QueryClientProvider>,
+  );
+  await screen.findByRole('button', { name: 'com_ui_discord_connect_named' });
+  expect(screen.queryByText('com_ui_discord_oauth_refused')).toBeNull();
+  expect(screen.queryByText('com_ui_discord_unconfirmed')).toBeNull();
+});

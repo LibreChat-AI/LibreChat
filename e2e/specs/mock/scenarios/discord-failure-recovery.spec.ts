@@ -217,6 +217,26 @@ for (const theme of themes) {
     await expect(pending).toHaveCount(0);
     await expect.soft(connect, 'Cancel returns focus to Connect').toBeFocused();
 
+    /** The callback landing page names its failure to the dialog that started the authorization. */
+    await connect.focus();
+    await page.keyboard.press('Enter');
+    await expect(pending).toBeVisible();
+    const landing = await page.context().newPage();
+    await landing.goto('/oauth/error?error=discord_provider_refused&flow=browser-flow');
+    const refusedByDiscord = discord
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_oauth_refused });
+    await expect(refusedByDiscord).toBeVisible();
+    await expect(refusedByDiscord).toContainText(translations.com_ui_discord_unconfirmed);
+    await expect(refusedByDiscord).toBeFocused();
+    await landing.close();
+    await refusedByDiscord.getByRole('button', { name: 'Cancel', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(refusedByDiscord).toHaveCount(0);
+    await expect
+      .soft(connect, 'Cancel returns focus to Connect after a callback failure')
+      .toBeFocused();
+
     /** A rejected connection leaves two notices: dismissing the first hands focus to the second. */
     connectFails = true;
     await expect(connect).toBeEnabled();
