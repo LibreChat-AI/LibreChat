@@ -1,9 +1,8 @@
 import React, { memo, useRef, useEffect } from 'react';
+import { FADE_HYDRATION_THRESHOLD } from '@librechat/chat/components';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from './markdownConfig';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import MarkdownErrorBoundary from './MarkdownErrorBoundary';
-import { FADE_HYDRATION_THRESHOLD } from './animate';
 import MarkdownBlocks from './MarkdownBlocks';
 import { useRehypeModules } from './rehype';
 
@@ -13,7 +12,7 @@ type TContentProps = {
 };
 
 const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TContentProps) {
-  const { useMessage, useLaTeXParsing } = useMessagePartsHost();
+  const { useMessage, useLaTeXParsing, useSmoothStreaming } = useMessagePartsHost();
   const { isSubmitting = false } = useMessage();
   const smoothStreaming = useSmoothStreaming();
   const LaTeXParsing = useLaTeXParsing();

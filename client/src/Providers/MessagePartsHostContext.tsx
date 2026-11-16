@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
 import { dataService } from 'librechat-data-provider';
+import { AnimatedText } from '@librechat/chat/components';
 import { setDefaultMessagePartsHost, pendingSteersByConvoId } from '@librechat/chat/react';
 import {
   liveAppliedSteerFamily,
@@ -44,7 +45,6 @@ import ToolIcon, { getToolIconType } from '~/components/Chat/Messages/Content/To
 import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import ToolCallInfo from '~/components/Chat/Messages/Content/ToolCallInfo';
-import { AnimatedText } from '~/components/Chat/Messages/Content/animate';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';

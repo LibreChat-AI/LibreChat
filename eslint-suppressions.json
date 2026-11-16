@@ -265,11 +265,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/animate.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/verticals.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
