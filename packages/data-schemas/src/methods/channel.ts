@@ -80,7 +80,9 @@ export function createAgentChannelMethods(
     record: AgentChannelRecord,
     workspace?: SlackWorkspaceRecord | null,
   ): AgentChannelRecord {
+    // A restored row of another provider must not inherit Slack workspace credentials.
     if (
+      record.type !== 'slack' ||
       !workspace ||
       record.credentialMode !== 'per_user' ||
       (workspace.tenantId || undefined) !== (record.tenantId || undefined)

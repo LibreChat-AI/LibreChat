@@ -191,7 +191,8 @@ export function createSlackDispatchHandlers(deps: {
         if (channelId) {
           const channel = await deps.channels.getAgentChannelMetadata(channelId);
           if (
-            channel?.status === 'active' &&
+            channel?.type === 'slack' &&
+            channel.status === 'active' &&
             channel.workspaceId === workspace.workspaceId &&
             channel.credentialMode === 'per_user'
           ) {
