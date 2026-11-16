@@ -916,3 +916,120 @@ describe('Discord durable worker delivery', () => {
     expect(f.state.receipts[0].outcome).toBe('unknown');
   });
 });
+
+describe('owned provider effect context', () => {
+  it('uses the active application owner and current fresh actor proof before each durable begin', async () => {
+    const f = fixture(true);
+    f.savedPlan();
+    await f.execute();
+    const begun = f.calls.filter(
+      (call) => call.path.endsWith('/delivery/begin') || call.path.endsWith('/progress/begin'),
+    );
+    expect(begun.length).toBeGreaterThan(0);
+    for (const call of begun)
+      expect(call.body.discordAuthority).toMatchObject({
+        applicationRevision: 'app-revision',
+        native: {
+          kind: 'guild_text',
+          owner: { applicationId: '123', ownerId: 'a'.repeat(32) },
+          source: {
+            applicationId: '123',
+            guildId: '456',
+            channelId: '111',
+            authorId: '333',
+            authorMember: true,
+            authorPermissions: '1024',
+          },
+        },
+      });
+  });
+  it('does not grant execution or begin output after an actor source read fails', async () => {
+    const f = fixture(true);
+    f.hooks.read = (path) =>
+      path.includes('/members/333') ? json({ message: 'private-provider-error' }, 503) : undefined;
+    await expect(f.execute()).rejects.toThrow('Discord operation was not confirmed');
+    expect(
+      f.calls.some(
+        (call) =>
+          call.path.endsWith('/response/prepare') ||
+          call.path.endsWith('/delivery/begin') ||
+          call.path.endsWith('/progress/begin'),
+      ),
+    ).toBe(false);
+    expect(f.writes).toEqual([]);
+  });
+});
+
+describe('native thread provider output', () => {
+  it('sends only to the actual thread and forwards fresh thread proof before durable begins', async () => {
+    const f = fixture(true, true);
+    f.savedPlan();
+    await f.execute();
+    expect(f.writes.length).toBeGreaterThan(0);
+    expect(f.writes.every((write) => write.path.includes('/channels/555/'))).toBe(true);
+    const begin = f.calls.find((call) => call.path.endsWith('/delivery/begin'));
+    expect(begin?.body.discordAuthority?.native).toMatchObject({
+      kind: 'guild_thread',
+      source: { threadChannelId: '555', parentChannelId: '111', authorId: '333' },
+    });
+  });
+  it('rechecks the actual parent after a grant and refuses a moved thread before writing', async () => {
+    const f = fixture(true, true);
+    f.savedPlan();
+    f.hooks.begin = () => {
+      f.hooks.read = (path) =>
+        path === '/api/v10/channels/555'
+          ? json({
+              id: '555',
+              guild_id: '456',
+              parent_id: '999',
+              type: 11,
+              thread_metadata: { archived: false, locked: false },
+            })
+          : undefined;
+    };
+    await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+    expect(f.writes).toEqual([]);
+  });
+  it('does not accept a different mapping reference returned after delivery begin', async () => {
+    const f = fixture(true, true);
+    f.savedPlan();
+    f.hooks.begin = () => {
+      f.state.admission.discordDestination = {
+        kind: 'guild_thread',
+        parentChannelId: '111',
+        mappingRevision: 'changed',
+      };
+    };
+    await expect(f.execute()).rejects.toThrow('Run admission changed');
+    expect(f.writes).toEqual([]);
+  });
+  it('keeps cosmetic progress deletion available after the actor loses access', async () => {
+    const f = fixture(true, true);
+    f.state.progress = {
+      revision: 1,
+      rendererVersion: 'discord-progress-v1',
+      text: 'Working',
+      outcome: 'confirmed',
+      attempts: 1,
+      externalMessageKey: '555:777',
+    };
+    f.hooks.read = () => json({ permissions: '0' });
+    await f.provider.deleteProgress(f.state, f.bundle, f.controller.signal);
+    expect(f.writes).toMatchObject([
+      { method: 'DELETE', path: '/api/v10/channels/555/messages/777' },
+    ]);
+  });
+});
+
+it('projects a resumed bound response without requesting a fresh credential when external access is lost', async () => {
+  const f = fixture(true, true);
+  f.state.state = 'executing';
+  f.hooks.read = () => json({ message: 'Access removed' }, 403);
+  await expect(f.execute()).rejects.toThrow();
+  expect(f.calls.some((call) => call.path.endsWith('/advance'))).toBe(true);
+  expect(f.calls.some((call) => call.path.endsWith('/response/prepare'))).toBe(false);
+  expect(f.calls.some((call) => call.path.endsWith('/delivery/begin'))).toBe(false);
+  expect(f.state.snapshot?.status).toBe('completed');
+  expect(f.writes).toEqual([]);
+});
