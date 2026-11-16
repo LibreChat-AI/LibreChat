@@ -142,6 +142,7 @@ export class DiscordGatewayApp {
         const credentials = new DiscordCredentialReporter({
           owner,
           intervalMs: this.policy.health.observationTtlMs,
+          retryMs: this.policy.health.observationRetryMs,
           write: (authority, state, sequence) =>
             this.ownership.observeCredentials(authority, state, sequence),
         });

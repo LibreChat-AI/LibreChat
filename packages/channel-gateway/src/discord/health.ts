@@ -159,6 +159,8 @@ export class DiscordHealth {
     const policy = {
       staleAfterMs: options.staleAfterMs ?? DEFAULT_DISCORD_HEALTH_POLICY.staleAfterMs,
       observationTtlMs: options.observationTtlMs ?? DEFAULT_DISCORD_HEALTH_POLICY.observationTtlMs,
+      observationRetryMs:
+        options.observationRetryMs ?? DEFAULT_DISCORD_HEALTH_POLICY.observationRetryMs,
       permissionWindow: options.permissionWindow ?? DEFAULT_DISCORD_HEALTH_POLICY.permissionWindow,
       taskWindow: options.taskWindow ?? DEFAULT_DISCORD_HEALTH_POLICY.taskWindow,
     };

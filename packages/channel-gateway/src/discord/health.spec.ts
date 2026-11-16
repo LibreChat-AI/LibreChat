@@ -26,6 +26,7 @@ describe('Discord health policy', () => {
     expect(DEFAULT_DISCORD_HEALTH_POLICY).toEqual({
       staleAfterMs: 120_000,
       observationTtlMs: 3_600_000,
+      observationRetryMs: 30_000,
       permissionWindow: 3,
       taskWindow: 8,
     });
@@ -37,6 +38,7 @@ describe('Discord health policy', () => {
     (value) => {
       expect(() => new DiscordHealth({ staleAfterMs: value })).toThrow(TypeError);
       expect(() => new DiscordHealth({ observationTtlMs: value })).toThrow(TypeError);
+      expect(() => new DiscordHealth({ observationRetryMs: value })).toThrow(TypeError);
       expect(() => new DiscordHealth({ permissionWindow: value })).toThrow(TypeError);
       expect(() => new DiscordHealth({ taskWindow: value })).toThrow(TypeError);
     },

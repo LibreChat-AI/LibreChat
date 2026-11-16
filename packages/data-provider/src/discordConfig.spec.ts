@@ -1,4 +1,4 @@
-import { channelConfigSchema, discordChannelConfigSchema } from './config';
+import { agentsEndpointSchema, channelConfigSchema, discordChannelConfigSchema } from './config';
 
 it('keeps DM selection opt-in with bounded code/session lifetimes and application capacities', () => {
   expect(discordChannelConfigSchema.parse({}).dm).toEqual({
@@ -140,21 +140,37 @@ it('keeps Discord health windows bounded, optional and separate from retry polic
   expect(discordChannelConfigSchema.parse({}).health).toEqual({
     staleAfterMs: 120000,
     observationTtlMs: 3600000,
+    observationRetryMs: 30000,
     permissionWindow: 3,
     taskWindow: 8,
   });
   expect(discordChannelConfigSchema.parse({ health: { taskWindow: 100 } }).health).toEqual({
     staleAfterMs: 120000,
     observationTtlMs: 3600000,
+    observationRetryMs: 30000,
     permissionWindow: 3,
     taskWindow: 100,
   });
+  for (const observationRetryMs of [1000, 45000, 600000])
+    expect(discordChannelConfigSchema.parse({ health: { observationRetryMs } }).health).toEqual(
+      expect.objectContaining({ observationRetryMs, observationTtlMs: 3600000 }),
+    );
+  // The app config reaches the gateway through this endpoint parse, so the key must survive it.
+  expect(
+    agentsEndpointSchema.parse({ channels: { discord: { health: { observationRetryMs: 45000 } } } })
+      .channels?.discord?.health,
+  ).toEqual(expect.objectContaining({ observationRetryMs: 45000 }));
   for (const health of [
     { staleAfterMs: 59999 },
     { staleAfterMs: 3600001 },
     { staleAfterMs: 120000.5 },
     { observationTtlMs: 59999 },
     { observationTtlMs: 86400001 },
+    { observationRetryMs: 999 },
+    { observationRetryMs: 0 },
+    { observationRetryMs: 600001 },
+    { observationRetryMs: 1000.5 },
+    { observationRetryMs: '30000' },
     { permissionWindow: 0 },
     { permissionWindow: 21 },
     { taskWindow: 0 },

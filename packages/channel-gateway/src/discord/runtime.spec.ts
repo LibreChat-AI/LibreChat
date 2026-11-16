@@ -40,7 +40,7 @@ const config = loadBootstrap({
   CHANNEL_SERVICE_TOKEN: 'private-service-token',
   LIBRECHAT_INTERNAL_URL: 'http://localhost:3080',
 }).config;
-const policy = (gateway: boolean) =>
+const policy = (gateway: boolean, retryMs?: number) =>
   discordChannelConfigSchema.parse({
     enabled: true,
     gateway: {
@@ -50,6 +50,7 @@ const policy = (gateway: boolean) =>
       maxApplications: 1,
       recovery: { fatalRetryMinMs: 1000, fatalRetryMaxMs: 2000 },
     },
+    ...(retryMs ? { health: { observationRetryMs: retryMs } } : {}),
   });
 const interaction = {
   type: 2,
@@ -81,11 +82,13 @@ const bot = {
 interface World {
   revision: string;
   channels: boolean;
-  inbox: 'idle' | 'unavailable' | 'reply';
+  inbox: 'idle' | 'unavailable' | 'reply' | 'inspect';
   runs: 'idle' | 'unavailable';
   submit: 'accepted' | 'conflict';
   replyStatus: number;
   credentialStatus: number;
+  /** Holds the first Discord channel read until the gate opens, then answers with `status`. */
+  hold?: { reached: boolean; gate: Promise<void>; status: number };
 }
 type Sample = { labels: Record<string, string | number>; value: number };
 
@@ -109,6 +112,7 @@ function compose(
     telemetry?: (real: DiscordTelemetry) => DiscordTelemetry;
     driver?: (attempt: number, options: DiscordGatewayDriverOptions) => Promise<void>;
     credentialWrite?: () => Promise<void>;
+    retryMs?: number;
   } = {},
 ) {
   const world: World = {
@@ -148,6 +152,12 @@ function compose(
         : Response.json({ error: 'unavailable' }, { status: world.credentialStatus });
     }
     if (url.hostname === 'discord.com') {
+      const { hold } = world;
+      if (hold && !hold.reached && path === `/api/v10/channels/${channelId}`) {
+        hold.reached = true;
+        await hold.gate;
+        return Response.json({ message: 'rejected' }, { status: hold.status });
+      }
       if (path.includes('/webhooks/'))
         return Response.json({ id: eventId }, { status: world.replyStatus });
       if (path.endsWith(`/permissions/member/${botUserId}`))
@@ -212,7 +222,15 @@ function compose(
     if (path.endsWith('/inbox/claim')) {
       if (world.inbox === 'unavailable') return Response.json({}, { status: 503 });
       if (world.inbox === 'idle') return new Response(null, { status: 204 });
+      const inspect = world.inbox === 'inspect';
       world.inbox = 'idle';
+      if (inspect)
+        return Response.json({
+          fence: { applicationId, eventId, owner: body.owner, epoch: 1 },
+          applicationRevision: world.revision,
+          expiresAt: Date.now() + 10_000,
+          inspection: { guildId, externalChannelId: channelId, externalUserId: actorId },
+        });
       return Response.json({
         fence: { applicationId, eventId, owner: body.owner, epoch: 1 },
         applicationRevision: world.revision,
@@ -265,7 +283,7 @@ function compose(
   const gateway = options.gateway ?? false;
   const app = new DiscordGatewayApp(
     config,
-    policy(gateway),
+    policy(gateway, options.retryMs),
     { info: () => undefined, warn: () => undefined, error: () => undefined },
     transport,
     gateway ? createDriver : undefined,
@@ -415,6 +433,38 @@ describe('Discord health and metrics in the running app', () => {
     expect(f.credentials[0].state).toBe('valid');
   });
 
+  it('repeats a failed credential write once the API is back, while a quiet bot reports nothing new', async () => {
+    const f = compose({ gateway: true, retryMs: 1000 });
+    f.world.credentialStatus = 503;
+    const running = f.run();
+    await f.until(async () => f.credentials.length === 1, 'the failed credential write');
+    const failedAt = Date.now();
+    f.world.credentialStatus = 204;
+    expect((await f.get('/readyz')).status).toBe(200);
+    await f.until(async () => f.credentials.length === 2, 'the repeated credential write');
+    expect(Date.now() - failedAt).toBeGreaterThanOrEqual(800);
+    expect(f.credentials[1]).toEqual(f.credentials[0]);
+    expect(f.sequences).toEqual([1, 2]);
+    // The repeat landed, so the full reporting interval applies again.
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    expect(f.credentials).toHaveLength(2);
+    controller.abort();
+    await running;
+  });
+
+  it('leaves no credential retry behind when the lease ends during an outage', async () => {
+    const f = compose({ gateway: true, retryMs: 1000 });
+    f.world.credentialStatus = 503;
+    const running = f.run();
+    await f.until(async () => f.credentials.length === 1, 'the failed credential write');
+    controller.abort();
+    await running;
+    expect(f.calls.filter((path) => path.endsWith('/gateway/release'))).toHaveLength(1);
+    f.world.credentialStatus = 204;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(f.credentials).toHaveLength(1);
+  });
+
   it('numbers a new owner from its first observation after a revision change', async () => {
     const f = compose({ gateway: true });
     const running = f.run();
@@ -426,6 +476,30 @@ describe('Discord health and metrics in the running app', () => {
     expect(f.sequences).toEqual([1, 1]);
     controller.abort();
     await running;
+  });
+
+  it('flushes evidence from work that is still winding down before releasing the lease', async () => {
+    let open: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const f = compose({ gateway: true });
+    f.world.hold = { reached: false, gate, status: 401 };
+    f.world.inbox = 'inspect';
+    const running = f.run();
+    await f.until(async () => f.world.hold?.reached === true, 'an inspection in flight');
+    await f.until(async () => f.credentials.length === 1, 'the READY credential');
+    controller.abort();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(f.calls.some((path) => path.endsWith('/gateway/release'))).toBe(false);
+    // The rejected bot token is only learned while the task winds down.
+    open();
+    await running;
+    expect(f.credentials.map((entry) => entry.state)).toEqual(['valid', 'invalid']);
+    expect(f.sequences).toEqual([1, 2]);
+    const order = f.calls.map((path, index) => [path, index] as const);
+    const lastWrite = order.filter(([path]) => path.endsWith('/observeCredentials')).pop()?.[1];
+    const release = order.find(([path]) => path.endsWith('/gateway/release'))?.[1];
+    expect(lastWrite).toBeDefined();
+    expect(release).toBeGreaterThan(lastWrite as number);
   });
 
   it('counts signed HTTP outcomes and acknowledgement time, and keeps an idle application unknown', async () => {
