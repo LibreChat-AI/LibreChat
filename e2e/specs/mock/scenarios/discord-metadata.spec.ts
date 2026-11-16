@@ -31,6 +31,9 @@ const walk = async <T extends { next?: string }>(
   return pages;
 };
 
+const sizes = (total: number, limit: number) =>
+  Array.from({ length: Math.ceil(total / limit) }, (_, i) => Math.min(limit, total - i * limit));
+
 test.describe('Discord installation metadata', () => {
   test.skip(!CHANNELS_ENABLED, 'Run with E2E_CHANNELS=true and a transaction-capable MongoDB');
   test.setTimeout(120_000);
@@ -44,11 +47,6 @@ test.describe('Discord installation metadata', () => {
       const [org, apps] = [world.org(), Array.from({ length: 5 }, () => world.app())];
       const actorId = await world.member(org);
       const secrets = apps.flatMap((app) => [app.encryptedBotToken, app.encryptedClientSecret]);
-      const sizes = (total: number, limit: number) =>
-        Array.from({ length: Math.ceil(total / limit) }, (_, i) =>
-          Math.min(limit, total - i * limit),
-        );
-
       await inOrg(org, async () => {
         const saved: DiscordApplication[] = [];
         for (const app of apps)
@@ -104,7 +102,7 @@ test.describe('Discord installation metadata', () => {
       await inOrg(org, async () => {
         const saved = ok(await store.configureApplication({ actorId, ...app }));
         const guilds: DiscordGuild[] = [];
-        for (const guildId of [snowflake(), snowflake(), snowflake()]) {
+        for (const guildId of [snowflake(), snowflake(), snowflake(), snowflake()]) {
           const installed = await store.connectGuild({
             actorId,
             applicationId: app.applicationId,
@@ -118,11 +116,14 @@ test.describe('Discord installation metadata', () => {
 
         /** Cursors walk the set once, in key order; the page that exhausts it has no cursor. */
         const installations = guilds.map((item) => item.installationId).sort();
-        const pages = await walk((cursor, size) => store.listGuilds(cursor, size), 2);
-        const listed = pages.flatMap((page) => page.guilds);
-        expect(listed.map((item) => item.installationId)).toEqual(installations);
-        expect(pages.map((page) => page.guilds.length)).toEqual([2, 1]);
-        clean(secrets, ...listed);
+        for (const limit of [2, 3, 4, 100]) {
+          const pages = await walk((cursor, size) => store.listGuilds(cursor, size), limit);
+          const listed = pages.flatMap((page) => page.guilds);
+          expect(listed.map((item) => item.installationId)).toEqual(installations);
+          expect(pages.map((page) => page.guilds.length)).toEqual(sizes(4, limit));
+          clean(secrets, ...listed);
+        }
+        expect(await store.listGuilds(installations[3])).toEqual({ guilds: [] });
 
         for (const limit of [0, -1, 101, 1.5, Number.NaN]) {
           const invalid = 'Invalid Discord metadata page size';
