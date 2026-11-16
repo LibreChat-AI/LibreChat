@@ -13,7 +13,7 @@ interface CertifiedIconProps {
 
 /**
  * Renders nothing while `interface.agentCertification` is off, so every surface that shows the
- * badge is gated by the one switch. The accessible name stays the short "Certified" label; an
+ * badge is gated by the one switch. The accessible name stays the short "Official agent" label; an
  * admin-configured explanation becomes its description, so a screen reader hears both. The
  * description lives in a `hidden` node because `role="img"` does not support `aria-description`.
  */

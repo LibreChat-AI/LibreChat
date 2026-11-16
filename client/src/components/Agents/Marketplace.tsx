@@ -160,22 +160,20 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
               <MarketplaceAdminSettings />
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 pb-3">
-              <div className="flex min-w-0 flex-1 basis-full items-center gap-1.5 lg:basis-0">
-                <div className="min-w-0 flex-1">
-                  <CategoryTabs
-                    categories={categoriesQuery.data || []}
-                    activeTab={activeCategory}
-                    isLoading={categoriesQuery.isLoading}
-                    onChange={handleTabChange}
-                  />
-                </div>
-                {certificationEnabled && (
-                  <CertifiedFilterToggle
-                    checked={certified}
-                    onCheckedChange={handleCertifiedChange}
-                  />
-                )}
-              </div>
+              <CategoryTabs
+                categories={categoriesQuery.data || []}
+                activeTab={activeCategory}
+                isLoading={categoriesQuery.isLoading}
+                onChange={handleTabChange}
+                leadingContent={
+                  certificationEnabled && (
+                    <CertifiedFilterToggle
+                      checked={certified}
+                      onCheckedChange={handleCertifiedChange}
+                    />
+                  )
+                }
+              />
               <div className="ms-auto flex shrink-0 items-center gap-1.5">
                 <MineFilterToggle checked={mine === 1} onCheckedChange={handleMineChange} />
                 <SortDropdown value={sort} onChange={handleSortChange} />

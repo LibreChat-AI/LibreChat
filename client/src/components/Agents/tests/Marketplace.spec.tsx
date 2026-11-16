@@ -20,7 +20,7 @@ const mockLocalize = jest.fn((key: string, options?: { count?: number; category?
     com_nav_toggle_nav: 'Open sidebar',
     com_agents_marketplace: 'Agent Marketplace',
     com_agents_filter_mine: 'Only Agents I created',
-    com_agents_filter_certified: 'Certified',
+    com_agents_filter_certified: 'Official agents',
     com_agents_my_agents: 'My agents',
     com_agents_sort_label: 'Sort by',
     com_agents_sort_newest: 'Newest first',
@@ -55,7 +55,7 @@ let mockCertificationEnabled = true;
 jest.mock('~/hooks', () => ({
   useAgentCertification: () => ({
     enabled: mockCertificationEnabled,
-    description: 'Certified',
+    description: 'Official agent',
     canManage: false,
   }),
   useLocalize: () => mockLocalize,
@@ -277,11 +277,14 @@ describe('Marketplace controls and agent results', () => {
     renderMarketplace('/agents/productivity?q=invoice');
     await screen.findByRole('list');
 
-    const certifiedFilter = screen.getByRole('button', { name: 'Certified' });
+    const certifiedFilter = screen.getByRole('button', { name: 'Official agents' });
     expect(certifiedFilter).toHaveClass('h-8', 'rounded-full');
     expect(
       certifiedFilter.compareDocumentPosition(screen.getByRole('tab', { name: /Productivity/ })),
-    ).toBe(Node.DOCUMENT_POSITION_PRECEDING);
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(certifiedFilter.parentElement).toBe(
+      screen.getByRole('tablist').parentElement?.parentElement,
+    );
 
     fireEvent.click(certifiedFilter);
 
@@ -296,7 +299,7 @@ describe('Marketplace controls and agent results', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Certified' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Official agents' }));
     await waitFor(() => {
       expect(currentUrl()).toBe('/agents/productivity?q=invoice');
     });
@@ -315,7 +318,7 @@ describe('Marketplace controls and agent results', () => {
       renderMarketplace('/agents/productivity?is_certified=true');
       await screen.findByRole('list');
 
-      expect(screen.queryByRole('button', { name: 'Certified' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Official agents' })).not.toBeInTheDocument();
       expect(marketplace.mock.calls[0][0]).not.toHaveProperty('is_certified');
     } finally {
       mockCertificationEnabled = true;

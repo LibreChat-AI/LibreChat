@@ -15,7 +15,7 @@ jest.mock('librechat-data-provider', () => {
   return { ...actual, dataService: { ...actual.dataService, getMarketplaceAgents: jest.fn() } };
 });
 jest.mock('~/hooks', () => ({
-  useAgentCertification: () => ({ enabled: true, description: 'Certified', canManage: false }),
+  useAgentCertification: () => ({ enabled: true, description: 'Official agent', canManage: false }),
   useLocalize: () => (key: string) => key,
   useAgentCategories: () => ({ categories: [] }),
 }));

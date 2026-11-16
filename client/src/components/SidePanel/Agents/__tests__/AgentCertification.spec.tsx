@@ -15,17 +15,17 @@ let mockMutationOptions: {
 } = {};
 
 const translations: Record<string, string> = {
-  com_ui_certification: 'Certification',
-  com_ui_certified_agent: 'Certified',
-  com_ui_certify: 'Certify',
-  com_ui_uncertify: 'Remove certification',
-  com_ui_certify_agent: 'Certify this agent',
-  com_ui_uncertify_agent: 'Remove certification',
-  com_ui_certify_agent_confirm: 'Are you sure you want to certify this agent?',
-  com_ui_uncertify_agent_confirm: 'Are you sure you want to remove certification?',
-  com_ui_agent_certified_success: 'Agent certified',
-  com_ui_agent_uncertified_success: 'Certification removed',
-  com_ui_agent_certification_error: 'Could not update certification. Try again.',
+  com_ui_certification: 'Official status',
+  com_ui_certified_agent: 'Official agent',
+  com_ui_certify: 'Mark official',
+  com_ui_uncertify: 'Remove official status',
+  com_ui_certify_agent: 'Mark this agent as official',
+  com_ui_uncertify_agent: 'Remove official status',
+  com_ui_certify_agent_confirm: 'Mark this agent as official?',
+  com_ui_uncertify_agent_confirm: 'Are you sure you want to remove official status?',
+  com_ui_agent_certified_success: 'Agent marked as official',
+  com_ui_agent_uncertified_success: 'Official status removed',
+  com_ui_agent_certification_error: 'Could not update official status. Try again.',
   com_ui_cancel: 'Cancel',
 };
 
@@ -33,7 +33,7 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => translations[key] ?? key,
   useAgentCertification: () => ({
     enabled: true,
-    description: 'Reviewed by the AI governance board.',
+    description: 'Reviewed and approved by admins or Central IT.',
     canManage: mockCanManage,
   }),
 }));
@@ -70,20 +70,20 @@ describe('AgentCertification', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('asks before certifying and saves only on confirm', async () => {
+  it('asks before marking official and saves only on confirm', async () => {
     const user = userEvent.setup();
     render(<AgentCertification agentId="agent_1" isCertified={false} />);
 
-    const checkbox = screen.getByRole('checkbox', { name: 'Certify this agent' });
-    expect(checkbox).toHaveAccessibleDescription('Reviewed by the AI governance board.');
+    const checkbox = screen.getByRole('checkbox', { name: 'Mark this agent as official' });
+    expect(checkbox).toHaveAccessibleDescription('Reviewed and approved by admins or Central IT.');
     expect(checkbox).not.toBeChecked();
 
     await user.click(checkbox);
     const dialog = await screen.findByRole('dialog');
-    expect(dialog).toHaveTextContent('Are you sure you want to certify this agent?');
+    expect(dialog).toHaveTextContent('Mark this agent as official?');
     expect(mockMutate).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('button', { name: 'Certify' }));
+    await user.click(screen.getByRole('button', { name: 'Mark official' }));
     expect(mockMutate).toHaveBeenCalledWith({ agent_id: 'agent_1', is_certified: true });
   });
 
@@ -91,11 +91,11 @@ describe('AgentCertification', () => {
     const user = userEvent.setup();
     render(<AgentCertification agentId="agent_1" isCertified />);
 
-    const checkbox = screen.getByRole('checkbox', { name: /Certify this agent/ });
+    const checkbox = screen.getByRole('checkbox', { name: /Mark this agent as official/ });
     expect(checkbox).toBeChecked();
     await user.click(checkbox);
     expect(await screen.findByRole('dialog')).toHaveTextContent(
-      'Are you sure you want to remove certification?',
+      'Are you sure you want to remove official status?',
     );
 
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -110,13 +110,13 @@ describe('AgentCertification', () => {
 
     mockMutationOptions.onSuccess?.({ id: 'agent_1', is_certified: false });
     expect(mockShowToast).toHaveBeenLastCalledWith({
-      message: 'Certification removed',
+      message: 'Official status removed',
       status: 'success',
     });
 
     mockMutationOptions.onError?.();
     expect(mockShowToast).toHaveBeenLastCalledWith({
-      message: 'Could not update certification. Try again.',
+      message: 'Could not update official status. Try again.',
       status: 'error',
     });
   });
@@ -125,7 +125,7 @@ describe('AgentCertification', () => {
     mockIsLoading = true;
     render(<AgentCertification agentId="agent_1" isCertified={false} />);
 
-    expect(screen.getByRole('checkbox', { name: 'Certify this agent' })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: 'Mark this agent as official' })).toBeDisabled();
   });
 
   it('has no detectable accessibility violations, closed or confirming', async () => {
@@ -134,7 +134,7 @@ describe('AgentCertification', () => {
 
     expect(await axeViolations(container)).toEqual([]);
 
-    await user.click(screen.getByRole('checkbox', { name: /Certify this agent/ }));
+    await user.click(screen.getByRole('checkbox', { name: /Mark this agent as official/ }));
     expect(await axeViolations(await screen.findByRole('dialog'))).toEqual([]);
   });
 });

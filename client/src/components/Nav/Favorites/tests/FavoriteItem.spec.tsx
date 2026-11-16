@@ -8,7 +8,7 @@ const mockRemoveFavoriteModel = jest.fn();
 const mockRemoveFavoriteSpec = jest.fn();
 
 jest.mock('~/hooks', () => ({
-  useAgentCertification: () => ({ enabled: true, description: 'Certified', canManage: false }),
+  useAgentCertification: () => ({ enabled: true, description: 'Official agent', canManage: false }),
   useLocalize: () => (key: string) => key,
   useFavorites: () => ({
     removeFavoriteAgent: mockRemoveFavoriteAgent,

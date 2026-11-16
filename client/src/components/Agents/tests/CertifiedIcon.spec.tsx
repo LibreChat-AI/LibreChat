@@ -3,30 +3,30 @@ import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import CertifiedIcon from '../CertifiedIcon';
 
-let mockCertification = { enabled: true, description: 'Certified', canManage: false };
+let mockCertification = { enabled: true, description: 'Official agent', canManage: false };
 
 jest.mock('~/hooks', () => ({
   useAgentCertification: () => mockCertification,
-  useLocalize: () => (key: string) => (key === 'com_ui_certified_agent' ? 'Certified' : key),
+  useLocalize: () => (key: string) => (key === 'com_ui_certified_agent' ? 'Official agent' : key),
 }));
 
 describe('CertifiedIcon', () => {
   beforeEach(() => {
-    mockCertification = { enabled: true, description: 'Certified', canManage: false };
+    mockCertification = { enabled: true, description: 'Official agent', canManage: false };
   });
 
   it('shows its localized tooltip when focused by keyboard', async () => {
     const user = userEvent.setup();
     render(<CertifiedIcon />);
 
-    const icon = screen.getByRole('img', { name: 'Certified' });
+    const icon = screen.getByRole('img', { name: 'Official agent' });
     expect(icon).toHaveClass('text-status-info');
     expect(icon.querySelector('svg')).toHaveClass('fill-current', 'stroke-surface-primary');
     await user.tab();
 
     expect(icon).toHaveFocus();
     expect(await screen.findByRole('tooltip', undefined, { timeout: 3000 })).toHaveTextContent(
-      'Certified',
+      'Official agent',
     );
   });
 
@@ -43,7 +43,7 @@ describe('CertifiedIcon', () => {
     const user = userEvent.setup();
     render(<CertifiedIcon />);
 
-    const icon = screen.getByRole('img', { name: 'Certified' });
+    const icon = screen.getByRole('img', { name: 'Official agent' });
     expect(icon).toHaveAccessibleDescription(explanation);
     await user.tab();
 
@@ -55,8 +55,8 @@ describe('CertifiedIcon', () => {
   it('adds no tab stop when static inside another control', () => {
     render(<CertifiedIcon static />);
 
-    const icon = screen.getByRole('img', { name: 'Certified' });
+    const icon = screen.getByRole('img', { name: 'Official agent' });
     expect(icon).not.toHaveAttribute('tabindex');
-    expect(icon).toHaveAttribute('title', 'Certified');
+    expect(icon).toHaveAttribute('title', 'Official agent');
   });
 });

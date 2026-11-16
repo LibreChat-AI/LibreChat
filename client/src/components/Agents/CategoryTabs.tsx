@@ -11,6 +11,8 @@ import { cn } from '~/utils';
 interface CategoryTabsProps {
   /** Array of agent categories to display as tabs */
   categories: t.TMarketplaceCategory[];
+  /** Optional non-tab filter rendered before the category chips. */
+  leadingContent?: React.ReactNode;
   /** Currently selected tab value */
   activeTab: string;
   /** Whether categories are currently loading */
@@ -24,6 +26,7 @@ const ARROW_SWAP: Record<string, string> = { ArrowLeft: 'ArrowRight', ArrowRight
 /** Keyboard-accessible category filters with immediate selection feedback. */
 const CategoryTabs: React.FC<CategoryTabsProps> = ({
   categories,
+  leadingContent,
   activeTab,
   isLoading,
   onChange,
@@ -112,63 +115,76 @@ const CategoryTabs: React.FC<CategoryTabsProps> = ({
   // Early return if no categories available
   if (!isLoading && (!categories || categories.length === 0)) {
     return (
-      <div className="text-text-secondary text-center">{localize('com_ui_no_categories')}</div>
+      <div
+        className={cn(
+          'flex min-w-0 flex-1 items-center gap-1.5',
+          isSmallScreen ? 'hide-scrollbar overflow-x-auto' : 'flex-wrap',
+        )}
+      >
+        <div className="text-text-secondary text-center">{localize('com_ui_no_categories')}</div>
+        {leadingContent}
+      </div>
     );
   }
 
   // Main tabs content
   const tabsContent = (
-    <div className="w-full">
-      <div
-        className={cn(
-          isSmallScreen
-            ? 'hide-scrollbar flex gap-1.5 overflow-x-auto'
-            : 'flex flex-wrap justify-start gap-1.5',
-        )}
-        role="tablist"
-        aria-label={localize('com_agents_category_tabs_label')}
-        aria-orientation="horizontal"
-      >
-        {categories.map((category, index) => (
-          <button
-            key={category.value}
-            id={`category-tab-${category.value}`}
-            onClick={() => onChange(category.value)}
-            onKeyDown={(e) => handleKeyDown(e, category.value)}
-            className={cn(
-              'focus-visible:ring-text-primary inline-flex h-8 cursor-pointer items-center justify-center rounded-full border px-2.5 text-xs font-medium whitespace-nowrap select-none focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
-              isSmallScreen ? 'min-w-fit shrink-0' : '',
-              activeTab === category.value
-                ? 'border-border-chrome-heavy bg-surface-active-alt text-text-primary'
-                : 'border-border-chrome bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary',
-            )}
-            role="tab"
-            aria-selected={activeTab === category.value}
-            aria-controls={`category-panel-${category.value}`}
-            tabIndex={activeTab === category.value ? 0 : -1}
-            aria-label={localize('com_agents_category_tab_label', {
-              category: getCategoryDisplayName(category),
-              position: index + 1,
-              total: categories.length,
-            })}
-          >
-            {getCategoryDisplayName(category)}
-          </button>
-        ))}
-      </div>
+    <div
+      className={cn(
+        isSmallScreen ? 'flex shrink-0 gap-1.5' : 'flex flex-wrap justify-start gap-1.5',
+      )}
+      role="tablist"
+      aria-label={localize('com_agents_category_tabs_label')}
+      aria-orientation="horizontal"
+    >
+      {categories.map((category, index) => (
+        <button
+          key={category.value}
+          id={`category-tab-${category.value}`}
+          onClick={() => onChange(category.value)}
+          onKeyDown={(e) => handleKeyDown(e, category.value)}
+          className={cn(
+            'focus-visible:ring-text-primary inline-flex h-8 cursor-pointer items-center justify-center rounded-full border px-2.5 text-xs font-medium whitespace-nowrap select-none focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
+            isSmallScreen ? 'min-w-fit shrink-0' : '',
+            activeTab === category.value
+              ? 'border-border-chrome-heavy bg-surface-active-alt text-text-primary'
+              : 'border-border-chrome bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary',
+          )}
+          role="tab"
+          aria-selected={activeTab === category.value}
+          aria-controls={`category-panel-${category.value}`}
+          tabIndex={activeTab === category.value ? 0 : -1}
+          aria-label={localize('com_agents_category_tab_label', {
+            category: getCategoryDisplayName(category),
+            position: index + 1,
+            total: categories.length,
+          })}
+        >
+          {getCategoryDisplayName(category)}
+        </button>
+      ))}
     </div>
   );
 
   // Use SmartLoader to prevent category loading flashes
   return (
-    <SmartLoader
-      isLoading={isLoading}
-      hasData={categories?.length > 0}
-      delay={100} // Very short delay since categories should load quickly
-      loadingComponent={loadingSkeleton}
+    <div
+      className={cn(
+        'flex min-w-0 flex-1 items-center gap-1.5',
+        isSmallScreen ? 'hide-scrollbar overflow-x-auto' : 'flex-wrap',
+      )}
     >
-      {tabsContent}
-    </SmartLoader>
+      {leadingContent}
+      <SmartLoader
+        className="contents"
+        isLoading={isLoading}
+        hasData={categories?.length > 0}
+        delay={100}
+        loadingComponent={loadingSkeleton}
+      >
+        {tabsContent}
+      </SmartLoader>
+    </div>
   );
 };
 

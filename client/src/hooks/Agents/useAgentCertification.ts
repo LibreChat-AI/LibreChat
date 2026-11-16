@@ -4,7 +4,7 @@ import { useLocalize } from '~/hooks';
 export type AgentCertificationSettings = {
   /** `interface.agentCertification.enabled`; off by default, which hides every badge. */
   enabled: boolean;
-  /** The badge's tooltip: the configured `description`, or the default "Certified". */
+  /** The badge's tooltip: the configured `description`, or the default "Official agent". */
   description: string;
   /** The server reported `manage:agents` for this user while certification is enabled. */
   canManage: boolean;
