@@ -100,7 +100,13 @@ function sessionButton(
   part: ChannelDeliveryPart,
 ): APIButtonComponent | undefined {
   const url = sessionURL(run);
-  const last = run.plan?.parts.findLast((item) => item.required && item.traceUrl === undefined);
+  const parts = run.plan?.parts ?? [];
+  let last: ChannelDeliveryPart | undefined;
+  for (let index = parts.length - 1; index >= 0; index--) {
+    if (!parts[index].required || parts[index].traceUrl !== undefined) continue;
+    last = parts[index];
+    break;
+  }
   return renderer === discordSessionRendererVersion &&
     last?.operationId === part.operationId &&
     url !== undefined &&
