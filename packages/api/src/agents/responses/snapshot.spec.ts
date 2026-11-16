@@ -37,7 +37,7 @@ it('preserves IDs, phase, annotations, usage and content through a complete text
     delta: 'héllo 🌎',
     logprobs: [],
   });
-  expect(events.at(-1)?.response).toEqual(response);
+  expect(events[events.length - 1]?.response).toEqual(response);
   expect(response.output[0].content[0].text).toBe('héllo 🌎');
 });
 
@@ -103,7 +103,7 @@ it('projects reasoning, summary and refusal content with their own event fields'
   expect(events.find((event) => event.type === 'response.refusal.done')).toMatchObject({
     refusal: 'Cannot answer',
   });
-  expect(events.at(-1)?.type).toBe('response.incomplete');
+  expect(events[events.length - 1]?.type).toBe('response.incomplete');
 });
 
 it('rejects a non-response JSON body before emitting events', () => {

@@ -22,7 +22,10 @@ Clients provide their bearer credential in the upgrade headers, then send
 `response.create` events with the ordinary request fields. Omit HTTP-only
 `stream`, `stream_options` and `background` fields. Replies are JSON Responses
 events, without SSE framing. Reverse proxies must forward WebSocket upgrades;
-connection capacity is per process, including pending handshakes. Authenticated
+connection capacity is per process, including pending handshakes and rejecting
+raw connections. Saturation closes new raw connections immediately; rejected
+handshakes are destroyed after their response is flushed and remain bounded by
+the admission deadline. Authenticated
 tenant settings may lower connection payload, queue, cache, output and lifetime
 limits beneath deployment caps; reconnect to apply changes to these lifecycle
 limits. Input/cache admission also uses the current request configuration. Both server
@@ -54,6 +57,8 @@ persistence apply. Storage failures remain service errors.
 Turns execute serially. Pending frames and outgoing events are bounded; queue
 overflow closes the connection with code 1008 and aborts the active turn. Oversize
 payloads close with code 1009. Connections also have heartbeat and lifetime limits.
+Expiry cancels active execution immediately; its final error is best-effort and
+a backpressured peer is terminated rather than delaying cleanup.
 A reconnect has no `store:false` history: recover by supplying explicit history in a new chain. Failed sends, disconnects and retries do not
 provide exactly-once execution, and the server does not retry automatically.
 

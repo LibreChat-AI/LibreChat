@@ -157,8 +157,8 @@ export function installResponseSockets(deps: {
     perMessageDeflate: false,
   });
   let stopping = false;
-  const pendingSockets = new Set<import('node:stream').Duplex>();
-  const upgrade = (req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer) => {
+  const upgradeSockets = new Set<Duplex>();
+  const upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (req.url?.split('?')[0] !== path) {
       if (deps.server.listenerCount('upgrade') === 1) {
         guardSocketErrors(socket);
@@ -166,26 +166,42 @@ export function installResponseSockets(deps: {
       }
       return;
     }
-    // Node's HTTP error listener is gone after upgrade; ws has not taken ownership yet.
     guardSocketErrors(socket);
-    if (stopping) {
+    // Overload must not allocate another pending/rejecting connection.
+    if (stopping || sockets.clients.size + upgradeSockets.size >= limits.maxConnections) {
       socket.destroy();
       return;
     }
+    upgradeSockets.add(socket);
+    let active = true;
+    let abortProbe: (() => void) | undefined;
+    const timer = setTimeout(() => {
+      active = false;
+      abortProbe?.();
+      socket.destroy();
+    }, limits.admissionTimeoutMs);
+    timer.unref();
+    const onClose = () => {
+      active = false;
+      abortProbe?.();
+      upgradeSockets.delete(socket);
+      clearTimeout(timer);
+    };
+    socket.once('close', onClose);
+    const reject = (status: number) => {
+      if (socket.destroyed) return;
+      // A half-open peer must not retain the readable side after rejection.
+      socket.end(
+        `HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+        () => socket.destroy(),
+      );
+    };
     if (!req.headers.authorization) {
-      socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      reject(401);
       return;
     }
-    if (sockets.clients.size + pendingSockets.size >= limits.maxConnections) {
-      socket.end('HTTP/1.1 503 Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
-      return;
-    }
-    pendingSockets.add(socket);
-    // Admission uses the same authenticated GET route, but its HTTP response is
-    // captured, so no HTTP body can corrupt the subsequent WebSocket handshake.
     let accepted = false;
     const admittedLimits = { ...limits };
-    let active = true;
     const probe = dispatchResponseHttp({
       application: deps.application,
       maxBufferedBytes: limits.maxBufferedBytes,
@@ -211,36 +227,24 @@ export function installResponseSockets(deps: {
         }),
       onBody: () => {},
     });
-    // The marker's accept function ends the probe via the route below.
-    const timer = setTimeout(() => {
-      active = false;
-      probe.abort();
-      pendingSockets.delete(socket);
-      socket.destroy();
-    }, limits.admissionTimeoutMs);
-    timer.unref();
-    socket.once('close', () => {
-      active = false;
-      probe.abort();
-      pendingSockets.delete(socket);
-      clearTimeout(timer);
-    });
+    abortProbe = probe.abort;
     void probe.done
       .then((result) => {
-        clearTimeout(timer);
-        pendingSockets.delete(socket);
         if (!active || socket.destroyed) return;
         if (!accepted || result.status !== 204) {
-          socket.end(
-            `HTTP/1.1 ${result.status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
-          );
+          reject(result.status);
           return;
         }
-        sockets.handleUpgrade(req, socket, head, (ws) => serve(ws, req, admittedLimits));
+        sockets.handleUpgrade(req, socket, head, (ws) => {
+          // Transfer ownership only after ws has accepted the socket.
+          clearTimeout(timer);
+          upgradeSockets.delete(socket);
+          socket.off('close', onClose);
+          abortProbe = undefined;
+          serve(ws, req, admittedLimits);
+        });
       })
       .catch((error) => {
-        clearTimeout(timer);
-        pendingSockets.delete(socket);
         if (active) {
           deps.onError?.(error);
           socket.destroy();
@@ -279,12 +283,15 @@ export function installResponseSockets(deps: {
       clearInterval(heartbeat);
     };
     const lifetime = setTimeout(() => {
-      void error(400, 'websocket_connection_limit_reached', 'Open a new Responses connection.')
-        .finally(() => {
-          ws.close(1000);
-          dispose();
-        })
-        .catch(() => {});
+      // Notification is best-effort; cancellation never waits for a blocked writer.
+      void error(
+        400,
+        'websocket_connection_limit_reached',
+        'Open a new Responses connection.',
+      ).catch(() => {});
+      dispose();
+      ws.close(1000);
+      if (ws.bufferedAmount > 0) ws.terminate();
     }, limits.maxConnectionMs);
     lifetime.unref();
     let alive = true;
@@ -500,8 +507,8 @@ export function installResponseSockets(deps: {
   return async () => {
     stopping = true;
     deps.server.removeListener('upgrade', upgrade);
-    for (const socket of pendingSockets) socket.destroy();
-    pendingSockets.clear();
+    for (const socket of upgradeSockets) socket.destroy();
+    upgradeSockets.clear();
     for (const ws of sockets.clients) ws.terminate();
     await new Promise<void>((resolve) => sockets.close(() => resolve()));
   };

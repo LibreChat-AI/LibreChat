@@ -139,6 +139,16 @@ async function fixture(
     );
   });
   const server = createServer(app);
+  let rawSocketClosed!: () => void;
+  const firstRawSocketClosed = new Promise<void>((resolve) => {
+    rawSocketClosed = resolve;
+  });
+  const firstRawSocket = new Promise<import('node:net').Socket>((resolve) => {
+    server.once('connection', (socket) => {
+      socket.once('close', rawSocketClosed);
+      resolve(socket);
+    });
+  });
   const stop = installResponseSockets({
     server,
     application: app,
@@ -167,6 +177,12 @@ async function fixture(
     connect,
     url,
     inputs,
+    firstRawSocketClosed,
+    firstRawSocket,
+    connectionCount: () =>
+      new Promise<number>((resolve, reject) =>
+        server.getConnections((error, count) => (error ? reject(error) : resolve(count))),
+      ),
     admissionStarted,
     admissionEnded,
     replayNames,
@@ -369,16 +385,7 @@ it('caps upgraded connections without affecting existing sessions', async () => 
   const f = await fixture({ maxConnections: 1 });
   try {
     const ws = await f.connect();
-    const rejected = new WebSocket(f.url, { headers: { Authorization: 'Bearer fixture' } });
-    const status = await new Promise<number>((resolve) => {
-      rejected.on('unexpected-response', (_request, res) => {
-        resolve(res.statusCode!);
-        res.resume();
-        rejected.terminate();
-      });
-      rejected.on('error', () => {});
-    });
-    expect(status).toBe(503);
+    await expect(f.connect()).rejects.toThrow();
     expect((await response(ws, { input: 'still works' })).type).toBe('response.completed');
   } finally {
     await f.stop();
@@ -561,6 +568,62 @@ it('fails a successful HTTP stream that ends without a terminal response', async
       'response_unavailable',
     );
   } finally {
+    await f.stop();
+  }
+});
+
+it.each([false, true])(
+  'destroys rejected raw sockets held half-open (authenticated=%s)',
+  async (authenticated) => {
+    const f = await fixture({ enabled: false });
+    const url = new URL(f.url);
+    const raw = connectTcp({ host: url.hostname, port: Number(url.port), allowHalfOpen: true });
+    raw.on('error', () => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await once(raw, 'connect');
+      const ended = once(raw, 'end');
+      raw.resume();
+      raw.write(
+        `GET ${url.pathname} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n${authenticated ? 'Authorization: Bearer fixture\r\n' : ''}\r\n`,
+      );
+      await ended;
+      await Promise.race([
+        f.firstRawSocketClosed,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Rejected socket retained')), 2000);
+        }),
+      ]);
+      expect(await f.connectionCount()).toBe(0);
+    } finally {
+      clearTimeout(timer);
+      raw.destroy();
+      await f.stop();
+    }
+  },
+);
+it('cancels execution at expiry even when the socket writer is backpressured', async () => {
+  const f = await fixture({ maxConnectionMs: 1000 });
+  let ws: WebSocket | undefined;
+  let raw: import('node:net').Socket | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    ws = await f.connect();
+    raw = await f.firstRawSocket;
+    // Hold actual TCP writes, including callbacks, without replacing WebSocket behavior.
+    raw.cork();
+    ws.send(JSON.stringify({ type: 'response.create', model: 'agent', input: 'wait' }));
+    await Promise.race([
+      Promise.all([f.cancellation, f.firstRawSocketClosed]),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Expired execution retained')), 3000);
+      }),
+    ]);
+    expect(await f.connectionCount()).toBe(0);
+  } finally {
+    clearTimeout(timer);
+    raw?.uncork();
+    ws?.terminate();
     await f.stop();
   }
 });
