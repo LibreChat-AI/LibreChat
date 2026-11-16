@@ -466,6 +466,15 @@ export async function createDiscordAcceptance(
           { cause },
         );
       }
+      // The default native policy leaves the privileged Message Content intent off, so a non-mention
+      // guild message reaches the app with its content stripped, as Discord delivers it. The real
+      // driver must still have identified for guild and DM messages, or Discord would send neither.
+      expect(settings.discord.gateway.messageContent).toBe(false);
+      expect(gateway?.subscriptions()).toMatchObject({
+        guildMessages: true,
+        directMessages: true,
+        messageContent: false,
+      });
     }
 
     /** A signed guild interaction, in the bound channel unless a thread or channel is named. */

@@ -1,12 +1,17 @@
 /// <reference lib="es2022" />
 import { once } from 'node:events';
-import { randomUUID } from 'node:crypto';
 import { WebSocketServer } from 'ws';
+import { randomUUID } from 'node:crypto';
+import { GatewayIntentBits } from 'discord-api-types/v10';
 import type { AddressInfo } from 'node:net';
 import type { WebSocket } from 'ws';
 
-/** The Gateway intent bits the acceptance reasons about. */
-const messageContentIntent = 1 << 15;
+/** Names of the intents in a mask, from the same enum the SDK under test builds its mask with. */
+function intentNames(mask: number): string[] {
+  return Object.entries(GatewayIntentBits)
+    .filter(([, bit]) => typeof bit === 'number' && (mask & bit) !== 0)
+    .map(([name]) => name);
+}
 
 export interface DiscordGatewayOptions {
   applicationId: string;
@@ -61,6 +66,8 @@ export async function createDiscordGateway(options: DiscordGatewayOptions) {
     seen.connections++;
     live = socket;
     sequence = 0;
+    // A new session has identified nothing yet, so it is subscribed to nothing.
+    seen.intents = 0;
     frame(socket, { op: 10, d: { heartbeat_interval: interval } });
     socket.on('message', (raw) => {
       const received = JSON.parse(String(raw)) as { op: number; d?: Record<string, unknown> };
@@ -100,15 +107,26 @@ export async function createDiscordGateway(options: DiscordGatewayOptions) {
   });
 
   /**
-   * Delivers one MESSAGE_CREATE on the live session. Without the privileged Message Content intent
-   * Discord strips the content of every guild message that does not mention the bot, so a policy of
-   * `messageContent: false` really delivers an empty string for those.
+   * Delivers one MESSAGE_CREATE on the live session, under Discord's delivery rules. Discord sends a
+   * guild or thread message only to a session that identified with GuildMessages, and a DM only to
+   * one that identified with DirectMessages. A message it would not send throws, so a negative
+   * assertion can never pass because nothing could arrive. Without the privileged Message Content
+   * intent Discord also strips the content of every guild message that does not mention the bot, so
+   * a policy of `messageContent: false` really delivers an empty string for those.
    */
   function dispatch(message: DiscordGatewayMessage): void {
     if (!live) throw new Error('No live Discord Gateway session to deliver to');
+    const direct = message.guildId === undefined;
+    const subscription = direct
+      ? GatewayIntentBits.DirectMessages
+      : GatewayIntentBits.GuildMessages;
+    if ((seen.intents & subscription) === 0) {
+      throw new Error(
+        `Discord would not deliver this ${direct ? 'direct' : 'guild'} message: the session identified with ${intentNames(seen.intents).join(', ') || 'no intents'}, without ${GatewayIntentBits[subscription]}`,
+      );
+    }
     const mentioned = message.mentions?.includes(options.botUserId) === true;
-    const visible =
-      message.guildId === undefined || mentioned || (seen.intents & messageContentIntent) !== 0;
+    const visible = direct || mentioned || (seen.intents & GatewayIntentBits.MessageContent) !== 0;
     frame(live, {
       op: 0,
       t: 'MESSAGE_CREATE',
@@ -136,6 +154,13 @@ export async function createDiscordGateway(options: DiscordGatewayOptions) {
     url,
     seen,
     dispatch,
+    /** What the live session identified with, decoded from the canonical Gateway intents. */
+    subscriptions: () => ({
+      guildMessages: (seen.intents & GatewayIntentBits.GuildMessages) !== 0,
+      directMessages: (seen.intents & GatewayIntentBits.DirectMessages) !== 0,
+      messageContent: (seen.intents & GatewayIntentBits.MessageContent) !== 0,
+      intents: intentNames(seen.intents),
+    }),
     /** Sockets the fixture still holds open. */
     open: () => server.clients.size,
     lifecycle(): DiscordGatewayLifecycle {
