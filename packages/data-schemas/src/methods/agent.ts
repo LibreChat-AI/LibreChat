@@ -1118,6 +1118,7 @@ export function createAgentMethods(
       skipVersioning?: boolean;
       /** Action edits may retain existing MCP grants, but cannot derive new grants from keys. */
       preserveMCPAccess?: boolean;
+      expectedMCPAccess?: { names: string[]; updatedAt?: Date };
     },
   ) => Promise<IAgent | null>;
   updateAgentAvatar: (params: {
@@ -1510,6 +1511,7 @@ export function createAgentMethods(
       skipVersioning?: boolean;
       /** Action edits may retain existing MCP grants, but cannot derive new grants from keys. */
       preserveMCPAccess?: boolean;
+      expectedMCPAccess?: { names: string[]; updatedAt?: Date };
     } = {},
   ): Promise<IAgent | null> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
@@ -1520,7 +1522,7 @@ export function createAgentMethods(
     let suppressedVersionEntry = false;
 
     const currentAgent = await Agent.findOne(searchParameter);
-    if (!currentAgent && options.preserveMCPAccess) {
+    if (!currentAgent && (options.preserveMCPAccess || options.expectedMCPAccess)) {
       throw new AgentRevisionConflictError(
         'Agent changed during Action update; reload and try again',
       );
@@ -1710,6 +1712,18 @@ export function createAgentMethods(
         ],
       };
     }
+    if (options.expectedMCPAccess) {
+      const { names, updatedAt } = options.expectedMCPAccess;
+      updateFilter = {
+        $and: [
+          updateFilter,
+          ...(updatedAt ? [{ updatedAt }] : []),
+          names.length > 0
+            ? { mcpServerNames: names }
+            : { $or: [{ mcpServerNames: [] }, { mcpServerNames: null }] },
+        ],
+      };
+    }
     const updatedAgent = await withCodeEnvironmentReferences(
       mongoose,
       nextEnvironmentIds,
@@ -1731,7 +1745,7 @@ export function createAgentMethods(
       },
     );
 
-    if (currentAgent && options.preserveMCPAccess && !updatedAgent) {
+    if (currentAgent && (options.preserveMCPAccess || options.expectedMCPAccess) && !updatedAgent) {
       throw new AgentRevisionConflictError(
         'Agent changed during Action update; reload and try again',
       );

@@ -8,6 +8,7 @@ import {
 } from 'librechat-data-provider';
 import type { MCPOptions } from 'librechat-data-provider';
 import type * as t from '~/types';
+import { createMCPNameModel } from '../models/mcpName';
 import { createMCPServerMethods } from './mcpServer';
 import { createAclEntryMethods } from './aclEntry';
 import mcpServerSchema from '~/schema/mcpServer';
@@ -22,6 +23,7 @@ let methods: ReturnType<typeof createMCPServerMethods>;
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   const mongoUri = mongoServer.getUri();
+  createMCPNameModel(mongoose);
   MCPServer = mongoose.models.MCPServer || mongoose.model('MCPServer', mcpServerSchema);
   if (!mongoose.models.AclEntry) {
     mongoose.model('AclEntry', aclEntrySchema);
@@ -45,6 +47,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await mongoose.connection.dropDatabase();
+  await mongoose.models.MCPName.syncIndexes();
 });
 
 describe('MCPServer Model Tests', () => {
@@ -879,3 +882,16 @@ describe('MCPServer Model Tests', () => {
     });
   });
 });
+
+test.each(['single', 'bulk'])(
+  'deleted server names remain reserved after %s deletion',
+  async (mode) => {
+    const author = new mongoose.Types.ObjectId();
+    const config: MCPOptions = { title: 'Reserved', type: 'sse', url: 'https://example.test/mcp' };
+    const first = await methods.createMCPServer({ author, config });
+    if (mode === 'single') await methods.deleteMCPServer(first.serverName);
+    else await methods.deleteMCPServersWithAcl([first._id.toString()]);
+    const next = await methods.createMCPServer({ author, config });
+    expect(next.serverName).not.toBe(first.serverName);
+  },
+);

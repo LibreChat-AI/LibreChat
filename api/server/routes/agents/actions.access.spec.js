@@ -350,3 +350,21 @@ describe('Action writes and agent-mediated MCP access', () => {
     }
   });
 });
+
+it.each(['registry', 'legacy'])(
+  'does not transfer a grant after %s server deletion',
+  async (mode) => {
+    await db.updateAgent({ id: agent.id }, { tools: ['lookup_mcp_pay'], mcpServerNames: ['pay'] });
+    const registry = new MCPServersRegistry(mongoose);
+    if (mode === 'registry') await registry.removeServer('pay', 'DB', ownerId);
+    else await mongoose.models.MCPServer.deleteOne({ serverName: 'pay' });
+    const replacement = await db.createMCPServer({
+      author: ownerId,
+      config: { title: 'pay', type: 'sse', url: 'https://replacement.example.test/mcp' },
+    });
+    expect(replacement.serverName).not.toBe('pay');
+    expect(await registry.getAllServerConfigs(actorId, undefined, 'USER')).not.toHaveProperty(
+      replacement.serverName,
+    );
+  },
+);
