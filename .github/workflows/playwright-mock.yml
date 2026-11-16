@@ -791,13 +791,97 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  discord_channels:
+    name: Discord Channels acceptance
+    # The opt-in runtime scenarios must run independently of codegraph shard selection.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request != null &&
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      CI: 'true'
+      E2E_CHROMIUM_CHANNEL: chrome
+      REDIS_URI: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 24.22.3
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            packages/channel-gateway/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
+
+      - name: Verify Chrome is present
+        run: google-chrome --version
+
+      - name: Check Discord result gating
+        run: node --test e2e/discord/results.test.mjs .github/scripts/playwright-matrix.test.mjs
+
+      - name: Build the application
+        run: npm run e2e:prepare
+
+      - name: Run Discord acceptance with disposable transactional storage
+        run: node e2e/discord/run.mjs
+
+      - name: Upload Discord reports and diagnostics
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        continue-on-error: true
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-discord-channels
+          path: |
+            e2e/playwright-report/discord/**
+            e2e/specs/.test-results/discord/**
+          retention-days: 7
+          if-no-files-found: warn
+
   e2e:
     name: e2e
     # `!cancelled()`, not `always()`: the gate has to survive a failed shard to report it, but a
     # run superseded by `cancel-in-progress` has nothing to adjudicate. Under `always()` it was
     # still dispatched onto a fresh runner while every other job went `cancelled`, then read
     # `needs.e2e_shards.result == 'cancelled'` and exited 1 — so each superseded push left this
-    # required check red instead of cancelled. Matches all three lanes it gates.
+    # required check red instead of cancelled. Matches every lane it gates.
     if: >-
       !cancelled() &&
       (github.event_name == 'schedule' ||
@@ -808,7 +892,15 @@ jobs:
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
       github.event.pull_request.head.repo.full_name == github.repository)))
-    needs: [codegraph_select, shard_timings, e2e_shards, mcp_tool_list_changed, mcp_apps]
+    needs:
+      [
+        codegraph_select,
+        shard_timings,
+        e2e_shards,
+        mcp_tool_list_changed,
+        mcp_apps,
+        discord_channels,
+      ]
     runs-on: ubuntu-latest
     steps:
       # A codegraph-skipped MCP lane reports `skipped`; that is a decision, not a failure.
@@ -817,6 +909,7 @@ jobs:
           needs.shard_timings.result != 'success' ||
           needs.e2e_shards.result != 'success' ||
           needs.mcp_apps.result != 'success' ||
+          needs.discord_channels.result != 'success' ||
           (needs.mcp_tool_list_changed.result != 'success' &&
           !(needs.mcp_tool_list_changed.result == 'skipped' && needs.codegraph_select.outputs.mcp_run == 'false'))
         run: exit 1

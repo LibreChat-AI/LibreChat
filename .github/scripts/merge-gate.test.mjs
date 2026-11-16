@@ -210,6 +210,7 @@ test('the Playwright merge group matrix is the pull request profile with no lane
   assert.deepEqual(queued.e2e_shards.matrix, profile);
   assert.equal(profile.include.length, 17);
   assert.deepEqual(ran(queued).sort(), [
+    'discord_channels',
     'e2e',
     'e2e_shards',
     'mcp_apps',
