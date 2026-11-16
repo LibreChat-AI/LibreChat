@@ -303,7 +303,7 @@ export interface FunctionTool {
   name: string;
   description?: string | null;
   parameters?: Record<string, unknown> | null;
-  strict?: boolean;
+  strict?: boolean | null;
 }
 
 /** Hosted tool (provider-specific) */
