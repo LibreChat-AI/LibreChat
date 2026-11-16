@@ -208,6 +208,7 @@ async function callAndCapture(
     agents?: ReturnType<typeof makeAgent>[];
     summarizationConfig?: SummarizationConfig;
     summarizeOnly?: boolean;
+    summarizeFullWindow?: boolean;
     initialSummary?: { text: string; tokenCount: number };
     appConfig?: AppConfig;
     messages?: BaseMessage[];
@@ -230,6 +231,7 @@ async function callAndCapture(
     signal,
     summarizationConfig: opts.summarizationConfig,
     summarizeOnly: opts.summarizeOnly,
+    summarizeFullWindow: opts.summarizeFullWindow,
     initialSummary: opts.initialSummary,
     appConfig: opts.appConfig,
     messages: opts.messages,
@@ -6087,6 +6089,21 @@ describe('ask_user_question run wiring', () => {
 // summarizeOnly resolution (manual compaction)
 // ---------------------------------------------------------------------------
 describe('summarizeOnly resolution', () => {
+  it('summarizes the explicit standalone window without changing ordinary manual compaction', async () => {
+    const full = await callAndCapture({
+      summarizeOnly: true,
+      summarizeFullWindow: true,
+      summarizationConfig: { retainRecent: { turns: 2 } },
+    });
+    expect(full[0].summarizationConfig).toMatchObject({ retainRecent: { turns: 0 } });
+    (Run.create as jest.Mock).mockClear();
+    const ordinary = await callAndCapture({
+      summarizeOnly: true,
+      summarizationConfig: { retainRecent: { turns: 2 } },
+    });
+    expect(ordinary[0].summarizationConfig).toMatchObject({ retainRecent: { turns: 2 } });
+  });
+
   it('is absent on an ordinary run', async () => {
     const agents = await callAndCapture();
     expect(agents[0].summarizeOnly).toBeUndefined();
