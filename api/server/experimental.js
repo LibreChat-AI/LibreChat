@@ -44,6 +44,8 @@ const {
   preAuthTenantMiddleware,
   requestContextMiddleware,
   configureServerTimeouts,
+  installResponseSockets,
+  getSafeErrorMetadata,
   setupGracefulShutdown,
   registerShutdownTask,
   getClusterShutdownBudgetMs,
@@ -785,6 +787,16 @@ if (cluster.isMaster) {
       }
     });
 
+    registerShutdownTask(
+      'Responses WebSockets',
+      installResponseSockets({
+        server,
+        application: app,
+        limits: appConfig?.endpoints?.agents?.responses?.websocket,
+        onError: (error) => logger.error('[Responses WebSocket]', getSafeErrorMetadata(error)),
+      }),
+      { priority: 110, phase: 'pre-drain' },
+    );
     configureServerTimeouts(server);
     logger.info(`Worker ${process.pid} HTTP server timeout configuration`, {
       keepAliveTimeout: server.keepAliveTimeout,

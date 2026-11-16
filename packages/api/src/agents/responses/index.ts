@@ -236,3 +236,10 @@ export * from './foreground';
 export { createResponseTurn, stageResponseTurn } from './turn';
 export * from './stored';
 export type { ResponseCompletion, ResponseCompletionRecord } from './completion';
+
+export {
+  installResponseSockets,
+  admitResponseSocket,
+  acceptResponseSocket,
+  responseSocketToolNames,
+} from './socket';

@@ -54,6 +54,8 @@ const {
   getRemainingShutdownMs,
   registerBackgroundTaskShutdown,
   configureServerTimeouts,
+  installResponseSockets,
+  getSafeErrorMetadata,
   createReadinessHandler,
   keyvRedisClient,
   ioredisClient,
@@ -603,6 +605,16 @@ const startServer = async () => {
     }
   });
 
+  registerShutdownTask(
+    'Responses WebSockets',
+    installResponseSockets({
+      server,
+      application: app,
+      limits: appConfig?.endpoints?.agents?.responses?.websocket,
+      onError: (error) => logger.error('[Responses WebSocket]', getSafeErrorMetadata(error)),
+    }),
+    { priority: 110, phase: 'pre-drain' },
+  );
   configureServerTimeouts(server);
   logger.info('HTTP server timeout configuration', {
     keepAliveTimeout: server.keepAliveTimeout,

@@ -20,6 +20,7 @@
  * @see https://openresponses.org/specification
  */
 const express = require('express');
+const { admitResponseSocket, acceptResponseSocket } = require('@librechat/api');
 const {
   createResponse,
   getResponse,
@@ -90,7 +91,8 @@ router.use(checkRemoteAgentsFeature);
  *   "usage": { ... }
  * }
  */
-router.post('/', checkAgentPermission, background.create);
+router.get('/', admitResponseSocket, acceptResponseSocket);
+router.post('/', checkAgentPermission, admitResponseSocket, background.create);
 router.post('/:id/cancel', background.cancel);
 
 /**

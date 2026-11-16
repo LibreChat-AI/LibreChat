@@ -226,6 +226,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').createStoredForegroundResponseReader(...args),
   createResponseAccountingSnapshot: (...args) =>
     jest.requireActual('@librechat/api').createResponseAccountingSnapshot(...args),
+  responseSocketToolNames: (...args) =>
+    jest.requireActual('@librechat/api').responseSocketToolNames(...args),
   withResponsePersistenceErrors: (...args) =>
     jest.requireActual('@librechat/api').withResponsePersistenceErrors(...args),
   createFileProvisionRecovery: () =>

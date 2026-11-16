@@ -66,6 +66,7 @@ const {
   createResponseAccountingSnapshot,
   withResponsePersistenceErrors,
   createResponseExecutionRuntime,
+  responseSocketToolNames,
   GenerationJobManager,
   getPluginHookSource,
   writeDone,
@@ -981,7 +982,7 @@ const executeResponse = async (envelope, { req, res }) => {
       const toolSet = buildRunToolSet(
         primaryConfig,
         handoffAgentConfigs.values(),
-        undefined,
+        responseSocketToolNames(req),
         allMessages,
         true,
       );

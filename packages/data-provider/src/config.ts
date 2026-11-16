@@ -1886,11 +1886,43 @@ export const subagentActivityConfigSchema = z.object({
 
 export type TSubagentActivityConfig = z.infer<typeof subagentActivityConfigSchema>;
 
+export const responsesProtocolSchema = z.object({
+  websocket: z
+    .object({
+      enabled: z.boolean().default(false),
+      maxMessageBytes: z
+        .number()
+        .int()
+        .min(1024)
+        .max(16 * 1024 * 1024)
+        .default(1024 * 1024),
+      maxConnections: z.number().int().min(1).max(10000).default(32),
+      admissionTimeoutMs: z.number().int().min(100).max(60000).default(10000),
+      heartbeatMs: z.number().int().min(100).max(120000).default(30000),
+      maxQueuedTurns: z.number().int().min(1).max(64).default(4),
+      maxCacheBytes: z
+        .number()
+        .int()
+        .min(1024)
+        .max(32 * 1024 * 1024)
+        .default(4 * 1024 * 1024),
+      maxBufferedBytes: z
+        .number()
+        .int()
+        .min(1024)
+        .max(32 * 1024 * 1024)
+        .default(4 * 1024 * 1024),
+      maxConnectionMs: z.number().int().min(1000).max(3600000).default(3600000),
+    })
+    .prefault({}),
+});
+
 export const agentsEndpointSchema = baseEndpointSchema
   .omit({ baseURL: true })
   .merge(
     z.object({
       /* agents specific */
+      responses: responsesProtocolSchema.optional(),
       /** Trusted server-side SDK modules. Unconfigured runtimes cannot execute. */
       sdkRuntimes: z
         .record(
