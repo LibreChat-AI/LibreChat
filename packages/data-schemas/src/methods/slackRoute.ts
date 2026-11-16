@@ -156,6 +156,7 @@ export function createSlackRouteStorage(
           .findOne({
             channelId: input.channelId,
             tenantId: tenantId ?? null,
+            type: 'slack',
             status: input.activate ? { $in: ['pending_install', 'disabled'] } : 'active',
             workspaceId: input.workspaceId,
             credentialMode: 'per_user',
@@ -180,6 +181,7 @@ export function createSlackRouteStorage(
             {
               channelId: channel.channelId,
               tenantId: tenantId ?? null,
+              type: 'slack',
               revision: input.channelRevision,
               status: channel.status,
             },

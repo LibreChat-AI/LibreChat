@@ -241,6 +241,10 @@ describe('shared Slack service routing', () => {
   async function pending(workspaceId: string, agentId = 'agent') {
     return (await browserPost(agentId + '/connections', { workspaceId }).expect(201)).body;
   }
+  /** A raw restore writes another provider while the row keeps its workspace binding. */
+  const restoreProvider = (channelId: string) =>
+    db.models.AgentChannel.collection.updateOne({ channelId }, { $set: { type: 'discord' } });
+  const stored = (channelId: string) => db.models.AgentChannel.collection.findOne({ channelId });
 
   it('preserves thread/channel refinement when adding the service tenant scope', async () => {
     await scoped(() => install());
@@ -887,6 +891,89 @@ describe('shared Slack service routing', () => {
       await post('/resolve', { ...query(), target }).expect(404);
     await post('/discover', { limit: 3 }).expect(400);
     expect((await post('/discover', { limit: 2 }).expect(200)).body).toEqual([]);
+  });
+  it('never advertises or serves a restored non-Slack row that kept its workspace binding', async () => {
+    await scoped(async () => {
+      const workspace = await install();
+      await bind(workspace.workspaceId);
+      await db.models.ChannelRun.collection.insertOne({
+        tenantId: 'org-a',
+        workspaceId: workspace.workspaceId,
+        channelId: 'binding-a',
+        runId: 'run-a',
+      });
+      await db.models.SlackThreadRoute.create({
+        workspaceId: workspace.workspaceId,
+        externalUserId: 'UACTOR',
+        externalThreadKey: 'C123:2.000002',
+        channelId: 'binding-a',
+        userId: 'member',
+      });
+    });
+    const established = {
+      kind: 'thread',
+      actorId: 'UACTOR',
+      externalChannelId: 'C123',
+      externalThreadKey: 'C123:2.000002',
+    };
+    const run = { kind: 'run', runId: 'run-a' };
+    const bundle = () =>
+      request.get('/bundle/org-a/binding-a').set('Authorization', `Bearer ${serviceToken}`);
+    for (const target of [query().target, established, run])
+      expect((await post('/resolve', { ...query(), target }).expect(200)).body).toMatchObject({
+        kind: 'bound',
+        channelId: 'binding-a',
+      });
+    await bundle().expect(200);
+
+    await restoreProvider('binding-a');
+    const fallback = (await post('/resolve', query()).expect(200)).body;
+    expect(fallback.kind).toBe('unmapped');
+    expect(fallback).not.toHaveProperty('channelId');
+    expect(
+      (await post('/resolve', { ...query(), target: established }).expect(200)).body.kind,
+    ).toBe('retired_thread');
+    await post('/resolve', { ...query(), target: run }).expect(404);
+    await bundle().expect(404, { error: 'channel_not_found' });
+  });
+  it('keeps binding management closed to a restored non-Slack row while generic deletion still works', async () => {
+    const workspace = await scoped(() => install());
+    const control = await pending(workspace.workspaceId);
+    const restored = await pending(workspace.workspaceId);
+    await restoreProvider(restored.channelId);
+    const before = await stored(restored.channelId);
+    const path = `/ui/agent/${restored.channelId}/routes`;
+    await request.get(path).set('x-test-user', 'admin').expect(404);
+    await request
+      .post(path)
+      .set('x-test-user', 'admin')
+      .send({ channelRevision: restored.revision })
+      .expect(404);
+    await request
+      .delete(path)
+      .set('x-test-user', 'admin')
+      .send({ expectedRevision: 'route-revision' })
+      .expect(404);
+    expect(await stored(restored.channelId)).toEqual(before);
+    expect(await scoped(() => routes.read(workspace.workspaceId))).toBeNull();
+
+    await request
+      .get(`/ui/agent/${control.channelId}/routes`)
+      .set('x-test-user', 'admin')
+      .expect(200, { routes: [] });
+    expect(
+      (
+        await browserPost(`agent/${control.channelId}/routes`, {
+          channelRevision: control.revision,
+        }).expect(200)
+      ).body.status,
+    ).toBe('active');
+    expect(await scoped(() => routes.read(workspace.workspaceId))).toMatchObject({
+      channelId: control.channelId,
+    });
+
+    await request.delete(`/ui/agent/${restored.channelId}`).set('x-test-user', 'admin').expect(204);
+    expect(await stored(restored.channelId)).toBeNull();
   });
   it.each(['rate-limit', 'malformed', 'network'])(
     'does not disconnect on a %s credential probe failure',
