@@ -56,6 +56,8 @@ type PendingSubagent = { parentMessageId: string; events: SubagentUpdateEvent[] 
 export type StreamState = {
   /** Authoritative streaming copy of each response, ahead of the cache while a flush is queued. */
   messages: Map<string, TMessage>;
+  /** Latest model response, after the submission placeholder has been replaced. */
+  currentResponseId?: string;
   steps: Map<string, Agents.RunStep>;
   toolCallIds: Map<string, string | undefined>;
   firstFragmentByCall: Map<string, number>;
@@ -92,6 +94,7 @@ export function createStreamState(): StreamState {
 
 export function resetStreamState(state: StreamState): void {
   state.messages.clear();
+  state.currentResponseId = undefined;
   state.steps.clear();
   state.toolCallIds.clear();
   state.firstFragmentByCall.clear();

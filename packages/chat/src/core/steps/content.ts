@@ -45,7 +45,7 @@ type AllContentTypes =
 export const isOAuthToolCallName = (name?: string): boolean =>
   typeof name === 'string' && name.startsWith(`oauth${Constants.mcp_delimiter}`);
 
-const isOAuthToolCallContent = (part?: Partial<TMessageContentParts>) => {
+export const isOAuthToolCallContent = (part?: Partial<TMessageContentParts>): boolean => {
   if (part?.type !== ContentTypes.TOOL_CALL || !('tool_call' in part)) {
     return false;
   }
@@ -198,7 +198,16 @@ export function updateContent(
   const position = auxiliary.findIndex((part) => {
     if (part.type !== ContentTypes.TOOL_CALL || !('tool_call' in part)) return false;
     const call = part.tool_call;
-    if (incoming?.id) return call?.id === incoming.id;
+    if (incoming?.id) {
+      return (
+        call?.id === incoming.id ||
+        (!finalUpdate &&
+          incoming.stepId != null &&
+          call != null &&
+          'stepId' in call &&
+          call.stepId === incoming.stepId)
+      );
+    }
     if (incoming?.stepId)
       return call != null && 'stepId' in call && call.stepId === incoming.stepId;
     return call != null && 'name' in call && call.name === incoming?.name;
@@ -220,8 +229,20 @@ export function updateContent(
     return { ...result, content: [...(result.content ?? []), ...active] };
   }
   if (finalUpdate) {
-    if (position >= 0) auxiliary.splice(position, 1);
+    if (position < 0) return message;
+    auxiliary.splice(position, 1);
     return { ...message, content: [...native, ...auxiliary] };
+  }
+  const existing = auxiliary[position];
+  if (
+    oauth &&
+    incoming?.id &&
+    existing?.type === ContentTypes.TOOL_CALL &&
+    'tool_call' in existing &&
+    existing.tool_call?.id !== incoming.id
+  ) {
+    // A new flow for the same step must not inherit the previous sign-in URL or args.
+    delete auxiliary[position];
   }
   const result = writeContent(
     { ...message, content: auxiliary },
@@ -386,8 +407,12 @@ function writeContent(
       args,
       stepId: getNonEmptyValue([contentPart.tool_call.stepId, existingToolCall?.stepId]),
       type: ToolCallTypes.TOOL_CALL,
-      auth: contentPart.tool_call.auth,
-      expires_at: contentPart.tool_call.expires_at,
+      auth: isOAuthToolCallName(name)
+        ? (contentPart.tool_call.auth ?? existingToolCall?.auth)
+        : contentPart.tool_call.auth,
+      expires_at: isOAuthToolCallName(name)
+        ? (contentPart.tool_call.expires_at ?? existingToolCall?.expires_at)
+        : contentPart.tool_call.expires_at,
       toolPreparationStartedAt:
         contentPart.tool_call.toolPreparationStartedAt ??
         existingToolCall?.toolPreparationStartedAt,

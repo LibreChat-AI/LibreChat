@@ -5,7 +5,7 @@ import {
   getRunStepCloseMetadata,
 } from 'librechat-data-provider';
 import type { Agents, TMessage, PartMetadata } from 'librechat-data-provider';
-import { getStepMetadata, updateContent, isOAuthToolCallName } from './content';
+import { getStepMetadata, isOAuthToolCallName, updateContent } from './content';
 
 type ToolTimingLookup = (
   callId: string,
@@ -172,11 +172,27 @@ export function applyRunStepClosed(
   editPrefixOffset: number,
   timing: Pick<PartMetadata, 'toolPreparationDurationMs' | 'toolExecutionDurationMs'> = {},
 ): TMessage | undefined {
-  if (
-    runStep.stepDetails.type === StepTypes.TOOL_CALLS &&
-    runStep.stepDetails.tool_calls?.some((call) => 'name' in call && isOAuthToolCallName(call.name))
-  )
-    return undefined;
+  if (runStep.stepDetails.type === StepTypes.TOOL_CALLS) {
+    const oauthCalls = runStep.stepDetails.tool_calls?.filter(
+      (call) => 'name' in call && isOAuthToolCallName(call.name),
+    );
+    if (oauthCalls?.length) {
+      const updated = oauthCalls.reduce(
+        (current, call) =>
+          updateContent(
+            current,
+            0,
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { ...call },
+            },
+            true,
+          ),
+        message,
+      );
+      return updated === message ? undefined : updated;
+    }
+  }
   const index = runStep.index + editPrefixOffset;
   const existing = message.content?.[index];
   if (!existing || existing.type !== ContentTypes.TOOL_CALL) {

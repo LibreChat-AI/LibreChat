@@ -1,8 +1,8 @@
 import { StepTypes, ContentTypes, getToolTimingDurations } from 'librechat-data-provider';
 import type { Agents, TMessage } from 'librechat-data-provider';
 import type { StepEvent, StepContext, StreamState } from './state';
+import { applyToolCallDelta, applyRunStepClosed, isOAuthToolCallName } from '../steps';
 import { toolTimingKey, isValidTime, resolveResponseId, bufferDelta } from './state';
-import { applyToolCallDelta, applyRunStepClosed } from '../steps';
 
 /** Writes `updated` into the list as the response `responseMessageId`. */
 export type MergeResponse = (updated: TMessage, responseMessageId: string) => void;
@@ -191,7 +191,17 @@ export function applyRunStepClosedTiming({
     return;
   }
   const response = state.messages.get(responseMessageId);
-  const existing = response?.content?.[runStep.index + editPrefixOffset];
+  const oauthCall =
+    runStep.stepDetails.type === StepTypes.TOOL_CALLS
+      ? runStep.stepDetails.tool_calls?.find(
+          (call) => 'name' in call && isOAuthToolCallName(call.name),
+        )
+      : undefined;
+  const existing = oauthCall
+    ? response?.content?.find(
+        (part) => part?.type === ContentTypes.TOOL_CALL && part.tool_call?.id === oauthCall.id,
+      )
+    : response?.content?.[runStep.index + editPrefixOffset];
   if (!response || existing?.type !== ContentTypes.TOOL_CALL || !existing.tool_call) {
     return;
   }
