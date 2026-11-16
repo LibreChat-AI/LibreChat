@@ -4,7 +4,9 @@ import type { CodeBarProps } from '~/common';
 import FloatingCodeBar from '~/components/Messages/Content/FloatingCodeBar';
 import ResultSwitcher from '~/components/Messages/Content/ResultSwitcher';
 import { useToolCallsMapContext, useMessageContext } from '~/Providers';
-import { LogContent } from '~/components/Chat/Messages/Content/Parts';
+/* The module, not the parts barrel: the barrel registers the part renderers, which import the
+ * whole markdown stack, and code blocks render on boot-time surfaces such as prompt previews. */
+import LogContent from '~/components/Chat/Messages/Content/Parts/LogContent';
 import CodeBar from '~/components/Messages/Content/CodeBar';
 import { useLocalize } from '~/hooks';
 import cn from '~/utils/cn';

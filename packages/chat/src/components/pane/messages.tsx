@@ -5,15 +5,12 @@ import { MessagesViewProvider } from '../../react/messages/view';
 import { useChatSurface } from '../../react/subagents/surface';
 import MessagesView from '../messages/MessagesView';
 
-/** The list's slots the app fills: thread mode, pending pieces, scroll control and rail. */
+/** The list's slots a host may replace: the thread, pending pieces, scroll control and rail.
+ *  Flat thread mode is a host setting (`useFlatThread`), and the pending pieces render
+ *  themselves when a slot is absent. */
 export type ChatScreenMessagesSlots = Pick<
   MessagesViewProps,
-  | 'flatThread'
-  | 'renderThread'
-  | 'renderPendingTurn'
-  | 'renderPendingSteers'
-  | 'renderScrollButton'
-  | 'renderNav'
+  'renderThread' | 'renderPendingTurn' | 'renderPendingSteers' | 'renderScrollButton' | 'renderNav'
 >;
 
 /** What the message list receives: the session's messages and the tree built from them. */

@@ -247,4 +247,38 @@ test.describe('composer palette', () => {
      * it alone, to keep the on-screen keyboard from rising again. */
     await expect(messageInput).toBeFocused();
   });
+
+  test('picking rows with the mouse keeps a toggle open and hands focus back to the message field @scenario:palette-mouse-pick-returns-focus-to-the-composer', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    await selectMockChat(page);
+    const messageInput = page.getByRole('textbox', { name: 'Message input' });
+
+    /* A tool row is a toggle: the press leaves the palette open, and the row has taken focus by
+     * then, so the close that follows is what has to give it back to the field. */
+    await openPalette(page);
+    const memory = palette(page).getByRole('button', { name: 'Memory', exact: true });
+    await expect(memory).toBeVisible();
+    await memory.click();
+    await expect(memory).toHaveAttribute('aria-pressed', 'true');
+    await expect(palette(page)).toBeVisible();
+    await expect(
+      page.getByTestId('composer-active-builtin').filter({ hasText: 'Memory' }),
+    ).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(palette(page)).toBeHidden();
+    await expect(messageInput).toBeFocused();
+
+    /* An upload destination is terminal: the pick itself closes the palette. */
+    await openPalette(page);
+    const upload = palette(page).getByRole('button', {
+      name: /^(From Local Computer|Upload to Provider)$/,
+    });
+    await expect(upload).toBeVisible();
+    const [fileChooser] = await Promise.all([page.waitForEvent('filechooser'), upload.click()]);
+    await fileChooser.setFiles([]);
+    await expect(palette(page)).toBeHidden();
+    await expect(messageInput).toBeFocused();
+  });
 });

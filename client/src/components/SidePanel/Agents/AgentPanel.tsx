@@ -1036,11 +1036,21 @@ export default function AgentPanel() {
       user?.role === SystemRoles.ADMIN ||
       (!permissionsLoading && hasPermission(PermissionBits.SHARE)));
 
+  const channelsSection =
+    showChannels && user?.id ? (
+      <Channels
+        agentId={isPersistedAgent ? current_agent_id! : undefined}
+        userId={user.id}
+        tenantId={user.tenantId}
+        isAdmin={user.role === SystemRoles.ADMIN}
+      />
+    ) : null;
+
   return (
     <FormProvider {...methods}>
       <form
         onSubmit={handleSubmit(onSubmit)}
-        className="flex flex-1 scrollbar-gutter-stable flex-col px-3 pt-2 pb-3"
+        className="flex flex-1 scrollbar-gutter-stable flex-col ps-3 pe-1 pt-2 pb-3"
         aria-label="Agent configuration form"
       >
         <div className="flex-1">
@@ -1141,15 +1151,11 @@ export default function AgentPanel() {
             <AgentConfig
               instructionsPromptStatus={instructionsPromptStatus}
               onRetryInstructionsPrompt={retryInstructionsPrompt}
+              channels={channelsSection}
             />
           )}
-          {showChannels && user?.id && (
-            <Channels
-              agentId={isPersistedAgent ? current_agent_id! : undefined}
-              userId={user.id}
-              tenantId={user.tenantId}
-            />
-          )}
+          {/* Without the editor the builder is not drawn, so a sharer still gets the section here. */}
+          {!canEditAgent && channelsSection}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.advanced && (
             <AdvancedPanel />
           )}

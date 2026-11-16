@@ -459,7 +459,7 @@ export async function loadToolDefinitions(
             bindToolApprovalIdentity(
               {
                 name: actualToolName,
-                description: toolDef.function.description || undefined,
+                description: toolDef.function.description || `${actualToolName} tool`,
                 parameters: buildMcpParameters(toolDef.function.parameters),
                 serverName,
                 serverToolName: toolDef.serverToolName,
@@ -489,7 +489,7 @@ export async function loadToolDefinitions(
         bindToolApprovalIdentity(
           {
             name: toolName,
-            description: toolMatch.def.function.description || undefined,
+            description: toolMatch.def.function.description || `${toolName} tool`,
             parameters: buildMcpParameters(toolMatch.def.function.parameters),
             serverName,
             serverToolName: toolMatch.def.serverToolName,

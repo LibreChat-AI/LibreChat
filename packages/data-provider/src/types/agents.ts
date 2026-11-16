@@ -776,6 +776,13 @@ export namespace Agents {
 
   export interface SummarizeDeltaEvent {
     id: string;
+    /**
+     * Discard what the step has streamed so far, then apply `delta`. Deltas arrive while the
+     * provider is still responding, so an attempt that is then abandoned (a retry, a fallback
+     * provider) has already shown text; the next attempt's first delta carries this, or a delta
+     * with no content when no attempt follows.
+     */
+    reset?: boolean;
     delta: {
       summary: SummaryContentPart;
     };
@@ -1112,6 +1119,15 @@ export const InstructionsPromptErrorCode = {
 export type InstructionsPromptErrorCode =
   (typeof InstructionsPromptErrorCode)[keyof typeof InstructionsPromptErrorCode];
 
+export const sdkRuntimeBindingSchema = z
+  .object({
+    id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+    protocolVersion: z.literal(1),
+  })
+  .strict();
+
+export type SdkRuntimeBinding = z.infer<typeof sdkRuntimeBindingSchema>;
+
 export type Agent = {
   _id?: string;
   id: string;
@@ -1131,6 +1147,8 @@ export type Agent = {
   tool_kwargs?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   provider: AgentProvider;
+  /** Selects an operator-installed SDK runtime; never contains executable code or credentials. */
+  sdk_runtime?: SdkRuntimeBinding | null;
   model: string | null;
   model_parameters: AgentModelParameters;
   conversation_starters?: string[];
@@ -1196,6 +1214,7 @@ export type Agent = {
 export type TAgentsMap = Record<string, Agent | undefined>;
 
 export type AgentCreateParams = {
+  sdk_runtime?: SdkRuntimeBinding | null;
   git_identity?: AgentGitIdentity;
   name?: string | null;
   description?: string | null;
@@ -1235,6 +1254,7 @@ export type AgentCreateParams = {
 >;
 
 export type AgentUpdateParams = {
+  sdk_runtime?: SdkRuntimeBinding | null;
   name?: string | null;
   description?: string | null;
   avatar?: AgentAvatar | null;

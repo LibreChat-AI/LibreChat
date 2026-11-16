@@ -2,24 +2,27 @@ import React, { useMemo, useState } from 'react';
 import { getDefaultStore, useAtom } from 'jotai';
 import { filesFamily, isSubmittingFamily } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
+import axios from 'axios';
 import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
 import userEvent from '@testing-library/user-event';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { render, screen } from '@testing-library/react';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { TFile, TConversation } from 'librechat-data-provider';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { TFile, TMessage, TConversation } from 'librechat-data-provider';
 import type { TOptions } from 'i18next';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type BarComponent from '../Composer/Bar';
 import type { ChatFormValues } from '~/common';
+import { createMessageCache } from '~/Providers/ChatHostContext';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { SteerHostTestProvider } from 'test/steerHost';
+import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
 
 type BarProps = React.ComponentProps<typeof BarComponent>;
@@ -40,6 +43,22 @@ jest.mock('react-i18next', () => {
       },
     }),
   };
+});
+
+const startupConfig = { interface: { contextUsage: true }, modelSpecs: { list: [] } };
+const originalAdapter = axios.defaults.adapter;
+
+beforeEach(() => {
+  axios.defaults.adapter = async (config) => {
+    if (config.url === '/api/config') {
+      return { data: startupConfig, status: 200, statusText: 'OK', headers: {}, config };
+    }
+    throw new Error('Composer fixture blocks external API requests');
+  };
+});
+
+afterEach(() => {
+  axios.defaults.adapter = originalAdapter;
 });
 
 /** Props of every render of the bar, in order. Written by the probe below. */
@@ -79,7 +98,38 @@ jest.mock('~/hooks/Input/usePaletteEntries', () => {
   };
 });
 
+const mockFormBody = { runs: 0 };
+
+/**
+ * The form calls this hook once per render and, in this tree, nothing else does, so the count is
+ * how many times the form's own body ran: its props, its state, or any cache it subscribes to.
+ */
+jest.mock('~/hooks/Input/useAskAnswerMode', () => {
+  const actual = jest.requireActual('~/hooks/Input/useAskAnswerMode');
+  return {
+    __esModule: true,
+    ...actual,
+    default: (...args: unknown[]) => {
+      mockFormBody.runs += 1;
+      return actual.default(...args);
+    },
+  };
+});
+
+const SAVED_CHAT = 'saved-chat';
+const historyKey = [QueryKeys.messages, SAVED_CHAT];
+const mockHistory = { renders: 0 };
+
+/** Reads the whole history, so it renders for every write: proof that a write was delivered. */
+function HistoryProbe() {
+  useQuery<TMessage[]>(historyKey, { enabled: false }).data;
+  mockHistory.renders += 1;
+  return null;
+}
+
 function Harness({ conversationId }: { conversationId: string }) {
+  const queryClient = useQueryClient();
+  const messageCache = useMemo(() => createMessageCache(queryClient), [queryClient]);
   const [files, setFiles] = useAtom(filesFamily(0));
   const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
@@ -109,9 +159,19 @@ function Harness({ conversationId }: { conversationId: string }) {
         setFilesLoading,
         newConversation: () => undefined,
         handleStopGenerating: () => undefined,
-        stopGenerating: () => undefined,
-        getMessages: () => undefined,
-        setMessages: () => undefined,
+        stopGenerating: () => Promise.resolve(),
+        getMessages: (targetConversationId?: string | null) =>
+          messageCache.read(targetConversationId ?? conversationId),
+        messagesKey: conversationId,
+        latestMessageId: undefined,
+        latestMessageDepth: undefined,
+        subscribeMessages: (onChange: () => void) =>
+          messageCache.subscribe(conversationId, onChange),
+        getMessagesRevision: () => messageCache.revision(conversationId),
+        useLiveAttachments: () => ({}),
+        getMappingOptions: () => ({}),
+        feedbackEnabled: false,
+        setMessages: (messages: TMessage[]) => messageCache.write(conversationId, messages),
         ask: () => undefined,
         regenerate: () => undefined,
         setSiblingIdx: () => undefined,
@@ -123,8 +183,8 @@ function Harness({ conversationId }: { conversationId: string }) {
         setOptionSettings: () => undefined,
         handleRegenerate: () => undefined,
         handleContinue: () => undefined,
-      }) as unknown as React.ContextType<typeof ChatContext>,
-    [conversation, files, setFiles, isSubmitting],
+      }) satisfies React.ContextType<typeof ChatContext>,
+    [conversation, files, setFiles, isSubmitting, messageCache, conversationId],
   );
 
   return (
@@ -150,14 +210,17 @@ function renderComposer({
   submitting = false,
 }: { conversationId?: string; submitting?: boolean } = {}) {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } },
   });
+  queryClient.setQueryData(startupConfigKey(true), startupConfig);
+  queryClient.setQueryData(startupConfigKey(false), startupConfig);
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
   getDefaultStore().set(isSubmittingFamily(0), submitting);
 
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
+      <HistoryProbe />
       <RecoilRoot>
         <SteerHostTestProvider>
           <Router>
@@ -173,6 +236,7 @@ function renderComposer({
       </RecoilRoot>
     </QueryClientProvider>,
   );
+  return { ...view, queryClient };
 }
 
 /** Names of the props whose identity differs between two renders of the bar. */
@@ -192,6 +256,8 @@ beforeEach(() => {
   localStorage.clear();
   mockBarRenders.length = 0;
   mockBarBody.runs = 0;
+  mockFormBody.runs = 0;
+  mockHistory.renders = 0;
 });
 
 afterEach(() => {
@@ -250,5 +316,53 @@ describe('ChatForm action bar', () => {
 
     await userEvent.clear(textarea);
     expect(screen.queryByTestId('during-run-send-button')).not.toBeInTheDocument();
+  }, 20000);
+});
+
+describe('ChatForm while a reply streams', () => {
+  const turn = (text: string): TMessage[] =>
+    [
+      {
+        messageId: 'user-1',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        conversationId: SAVED_CHAT,
+        isCreatedByUser: true,
+        text: 'question',
+      },
+      {
+        messageId: 'reply-1',
+        parentMessageId: 'user-1',
+        conversationId: SAVED_CHAT,
+        isCreatedByUser: false,
+        text,
+        content: [{ type: 'text', text }],
+      },
+    ] as TMessage[];
+
+  /** Every streamed delta is a write to the history the form sends from. The form reads where
+   *  the reply sits and whether the run has paused, neither of which a delta moves, so it has
+   *  nothing to render for one; it used to render for each, and re-measure its textarea. */
+  test('does not re-render for a delta', async () => {
+    const { queryClient } = renderComposer({ conversationId: SAVED_CHAT, submitting: true });
+    await screen.findByTestId('text-input');
+    act(() => {
+      queryClient.setQueryData(historyKey, turn(''));
+    });
+    await waitFor(() => expect(mockHistory.renders).toBeGreaterThan(1));
+
+    const formBefore = mockFormBody.runs;
+    const barBefore = mockBarBody.runs;
+    expect(formBefore).toBeGreaterThan(0);
+
+    for (const text of ['The', 'The answer', 'The answer is']) {
+      const delivered = mockHistory.renders;
+      act(() => {
+        queryClient.setQueryData(historyKey, turn(text));
+      });
+      await waitFor(() => expect(mockHistory.renders).toBeGreaterThan(delivered));
+    }
+
+    expect(mockFormBody.runs).toBe(formBefore);
+    expect(mockBarBody.runs).toBe(barBefore);
   }, 20000);
 });

@@ -78,6 +78,27 @@ function buildAttachmentHeavyFinal(bodyChars: number): FinalEvent {
 }
 
 describe('projectTerminalEvent', () => {
+  it('excludes opaque signatures from every terminal message slot without mutating history', () => {
+    const metadata = Object.freeze({ thoughtSignatures: { turns: [] }, remaining: 'visible' });
+    const message = Object.freeze({ messageId: 'signed', metadata });
+    const event: FinalEvent = {
+      final: true,
+      requestMessage: message,
+      responseMessage: message,
+      runMessages: [message],
+    };
+    const projected = projectTerminalEvent(event);
+    for (const slot of [
+      projected.requestMessage,
+      projected.responseMessage,
+      ...(projected.runMessages ?? []),
+    ]) {
+      expect(slot?.metadata).toEqual({ remaining: 'visible' });
+    }
+    expect(message.metadata).toHaveProperty('thoughtSignatures');
+    expect(projectTerminalEvent(projected)).toBe(projected);
+  });
+
   describe('exclusion of transient prompt data', () => {
     it('excludes fileContext, image_urls and embedded file bodies', () => {
       const projected = projectTerminalEvent(buildAttachmentHeavyFinal(64));

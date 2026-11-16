@@ -16,7 +16,19 @@ export type {
   ToolRenderProps,
 } from './components/Part';
 
+export {
+  AnimatedText,
+  createFadePlugin,
+  FADE_DURATION_MS,
+  FADE_STAGGER_MS,
+  FADE_STAGGER_MAX_MS,
+  FADE_HYDRATION_THRESHOLD,
+} from './components/fade';
+export type { FadePlugin } from './components/fade';
+
 /** Composer: the chat input, its controls and the steering queue. */
+export { default as BrowserAudio } from './components/composer/Audio';
+export type { BrowserAudioProps } from './components/composer/Audio';
 export { default as StopButton } from './components/composer/StopButton';
 export { default as MentionItem } from './components/composer/MentionItem';
 export { default as MentionPopover } from './components/composer/popover/Mention';
@@ -29,6 +41,8 @@ export {
   COMPOSER_FOCUS_OWNER_ATTRIBUTE,
 } from './components/composer/Frame';
 export { default as CommandPopover } from './components/composer/popover/Command';
+export { default as ComposerPalette } from './components/composer/Palette';
+export type { ComposerPaletteProps } from './components/composer/Palette';
 export { default as CollapseChat } from './components/composer/CollapseChat';
 export { default as ComposerChip } from './components/composer/bar/Chip';
 export { default as composerClearance } from './components/composer/clearance';
@@ -75,6 +89,15 @@ export { getFileType } from './components/composer/files/kinds';
 export type { FileKind } from './components/composer/files/kinds';
 export type { SubtitleAction } from './components/composer/files/FileContainer';
 export type { PastedTextEdit } from './components/composer/files/PastedTextDialog';
+export { composerChipClasses } from './components/composer/chip';
+export type { ComposerChipClasses } from './components/composer/chip';
+export { default as CodeWorkspaceMenu } from './components/composer/Workspace';
+export type {
+  WorkspaceLocalize,
+  WorkspaceMachineQuery,
+  CodeWorkspaceMenuProps,
+  CodeWorkspaceMenuWorkspace,
+} from './components/composer/Workspace';
 
 /** Message list building blocks: rows, headers, sibling navigation and the streaming timer. */
 export { default as SubRow } from './components/messages/SubRow';
@@ -91,10 +114,13 @@ export {
 export { messageFooterClasses, revealOnRowHoverClasses } from './components/messages/styles';
 export { getRunStepDurationLabels, getElapsedDurationLabels } from './components/messages/duration';
 export type { RunStepDurationLabels } from './components/messages/duration';
+export { default as MessageFiles } from './components/messages/Files';
 export { default as MessageRow } from './components/messages/MessageRow';
 export { default as WakeupRow } from './components/messages/WakeupRow';
 export { default as PendingTurn } from './components/messages/PendingTurn';
 export type { PendingTurnProps } from './components/messages/PendingTurn';
+export { default as PendingSteers } from './components/messages/PendingSteers';
+export type { PendingSteersProps } from './components/messages/PendingSteers';
 export { default as MessageTimestamp } from './components/messages/MessageTimestamp';
 export { getMessageRowWidthClass } from './components/messages/width';
 export { isValidTimestamp, getMessageTimestamp } from './components/messages/time';
@@ -110,6 +136,12 @@ export { default as MessageNav } from './components/messages/MessageNav';
 export type { MessageFooterProps } from './components/messages/MessageFooter';
 export { getMessageAriaLabel, getHeaderPrefixForScreenReader } from './components/messages/labels';
 
+export { default as PhaseLabel, FOLD_EASING } from './components/parts/PhaseLabel';
+export { default as ToolGroupHeader } from './components/parts/group/Header';
+export type { ToolGroupHeaderProps } from './components/parts/group/Header';
+export { default as ToolGroupBody } from './components/parts/group/Body';
+export type { ToolGroupBodyProps } from './components/parts/group/Body';
+
 /** Parts: the leaf components and row classes tool cards share. */
 export { default as Stdout } from './components/parts/Stdout';
 export { default as BareStatus } from './components/parts/BareStatus';
@@ -123,12 +155,20 @@ export {
   TOOL_ROW_CLASSES,
   FOLD_RAIL_CLASSES,
   FOLD_GLYPH_SELECTOR,
+  PROGRESS_TEXT_CONTENT,
+  PROGRESS_TEXT_WRAPPER,
   ARTIFACT_ROW_NAV_SPACING,
 } from './components/parts/rows';
 export { default as AskOptions } from './components/parts/AskOptions';
 export { default as AskPopover } from './components/composer/ask/Popover';
 export type { LiveAsk, AskAnswerView, AskPopoverProps } from './components/composer/ask/Popover';
 export type { AskOption } from './components/parts/AskOptions';
+export { default as AutoHeight } from './components/parts/AutoHeight';
+export { default as AskUserQuestion } from './components/parts/ask/Question';
+export { default as AskUserQuestions } from './components/parts/ask/Questions';
+export { default as AskUserQuestionCall } from './components/parts/ask/Call';
+export { default as AskUserQuestionProgress } from './components/parts/ask/Progress';
+export type { AskCardMode } from './components/parts/ask/Question';
 export { default as SkillPills } from './components/parts/SkillPills';
 export type { SkillPillsSource } from './components/parts/SkillPills';
 export { default as MessageQuotes } from './components/parts/MessageQuotes';
@@ -148,6 +188,12 @@ export { default as MemoryInfo } from './components/parts/MemoryInfo';
 export { default as DialogImage } from './components/parts/DialogImage';
 export { default as PendingSkillCall } from './components/parts/PendingSkillCall';
 export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
+export { default as ToolCall } from './components/parts/ToolCall';
+export type { ToolCallProps } from './components/parts/ToolCall';
+export { default as ProgressText } from './components/parts/ProgressText';
+export type { ProgressTextProps } from './components/parts/ProgressText';
+export { default as SubagentCall } from './components/parts/SubagentCall';
+export type { SubagentCallProps, SubagentCallContext } from './components/parts/SubagentCall';
 export { default as ResumeAuthorHeader } from './components/parts/ResumeAuthorHeader';
 export { ToolAuthWarning, ToolAuthWarningContext } from './components/parts/auth';
 export { ToolPreparation, useToolPreparation } from './components/parts/preparation';
@@ -217,6 +263,7 @@ export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';
 export { default as ChatScreen } from './components/pane/Screen';
 export { default as ChatStarters } from './components/pane/starters';
 export { getChatPaneChrome } from './components/pane/chrome';
+export { loadScreenMessages } from './components/pane/load';
 export type {
   ChatScreenProps,
   ChatScreenComposerProps,
@@ -269,3 +316,63 @@ export {
 export { default as CopyButton } from './components/parts/CopyButton';
 export { default as ActionButton } from './components/parts/ActionButton';
 export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';
+export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';
+export { default as RetrievalCall } from './components/parts/Retrieval';
+export type { RetrievalCallProps, RetrievalProgress } from './components/parts/Retrieval';
+export {
+  bySalience,
+  byEntrySalience,
+  displayFilename,
+  attachmentSalience,
+  isTextAttachment,
+  isImageAttachment,
+  renderAttachmentKey,
+  isInternalSandboxArtifact,
+} from './components/parts/attachmentTypes';
+
+/** Tool approval: the shared decision state and the composer's review panel. */
+export {
+  default as ApprovalProvider,
+  ResumeSubmitContext,
+  useApprovalContext,
+  useAskSubmitStatus,
+  useResumeSubmit,
+} from './components/approval/context';
+export type {
+  ResumeSubmitTransport,
+  ToolApprovalDecisionDraft,
+} from './components/approval/context';
+export { PendingToolApprovalButton, PendingToolApprovalPanel } from './components/approval/Review';
+export type {
+  ApprovalRequestRenderProps,
+  ApprovalReviewCopy,
+  PendingToolApprovalButtonProps,
+  PendingToolApprovalPanelProps,
+} from './components/approval/Review';
+
+/** Reasoning, thinking and web search parts, with the source and viewport helpers they share. */
+export {
+  default as Thinking,
+  FloatingThinkingBar,
+  ThinkingButton,
+  ThinkingContent,
+  ThinkingLabel,
+} from './components/parts/Thinking';
+export {
+  default as Reasoning,
+  ReasoningCompact,
+  ReasoningMarker,
+  StreamingThoughtPeek,
+} from './components/parts/Reasoning';
+export { default as WebSearch } from './components/parts/WebSearch';
+export type {
+  WebSearchFailedCall,
+  WebSearchFaviconProps,
+  WebSearchStackProps,
+} from './components/parts/WebSearch';
+export {
+  collectSources,
+  getCleanDomain,
+  getSourceDomains,
+  getUniqueDomainSources,
+} from './components/parts/sources';
