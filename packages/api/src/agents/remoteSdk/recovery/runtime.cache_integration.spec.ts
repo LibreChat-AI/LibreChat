@@ -13,8 +13,8 @@ import {
   MemorySaver,
   HookRegistry,
 } from '@librechat/agents';
+import type { RunConfig, ToolCallRequest, ToolExecuteBatchRequest } from '@librechat/agents';
 import type { AddressInfo, Socket } from 'node:net';
-import type { RunConfig } from '@librechat/agents';
 import type { RedisTestClient } from '../../../stream/__tests__/helpers/redis';
 import type { RemoteSdkFactoryInput } from '../types';
 import {
@@ -180,6 +180,104 @@ async function fixture(makeRun = factory) {
   };
 }
 describe('live SDK recovery', () => {
+  it('replays worker tool cancellation across a disconnect without repeating the invocation', async () => {
+    const workerCall = new AbortController();
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const resolveTool = jest.fn();
+    const rejectTool = jest.fn();
+    const toolCall: ToolCallRequest = { id: 'cancelled-call', name: 'inspect', args: {} };
+    const runtime = await fixture(async (input) => {
+      const run = await Run.create({
+        ...input.config,
+        tokenCounter: () => 1,
+        returnContent: true,
+        graphConfig: {
+          type: 'standard',
+          agents: [
+            {
+              agentId: input.identity.agentId,
+              provider: Providers.OPENAI,
+              tools: [],
+              toolDefinitions: input.hostTools?.toolDefinitions,
+            },
+          ],
+        },
+      });
+      run.processStream = async () => {
+        await input.config.customHandlers![GraphEvents.ON_TOOL_EXECUTE].handle(
+          GraphEvents.ON_TOOL_EXECUTE,
+          {
+            toolCalls: [toolCall],
+            signal: workerCall.signal,
+            agentId: identity.agentId,
+            resolve: resolveTool,
+            reject: rejectTool,
+          },
+        );
+        return [];
+      };
+      return run;
+    });
+    let calls = 0;
+    let hostSignal: AbortSignal | undefined;
+    try {
+      const config: RunConfig = {
+        ...hostConfig(async () => undefined),
+        graphConfig: {
+          type: 'standard',
+          llmConfig: { provider: Providers.OPENAI },
+          toolDefinitions: [{ name: 'inspect', description: 'Inspect' }],
+        },
+        customHandlers: {
+          [GraphEvents.ON_TOOL_EXECUTE]: {
+            handle: async (_event, data) => {
+              const batch = data as ToolExecuteBatchRequest;
+              calls++;
+              hostSignal = batch.signal;
+              batch.toolCalls[0].codeSessionContext = { session_id: 'retained-session' };
+              started();
+              await new Promise<void>((resolve) =>
+                batch.signal!.addEventListener('abort', () => resolve(), { once: true }),
+              );
+              batch.reject(new Error('cancelled'));
+            },
+          },
+        },
+      };
+      const run = await createRemoteSdkRun({ config, identity, remote: runtime.remote });
+      const completion = run.processStream(
+        { messages: [] },
+        {
+          version: 'v2',
+          configurable: { thread_id: identity.conversationId },
+        },
+      );
+      void completion.catch(() => undefined);
+      await ready;
+      runtime.offline(true);
+      runtime.drop();
+      await delay(50);
+      workerCall.abort();
+      await delay(50);
+      expect(hostSignal?.aborted).toBe(false);
+      runtime.offline(false);
+      await completion;
+      expect(hostSignal?.aborted).toBe(true);
+      expect(calls).toBe(1);
+      expect(runtime.createRun).toHaveBeenCalledTimes(1);
+      expect(runtime.connections()).toBeGreaterThan(1);
+      expect(resolveTool).not.toHaveBeenCalled();
+      expect(rejectTool).toHaveBeenCalledTimes(1);
+      expect(toolCall.codeSessionContext?.session_id).toBe('retained-session');
+    } finally {
+      runtime.offline(false);
+      workerCall.abort();
+      await runtime.close();
+    }
+  });
   it('runs a real SDK graph through the negotiated durable channel', async () => {
     const runtime = await fixture();
     try {

@@ -30,9 +30,12 @@ export function createHostToolService(options: {
   metadata?: Record<string, unknown>;
   peer: { call: SdkRpc };
   signal: AbortSignal;
-}): (data: unknown) => Promise<ToolExecuteResult[]> {
+}): (data: unknown, invocationSignal?: AbortSignal) => Promise<ToolExecuteResult[]> {
   const references = new Map(options.tools.map((t) => [t.definition.name, t.reference]));
-  return async (data: unknown): Promise<ToolExecuteResult[]> => {
+  return async (data: unknown, invocationSignal?: AbortSignal): Promise<ToolExecuteResult[]> => {
+    const signal = invocationSignal
+      ? AbortSignal.any([options.signal, invocationSignal])
+      : options.signal;
     const envelope = z
       .object({
         id: z.string().uuid(),
@@ -83,7 +86,7 @@ export function createHostToolService(options: {
         throw new Error('Host tool capability mismatch');
       ids.add(call.id);
     }
-    options.signal.throwIfAborted();
+    signal.throwIfAborted();
     const notifications: Promise<unknown>[] = [];
     let active = true;
     let resolve!: (results: ToolExecuteResult[]) => void;
@@ -94,45 +97,57 @@ export function createHostToolService(options: {
     });
     // Install rejection handling before invoking a handler that may reject synchronously.
     void result.catch(() => undefined);
+    let cancel!: (error: Error) => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      cancel = reject;
+    });
+    void cancelled.catch(() => undefined);
+    const abort = () => cancel(new Error('Host tool invocation cancelled'));
+    signal.addEventListener('abort', abort, { once: true });
     try {
-      await options.handler.handle(
-        GraphEvents.ON_TOOL_EXECUTE,
-        {
-          toolCalls: request.calls.map((c) => c.call),
-          userId: options.identity.userId,
-          agentId: options.identity.agentId,
-          configurable: options.configurable,
-          metadata: options.metadata,
-          callerCapabilityProjection: request.callerCapabilityProjection,
-          signal: options.signal,
-          resolve,
-          reject,
-          ...(envelope.incremental
-            ? {
-                onResult: (value: ToolExecuteResult) => {
-                  if (!active || options.signal.aborted) return;
-                  if (!ids.has(value.toolCallId))
-                    throw new Error('Invalid incremental tool receipt');
-                  const notice = options.peer.call('tool.result', {
-                    id: envelope.id,
-                    result: value,
-                  });
-                  void notice.catch(() => undefined);
-                  notifications.push(notice);
-                },
-              }
-            : {}),
-        },
-        options.metadata,
-        options.graph,
+      const handling = Promise.resolve(
+        options.handler.handle(
+          GraphEvents.ON_TOOL_EXECUTE,
+          {
+            toolCalls: request.calls.map((c) => c.call),
+            userId: options.identity.userId,
+            agentId: options.identity.agentId,
+            configurable: options.configurable,
+            metadata: options.metadata,
+            callerCapabilityProjection: request.callerCapabilityProjection,
+            signal,
+            resolve,
+            reject,
+            ...(envelope.incremental
+              ? {
+                  onResult: (value: ToolExecuteResult) => {
+                    if (!active || signal.aborted) return;
+                    if (!ids.has(value.toolCallId))
+                      throw new Error('Invalid incremental tool receipt');
+                    const notice = options.peer.call('tool.result', {
+                      id: envelope.id,
+                      result: value,
+                    });
+                    void notice.catch(() => undefined);
+                    notifications.push(notice);
+                  },
+                }
+              : {}),
+          },
+          options.metadata,
+          options.graph,
+        ),
       );
-      const results = await result;
+      // A handler may ignore cancellation or never call resolve/reject. Stop waiting on it,
+      // but reconcile session state and acknowledge notifications before settling the RPC.
+      const results = await Promise.race([handling.then(() => result), cancelled]);
       active = false;
       await Promise.all(notifications);
-      options.signal.throwIfAborted();
+      signal.throwIfAborted();
       return results;
     } finally {
       active = false;
+      signal.removeEventListener('abort', abort);
       for (const { call } of request.calls) {
         notifications.push(
           options.peer.call('tool.session', {
@@ -150,6 +165,7 @@ export function createHostToolService(options: {
         );
       }
       await Promise.all(notifications);
+      signal.throwIfAborted();
     }
   };
 }
@@ -158,20 +174,25 @@ export function createWorkerToolService(peer: { call: SdkRpc }): {
   service: HostToolService;
   accept: (data: unknown, kind?: 'result' | 'session') => null;
 } {
-  const pending = new Map<string, HostToolEvents>();
+  const pending = new Map<string, { events: HostToolEvents; signal?: AbortSignal }>();
   return {
     service: {
       version: 1,
       invoke: async (request, signal, events) => {
         signal?.throwIfAborted();
         const id = randomUUID();
-        if (events) pending.set(id, events);
+        if (events) pending.set(id, { events, signal });
         try {
-          return (await peer.call('tools', {
-            id,
-            request,
-            incremental: Boolean(events?.onResult),
-          })) as ToolExecuteResult[];
+          return (await peer.call(
+            'tools',
+            {
+              id,
+              request,
+              incremental: Boolean(events?.onResult),
+            },
+            undefined,
+            signal,
+          )) as ToolExecuteResult[];
         } finally {
           pending.delete(id);
         }
@@ -199,13 +220,13 @@ export function createWorkerToolService(peer: { call: SdkRpc }): {
           .parse(data);
         const events = pending.get(value.id);
         if (!events) throw new Error('Unknown tool session invocation');
-        events.onSessionUpdate(value.update as HostToolSessionUpdate);
+        events.events.onSessionUpdate(value.update as HostToolSessionUpdate);
         return null;
       }
       const value = toolResultSchema.parse(data);
       const handler = pending.get(value.id);
       if (!handler) throw new Error('Unknown tool result invocation');
-      handler.onResult?.(value.result as ToolExecuteResult);
+      if (!handler.signal?.aborted) handler.events.onResult?.(value.result as ToolExecuteResult);
       return null;
     },
   };

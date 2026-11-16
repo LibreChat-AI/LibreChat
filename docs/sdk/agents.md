@@ -179,7 +179,7 @@ transport success alone is insufficient to mark a product migration complete.
 ### Host tool execution
 
 With SDK 4.2.4+, a host agent's schema tools bind to its existing authenticated tool handler.
-The bridge negotiates `hostTools: 1` before starting the worker; an older worker cannot silently
+The bridge negotiates `hostTools: 2` before starting the worker; an older worker cannot silently
 ignore required host tools. Factories install `input.hostTools.toolDefinitions` on the matching
 SDK agent; supplied config already contains the execution handler. Missing definitions fail
 before graph execution. Worker-owned direct tools may use `graphTools` alongside host schemas.
@@ -199,6 +199,15 @@ Host tool execution uses `maxRunMs` for its RPC lifetime. `rpcTimeoutMs` continu
 control, checkpoint and notification RPCs; a healthy long-running tool must not fail solely
 because it exceeds that shorter control timeout. The run's cancellation/deadline still aborts
 both sides cooperatively.
+
+Worker tool-call cancellation is scoped to its RPC, including calls still queued behind events.
+The host combines that signal with the run signal, stops awaiting an unresponsive handler, and
+reconciles current session state before replying. Late results are suppressed; cancellation cannot
+undo side effects or force noncooperative tool code to stop. Session changes made after cancellation
+has settled are not part of that invocation. Cancellation frames use the same recovery journal as
+other traffic and are delivered after reattachment, subject to the configured recovery limits.
+Upgrade host and worker together: host-tool capability 2 is required on both sides, and mixed
+versions reject host-tool runs before execution. Runs without host tools retain their existing path.
 
 Caller-owned function tools (`clientDelegatedToolNames`) are not host tools. Remote SDK
 execution rejects that configuration until an explicit ownership/continuation adapter is

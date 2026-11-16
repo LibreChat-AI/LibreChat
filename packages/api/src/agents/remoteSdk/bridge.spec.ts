@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import WebSocket from 'ws';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'node:crypto';
+import WebSocket, { WebSocketServer } from 'ws';
 import { tool } from '@librechat/agents/langchain/tools';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
@@ -19,6 +19,7 @@ import type { RemoteSdkServerOptions } from './server';
 import type { RemoteSdkFactoryInput } from './types';
 import { createRemoteSdkServer } from './server';
 import { createRemoteSdkRun } from './client';
+import { createSdkPeer } from './peer';
 
 const secret = 'sdk-runtime-test-secret-at-least-32-characters';
 const identity = {
@@ -694,6 +695,45 @@ describe('remote SDK runtime bridge', () => {
       expect(handle).not.toHaveBeenCalled();
     } finally {
       await runtime.close();
+    }
+  });
+  it('rejects workers without cancellable host tools before sending a run', async () => {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const methods: string[] = [];
+    server.on('connection', (socket) =>
+      createSdkPeer(socket, {
+        maxFrameBytes: 65536,
+        maxBufferedBytes: 131072,
+        timeoutMs: 2000,
+        onClose: () => undefined,
+        onFrame: async () => undefined,
+        onCall: async (method) => {
+          methods.push(method);
+          return { hostTools: 1 };
+        },
+      }),
+    );
+    try {
+      const config = hostConfig();
+      config.graphConfig = {
+        type: 'standard',
+        llmConfig: { provider: Providers.OPENAI },
+        toolDefinitions: [{ name: 'inspect' }],
+      };
+      config.customHandlers = { [GraphEvents.ON_TOOL_EXECUTE]: { handle: jest.fn() } };
+      const run = await createRemoteSdkRun({
+        config,
+        identity,
+        remote: { url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, secret },
+      });
+      await expect(run.processStream({ messages: [] }, invocation())).rejects.toThrow(
+        'SDK runtime execution failed',
+      );
+      expect(methods).toEqual(['capabilities']);
+    } finally {
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
   it('executes authorized host tools and delivers a fast result before the batch settles', async () => {

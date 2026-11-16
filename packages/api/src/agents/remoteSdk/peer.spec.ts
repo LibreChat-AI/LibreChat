@@ -35,6 +35,46 @@ async function pair() {
 }
 
 describe('remote SDK event and policy ordering', () => {
+  it('cancels a queued invocation before dispatch without waiting for the event queue', async () => {
+    const sockets = await pair();
+    const blocked = deferred();
+    const release = deferred();
+    const cancelled = deferred();
+    const handle = jest.fn(async () => null);
+    sockets.host.on('message', (raw) => {
+      if (JSON.parse(raw.toString()).type === 'cancel') cancelled.resolve();
+    });
+    createSdkPeer(sockets.host, {
+      ...limits,
+      onCall: handle,
+      onFrame: async () => {
+        blocked.resolve();
+        await release.promise;
+      },
+    });
+    const worker = createSdkPeer(sockets.worker, {
+      ...limits,
+      onCall: async () => null,
+      onFrame: async () => undefined,
+    });
+    try {
+      worker.send({ type: 'event', name: 'held', data: null });
+      await blocked.promise;
+      const controller = new AbortController();
+      const call = worker.call('tools', {}, undefined, controller.signal);
+      const rejected = call.catch((error: Error) => error);
+      controller.abort();
+      await cancelled.promise;
+      release.resolve();
+      expect(await rejected).toMatchObject({ message: 'SDK runtime connection failed' });
+      expect(handle).not.toHaveBeenCalled();
+      expect(sockets.worker.readyState).toBe(WebSocket.OPEN);
+      await expect(worker.call('probe', null)).resolves.toBeNull();
+    } finally {
+      release.resolve();
+      await sockets.close();
+    }
+  });
   it('applies preceding async events before a hook, then allows subsequent events', async () => {
     const sockets = await pair();
     const release = deferred();

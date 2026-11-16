@@ -49,10 +49,13 @@ Enable the opt-in recovery configuration below to reattach the same live Run and
 events without repeating execution. Approval resumes rebuild a
 fresh worker Run against host-owned checkpoints, without sharing database credentials.
 
-Remote runtimes execute their own operator-installed tools. The bridge deliberately does not
-forward host provider credentials, MCP tokens, tool registries, or arbitrary host tool-execution
-requests. Configure domain data access inside the trusted worker and authorize it using the
-signed caller identity. Host policy hooks still gate SDK tool execution.
+Remote runtimes can execute their own operator-installed tools and the saved root agent's
+authorized host schema tools. Install `input.hostTools.toolDefinitions` on the SDK agent as the
+examples do; the supplied SDK handler dispatches those tools on the host. Provider credentials
+and MCP tokens remain host-owned. Configure worker-owned domain access separately and authorize
+it using the signed caller identity. Host policy hooks still gate SDK tool execution.
+Host-tool capability 2 requires matching host and worker upgrades and propagates per-invocation
+cancellation without closing the run's socket; older versions fail before host-tool execution.
 
 ## Measuring transport overhead
 

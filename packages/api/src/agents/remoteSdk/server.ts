@@ -249,8 +249,8 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         };
         transport.once('close', cleanup);
         const workerTools = createWorkerToolService({
-          call: (method, data) =>
-            peer.call(method, data, method === 'tools' ? limits.maxRunMs : undefined),
+          call: (method, data, _timeoutMs, signal) =>
+            peer.call(method, data, method === 'tools' ? limits.maxRunMs : undefined, signal),
         });
         const peer = createSdkPeer(transport, {
           ...limits,
@@ -261,7 +261,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
             throw new Error('Unexpected runtime frame');
           },
           onCall: async (method, data) => {
-            if (method === 'capabilities') return { hostTools: 1 };
+            if (method === 'capabilities') return { hostTools: 2 };
             if (method === 'tool.result') return workerTools.accept(data);
             if (method === 'tool.session') return workerTools.accept(data, 'session');
             if (method !== 'run' || started) throw new Error('SDK execution already admitted');

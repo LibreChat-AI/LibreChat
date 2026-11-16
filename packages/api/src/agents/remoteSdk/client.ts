@@ -229,7 +229,7 @@ export async function createRemoteSdkRun({
           } else if (frame.type === 'error') finish();
           else throw new Error('Unexpected SDK runtime frame');
         },
-        onCall: async (method, data) => {
+        onCall: async (method, data, _timeoutMs, signal) => {
           if (execution.signal.aborted || options.signal?.aborted)
             throw new Error('SDK runtime execution stopped');
           if (method === 'tools') {
@@ -249,7 +249,7 @@ export async function createRemoteSdkRun({
               peer,
               signal: execution.signal,
             });
-            return hostToolInvoke(data);
+            return hostToolInvoke(data, signal);
           }
           if (method === 'hook') {
             if (config.hooks == null) throw new Error('Host hooks are unavailable');
@@ -388,7 +388,7 @@ export async function createRemoteSdkRun({
       void (async () => {
         if (descriptors.length) {
           const capabilities = (await peer.call('capabilities', null)) as { hostTools?: number };
-          if (capabilities?.hostTools !== 1)
+          if (capabilities?.hostTools !== 2)
             throw new Error('Worker host tool capability unavailable');
         }
         await peer.call('run', start);
