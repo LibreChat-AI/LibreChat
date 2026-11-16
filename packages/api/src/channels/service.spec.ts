@@ -50,6 +50,7 @@ beforeEach(async () => {
     await mongoose.models.ChannelRun.deleteMany({});
     await mongoose.models.DiscordApplication.deleteMany({});
     await mongoose.models.DiscordGuild.deleteMany({});
+    await mongoose.models.DiscordRoute.deleteMany({});
     await mongoose.models.User.deleteMany({});
   });
   deps = {
@@ -470,7 +471,7 @@ it('uses the same setup error contract for an authenticated service operation', 
   expect(result.body).toEqual({ error: 'transactions_unavailable' });
 });
 
-async function createDiscordChannel() {
+async function createDiscordChannel(channelId = 'discord-channel') {
   return tenantStorage.run({ tenantId }, async () => {
     await mongoose.models.User.create({
       _id: owner,
@@ -500,7 +501,7 @@ async function createDiscordChannel() {
     });
     if (!guild.ok) throw new Error(guild.error.code);
     await db.createAgentChannel({
-      channelId: 'discord-channel',
+      channelId,
       tenantId,
       agentId: 'agent-test',
       createdBy: owner,
@@ -519,7 +520,7 @@ async function createDiscordChannel() {
       installationRevision: guild.value.revision,
       applicationRevision: application.value.revision,
       externalChannelId: '456789012345678901',
-      channelId: 'discord-channel',
+      channelId,
       channelRevision: 'channel-revision',
     });
     if (!assigned.ok) throw new Error(assigned.error.code);
@@ -566,4 +567,92 @@ it('serves Discord credentials only through enabled authenticated provider and t
   expect(JSON.stringify(metadata.body)).not.toMatch(
     /private-discord-token|applicationRevision|encrypted/,
   );
+});
+
+/**
+ * Raw updates, as a restore or an older build leaves a Discord row. A row is active unless a case
+ * says otherwise: active is the state the installation check rewrites to disabled while keeping the
+ * binding as stored.
+ */
+const brokenDiscord: Record<string, Record<string, Record<string, unknown>>> = {
+  'no guild binding': { $unset: { discord: '' } },
+  'no guild channel': { $unset: { 'discord.externalChannelId': '' } },
+  'a malformed snowflake': { $set: { 'discord.guildId': '012' } },
+  'no installation': { $set: { status: 'disabled' }, $unset: { installationId: '' } },
+};
+
+function restoreDiscord(update: Record<string, Record<string, unknown>>, channelId: string) {
+  return mongoose.models.AgentChannel.collection.updateOne(
+    { channelId },
+    { ...update, $set: { status: 'active', ...update.$set } },
+  );
+}
+
+/** A deletion cannot finish while a run is queued for its channel, so it answers 202. */
+async function deleteWhileRunning(channelId: string) {
+  await mongoose.models.ChannelRun.collection.insertOne({ channelId, tenantId, state: 'queued' });
+  return request(app).delete(`/ui/agent-test/channels/${channelId}`).expect(202);
+}
+
+it.each(Object.entries(brokenDiscord))(
+  'lists a Discord row with %s as unavailable beside working ones',
+  async (_label, update) => {
+    const served = await createChannel();
+    await activation(served).expect(200);
+    await createDiscordChannel();
+    const listing = async () => {
+      const listed = await request(app).get('/ui/agent-test/channels').expect(200);
+      return new Map<string, { revision: string }>(
+        listed.body.map((row: { channelId: string; revision: string }) => [row.channelId, row]),
+      );
+    };
+    const valid = (await listing()).get('discord-channel');
+    expect(valid).toMatchObject({
+      type: 'discord',
+      discord: { externalChannelId: '456789012345678901' },
+    });
+
+    await restoreDiscord(update, 'discord-channel');
+    const rows = await listing();
+    expect(rows.get(served)).toMatchObject({ type: 'slack' });
+    // The persisted revision of the same row, as the valid listing showed it, not a literal.
+    expect(rows.get('discord-channel')).toEqual({
+      channelId: 'discord-channel',
+      tenantId,
+      agentId: 'agent-test',
+      createdBy: owner,
+      type: 'unavailable',
+      status: 'disabled',
+      revision: valid?.revision,
+    });
+    expect(deps.logError).not.toHaveBeenCalled();
+  },
+);
+
+// A deletion closes the channel scope for good, so each draining case owns a channel id.
+it('keeps the provider detail of a valid Discord row in a deletion still draining', async () => {
+  const id = 'discord-draining-valid';
+  await createDiscordChannel(id);
+  const response = await deleteWhileRunning(id);
+  expect(response.body).toMatchObject({
+    channelId: id,
+    type: 'discord',
+    status: 'deleting',
+    discord: { externalChannelId: '456789012345678901' },
+  });
+  expect(deps.logError).not.toHaveBeenCalled();
+});
+
+it('answers a deletion still draining for a Discord row with no guild binding, then finishes it', async () => {
+  const id = 'discord-draining-restored';
+  await createDiscordChannel(id);
+  await restoreDiscord(brokenDiscord['no guild binding'], id);
+  const response = await deleteWhileRunning(id);
+  expect(response.body).toMatchObject({ channelId: id, type: 'unavailable', status: 'deleting' });
+  expect(response.body).not.toHaveProperty('discord');
+
+  await mongoose.models.ChannelRun.collection.deleteMany({ channelId: id, tenantId });
+  await request(app).delete(`/ui/agent-test/channels/${id}`).expect(204);
+  expect(await tenantStorage.run({ tenantId }, () => db.getAgentChannel(id))).toBeNull();
+  expect(deps.logError).not.toHaveBeenCalled();
 });
