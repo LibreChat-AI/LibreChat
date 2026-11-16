@@ -4,6 +4,8 @@ const {
   createChannelRunHandlers,
   createChannelExecutionAdapter,
   createChannelResponseProjection,
+  createChannelResponsePreview,
+  GenerationJobManager,
   createChannelResponseRetirement,
   createChannelIdentityHandlers,
   createChannelFeedbackRuntime,
@@ -59,6 +61,10 @@ const execution = createChannelExecutionAdapter({
     storage: responseStorage,
     readResponse: readBackgroundResponse,
     cancelResponse: cancelBackgroundResponse,
+    readPreview: createChannelResponsePreview({
+      jobs: GenerationJobManager,
+      getConfig: policy.runConfig,
+    }),
   }),
 });
 const artifactReader = createChannelArtifactReader({

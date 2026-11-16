@@ -103,7 +103,12 @@ beforeEach(async () => {
     },
   };
 });
-function fixture() {
+function fixture(
+  readPreview?: (
+    run: ChannelRunRecord,
+    record: StoredResponseRecord,
+  ) => Promise<string | undefined>,
+) {
   let authorized = true;
   const cancel = jest.fn(async () => {});
   const service = createBackgroundResponseService({
@@ -129,6 +134,7 @@ function fixture() {
       storage,
       readResponse: service.retrieve,
       cancelResponse: service.cancel,
+      readPreview,
       now: () => 6000,
     }),
     cancel,
@@ -146,6 +152,35 @@ async function publish(response: Response) {
   if (!result.ok) throw new Error('Publication failed');
   stored = result.record;
 }
+
+it('keeps an authorized live preview separate from final text and refuses it after revocation', () =>
+  scoped(async () => {
+    const readPreview = jest.fn(async () => 'Live draft');
+    const f = fixture(readPreview);
+    await publish({ ...buildPendingBackgroundResponse(stored), status: 'in_progress' });
+    expect((await f.project(run)).snapshot).toMatchObject({
+      status: 'running',
+      text: '',
+      previewText: 'Live draft',
+    });
+    expect(readPreview).toHaveBeenCalledTimes(1);
+    readPreview.mockClear();
+    f.revoke();
+    await expect(f.project(run)).rejects.toMatchObject({ code: 'execution_identity_changed' });
+    expect(readPreview).not.toHaveBeenCalled();
+  }));
+
+it.each(['completed', 'failed', 'cancelled'] as const)(
+  'does not read a live preview for a %s response',
+  (status) =>
+    scoped(async () => {
+      const readPreview = jest.fn(async () => 'Stale draft');
+      await publish({ ...buildPendingBackgroundResponse(stored), status });
+      const result = await fixture(readPreview).project(run);
+      expect(result.snapshot.previewText).toBeUndefined();
+      expect(readPreview).not.toHaveBeenCalled();
+    }),
+);
 
 it('carries a nonterminal recovery warning without publishing stale actions, output or enqueueing work', async () => {
   await scoped(async () => {

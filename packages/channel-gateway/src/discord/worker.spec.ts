@@ -712,7 +712,8 @@ describe('Discord durable worker delivery', () => {
       elapsedMs: 10,
       pendingAction: { kind: 'oauth', actionId: 'private', expiresAt: Date.now() + 60_000 },
     };
-    expect(discordProgressText(f.state)).toContain('Completion is not confirmed');
+    expect(discordProgressText(f.state)).toContain('I cannot confirm this request’s status');
+    expect(discordProgressText(f.state)).toContain('some actions may already have run');
     expect(discordProgressText(f.state)).not.toContain('private review');
   });
 

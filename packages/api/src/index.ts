@@ -171,6 +171,7 @@ export * from './channels/runs';
 export * from './channels/authority';
 export * from './channels/execution';
 export * from './channels/responses';
+export * from './channels/preview';
 export * from './channels/credentials';
 export * from './channels/identity';
 export * from './channels/identityHttp';

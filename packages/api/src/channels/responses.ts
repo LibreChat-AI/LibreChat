@@ -3,6 +3,7 @@ import type {
   ChannelRunStorage,
   ResponseStorage,
   ResponseOwner,
+  StoredResponseRecord,
 } from '@librechat/data-schemas';
 import type { ChannelRunSnapshot } from 'librechat-data-provider';
 import type { BackgroundResponseResult } from '~/agents/responses/background';
@@ -14,6 +15,10 @@ export interface ChannelResponseProjectionDependencies {
   /** Reads through live source-key, owner, tenant, role and Agent authorization. */
   readResponse: (owner: ResponseOwner, responseId: string) => Promise<BackgroundResponseResult>;
   cancelResponse: (owner: ResponseOwner, responseId: string) => Promise<BackgroundResponseResult>;
+  readPreview?: (
+    run: ChannelRunRecord,
+    record: StoredResponseRecord,
+  ) => Promise<string | undefined>;
   now?: () => number;
 }
 
@@ -127,6 +132,10 @@ export function createChannelResponseProjection(deps: ChannelResponseProjectionD
     const terminal = ['completed', 'failed', 'incomplete', 'cancelled'].includes(response.status);
     const status = snapshotStatus(response);
     const action = response.required_action;
+    const previewText =
+      status === 'running' && !response.recovery && !run.cancellationRequested
+        ? await deps.readPreview?.(run, stored)
+        : undefined;
     return {
       generationCreatedAt: stored.generationCreatedAt,
       snapshot: {
@@ -134,6 +143,7 @@ export function createChannelResponseProjection(deps: ChannelResponseProjectionD
         status,
         ...(response.recovery ? { recovery: response.recovery } : {}),
         text: terminal ? text.join('') : '',
+        ...(previewText ? { previewText } : {}),
         elapsedMs: Math.max(
           0,
           (response.completed_at == null

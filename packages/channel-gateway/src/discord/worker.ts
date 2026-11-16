@@ -219,8 +219,8 @@ export function discordProgressText(run: ChannelRunView, bundle?: ChannelBundle)
   }
   if (run.snapshot?.recovery === 'execution_state_unavailable')
     return (
-      (run.cancellationRequested ? 'Cancellation requested. ' : '') +
-      'The execution status is unavailable, possibly after a restart. Completion is not confirmed. Check the result before retrying actions that may already have run. Ask an administrator to reconcile this request if the status stays unavailable.'
+      (run.cancellationRequested ? 'Stop requested. ' : '') +
+      'I cannot confirm this request’s status. Use /librechat status to check the saved session before trying again, since some actions may already have run. If the status stays unavailable, contact an administrator.'
     );
   if (run.cancellationRequested) return 'Stop requested. Waiting for the agent to confirm.';
   if (run.snapshot?.status === 'requires_action')

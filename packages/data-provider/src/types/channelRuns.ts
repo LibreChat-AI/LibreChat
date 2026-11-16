@@ -127,6 +127,8 @@ export interface ChannelRunSnapshot {
   recovery?: 'execution_state_unavailable';
   responseId?: string;
   text: string;
+  /** Authorized live assistant text for previews only; never a terminal delivery payload. */
+  previewText?: string;
   status: 'running' | 'requires_action' | 'completed' | 'failed' | 'cancelled';
   elapsedMs: number;
   usage?: ChannelRunUsage;
