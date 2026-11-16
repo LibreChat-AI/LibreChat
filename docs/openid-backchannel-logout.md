@@ -21,8 +21,10 @@ logout, another connected application in the same browser) actually sends a `sid
 before relying on it in enforce mode.
 
 **Keycloak**: set the client's back-channel logout URL to the same endpoint and enable "Backchannel
-logout session required" so Keycloak includes `sid`. Keycloak retries a failed delivery a bounded
-number of times with its own backoff; it does not retry indefinitely.
+logout session required" so Keycloak includes `sid`. Verify failed-delivery behavior for the Keycloak version and logout
+path you use. The [real-provider tests](../e2e/openid/README.md) observe one failed HTTP delivery
+(502) and no retry within 120 seconds on Keycloak 26.1.5. These tests do not show whether later
+retries occur. LibreChat can enforce only notifications it receives.
 
 ## Rollout
 
