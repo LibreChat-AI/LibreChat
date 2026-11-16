@@ -3,6 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createDiscordGatewayStorage, touchDiscordGatewayOwner } from './discordGateway';
 import { createDiscordGatewayCheckpointModel } from '~/models/discordGateway';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createDiscordApplicationModel } from '~/models/discord';
 import { createResourceLockModel } from '~/models/resourceLock';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createDiscordInstallationStorage } from './discord';
@@ -364,4 +365,104 @@ it('grants exactly the requested current duration and refreshes idempotent acqui
     expect(await storage.renew(current, 30000)).toBe(false);
     expect(await storage.renew(current, 5000)).toBe(true);
     expect(await storage.acquire(current, 5000)).toBe(true);
+  }));
+it('records credential observations only for the current leased revision and resets them on rotation', () =>
+  scoped(async () => {
+    const current = owner(revision);
+    const initial = await installs.readApplication(applicationId);
+    expect(initial?.credentialHealth).toEqual({ state: 'valid', checkedAt: expect.any(Number) });
+    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    await storage.acquire(current, 30000);
+    const before = Date.now();
+    expect(await storage.observeCredentials(current, 'invalid')).toBe(true);
+    const invalid = await installs.readApplication(applicationId);
+    expect(invalid?.revision).toBe(revision);
+    expect(invalid?.credentialHealth?.state).toBe('invalid');
+    expect(invalid?.credentialHealth?.checkedAt).toBeGreaterThanOrEqual(before);
+    expect(invalid?.credentialHealth?.checkedAt).toBeLessThanOrEqual(Date.now());
+    expect(await storage.observeCredentials(owner(revision, 'b'), 'valid')).toBe(false);
+    await scoped(async () => {
+      expect(await storage.observeCredentials(current, 'valid')).toBe(false);
+    }, 'foreign');
+    expect((await installs.readApplication(applicationId))?.credentialHealth).toEqual(
+      invalid?.credentialHealth,
+    );
+    expect(await storage.observeCredentials(current, 'valid')).toBe(true);
+    expect((await installs.readApplication(applicationId))?.credentialHealth?.state).toBe('valid');
+    await storage.observeCredentials(current, 'invalid');
+    const changed = await installs.configureApplication({
+      actorId: userId,
+      applicationId,
+      botUserId,
+      publicKey: 'a'.repeat(64),
+      expectedRevision: revision,
+      encryptedBotToken: 'rotated-token',
+    });
+    expect(changed.ok).toBe(true);
+    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    expect((await installs.readApplication(applicationId))?.credentialHealth?.state).toBe('valid');
+  }));
+it('does not persist credential observations after lease release, expiry, owner deletion or policy disablement', () =>
+  scoped(async () => {
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    await storage.release(current);
+    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    await storage.acquire(current, 30000);
+    await createResourceLockModel(db).updateOne(
+      { key: `discord:gateway:${applicationId}` },
+      { $set: { expiresAt: new Date(0) } },
+    );
+    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    await storage.acquire(current, 30000);
+    settings = null;
+    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    settings = { ownershipLeaseMs: 30000, shardCount: 2 };
+    await createUserModel(db).deleteOne({ _id: userId });
+    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
+    expect((await installs.readApplication(applicationId))?.credentialHealth?.state).toBe('valid');
+  }));
+
+it('projects legacy and malformed credential metadata as unknown without exposing restored fields', () =>
+  scoped(async () => {
+    const applications = createDiscordApplicationModel(db);
+    for (const health of [
+      null,
+      { state: 'invalid', checkedAt: -1 },
+      { state: 'valid', checkedAt: 1, secret: 'must-not-leak' },
+    ]) {
+      await applications.collection.updateOne(
+        { applicationId },
+        { $set: { credentialHealth: health } },
+      );
+      expect((await installs.readApplication(applicationId))?.credentialHealth).toBeUndefined();
+      expect((await installs.listApplications()).applications[0]?.credentialHealth).toBeUndefined();
+      expect(JSON.stringify(await installs.lookupApplication(applicationId))).not.toContain(
+        'must-not-leak',
+      );
+    }
+    await applications.collection.updateOne(
+      { applicationId },
+      { $unset: { credentialHealth: '' } },
+    );
+    expect((await installs.readApplication(applicationId))?.credentialHealth).toBeUndefined();
+  }));
+it('fences a concurrent old-owner observation against rotation', () =>
+  scoped(async () => {
+    const current = owner(revision);
+    await storage.acquire(current, 30000);
+    const [, changed] = await Promise.all([
+      storage.observeCredentials(current, 'invalid'),
+      installs.configureApplication({
+        actorId: userId,
+        applicationId,
+        botUserId,
+        publicKey: 'a'.repeat(64),
+        expectedRevision: revision,
+        encryptedBotToken: 'rotated-token',
+      }),
+    ]);
+    expect(changed.ok).toBe(true);
+    expect((await installs.readApplication(applicationId))?.credentialHealth?.state).toBe('valid');
+    expect(await storage.observeCredentials(current, 'invalid')).toBe(false);
   }));

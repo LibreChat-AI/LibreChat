@@ -1,5 +1,9 @@
 import { nanoid } from 'nanoid';
-import { channelSnowflakeSchema, discordPublicKeySchema } from 'librechat-data-provider';
+import {
+  channelSnowflakeSchema,
+  discordPublicKeySchema,
+  discordCredentialHealthSchema,
+} from 'librechat-data-provider';
 import type { DiscordApplication, DiscordGuild } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { DiscordApplicationRecord } from '~/models/discord';
@@ -98,6 +102,7 @@ function tenant(): string | undefined {
 }
 
 function applicationMetadata(record: DiscordApplication): DiscordApplication {
+  const health = discordCredentialHealthSchema.safeParse(record.credentialHealth);
   return {
     tenantId: record.tenantId,
     applicationId: record.applicationId,
@@ -107,6 +112,7 @@ function applicationMetadata(record: DiscordApplication): DiscordApplication {
     createdBy: record.createdBy,
     revision: record.revision,
     authorityWrites: record.authorityWrites,
+    ...(health.success ? { credentialHealth: health.data } : {}),
   };
 }
 
@@ -255,6 +261,8 @@ export function createDiscordInstallationStorage(
           if (!(await reserveDiscordApplication(mongoose, input.applicationId, session)))
             return failure('application_unavailable');
           const revision = nanoid();
+          // The management service freshly verifies the bot token before this write.
+          const credentialHealth = { state: 'valid' as const, checkedAt: Date.now() };
           if (current) {
             const saved = await applications
               .findOneAndUpdate(
@@ -267,6 +275,7 @@ export function createDiscordInstallationStorage(
                   $set: {
                     publicKey: input.publicKey,
                     revision,
+                    credentialHealth,
                     ...(input.name !== undefined ? { name: input.name } : {}),
                     ...(input.encryptedBotToken
                       ? { encryptedBotToken: input.encryptedBotToken }
@@ -294,6 +303,7 @@ export function createDiscordInstallationStorage(
                 ...(input.name !== undefined ? { name: input.name } : {}),
                 createdBy: input.actorId,
                 revision,
+                credentialHealth,
                 authorityWrites: 0,
                 encryptedBotToken: input.encryptedBotToken,
                 encryptedClientSecret: input.encryptedClientSecret,
@@ -301,7 +311,7 @@ export function createDiscordInstallationStorage(
             ],
             { session },
           );
-          return { ok: true, value: applicationMetadata(saved) };
+          return { ok: true, value: applicationMetadata(saved.toObject()) };
         });
       } catch (error) {
         if (

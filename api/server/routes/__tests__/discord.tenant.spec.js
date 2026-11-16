@@ -53,6 +53,7 @@ jest.mock('~/server/services/DiscordChannels', () => ({
       'bootstrap',
       'load',
       'save',
+      'observeCredentials',
       'prepareGuildRemoval',
       'removeGuild',
     ].map((name) => [name, (_req, res) => res.sendStatus(401)]),

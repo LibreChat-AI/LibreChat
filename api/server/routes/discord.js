@@ -25,6 +25,7 @@ router.post('/service/gateway/release', channels.gateway.release);
 router.post('/service/gateway/bootstrap', channels.gateway.bootstrap);
 router.post('/service/gateway/load', channels.gateway.load);
 router.post('/service/gateway/save', channels.gateway.save);
+router.post('/service/gateway/observeCredentials', channels.gateway.observeCredentials);
 router.post('/service/gateway/prepareGuildRemoval', channels.gateway.prepareGuildRemoval);
 router.post('/service/gateway/removeGuild', channels.gateway.removeGuild);
 router.post('/service/inbox/submit', channels.inbox.submit);

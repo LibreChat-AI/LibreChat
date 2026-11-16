@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   discordGatewayOwnerSchema,
+  discordCredentialStateSchema,
   discordGatewayBatchSchema,
   discordChannelConfigSchema,
   discordGuildRemovalTargetSchema,
@@ -21,6 +22,7 @@ export function createDiscordGatewayHandlers(deps: {
   | 'bootstrap'
   | 'load'
   | 'save'
+  | 'observeCredentials'
   | 'prepareGuildRemoval'
   | 'removeGuild',
   RequestHandler
@@ -54,6 +56,10 @@ export function createDiscordGatewayHandlers(deps: {
     };
   }
   return {
+    observeCredentials: handle(
+      ownerSchema.extend({ state: discordCredentialStateSchema }),
+      ({ owner, state }) => deps.service.observeCredentials(owner, state),
+    ),
     prepareGuildRemoval: handle(
       ownerSchema.extend({ guildId: channelSnowflakeSchema }),
       ({ owner, guildId }) => deps.service.prepareGuildRemoval(owner, guildId),
