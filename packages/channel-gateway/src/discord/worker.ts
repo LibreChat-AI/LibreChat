@@ -25,6 +25,7 @@ import type { DiscordClient } from './client';
 import {
   discordRendererVersion,
   discordLegacyRendererVersion,
+  discordSessionRendererVersion,
   readDiscordFeedbackPresentation,
   renderDiscordPlan,
   discordPlanRevision,
@@ -73,11 +74,45 @@ function validateAddress(run: ChannelRunView): void {
   addressKey(run.admission.externalMessageKey, channel);
 }
 
+const presentationVersions = [discordRendererVersion, discordSessionRendererVersion];
+const rendererVersions = [...presentationVersions, discordLegacyRendererVersion];
+/** Discord rejects a link button URL longer than this, while a message link may be longer. */
+const buttonUrlMax = 512;
 const traceText = (url: string) => `[View session](<${url}>)`;
+
+/** The backend presents a session URL only while it is authorized, for this run's own summary. */
+function sessionURL(run: ChannelRunView): string | undefined {
+  const summary = run.snapshot?.summary;
+  const url = validSummary(summary, run.sequence) ? summary.session?.url : undefined;
+  return url && safeSummarySessionURL(url) ? url : undefined;
+}
+
+/** A malformed button fails the whole required message, so offer only a short canonical URL. */
+const fitsButton = (url: string) => url.length <= buttonUrlMax && new URL(url).href === url;
+
+/**
+ * Only a v3 plan offers the link, on its last answer part, and only from the run view that
+ * delivery/begin just authorized. The URL is never read from the persisted plan.
+ */
+function sessionButton(
+  run: ChannelRunView,
+  renderer: string,
+  part: ChannelDeliveryPart,
+): APIButtonComponent | undefined {
+  const url = sessionURL(run);
+  const last = run.plan?.parts.findLast((item) => item.required && item.traceUrl === undefined);
+  return renderer === discordSessionRendererVersion &&
+    last?.operationId === part.operationId &&
+    url !== undefined &&
+    fitsButton(url)
+    ? { type: ComponentType.Button, style: ButtonStyle.Link, label: 'View session', url }
+    : undefined;
+}
+
 function validatePart(part: ChannelDeliveryPart, renderer: string): void {
   if (
     part.kind !== 'message' ||
-    (part.presentation !== undefined && renderer !== discordRendererVersion) ||
+    (part.presentation !== undefined && !presentationVersions.includes(renderer)) ||
     part.artifactId !== undefined ||
     !part.text ||
     part.text.length > 2000
@@ -128,7 +163,7 @@ function assertBinding(
   )
     throw new Error('Discord run binding changed');
   if (run.plan) {
-    if (![discordRendererVersion, discordLegacyRendererVersion].includes(run.plan.rendererVersion))
+    if (!rendererVersions.includes(run.plan.rendererVersion))
       throw new Error('Unsupported Discord renderer');
     for (const part of run.plan.parts) {
       validatePart(part, run.plan.rendererVersion);
@@ -273,8 +308,7 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
     validateAddress,
     assertBinding,
     progressText: discordProgressText,
-    supportsRenderer: (version) =>
-      [discordRendererVersion, discordLegacyRendererVersion].includes(version),
+    supportsRenderer: (version) => rendererVersions.includes(version),
     makePlan(run, bundle) {
       assertBinding(run, bundle);
       if (run.plan) throw new Error('Existing delivery plans must not be regenerated');
@@ -292,13 +326,12 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
       else if (!text.trim()) text = 'The agent finished without a text reply.';
       if (snapshot.artifacts?.length || snapshot.artifactsUnavailable)
         text += '\n\nAttachments are unavailable in Discord. The text answer is preserved.';
-      const summary = snapshot.summary;
-      const url = validSummary(summary, run.sequence) ? summary.session?.url : undefined;
-      const link =
-        url && safeSummarySessionURL(url) && traceText(url).length <= 2000 ? url : undefined;
+      const url = sessionURL(run);
+      const link = url && traceText(url).length <= 2000 ? url : undefined;
       const plan = renderDiscordPlan({ runId: run.runId, text }, bundle.delivery.maxDeliveryParts, {
         shorten: true,
         spare: link !== undefined,
+        session: url !== undefined && fitsButton(url),
         feedback:
           snapshot.status === 'completed' &&
           !run.cancellationRequested &&
@@ -317,8 +350,7 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
     },
     preparePart(part, renderer, bundle) {
       discordBundle(bundle);
-      if (![discordRendererVersion, discordLegacyRendererVersion].includes(renderer))
-        throw new Error('Unsupported Discord renderer');
+      if (!rendererVersions.includes(renderer)) throw new Error('Unsupported Discord renderer');
       validatePart(part, renderer);
       return async (run, signal) => {
         assertBinding(run, bundle);
@@ -338,33 +370,33 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
         )
           throw new Error('Discord delivery source changed');
         const feedbackRun = readDiscordFeedbackPresentation(part);
-        const components: APIActionRowComponent<APIButtonComponent>[] | undefined =
+        const buttons: APIButtonComponent[] =
           feedbackRun !== undefined &&
           run.feedbackEnabled === true &&
           run.snapshot?.status === 'completed' &&
           !run.cancellationRequested
             ? [
                 {
-                  type: ComponentType.ActionRow,
-                  components: [
-                    {
-                      type: ComponentType.Button,
-                      style: ButtonStyle.Secondary,
-                      label: 'Thumbs up',
-                      emoji: { name: '👍' },
-                      custom_id: discordRunControl('thumbsUp', feedbackRun),
-                    },
-                    {
-                      type: ComponentType.Button,
-                      style: ButtonStyle.Secondary,
-                      label: 'Thumbs down',
-                      emoji: { name: '👎' },
-                      custom_id: discordRunControl('thumbsDown', feedbackRun),
-                    },
-                  ],
+                  type: ComponentType.Button,
+                  style: ButtonStyle.Secondary,
+                  label: 'Thumbs up',
+                  emoji: { name: '👍' },
+                  custom_id: discordRunControl('thumbsUp', feedbackRun),
+                },
+                {
+                  type: ComponentType.Button,
+                  style: ButtonStyle.Secondary,
+                  label: 'Thumbs down',
+                  emoji: { name: '👎' },
+                  custom_id: discordRunControl('thumbsDown', feedbackRun),
                 },
               ]
-            : undefined;
+            : [];
+        const session = sessionButton(run, renderer, part);
+        if (session) buttons.push(session);
+        const components: APIActionRowComponent<APIButtonComponent>[] | undefined = buttons.length
+          ? [{ type: ComponentType.ActionRow, components: buttons }]
+          : undefined;
         const currentClient = await writableClient(run, bundle, signal);
         return currentClient.createMessage(
           run.admission.externalChannelId,

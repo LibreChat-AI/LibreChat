@@ -20,6 +20,7 @@ import {
   discordPlanRevision,
   sanitizeDiscordMentions,
   discordFeedbackPresentation,
+  discordSessionRendererVersion,
 } from './render';
 import { createDiscordWorkerProvider, discordProgressText } from './worker';
 import { DiscordClient, DiscordWriteError, discordNonce } from './client';
@@ -978,6 +979,7 @@ describe('Discord session link with a shortened answer', () => {
       });
       expect(parts.every((part) => part.text.length <= 2000)).toBe(true);
       expect(f.state.plan!.revision).toBe(discordPlanRevision(f.state.plan!));
+      expect(f.state.plan!.rendererVersion).toBe(discordRendererVersion);
     },
   );
 
@@ -985,6 +987,7 @@ describe('Discord session link with a shortened answer', () => {
     const f = planned(3, overflow(3), summary(link));
     const plan = structuredClone(f.state.plan);
     await f.execute();
+    expect(f.writes.every((write) => write.body.components === undefined)).toBe(true);
     expect(f.writes).toHaveLength(3);
     expect(f.writes.map((write) => write.body.content)).toEqual(
       plan!.parts.map((part) => part.text),
@@ -999,27 +1002,226 @@ describe('Discord session link with a shortened answer', () => {
     expect(f.state.state).toBe('delivered');
   });
 
-  test('keeps the only part of a one part budget for the answer and its controls', async () => {
-    const f = planned(1, overflow(1), summary(link), true);
-    const parts = f.state.plan!.parts;
-    expect(parts).toHaveLength(1);
-    expect(parts[0]).toMatchObject({
-      operationId: 'run-1:discord:0',
-      required: true,
-      presentation: discordFeedbackPresentation('run-1'),
-    });
-    expect(parts[0].text.length).toBeLessThanOrEqual(2000);
-    expect(parts[0].text).toContain('Reply shortened');
-    expect(JSON.stringify(f.state.plan)).not.toContain(link);
+  test.each([
+    ['too long for a button', `https://chat.company.com/${'a'.repeat(600)}`],
+    ['not canonical', 'https://CHAT.company.com/trace/session'],
+  ])('still sends a %s link as the trace operation when a part is spare', async (_name, url) => {
+    const f = planned(3, overflow(3), summary(url));
+    expect(f.state.plan!.rendererVersion).toBe(discordRendererVersion);
+    expect(f.state.plan!.parts.at(-1)).toMatchObject({ required: false, traceUrl: url });
     await f.execute();
-    expect(f.writes).toHaveLength(1);
-    expect(f.writes[0].body.components?.[0].components).toHaveLength(2);
-    expect(f.state.state).toBe('delivered');
+    expect(f.writes.at(-1)?.body.content).toBe(`[View session](<${url}>)`);
+    expect(f.writes.every((write) => write.body.components === undefined)).toBe(true);
   });
 
-  test('adds no link to a complete answer that already uses the whole one part budget', () => {
+  test('adds no link to a complete answer that already uses the whole one part budget', async () => {
     const f = planned(1, 'Answer', summary(link));
     expect(f.state.plan!.parts.map((part) => part.text)).toEqual(['Answer']);
+    expect(f.state.plan!.rendererVersion).toBe(discordRendererVersion);
+    await f.execute();
+    expect(f.writes.map((write) => write.body.components)).toEqual([undefined]);
+  });
+
+  describe('one part budget', () => {
+    const button = { type: 2, style: 5, label: 'View session', url: link };
+    const thumbs = [
+      {
+        type: 2,
+        style: 2,
+        label: 'Thumbs up',
+        emoji: { name: '👍' },
+        custom_id: 'lc1:u:run-1',
+      },
+      {
+        type: 2,
+        style: 2,
+        label: 'Thumbs down',
+        emoji: { name: '👎' },
+        custom_id: 'lc1:d:run-1',
+      },
+    ];
+    const authorize = (f: ReturnType<typeof fixture>, session: ChannelRunSummary | undefined) => {
+      f.hooks.begin = () => {
+        f.state.snapshot!.summary = session;
+      };
+    };
+
+    test('stamps the plan without persisting the URL or changing the single part', () => {
+      const f = planned(1, overflow(1), summary(link), true);
+      const plain = planned(1, overflow(1), undefined, true);
+      const parts = f.state.plan!.parts;
+      expect(parts).toHaveLength(1);
+      expect(f.state.plan!.rendererVersion).toBe(discordSessionRendererVersion);
+      expect(plain.state.plan!.rendererVersion).toBe(discordRendererVersion);
+      expect(parts).toEqual(plain.state.plan!.parts);
+      expect(parts[0]).toMatchObject({
+        operationId: 'run-1:discord:0',
+        required: true,
+        presentation: discordFeedbackPresentation('run-1'),
+      });
+      expect(parts[0].text.length).toBeLessThanOrEqual(2000);
+      expect(parts[0].text).toContain('Reply shortened');
+      expect(JSON.stringify(f.state.plan)).not.toContain('chat.company.com');
+      expect(f.state.plan!.revision).toBe(discordPlanRevision(f.state.plan!));
+      expect(f.state.plan!.revision).not.toBe(plain.state.plan!.revision);
+      expect(planned(1, overflow(1), summary(link), true).state.plan).toEqual(f.state.plan);
+    });
+
+    test('delivers the link as a button after the feedback controls', async () => {
+      const f = planned(1, overflow(1), summary(link), true);
+      const plan = structuredClone(f.state.plan);
+      await f.execute();
+      expect(f.writes).toHaveLength(1);
+      expect(f.writes[0].body.content).toBe(plan!.parts[0].text);
+      expect(f.writes[0].body.components).toEqual([{ type: 1, components: [...thumbs, button] }]);
+      expect(f.state.plan).toEqual(plan);
+      expect(f.state.receipts.map((receipt) => receipt.outcome)).toEqual(['confirmed']);
+      expect(f.state.state).toBe('delivered');
+    });
+
+    test('makes the button the only control when feedback is off', async () => {
+      const f = planned(1, overflow(1), summary(link));
+      await f.execute();
+      expect(f.writes[0].body.components).toEqual([{ type: 1, components: [button] }]);
+    });
+
+    test('keeps only the link when feedback is revoked before the part begins', async () => {
+      const f = planned(1, overflow(1), summary(link), true);
+      f.hooks.begin = () => {
+        f.state.feedbackEnabled = false;
+      };
+      await f.execute();
+      expect(f.writes[0].body.components).toEqual([{ type: 1, components: [button] }]);
+    });
+
+    test('reads the URL from the view delivery/begin returned, not from plan time', async () => {
+      const f = planned(1, overflow(1), summary(link));
+      const rotated = 'https://chat.company.com/trace/rotated';
+      authorize(f, summary(rotated));
+      await f.execute();
+      expect(f.writes[0].body.components).toEqual([
+        { type: 1, components: [{ ...button, url: rotated }] },
+      ]);
+    });
+
+    test.each([true, false])(
+      'still delivers the answer without a button when the link is revoked (feedback %s)',
+      async (feedback) => {
+        const f = planned(1, overflow(1), summary(link), feedback);
+        authorize(f, { ...summary(link), session: undefined });
+        await f.execute();
+        expect(f.writes).toHaveLength(1);
+        expect(f.writes[0].body.components).toEqual(
+          feedback ? [{ type: 1, components: thumbs }] : undefined,
+        );
+        expect(f.state.state).toBe('delivered');
+      },
+    );
+
+    test.each<[string, ChannelRunSummary]>([
+      ['unsafe scheme', summary('http://chat.company.com/trace/session')],
+      ['private address', summary('https://127.0.0.1/trace/session')],
+      ['query token', summary(`${link}?token=secret`)],
+      ['too long for a button', summary(`https://chat.company.com/${'a'.repeat(500)}`)],
+      ['uppercase host', summary('https://CHAT.company.com/trace/session')],
+      ['non ASCII path', summary('https://chat.company.com/trace/é')],
+      [
+        'stale sequence',
+        { ...summary(link), throughSequence: 2, expectedRuns: 2, observedRuns: 2, priorRuns: 1 },
+      ],
+      ['inconsistent run count', { ...summary(link), observedRuns: 2 }],
+    ])('omits the button when the delivery view has a %s link', async (_name, session) => {
+      const f = planned(1, overflow(1), summary(link));
+      authorize(f, session);
+      await f.execute();
+      expect(f.writes).toHaveLength(1);
+      expect(f.writes[0].body.components).toBeUndefined();
+      expect(f.state.state).toBe('delivered');
+    });
+
+    test.each<[string, ChannelRunSummary | undefined]>([
+      ['unsafe scheme', summary('http://chat.company.com/trace/session')],
+      ['private address', summary('https://127.0.0.1/trace/session')],
+      ['query token', summary(`${link}?token=secret`)],
+      ['embedded credential', summary('https://user:secret@chat.company.com/trace/session')],
+      ['markup breaking', summary('https://chat.company.com/trace/<session>')],
+      ['too long for a button', summary(`https://chat.company.com/${'a'.repeat(500)}`)],
+      ['uppercase host', summary('https://CHAT.company.com/trace/session')],
+      ['non ASCII path', summary('https://chat.company.com/trace/é')],
+      ['oversized', summary(`https://chat.company.com/${'a'.repeat(1990)}`)],
+      [
+        'stale sequence',
+        { ...summary(link), throughSequence: 2, expectedRuns: 2, observedRuns: 2, priorRuns: 1 },
+      ],
+      ['inconsistent run count', { ...summary(link), observedRuns: 2 }],
+      ['missing session', { ...summary(link), session: undefined }],
+      ['missing summary', undefined],
+    ])('stamps nothing for a %s link and never gains a button later', async (_name, session) => {
+      const f = planned(1, overflow(1), session, true);
+      const plain = planned(1, overflow(1), undefined, true);
+      expect(f.state.plan).toEqual(plain.state.plan);
+      expect(f.state.plan!.rendererVersion).toBe(discordRendererVersion);
+      authorize(f, summary(link));
+      await f.execute();
+      expect(f.writes[0].body.components).toEqual([{ type: 1, components: thumbs }]);
+    });
+
+    test.each([discordLegacyRendererVersion, discordRendererVersion])(
+      'never retrofits a button onto a saved %s plan',
+      async (version) => {
+        const f = planned(1, overflow(1));
+        f.state.plan!.rendererVersion = version;
+        f.state.plan!.revision = discordPlanRevision(f.state.plan!);
+        const plan = structuredClone(f.state.plan);
+        authorize(f, summary(link));
+        await f.execute();
+        expect(f.writes[0].body.components).toBeUndefined();
+        expect(f.state.plan).toEqual(plan);
+      },
+    );
+
+    test('offers the button on the last required answer part only', async () => {
+      const f = planned(3, 'x'.repeat(3000));
+      f.state.plan!.rendererVersion = discordSessionRendererVersion;
+      f.state.plan!.revision = discordPlanRevision(f.state.plan!);
+      authorize(f, summary(link));
+      await f.execute();
+      expect(f.writes.map((write) => write.body.components)).toEqual([
+        undefined,
+        [{ type: 1, components: [button] }],
+      ]);
+    });
+
+    test('keeps the fenced Unicode text and suppresses mentions exactly as without a link', async () => {
+      const mentions = '@everyone @here <@123> <@!123> <@&123> <#123> ';
+      const text = '```typescript\n' + `${mentions}${'😀'.repeat(400)}\n`.repeat(6) + '```';
+      const f = planned(1, text, summary(link));
+      const [part] = f.state.plan!.parts;
+      expect(f.state.plan!.rendererVersion).toBe(discordSessionRendererVersion);
+      expect(part).toEqual(planned(1, text).state.plan!.parts[0]);
+      expect(part.text.length).toBeLessThanOrEqual(2000);
+      expect(part.text.startsWith('```typescript\n')).toBe(true);
+      expect(part.text).toContain('\n```\n\nReply shortened');
+      expect(part.text).not.toMatch(loneSurrogate);
+      expect(part.text).not.toMatch(/@(everyone|here)|<(@[!&]?|#)\d/);
+      expect(sanitizeDiscordMentions(part.text)).toBe(part.text);
+      await f.execute();
+      expect(f.writes).toHaveLength(1);
+      expect(f.writes[0].body.allowed_mentions).toEqual({ parse: [], replied_user: false });
+      expect(f.writes[0].body.components).toEqual([{ type: 1, components: [button] }]);
+    });
+
+    test('supports the stamped version beside the legacy readers and rejects unknown ones', () => {
+      const f = fixture();
+      expect(
+        [
+          discordLegacyRendererVersion,
+          discordRendererVersion,
+          discordSessionRendererVersion,
+          'discord-text-v4',
+        ].map((version) => f.provider.supportsRenderer(version)),
+      ).toEqual([true, true, true, false]);
+    });
   });
 
   test.each<[string, ChannelRunSummary | undefined]>([

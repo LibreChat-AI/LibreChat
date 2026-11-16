@@ -5,6 +5,8 @@ import type { ChannelDeliveryPlan, ChannelDeliveryPart } from 'librechat-data-pr
 
 export const discordLegacyRendererVersion = 'discord-text-v1';
 export const discordRendererVersion = 'discord-text-v2';
+/** v2 whose last answer part may carry an authorized session link button, resolved at delivery. */
+export const discordSessionRendererVersion = 'discord-text-v3';
 const feedbackFormat = 'discord-feedback-v1';
 const feedbackSchema = z.object({ runId: z.string().min(1).max(80) }).strict();
 const presentationSchema = z
@@ -107,27 +109,36 @@ export function discordPlanRevision(
  * `spare` leaves one part free only when the answer has to be shortened, so the caller can still
  * append an optional part within `maxParts`. A complete answer is never shortened for it, and a
  * one part budget keeps its required answer part.
+ * `session` covers the shortened answer that still fills the whole budget, where no part is left
+ * for a link. The plan is stamped with the renderer version that lets delivery attach the session
+ * link as a button, if the backend still authorizes it then. The text is unchanged and no URL is
+ * persisted.
  */
 export function renderDiscordPlan(
   input: DiscordRenderInput,
   maxParts: number,
-  options: { shorten?: boolean; feedback?: boolean; spare?: boolean } = {},
+  options: { shorten?: boolean; feedback?: boolean; spare?: boolean; session?: boolean } = {},
 ): DiscordTextPlan {
   if (!input.runId || !Number.isSafeInteger(maxParts) || maxParts < 1 || maxParts > 100)
     throw new TypeError('Invalid Discord delivery budget');
   const source = sanitizeDiscordMentions(input.text);
   if (!source.trim()) throw new DiscordRenderLimitError();
   let chunks: string[];
+  let shortened = false;
   try {
     if (source.length > maxParts * 2000) throw new DiscordRenderLimitError();
     chunks = splitText(source, maxParts, false);
   } catch (error) {
     if (!(error instanceof DiscordRenderLimitError) || !options.shorten) throw error;
+    shortened = true;
     chunks = splitText(source, options.spare ? Math.max(1, maxParts - 1) : maxParts, true);
   }
   const plan: ChannelDeliveryPlan = {
     revision: '',
-    rendererVersion: discordRendererVersion,
+    rendererVersion:
+      options.session === true && shortened && chunks.length >= maxParts
+        ? discordSessionRendererVersion
+        : discordRendererVersion,
     parts: chunks.map((text, index) => ({
       operationId: `${input.runId}:discord:${index}`,
       kind: 'message',
