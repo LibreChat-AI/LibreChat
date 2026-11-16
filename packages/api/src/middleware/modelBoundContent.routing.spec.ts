@@ -98,6 +98,22 @@ describe('runtime MIME metadata at the model-bound boundary', () => {
     ).not.toThrow();
   });
 
+  it.each([
+    { messages: { pii } },
+    { files: { pii: { fields: ['name'], starterPatterns: [], uninspectable: 'block' } } },
+  ] satisfies FiltersConfig[])(
+    'preserves attachment-free admission without selected opaque-file content: %j',
+    (filters) => {
+      const { deliveryRouting } = setup();
+      const read = jest.fn(() => {
+        throw new Error('unselected runtime field');
+      });
+      const agent = { name: 'Office agent', deliveryRouting };
+      Object.defineProperty(agent, 'runtimeOnly', { enumerable: true, get: read });
+      expect(() => assertModelBoundContent({ filters, agents: [agent] })).not.toThrow();
+    },
+  );
+
   it('admits fresh-process TXT before any Office match', () => {
     const { deliveryRouting, hydrate } = setup();
     expect(() =>

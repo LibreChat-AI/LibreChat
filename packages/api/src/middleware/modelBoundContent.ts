@@ -3878,9 +3878,18 @@ function inspectModelBoundContent(
         agentFilesById.set(resolvedFile.file_id, resolvedFile);
       }
     }
+    const fileInspectionAgent =
+      agentFilesById.size > 0 ||
+      getBlockedUninspectableFileField(input.filters, [
+        'content',
+        'extracted_text',
+        'transcript',
+      ]) != null
+        ? projectAgentFileInspection(agent)
+        : agent;
     assertInspectableFileInput(
       input.filters,
-      omitResolvedCanonicalFileLocators(projectAgentFileInspection(agent), agentFilesById, {
+      omitResolvedCanonicalFileLocators(fileInspectionAgent, agentFilesById, {
         onTraversalFailure: input.onTraversalFailure,
         messageCount: input.storedMessages?.length ?? 0,
       }),
