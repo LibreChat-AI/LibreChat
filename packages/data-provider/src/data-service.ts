@@ -2,6 +2,7 @@ import { isAxiosError } from 'axios';
 import type { AxiosResponse } from 'axios';
 import type {
   AgentChannel,
+  ListedAgentChannel,
   ActivateAgentChannel,
   SlackChannelManifest,
   SlackAppPage,
@@ -64,7 +65,7 @@ import request from './request';
 import * as s from './schemas';
 import * as r from './roles';
 
-export function listAgentChannels(agentId: string): Promise<AgentChannel[]> {
+export function listAgentChannels(agentId: string): Promise<ListedAgentChannel[]> {
   return request.get(endpoints.agentChannels(agentId));
 }
 

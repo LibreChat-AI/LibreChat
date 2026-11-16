@@ -13,7 +13,7 @@ import { cleanupAgent, openAgentBuilder, uniqueAgentName } from '../agents.helpe
 test.use({ viewport: { width: 1280, height: 860 }, hasTouch: false, isMobile: false });
 
 type Channel = Record<string, unknown>;
-type Kind = 'active' | 'pending' | 'disabled';
+type Kind = 'active' | 'pending' | 'disabled' | 'unavailable';
 type Call = { method: string; id: string; body: Record<string, unknown> };
 
 const MANIFEST = {
@@ -54,16 +54,23 @@ async function openChannels(page: Page, kinds: Kind[]) {
   });
 
   const slack = { teamId: 'T01TEAM', appId: 'A01ACTIVE', botUserId: 'U01BOT' };
-  const make = (kind: Kind): Channel => ({
-    channelId: `chan_${kind}`,
-    agentId: agent.id,
-    createdBy: userId,
-    type: 'slack',
-    status: { active: 'active', pending: 'pending_install', disabled: 'disabled' }[kind],
-    credentialMode: kind === 'active' ? 'per_user' : 'shared',
-    revision: `rev_${kind}_1`,
-    ...(kind === 'pending' ? {} : { slack }),
-  });
+  const make = (kind: Kind): Channel => {
+    const identity = {
+      channelId: `chan_${kind}`,
+      agentId: agent.id,
+      createdBy: userId,
+      revision: `rev_${kind}_1`,
+    };
+    // The list reports a row no provider serves with its identity and a disabled status only.
+    if (kind === 'unavailable') return { ...identity, type: 'unavailable', status: 'disabled' };
+    return {
+      ...identity,
+      type: 'slack',
+      status: { active: 'active', pending: 'pending_install', disabled: 'disabled' }[kind],
+      credentialMode: kind === 'active' ? 'per_user' : 'shared',
+      ...(kind === 'pending' ? {} : { slack }),
+    };
+  };
   const channels = kinds.map(make);
   const calls: Call[] = [];
 
@@ -292,6 +299,49 @@ test('disabling and deleting a connection each ask first @scenario:channel-disab
       .getByRole('button', { name: 'Delete', exact: true })
       .click();
     await expect.poll(() => calls.filter((call) => call.method === 'DELETE').length).toBe(1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('a connection no provider serves is listed beside a working one and can only be deleted @scenario:channel-unavailable-connection-offers-delete-only', async ({
+  page,
+}) => {
+  const { section, calls, cleanup } = await openChannels(page, ['active', 'unavailable']);
+  try {
+    await expect(section.locator('li')).toHaveCount(2);
+
+    /** The working connection is unchanged: it is Slack, and it can be managed. */
+    await expect(rowOf(section, 0).getByText('Slack', { exact: true })).toBeVisible();
+    await rowOf(section, 0).hover();
+    await expect(
+      rowOf(section, 0).getByRole('button', { name: 'Manage connection' }),
+    ).toBeVisible();
+
+    /** The other is not shown as Slack, says why nothing runs, and offers deletion alone. */
+    const row = rowOf(section, 1);
+    await expect(row.getByText('Unavailable connection')).toBeVisible();
+    await expect(
+      row.getByText("This version can't run it. You can still delete it."),
+    ).toBeVisible();
+    await expect(row.getByText('Slack', { exact: true })).toHaveCount(0);
+    await row.hover();
+    await expect(row.getByRole('button')).toHaveCount(1);
+    await row.getByRole('button', { name: 'Delete connection' }).click();
+
+    /** The confirmation describes this connection, not a Slack app, and nothing is sent before it. */
+    const remove = dialogNamed(page, 'Delete this connection?');
+    await expect(
+      remove.getByText(/removes the unavailable connection and everything saved for it/),
+    ).toBeVisible();
+    await expect(remove.getByText(/Slack/)).toHaveCount(0);
+    expect(calls).toHaveLength(0);
+    await remove.getByRole('button', { name: 'Delete', exact: true }).click();
+    await expect.poll(() => calls.filter((call) => call.method === 'DELETE').length).toBe(1);
+    expect(calls[0]).toMatchObject({ method: 'DELETE', id: 'chan_unavailable' });
+    await expect(section.locator('li')).toHaveCount(1);
+    await expect(section.getByText('Unavailable connection')).toHaveCount(0);
+    await expect(rowOf(section, 0).getByText('Slack', { exact: true })).toBeVisible();
   } finally {
     await cleanup();
   }
