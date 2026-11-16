@@ -292,27 +292,25 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
       else if (!text.trim()) text = 'The agent finished without a text reply.';
       if (snapshot.artifacts?.length || snapshot.artifactsUnavailable)
         text += '\n\nAttachments are unavailable in Discord. The text answer is preserved.';
+      const summary = snapshot.summary;
+      const url = validSummary(summary, run.sequence) ? summary.session?.url : undefined;
+      const link =
+        url && safeSummarySessionURL(url) && traceText(url).length <= 2000 ? url : undefined;
       const plan = renderDiscordPlan({ runId: run.runId, text }, bundle.delivery.maxDeliveryParts, {
         shorten: true,
+        spare: link !== undefined,
         feedback:
           snapshot.status === 'completed' &&
           !run.cancellationRequested &&
           run.feedbackEnabled === true,
       });
-      const summary = snapshot.summary;
-      const url = validSummary(summary, run.sequence) ? summary.session?.url : undefined;
-      if (
-        url &&
-        safeSummarySessionURL(url) &&
-        traceText(url).length <= 2000 &&
-        plan.parts.length < bundle.delivery.maxDeliveryParts
-      )
+      if (link && plan.parts.length < bundle.delivery.maxDeliveryParts)
         plan.parts.push({
           operationId: `${run.runId}:trace:0`,
           kind: 'message',
           required: false,
-          text: traceText(url),
-          traceUrl: url,
+          text: traceText(link),
+          traceUrl: link,
         });
       plan.revision = discordPlanRevision(plan);
       return plan;
