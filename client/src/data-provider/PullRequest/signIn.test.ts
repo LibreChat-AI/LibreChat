@@ -575,3 +575,58 @@ describe('OAuth settlement transports', () => {
     stop();
   });
 });
+
+describe('Discord OAuth failure codes', () => {
+  it('carries only approved codes and strips arbitrary fields before announcing or receiving', () => {
+    const received = jest.fn();
+    const stop = watchOAuthSettlements(received);
+    const write = jest.spyOn(Storage.prototype, 'setItem');
+    const notice = {
+      outcome: 'failed' as const,
+      flowId: 'flow-discord',
+      errorCode: 'discord_missing_permissions' as const,
+      error_description: 'private-provider-token',
+    };
+    announceOAuthSettled(notice);
+    const encoded = write.mock.calls.find(([key]) => key === OAUTH_SETTLED_CHANNEL)![1];
+    expect(JSON.parse(encoded)).toMatchObject({ errorCode: 'discord_missing_permissions' });
+    expect(encoded).not.toContain('private-provider-token');
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: OAUTH_SETTLED_CHANNEL,
+        newValue: JSON.stringify(notice),
+      }),
+    );
+    expect(received).toHaveBeenLastCalledWith({
+      outcome: 'failed',
+      flowId: 'flow-discord',
+      errorCode: 'discord_missing_permissions',
+    });
+    for (const errorCode of [
+      'private-provider-token',
+      'discord_unrecognized',
+      { secret: 'token' },
+      null,
+    ]) {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: OAUTH_SETTLED_CHANNEL,
+          newValue: JSON.stringify({ outcome: 'failed', flowId: 'flow-discord', errorCode }),
+        }),
+      );
+      expect(received).toHaveBeenLastCalledWith({ outcome: 'failed', flowId: 'flow-discord' });
+    }
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: OAUTH_SETTLED_CHANNEL,
+        newValue: JSON.stringify({
+          outcome: 'succeeded',
+          flowId: 'flow-discord',
+          errorCode: 'discord_missing_permissions',
+        }),
+      }),
+    );
+    expect(received).toHaveBeenLastCalledWith({ outcome: 'succeeded', flowId: 'flow-discord' });
+    stop();
+  });
+});
