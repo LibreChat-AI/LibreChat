@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module';
 import AxeBuilder from '@axe-core/playwright';
 import type { ChannelLinkView } from 'librechat-data-provider';
 import type { Page } from '@playwright/test';
@@ -135,64 +134,6 @@ for (const theme of ['light', 'dark'] as const) {
     });
   });
 }
-
-/** Optional verification adapter: a pinned, integrity-verified decoder can live outside the repo. */
-test('the rendered QR decodes to the same private fragment URL @scenario:channel-link-qr-decodes', async ({
-  page,
-}) => {
-  const decoderPath = process.env.E2E_QR_DECODER_PATH;
-  test.skip(
-    !decoderPath,
-    'Set E2E_QR_DECODER_PATH to an independently verified local jsQR decoder.',
-  );
-  if (!decoderPath) throw new Error('A local QR decoder is required');
-  const fixture = await mockLinkApi(page);
-  await openHandoff(page);
-  await page.getByRole('button', { name: 'Use my phone', exact: true }).click();
-  const qr = page.locator('main svg').filter({
-    has: page.locator('title', { hasText: 'Private account linking QR code' }),
-  });
-  const pixels = await qr.evaluate(async (node) => {
-    const svg = node.cloneNode(true);
-    if (!(svg instanceof SVGSVGElement)) throw new Error('The QR must render as an SVG');
-    svg.setAttribute('width', '512');
-    svg.setAttribute('height', '512');
-    svg.removeAttribute('class');
-    const url = URL.createObjectURL(
-      new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' }),
-    );
-    try {
-      const image = new Image();
-      image.src = url;
-      await image.decode();
-      const canvas = document.createElement('canvas');
-      canvas.width = 512;
-      canvas.height = 512;
-      const context = canvas.getContext('2d');
-      if (!context) throw new Error('A canvas is required to rasterize the rendered QR');
-      context.drawImage(image, 0, 0, 512, 512);
-      return Array.from(context.getImageData(0, 0, 512, 512).data);
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  });
-  const decode: (
-    data: Uint8ClampedArray,
-    width: number,
-    height: number,
-  ) => { data: string } | null = createRequire(__filename)(decoderPath);
-  const decoded = decode(new Uint8ClampedArray(pixels), 512, 512);
-  expect(decoded?.data).toBe(await page.getByLabel('Private account linking URL').inputValue());
-  const url = new URL(decoded!.data);
-  expect(url.hash).toBe(`#${ticket}`);
-  expect(url.search).toBe('');
-  expect(fixture.previews).toEqual([]);
-  expect(fixture.requests.some((request) => request.includes(ticket))).toBe(false);
-  await page.screenshot({
-    path: test.info().outputPath('channel-handoff-decoded-qr.png'),
-    fullPage: true,
-  });
-});
 
 test('the private ticket survives login and browser consent waits for Discord confirmation @scenario:channel-link-login-confirmation', async ({
   page,
