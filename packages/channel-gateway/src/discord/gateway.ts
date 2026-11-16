@@ -10,8 +10,8 @@ import type {
 import type { DiscordApplicationObservation } from './observe';
 import type { DiscordGatewayStopReason } from './recovery';
 import type { Logger } from '../types';
+import { DiscordGatewayFailure, DiscordIdentifyRefusal } from './recovery';
 import { createDiscordGatewayDriver } from './socket';
-import { DiscordGatewayFailure } from './recovery';
 import { safeDiscordObserver } from './observe';
 
 export interface DiscordGatewayOwner {
@@ -381,6 +381,14 @@ export class OwnedDiscordGateway {
         },
         heartbeat: (shardId, latencyMs) => {
           if (!this.stopped) this.observe({ type: 'heartbeat', shardId, latencyMs });
+        },
+        // A refused IDENTIFY is never sent, so the session cannot become READY. It stops now and the
+        // owner's retry ladder decides when to start again. A rejected token keeps its own reason.
+        identifyRefused: (error) => {
+          if (this.stopped) return;
+          const reason = error instanceof DiscordIdentifyRefusal ? error.reason : 'unconfirmed';
+          this.deps.log.warn(`discord_gateway_identify_refused:${reason}`);
+          void this.stop(error instanceof DiscordGatewayFailure ? error.reason : 'failed');
         },
       };
       this.driver = (this.deps.createDriver ?? createDiscordGatewayDriver)(options);

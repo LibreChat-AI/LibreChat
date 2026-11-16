@@ -23,6 +23,19 @@ export class DiscordGatewayFailure extends Error {
   }
 }
 
+export type DiscordIdentifyRefusalReason = 'exhausted' | 'invalid' | 'unconfirmed' | 'retry';
+
+/**
+ * An IDENTIFY the owner refused to let the SDK send: the session budget is spent, unreadable or
+ * could not be confirmed, or the shard has not answered its previous IDENTIFY. The reason is a
+ * closed set and carries no detail.
+ */
+export class DiscordIdentifyRefusal extends Error {
+  constructor(readonly reason: DiscordIdentifyRefusalReason) {
+    super('Discord Gateway identify refused');
+  }
+}
+
 /** Failures counted against one owner. Fatal and transient failures never share a counter. */
 export interface DiscordRetryState {
   fatalFailures: number;

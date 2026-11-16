@@ -4,6 +4,12 @@ import { WebSocketManager, WebSocketShardEvents, SimpleIdentifyThrottler } from 
 import type { SessionInfo, ManagerShardEventsMap, IIdentifyThrottler } from '@discordjs/ws';
 import type { DiscordChannelConfig } from 'librechat-data-provider';
 import type { RESTOptions } from '@discordjs/rest';
+import type { DiscordIdentifyBudget } from './budget';
+import {
+  assertDiscordGatewayInformation,
+  createDiscordIdentifyBudget,
+  readDiscordGatewayInformation,
+} from './budget';
 import { DiscordGatewayFailure } from './recovery';
 import { DiscordRateCoordinator } from './rates';
 import { boundedBody } from '../transport';
@@ -30,6 +36,8 @@ export interface DiscordGatewayDriverOptions {
   error(): void;
   /** Round trip of one acknowledged heartbeat. The shard id is for health only, never a label. */
   heartbeat?(shardId: number, latencyMs: number): void;
+  /** An IDENTIFY was refused (see `DiscordIdentifyRefusal`). The owner must stop the session. */
+  identifyRefused?(error: unknown): void;
 }
 
 function requestHeaders(input: Parameters<RESTOptions['makeRequest']>[1]['headers']): Headers {
@@ -49,36 +57,84 @@ function requestHeaders(input: Parameters<RESTOptions['makeRequest']>[1]['header
   return headers;
 }
 
-/** The promise itself is shared, including concurrent first identifies on separate shards. */
+/**
+ * The promise itself is shared, including concurrent first identifies on separate shards. Every
+ * IDENTIFY is reserved against the session budget before the SDK throttle spaces it. A refused one
+ * is never sent: the SDK sends an IDENTIFY anyway once it has recovered from a throttle that
+ * threw, so a refusal tells the owner and then parks the shard instead.
+ */
 export function createOwnedIdentifyThrottler(
-  options: Pick<DiscordGatewayDriverOptions, 'assertOwned' | 'signal'>,
+  options: Pick<DiscordGatewayDriverOptions, 'assertOwned' | 'signal' | 'identifyRefused'>,
+  budget: DiscordIdentifyBudget = createDiscordIdentifyBudget(),
+  throttle: (maxConcurrency: number) => IIdentifyThrottler = (maxConcurrency) =>
+    new SimpleIdentifyThrottler(maxConcurrency),
 ) {
+  const parked = new Promise<never>(() => undefined);
+  const refuse = (error: unknown) => {
+    try {
+      options.identifyRefused?.(error);
+    } catch {
+      // The owner stops the session itself, and a refusal cannot be allowed to throw into the SDK.
+    }
+  };
+  const refusing = (error: unknown): IIdentifyThrottler => ({
+    async waitForIdentify() {
+      options.assertOwned();
+      refuse(error);
+      return parked;
+    },
+  });
+  const spaced = (
+    manager: Pick<WebSocketManager, 'fetchGatewayInformation'>,
+    maxConcurrency: number,
+  ): IIdentifyThrottler => {
+    const throttler = throttle(maxConcurrency);
+    return {
+      async waitForIdentify(shardId: number, signal: AbortSignal) {
+        options.assertOwned();
+        try {
+          await budget.reserve(manager, shardId);
+        } catch (error) {
+          refuse(error);
+          return parked;
+        }
+        const combined = AbortSignal.any([signal, options.signal]);
+        let abort = () => {};
+        const stopped = new Promise<never>((_resolve, reject) => {
+          abort = () => reject(new DOMException('Discord identify cancelled', 'AbortError'));
+          combined.addEventListener('abort', abort, { once: true });
+        });
+        try {
+          combined.throwIfAborted();
+          await Promise.race([throttler.waitForIdentify(shardId, combined), stopped]);
+          combined.throwIfAborted();
+          options.assertOwned();
+        } catch (error) {
+          budget.release(shardId);
+          throw error;
+        } finally {
+          combined.removeEventListener('abort', abort);
+        }
+      },
+    };
+  };
   let pending: Promise<IIdentifyThrottler> | undefined;
   return (
     manager: Pick<WebSocketManager, 'fetchGatewayInformation'>,
   ): Promise<IIdentifyThrottler> => {
-    pending ??= manager.fetchGatewayInformation().then((info) => {
-      const throttler = new SimpleIdentifyThrottler(info.session_start_limit.max_concurrency);
-      return {
-        async waitForIdentify(shardId: number, signal: AbortSignal) {
-          options.assertOwned();
-          const combined = AbortSignal.any([signal, options.signal]);
-          combined.throwIfAborted();
-          let abort = () => {};
-          const stopped = new Promise<never>((_resolve, reject) => {
-            abort = () => reject(new DOMException('Discord identify cancelled', 'AbortError'));
-            combined.addEventListener('abort', abort, { once: true });
-          });
-          try {
-            await Promise.race([throttler.waitForIdentify(shardId, combined), stopped]);
-            combined.throwIfAborted();
-            options.assertOwned();
-          } finally {
-            combined.removeEventListener('abort', abort);
-          }
-        },
-      };
-    });
+    pending ??= manager.fetchGatewayInformation().then(
+      (info) => {
+        try {
+          return spaced(
+            manager,
+            readDiscordGatewayInformation(info).session_start_limit.max_concurrency,
+          );
+        } catch (error) {
+          return refusing(error);
+        }
+      },
+      (error: unknown) => refusing(error),
+    );
     return pending;
   };
 }
@@ -88,6 +144,7 @@ export function createDiscordGatewayDriver(
   options: DiscordGatewayDriverOptions,
   transport: typeof fetch = fetch,
   rates: DiscordRateCoordinator = new DiscordRateCoordinator(),
+  budget: DiscordIdentifyBudget = createDiscordIdentifyBudget(),
 ): DiscordGatewayDriver {
   // The SDK runs reconnects and heartbeats on timers no caller awaits, so a hook that throws there
   // is an unhandled rejection that ends the process. Losing ownership freezes the SDK instead:
@@ -129,6 +186,8 @@ export function createDiscordGatewayDriver(
             /* Header limits remain authoritative for a malformed response. */
           }
         }
+        if (response.ok && new URL(url).pathname.endsWith('/gateway/bot'))
+          assertDiscordGatewayInformation(bytes);
         const bounded = new Response(Uint8Array.from(bytes), {
           status: response.status,
           headers: response.headers,
@@ -178,11 +237,17 @@ export function createDiscordGatewayDriver(
         // Every failing path has already stopped the session, and a stopped session records nothing.
       }
     },
-    buildIdentifyThrottler: createOwnedIdentifyThrottler(options),
+    buildIdentifyThrottler: createOwnedIdentifyThrottler(options, budget),
   });
   manager.on(WebSocketShardEvents.Dispatch, options.dispatch);
-  manager.on(WebSocketShardEvents.Ready, options.ready);
-  manager.on(WebSocketShardEvents.Resumed, ({ shardId }) => options.resumed(shardId));
+  manager.on(WebSocketShardEvents.Ready, (event) => {
+    budget.reached(event.shardId);
+    options.ready(event);
+  });
+  manager.on(WebSocketShardEvents.Resumed, ({ shardId }) => {
+    budget.reached(shardId);
+    options.resumed(shardId);
+  });
   manager.on(WebSocketShardEvents.Closed, ({ code, shardId }) => options.closed(code, shardId));
   manager.on(WebSocketShardEvents.Error, options.error);
   manager.on(WebSocketShardEvents.HeartbeatComplete, ({ shardId, latency }) =>
