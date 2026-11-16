@@ -298,6 +298,28 @@ credentials. To resume, make a new selection and send a fresh prompt.
   revoked records must pass current application, installation, user and agent checks.
   Do not repair access by manually changing revisions or route records.
 
+Fatal native Gateway stops (rejected bot credentials, invalid shard configuration or intents,
+and identity mismatches) enter a per-process quarantine. Retries start at 30 seconds and double
+to a 15-minute cap. Transient failures use jittered exponential delays capped at 60 seconds.
+A credential revision change bypasses the previous revision's delay immediately; only a
+verified healthy session lasting two minutes resets failure counters. Fix settings in the
+Discord Developer Portal or rotate credentials in LibreChat, rather than repeatedly restarting
+the gateway to clear its local delay.
+
+The controls live under `endpoints.agents.channels.discord.gateway.recovery`:
+
+| Setting                  | Default  | Purpose                                                         |
+| ------------------------ | -------- | --------------------------------------------------------------- |
+| `fatalRetryMinMs`        | `30000`  | First retry delay after a fatal stop                            |
+| `fatalRetryMaxMs`        | `900000` | Maximum fatal retry delay                                       |
+| `retryMaxMs`             | `60000`  | Maximum transient retry delay                                   |
+| `resetAfterMs`           | `120000` | Verified session lifetime needed to reset failure counts        |
+| `maxTrackedApplications` | `4096`   | Bound on active and delayed applications tracked by one process |
+
+When recovery tracking is full, additional applications wait for capacity. An application
+absent from a complete discovery scan releases its delayed slot; a failed discovery page
+does not. Shutdown and lease loss do not quarantine an application.
+
 Delivery records distinguish known failure from an uncertain send. A timeout can happen
 after Discord accepted a message. Refresh run status and inspect the destination before
 manually submitting another prompt. Restarting a gateway is not a reason to replay old

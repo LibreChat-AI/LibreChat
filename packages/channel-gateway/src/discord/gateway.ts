@@ -7,8 +7,10 @@ import type {
   DiscordGatewayDriverOptions,
   DiscordGatewayDispatch,
 } from './socket';
+import type { DiscordGatewayStopReason } from './recovery';
 import type { Logger } from '../types';
 import { createDiscordGatewayDriver } from './socket';
+import { DiscordGatewayFailure } from './recovery';
 
 export interface DiscordGatewayOwner {
   applicationId: string;
@@ -154,15 +156,6 @@ interface QueuedEvent {
 }
 
 /** SDK heartbeat state stays hot; durable resume checkpoints never pass uncommitted dispatches. */
-type StopReason =
-  | 'shutdown'
-  | 'lost'
-  | 'identity'
-  | 'checkpoint'
-  | 'configuration'
-  | 'failed'
-  | 'backpressure'
-  | 'dispatch';
 export class OwnedDiscordGateway {
   private readonly application: DiscordGatewayApplication;
   private readonly policy: DiscordGatewayDriverOptions['policy'];
@@ -180,7 +173,9 @@ export class OwnedDiscordGateway {
   private owned = false;
   private started = false;
   private stopped = false;
-  private stopReason?: StopReason;
+  private stopReason?: DiscordGatewayStopReason;
+  private readyAt?: number;
+  private stoppedAt?: number;
   private pumping = false;
   private saves: Promise<void> = Promise.resolve();
   private checkpointRevision = 0;
@@ -212,6 +207,14 @@ export class OwnedDiscordGateway {
         .regex(/^[a-f0-9]{32}$/)
         .parse(deps.ownerId ?? randomBytes(16).toString('hex')),
     };
+  }
+  get failure(): DiscordGatewayFailure | undefined {
+    const reason = this.stopReason;
+    if (!reason || reason === 'shutdown' || reason === 'lost') return undefined;
+    return new DiscordGatewayFailure(
+      reason,
+      this.readyAt === undefined ? 0 : Math.max(0, (this.stoppedAt ?? Date.now()) - this.readyAt),
+    );
   }
   private assertOwned = () => {
     if (this.stopped || !this.owned || Date.now() >= this.expiresAt) {
@@ -348,7 +351,8 @@ export class OwnedDiscordGateway {
         },
         dispatch: (event) => this.receive(event),
         closed: (code) => {
-          if ([4004, 4010, 4011, 4012, 4013, 4014].includes(code)) void this.stop('configuration');
+          if (code === 4004) void this.stop('credentials');
+          else if ([4010, 4011, 4012, 4013, 4014].includes(code)) void this.stop('configuration');
           else if (!this.stopped) this.deps.log.warn('discord_gateway_reconnecting');
         },
         error: () => {
@@ -370,11 +374,12 @@ export class OwnedDiscordGateway {
         return false;
       this.assertOwned();
       this.scheduleCheckpoint();
+      this.readyAt = Date.now();
       return true;
-    } catch {
+    } catch (error) {
       this.deps.log.warn('discord_gateway_start_unavailable');
-      await this.stop('failed');
-      throw new Error('Discord Gateway connection unavailable');
+      await this.stop(error instanceof DiscordGatewayFailure ? error.reason : 'failed');
+      throw this.failure ?? new DiscordGatewayFailure('failed');
     }
   }
   private async stage<T>(work: Promise<T>): Promise<{ value: T } | null> {
@@ -551,10 +556,11 @@ export class OwnedDiscordGateway {
       }
     })();
   }
-  stop(reason: StopReason = 'shutdown'): Promise<void> {
+  stop(reason: DiscordGatewayStopReason = 'shutdown'): Promise<void> {
     if (this.cleanup) return this.cleanup;
     this.stopped = true;
     this.stopReason = reason;
+    this.stoppedAt = Date.now();
     this.controller.abort();
     clearTimeout(this.expiryTimer);
     clearTimeout(this.renewalTimer);

@@ -1357,6 +1357,19 @@ export const discordChannelConfigSchema = z
       .extend({
         enabled: z.boolean().default(false),
         maxApplications: z.number().int().min(1).max(1000).default(32),
+        recovery: z
+          .object({
+            retryMaxMs: z.number().int().min(1000).max(300_000).default(60_000),
+            resetAfterMs: z.number().int().min(1000).max(3_600_000).default(120_000),
+            fatalRetryMinMs: z.number().int().min(1000).max(3_600_000).default(30_000),
+            fatalRetryMaxMs: z.number().int().min(1000).max(86_400_000).default(900_000),
+            maxTrackedApplications: z.number().int().min(1).max(100_000).default(4096),
+          })
+          .strict()
+          .refine((value) => value.fatalRetryMaxMs >= value.fatalRetryMinMs, {
+            message: 'Fatal retry maximum must be at least the minimum',
+          })
+          .prefault({}),
         shardCount: z.number().int().min(1).max(128).default(1),
         messageContent: z.boolean().default(false),
         // Never exceed the minimum occurrence-receipt retention, even after policy changes.

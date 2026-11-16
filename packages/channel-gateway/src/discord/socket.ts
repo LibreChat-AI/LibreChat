@@ -4,6 +4,7 @@ import { WebSocketManager, WebSocketShardEvents, SimpleIdentifyThrottler } from 
 import type { SessionInfo, ManagerShardEventsMap, IIdentifyThrottler } from '@discordjs/ws';
 import type { DiscordChannelConfig } from 'librechat-data-provider';
 import type { RESTOptions } from '@discordjs/rest';
+import { DiscordGatewayFailure } from './recovery';
 import { DiscordRateCoordinator } from './rates';
 import { boundedBody } from '../transport';
 
@@ -113,6 +114,7 @@ export function createDiscordGatewayDriver(
           signal,
         });
         permit.observe(response);
+        if (response.status === 401) throw new DiscordGatewayFailure('credentials');
         const bytes = await boundedBody(response, options.maxResponseBytes);
         if (response.status === 429) {
           try {
