@@ -210,3 +210,12 @@ export * from './postgres/migrations';
 export * from './postgres/favorite';
 export * from './postgres/import';
 export * from './postgres/mongo';
+
+export { createDiscordInstallationStorage } from './methods/discord';
+export type {
+  DiscordInstallationStorage,
+  DiscordStorageResult,
+  DiscordStorageError,
+  ConfigureDiscordApplicationRecord,
+} from './methods/discord';
+export type { DiscordApplicationRecord } from './models/discord';
