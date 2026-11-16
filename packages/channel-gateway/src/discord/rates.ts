@@ -24,6 +24,14 @@ export class DiscordRateQueueError extends Error {
   }
 }
 
+/** A caller abort is the caller's own decision, so only the local queue refusing work is a fact. */
+export type DiscordRateRejection = Exclude<DiscordRateQueueError['code'], 'aborted'>;
+/** `route` is the templated route and never the major key, which can derive from a token. */
+export type DiscordRateObservation =
+  | { type: 'rest'; route: string; status: number | undefined }
+  | { type: 'rejected'; reason: DiscordRateRejection };
+export type DiscordRateObserver = (observation: DiscordRateObservation) => void;
+
 interface RouteState extends DiscordRateRoute {
   bucket?: string;
   remaining?: number;
@@ -58,7 +66,10 @@ export class DiscordRateCoordinator {
   private globalUntil = 0;
   private timer?: ReturnType<typeof setTimeout>;
 
-  constructor(policy: DiscordRatePolicy = DEFAULT_DISCORD_RATE_POLICY) {
+  constructor(
+    policy: DiscordRatePolicy = DEFAULT_DISCORD_RATE_POLICY,
+    private readonly observer?: DiscordRateObserver,
+  ) {
     if (
       [
         policy.globalRequestsPerSecond,
@@ -132,7 +143,17 @@ export class DiscordRateCoordinator {
   }
 
   private failure(code: DiscordRateQueueError['code']): DiscordRateQueueError {
+    if (code !== 'aborted') this.notify({ type: 'rejected', reason: code });
     return new DiscordRateQueueError(code, this.policy.fallbackRetryMs);
+  }
+
+  /** Telemetry must never change rate state, so a throwing observer is ignored. */
+  private notify(observation: DiscordRateObservation): void {
+    try {
+      this.observer?.(observation);
+    } catch {
+      // Requests and queueing continue without the observer.
+    }
   }
 
   private group(state: RouteState): RouteState[] {
@@ -212,13 +233,16 @@ export class DiscordRateCoordinator {
       this.timer = setTimeout(() => this.drain(), Math.max(1, wakeAt - now));
   }
 
+  /** Every REST path acquires a permit, so release is the one place a request is counted. */
   private permit(state: RouteState): DiscordRatePermit {
     let released = false;
     let observedAt: number | undefined;
+    let status: number | undefined;
     return {
       observe: (response, body) => {
         if (released) return;
         observedAt ??= Date.now();
+        status ??= response.status;
         const bucket = response.headers.get('x-ratelimit-bucket');
         if (bucket && bucket.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(bucket))
           state.bucket = bucket;
@@ -245,6 +269,7 @@ export class DiscordRateCoordinator {
         state.active--;
         state.lastUsed = Date.now();
         this.drain();
+        this.notify({ type: 'rest', route: state.route, status });
       },
     };
   }
