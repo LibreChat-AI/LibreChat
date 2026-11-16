@@ -38,9 +38,11 @@ import {
   getMCPConnectionPoolKey,
   getMCPUserConnectionPoolKey,
   MCP_APPS_CAPABILITY_PROFILE,
+  parseMCPConnectionPoolKey,
   resolveMCPClientCapabilityProfile,
   STANDARD_MCP_CAPABILITY_PROFILE,
 } from './capabilities';
+import { isEnabled } from '~/utils/common';
 import {
   resolveScheduledMCPBearerConfig,
   requiresScheduledMCPBearerConnection,
@@ -979,11 +981,24 @@ export class MCPManager extends UserConnectionManager {
       registry.getAllServerConfigs(undefined, configServers),
       registry.getUserHiddenServerNames(user),
     ]);
+    const userConnections = user?.id ? this.userConnections.get(user.id) : undefined;
     for (const [serverName, config] of Object.entries(configs)) {
       if (hidden.has(serverName) && !isUserSourced(config)) {
         continue;
       }
-      const resolved = resolveServerInstructions(config);
+      let resolved = resolveServerInstructions(config);
+      if (resolved == null && isEnabled(config.serverInstructions) && userConnections) {
+        for (const [poolKey, connection] of userConnections) {
+          if (parseMCPConnectionPoolKey(poolKey).serverName !== serverName) {
+            continue;
+          }
+          const liveInstructions = connection.client?.getInstructions();
+          if (liveInstructions) {
+            resolved = liveInstructions;
+            break;
+          }
+        }
+      }
       if (resolved != null) {
         instructions[serverName] = resolved;
       }
