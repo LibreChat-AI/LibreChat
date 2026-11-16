@@ -9,6 +9,7 @@ import {
   RowMountProvider,
   useProgressiveRowMount,
 } from '../../react/messages/useProgressiveRowMount';
+import { OffscreenRowsProvider, useOffscreenRows } from '../../react/messages/offscreen';
 import useMessageScrolling from '../../react/messages/useMessageScrolling';
 import useConversationSeen from '../../react/messages/useConversationSeen';
 import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
@@ -145,6 +146,7 @@ export default function MessagesView({
   });
 
   useScrollbarGutter(scrollableRef);
+  const observeRow = useOffscreenRows(scrollableRef);
 
   /** Re-arm from the conversation that owns the RENDERED tree: the app's conversation id lags
    *  the route during warm-cache navigation, and keying off it would first mount the new tree
@@ -251,14 +253,16 @@ export default function MessagesView({
                   data-testid="screenshot-target"
                 >
                   <RowMountProvider mountWindow={mountWindow}>
-                    {renderThread({
-                      messagesTree,
-                      messages,
-                      conversationId: treeConversationId,
-                      flat,
-                      currentEditId,
-                      setCurrentEditId,
-                    })}
+                    <OffscreenRowsProvider observe={observeRow}>
+                      {renderThread({
+                        messagesTree,
+                        messages,
+                        conversationId: treeConversationId,
+                        flat,
+                        currentEditId,
+                        setCurrentEditId,
+                      })}
+                    </OffscreenRowsProvider>
                   </RowMountProvider>
                 </div>
                 {renderPendingTurn?.({ scrollableRef, messages, maximizeChatSpace })}

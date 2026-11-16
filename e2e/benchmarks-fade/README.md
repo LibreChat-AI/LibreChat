@@ -24,6 +24,16 @@ transcript, from a Chromium trace of the built client:
   and across two short runs, and traces the main thread for each. Anything above zero errors
   and one request (the composer's silent clip) is a row loading something it was not asked to.
 
+- **`sidebar.perf.spec.ts`**: the cost of opening and closing the sidebar beside the thread.
+  The sidebar slides by changing its width, so the chat pane changes width on every frame of
+  the slide; each direction is traced on its own. `ms/frame` and the longest task say whether
+  the slide can hold a frame rate. `FADE_PERF_PROFILE=1` adds the script's self time and
+  `FADE_PERF_WHY=1` the components that render for each toggle.
+- **`scroll.perf.spec.ts`**: the cost of reading back through the thread, a page at a time
+  from the latest turn towards the first and back. Rows far from the viewport are skipped by
+  the browser and laid out again as a scroll brings them near, so this is where that work
+  shows up if it ever costs more than it saves.
+
 - **`restyle.perf.spec.ts`**: the cost of one small change in every row at once, which is
   what a run starting or ending is. It flips a class, flips `disabled` and mounts a button on
   each row by hand and times the style and layout pass that follows. With a stylesheet whose
@@ -96,6 +106,15 @@ and read the `StyleInvalidatorInvalidationTracking` events before it: they name
 the nodes whose subtrees were invalidated and the selector feature that did it.
 That is how a `disabled` flip on one button per row turned out to re-style every
 row of the thread, through the stylesheet's `:has(:disabled)` rules.
+
+To compare with and without skipped rows on one build, lay this over the page with
+`FADE_PERF_CSS`; the rows are still marked, but every one is laid out and painted:
+
+```css
+.message-render[data-offscreen] {
+  content-visibility: visible !important;
+}
+```
 
 Role locators are kept out of the measured windows: Playwright computes
 accessible names across the whole transcript on each poll, which a trace
