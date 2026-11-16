@@ -2505,6 +2505,56 @@ describe('Azure deployment alias', () => {
     expect(azure.headers.get('api-key')).toBe('expanded-azure-key');
   });
 
+  it('forwards the primary agent id on OpenAI and Azure summarizer headers', async () => {
+    jest.replaceProperty(process, 'env', { ...process.env, OPENAI_API_KEY: 'openai-summary-key' });
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints!.all = { headers: { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' } };
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      isValid: true,
+      errors: [],
+      modelNames: ['gpt-6-astra', 'gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-6-astra': { group: 'main' }, 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        main: {
+          apiKey: 'test-azure-key',
+          instanceName: 'test-instance',
+          version: '2025-04-01-preview',
+          models: { 'gpt-6-astra': { deploymentName: 'production-deployment' } },
+        },
+        summary: {
+          apiKey: 'summary-key',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    };
+    const compact = async (summarizationConfig: SummarizationConfig) => {
+      (Run.create as jest.Mock).mockClear();
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig,
+        summarizeOnly: true,
+        summarizationConfig,
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      return requests[0];
+    };
+
+    const openAI = await compact({
+      provider: EModelEndpoint.openAI,
+      model: 'gpt-4.1-mini',
+      parameters: { streaming: false },
+    });
+    expect(openAI.url.origin).toBe('https://api.openai.com');
+    expect(openAI.headers.get('X-Agent-Id')).toBe('agent_1');
+
+    const azure = await compact({ model: 'gpt-4.1-mini', parameters: { streaming: false } });
+    expect(azure.url.origin).toBe('https://summary-instance.openai.azure.com');
+    expect(azure.headers.get('X-Agent-Id')).toBe('agent_1');
+  });
+
   it("leaves Azure's reserved URL templates to the summary deployment", async () => {
     jest.replaceProperty(process, 'env', {
       ...process.env,
@@ -3322,6 +3372,28 @@ describe('custom-endpoint provider resolution', () => {
     const configuration = parameters.configuration as Record<string, unknown>;
 
     expect(configuration.defaultHeaders).toEqual({ 'X-Tenant-ID': 'request-tenant' });
+  });
+
+  it('forwards the primary agent id in custom-endpoint summarization headers', async () => {
+    const appConfig = makeAppConfig([
+      {
+        name: 'Agent Gateway',
+        baseURL: 'https://gateway.example.com/v1',
+        apiKey: 'gateway-key',
+        headers: { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' },
+      },
+    ]);
+    const agents = await callAndCapture({
+      agents: [makeAgent({ id: 'agent_gateway' })],
+      summarizationConfig: { provider: 'Agent Gateway', model: 'summary-model' },
+      appConfig,
+    });
+
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    const parameters = config.parameters as Record<string, unknown>;
+    const configuration = parameters.configuration as Record<string, unknown>;
+
+    expect(configuration.defaultHeaders).toEqual({ 'X-Agent-Id': 'agent_gateway' });
   });
 
   it('forwards PROXY env var into summarization client configuration', async () => {

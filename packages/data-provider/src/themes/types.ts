@@ -827,6 +827,13 @@ export interface IThemeAppearance {
    * and pressed tints a step stronger.
    */
   destructiveStyle: 'fill' | 'soft';
+  /**
+   * What the welcome screen paints behind its greeting and composer. `none` (the default)
+   * keeps the plain surface. `dots` names a dot field; the app paints it only when a
+   * component is registered for it (`registerWelcomeBackdrop`), and keeps the plain surface
+   * otherwise, so a theme can ask for it before the build provides it.
+   */
+  welcomeBackdrop: 'none' | 'dots';
 }
 
 export interface ThemeModeDefinition {

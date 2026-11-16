@@ -149,8 +149,14 @@ export function SteerHostProvider({
   return <SteerHostContext.Provider value={host}>{children}</SteerHostContext.Provider>;
 }
 
+/** The nearest steer host, or null when this tree has none. A surface that can render without
+ *  steering, such as a shared conversation, uses this and leaves the pending rows unmounted. */
+export function useOptionalSteerHost(): SteerHost | null {
+  return useContext(SteerHostContext);
+}
+
 export function useSteerHost(): SteerHost {
-  const host = useContext(SteerHostContext);
+  const host = useOptionalSteerHost();
   if (host == null) {
     throw new Error('The steer hooks need a SteerHostProvider above them.');
   }

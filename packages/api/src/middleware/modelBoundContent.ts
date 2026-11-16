@@ -70,6 +70,7 @@ import { extractMessageContent, snapshotExternalMessages } from '../protection/a
 import { ContentTraversalLimitError } from '../protection/adapters/nested';
 import { ContentFilterError, isContentFilterError } from './contentFilter';
 import { createConfiguredContentInspector } from '../protection/runtime';
+import { projectAgentFileInspection } from '../protection/metadata';
 import { aggregateAuditFindingsSync } from '../protection/audit';
 
 export type ModelBoundProviderAttribution = 'user' | 'model' | 'tool' | 'synthetic';
@@ -3877,21 +3878,30 @@ function inspectModelBoundContent(
         agentFilesById.set(resolvedFile.file_id, resolvedFile);
       }
     }
+    const fileInspectionAgent =
+      agentFilesById.size > 0 ||
+      getBlockedUninspectableFileField(input.filters, [
+        'content',
+        'extracted_text',
+        'transcript',
+      ]) != null
+        ? projectAgentFileInspection(agent)
+        : agent;
     assertInspectableFileInput(
       input.filters,
-      omitResolvedCanonicalFileLocators(agent, agentFilesById, {
+      omitResolvedCanonicalFileLocators(fileInspectionAgent, agentFilesById, {
         onTraversalFailure: input.onTraversalFailure,
         messageCount: input.storedMessages?.length ?? 0,
       }),
     );
-    appendExtractedContent(() => extractAgentContent(agent));
+    appendExtractedContent(() => extractAgentContent(agent, inspector?.shouldInspect));
   }
   for (const assistant of input.assistants ?? []) {
     assertInspectableFileInput(input.filters, assistant);
-    appendExtractedContent(() => extractAssistantContent(assistant));
+    appendExtractedContent(() => extractAssistantContent(assistant, inspector?.shouldInspect));
   }
   for (const action of input.actions ?? []) {
-    appendExtractedContent(() => extractAssistantActionContent(action));
+    appendExtractedContent(() => extractAssistantActionContent(action, inspector?.shouldInspect));
   }
   for (const skill of input.skills ?? []) {
     appendExtractedContent(() => extractSkillContent(skill));

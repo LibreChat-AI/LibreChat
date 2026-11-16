@@ -93,7 +93,15 @@ export default function ComposerFrame({
       className={cn(
         'mx-auto flex w-full flex-row gap-3 sm:px-2',
         composerPlacementTransition(),
-        maximizeChatSpace ? 'max-w-full' : 'md:max-w-3xl xl:max-w-4xl',
+        maximizeChatSpace
+          ? 'max-w-full'
+          : /* The 3xl/4xl width where the column has room for it, and 1rem clear of each
+               column edge where it does not (a tablet, or a desktop with the sidebar open).
+               `cqw` reads the chat column the host declares as a size container, the same
+               element on the welcome screen and in a conversation, so the composer keeps
+               its width on the first send; without a container it reads the viewport.
+               Below `sm` a phone keeps the full width. */
+            'sm:max-w-[min(48rem,100cqw_-_2rem)] xl:max-w-[min(56rem,100cqw_-_2rem)]',
         clearanceClassName,
       )}
     >

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { getAccessToken, requestJson, replyPrompt, replyText } from './helpers';
+import { withMongo } from './db';
 
 const uniqueName = (prefix: string) => `${prefix} ${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
 
@@ -126,48 +127,57 @@ test.describe('scheduled chat execution', () => {
   });
 
   /**
-   * A due schedule must fire on the engine's own tick — no user action — exactly once,
-   * and then advance past the occurrence. TICK_MS is 30s, so budget for one tick.
+   * A due schedule must fire on the engine's own tick, with no user action, exactly once, and
+   * then advance past the occurrence. TICK_MS is 30s, so budget for one tick.
+   *
+   * The schedule is made due in the database rather than by the clock. Waiting for its own
+   * first occurrence meant the next minute boundary plus this schedule's jitter (up to
+   * SCHEDULE_JITTER_WINDOW_MS, 120s) before the tick under test even mattered: about 109s
+   * in CI, and anywhere up to three and a half minutes. Creation still has to arm a future
+   * occurrence, which is checked before the row is touched.
    */
-  test('a due schedule fires automatically, once, and advances', async ({ page }) => {
-    test.setTimeout(600000);
+  test('a due schedule fires automatically, once, and advances @scenario:due-schedule-fires-once-on-the-engine-tick', async ({
+    page,
+  }) => {
+    test.setTimeout(180000);
     await page.goto('/c/new', { timeout: 15000 });
     const token = await getAccessToken(page);
     const agent = await ensureAgent(page, token);
     const label = `auto-${Date.now()}`;
-    // Hourly ignores `hour` (cron `m * * * *`) but the payload schema still requires it.
+    // Hourly ignores `hour` (cron `m * * * *`) but the payload schema still requires it. Half
+    // an hour out keeps the schedule's own next occurrence clear of this test.
     const schedule = await createSchedule(
       page,
       token,
       scheduleBody(agent.id, {
         prompt: replyPrompt(label),
-        cadence: { frequency: 'hourly', hour: 0, minute: (new Date().getUTCMinutes() + 1) % 60 },
+        cadence: { frequency: 'hourly', hour: 0, minute: (new Date().getUTCMinutes() + 30) % 60 },
         timezone: 'UTC',
       }),
     );
-    const before = await readSchedule(page, token, schedule.id);
-    expect(before?.nextRunAt).toBeTruthy();
+    const armed = await readSchedule(page, token, schedule.id);
+    expect(armed?.nextRunAt).toBeTruthy();
+    expect(new Date(armed!.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
 
-    // Budget from the server's OWN nextRunAt rather than a guessed constant: it already
-    // includes this schedule's deterministic jitter (up to SCHEDULE_JITTER_WINDOW_MS,
-    // 120s), which no fixed timeout can safely assume away. Add the engine tick
-    // (30s + 2s jitter) plus room for the generation.
-    const dueIn = Math.max(new Date(before!.nextRunAt!).getTime() - Date.now(), 0);
-    const budget = dueIn + 120000;
+    const due = await withMongo((db) =>
+      db
+        .collection('schedules')
+        .updateOne({ id: schedule.id }, { $set: { nextRunAt: new Date(Date.now() - 1000) } }),
+    );
+    expect(due.matchedCount).toBe(1);
 
+    // One engine tick (30s + 2s jitter) plus room for the generation.
     await expect
       .poll(async () => (await readSchedule(page, token, schedule.id))?.lastRun?.status, {
-        timeout: budget,
+        timeout: 120000,
         intervals: [2000],
       })
       .toBe('success');
 
     const after = await readSchedule(page, token, schedule.id);
-    // Exactly one run, and the occurrence was advanced rather than re-fired.
+    // Exactly one run, and the occurrence was advanced to a future one rather than left due.
     expect(after?.runCount).toBe(1);
-    expect(new Date(after!.nextRunAt!).getTime()).toBeGreaterThan(
-      new Date(before!.nextRunAt!).getTime(),
-    );
+    expect(new Date(after!.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
   });
 
   test('rejects an invalid timezone before persisting anything', async ({ page }) => {

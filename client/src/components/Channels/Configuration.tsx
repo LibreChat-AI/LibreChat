@@ -1,5 +1,5 @@
 import { useId, useRef, useState } from 'react';
-import { Settings2 } from 'lucide-react';
+import { ExternalLink, Settings2 } from 'lucide-react';
 import { CopyButton } from '@librechat/chat/components';
 import {
   Button,
@@ -79,14 +79,12 @@ function Settings({ app, setup, tenantId }: ConfigurationProps) {
   return (
     <div className="space-y-4">
       {urls}
-      <a
-        className="text-text-primary inline-flex text-sm underline"
-        href="https://api.slack.com/apps"
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        {localize('com_ui_slack_apps_dashboard')}
-      </a>
+      <Button asChild variant="inline-link" className="w-fit">
+        <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">
+          {localize('com_ui_slack_apps_dashboard')}
+          <ExternalLink className="size-3.5" aria-hidden="true" />
+        </a>
+      </Button>
     </div>
   );
 }

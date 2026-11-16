@@ -50,8 +50,8 @@ concurrency:
   # progress always finishes; GitHub holds one pending run per group and a newer one replaces
   # it, so merges that land meanwhile collapse into a single run of the newest commit. A
   # cancelling group would rarely finish on a busy day (nine merges landed within 89 seconds on
-  # 2026-11-09) and a run per commit, which the jest workflows use, costs about 190
-  # runner-minutes on 15 runners each time. A red run therefore names a range of merges, from
+  # 2026-11-09) and a run per commit, which the jest workflows use, costs about 200
+  # runner-minutes on 20 runners each time. A red run therefore names a range of merges, from
   # the commit of the last finished run to its own, and the dev tip always gets a run.
   group: playwright-mock-${{ github.event_name == 'push' && 'post-merge-' || '' }}${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
@@ -96,7 +96,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CHANGED: ${{ github.event.pull_request.changed_files }}
           E2E_SKIP_ARMED: ${{ vars.CODEGRAPH_E2E_SKIP }}
-          FULL_INCLUDE: '{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}'
+          FULL_INCLUDE: '{"include":[{"name":"memory, shard 1/15","stream_store":"memory","redis_image":"","suite":"full","shard":"1/15","artifact":"memory-1-of-15","email_change":"true"},{"name":"memory, shard 2/15","stream_store":"memory","redis_image":"","suite":"full","shard":"2/15","artifact":"memory-2-of-15"},{"name":"memory, shard 3/15","stream_store":"memory","redis_image":"","suite":"full","shard":"3/15","artifact":"memory-3-of-15"},{"name":"memory, shard 4/15","stream_store":"memory","redis_image":"","suite":"full","shard":"4/15","artifact":"memory-4-of-15"},{"name":"memory, shard 5/15","stream_store":"memory","redis_image":"","suite":"full","shard":"5/15","artifact":"memory-5-of-15"},{"name":"memory, shard 6/15","stream_store":"memory","redis_image":"","suite":"full","shard":"6/15","artifact":"memory-6-of-15"},{"name":"memory, shard 7/15","stream_store":"memory","redis_image":"","suite":"full","shard":"7/15","artifact":"memory-7-of-15"},{"name":"memory, shard 8/15","stream_store":"memory","redis_image":"","suite":"full","shard":"8/15","artifact":"memory-8-of-15"},{"name":"memory, shard 9/15","stream_store":"memory","redis_image":"","suite":"full","shard":"9/15","artifact":"memory-9-of-15"},{"name":"memory, shard 10/15","stream_store":"memory","redis_image":"","suite":"full","shard":"10/15","artifact":"memory-10-of-15"},{"name":"memory, shard 11/15","stream_store":"memory","redis_image":"","suite":"full","shard":"11/15","artifact":"memory-11-of-15"},{"name":"memory, shard 12/15","stream_store":"memory","redis_image":"","suite":"full","shard":"12/15","artifact":"memory-12-of-15"},{"name":"memory, shard 13/15","stream_store":"memory","redis_image":"","suite":"full","shard":"13/15","artifact":"memory-13-of-15"},{"name":"memory, shard 14/15","stream_store":"memory","redis_image":"","suite":"full","shard":"14/15","artifact":"memory-14-of-15"},{"name":"memory, shard 15/15","stream_store":"memory","redis_image":"","suite":"full","shard":"15/15","artifact":"memory-15-of-15"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}'
         run: |
           set +e
           note() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
@@ -145,7 +145,7 @@ jobs:
             INCLUDE="$FULL_INCLUDE"
             note "| redis transport | run |"
           fi
-          if ! echo "$INCLUDE" | jq -e '.include | length >= 10' >/dev/null 2>&1; then
+          if ! echo "$INCLUDE" | jq -e '.include | length >= 15' >/dev/null 2>&1; then
             note "_matrix assembly failed; running FULL_"
             exit 0
           fi
@@ -182,9 +182,57 @@ jobs:
           note "memory shards always run · kill switch: repo variable \`CODEGRAPH_GATING=off\` · full matrix on PR open, on every dev push and nightly"
           exit 0
 
+  # Every shard has to plan from the same timings, or the partition stops being disjoint and a
+  # spec runs twice or not at all. The newest recorded copy is therefore resolved once, here,
+  # and handed to the shards as a job output: a shard that restored the cache itself could see
+  # a newer entry than its siblings, and a re-run shard a newer one than the attempt it joins.
+  # playwright-timings.yml writes the cache from green runs on dev, and a pull request reads
+  # dev's entries as its base branch. With no entry or a malformed one the output is empty and
+  # every shard plans from the committed e2e/timings.mock.json, so nothing in this job fails on
+  # the data; like every job here it still answers to the gate.
+  shard_timings:
+    name: Shard timings
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request != null &&
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      timings: ${{ steps.read.outputs.timings }}
+    steps:
+      - name: Restore the newest recorded timings
+        id: restore
+        continue-on-error: true
+        uses: actions/cache/restore@v5
+        with:
+          path: e2e/.generated/shard-timings.json
+          key: e2e-shard-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: e2e-shard-timings-
+
+      - name: Hand one copy to every shard
+        id: read
+        run: |
+          FILE=e2e/.generated/shard-timings.json
+          if [ ! -s "$FILE" ]; then
+            echo "no recorded timings; shards plan from e2e/timings.mock.json"
+            exit 0
+          fi
+          if ! TIMINGS=$(jq -ce '{files: (.files | with_entries(select(.value | type == "number")))} | select(.files | length > 0)' "$FILE"); then
+            echo "::warning::recorded shard timings are malformed; shards plan from e2e/timings.mock.json"
+            exit 0
+          fi
+          echo "timings=$TIMINGS" >> "$GITHUB_OUTPUT"
+          echo "recorded timings for $(jq '.files | length' <<< "$TIMINGS") spec files"
+
   e2e_shards:
     name: e2e (${{ matrix.name }})
-    needs: [codegraph_select]
+    needs: [codegraph_select, shard_timings]
     if: >-
       !cancelled() &&
       (github.event_name == 'schedule' ||
@@ -206,8 +254,8 @@ jobs:
           (github.event_name == 'pull_request' && needs.codegraph_select.outputs.e2e_include != '' &&
           fromJSON(needs.codegraph_select.outputs.e2e_include)) ||
           ((github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'merge_group' || inputs.coverage == 'pr') &&
-          fromJSON('{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
-          fromJSON('{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis, shard 1/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/10","artifact":"redis-1-of-10"},{"name":"redis, shard 2/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/10","artifact":"redis-2-of-10"},{"name":"redis, shard 3/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"3/10","artifact":"redis-3-of-10"},{"name":"redis, shard 4/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"4/10","artifact":"redis-4-of-10"},{"name":"redis, shard 5/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"5/10","artifact":"redis-5-of-10"},{"name":"redis, shard 6/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"6/10","artifact":"redis-6-of-10"},{"name":"redis, shard 7/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"7/10","artifact":"redis-7-of-10"},{"name":"redis, shard 8/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"8/10","artifact":"redis-8-of-10"},{"name":"redis, shard 9/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"9/10","artifact":"redis-9-of-10"},{"name":"redis, shard 10/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"10/10","artifact":"redis-10-of-10"}]}')
+          fromJSON('{"include":[{"name":"memory, shard 1/15","stream_store":"memory","redis_image":"","suite":"full","shard":"1/15","artifact":"memory-1-of-15","email_change":"true"},{"name":"memory, shard 2/15","stream_store":"memory","redis_image":"","suite":"full","shard":"2/15","artifact":"memory-2-of-15"},{"name":"memory, shard 3/15","stream_store":"memory","redis_image":"","suite":"full","shard":"3/15","artifact":"memory-3-of-15"},{"name":"memory, shard 4/15","stream_store":"memory","redis_image":"","suite":"full","shard":"4/15","artifact":"memory-4-of-15"},{"name":"memory, shard 5/15","stream_store":"memory","redis_image":"","suite":"full","shard":"5/15","artifact":"memory-5-of-15"},{"name":"memory, shard 6/15","stream_store":"memory","redis_image":"","suite":"full","shard":"6/15","artifact":"memory-6-of-15"},{"name":"memory, shard 7/15","stream_store":"memory","redis_image":"","suite":"full","shard":"7/15","artifact":"memory-7-of-15"},{"name":"memory, shard 8/15","stream_store":"memory","redis_image":"","suite":"full","shard":"8/15","artifact":"memory-8-of-15"},{"name":"memory, shard 9/15","stream_store":"memory","redis_image":"","suite":"full","shard":"9/15","artifact":"memory-9-of-15"},{"name":"memory, shard 10/15","stream_store":"memory","redis_image":"","suite":"full","shard":"10/15","artifact":"memory-10-of-15"},{"name":"memory, shard 11/15","stream_store":"memory","redis_image":"","suite":"full","shard":"11/15","artifact":"memory-11-of-15"},{"name":"memory, shard 12/15","stream_store":"memory","redis_image":"","suite":"full","shard":"12/15","artifact":"memory-12-of-15"},{"name":"memory, shard 13/15","stream_store":"memory","redis_image":"","suite":"full","shard":"13/15","artifact":"memory-13-of-15"},{"name":"memory, shard 14/15","stream_store":"memory","redis_image":"","suite":"full","shard":"14/15","artifact":"memory-14-of-15"},{"name":"memory, shard 15/15","stream_store":"memory","redis_image":"","suite":"full","shard":"15/15","artifact":"memory-15-of-15"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
+          fromJSON('{"include":[{"name":"memory, shard 1/15","stream_store":"memory","redis_image":"","suite":"full","shard":"1/15","artifact":"memory-1-of-15","email_change":"true"},{"name":"memory, shard 2/15","stream_store":"memory","redis_image":"","suite":"full","shard":"2/15","artifact":"memory-2-of-15"},{"name":"memory, shard 3/15","stream_store":"memory","redis_image":"","suite":"full","shard":"3/15","artifact":"memory-3-of-15"},{"name":"memory, shard 4/15","stream_store":"memory","redis_image":"","suite":"full","shard":"4/15","artifact":"memory-4-of-15"},{"name":"memory, shard 5/15","stream_store":"memory","redis_image":"","suite":"full","shard":"5/15","artifact":"memory-5-of-15"},{"name":"memory, shard 6/15","stream_store":"memory","redis_image":"","suite":"full","shard":"6/15","artifact":"memory-6-of-15"},{"name":"memory, shard 7/15","stream_store":"memory","redis_image":"","suite":"full","shard":"7/15","artifact":"memory-7-of-15"},{"name":"memory, shard 8/15","stream_store":"memory","redis_image":"","suite":"full","shard":"8/15","artifact":"memory-8-of-15"},{"name":"memory, shard 9/15","stream_store":"memory","redis_image":"","suite":"full","shard":"9/15","artifact":"memory-9-of-15"},{"name":"memory, shard 10/15","stream_store":"memory","redis_image":"","suite":"full","shard":"10/15","artifact":"memory-10-of-15"},{"name":"memory, shard 11/15","stream_store":"memory","redis_image":"","suite":"full","shard":"11/15","artifact":"memory-11-of-15"},{"name":"memory, shard 12/15","stream_store":"memory","redis_image":"","suite":"full","shard":"12/15","artifact":"memory-12-of-15"},{"name":"memory, shard 13/15","stream_store":"memory","redis_image":"","suite":"full","shard":"13/15","artifact":"memory-13-of-15"},{"name":"memory, shard 14/15","stream_store":"memory","redis_image":"","suite":"full","shard":"14/15","artifact":"memory-14-of-15"},{"name":"memory, shard 15/15","stream_store":"memory","redis_image":"","suite":"full","shard":"15/15","artifact":"memory-15-of-15"},{"name":"redis, shard 1/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/10","artifact":"redis-1-of-10"},{"name":"redis, shard 2/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/10","artifact":"redis-2-of-10"},{"name":"redis, shard 3/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"3/10","artifact":"redis-3-of-10"},{"name":"redis, shard 4/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"4/10","artifact":"redis-4-of-10"},{"name":"redis, shard 5/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"5/10","artifact":"redis-5-of-10"},{"name":"redis, shard 6/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"6/10","artifact":"redis-6-of-10"},{"name":"redis, shard 7/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"7/10","artifact":"redis-7-of-10"},{"name":"redis, shard 8/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"8/10","artifact":"redis-8-of-10"},{"name":"redis, shard 9/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"9/10","artifact":"redis-9-of-10"},{"name":"redis, shard 10/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"10/10","artifact":"redis-10-of-10"}]}')
         }}
     services:
       redis:
@@ -250,9 +298,6 @@ jobs:
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
-
-      - name: Test Playwright matrix selection, the vote gate, the merge gate and the retried-pass reporter
-        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs .github/scripts/merge-gate.test.mjs e2e/reporters/retried.test.mjs
 
       - name: Restore data-provider build cache
         id: cache-data-provider
@@ -383,10 +428,13 @@ jobs:
           # and the title ownership regressions), so the plan hands it that much less of the
           # suite. Every lane of one store plans with the same value, so they agree.
           E2E_SHARD_RESERVE: ${{ matrix.stream_store == 'memory' && '1:130' || '' }}
+          # The run's one copy of the recorded timings; empty when `shard_timings` found none.
+          E2E_SHARD_TIMINGS: ${{ needs.shard_timings.outputs.timings }}
         # Shards are planned by recorded duration, not test count: Playwright lists the suite,
         # and .github/scripts/playwright-shards.mjs assigns whole spec files longest-first to
-        # the least-loaded shard, using e2e/timings.mock.json. Every shard derives the same
-        # disjoint partition of the listed files, so together they run exactly the suite.
+        # the least-loaded shard, using the timings `shard_timings` resolved for this run or,
+        # without them, e2e/timings.mock.json. Every shard derives the same disjoint partition
+        # of the listed files, so together they run exactly the suite.
         #
         # Graduated-spec skipping (dark until repo var CODEGRAPH_E2E_SKIP=on upstream) subtracts
         # the earned skips from that listing before planning, so an unknown or stale name simply
@@ -394,11 +442,17 @@ jobs:
         # still execute post-merge in every full-suite vote run, which is the net that catches a
         # wrong skip.
         run: |
+          TIMINGS=e2e/timings.mock.json
+          if [ -n "$E2E_SHARD_TIMINGS" ]; then
+            mkdir -p e2e/.generated
+            TIMINGS=e2e/.generated/shard-timings.json
+            printf '%s' "$E2E_SHARD_TIMINGS" > "$TIMINGS"
+          fi
           PLAYWRIGHT_JSON_OUTPUT_FILE=e2e/.generated/playwright-list.json \
             npx playwright test --config=e2e/playwright.config.mock.ts --list --reporter=json > /dev/null
           node .github/scripts/playwright-shards.mjs plan \
             --list e2e/.generated/playwright-list.json \
-            --timings e2e/timings.mock.json \
+            --timings "$TIMINGS" \
             --shard '${{ matrix.shard }}' \
             --reserve "$E2E_SHARD_RESERVE" \
             --skip "$E2E_SKIP" \
@@ -695,6 +749,11 @@ jobs:
       - name: Verify Chrome is present
         run: google-chrome --version
 
+      # These check this workflow's own wiring and scripts, so once per run is enough. They ran in
+      # every shard for about 8 seconds each; this lane finishes minutes before the shards do.
+      - name: Test Playwright matrix selection, the vote gate, the merge gate and the retried-pass reporter
+        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs .github/scripts/merge-gate.test.mjs e2e/reporters/retried.test.mjs
+
       - name: Check MCP Apps result gating and same-repository PR eligibility
         run: node --test e2e/mcp-apps/results.test.mjs e2e/mcp-apps/workflow.test.mjs
 
@@ -749,12 +808,13 @@ jobs:
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
       github.event.pull_request.head.repo.full_name == github.repository)))
-    needs: [codegraph_select, e2e_shards, mcp_tool_list_changed, mcp_apps]
+    needs: [codegraph_select, shard_timings, e2e_shards, mcp_tool_list_changed, mcp_apps]
     runs-on: ubuntu-latest
     steps:
       # A codegraph-skipped MCP lane reports `skipped`; that is a decision, not a failure.
       - name: Verify every Playwright job passed
         if: >-
+          needs.shard_timings.result != 'success' ||
           needs.e2e_shards.result != 'success' ||
           needs.mcp_apps.result != 'success' ||
           (needs.mcp_tool_list_changed.result != 'success' &&

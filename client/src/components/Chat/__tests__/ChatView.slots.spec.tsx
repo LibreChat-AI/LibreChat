@@ -1,10 +1,7 @@
-import React, { createRef, isValidElement } from 'react';
+import React from 'react';
 import '@testing-library/jest-dom';
-import type { ChatScreenMessagesSlots, ChatScreenProps } from '@librechat/chat/components';
-import type { ReactElement, ReactNode } from 'react';
-import PendingSteers from '../Messages/Content/Parts/PendingSteers';
-import PendingTurn from '../Messages/PendingTurn';
-import { FLAT_THREAD } from '../Messages/Thread';
+import type { ChatScreenProps } from '@librechat/chat/components';
+import { renderMessages } from '../Messages/load';
 import { render } from 'test/layout-test-utils';
 import ChatView from '../ChatView';
 
@@ -26,6 +23,7 @@ jest.mock('~/hooks/Chat/target', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
+  useCachedMessages: () => ({ data: null }),
   useProjectQuery: () => ({ data: undefined }),
 }));
 
@@ -70,47 +68,11 @@ jest.mock('../Footer', () => ({
   useLandingFooter: () => true,
 }));
 
-const screenSlots = (): ChatScreenMessagesSlots => {
-  render(<ChatView />);
-  const props = mockScreenProps.mock.calls.at(-1)?.[0];
-  expect(props?.renderMessages).toBeUndefined();
-  return props?.messagesSlots ?? {};
-};
-
-const scrollableRef = createRef<HTMLDivElement>();
-
-/** A slot's output as an element, failing the test when the slot rendered nothing. */
-function element(node: ReactNode): ReactElement {
-  if (!isValidElement(node)) {
-    throw new Error('The slot did not render an element');
-  }
-  return node;
-}
-
-describe('ChatView message list slots', () => {
-  test('leaves the list to ChatScreen and fills it with the app thread mode', () => {
-    expect(screenSlots().flatThread).toBe(FLAT_THREAD);
-  });
-
-  test('leaves the scroll control to the package list', () => {
-    expect(screenSlots().renderScrollButton).toBeUndefined();
-  });
-
-  test('renders the app pending turn and steers with what the list passes', () => {
-    const slots = screenSlots();
-    const turn = { scrollableRef, messages: null, maximizeChatSpace: true };
-    const steers = { conversationId: 'convo-1', index: 0, fullWidth: false };
-
-    const turnElement = element(slots.renderPendingTurn?.(turn));
-    const steersElement = element(slots.renderPendingSteers?.(steers));
-
-    expect(turnElement.type).toBe(PendingTurn);
-    expect(turnElement.props).toEqual(turn);
-    expect(steersElement.type).toBe(PendingSteers);
-    expect(steersElement.props).toEqual(steers);
-  });
-
-  test('leaves the navigation rail to the package list', () => {
-    expect(screenSlots().renderNav).toBeUndefined();
+describe('ChatView message list', () => {
+  test('hands the screen the on-demand list and no message slots', () => {
+    render(<ChatView />);
+    const props = mockScreenProps.mock.calls.at(-1)?.[0];
+    expect(props?.renderMessages).toBe(renderMessages);
+    expect(props?.messagesSlots).toBeUndefined();
   });
 });

@@ -151,6 +151,7 @@ const googleModels = {
   'gemini-3.8-flash': 1048576,
   /** Shared across input, thinking and output; output is still capped by `maxOutputTokens`. */
   'gemini-4-argon': 1048576,
+  'gemini-4-hydrogen': 1048576,
 };
 
 const anthropicModels = {

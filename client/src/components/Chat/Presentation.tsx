@@ -21,8 +21,12 @@ import { migrateStoredFileDeletions } from '~/utils';
 import store from '~/store';
 
 const Artifacts = lazyWithRecovery(() => import('~/components/Artifacts/Artifacts'));
+/** The panel draws message rows, so the app's message hosts load with it. */
 const SubagentThreadPanel = lazyWithRecovery(() =>
-  import('@librechat/chat/components').then((module) => module.loadSubagentThreadPanel()),
+  Promise.all([
+    import('@librechat/chat/components').then((module) => module.loadSubagentThreadPanel()),
+    import('~/components/Chat/Messages/hosts'),
+  ]).then(([panel]) => panel),
 );
 
 export default function Presentation({
@@ -140,7 +144,10 @@ export default function Presentation({
             isSubmitting={isSubmitting}
           >
             <SidePanelGroup panel={panelElement}>
-              <main className="flex h-full flex-col overflow-y-auto" role="main">
+              {/* A size container: the composer caps its width against this column
+                  (`cqw`), so it keeps clear of the edges when the sidebar or a side panel
+                  narrows the column, which a viewport unit cannot see. */}
+              <main className="@container flex h-full flex-col overflow-y-auto" role="main">
                 <MessageSurfaceContext.Provider value="bg-surface-canvas">
                   {children}
                 </MessageSurfaceContext.Provider>

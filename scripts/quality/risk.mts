@@ -1,15 +1,18 @@
 import { Linter } from 'eslint';
 import { readFileSync } from 'node:fs';
 import sonarjs from 'eslint-plugin-sonarjs';
-import { basename, resolve } from 'node:path';
 import parser from '@typescript-eslint/parser';
+import { basename, extname, resolve } from 'node:path';
 
 import type { Rule } from 'eslint';
 
+import type { CoverageState, FileCoverageResult } from './coverage.mts';
 import type { ChangedFile } from './changes.mts';
 
-import { git, literalGlob, overlaps } from './changes.mts';
-import { createReport, measureFunctions } from '../crap.mts';
+import { changedLineCoverage, excerpt, groupRanges } from './coverage.mts';
+import { git, overlaps } from './changes.mts';
+import { changedRegions } from './lines.mts';
+import { createReport } from '../crap.mts';
 
 interface FunctionLocation {
   line: number;
@@ -169,75 +172,111 @@ export function selectedFunctions(
   }));
 }
 
-function previousSource(base: string | undefined, file: string): string | undefined {
-  if (!base || !git(['ls-tree', '--name-only', '-z', base, '--', file])) return undefined;
-  return git(['show', `${base}:${file}`]);
-}
-
-export function mutationTarget(
+/** Uses `oldFile` (set for a renamed file) so a fingerprint comparison against the base ref
+ * reads the content the file actually had there, not a lookup under its new path. */
+function previousSource(
+  base: string | undefined,
   file: string,
-  source: string,
-  ranges: ChangedFile['ranges'],
-  before?: string,
-) {
-  const functions = selectedFunctions(file, source, ranges, before);
-  const names = measureFunctions(file, source);
-  const intervals: [number, number][] = [];
-  for (const fn of functions.filter((item) => item.selected)) {
-    let start = fn.nodeRange[0];
-    for (const child of fn.children.sort((a, b) => a.nodeRange[0] - b.nodeRange[0])) {
-      if (start < child.nodeRange[0]) intervals.push([start, child.nodeRange[0]]);
-      start = child.nodeRange[1];
+  oldFile?: string,
+): string | undefined {
+  const path = oldFile ?? file;
+  if (!base || !git(['ls-tree', '--name-only', '-z', base, '--', path])) return undefined;
+  return git(['show', `${base}:${path}`]);
+}
+
+/** Changed-line selection for the mutation run. `selectedFunctions`' whole-function fingerprint
+ * feeds only the risk/CRAP table; mutant placement and owner labeling come from `lines.mts`. */
+export function mutationTarget(file: string, source: string, ranges: ChangedFile['ranges']) {
+  const { mutate, functions, suppressions } = changedRegions(file, source, ranges);
+  return { file, functions, mutate, suppressions };
+}
+
+/** Every changed file's mutation target, unfiltered: a comment-only change still carries its
+ * suppressions even though it selects no mutant. */
+export function allMutationTargets(files: ChangedFile[]) {
+  return files.map(({ file, ranges }) => mutationTarget(file, readFileSync(file, 'utf8'), ranges));
+}
+
+export function mutationSelection(files: ChangedFile[]) {
+  return allMutationTargets(files).filter(({ mutate }) => mutate.length);
+}
+
+export interface SuppressionAdvisory {
+  file: string;
+  line: number;
+  text: string;
+  problem: 'missing-reason' | 'all';
+}
+
+/** Flags a `// Stryker disable` comment naming `all`, or giving no reason, across every changed
+ * file, including one whose only mutation target was filtered out of `mutationSelection`. */
+export function suppressionAdvisory(
+  targets: ReturnType<typeof allMutationTargets>,
+): SuppressionAdvisory[] {
+  return targets.flatMap(({ file, suppressions }) =>
+    suppressions.map((item) => ({
+      file,
+      line: item.line,
+      text: item.mutators,
+      problem: (item.mutators.split(',').some((name) => name.trim().toLowerCase() === 'all')
+        ? 'all'
+        : 'missing-reason') as SuppressionAdvisory['problem'],
+    })),
+  );
+}
+
+export interface TestGapFile {
+  file: string;
+  state: CoverageState;
+  /** Joined evidence source labels, e.g. "packages/api tests + api/ specs (source alias)". */
+  scope: string;
+  reasons: string[];
+  gaps: { start: number; end: number; excerpt: string }[];
+}
+
+/** Changed-line coverage, from `changedRegions`' executable lines and each file's merged coverage
+ * evidence. A non-`measured` file reports its reason instead of a (necessarily unreliable) gap list. */
+export function testGapReport(files: ChangedFile[], results: FileCoverageResult[]): TestGapFile[] {
+  const byFile = new Map(results.map((result) => [resolve(result.file), result]));
+  return files.map(({ file, ranges }) => {
+    const result = byFile.get(resolve(file));
+    const source = readFileSync(file, 'utf8');
+    const { lines } = changedRegions(file, source, ranges);
+    const scope = result?.sources.join(' + ') ?? '';
+    if (!result || result.state !== 'measured' || !result.entry) {
+      return {
+        file,
+        state: result?.state ?? 'unavailable',
+        scope,
+        reasons: result?.reasons.length
+          ? result.reasons
+          : ['no coverage evidence computed for this file'],
+        gaps: [],
+      };
     }
-    if (start < fn.nodeRange[1]) intervals.push([start, fn.nodeRange[1]]);
-  }
-  const merged: [number, number][] = [];
-  for (const interval of intervals.sort((a, b) => a[0] - b[0])) {
-    const last = merged.at(-1);
-    if (last && interval[0] <= last[1]) last[1] = Math.max(last[1], interval[1]);
-    else merged.push([...interval]);
-  }
-  const point = (offset: number) => {
-    const lines = source.slice(0, offset).split(/\r\n|[\n\r\u2028\u2029]/u);
-    return { line: lines.length, column: lines.at(-1)!.length + 1 };
-  };
-  const position = (offset: number) => `${point(offset).line}:${point(offset).column - 1}`;
-  return {
-    file,
-    functions: functions
-      .filter((fn) => fn.selected)
-      .map(({ line, column, nodeRange }) => ({
-        line,
-        column,
-        function: names.find((fn) => fn.line === line && fn.column === column)!.function,
-        location: {
-          start: { line, column },
-          end: point(nodeRange[1]),
-        },
-      })),
-    // Match the exclusive node ends used by Stryker's Babel range comparison.
-    mutate: merged.map(
-      ([start, end]) => `${literalGlob(file)}:${position(start)}-${position(end)}`,
-    ),
-  };
+    const { uncovered } = changedLineCoverage(lines, result.entry);
+    const sourceLines = source.split(/\r\n|[\n\r\u2028\u2029]/u);
+    const gaps = groupRanges(uncovered).map((range) => ({
+      ...range,
+      excerpt: excerpt(sourceLines, range),
+    }));
+    return { file, state: result.state, scope, reasons: result.reasons, gaps };
+  });
 }
 
-export function mutationSelection(files: ChangedFile[], base: string) {
-  return files
-    .map(({ file, ranges }) =>
-      mutationTarget(file, readFileSync(file, 'utf8'), ranges, previousSource(base, file)),
-    )
-    .filter(({ mutate }) => mutate.length);
-}
-
-export function riskReport(coverageFile: string, files: ChangedFile[], base?: string) {
+export function riskReport(
+  coverageFile: string,
+  files: ChangedFile[],
+  options: { base?: string; coverageResults?: FileCoverageResult[]; coverageScope?: string } = {},
+) {
+  const { base, coverageResults = [], coverageScope = '' } = options;
   const report = createReport(
     coverageFile,
     files.map(({ file }) => file),
     process.cwd(),
   );
   const selected = new Map(
-    files.map(({ file, ranges }) => [
+    files.map(({ file, oldFile, ranges }) => [
       resolve(file),
       {
         ranges,
@@ -245,11 +284,12 @@ export function riskReport(coverageFile: string, files: ChangedFile[], base?: st
           file,
           readFileSync(file, 'utf8'),
           ranges,
-          previousSource(base, file),
+          previousSource(base, file, oldFile),
         ),
       },
     ]),
   );
+  const states = new Map(coverageResults.map((result) => [resolve(result.file), result.state]));
   const functions = report.functions.flatMap((row) => {
     const selection = selected.get(resolve(row.file));
     const fn = selection?.functions.find(
@@ -258,36 +298,130 @@ export function riskReport(coverageFile: string, files: ChangedFile[], base?: st
     if (!selection || !fn)
       throw new Error(`Function metrics disagree at ${row.file}:${row.line}:${row.column}`);
     if (!fn.selected) return [];
-    return [{ ...row, cognitiveComplexity: fn.cognitiveComplexity }];
+    // Partial or unmerged evidence must not read as a measured percentage or CRAP score. A file
+    // with no coverage result keeps the coverage file's own numbers.
+    const coverageState = states.get(resolve(row.file));
+    const measured = coverageState === undefined || coverageState === 'measured';
+    return [
+      {
+        ...row,
+        statementCoverage: measured ? row.statementCoverage : null,
+        crap: measured ? row.crap : null,
+        coverageState,
+        cognitiveComplexity: fn.cognitiveComplexity,
+      },
+    ];
   });
   functions.sort(
     (a, b) => (b.crap ?? -1) - (a.crap ?? -1) || b.cognitiveComplexity - a.cognitiveComplexity,
   );
-  return { ...report, cognitiveMetric: 'sonarjs/cognitive-complexity', functions };
+  return {
+    ...report,
+    cognitiveMetric: 'sonarjs/cognitive-complexity',
+    functions,
+    testGaps: testGapReport(files, coverageResults),
+    coverageScope,
+  };
 }
+
+/** Above this many files, a shared incomplete or unavailable reason collapses its file list. */
+const UNMEASURED_LIST_LIMIT = 5;
 
 export function riskMarkdown(report: ReturnType<typeof riskReport>): string {
   const cell = (value: string) => value.replaceAll('|', '\\|').replaceAll('\n', ' ');
+  // A fence one backtick longer than the longest run inside the excerpt cannot be closed by it.
+  const codeBlock = (text: string, language: string) => {
+    const longest = Math.max(0, ...(text.match(/`+/gu) ?? []).map((run) => run.length));
+    const fence = '`'.repeat(Math.max(3, longest + 1));
+    return [`${fence}${language}`, text, fence];
+  };
+  const coverageCell = (row: (typeof report.functions)[number]) => {
+    if (row.coverageState && row.coverageState !== 'measured') return row.coverageState;
+    return row.statementCoverage === null ? 'N/A' : `${(row.statementCoverage * 100).toFixed(1)}%`;
+  };
+  // Files without reliable coverage usually share one cause (one failing related suite can
+  // reach every file through a barrel import), so they are listed once per state, reason and
+  // evidence scope instead of once per file.
+  const unmeasured = new Map<string, { heading: string; scope: string; files: string[] }>();
+  for (const gap of report.testGaps) {
+    if (gap.state === 'measured') continue;
+    const heading = `Coverage ${gap.state}: ${gap.reasons.join('; ') || 'no reason given'}`;
+    const key = JSON.stringify([heading, gap.scope]);
+    const group = unmeasured.get(key) ?? { heading, scope: gap.scope, files: [] };
+    group.files.push(gap.file);
+    unmeasured.set(key, group);
+  }
+  const unmeasuredLines = [...unmeasured.values()].flatMap(({ heading, scope, files }) => {
+    const list = files.map((file) => `- ${cell(file)}`);
+    const count = `${files.length} ${files.length === 1 ? 'file' : 'files'}`;
+    return [
+      `### ${cell(heading)}`,
+      '',
+      scope ? `Evidence: ${cell(scope)}.` : 'Evidence: none.',
+      '',
+      ...(files.length > UNMEASURED_LIST_LIMIT
+        ? ['<details>', `<summary>${count}</summary>`, '', ...list, '', '</details>']
+        : [`${count}:`, '', ...list]),
+      '',
+    ];
+  });
+  const measuredLines = report.testGaps.flatMap((gap) => {
+    if (gap.state !== 'measured') return [];
+    const header = `### ${cell(gap.file)}${gap.scope ? ` (${cell(gap.scope)})` : ''}`;
+    if (!gap.gaps.length) return [header, '', 'Every changed executable line is covered.', ''];
+    return [
+      header,
+      '',
+      ...gap.gaps.flatMap((range) => [
+        range.start === range.end ? `L${range.start}:` : `L${range.start}-${range.end}:`,
+        '',
+        ...codeBlock(
+          range.excerpt,
+          extname(gap.file)
+            .slice(1)
+            .replace(/^[cm](?=[jt]s)/u, ''),
+        ),
+        '',
+      ]),
+    ];
+  });
   const rows = report.functions.map((row) =>
     [
       `${cell(row.file)}:${row.line}:${row.column}`,
       cell(row.function),
       row.complexity,
       row.cognitiveComplexity,
-      row.statementCoverage === null ? 'N/A' : `${(row.statementCoverage * 100).toFixed(1)}%`,
+      coverageCell(row),
       row.crap?.toFixed(2) ?? 'N/A',
     ].join(' | '),
   );
   return [
-    '## Change risk (advisory)',
+    '## Test gaps: changed lines without coverage',
     '',
-    'CRAP uses ESLint classic complexity and per-function statement coverage. Nested functions own their statements.',
-    'Cognitive complexity uses SonarJS. N/A means coverage is unavailable, not zero risk.',
+    'Changed executable lines without an instrumented statement that ran. Files whose coverage',
+    'is incomplete or unavailable are listed after them under their shared reason: an unreliable',
+    'merge is not a test gap.',
+    '',
+    ...(report.testGaps.length
+      ? [...measuredLines, ...unmeasuredLines]
+      : ['No changed files.', '']),
+    '## Refactor hints (advisory)',
+    '',
+    'Complexity and CRAP for added or edited functions only; this is refactoring advice, not the',
+    'test-gap signal above. CRAP uses ESLint classic complexity and whole-function statement',
+    'coverage (nested functions own their statements), so a function can score well here while a',
+    'line this change added is still uncovered above. Cognitive complexity uses SonarJS. N/A means',
+    'coverage is unavailable, not zero risk. `incomplete` or `unavailable` means the file has no',
+    'reliable coverage (see its test-gap reason above), so the table shows no percentage or CRAP.',
     '',
     '| Function location | Name | Cyclomatic | Cognitive | Statement coverage | CRAP |',
     '| --- | --- | ---: | ---: | ---: | ---: |',
     ...rows.map((row) => `| ${row} |`),
     ...(rows.length ? [] : ['No added or edited functions.']),
+    '',
+    '## Coverage scope',
+    '',
+    `Coverage: ${report.coverageScope || 'no coverage evidence computed for this run'}.`,
     '',
   ].join('\n');
 }

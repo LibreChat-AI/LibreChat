@@ -227,7 +227,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 }, LIFECYCLE_TIMEOUT_MS);
 
 describe('hiding librechat.yaml custom endpoints by key', () => {

@@ -3,6 +3,7 @@
  */
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { ComposerHost } from '../../../react/input';
+import { emptyPaletteSources } from '../../../react/palette';
 import { ComposerHostProvider } from '../../../react/input';
 import { NO_HOST_BINDINGS } from '../../../core/shortcuts';
 import EscalateNowButton from '../EscalateNowButton';
@@ -16,6 +17,7 @@ const host: ComposerHost = {
   useComposerBindings: () => NO_HOST_BINDINGS,
   useShortcutDisplay: () => 'Ctrl+Shift+.',
   useShortcutAriaKey: () => 'Control+Shift+.',
+  usePaletteSources: emptyPaletteSources,
 };
 
 function Pane({ index }: { index: number }) {

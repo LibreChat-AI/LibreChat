@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useEffect, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
@@ -9,42 +9,33 @@ import {
   submissionByIndex,
   ChatSessionProvider,
   useScrollbarGutterSeed,
-  AskAnswerHostProvider,
   ComposerRestoreProvider,
   pendingApprovalActionFamily,
 } from '@librechat/chat/react';
-import type { ChatScreenMessagesSlots } from '@librechat/chat/components';
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
 import { AssistantsMapContext, useAssistantsMapContext } from '~/Providers/AssistantsMapContext';
 import { AgentsMapContext, useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
-import PendingSteers from './Messages/Content/Parts/PendingSteers';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
+import { preloadMessages, renderMessages } from './Messages/load';
 import ConversationStarters from './Input/ConversationStarters';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
 import { TargetContext } from '~/Providers/TargetContext';
-import PendingTurn from './Messages/PendingTurn';
-import { FLAT_THREAD } from './Messages/Thread';
 import useTarget from '~/hooks/Chat/target';
 import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
+import WelcomeBackdrop from './Backdrop';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
 import Lia from '~/components/Lia';
+import AskHost from './AskHost';
 import Landing from './Landing';
 import Header from './Header';
 import store from '~/store';
-
-/** The app's pieces of the package message list. */
-const messagesSlots: ChatScreenMessagesSlots = {
-  flatThread: FLAT_THREAD,
-  renderPendingTurn: (props) => <PendingTurn {...props} />,
-  renderPendingSteers: (props) => <PendingSteers {...props} />,
-};
 
 type ChatViewProps = {
   index?: number;
@@ -70,6 +61,10 @@ function renderFooter(placement: 'full' | 'composer' | 'band') {
   return <Footer />;
 }
 
+function warmMessages() {
+  preloadMessages().catch(() => undefined);
+}
+
 function ChatViewPane({
   index = 0,
   project,
@@ -91,6 +86,15 @@ function ChatViewPane({
   const pendingAction = useAtomValue(
     pendingApprovalActionFamily(conversationId ?? Constants.NEW_CONVO),
   );
+
+  /** A routed conversation shows its messages as soon as they arrive, so the list's code
+   *  loads alongside them instead of after. */
+  const routedConversation = conversationId != null && conversationId !== Constants.NEW_CONVO;
+  useEffect(() => {
+    if (routedConversation) {
+      preloadMessages().catch(() => undefined);
+    }
+  }, [routedConversation]);
 
   /** The welcome screen reserves the message column's scrollbar band before any
    *  column exists to measure it (see the column classes in `ChatPane`). */
@@ -147,7 +151,7 @@ function ChatViewPane({
     <TargetContext.Provider value={readiness}>
       <AgentsMapContext.Provider value={selectedAgents}>
         <AssistantsMapContext.Provider value={selectedAssistants}>
-          <AskAnswerHostProvider saveDrafts={saveDrafts}>
+          <AskHost saveDrafts={saveDrafts}>
             <ChatFormProvider {...methods}>
               <ComposerRestoreProvider>
                 <QueuedTurnPortalProvider>
@@ -171,31 +175,39 @@ function ChatViewPane({
                               />
                             )}
                             renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
-                            messagesSlots={messagesSlots}
+                            renderMessages={renderMessages}
                             landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
-                            renderColumn={(column) => (
+                            renderColumn={(column, { isLanding }) => (
                               <OwnerTextProvider
                                 messages={messages}
                                 conversationId={conversationId}
                                 isSubmitting={chat.isSubmitting}
                               >
+                                {/* The welcome screen only, behind its column: a theme's
+                                backdrop covers the greeting and the composer together and
+                                goes with them on the first message. It paints nothing unless
+                                the theme asks and the build registers one. */}
+                                {isLanding && <WelcomeBackdrop />}
                                 {column}
                               </OwnerTextProvider>
                             )}
                             starters={<ConversationStarters />}
                             renderComposer={({ isLanding, footerBelow, project, placeholder }) => (
-                              <ChatForm
-                                index={index}
-                                routePending={routePending}
-                                placeholder={placeholder}
-                                project={project}
-                                isLandingPage={isLanding}
-                                enterToSend={enterToSend}
-                                autoSendText={autoSendText}
-                                speechSettingsInitialized={speechSettingsInitialized}
-                                footerBelow={footerBelow}
-                                centerFormOnLanding={centerFormOnLanding}
-                              />
+                              /* Typing a first message is the cue that the list is next. */
+                              <div className="contents" onFocusCapture={warmMessages}>
+                                <ChatForm
+                                  index={index}
+                                  routePending={routePending}
+                                  placeholder={placeholder}
+                                  project={project}
+                                  isLandingPage={isLanding}
+                                  enterToSend={enterToSend}
+                                  autoSendText={autoSendText}
+                                  speechSettingsInitialized={speechSettingsInitialized}
+                                  footerBelow={footerBelow}
+                                  centerFormOnLanding={centerFormOnLanding}
+                                />
+                              </div>
                             )}
                             renderFooter={renderFooter}
                             renderMascot={(bandRef, landing) => (
@@ -213,7 +225,7 @@ function ChatViewPane({
                 </QueuedTurnPortalProvider>
               </ComposerRestoreProvider>
             </ChatFormProvider>
-          </AskAnswerHostProvider>
+          </AskHost>
         </AssistantsMapContext.Provider>
       </AgentsMapContext.Provider>
     </TargetContext.Provider>

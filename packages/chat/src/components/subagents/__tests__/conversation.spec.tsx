@@ -17,7 +17,12 @@ import type { ChatSurface } from '../../../react/subagents/surface';
 import type { SubagentsHost } from '../../../react/subagents/host';
 import type { TurnAuthor } from '../../../react/subagents/author';
 import type { ChatContract } from '../../../react/chat/contract';
-import { MessagePartsHostProvider, useMessagePartsHost } from '../../../react/host';
+import {
+  emptyToolCallChrome,
+  MessagePartsHostProvider,
+  useMessagePartsHost,
+} from '../../../react/host';
+import { AskAnswerHostProvider, useLiveAskPauses } from '../../../react/parts/ask';
 import { mergeChildConversationTurns } from '../../../react/subagents/adapters';
 import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
@@ -33,6 +38,7 @@ const mockRenderedContent = jest.fn<void, [Array<TMessageContentParts | undefine
 const mockPartScope = jest.fn<void, [ChatContract | null, Ask | undefined]>();
 const lastCall = <T,>(calls: T[]): T => calls[calls.length - 1];
 const mockParentAsk = jest.fn();
+const mockAskPauses = jest.fn();
 
 jest.mock('../../messages/MinimalHoverButtons', () => ({
   __esModule: true,
@@ -75,6 +81,8 @@ function partLabel(part: TMessageContentParts | undefined): string {
 
 function ContentPartsMock({ content, messageId }: ContentPartsSlotProps) {
   const host = useMessagePartsHost();
+  const liveAskPauses = useLiveAskPauses();
+  mockAskPauses(liveAskPauses);
   mockPartScope(useContext(ChatContext), hasAsk(host) ? host.useMessagesAsk() : undefined);
   mockRenderedContent(content);
   return (
@@ -115,6 +123,7 @@ const parentHost: AskPartsHost = {
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, jest.fn()],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
   useMessagesAsk: () => mockParentAsk,
 };
 
@@ -201,6 +210,26 @@ const turns: ChildConversationTurn[] = [
     },
   },
 ];
+
+describe('child ask pause scope', () => {
+  test.each([false, true])('only shares parent live pauses for interactive=%s', (interactive) => {
+    const pauses = { ids: ['parent-call'], hasUnattributed: false };
+    render(
+      <ChatSurfaceHarness>
+        <AskAnswerHostProvider saveDrafts={false} liveAskPauses={pauses}>
+          <SubagentConversation
+            turns={turns}
+            author={author}
+            parentAuthor={parentAuthor}
+            interactive={interactive}
+          />
+        </AskAnswerHostProvider>
+      </ChatSurfaceHarness>,
+    );
+    expect(mockAskPauses).toHaveBeenCalled();
+    expect(mockAskPauses).toHaveBeenLastCalledWith(interactive ? pauses : null);
+  });
+});
 
 describe('SubagentConversation', () => {
   it('renders parent turns and child activity through the main chat row and content modules', () => {

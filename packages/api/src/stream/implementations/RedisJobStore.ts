@@ -35,6 +35,7 @@ import type {
   ParkedSteerClaim,
   ScheduleCleanupScope,
   ScheduleProviderOwner,
+  ActiveJobFilter,
 } from '~/stream/interfaces/IJobStore';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
@@ -980,6 +981,45 @@ const CHUNK_APPEND_LUA =
   'if qt >= 0 and qt < target then redis.call("EXPIRE", KEYS[i], target) end end ' +
   'if receipt then receipt.item = delivered receipt.state = "delivered" ' +
   'redis.call("HSET", KEYS[3], ARGV[4], cjson.encode(receipt)) end ' +
+  'return 1';
+
+/**
+ * The liveness half of CHUNK_APPEND_LUA with no event: an owner whose run is alive but
+ * silent refreshes the idle clock and every lifetime an append would have extended. Same
+ * generation and retained-epoch fence; running jobs only, since a paused job keeps its
+ * own approval window.
+ *
+ *   KEYS: [chunks, job, steerReceipts, steerReceiptOrder, claimedSteers, steers,
+ *          parkedSteers, generationEpoch]
+ *   ARGV: [runningTtl, expectCreatedAt, nowMs, parkedSteersTtl, generationEpochGraceTtl]
+ */
+const JOB_TOUCH_LUA =
+  SCHEDULE_RETENTION_LUA +
+  'local currentCreatedAt = redis.call("HGET", KEYS[2], "createdAt") ' +
+  'if not currentCreatedAt or currentCreatedAt ~= ARGV[2] then return 0 end ' +
+  'if redis.call("HGET", KEYS[2], "status") ~= "running" then return 0 end ' +
+  'local retainedEpoch = redis.call("GET", KEYS[8]) ' +
+  'if retainedEpoch and retainedEpoch ~= currentCreatedAt then return 0 end ' +
+  'local target = tonumber(ARGV[1]) ' +
+  'local jobTtl = redis.call("TTL", KEYS[2]) ' +
+  'if jobTtl < target then expireScheduleJob(KEYS[2], target) ' +
+  'elseif jobTtl > target then target = jobTtl end ' +
+  'local recoveryTarget = target ' +
+  'if redis.call("HGET", KEYS[2], "recoveredSteerId") then ' +
+  'recoveryTarget = target + tonumber(ARGV[4]) ' +
+  'local pt = redis.call("TTL", KEYS[7]) ' +
+  'if pt >= 0 and pt < recoveryTarget then redis.call("EXPIRE", KEYS[7], recoveryTarget) end end ' +
+  'local epochTarget = target + tonumber(ARGV[5]) ' +
+  'if retainedEpoch then local epochTtl = redis.call("TTL", KEYS[8]) ' +
+  'if epochTtl >= 0 and epochTtl < epochTarget then redis.call("EXPIRE", KEYS[8], epochTarget) end ' +
+  'else redis.call("SET", KEYS[8], currentCreatedAt, "EX", epochTarget) end ' +
+  'redis.call("HSET", KEYS[2], "lastActiveAt", ARGV[3]) ' +
+  'local cur = redis.call("TTL", KEYS[1]) ' +
+  'if cur >= 0 and cur < target then redis.call("EXPIRE", KEYS[1], target) end ' +
+  'for i = 3, 4 do local rt = redis.call("TTL", KEYS[i]) ' +
+  'if rt >= 0 and rt < recoveryTarget then redis.call("EXPIRE", KEYS[i], recoveryTarget) end end ' +
+  'for i = 5, 6 do local qt = redis.call("TTL", KEYS[i]) ' +
+  'if qt >= 0 and qt < target then redis.call("EXPIRE", KEYS[i], target) end end ' +
   'return 1';
 
 /**
@@ -4009,8 +4049,12 @@ export class RedisJobStore implements IJobStoreV2 {
    * @param userId - The user ID to query
    * @returns Array of conversation IDs with active jobs
    */
-  async getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
-    return this.getJobIdsByUser(userId, tenantId, false);
+  async getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]> {
+    return this.getJobIdsByUser(userId, tenantId, false, accept);
   }
 
   async getCleanupBlockingJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
@@ -4039,6 +4083,7 @@ export class RedisJobStore implements IJobStoreV2 {
     userId: string,
     tenantId: string | undefined,
     includeUndrained: boolean,
+    accept?: ActiveJobFilter,
   ): Promise<string[]> {
     const userJobsKey = KEYS.userJobs(userId, tenantId);
     const trackedIds = await this.redis.smembers(userJobsKey);
@@ -4083,7 +4128,9 @@ export class RedisJobStore implements IJobStoreV2 {
         ) {
           continue;
         }
-        activeIds.push(streamId);
+        if (accept == null || accept(job)) {
+          activeIds.push(streamId);
+        }
       } else {
         // Self-heal from durable state instead of a raw SREM, which could remove
         // a replacement's membership after the read.
@@ -4115,7 +4162,8 @@ export class RedisJobStore implements IJobStoreV2 {
                 currentJob.terminalPersistencePending === true ||
                 currentJob.terminalHostActionPending === true)
             )
-          )
+          ) &&
+          (accept == null || accept(currentJob))
         ) {
           activeIds.push(streamId);
         }
@@ -5313,6 +5361,27 @@ export class RedisJobStore implements IJobStoreV2 {
     return appended === 1;
   }
 
+  async touchJob(streamId: string, expectedCreatedAt: number): Promise<boolean> {
+    const touched = await this.redis.eval(
+      JOB_TOUCH_LUA,
+      8,
+      KEYS.chunks(streamId),
+      KEYS.job(streamId),
+      KEYS.steerReceipts(streamId),
+      KEYS.steerReceiptOrder(streamId),
+      KEYS.claimedSteers(streamId),
+      KEYS.steers(streamId),
+      KEYS.parkedSteers(streamId),
+      KEYS.generationEpoch(streamId),
+      String(this.runningStorageTtlSeconds()),
+      String(expectedCreatedAt),
+      String(Date.now()),
+      String(this.parkedRecoveryTtlSeconds()),
+      String(GENERATION_EPOCH_GRACE_TTL_S),
+    );
+    return touched === 1;
+  }
+
   /**
    * Buffer a coalescable durable append for the current window. The whole batch
    * settles together: `true` on commit, `false` under the generation/status
@@ -5790,6 +5859,8 @@ export class RedisJobStore implements IJobStoreV2 {
         ? JSON.parse(data.agentEventDetachedTerminalEvidence)
         : undefined,
       agentEventBindingId: data.agentEventBindingId || undefined,
+      subagentTaskId: data.subagentTaskId || undefined,
+      subagentParentConversationId: data.subagentParentConversationId || undefined,
       agentEventExpectedAction: data.agentEventExpectedAction
         ? JSON.parse(data.agentEventExpectedAction)
         : undefined,

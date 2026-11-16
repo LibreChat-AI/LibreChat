@@ -1,5 +1,5 @@
 import { memo, useState } from 'react';
-import { VerifiedIcon } from '@librechat/client';
+import { TooltipAnchor, VerifiedIcon } from '@librechat/client';
 import { Check, Globe, Info, Settings, Star, User } from 'lucide-react';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { AgentItem, ItemStatus } from './items/types';
@@ -189,23 +189,33 @@ function ToolCardImpl({
               </span>
             )}
             {isSharedSkill && skill && (
-              <span
-                className="bg-surface-tertiary text-text-tertiary text-3xs inline-flex max-w-[60%] items-center gap-1 rounded-full px-2 py-0.5"
-                title={localize('com_ui_tools_shared_by', { name: skill.authorName })}
-                aria-label={localize('com_ui_tools_shared_by', { name: skill.authorName })}
-              >
-                <User className="size-2.5 shrink-0" aria-hidden="true" />
-                <span className="truncate">{skill.authorName}</span>
-              </span>
+              <TooltipAnchor
+                description={localize('com_ui_tools_shared_by', { name: skill.authorName })}
+                tabIndex={-1}
+                render={
+                  <span
+                    className="bg-surface-tertiary text-text-tertiary text-3xs inline-flex max-w-[60%] items-center gap-1 rounded-full px-2 py-0.5"
+                    aria-label={localize('com_ui_tools_shared_by', { name: skill.authorName })}
+                  >
+                    <User className="size-2.5 shrink-0" aria-hidden="true" />
+                    <span className="truncate">{skill.authorName}</span>
+                  </span>
+                }
+              />
             )}
             {isPublicSkill && (
-              <span
-                className="bg-surface-tertiary text-text-tertiary text-3xs inline-flex items-center gap-1 rounded-full px-1.5 py-0.5"
-                title={localize('com_ui_sr_public_skill')}
-                aria-label={localize('com_ui_sr_public_skill')}
-              >
-                <Globe className="size-2.5" aria-hidden="true" />
-              </span>
+              <TooltipAnchor
+                description={localize('com_ui_sr_public_skill')}
+                tabIndex={-1}
+                render={
+                  <span
+                    className="bg-surface-tertiary text-text-tertiary text-3xs inline-flex items-center gap-1 rounded-full px-1.5 py-0.5"
+                    aria-label={localize('com_ui_sr_public_skill')}
+                  >
+                    <Globe className="size-2.5" aria-hidden="true" />
+                  </span>
+                }
+              />
             )}
           </div>
         ) : null}
@@ -213,45 +223,62 @@ function ToolCardImpl({
       {(canFavorite || canConfigure || showInfoOnly) && (
         <div className="absolute inset-e-2 bottom-2 flex items-center gap-1">
           {(canConfigure || showInfoOnly) && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onConfigure?.(item);
-              }}
-              aria-label={
+            <TooltipAnchor
+              description={
                 canConfigure ? localize('com_ui_tools_configure') : localize('com_ui_tools_info')
               }
-              className={cn(
-                'text-text-secondary flex size-7 items-center justify-center rounded-lg',
-                'hover:bg-surface-hover hover:text-text-primary transition duration-150',
-                'no-touch:opacity-0 group-focus-within:opacity-100 group-hover:opacity-100',
-                'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:opacity-100 focus-visible:ring-2',
-              )}
-            >
-              <DetailIcon className="size-4" aria-hidden="true" />
-            </button>
+              render={
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onConfigure?.(item);
+                  }}
+                  aria-label={
+                    canConfigure
+                      ? localize('com_ui_tools_configure')
+                      : localize('com_ui_tools_info')
+                  }
+                  className={cn(
+                    'text-text-secondary flex size-7 items-center justify-center rounded-lg',
+                    'hover:bg-surface-hover hover:text-text-primary transition duration-150',
+                    'no-touch:opacity-0 group-focus-within:opacity-100 group-hover:opacity-100',
+                    'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:opacity-100 focus-visible:ring-2',
+                  )}
+                >
+                  <DetailIcon className="size-4" aria-hidden="true" />
+                </button>
+              }
+            />
           )}
           {canFavorite && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleFavorite?.(item);
-              }}
-              aria-pressed={isFavorited}
-              aria-label={localize(isFavorited ? 'com_ui_unfavorite' : 'com_ui_favorite')}
-              className={cn(
-                'text-text-secondary flex size-7 items-center justify-center rounded-lg',
-                'hover:bg-surface-hover hover:text-text-primary transition duration-150',
-                'group-focus-within:opacity-100 group-hover:opacity-100',
-                'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:opacity-100 focus-visible:ring-2',
-                !isFavorited && 'no-touch:opacity-0',
-                isFavorited && 'text-series-4 hover:text-series-4',
-              )}
-            >
-              <Star className={cn('size-4', isFavorited && 'fill-current')} aria-hidden="true" />
-            </button>
+            <TooltipAnchor
+              description={localize(isFavorited ? 'com_ui_unfavorite' : 'com_ui_favorite')}
+              render={
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleFavorite?.(item);
+                  }}
+                  aria-pressed={isFavorited}
+                  aria-label={localize(isFavorited ? 'com_ui_unfavorite' : 'com_ui_favorite')}
+                  className={cn(
+                    'text-text-secondary flex size-7 items-center justify-center rounded-lg',
+                    'hover:bg-surface-hover hover:text-text-primary transition duration-150',
+                    'group-focus-within:opacity-100 group-hover:opacity-100',
+                    'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:opacity-100 focus-visible:ring-2',
+                    !isFavorited && 'no-touch:opacity-0',
+                    isFavorited && 'text-series-4 hover:text-series-4',
+                  )}
+                >
+                  <Star
+                    className={cn('size-4', isFavorited && 'fill-current')}
+                    aria-hidden="true"
+                  />
+                </button>
+              }
+            />
           )}
         </div>
       )}

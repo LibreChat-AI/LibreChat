@@ -155,7 +155,7 @@ afterAll(async () => {
     }
   }
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 describe('Agent Methods', () => {
@@ -3325,6 +3325,24 @@ describe('Agent Methods', () => {
       });
       spy.mockRestore();
       expect((await getAgent({ id: agentId }))?.name).toBe('Concurrent');
+    });
+
+    test('restores SDK bindings and removes them when reverting to a native version', async () => {
+      const id = `agent_${uuidv4()}`;
+      await createAgent({
+        id,
+        name: 'Native',
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+      });
+      const binding = { id: 'advisor', protocolVersion: 1 };
+      await updateAgent({ id }, { sdk_runtime: binding });
+      expect((await getAgent({ id }))?.sdk_runtime).toEqual(binding);
+      await revertAgentVersion({ id }, 0);
+      expect((await getAgent({ id }))?.sdk_runtime).toBeUndefined();
+      await revertAgentVersion({ id }, 1);
+      expect((await getAgent({ id }))?.sdk_runtime).toEqual(binding);
     });
 
     test('should unset a linked prompt-group instructions selection absent from the restored version', async () => {

@@ -53,6 +53,8 @@ const {
   applyInstructionsPromptUnset,
   instructionsContentForScan,
   authorizeAgentRestore,
+  applySdkAgentBindingWrite,
+  getSdkAgentWriteErrorStatus,
 } = require('@librechat/api');
 const {
   Time,
@@ -765,6 +767,12 @@ const createAgentHandler = async (req, res) => {
     normalizeToolResourceFiles(req.body?.tool_resources);
     const validatedData = agentCreateSchema.parse(req.body);
     const { tools = [], ...agentData } = removeNullishValues(validatedData);
+    applySdkAgentBindingWrite(
+      agentData,
+      validatedData.sdk_runtime,
+      req.config?.endpoints?.agents,
+      req.user?.role,
+    );
 
     if (
       (!isCodeInterpreterCapabilityEnabled(req) || !tools.includes(Tools.execute_code)) &&
@@ -1109,6 +1117,12 @@ const updateAgentHandler = async (req, res) => {
       ...rest
     } = validatedData;
     let updateData = removeNullishValues(rest);
+    applySdkAgentBindingWrite(
+      updateData,
+      validatedData.sdk_runtime,
+      req.config?.endpoints?.agents,
+      req.user?.role,
+    );
     if (codeEnvironmentIdField !== undefined) {
       updateData.code_environment_id = codeEnvironmentIdField;
     }
@@ -1519,6 +1533,12 @@ const duplicateAgentHandler = async (req, res) => {
       id: newAgentId,
       author: userId,
     });
+    applySdkAgentBindingWrite(
+      newAgentData,
+      newAgentData.sdk_runtime,
+      req.config?.endpoints?.agents,
+      req.user?.role,
+    );
     if (!validateAgentCodeEnvironmentAllowlist(req, res, newAgentData.code_environment_ids)) {
       return;
     }
@@ -1746,7 +1766,7 @@ const duplicateAgentHandler = async (req, res) => {
     if (error?.statusCode === 409) {
       return res.status(409).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message });
+    res.status(getSdkAgentWriteErrorStatus(error)).json({ error: error.message });
   }
 };
 
@@ -2096,6 +2116,12 @@ const revertAgentVersionHandler = async (req, res) => {
     if (!revertVersion) {
       return res.status(404).json({ error: `Version ${version_index} not found` });
     }
+    applySdkAgentBindingWrite(
+      revertVersion,
+      revertVersion.sdk_runtime,
+      req.config?.endpoints?.agents,
+      req.user?.role,
+    );
     if (!validateAgentCodeEnvironmentAllowlist(req, res, revertVersion.code_environment_ids)) {
       return;
     }
@@ -2260,7 +2286,7 @@ const revertAgentVersionHandler = async (req, res) => {
     if (error?.statusCode === 409) {
       return res.status(409).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message });
+    res.status(getSdkAgentWriteErrorStatus(error)).json({ error: error.message });
   }
 };
 /**
