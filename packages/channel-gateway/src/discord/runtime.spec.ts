@@ -2,8 +2,13 @@ import { once } from 'node:events';
 import { Registry } from 'prom-client';
 import { createServer } from 'node:http';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { discordChannelConfigSchema } from 'librechat-data-provider';
 import { ApplicationFlags, GatewayDispatchEvents } from 'discord-api-types/v10';
+import {
+  discordChannelConfigSchema,
+  discordCredentialStateSchema,
+  discordGatewayOwnerSchema,
+} from 'librechat-data-provider';
+import type { DiscordCredentialState, DiscordGatewayOwner } from 'librechat-data-provider';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import type { DiscordGatewayDriverOptions } from './socket';
@@ -79,6 +84,7 @@ interface World {
   runs: 'idle' | 'unavailable';
   submit: 'accepted' | 'conflict';
   replyStatus: number;
+  credentialStatus: number;
 }
 type Sample = { labels: Record<string, string | number>; value: number };
 
@@ -101,6 +107,7 @@ function compose(
     gateway?: boolean;
     telemetry?: (real: DiscordTelemetry) => DiscordTelemetry;
     driver?: (attempt: number, options: DiscordGatewayDriverOptions) => Promise<void>;
+    credentialWrite?: () => Promise<void>;
   } = {},
 ) {
   const world: World = {
@@ -110,17 +117,33 @@ function compose(
     runs: 'idle',
     submit: 'accepted',
     replyStatus: 200,
+    credentialStatus: 204,
   };
   const registry = new Registry();
   const health = new DiscordHealth();
   const real = createDiscordTelemetry({ registry, health });
   const drivers: DiscordGatewayDriverOptions[] = [];
   const calls: string[] = [];
+  const credentials: { owner: DiscordGatewayOwner; state: DiscordCredentialState }[] = [];
   const transport: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const path = url.pathname;
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
     calls.push(path);
+    if (path.endsWith('/gateway/observeCredentials')) {
+      expect(Object.keys(body).sort()).toEqual(['owner', 'state']);
+      expect(new Headers(init?.headers).get('authorization')).toBe(
+        `Bearer ${config.CHANNEL_SERVICE_TOKEN}`,
+      );
+      credentials.push({
+        owner: discordGatewayOwnerSchema.parse(body.owner),
+        state: discordCredentialStateSchema.parse(body.state),
+      });
+      await options.credentialWrite?.();
+      return world.credentialStatus === 204
+        ? new Response(null, { status: 204 })
+        : Response.json({ error: 'unavailable' }, { status: world.credentialStatus });
+    }
     if (url.hostname === 'discord.com') {
       if (path.includes('/webhooks/'))
         return Response.json({ id: eventId }, { status: world.replyStatus });
@@ -309,6 +332,7 @@ function compose(
     health,
     drivers,
     calls,
+    credentials,
     send,
     get,
     url,
@@ -327,6 +351,65 @@ const only = (counts: Record<string, number>) =>
 jest.setTimeout(30_000);
 
 describe('Discord health and metrics in the running app', () => {
+  it('records token evidence through the private owner-scoped API independently of metrics', async () => {
+    const f = compose({
+      gateway: true,
+      telemetry: (real) => ({
+        observe: real.observe,
+        application: () => ({
+          observe: () => {
+            throw new Error('metrics unavailable');
+          },
+          release: () => undefined,
+        }),
+      }),
+    });
+    const running = f.run();
+    await f.until(async () => f.credentials.length === 1, 'recorded READY credential');
+    expect(f.credentials[0]).toMatchObject({
+      owner: { applicationId, applicationRevision: 'revision-a' },
+      state: 'valid',
+    });
+    f.drivers[0].resumed(0);
+    f.drivers[0].closed(4004, 0);
+    await f.until(async () => f.credentials.length === 2, 'recorded rejected credential');
+    expect(f.credentials[1]).toEqual({ ...f.credentials[0], state: 'invalid' });
+    expect((await f.get('/readyz')).status).toBe(200);
+    controller.abort();
+    await running;
+  });
+
+  it('flushes credential evidence before releasing the application lease', async () => {
+    let finish: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const f = compose({ gateway: true, credentialWrite: () => pending });
+    const running = f.run();
+    await f.until(async () => f.credentials.length === 1, 'an in-flight credential write');
+    controller.abort();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(f.calls.some((path) => path.endsWith('/gateway/release'))).toBe(false);
+    finish();
+    await running;
+    expect(f.calls.filter((path) => path.endsWith('/gateway/release'))).toHaveLength(1);
+    expect(f.credentials).toHaveLength(1);
+  });
+
+  it('does not block serving or repeatedly write unchanged evidence during a private API outage', async () => {
+    const f = compose({ gateway: true });
+    f.world.credentialStatus = 503;
+    const running = f.run();
+    await f.until(async () => f.credentials.length === 1, 'an attempted credential write');
+    for (let index = 0; index < 20; index++) f.drivers[0].resumed(0);
+    expect((await f.send({ type: 1 })).status).toBe(200);
+    expect((await f.get('/readyz')).status).toBe(200);
+    controller.abort();
+    await running;
+    expect(f.credentials).toHaveLength(1);
+    expect(f.credentials[0].state).toBe('valid');
+  });
+
   it('counts signed HTTP outcomes and acknowledgement time, and keeps an idle application unknown', async () => {
     const f = compose();
     const running = f.run();
@@ -512,6 +595,7 @@ describe('Discord health and metrics in the running app', () => {
     const running = f.run();
     await f.ready();
     await f.until(async () => (await f.detail()).native.healthy === 1, 'the first revision');
+    await f.until(async () => f.credentials.length === 1, 'the first credential observation');
     f.world.revision = 'revision-b';
     await f.until(async () => f.drivers.length === 2, 'the second owner');
     const detail = await f.detail();
@@ -519,8 +603,11 @@ describe('Discord health and metrics in the running app', () => {
     expect(only(detail.credentials)).toBe('unknown');
     expect(only(detail.native)).toBe('unknown');
     expect(await f.count('applications_owned')).toBe(1);
+    f.drivers[0].resumed(0);
     controller.abort();
     await running;
+    expect(f.credentials).toHaveLength(1);
+    expect(f.credentials[0].owner.applicationRevision).toBe('revision-a');
   });
 
   it('fails a worker round only after every recent task failed, and never readiness', async () => {
@@ -564,6 +651,7 @@ describe('Discord health and metrics in the running app', () => {
     expect(only(detail.permissions)).toBe('unknown');
     controller.abort();
     await running;
+    expect(f.credentials).toEqual([]);
   });
 
   it.each([

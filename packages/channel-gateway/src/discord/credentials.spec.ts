@@ -1,5 +1,6 @@
 import type { DiscordApplicationObservation } from './observe';
-import { DiscordCredentialReporter, discordCredentialObservation } from './credentials';
+import { DiscordCredentialReporter } from './credentials';
+import { discordCredentialObservation } from './observe';
 
 const owner = {
   applicationId: '123456789012345678',

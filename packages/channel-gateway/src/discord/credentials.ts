@@ -1,22 +1,6 @@
 import type { DiscordCredentialState, DiscordGatewayOwner } from 'librechat-data-provider';
 import type { DiscordApplicationObservation } from './observe';
-import { discordRestRoute, discordRestStatus } from './observe';
-
-/** Only bot-authenticated responses and authenticated sessions prove token validity. */
-export function discordCredentialObservation(
-  observation: DiscordApplicationObservation,
-): DiscordCredentialState | undefined {
-  if (observation.type === 'stop')
-    return observation.reason === 'credentials' ? 'invalid' : undefined;
-  if (observation.type === 'session')
-    return observation.event === 'ready' || observation.event === 'resumed' ? 'valid' : undefined;
-  if (observation.type !== 'rest') return;
-  const route = discordRestRoute(observation.route);
-  if (route === 'other' || route === 'interaction_reply') return;
-  const status = discordRestStatus(observation.status);
-  if (status === '2xx') return 'valid';
-  if (status === '401') return 'invalid';
-}
+import { discordCredentialObservation } from './observe';
 
 interface CredentialReporterOptions {
   owner: DiscordGatewayOwner;
