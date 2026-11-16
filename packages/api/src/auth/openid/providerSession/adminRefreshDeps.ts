@@ -193,10 +193,19 @@ export async function prepareAdminOpenIdRefresh(
 }
 
 export interface AdminRefreshGrantDeps {
-  /** Same flight-key derivation the main refresh path's bridge recovery uses, so a bridged admin
-   *  retry and a bridged browser retry sharing the token never collide, but two admin retries for
-   *  the same bridged token coalesce. */
+  /** Key of the flight that grants the bridged successor of the presented token. The browser's
+   *  bridge recovery uses the same key, so a bridged admin retry and a bridged browser retry
+   *  for the same token grant the successor once, and two admin retries coalesce. */
   createRefreshTokenBridgeFlightKey?: (args: {
+    oldRefreshToken?: string;
+    userId?: string;
+    tenantId?: string;
+    openidIssuer?: string;
+  }) => string | null;
+  /** Key of the flight that records the admin's own grant of the presented token. A browser can
+   *  complete the bridge flight of a token the IdP has not spent yet (the login publication when
+   *  `OPENID_REUSE_TOKENS` is on), so this record lives in a separate namespace. */
+  createAdminRefreshGrantFlightKey?: (args: {
     oldRefreshToken?: string;
     userId?: string;
     tenantId?: string;
@@ -217,7 +226,10 @@ export interface AdminRefreshGrantDeps {
     key?: string | null;
     ownerId?: string;
   }) => Promise<unknown>;
-  waitForOpenIDRefreshFlight?: (args: { key?: string | null }) => Promise<TokenResult | null>;
+  waitForOpenIDRefreshFlight?: (args: {
+    key?: string | null;
+    timeoutMs?: number;
+  }) => Promise<TokenResult | null>;
   withOpenIDRefreshFlightLease?: <T>(args: {
     key?: string | null;
     ownerId?: string;
@@ -225,91 +237,128 @@ export interface AdminRefreshGrantDeps {
   }) => Promise<T>;
 }
 
+function coordinationUnavailable(cause?: unknown): ProviderSessionUnavailableError {
+  return new ProviderSessionUnavailableError(
+    'OpenID refresh coordination is temporarily unavailable',
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+function withClaims(
+  accessToken: string,
+  refreshToken: string | undefined,
+  claims: ReturnType<RefreshTokenset['claims']>,
+): RefreshTokenset {
+  return { access_token: accessToken, refresh_token: refreshToken, claims: () => claims };
+}
+
 /**
- * Runs the IdP refresh-token grant for an admin refresh. When the resolved token is a bridged
- * replacement (a prior attempt already spent the presented token), wraps the grant in the main
- * refresh path's flight lease so two concurrent retries that both recovered the same bridge
- * coalesce into a single IdP grant instead of racing a single-use rotating refresh token against
- * itself — the loser would otherwise get `REFRESH_FAILED` from the IdP for no reason. A direct
- * (unbridged) grant, or a deployment without the flight deps wired, runs the grant unprotected.
- *
- * A caller that loses the race waits for the flight to complete and reconstructs a
- * {@link RefreshTokenset} from the winner's published result; `claims()` is rebuilt from the
- * plain `__identityClaims` the winner captured, since a function does not survive the flight's
- * encrypted JSON round trip.
+ * Reads a completed flight result as an admin tokenset. An admin grant stores the tokens at the
+ * top level with `__identityClaims`. A browser publication or bridge recovery stores them under
+ * `tokenset`, with the identity in `claims`. Returns `null` for a result that is not usable here:
+ * missing tokens or subject, or a browser publication of the presented token itself (the login
+ * publication when `OPENID_REUSE_TOKENS` is on), which is not a successor of that token.
  */
-export async function runAdminOpenIdRefreshGrant(
-  grant: () => Promise<RefreshTokenset>,
+function readSharedAdminTokenset(
+  result: TokenResult,
   presentedRefreshToken: string,
-  prepared: Pick<AdminOpenIdRefreshPrepareResult, 'bridged' | 'identity'>,
+): RefreshTokenset | null {
+  if (result.tokenset) {
+    const { access_token: accessToken, refresh_token: refreshToken } = result.tokenset;
+    const claims = typeof result.claims === 'object' ? result.claims : undefined;
+    if (!accessToken || !refreshToken || refreshToken === presentedRefreshToken || !claims?.sub) {
+      return null;
+    }
+    return withClaims(accessToken, refreshToken, {
+      ...claims,
+      iss: claims.iss ?? result.openidIssuer,
+    });
+  }
+  const claims = result.__identityClaims;
+  if (!result.access_token || !claims?.sub) {
+    return null;
+  }
+  return withClaims(result.access_token, result.refresh_token, { ...claims });
+}
+
+/** Bounds the read of the recorded admin grant. A grant that is still pending cannot be the one
+ *  the bridge points to, because the bridge is stored after the grant completes, so the read
+ *  does not wait for it; the bound only gives the read itself time to run. */
+const RECORDED_ADMIN_GRANT_READ_TIMEOUT_MS = 100;
+
+/** Reads the admin grant recorded for the presented token. A missing, pending, failed or
+ *  unreadable record is not an error here: the caller then coordinates a new grant of the
+ *  successor. */
+async function readRecordedAdminGrant(
+  key: string,
+  deps: AdminRefreshGrantDeps,
+): Promise<TokenResult | null> {
+  try {
+    return (
+      (await deps.waitForOpenIDRefreshFlight?.({
+        key,
+        timeoutMs: RECORDED_ADMIN_GRANT_READ_TIMEOUT_MS,
+      })) ?? null
+    );
+  } catch (error) {
+    logger.debug('[runAdminOpenIdRefreshGrant] No usable recorded admin grant', { error });
+    return null;
+  }
+}
+
+/** Waits for the owner of flight `key` and reads its result as an admin tokenset. A failed
+ *  owner, a timed-out wait, or a result that is not usable answers a retryable `503`. */
+async function waitForSharedAdminTokenset(
+  key: string,
+  presentedRefreshToken: string,
   deps: AdminRefreshGrantDeps,
 ): Promise<RefreshTokenset> {
-  if (!prepared.bridged || !prepared.identity?.userId) {
-    return grant();
-  }
-
-  const key = deps.createRefreshTokenBridgeFlightKey?.({
-    oldRefreshToken: presentedRefreshToken,
-    userId: prepared.identity.userId,
-    tenantId: prepared.identity.tenantId,
-    openidIssuer: prepared.identity.openidIssuer,
-  });
-  if (!key || !deps.acquireOpenIDRefreshFlight || !deps.withOpenIDRefreshFlightLease) {
-    return grant();
-  }
-
-  let flight: { acquired: boolean; ownerId: string };
+  let resolved: TokenResult | null;
   try {
-    flight = await deps.acquireOpenIDRefreshFlight({ key });
+    resolved = (await deps.waitForOpenIDRefreshFlight?.({ key })) ?? null;
   } catch (error) {
-    logger.warn('[runAdminOpenIdRefreshGrant] Failed to acquire the shared refresh flight', {
+    logger.warn('[runAdminOpenIdRefreshGrant] Failed while waiting for the shared refresh flight', {
       error,
     });
-    throw new ProviderSessionUnavailableError(
-      'OpenID refresh coordination is temporarily unavailable',
-      { cause: error },
-    );
+    throw coordinationUnavailable(error);
   }
-
-  if (!flight.acquired) {
-    let resolved: TokenResult | null;
-    try {
-      resolved = (await deps.waitForOpenIDRefreshFlight?.({ key })) ?? null;
-    } catch (error) {
+  const tokenset = resolved ? readSharedAdminTokenset(resolved, presentedRefreshToken) : null;
+  if (!tokenset) {
+    if (resolved) {
       logger.warn(
-        '[runAdminOpenIdRefreshGrant] Failed while waiting for the shared refresh flight',
-        { error },
-      );
-      throw new ProviderSessionUnavailableError(
-        'OpenID refresh coordination is temporarily unavailable',
-        { cause: error },
+        '[runAdminOpenIdRefreshGrant] The shared refresh flight holds no successor of the presented token',
       );
     }
-    if (!resolved) {
-      throw new ProviderSessionUnavailableError(
-        'OpenID refresh coordination is temporarily unavailable',
-      );
-    }
-    const claims = resolved.__identityClaims;
-    return {
-      access_token: resolved.access_token,
-      refresh_token: resolved.refresh_token,
-      claims: () => (claims ?? {}) as ReturnType<RefreshTokenset['claims']>,
-    };
+    throw coordinationUnavailable();
   }
+  return tokenset;
+}
 
-  /** Only a coordination failure strictly before the grant starts maps to a `503`. Once the
-   *  grant has run, the IdP has already rotated the refresh token. A failure from the grant
-   *  itself still reaches the caller as-is. A failure from the lease's own bookkeeping after a
-   *  successful grant — the flight-completion write above, or the lease's post-operation renewal
-   *  and ownership checks — must not drop the rotated tokenset; it is returned so the caller can
-   *  still persist it. */
+/**
+ * Runs `grant` while this caller owns the flight `key`, and records the result on it.
+ *
+ * Only a coordination failure strictly before the grant starts maps to a `503`. Once the grant
+ * has run, the IdP has already rotated the refresh token. A failure from the grant itself still
+ * reaches the caller as-is. A failure from the lease's own bookkeeping after a successful grant
+ * (the completion write, or the lease's post-operation renewal and ownership checks) must not
+ * drop the rotated tokenset; it is returned so the caller can still persist it.
+ */
+async function runOwnedAdminGrant(
+  grant: () => Promise<RefreshTokenset>,
+  key: string,
+  ownerId: string,
+  deps: AdminRefreshGrantDeps & {
+    withOpenIDRefreshFlightLease: NonNullable<
+      AdminRefreshGrantDeps['withOpenIDRefreshFlightLease']
+    >;
+  },
+): Promise<RefreshTokenset> {
   let grantStarted = false;
   let grantedTokenset: RefreshTokenset | undefined;
   try {
     return await deps.withOpenIDRefreshFlightLease({
       key,
-      ownerId: flight.ownerId,
+      ownerId,
       operation: async () => {
         grantStarted = true;
         const tokenset = await grant();
@@ -323,7 +372,7 @@ export async function runAdminOpenIdRefreshGrant(
         try {
           await deps.completeOpenIDRefreshFlight?.({
             key,
-            ownerId: flight.ownerId,
+            ownerId,
             tokens: {
               access_token: tokenset.access_token,
               refresh_token: tokenset.refresh_token,
@@ -338,7 +387,7 @@ export async function runAdminOpenIdRefreshGrant(
            *  recovers this tokenset once lost, so it is kept regardless of what the confirmation
            *  finds; `applyAdminRefresh` is what persists it and repoints the bridge. */
           try {
-            await deps.assertOpenIDRefreshFlightAvailable?.({ key, ownerId: flight.ownerId });
+            await deps.assertOpenIDRefreshFlightAvailable?.({ key, ownerId });
           } catch {
             // Ownership could not be confirmed either; still keep the rotated tokenset.
           }
@@ -363,11 +412,109 @@ export async function runAdminOpenIdRefreshGrant(
         '[runAdminOpenIdRefreshGrant] Refresh flight coordination failed before the grant started',
         { error },
       );
-      throw new ProviderSessionUnavailableError(
-        'OpenID refresh coordination is temporarily unavailable',
-        { cause: error },
-      );
+      throw coordinationUnavailable(error);
     }
     throw error;
   }
+}
+
+/**
+ * Runs the IdP refresh-token grant for an admin refresh.
+ *
+ * Two flights are involved, with two different meanings:
+ *  - The admin grant flight (`createAdminRefreshGrantFlightKey` of the presented token) records
+ *    the admin's grant of the presented token. Only the admin reads it.
+ *  - The bridge flight (`createRefreshTokenBridgeFlightKey` of the presented token) records the
+ *    result that replaces the presented token. The browser's publication and bridge recovery
+ *    also write it, so its result can have either shape.
+ *
+ * A direct (unbridged) grant runs under the admin grant flight. A caller that loses that flight
+ * to a concurrent request with the same token waits for the owner's result instead of granting
+ * the token a second time. Only a deployment without the key or the flight deps wired runs the
+ * grant directly.
+ *
+ * A bridged retry (a prior attempt already spent the presented token) first reads the admin
+ * grant flight: when its refresh token is the bridge's successor, that is the result of the grant
+ * the bridge points to, and it is returned without a new IdP call. Otherwise the retry grants the
+ * successor under the bridge flight, so concurrent admin and browser retries sharing the bridge
+ * coalesce into a single IdP grant instead of racing a single-use rotating refresh token against
+ * itself. A caller that loses that race reads the winner's result in either shape; a result that
+ * is not usable answers a retryable `503`, never a tokenset with missing fields.
+ *
+ * `claims()` is rebuilt from the plain claims the winner recorded, since a function does not
+ * survive the flight's encrypted JSON round trip.
+ */
+export async function runAdminOpenIdRefreshGrant(
+  grant: () => Promise<RefreshTokenset>,
+  presentedRefreshToken: string,
+  prepared: Pick<AdminOpenIdRefreshPrepareResult, 'bridged' | 'identity'> &
+    Partial<Pick<AdminOpenIdRefreshPrepareResult, 'grantRefreshToken'>>,
+  deps: AdminRefreshGrantDeps,
+): Promise<RefreshTokenset> {
+  const identity = prepared.identity;
+  const { acquireOpenIDRefreshFlight, withOpenIDRefreshFlightLease } = deps;
+  if (!identity?.userId || !acquireOpenIDRefreshFlight || !withOpenIDRefreshFlightLease) {
+    return grant();
+  }
+  const keyInput = {
+    oldRefreshToken: presentedRefreshToken,
+    userId: identity.userId,
+    tenantId: identity.tenantId,
+    openidIssuer: identity.openidIssuer,
+  };
+  const grantKey = deps.createAdminRefreshGrantFlightKey?.(keyInput) ?? null;
+  const ownedDeps = { ...deps, withOpenIDRefreshFlightLease };
+
+  if (!prepared.bridged) {
+    if (!grantKey) {
+      return grant();
+    }
+    let flight: { acquired: boolean; ownerId: string };
+    try {
+      flight = await acquireOpenIDRefreshFlight({ key: grantKey });
+    } catch (error) {
+      logger.warn('[runAdminOpenIdRefreshGrant] Failed to acquire the admin grant flight', {
+        error,
+      });
+      throw coordinationUnavailable(error);
+    }
+    if (!flight.acquired) {
+      /** A concurrent request with the same token owns the grant. Granting again would present a
+       *  token the owner already spent, so this request takes the owner's result instead. */
+      return waitForSharedAdminTokenset(grantKey, presentedRefreshToken, deps);
+    }
+    return runOwnedAdminGrant(grant, grantKey, flight.ownerId, ownedDeps);
+  }
+
+  const successor = prepared.grantRefreshToken;
+  if (grantKey && successor) {
+    const recorded = await readRecordedAdminGrant(grantKey, deps);
+    if (recorded?.access_token && recorded.refresh_token === successor) {
+      const tokenset = readSharedAdminTokenset(recorded, presentedRefreshToken);
+      if (tokenset) {
+        return tokenset;
+      }
+    }
+  }
+
+  const key = deps.createRefreshTokenBridgeFlightKey?.(keyInput);
+  if (!key) {
+    return grant();
+  }
+
+  let flight: { acquired: boolean; ownerId: string };
+  try {
+    flight = await acquireOpenIDRefreshFlight({ key });
+  } catch (error) {
+    logger.warn('[runAdminOpenIdRefreshGrant] Failed to acquire the shared refresh flight', {
+      error,
+    });
+    throw coordinationUnavailable(error);
+  }
+
+  if (flight.acquired) {
+    return runOwnedAdminGrant(grant, key, flight.ownerId, ownedDeps);
+  }
+
+  return waitForSharedAdminTokenset(key, presentedRefreshToken, deps);
 }

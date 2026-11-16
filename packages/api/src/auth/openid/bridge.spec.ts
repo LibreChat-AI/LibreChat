@@ -153,3 +153,39 @@ describe('RefreshTokenBridgeService version handling', () => {
     expect(result).toBeNull();
   });
 });
+
+describe('RefreshTokenBridgeService flight keys', () => {
+  const input = {
+    oldRefreshToken: 'old-token',
+    userId: 'user-1',
+    tenantId: 'tenant-1',
+    openidIssuer: 'https://idp.example.com',
+  };
+
+  it('keeps the bridge flight key that rolling-deploy peers compute for the same token', () => {
+    const service = makeService();
+    const { hashRefreshToken } = service.__internals;
+    const expected = hashRefreshToken(
+      [
+        'bridge-recovery',
+        'user-1',
+        'tenant-1',
+        'https://idp.example.com',
+        hashRefreshToken('old-token'),
+      ].join('\x1f'),
+    );
+
+    expect(service.createRefreshTokenBridgeFlightKey(input)).toBe(expected);
+  });
+
+  it('keys the admin grant flight in its own namespace', () => {
+    const service = makeService();
+
+    const grantKey = service.createAdminRefreshGrantFlightKey(input);
+
+    expect(grantKey).toEqual(expect.any(String));
+    expect(grantKey).not.toBe(service.createRefreshTokenBridgeFlightKey(input));
+    expect(service.createAdminRefreshGrantFlightKey({ ...input, oldRefreshToken: '' })).toBeNull();
+    expect(service.createAdminRefreshGrantFlightKey({ ...input, userId: undefined })).toBeNull();
+  });
+});

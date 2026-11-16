@@ -101,6 +101,7 @@ jest.mock('~/server/services/RefreshTokenBridge', () => ({
   storeRefreshTokenBridge: jest.fn(),
   deleteRefreshTokenBridges: jest.fn(),
   createRefreshTokenBridgeFlightKey: jest.fn(),
+  createAdminRefreshGrantFlightKey: jest.fn(),
   OPENID_REFRESH_BRIDGE_GRACE_MS: 60000,
 }));
 
@@ -159,6 +160,7 @@ const {
   storeRefreshTokenBridge,
   deleteRefreshTokenBridges,
   createRefreshTokenBridgeFlightKey,
+  createAdminRefreshGrantFlightKey,
 } = require('~/server/services/RefreshTokenBridge');
 const {
   acquireOpenIDRefreshFlight,
@@ -211,6 +213,7 @@ describe('admin auth OpenID refresh route', () => {
     storeRefreshTokenBridge.mockResolvedValue(null);
     deleteRefreshTokenBridges.mockResolvedValue({});
     createRefreshTokenBridgeFlightKey.mockReturnValue(null);
+    createAdminRefreshGrantFlightKey.mockReturnValue(null);
     acquireOpenIDRefreshFlight.mockResolvedValue({ acquired: true, ownerId: 'owner-1' });
     completeOpenIDRefreshFlight.mockResolvedValue(undefined);
     waitForOpenIDRefreshFlight.mockResolvedValue(null);
@@ -451,6 +454,38 @@ describe('admin auth OpenID refresh route', () => {
       expect(openIdClient.refreshTokenGrant).toHaveBeenLastCalledWith(
         openIdConfig,
         'bridged-refresh-token',
+        {},
+      );
+    });
+
+    it('records a direct grant under the admin grant flight, keyed by createAdminRefreshGrantFlightKey', async () => {
+      createAdminRefreshGrantFlightKey.mockReturnValue('admin-grant-key-1');
+      applyAdminRefresh.mockResolvedValueOnce({
+        token: 'admin-jwt',
+        refreshToken: 'new-admin-refresh',
+        user: { id: 'user-id', email: 'admin@example.com' },
+        expiresAt: 1234567890,
+      });
+
+      const response = await request(app)
+        .post('/api/admin/oauth/refresh')
+        .send({ refresh_token: 'original-refresh-token' });
+
+      expect(response.status).toBe(200);
+      expect(createAdminRefreshGrantFlightKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          oldRefreshToken: 'original-refresh-token',
+          userId: 'admin-user-id',
+        }),
+      );
+      expect(createRefreshTokenBridgeFlightKey).not.toHaveBeenCalled();
+      expect(acquireOpenIDRefreshFlight).toHaveBeenCalledWith({ key: 'admin-grant-key-1' });
+      expect(completeOpenIDRefreshFlight).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'admin-grant-key-1', ownerId: 'owner-1' }),
+      );
+      expect(openIdClient.refreshTokenGrant).toHaveBeenLastCalledWith(
+        openIdConfig,
+        'original-refresh-token',
         {},
       );
     });
