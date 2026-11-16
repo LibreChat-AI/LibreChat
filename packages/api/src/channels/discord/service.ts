@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import {
+  getTenantId,
+  SYSTEM_TENANT_ID,
+  TransactionUnavailableError,
+} from '@librechat/data-schemas';
 import {
   channelSnowflakeSchema,
   configureDiscordApplicationSchema,
@@ -37,6 +41,7 @@ export type DiscordManagementError =
   | DiscordInstallError
   | 'forbidden'
   | 'not_configured'
+  | 'transactions_unavailable'
   | 'unavailable';
 export type DiscordManagementResult<T> =
   | { ok: true; value: T }
@@ -101,7 +106,7 @@ export function createDiscordManagementService(deps: {
       return await work();
     } catch (error) {
       deps.logError?.(getSafeErrorMetadata(error));
-      return failure('unavailable');
+      return failure(error instanceof TransactionUnavailableError ? error.code : 'unavailable');
     }
   }
   return {
