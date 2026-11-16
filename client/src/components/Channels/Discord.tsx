@@ -53,7 +53,7 @@ const confirmAtom = atom<DiscordGuild | null>(null);
 const flowAtom = atom<'pending' | 'cancelling' | 'failed' | null>(null);
 const openAtom = atom(false);
 /** Set when a dismissal removes the control the user was on; focus returns to `trigger` once the reads settle. */
-const restoreAtom = atom<{ trigger: HTMLButtonElement | null } | null>(null);
+const restoreAtom = atom<{ trigger: HTMLButtonElement | null; servers?: boolean } | null>(null);
 const empty = { applicationId: '', name: '', botToken: '', clientSecret: '' };
 type Fields = typeof empty;
 type Attempt = { popup: Window; flowId?: string; cancelling: boolean };
@@ -439,6 +439,15 @@ function Setup({
   const ready = apps.isSuccess && guilds.isSuccess && !apps.isFetching && !guilds.isFetching;
   const disabled = busy || !ready || flow !== null;
   const setup = apps.data?.pages[0].setup;
+  const confirmed = confirm
+    ? installations.find((item) => item.installationId === confirm.installationId)
+    : undefined;
+  /** The reads behind a failure are current, so only the record the user confirmed can be retried. */
+  const stale =
+    confirm !== null &&
+    disconnect.isError &&
+    ready &&
+    !(confirmed?.status === 'active' && confirmed.revision === confirm.revision);
   const { setFocus } = form;
   useEffect(() => {
     if (editor) setFocus(editor === 'new' ? 'applicationId' : 'botToken');
@@ -446,9 +455,9 @@ function Setup({
   useEffect(() => {
     if (!restore || editor || busy || flow) return;
     if (ready) {
-      const { trigger } = restore;
+      const { trigger, servers } = restore;
       if (trigger?.isConnected && !trigger.disabled) trigger.focus();
-      else appsHeading.current?.focus();
+      else (servers ? guildHeading : appsHeading).current?.focus();
       setRestore(null);
     } else if (apps.isError || guilds.isError) {
       const failure = loadFailure.current;
@@ -864,9 +873,7 @@ function Setup({
           className="w-11/12 max-w-md"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            const trigger = disconnectTrigger.current;
-            if (trigger?.isConnected && !trigger.disabled) trigger.focus();
-            else guildHeading.current?.focus();
+            if (mounted.current) setRestore({ trigger: disconnectTrigger.current, servers: true });
           }}
         >
           <AlertDialogHeader>
@@ -876,7 +883,9 @@ function Setup({
             </AlertDialogDescription>
           </AlertDialogHeader>
           {disconnect.isError && (
-            <Alert variant="error">{localize(errorLabel(disconnect.error))}</Alert>
+            <Alert ref={reveal} tabIndex={-1} variant={stale ? 'warning' : 'error'}>
+              {localize(stale ? 'com_ui_discord_disconnect_stale' : errorLabel(disconnect.error))}
+            </Alert>
           )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={disconnect.isLoading}>
@@ -886,7 +895,7 @@ function Setup({
               <Button
                 type="button"
                 variant="destructive"
-                disabled={disconnect.isLoading || !ready}
+                disabled={disconnect.isLoading || !ready || stale}
                 onClick={(event) => {
                   event.preventDefault();
                   if (confirm) disconnect.mutate(confirm);

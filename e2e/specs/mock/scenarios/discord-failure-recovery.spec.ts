@@ -66,6 +66,8 @@ for (const theme of themes) {
     let current = app;
     let failing = true;
     let connectFails = false;
+    let server: DiscordGuild = guild;
+    let disconnectCommits = false;
     const writes: Record<string, unknown>[] = [];
     await page.addInitScript((mode) => localStorage.setItem('color-theme', mode), theme);
     /** The authorization popup navigates to Discord: serve a stub so nothing leaves the machine. */
@@ -90,7 +92,15 @@ for (const theme of themes) {
         });
       }
       if (method === 'GET' && path.endsWith('/guilds')) {
-        return route.fulfill({ json: { guilds: [guild] } });
+        return route.fulfill({ json: { guilds: [server] } });
+      }
+      if (method === 'DELETE' && path.endsWith(`/guilds/${guild.installationId}`)) {
+        /** The write may have landed before the failure was reported: the reads then show a new revision. */
+        if (disconnectCommits) server = { ...guild, status: 'disconnected', revision: 'guild-r2' };
+        return route.fulfill({
+          status: disconnectCommits ? 504 : 429,
+          json: { ok: false, error: { code: disconnectCommits ? 'timeout' : 'rate_limited' } },
+        });
       }
       if (method === 'PUT' && path.endsWith('/apps')) {
         writes.push(request.postDataJSON());
@@ -232,6 +242,55 @@ for (const theme of themes) {
     await expect(unconfirmed).toHaveCount(0);
     await expect
       .soft(connect, 'Cancel returns focus to Connect after a failed connection')
+      .toBeFocused();
+
+    /** A rejected disconnection: the failure takes focus inside the dialog and Escape hands it back. */
+    const disconnect = discord.getByRole('button', { name: 'Disconnect Browser server' });
+    const confirmation = page.getByRole('alertdialog', {
+      name: translations.com_ui_discord_disconnect,
+    });
+    const confirmAction = confirmation.getByRole('button', {
+      name: translations.com_ui_discord_disconnect,
+      exact: true,
+    });
+    const reopen = async () => {
+      await expect(disconnect).toBeEnabled();
+      await disconnect.focus();
+      await page.keyboard.press('Enter');
+      await expect(confirmation).toBeVisible();
+      await page.keyboard.press('Tab');
+      await expect(confirmAction).toBeFocused();
+      await page.keyboard.press('Enter');
+    };
+    await reopen();
+    const refused = confirmation
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_rate_limited });
+    await expect(refused).toBeFocused();
+    /** The reads behind the failure show the same revision, so a retry is still meaningful. */
+    await expect(confirmAction).toBeEnabled();
+    await page.keyboard.press('Escape');
+    await expect(confirmation).toHaveCount(0);
+    await expect
+      .soft(disconnect, 'Escape returns focus to Disconnect after a failed disconnection')
+      .toBeFocused();
+
+    /** A disconnection that committed before its failure was reported cannot be retried from the stale dialog. */
+    disconnectCommits = true;
+    await reopen();
+    const changedServer = confirmation
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_disconnect_stale });
+    await expect(changedServer).toBeFocused();
+    await expect(confirmAction).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(confirmation).toHaveCount(0);
+    await expect(disconnect).toHaveCount(0);
+    await expect
+      .soft(
+        discord.getByRole('heading', { name: translations.com_ui_discord_guilds }),
+        'Escape falls back to the Servers heading once the server changed',
+      )
       .toBeFocused();
   });
 

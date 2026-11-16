@@ -1007,3 +1007,169 @@ test('rejects a mismatched registration acknowledgement without claiming success
   expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
   expect(screen.queryByText('com_ui_discord_commands_success')).toBeNull();
 });
+
+const guilds = (...records: DiscordGuild[]) => ({ guilds: records });
+const changed = { ...guild, status: 'disconnected' as const, revision: 'guild-r2' };
+async function openConfirmation(user: User) {
+  const origin = screen.getByRole('button', { name: 'com_ui_discord_disconnect_named' });
+  await user.click(origin);
+  const dialog = screen.getByRole('alertdialog', { name: 'com_ui_discord_disconnect' });
+  return {
+    origin,
+    dialog,
+    confirm: () => within(dialog).getByRole('button', { name: 'com_ui_discord_disconnect' }),
+    cancel: () => within(dialog).getByRole('button', { name: 'com_ui_cancel' }),
+  };
+}
+/**
+ * A rejected disconnect: the dialog stays open on its failure while the reads refresh behind it.
+ * The request stays pending until the busy state has reached the view, so a held read is consumed
+ * by the refetch that follows the failure rather than by the refresh inside the mutation.
+ */
+async function failedDisconnect(user: User, held?: () => Promise<{ guilds: DiscordGuild[] }>) {
+  let reject!: (error: Error) => void;
+  jest.mocked(dataService.disconnectDiscordGuild).mockReturnValueOnce(
+    new Promise<DiscordGuild>((_, fail) => {
+      reject = fail;
+    }),
+  );
+  const view = await openConfirmation(user);
+  await user.click(view.confirm());
+  await waitFor(() => expect(view.confirm()).toBeDisabled());
+  if (held) jest.mocked(dataService.getDiscordGuilds).mockImplementationOnce(held);
+  await act(async () => reject(Object.assign(new Error('safe'), { code: 'rate_limited' })));
+  const alert = await within(view.dialog).findByRole('alert');
+  return { ...view, alert };
+}
+const headingOf = (name: string) => screen.getByRole('heading', { name });
+
+test('moves focus to the disconnect failure and retries while the confirmed server is current', async () => {
+  const { user } = await page();
+  const { alert, confirm } = await failedDisconnect(user);
+  expect(alert).toHaveFocus();
+  await waitFor(() => expect(confirm()).toBeEnabled());
+  expect(within(alert).queryByText('com_ui_discord_disconnect_stale')).toBeNull();
+  expect(alert).toHaveTextContent('com_ui_discord_rate_limited');
+  await user.click(confirm());
+  await waitFor(() => expect(dataService.disconnectDiscordGuild).toHaveBeenCalledTimes(2));
+  expect(dataService.disconnectDiscordGuild).toHaveBeenLastCalledWith(
+    guild.installationId,
+    guild.revision,
+  );
+  await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+});
+
+test.each([
+  ['committed before the failure was reported', guilds(changed)],
+  ['changed by another administrator', guilds({ ...guild, revision: 'guild-r2' })],
+  ['removed', guilds()],
+])('blocks the retry once the refreshed reads show the server %s', async (_name, reads) => {
+  const { user } = await page();
+  jest.mocked(dataService.getDiscordGuilds).mockResolvedValue(reads);
+  const { dialog, alert, confirm } = await failedDisconnect(user);
+  await waitFor(() => expect(alert).toHaveTextContent('com_ui_discord_disconnect_stale'));
+  expect(within(dialog).queryByText('com_ui_discord_rate_limited')).toBeNull();
+  expect(confirm()).toBeDisabled();
+  expect(alert).toHaveFocus();
+  expect(dataService.disconnectDiscordGuild).toHaveBeenCalledTimes(1);
+});
+
+test.each([
+  ['Cancel', (user: User, cancel: HTMLElement) => user.click(cancel)],
+  ['Escape', (user: User) => user.keyboard('{Escape}')],
+])(
+  'returns focus to the disconnect control only after the reads behind a failure settle on %s',
+  async (_name, dismiss) => {
+    const { user } = await page();
+    const reads = deferred<{ guilds: DiscordGuild[] }>();
+    const { origin, cancel } = await failedDisconnect(user, () => reads.promise);
+    await dismiss(user, cancel());
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(origin).toBeDisabled();
+    expect(origin).not.toHaveFocus();
+    await act(async () => reads.resolve(guilds(guild)));
+    await waitFor(() => expect(origin).toBeEnabled());
+    await waitFor(() => expect(origin).toHaveFocus());
+  },
+);
+
+test('moves focus to the load failure when the reads fail behind a failed disconnect, then back after a retry', async () => {
+  const { user } = await page();
+  const { origin, cancel } = await failedDisconnect(user, () =>
+    Promise.reject(new Error('network')),
+  );
+  await user.click(cancel());
+  const failure = (await screen.findByText('com_ui_discord_error')).closest(
+    '[role="alert"]',
+  ) as HTMLElement;
+  await waitFor(() => expect(failure).toHaveFocus());
+  expect(origin).toBeDisabled();
+  expect(origin).not.toHaveFocus();
+  await user.click(within(failure).getByRole('button', { name: 'com_ui_retry' }));
+  await waitFor(() => expect(origin).toBeEnabled());
+  await waitFor(() => expect(origin).toHaveFocus());
+});
+
+test('falls back to the servers heading when the refreshed list no longer has the disconnect control', async () => {
+  const { user } = await page();
+  jest.mocked(dataService.getDiscordGuilds).mockResolvedValue(guilds(changed));
+  const { origin, cancel } = await failedDisconnect(user);
+  await waitFor(() => expect(origin).not.toBeInTheDocument());
+  await user.click(cancel());
+  await waitFor(() => expect(headingOf('com_ui_discord_guilds')).toHaveFocus());
+});
+
+test('returns focus to the servers heading once a disconnect succeeds and its reads settle', async () => {
+  const { user } = await page();
+  jest.mocked(dataService.getDiscordGuilds).mockResolvedValue(guilds(changed));
+  const { origin, confirm } = await openConfirmation(user);
+  await user.click(confirm());
+  await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+  await waitFor(() => expect(origin).not.toBeInTheDocument());
+  await waitFor(() => expect(headingOf('com_ui_discord_guilds')).toHaveFocus());
+});
+
+test('moves focus to the load failure when the reads fail after a disconnect succeeds, then to the servers heading after a retry', async () => {
+  const { user } = await page();
+  jest.mocked(dataService.getDiscordGuilds).mockRejectedValueOnce(new Error('network'));
+  const { confirm } = await openConfirmation(user);
+  await user.click(confirm());
+  const failure = (await screen.findByText('com_ui_discord_error')).closest(
+    '[role="alert"]',
+  ) as HTMLElement;
+  await waitFor(() => expect(failure).toHaveFocus());
+  jest.mocked(dataService.getDiscordGuilds).mockResolvedValue(guilds(changed));
+  await user.click(within(failure).getByRole('button', { name: 'com_ui_retry' }));
+  await waitFor(() => expect(headingOf('com_ui_discord_guilds')).toHaveFocus());
+});
+
+test('does not move focus in the next account when the previous account settles after a failed disconnect', async () => {
+  const { user, client, rerender } = await page();
+  const reads = deferred<{ guilds: DiscordGuild[] }>();
+  const { origin, cancel } = await failedDisconnect(user, () => reads.promise);
+  await user.click(cancel());
+  await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+  expect(origin).toBeDisabled();
+  rerender(
+    <QueryClientProvider client={client}>
+      <Discord userId="next-admin" tenantId="other-org" />
+    </QueryClientProvider>,
+  );
+  const next = await screen.findByRole('button', { name: 'com_ui_discord_disconnect_named' });
+  await waitFor(() => expect(next).toBeEnabled());
+  await act(async () => reads.resolve(guilds(guild)));
+  expect(next).toBeEnabled();
+  expect(next).not.toHaveFocus();
+  expect(document.body).toHaveFocus();
+});
+
+test('does not touch the document when the view unmounts before the reads behind a failed disconnect settle', async () => {
+  const { user, unmount } = await page();
+  const reads = deferred<{ guilds: DiscordGuild[] }>();
+  const { cancel } = await failedDisconnect(user, () => reads.promise);
+  await user.click(cancel());
+  await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+  unmount();
+  await act(async () => reads.resolve(guilds(guild)));
+  expect(document.body).toHaveFocus();
+});
