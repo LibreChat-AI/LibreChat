@@ -1353,17 +1353,16 @@ const updateAgentHandler = async (req, res) => {
             }
           }
           updateData.tools = nextTools;
-          /** The agent's MCP tools are retained verbatim here, so carry its resolved
-           *  names across too. Left unset when the agent has none stored, so
-           *  `updateAgent` can still derive rather than being pinned to an empty
-           *  index that would strip agent-scoped access. */
-          if (existingAgent.mcpServerNames?.length) {
-            updateData.mcpServerNames = existingAgent.mcpServerNames;
-          }
+          /** Retained strings alone cannot authorize a previously unindexed server. */
+          updateData.mcpServerNames = existingAgent.mcpServerNames ?? [];
         }
       } else if (hasToolUpdate) {
         const existingToolSet = new Set(existingTools);
-        const newMCPTools = requestedMCPTools.filter((t) => !existingToolSet.has(t));
+        const indexedNames = existingAgent.mcpServerNames ?? [];
+        const newMCPTools = requestedMCPTools.filter((tool) => {
+          const [, name] = splitMCPToolKey(tool, indexedNames);
+          return !existingToolSet.has(tool) || !indexedNames.includes(name);
+        });
         /** Names resolved during authorization of the newly added tools. */
         const resolvedServerNames = new Set();
 
@@ -1405,11 +1404,7 @@ const updateAgentHandler = async (req, res) => {
             }
           }
         }
-        /** Supplying `[]` would pin the index empty and suppress `updateAgent`'s
-         *  derivation, so only assert it when the result is authoritative: either we
-         *  resolved names, or no MCP tool survives and the index genuinely is empty. */
-        const retainsMCPTools = (updateData.tools ?? []).some(isMCPTool);
-        if (resolvedServerNames.size > 0 || !retainsMCPTools) {
+        if (hasToolUpdate) {
           updateData.mcpServerNames = Array.from(resolvedServerNames);
         }
       }
@@ -1429,6 +1424,10 @@ const updateAgentHandler = async (req, res) => {
       Object.keys(updateData).length > 0
         ? await db.updateAgent({ id }, updateData, {
             updatingUserId: req.user.id,
+            expectedMCPAccess: {
+              names: existingAgent.mcpServerNames ?? [],
+              updatedAt: existingAgent.updatedAt,
+            },
           })
         : existingAgent;
 

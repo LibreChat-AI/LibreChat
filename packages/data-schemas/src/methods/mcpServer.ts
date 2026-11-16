@@ -137,7 +137,21 @@ export function createMCPServerMethods(
       .select('serverName')
       .lean<Array<{ serverName: string }>>();
 
+    const reservations = await mongoose.models.MCPName.find({
+      name: { $regex: matchingNamePattern },
+    })
+      .select('name')
+      .lean<Array<{ name: string }>>();
+    const referenced = await mongoose.models.Agent?.find({
+      mcpServerNames: { $regex: matchingNamePattern },
+    })
+      .select('mcpServerNames')
+      .lean<Array<{ mcpServerNames: string[] }>>();
     const existingNames = new Set([
+      ...(referenced ?? []).flatMap((agent) =>
+        agent.mcpServerNames.filter((name) => matchingNamePattern.test(name)),
+      ),
+      ...reservations.map((entry) => entry.name),
       ...existing.map((server) => server.serverName),
       ...Array.from(reservedServerNames).filter((serverName) =>
         matchingNamePattern.test(serverName),
@@ -188,6 +202,8 @@ export function createMCPServerMethods(
           serverName = `mcp-${nanoid(16)}`;
         }
 
+        await mongoose.models.MCPName.init();
+        await mongoose.models.MCPName.create({ name: serverName });
         const newServer = await MCPServer.create({
           serverName,
           normalizedServerName: normalizeServerName(serverName),
@@ -367,6 +383,12 @@ export function createMCPServerMethods(
    */
   async function deleteMCPServer(serverName: string): Promise<MCPServerDocument | null> {
     const MCPServer = mongoose.models.MCPServer as Model<MCPServerDocument>;
+    await mongoose.models.MCPName.init();
+    await mongoose.models.MCPName.updateOne(
+      { name: serverName },
+      { $setOnInsert: { name: serverName } },
+      { upsert: true },
+    );
     return await MCPServer.findOneAndDelete({ serverName }).lean<MCPServerDocument>();
   }
 
@@ -528,6 +550,19 @@ export function createMCPServerMethods(
     }
     const MCPServer = mongoose.models.MCPServer as Model<MCPServerDocument>;
     const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
+    const servers = await MCPServer.find({ _id: { $in: objectIds } })
+      .select('serverName')
+      .lean<Array<{ serverName: string }>>();
+    await mongoose.models.MCPName.init();
+    await Promise.all(
+      servers.map(({ serverName }) =>
+        mongoose.models.MCPName.updateOne(
+          { name: serverName },
+          { $setOnInsert: { name: serverName } },
+          { upsert: true },
+        ),
+      ),
+    );
     const result = await MCPServer.deleteMany({ _id: { $in: objectIds } });
     /** ACL entries are the retry discovery key for sole-owned servers, so they go last. */
     await mongoose.models.AclEntry.deleteMany({
