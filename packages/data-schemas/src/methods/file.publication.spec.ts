@@ -67,7 +67,7 @@ describe('Run artifact persistence', () => {
   afterAll(async () => {
     await mongoose.disconnect();
     mongoose.deleteModel('File');
-    await mongo.stop();
+    await mongo?.stop();
   });
 
   it('claims a stable UUID without exposing an incomplete file record', async () => {

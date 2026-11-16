@@ -6,6 +6,7 @@ import {
   Alert,
   Button,
   IconButton,
+  InfoHoverCard,
   OGDialog,
   OGDialogContent,
   OGDialogHeader,
@@ -13,7 +14,6 @@ import {
   OGDialogDescription,
   OGDialogFooter,
   OGDialogClose,
-  InfoHoverCard,
   Spinner,
   TooltipAnchor,
 } from '@librechat/client';
@@ -22,6 +22,7 @@ import PeoplePickerSearchItem from '~/components/Sharing/PeoplePicker/PeoplePick
 import { SearchPicker } from '~/components/Sharing/PeoplePicker/SearchPicker';
 import PrincipalAvatar from '~/components/Sharing/PrincipalAvatar';
 import { useLocalize } from '~/hooks';
+import Loading from './Loading';
 
 function ManagerSearch({
   workspaceId,
@@ -183,7 +184,7 @@ export default function BotManagers({
             <OGDialogDescription>{workspace.teamName}</OGDialogDescription>
           </OGDialogHeader>
           <div className="space-y-4 py-2 text-sm">
-            {query.isFetching && <Spinner className="size-5" />}
+            {query.isFetching && <Loading />}
             {(query.isError || mutation.isError) && (
               <Alert variant="error">
                 <p>{localize('com_ui_slack_bot_managers_error')}</p>
@@ -247,7 +248,7 @@ export default function BotManagers({
                         )
                       }
                     >
-                      {localize('com_nav_tool_remove')}
+                      {localize('com_ui_remove')}
                     </Button>
                   </div>
                 ))}
@@ -261,11 +262,7 @@ export default function BotManagers({
           </div>
           <OGDialogFooter className="sm:justify-between">
             <OGDialogClose asChild>
-              <Button
-                variant="outline"
-                aria-label={localize('com_ui_cancel')}
-                disabled={mutation.isLoading}
-              >
+              <Button variant="outline" disabled={mutation.isLoading}>
                 {localize('com_ui_cancel')}
               </Button>
             </OGDialogClose>

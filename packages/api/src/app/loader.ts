@@ -9,10 +9,12 @@ import {
   EImageOutputType,
   getMaxSubagents,
   setMaxSubagents,
+  setPiiRegexProgramSizer,
 } from 'librechat-data-provider';
 import type { TCustomConfig, TEndpoint } from 'librechat-data-provider';
 import type { ConfigOverrideIssue } from '@librechat/data-schemas';
 import type { ZodIssue } from 'zod';
+import { getPiiRegexProgramSize } from '~/protection/programSize';
 import { serviceRequestBudget } from '~/utils/timeouts';
 import { checkConfigPolicyLinks } from './interface';
 import { expandCustomEndpoint } from './params';
@@ -294,6 +296,9 @@ export function createCustomConfigLoader({
       reportPolicyLinkCheck(configPath, linkCheck.dropped);
 
       setMaxSubagents(getConfiguredMaxSubagents(loadedConfig));
+      /* `filters` PII patterns are sized by RE2, which the shared schema cannot carry. Every
+         entry point loads config through here, the CLI scripts included, so register it here. */
+      setPiiRegexProgramSizer(getPiiRegexProgramSize);
       const result = configSchema.strict().safeParse(loadedConfig);
       if (
         result.error?.issues.some(

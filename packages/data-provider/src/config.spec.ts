@@ -37,6 +37,38 @@ import {
   isSafeLinkUrl,
 } from './config';
 
+describe('local configuration cache limits', () => {
+  it('defaults an explicit block and keeps the policy deployment-only', () => {
+    expect(configSchema.parse({ version: '1.3.18' }).configCache).toBeUndefined();
+    expect(configSchema.parse({ version: '1.3.18', configCache: {} }).configCache).toEqual({
+      maxBytes: 16 * 1024 * 1024,
+      maxEntries: 1000,
+    });
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS.configCache).toBe('operator');
+  });
+
+  it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1, '100'])(
+    'rejects invalid bounds %p',
+    (value) => {
+      for (const field of ['maxBytes', 'maxEntries']) {
+        expect(
+          configSchema.safeParse({ version: '1.3.18', configCache: { [field]: value } }).success,
+        ).toBe(false);
+      }
+    },
+  );
+
+  it('accepts explicit positive bounds and rejects unknown settings', () => {
+    expect(
+      configSchema.parse({ version: '1.3.18', configCache: { maxBytes: 4096, maxEntries: 2 } })
+        .configCache,
+    ).toEqual({ maxBytes: 4096, maxEntries: 2 });
+    expect(configSchema.safeParse({ version: '1.3.18', configCache: { maxSize: 1 } }).success).toBe(
+      false,
+    );
+  });
+});
+
 describe('independent browser replay opt-in', () => {
   it('preserves absent configuration for existing environment-based RUM deployments', () => {
     expect(configSchema.parse({ version: '1.3.17' }).telemetry).toBeUndefined();
@@ -3085,6 +3117,8 @@ describe('subagent activity policy', () => {
       endpoints: { agents: { subagentActivity: {} } },
     });
     expect(parsed.endpoints?.agents?.subagentActivity).toEqual({
+      generationJobs: true,
+      generationContentBytes: 4_194_304,
       contentRecoveryEnabled: false,
       contentPageBytes: 262_144,
       contentFlushMs: 250,
@@ -3482,4 +3516,67 @@ describe('complete channel operator configuration', () => {
       ).toBe(false);
     },
   );
+});
+
+describe('remote SDK runtime configuration', () => {
+  it('keeps module registrations and supplies remote transport defaults', () => {
+    const result = agentsEndpointSchema.parse({
+      sdkRuntimes: {
+        local: { module: './local.cjs' },
+        remote: { remote: { url: 'wss://runtime.example/sdk', secret: '${SDK_RUNTIME_SECRET}' } },
+      },
+    });
+    expect(result?.sdkRuntimes?.local).toEqual({ module: './local.cjs', roles: ['ADMIN'] });
+    expect(result?.sdkRuntimes?.remote).toEqual({
+      roles: ['ADMIN'],
+      remote: {
+        url: 'wss://runtime.example/sdk',
+        secret: '${SDK_RUNTIME_SECRET}',
+        connectTimeoutMs: 10000,
+        rpcTimeoutMs: 60000,
+        maxFrameBytes: 1048576,
+        maxBufferedBytes: 4194304,
+        maxRunMs: 600000,
+      },
+    });
+  });
+  it('enables recovery explicitly with bounded defaults', () => {
+    const remote = (recovery: unknown) => ({
+      sdkRuntimes: {
+        test: { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', recovery } },
+      },
+    });
+    const registration = agentsEndpointSchema.parse(remote({}))?.sdkRuntimes?.test;
+    expect(
+      registration && 'remote' in registration ? registration.remote.recovery : undefined,
+    ).toEqual({
+      maxDisconnectMs: 15000,
+      retryDelayMs: 250,
+      maxJournalBytes: 67108864,
+    });
+    const routed = agentsEndpointSchema.parse(
+      remote({ routes: { 'worker-a': 'wss://worker-a.internal/sdk' } }),
+    )?.sdkRuntimes?.test;
+    expect(routed && 'remote' in routed ? routed.remote.recovery?.routes : undefined).toEqual({
+      'worker-a': 'wss://worker-a.internal/sdk',
+    });
+    for (const recovery of [
+      { routes: { 'worker-a': 'https://worker-a.internal/sdk' } },
+      { maxDisconnectMs: 0 },
+      { maxDisconnectMs: 60000 },
+      { retryDelayMs: -1 },
+      { maxJournalBytes: 0 },
+      { unknown: true },
+    ])
+      expect(agentsEndpointSchema.safeParse(remote(recovery)).success).toBe(false);
+  });
+  it.each([
+    { module: './local.cjs', remote: { url: 'wss://runtime.example/sdk', secret: 'secret' } },
+    { remote: { url: 'https://runtime.example/sdk', secret: 'secret' } },
+    { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', maxFrameBytes: 0 } },
+  ])('rejects ambiguous or invalid transport registrations', (registration) => {
+    expect(agentsEndpointSchema.safeParse({ sdkRuntimes: { invalid: registration } }).success).toBe(
+      false,
+    );
+  });
 });

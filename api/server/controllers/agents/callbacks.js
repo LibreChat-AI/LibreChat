@@ -20,6 +20,7 @@ const {
 const {
   sendEvent,
   getModelEndUsage,
+  collectGoogleThoughtSignatures,
   computeUsageCostUSD,
   captureResponseAccountingUsage,
   GenerationJobManager,
@@ -95,17 +96,8 @@ async function enqueueCodeOutputBatch({
 class ModelEndHandler {
   /**
    * @param {Array<UsageMetadata>} collectedUsage
-   * @param {Record<string, string> | null} [collectedThoughtSignatures] Map of
-   *   `tool_call_id → thoughtSignature` accumulated across `chat_model_end`
-   *   events. Used to persist Vertex Gemini 3 thought signatures across DB
-   *   round-trips so resumed conversations don't 400 on the next API call.
-   *   Each `model_end` may emit multiple tool calls (one per LLM cycle in a
-   *   tool-using turn); per-id storage preserves the mapping so each tool
-   *   call's signature can be restored onto the right reconstructed
-   *   AIMessage rather than being concentrated on the last one.
-   *   Optional; when `null`, the handler is a no-op for signatures. Non-Vertex
-   *   providers don't emit `additional_kwargs.signatures`, so capture is also
-   *   a no-op for them even when the map is provided.
+   * @param {import('@librechat/api').GoogleThoughtSignatures | null} [collectedThoughtSignatures]
+   *   Provider replay metadata accumulated across model calls and saved with the assistant row.
    * @param {(data: Record<string, unknown>) => Promise<void> | void} [emitUsage] Optional
    *   callback to stream per-call token usage to the client.
    */
@@ -156,6 +148,7 @@ class ModelEndHandler {
         });
       }
 
+      collectGoogleThoughtSignatures(this.collectedThoughtSignatures, data?.output);
       const usage = getModelEndUsage(data?.output);
       if (!usage) {
         return;
@@ -213,33 +206,8 @@ class ModelEndHandler {
           });
         } catch (err) {
           /** Best-effort telemetry: a failed emit (closed SSE, Redis publish
-           *  error) must not abort the handler before the thought-signature
-           *  capture below, or resumed tool-call requests lose that metadata */
+           *  error) must not abort the handler */
           logger.warn('[ModelEndHandler] Failed to emit token usage', err);
-        }
-      }
-
-      /**
-       * `additional_kwargs.signatures` is a flat array indexed by response
-       * part position (text + functionCall interleaved). `tool_calls` is
-       * just the function calls in their original order. Non-empty
-       * signatures correspond 1:1 with `tool_calls` in order — see
-       * `partsToSignatures` in `@langchain/google-common`. Walk both in a
-       * single pass to map each signature onto the right `tool_call.id`.
-       */
-      const signatures = data?.output?.additional_kwargs?.signatures;
-      const toolCalls = data?.output?.tool_calls;
-      if (
-        this.collectedThoughtSignatures &&
-        Array.isArray(signatures) &&
-        Array.isArray(toolCalls)
-      ) {
-        let toolIdx = 0;
-        for (const sig of signatures) {
-          if (typeof sig !== 'string' || sig.length === 0) continue;
-          if (toolIdx >= toolCalls.length) break;
-          const id = toolCalls[toolIdx++]?.id;
-          if (id) this.collectedThoughtSignatures[id] = sig;
         }
       }
     } catch (error) {

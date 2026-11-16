@@ -4,10 +4,14 @@ import { render } from '@testing-library/react';
 import { splitMarkdownIntoBlocks, splitMarkdownIntoBlocksUncached } from '@librechat/chat';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from './markdownConfig';
 import { ArtifactProvider, CodeBlockProvider, MessageContext } from '~/Providers';
+import { getLoadedRehypeModules, loadRehypeModules } from './rehype';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
 import MarkdownBlocks from './MarkdownBlocks';
 import { AppStores } from 'test/harness';
 import Markdown from './Markdown';
+
+/** KaTeX and highlight.js load on first need in the app; load them up front here. */
+beforeAll(() => loadRehypeModules());
 
 /**
  * Render benchmark comparing the previous whole-message renderer (one
@@ -77,7 +81,7 @@ const OldMarkdown = ({ content }: { content: string }) => (
         /** @ts-ignore */
         remarkPlugins={getRemarkPlugins()}
         /** @ts-ignore */
-        rehypePlugins={getRehypePlugins()}
+        rehypePlugins={getRehypePlugins(getLoadedRehypeModules())}
         components={getMarkdownComponents()}
       >
         {content}
@@ -92,7 +96,7 @@ const NewMarkdown = ({ content }: { content: string }) => (
     content={content}
     streaming={true}
     remarkPlugins={getRemarkPlugins()}
-    rehypePlugins={getRehypePlugins()}
+    rehypePlugins={getRehypePlugins(getLoadedRehypeModules())}
     components={getMarkdownComponents()}
   />
 );

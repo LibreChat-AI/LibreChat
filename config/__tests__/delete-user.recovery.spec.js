@@ -53,11 +53,11 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
     await db.query('DROP FUNCTION IF EXISTS reject_cancel()');
   });
   afterAll(async () => {
-    await db.close();
-    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-    await admin.close();
+    await db?.close();
+    await admin?.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin?.close();
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   });
   async function runCli(
     email,

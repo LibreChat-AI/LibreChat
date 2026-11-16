@@ -1,5 +1,11 @@
 import { memo } from 'react';
-import { Part as ChatPart, ToolPreparation, Container } from '@librechat/chat/components';
+import {
+  Part as ChatPart,
+  ToolCall,
+  ToolPreparation,
+  Container,
+  AskUserQuestionCall,
+} from '@librechat/chat/components';
 import {
   isBashProgrammaticToolCall,
   getAskUserQuestionPart,
@@ -44,7 +50,6 @@ import {
 } from './Parts';
 import { getCachedPreview, getPartKeyIndex } from '~/utils';
 import BackgroundTaskCall from './Parts/BackgroundTaskCall';
-import AskUserQuestionCall from './AskUserQuestionCall';
 import { isError } from './ToolOutput/OutputRenderer';
 import { ErrorMessage } from './MessageContent';
 import AskUserQuestion from './AskUserQuestion';
@@ -53,8 +58,8 @@ import ToolApproval from './ToolApproval';
 import AgentHandoff from './AgentHandoff';
 import CodeAnalyze from './CodeAnalyze';
 import WebSearch from './WebSearch';
-import ToolCall from './ToolCall';
 import Image from './Image';
+import './toolCallSlots';
 
 const isFailedImageCall = (
   output: string | null | undefined,

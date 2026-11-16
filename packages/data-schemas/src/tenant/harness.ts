@@ -44,9 +44,11 @@ export function createMongooseTenantHarness(engine: MongooseTenantEngine): Tenan
     },
 
     async teardown() {
-      await raw()
-        .drop()
-        .catch(() => undefined);
+      if (mongoose.connection.db) {
+        await raw()
+          .drop()
+          .catch(() => undefined);
+      }
       await mongoose.disconnect();
       await engine.release();
     },

@@ -6,6 +6,12 @@
   "main": "dist/index.cjs",
   "types": "./dist/index.d.cts",
   "exports": {
+    "./sdk": {
+      "require": {
+        "types": "./dist/sdk.d.cts",
+        "default": "./dist/sdk.cjs"
+      }
+    },
     ".": {
       "require": {
         "types": "./dist/index.d.cts",
@@ -39,7 +45,8 @@
     "test:cache-integration:cluster": "jest --testPathPatterns=\"src/cluster/.*\\.cache_integration\\.(spec|test)\\.ts$\" --coverage=false --runInBand",
     "test:cache-integration:mcp": "jest --testPathPatterns=\"src/mcp/.*\\.cache_integration\\.(spec|test)\\.ts$\" --coverage=false",
     "test:cache-integration:stream": "jest --testPathPatterns=\"\\.stream_integration\\.(spec|test)\\.ts$\" --coverage=false --runInBand --forceExit",
-    "test:cache-integration": "npm run test:cache-integration:core && npm run test:cache-integration:cluster && npm run test:cache-integration:mcp && npm run test:cache-integration:stream",
+    "test:cache-integration:sdk": "jest --testPathPatterns=src/agents/remoteSdk/recovery/.*cache_integration --coverage=false --runInBand",
+    "test:cache-integration": "npm run test:cache-integration:sdk && npm run test:cache-integration:core && npm run test:cache-integration:cluster && npm run test:cache-integration:mcp && npm run test:cache-integration:stream",
     "test:integration": "jest --testPathPatterns=\"\\.integration\\.(spec|test)\\.ts$\" --coverage=false --runInBand --forceExit",
     "test:s3-integration": "jest --testPathPatterns=\"src/storage/s3/.*\\.integration\\.spec\\.ts$\" --coverage=false --runInBand",
     "test:agents-integration": "jest --testPathPatterns=\"src/agents/.*\\.integration\\.spec\\.ts$\" --coverage=false --runInBand --forceExit",
@@ -113,12 +120,12 @@
     "@azure/identity": "^4.14.0",
     "@azure/storage-blob": "^12.30.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^4.2.2",
+    "@librechat/agents": "^4.2.5",
     "@librechat/data-schemas": "*",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/instrumentation-express": "^0.56.0",
-    "@opentelemetry/instrumentation-http": "^0.207.0",
+    "@opentelemetry/instrumentation-http": "^0.222.0",
     "@opentelemetry/instrumentation-ioredis": "^0.55.0",
     "@opentelemetry/instrumentation-mongodb": "^0.60.0",
     "@opentelemetry/instrumentation-mongoose": "^0.67.0",
@@ -157,7 +164,7 @@
     "mathjs": "^15.2.0",
     "memorystore": "^1.6.7",
     "mongodb": "^6.14.2",
-    "mongoose": "^8.24.1",
+    "mongoose": "^8.24.9",
     "nanoid": "^3.3.7",
     "node-fetch": "2.7.0",
     "pdfjs-dist": "^5.5.207",
@@ -182,6 +189,7 @@
     "protobufjs": "^7.6.5",
     "proxy-from-env": "^2.1.0",
     "re2js": "^2.9.1",
-    "@librechat/code": "file:../../vendor/code"
+    "@librechat/code": "file:../../vendor/code",
+    "ws": "^8.21.0"
   }
 }

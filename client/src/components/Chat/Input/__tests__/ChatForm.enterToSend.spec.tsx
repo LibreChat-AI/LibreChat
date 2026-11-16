@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { getDefaultStore, useAtom } from 'jotai';
 import { filesFamily, isSubmittingFamily } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
+import axios from 'axios';
 import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
@@ -10,13 +11,31 @@ import { HTML5Backend } from 'react-dnd-html5-backend';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { TFile, TConversation } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import type { TMessage, TFile, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
+import { createMessageCache } from '~/Providers/ChatHostContext';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { SteerHostTestProvider } from 'test/steerHost';
+import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
+
+const startupConfig = { interface: { contextUsage: true }, modelSpecs: { list: [] } };
+const originalAdapter = axios.defaults.adapter;
+
+beforeEach(() => {
+  axios.defaults.adapter = async (config) => {
+    if (config.url === '/api/config') {
+      return { data: startupConfig, status: 200, statusText: 'OK', headers: {}, config };
+    }
+    throw new Error('Composer fixture blocks external API requests');
+  };
+});
+
+afterEach(() => {
+  axios.defaults.adapter = originalAdapter;
+});
 
 const conversation = {
   conversationId: 'new',
@@ -31,6 +50,8 @@ const conversation = {
  * passes it, not the atom it used to read directly, so each value is covered.
  */
 function Harness({ enterToSend }: { enterToSend: boolean }) {
+  const queryClient = useQueryClient();
+  const messageCache = useMemo(() => createMessageCache(queryClient), [queryClient]);
   const [files, setFiles] = useAtom(filesFamily(0));
   const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
@@ -50,9 +71,20 @@ function Harness({ enterToSend }: { enterToSend: boolean }) {
         setFilesLoading,
         newConversation: () => undefined,
         handleStopGenerating: () => undefined,
-        stopGenerating: () => undefined,
-        getMessages: () => undefined,
-        setMessages: () => undefined,
+        stopGenerating: () => Promise.resolve(),
+        getMessages: (targetConversationId?: string | null) =>
+          messageCache.read(targetConversationId ?? conversation.conversationId ?? ''),
+        messagesKey: conversation.conversationId ?? '',
+        latestMessageId: undefined,
+        latestMessageDepth: undefined,
+        subscribeMessages: (onChange: () => void) =>
+          messageCache.subscribe(conversation.conversationId ?? '', onChange),
+        getMessagesRevision: () => messageCache.revision(conversation.conversationId ?? ''),
+        useLiveAttachments: () => ({}),
+        getMappingOptions: () => ({}),
+        feedbackEnabled: false,
+        setMessages: (messages: TMessage[]) =>
+          messageCache.write(conversation.conversationId ?? '', messages),
         ask: () => undefined,
         regenerate: () => undefined,
         setSiblingIdx: () => undefined,
@@ -64,8 +96,8 @@ function Harness({ enterToSend }: { enterToSend: boolean }) {
         setOptionSettings: () => undefined,
         handleRegenerate: () => undefined,
         handleContinue: () => undefined,
-      }) as unknown as React.ContextType<typeof ChatContext>,
-    [files, setFiles, isSubmitting],
+      }) satisfies React.ContextType<typeof ChatContext>,
+    [files, setFiles, isSubmitting, messageCache],
   );
 
   return (
@@ -85,8 +117,10 @@ function Harness({ enterToSend }: { enterToSend: boolean }) {
 
 function renderComposer({ enterToSend }: { enterToSend: boolean }) {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } },
   });
+  queryClient.setQueryData(startupConfigKey(true), startupConfig);
+  queryClient.setQueryData(startupConfigKey(false), startupConfig);
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 

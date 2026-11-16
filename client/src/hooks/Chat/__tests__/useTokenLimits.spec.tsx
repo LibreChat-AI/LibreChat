@@ -22,9 +22,9 @@ beforeEach(() => {
   }));
 });
 it.each([
-  ['vertexai', 'google'],
+  ['vertexai', 'vertexai'],
   ['Ollama', 'ollama'],
-])('requests %s under the served %s catalog', (provider, catalog) => {
+])('requests %s under the %s pricing identity', (provider, catalog) => {
   mockAgent = { id: 'agent_selected', provider, model: 'selected' };
   const { result } = renderHook(() =>
     useTokenLimits({ endpoint: 'agents', agent_id: 'agent_selected' } as TConversation),

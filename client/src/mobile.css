@@ -31,8 +31,11 @@
   }
 }
 
+/* Not a button its toolbar is concealing: this rule sits outside every cascade layer, so it
+   outranks the utilities that conceal one, and a rerun withheld during a run would stay on
+   screen and in the tab order. */
 @media (max-width: 1024px) {
-  .hover-button {
+  .hover-button:not([data-concealed]) {
     display: block;
     visibility: visible;
   }

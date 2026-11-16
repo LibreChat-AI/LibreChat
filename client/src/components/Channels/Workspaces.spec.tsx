@@ -380,7 +380,7 @@ test('a blocked popup is actionable and does not create an installation attempt'
   await user.click(
     await screen.findByRole('button', { name: /com_ui_slack_workspaces_connect(?:_another)?/ }),
   );
-  expect(screen.getByRole('alert')).toHaveTextContent('com_ui_slack_workspaces_error');
+  expect(screen.getByRole('alert')).toHaveTextContent('com_ui_slack_popup_blocked');
   expect(connect).not.toHaveBeenCalled();
 });
 

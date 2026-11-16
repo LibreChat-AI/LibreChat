@@ -1,0 +1,478 @@
+import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
+import { TriangleAlert } from 'lucide-react';
+import { cn, Input, Button, useLocalize } from '@librechat/client';
+import type { Agents } from 'librechat-data-provider';
+import type { KeyboardEvent, ReactNode } from 'react';
+import type { AskAnswerSubmit } from '../../../react/parts/ask';
+import { isCancelKey, isReboundSubmitChord, splitOtherOption } from '../../../core';
+import useArrivalFocus, { isFocusIdle } from '../../../react/parts/arrival';
+import { useOptionalChatSurface } from '../../../react/subagents/surface';
+import useAskQuestionsForm from '../../../react/parts/questionsForm';
+import AutoHeight from '../AutoHeight';
+import AskOptions from '../AskOptions';
+
+/**
+ * One bounded batch of `ask_user_question` items, presented a single question at
+ * a time. The batch arrives as one interrupt and submits as one answer map. The
+ * stepper is purely presentational, so Submit still waits until every question
+ * has an answer and Skip still declines the whole batch from any step.
+ */
+export default function AskUserQuestions({
+  actionId,
+  questions,
+  className,
+  headerAction,
+  focusOnArrival = false,
+  focusOnHandoff = false,
+  onEscape,
+  submitAskAnswer = () => undefined,
+}: {
+  actionId: string;
+  questions: Agents.AskUserQuestionBatchItem[];
+  className?: string;
+  /** This surface is the live pause's visible one, so the batch arriving may
+   *  take focus. A Share view or a hidden footprint copy leaves it alone. */
+  focusOnArrival?: boolean;
+  /** The batch was just moved onto this surface, which is on screen: it takes
+   *  focus whenever focus is idle, even after an earlier arrival did. */
+  focusOnHandoff?: boolean;
+  /** The surface's own control (move to chat, move back), set in the
+   *  question's header row so it shares the form's inset. */
+  headerAction?: ReactNode;
+  /** Escape on this surface. Without one, Escape skips the batch. */
+  onEscape?: () => void;
+  /** Resumes the run. Absent, the card still renders and submit does nothing. */
+  submitAskAnswer?: AskAnswerSubmit;
+}): ReactNode {
+  const localize = useLocalize();
+  const promptId = useId();
+  const form = useAskQuestionsForm(actionId, questions, submitAskAnswer);
+  const composerBindings = useOptionalChatSurface()?.composerBindings;
+  const { goToStep, selectOption } = form;
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stepRef = useRef<HTMLFieldSetElement>(null);
+  const answerRef = useRef<HTMLInputElement>(null);
+  /** Set only when a choice click or an Enter is about to swap the step out
+   *  from under focus, which would otherwise drop focus to <body> mid-batch. */
+  const refocusRef = useRef(false);
+
+  const total = questions.length;
+  const stepped = total > 1;
+  const activeIndex = form.step;
+  const isLastStep = activeIndex === total - 1;
+  /** Narrower than `locked`: an expired or errored batch is unanswerable but
+   *  still worth paging through, so only an in-flight submit freezes the steps. */
+  const navLocked = form.status === 'submitting';
+
+  const firstUnanswered = useMemo(() => {
+    for (let index = 0; index < questions.length; index++) {
+      if (!Object.prototype.hasOwnProperty.call(form.answers, questions[index].id)) {
+        return index;
+      }
+    }
+    return -1;
+  }, [questions, form.answers]);
+
+  const handleSelectOption = useCallback(
+    (question: Agents.AskUserQuestionBatchItem, value: string) => {
+      selectOption(question, value);
+      if (question.multiSelect === true || activeIndex >= total - 1) {
+        return;
+      }
+      refocusRef.current = true;
+      goToStep(activeIndex + 1);
+    },
+    [activeIndex, goToStep, selectOption, total],
+  );
+
+  /**
+   * Focus the step's control that is ready to answer: its picked option, else
+   * the answer field. Each is labelled within the step, so a screen reader
+   * still announces the new question. The step itself is the fallback when
+   * every control is locked.
+   *
+   * An unpicked option is only a target on arrival (`firstOption`). After a
+   * step change the key that caused it may still be down: a held or
+   * double-tapped Enter on a focused option is its click, which would pick it,
+   * advance again, and on the last step confirm the pick and submit the batch.
+   */
+  const focusStep = useCallback(
+    ({ firstOption = false, ...options }: FocusOptions & { firstOption?: boolean } = {}) => {
+      const step = stepRef.current;
+      if (step == null) {
+        return;
+      }
+      const target =
+        step.querySelector<HTMLElement>('button[data-selected]:not(:disabled)') ??
+        (firstOption ? step.querySelector<HTMLElement>('button:not(:disabled)') : null) ??
+        (answerRef.current?.disabled === false ? answerRef.current : null) ??
+        step;
+      target.focus(options);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (scrollRef.current != null) {
+      scrollRef.current.scrollTop = 0;
+    }
+    if (!refocusRef.current) {
+      return;
+    }
+    refocusRef.current = false;
+    focusStep();
+  }, [activeIndex, focusStep]);
+
+  /**
+   * A batch moved onto this surface by the user's own handoff always takes
+   * focus: the control that did it is gone or hidden (Safari keeps focus on a
+   * clicked button's previous owner, which may be the now-inert card), so
+   * there is nothing of the user's to protect.
+   */
+  const handoffRef = useRef({
+    focusOnHandoff,
+    locked: form.locked,
+    focusStep,
+    markArrivalFocused: form.markArrivalFocused,
+  });
+  handoffRef.current = {
+    focusOnHandoff,
+    locked: form.locked,
+    focusStep,
+    markArrivalFocused: form.markArrivalFocused,
+  };
+  /** Mount only: a handoff is the surface appearing, not a later prop change. */
+  useEffect(() => {
+    const current = handoffRef.current;
+    if (!current.focusOnHandoff || current.locked) {
+      return;
+    }
+    current.focusStep({ firstOption: true, preventScroll: true });
+    current.markArrivalFocused();
+  }, []);
+
+  /**
+   * An arriving batch puts the user on the first question's controls once it
+   * is on screen, but only when focus is idle then, so a draft or any other
+   * control the user is in keeps focus. It happens once per batch: moving it
+   * between the popover and the chat is not a new arrival.
+   */
+  const latestFormRef = useRef(form);
+  latestFormRef.current = form;
+  useArrivalFocus(
+    focusOnArrival && !focusOnHandoff && !form.locked && !form.arrivalFocused,
+    stepRef,
+    () => {
+      const current = latestFormRef.current;
+      if (current.locked || current.arrivalFocused || !isFocusIdle()) {
+        return;
+      }
+      focusStep({ firstOption: true, preventScroll: true });
+      if (stepRef.current?.contains(document.activeElement) === true) {
+        current.markArrivalFocused();
+      }
+    },
+  );
+
+  if (form.status === 'submitted') {
+    return null;
+  }
+
+  if (questions[activeIndex] == null) {
+    return null;
+  }
+
+  /** Only worth surfacing when the gap is somewhere the user cannot see: the
+   *  last step's own blank answer field already explains a disabled Submit. */
+  const remaining = total - Object.keys(form.answers).length;
+  const showRemaining =
+    stepped &&
+    isLastStep &&
+    !form.locked &&
+    firstUnanswered >= 0 &&
+    firstUnanswered !== activeIndex;
+
+  const question = questions[activeIndex];
+  const { choices, otherLabel } = splitOtherOption(question.options);
+  const selected = Object.prototype.hasOwnProperty.call(form.state.selected, question.id)
+    ? form.state.selected[question.id]
+    : [];
+  const selectedIndices = choices.flatMap((option, optionIndex) =>
+    selected.includes(option.value) ? [optionIndex] : [],
+  );
+  const text = Object.prototype.hasOwnProperty.call(form.state.text, question.id)
+    ? form.state.text[question.id]
+    : '';
+
+  /** Confirm the current answer: the next step, or the batch on the last one. */
+  const confirmStep = () => {
+    if (!isLastStep) {
+      if (!navLocked) {
+        refocusRef.current = true;
+        goToStep(activeIndex + 1);
+      }
+      return;
+    }
+    form.submit();
+  };
+
+  /**
+   * Escape is the surface's way out when it has one (the popover moves the
+   * batch to the chat), else Skip. Skip only fires before anything is
+   * answered, so a stray Escape cannot discard answers and resume the run.
+   */
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (isCancelKey(event.nativeEvent) && !event.nativeEvent.isComposing) {
+      if (onEscape != null) {
+        event.preventDefault();
+        onEscape();
+        return;
+      }
+      if (form.locked || Object.keys(form.answers).length > 0) {
+        return;
+      }
+      event.preventDefault();
+      form.skip();
+      return;
+    }
+    /* Picking and confirming stay separate (WCAG 3.2.2): Enter on an option is
+       its click, so a pick never submits by itself. Enter on the single-select
+       option that is ALREADY the answer confirms that answer, like Enter in the
+       field: the next step, or the batch. The handler sits on this surface
+       rather than the fieldset, which is not an interactive element. */
+    const target = event.target;
+    if (
+      event.key !== 'Enter' ||
+      event.repeat ||
+      event.shiftKey ||
+      event.altKey ||
+      question.multiSelect === true ||
+      !(target instanceof HTMLButtonElement) ||
+      target.getAttribute('aria-pressed') !== 'true'
+    ) {
+      return;
+    }
+    event.preventDefault();
+    confirmStep();
+  };
+
+  return (
+    <div className={cn('flex min-h-0 flex-col', className)} onKeyDown={handleKeyDown}>
+      {/* Only the active step renders, laid out at its final size at once.
+          One `AutoHeight` holds everything above the buttons and clips only at
+          its bottom edge, so the header and title stay put and the footer
+          rides that edge as the card eases to the new height. */}
+      <AutoHeight>
+        {stepped && (
+          <p className="sr-only" aria-live="polite">
+            {localize('com_ui_question_step', { 0: activeIndex + 1, 1: total })}
+          </p>
+        )}
+        <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 px-3 pt-3">
+          {/* Bounded so a long prompt scrolls rather than pushing the composer
+              popover past the top of the viewport. */}
+          <div className="max-h-[25vh] min-w-0 flex-1 overflow-y-auto">
+            {question.header != null && question.header !== '' && (
+              <p className="mb-1 text-xs font-medium">{question.header}</p>
+            )}
+            <p
+              id={promptId}
+              className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]"
+            >
+              {question.question}
+            </p>
+            {question.description != null && question.description.length > 0 && (
+              <p className="mt-0.5 text-sm [overflow-wrap:anywhere]">{question.description}</p>
+            )}
+          </div>
+          {(stepped || headerAction != null) && (
+            <div className="flex shrink-0 items-center gap-1">
+              {stepped && (
+                <div
+                  role="group"
+                  aria-label={localize('com_ui_question_navigation')}
+                  className="flex items-center"
+                >
+                  {questions.map((item, index) => {
+                    const isAnswered = Object.prototype.hasOwnProperty.call(form.answers, item.id);
+                    const isActive = index === activeIndex;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        disabled={navLocked}
+                        aria-current={isActive ? 'step' : undefined}
+                        aria-label={localize(
+                          isAnswered
+                            ? 'com_ui_question_step_answered'
+                            : 'com_ui_question_step_unanswered',
+                          { 0: index + 1 },
+                        )}
+                        className="flex h-7 items-center justify-center px-1"
+                        onClick={() => goToStep(index)}
+                      >
+                        <span
+                          className={cn(
+                            'h-2 rounded-full transition-all duration-300 ease-out motion-reduce:transition-none',
+                            isActive ? 'w-4' : 'w-2',
+                            isAnswered ? 'bg-surface-submit' : 'bg-border-heavy',
+                          )}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {headerAction}
+            </div>
+          )}
+        </div>
+        {/* `pb-1 -mb-1` keeps the answer field's focus ring inside the padding
+          box, so focusing it never counts as overflow and draws a scrollbar. */}
+        <div ref={scrollRef} className="-mb-1 max-h-[45vh] overflow-y-auto px-3 pb-1">
+          <fieldset
+            key={question.id}
+            ref={stepRef}
+            tabIndex={-1}
+            aria-labelledby={promptId}
+            className="flex flex-col gap-2 pt-3 outline-hidden"
+          >
+            {choices.length > 0 && (
+              <AskOptions
+                options={choices}
+                multiSelect={question.multiSelect === true}
+                checked={selectedIndices}
+                selected={question.multiSelect === true ? null : (selectedIndices[0] ?? null)}
+                selectedIsAnswer
+                locked={form.locked || text.trim().length > 0}
+                onActivate={(optionIndex) =>
+                  handleSelectOption(question, choices[optionIndex].value)
+                }
+                className="flex flex-col"
+              />
+            )}
+            <Input
+              ref={answerRef}
+              value={text}
+              disabled={form.locked}
+              onChange={(event) => form.setText(question, event.target.value)}
+              onKeyDown={(event) => {
+                /* The composer popover sits inside the chat form, where Enter in a
+                   single-line field would submit the composer draft instead.
+                   Enter (or Ctrl/Cmd+Enter) confirms this answer: the next step,
+                   or the batch, and so does a submit shortcut rebound off Enter.
+                   Shift+Enter and Alt+Enter never submit, as in the
+                   composer, and neither does a held Enter repeating into the next
+                   step; those are still kept from submitting the form. An Enter
+                   that confirms an IME composition is left alone, with the same
+                   Safari fallback as the composer. */
+                const composing =
+                  event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
+                if (
+                  !composing &&
+                  composerBindings != null &&
+                  isReboundSubmitChord(event.nativeEvent, composerBindings)
+                ) {
+                  event.preventDefault();
+                  if (!event.repeat) {
+                    confirmStep();
+                  }
+                  return;
+                }
+                if (event.key !== 'Enter' || composing) {
+                  return;
+                }
+                event.preventDefault();
+                if (event.repeat || event.shiftKey || event.altKey) {
+                  return;
+                }
+                confirmStep();
+              }}
+              placeholder={otherLabel ?? localize('com_ui_your_answer')}
+              aria-label={`${question.question} ${localize('com_ui_your_answer')}`}
+            />
+          </fieldset>
+        </div>
+        <div className="shrink-0 px-3">
+          {(form.status === 'error' || form.status === 'expired') && (
+            <div className="text-text-warning flex items-center gap-1.5 pt-2 text-xs">
+              <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+              {form.status === 'expired'
+                ? localize('com_ui_approval_expired')
+                : localize('com_ui_ask_answer_error')}
+            </div>
+          )}
+          {showRemaining && (
+            <button
+              type="button"
+              className="text-text-secondary hover:text-text-primary pt-2 text-start text-xs select-none hover:underline"
+              onClick={() => goToStep(firstUnanswered)}
+            >
+              {localize(
+                remaining === 1 ? 'com_ui_questions_remaining_one' : 'com_ui_questions_remaining',
+                { count: remaining, 0: remaining },
+              )}
+            </button>
+          )}
+        </div>
+      </AutoHeight>
+      <div
+        className={cn(
+          'flex shrink-0 items-center gap-2 p-3',
+          stepped ? 'justify-between' : 'justify-end',
+        )}
+      >
+        <Button
+          type="button"
+          className="select-none"
+          size="sm"
+          variant="outline"
+          disabled={form.locked}
+          onClick={form.skip}
+        >
+          {localize('com_ui_skip')}
+        </Button>
+        <div className="flex items-center gap-2">
+          {stepped && (
+            <Button
+              type="button"
+              className="select-none"
+              size="sm"
+              variant="outline"
+              disabled={navLocked || activeIndex === 0}
+              onClick={() => goToStep(activeIndex - 1)}
+            >
+              {localize('com_ui_back')}
+            </Button>
+          )}
+          {isLastStep ? (
+            <Button
+              type="button"
+              className="select-none"
+              size="sm"
+              variant="submit"
+              disabled={!form.canSubmit}
+              onClick={form.submit}
+            >
+              {form.status === 'submitting'
+                ? localize('com_ui_submitting')
+                : localize('com_ui_submit')}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              className="select-none"
+              size="sm"
+              variant="submit"
+              disabled={navLocked}
+              onClick={() => goToStep(activeIndex + 1)}
+            >
+              {localize('com_ui_next')}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
