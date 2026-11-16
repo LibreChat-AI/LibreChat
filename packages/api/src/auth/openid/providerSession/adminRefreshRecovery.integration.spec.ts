@@ -9,11 +9,15 @@ import type {
   AdminRefreshGrantDeps,
   BuildAdminRefreshProviderSessionDepsInput,
 } from './adminRefreshDeps';
+import type { OpenIDRefreshRecoveryDeps } from '~/auth/openid/recovery';
+import type { SharedOpenIDRefreshResult } from '~/auth/openid/types';
 import type { RefreshTokenBridgeDeps } from '~/auth/openid/bridge';
 import type { ResolvedBackchannelLogoutConfig } from './config';
 import type { TokenResult } from '~/auth/openid/flight';
 import type { RefreshTokenset } from '~/auth/refresh';
 import { prepareAdminOpenIdRefresh, runAdminOpenIdRefreshGrant } from './adminRefreshDeps';
+import { createOpenIDRefreshRecoveryService } from '~/auth/openid/recovery';
+import { createOpenIDRefreshFlightService } from '~/auth/openid/flight';
 import { createRefreshTokenBridgeService } from '~/auth/openid/bridge';
 import { createRefreshTokenBridgeIdentity } from '~/utils/identity';
 import { createProviderSessionAuthorizer } from './authorize';
@@ -876,3 +880,461 @@ describe.each(['record', 'enforce'] as const)('admin refresh recovery (%s mode)'
     expect(bridge?.refreshToken).toBe(`${A}-r-r`);
   });
 });
+
+/** The real flight service on the same database, as the admin route and the browser refresh
+ *  controller wire it. Encryption is the identity function. */
+function makeRealFlightService() {
+  return createOpenIDRefreshFlightService({
+    db: {
+      acquireOpenIDRefreshFlight: methods.acquireOpenIDRefreshFlight,
+      completeOpenIDRefreshFlight: methods.completeOpenIDRefreshFlight,
+      renewOpenIDRefreshFlight: methods.renewOpenIDRefreshFlight,
+      failOpenIDRefreshFlight: methods.failOpenIDRefreshFlight,
+      revokeOpenIDRefreshFlight: methods.revokeOpenIDRefreshFlight,
+      findOpenIDRefreshFlight: methods.findOpenIDRefreshFlight,
+      claimOpenIDRefreshFlightDelivery: methods.claimOpenIDRefreshFlightDelivery,
+      releaseOpenIDRefreshFlightDelivery: methods.releaseOpenIDRefreshFlightDelivery,
+    } as Parameters<typeof createOpenIDRefreshFlightService>[0]['db'],
+    logger: makeLogger(),
+    encrypt: async (value: string) => value,
+    decrypt: async (value: string) => value,
+  });
+}
+
+type RealFlightService = ReturnType<typeof makeRealFlightService>;
+type BridgeService = Awaited<ReturnType<typeof makeBridgeService>>;
+
+/** The grant deps the admin route passes, backed by the real flight and bridge services. */
+function makeRealGrantDeps(
+  flights: RealFlightService,
+  bridgeService: BridgeService,
+): AdminRefreshGrantDeps {
+  return {
+    createRefreshTokenBridgeFlightKey: bridgeService.createRefreshTokenBridgeFlightKey,
+    createAdminRefreshGrantFlightKey: (
+      bridgeService as Partial<Pick<BridgeService, 'createAdminRefreshGrantFlightKey'>>
+    ).createAdminRefreshGrantFlightKey,
+    acquireOpenIDRefreshFlight: flights.acquireOpenIDRefreshFlight,
+    completeOpenIDRefreshFlight: flights.completeOpenIDRefreshFlight,
+    assertOpenIDRefreshFlightAvailable: flights.assertOpenIDRefreshFlightAvailable,
+    waitForOpenIDRefreshFlight: flights.waitForOpenIDRefreshFlight,
+    withOpenIDRefreshFlightLease: flights.withOpenIDRefreshFlightLease,
+  };
+}
+
+function bridgeFlightKey(bridgeService: BridgeService, oldRefreshToken: string): string {
+  const key = bridgeService.createRefreshTokenBridgeFlightKey({
+    oldRefreshToken,
+    userId: ADMIN_USER_ID,
+    openidIssuer: ISSUER,
+  });
+  if (!key) throw new Error('bridge flight key is unavailable');
+  return key;
+}
+
+/** Completes a flight the way another writer does: acquire, then complete with `tokens`. */
+async function completeFlightAs(
+  flights: RealFlightService,
+  key: string,
+  tokens: TokenResult | SharedOpenIDRefreshResult,
+): Promise<void> {
+  const flight = await flights.acquireOpenIDRefreshFlight({ key });
+  expect(flight.acquired).toBe(true);
+  const completed = await flights.completeOpenIDRefreshFlight({
+    key,
+    ownerId: flight.ownerId,
+    tokens: tokens as TokenResult,
+  });
+  expect(completed).not.toBeNull();
+}
+
+/** The result `sendOpenIDAuthResponse` publishes for a browser login when
+ *  `OPENID_REUSE_TOKENS` is on: keyed by the login's own refresh token, which the IdP has not
+ *  spent yet, so the published `tokenset.refresh_token` is that same token. */
+function browserLoginPublication(refreshToken: string): SharedOpenIDRefreshResult {
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+  return {
+    tokenset: {
+      access_token: `browser-at-${refreshToken}`,
+      id_token: `browser-id-${refreshToken}`,
+      refresh_token: refreshToken,
+      expires_at: expiresAt,
+    },
+    claims: { sub: 'sub-1' },
+    openidIssuer: ISSUER,
+    expires_at: expiresAt,
+    appAuthToken: `browser-app-${refreshToken}`,
+    acceptedIdentity: {
+      appUserId: ADMIN_USER_ID,
+      openidSubject: 'sub-1',
+      openidIssuer: ISSUER,
+    },
+    providerSession: { issuer: ISSUER, clientId: CLIENT_ID, sid: SID },
+  };
+}
+
+/** A browser refresh-recovery service on the real flight and bridge services. Only the IdP
+ *  grant (`refreshOpenIDSession`) and the cookie writers are stubs. */
+function makeBrowserRecovery(flights: RealFlightService, bridgeService: BridgeService) {
+  const bridgeUser = {
+    _id: ADMIN_USER_ID,
+    provider: 'openid',
+    openidId: 'sub-1',
+    openidIssuer: ISSUER,
+  };
+  const refreshOpenIDSession = jest.fn(
+    async (req: { session: { openidTokens: { refreshToken: string } } }) => {
+      const granted = req.session.openidTokens.refreshToken;
+      return {
+        access_token: `at-${granted}`,
+        id_token: `id-${granted}`,
+        refresh_token: `${granted}-r`,
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+        claims: () => ({ sub: 'sub-1', iss: ISSUER, sid: SID }),
+      };
+    },
+  );
+  const deps = {
+    jwt: { decode: jest.fn() },
+    cookies: { parse: jest.fn(() => ({})) },
+    getJwtRefreshSecret: () => 'refresh-secret',
+    findOpenIDUser: jest.fn().mockResolvedValue({ user: bridgeUser, error: null }),
+    findUser: jest.fn(),
+    getOpenIdConfig: jest.fn(),
+    getOpenIdEmail: jest.fn(),
+    getOpenIdIssuer: jest.fn(() => ISSUER),
+    createAuthIdentityContext: jest.fn(() => ({
+      appUserId: ADMIN_USER_ID,
+      openidSubject: 'sub-1',
+      openidIssuer: ISSUER,
+    })),
+    refreshOpenIDSession,
+    clearOpenIDAuthTokens: jest.fn(),
+    deleteOpenIDSession: jest.fn(),
+    createOpenIDRefreshFlightKey: jest.fn(() => null),
+    storeRefreshTokenBridge: bridgeService.storeRefreshTokenBridge,
+    deleteRefreshTokenBridges: bridgeService.deleteRefreshTokenBridges,
+    createRefreshTokenBridgeFlightKey: bridgeService.createRefreshTokenBridgeFlightKey,
+    acquireOpenIDRefreshFlight: flights.acquireOpenIDRefreshFlight,
+    completeOpenIDRefreshFlight: flights.completeOpenIDRefreshFlight,
+    failOpenIDRefreshFlight: flights.failOpenIDRefreshFlight,
+    waitForOpenIDRefreshFlight: flights.waitForOpenIDRefreshFlight,
+    assertOpenIDRefreshFlightAvailable: flights.assertOpenIDRefreshFlightAvailable,
+    assertOpenIDRefreshSessionGenerationAvailable:
+      flights.assertOpenIDRefreshSessionGenerationAvailable,
+    revokeOpenIDRefreshFlights: flights.revokeOpenIDRefreshFlights,
+    withOpenIDRefreshFlightLease: flights.withOpenIDRefreshFlightLease,
+    bridgeGraceMs: bridgeService.OPENID_REFRESH_BRIDGE_GRACE_MS,
+    logger: { debug: jest.fn(), warn: jest.fn(), info: jest.fn(), error: jest.fn() },
+    getOpenIDAppAuthToken: jest.fn(
+      (tokens: { access_token?: string }) => `app-${tokens.access_token}`,
+    ),
+    storeOpenIDSession: jest.fn().mockResolvedValue(undefined),
+    setOpenIDAuthTokens: jest.fn(
+      (tokens: { access_token?: string }) => `app-${tokens.access_token}`,
+    ),
+    getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
+    providerSessionAuthorizer: {
+      establish: jest.fn().mockResolvedValue({ ok: true }),
+      authorize: jest.fn().mockResolvedValue({ ok: true }),
+      preCheck: jest.fn().mockResolvedValue({ ok: true }),
+      getMode: jest.fn().mockResolvedValue('enforce'),
+    },
+    getProviderSessionClient: jest.fn(() => ({ issuer: ISSUER, clientId: CLIENT_ID })),
+  } as unknown as OpenIDRefreshRecoveryDeps;
+  const service = createOpenIDRefreshRecoveryService(deps);
+  const recover = async (refreshToken: string) => {
+    const bridge = await bridgeService.getRefreshTokenBridge({
+      oldRefreshToken: refreshToken,
+      userId: ADMIN_USER_ID,
+      openidIssuer: ISSUER,
+    });
+    if (!bridge) throw new Error('no bridge to recover');
+    return service.recoverOpenIDRefreshBridge({
+      req: {
+        session: {
+          save: (callback: (error?: Error | null) => void) => callback(null),
+          reload: (callback: (error?: Error | null) => void) => callback(null),
+        },
+      } as never,
+      res: {} as never,
+      refreshToken,
+      bridgedRefreshToken: bridge.refreshToken,
+      bridgeUser: bridgeUser as never,
+      bridgeProviderSession: bridge.providerSession ?? null,
+      markerProviderSession: null,
+    });
+  };
+  return { recover, refreshOpenIDSession, deps, service };
+}
+
+/**
+ * The browser and the admin share the bridge flight key of a refresh token. A browser login with
+ * `OPENID_REUSE_TOKENS` completes that flight for a token the IdP has not spent yet, and the
+ * admin's first grant then spends it. These cases run against the real flight service, the real
+ * bridge service, and a real database; only the IdP is mocked.
+ */
+describe.each(['record', 'enforce'] as const)(
+  'admin refresh retries next to a browser publication of the same token (%s mode)',
+  (mode) => {
+    const config = makeConfig(mode);
+
+    async function setup(R0: string, options: { publishBrowserLogin?: boolean } = {}) {
+      const bridgeService = await makeBridgeService();
+      const flights = makeRealFlightService();
+      const ref = await seedLoggedIn(R0, ADMIN_USER_ID);
+      if (options.publishBrowserLogin !== false) {
+        await completeFlightAs(
+          flights,
+          bridgeFlightKey(bridgeService, R0),
+          browserLoginPublication(R0),
+        );
+      }
+      const grant = makeGrant();
+      const flightDeps = makeRealGrantDeps(flights, bridgeService);
+      const run = () =>
+        runAdminRefresh({
+          refreshToken: R0,
+          config,
+          bridgeService,
+          userId: ADMIN_USER_ID,
+          grant,
+          flightDeps,
+        });
+      return { bridgeService, flights, ref, grant, run };
+    }
+
+    it('(a) answers a sequential retry with the tokens of the first grant, calling the IdP once', async () => {
+      const R0 = 'refresh-shared-a';
+      const { grant, run } = await setup(R0);
+
+      const first = await run();
+      expect(first.status).toBe(200);
+      expect(first.body.refreshToken).toBe(`${R0}-r`);
+      expect(grant).toHaveBeenCalledTimes(1);
+      expect(grant).toHaveBeenCalledWith(R0);
+
+      // The client ignores the first response and retries with R0.
+      const retry = await run();
+      expect(retry.status).toBe(200);
+      expect(retry.body.refreshToken).toBe(`${R0}-r`);
+      expect(retry.body.token).toBe(first.body.token);
+      expect(grant).toHaveBeenCalledTimes(1);
+      expect(await methods.findSession({ refreshToken: `${R0}-r` }, { lean: true })).not.toBeNull();
+    });
+
+    it('(b) answers two concurrent first requests with the same R1, calling the IdP once', async () => {
+      const R0 = 'refresh-shared-first';
+      const { bridgeService, flights } = await setup(R0, { publishBrowserLogin: false });
+      /** A rotating IdP with reuse 0: a token it already spent is rejected. */
+      const spent = new Set<string>();
+      const grant = jest.fn(async (presented: string) => {
+        if (spent.has(presented)) {
+          throw Object.assign(new Error('invalid_grant'), { code: 'invalid_grant' });
+        }
+        spent.add(presented);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        return makeTokenset(presented);
+      });
+      const run = () =>
+        runAdminRefresh({
+          refreshToken: R0,
+          config,
+          bridgeService,
+          userId: ADMIN_USER_ID,
+          grant,
+          flightDeps: makeRealGrantDeps(flights, bridgeService),
+        });
+
+      const [first1, first2] = await Promise.all([run(), run()]);
+
+      expect(first1.status).toBe(200);
+      expect(first2.status).toBe(200);
+      expect(first1.body.refreshToken).toBe(`${R0}-r`);
+      expect(first2.body.refreshToken).toBe(`${R0}-r`);
+      expect(grant).toHaveBeenCalledTimes(1);
+    });
+
+    it('(b) answers two concurrent retries with the same successor tokens, calling the IdP once', async () => {
+      const R0 = 'refresh-shared-b';
+      const { grant, run } = await setup(R0);
+      expect((await run()).status).toBe(200);
+
+      const [retry1, retry2] = await Promise.all([run(), run()]);
+
+      expect(retry1.status).toBe(200);
+      expect(retry2.status).toBe(200);
+      expect(retry1.body.refreshToken).toBe(`${R0}-r`);
+      expect(retry2.body.refreshToken).toBe(`${R0}-r`);
+      expect(grant).toHaveBeenCalledTimes(1);
+    });
+
+    it('(c) answers 401 OPENID_SESSION_ENDED without tokens and deletes the bridge once the provider session ended', async () => {
+      const R0 = 'refresh-shared-c';
+      const { bridgeService, ref, grant, run } = await setup(R0);
+      expect((await run()).status).toBe(200);
+
+      await methods.revokeProviderSession({
+        issuer: ref.issuer,
+        clientId: ref.clientId,
+        sid: ref.sid,
+        expiresAt: future(),
+        now: new Date(),
+      });
+      const retry = await run();
+
+      expect(retry.status).toBe(401);
+      expect(retry.body.error_code).toBe('OPENID_SESSION_ENDED');
+      expect(retry.body).not.toHaveProperty('token');
+      expect(retry.body).not.toHaveProperty('refreshToken');
+      expect(grant).toHaveBeenCalledTimes(1);
+      expect(
+        await bridgeService.getRefreshTokenBridge({
+          oldRefreshToken: R0,
+          userId: ADMIN_USER_ID,
+          openidIssuer: ISSUER,
+        }),
+      ).toBeNull();
+    });
+
+    it('(d) lets a browser retry with R0 recover through the bridge after the admin rotated R0', async () => {
+      const R0 = 'refresh-shared-d';
+      const { bridgeService, flights, grant, run } = await setup(R0, {
+        publishBrowserLogin: false,
+      });
+      expect((await run()).status).toBe(200);
+
+      const browser = makeBrowserRecovery(flights, bridgeService);
+      const recovered = await browser.recover(R0);
+
+      expect(recovered.appAuthToken).toBe(`app-at-${R0}-r`);
+      expect(recovered.tokenset.refresh_token).toBe(`${R0}-r-r`);
+      expect(browser.refreshOpenIDSession).toHaveBeenCalledTimes(1);
+      expect(grant).toHaveBeenCalledTimes(1);
+    });
+
+    it('(d) never returns the presented token when the browser recovery meets its login publication', async () => {
+      const R0 = 'refresh-shared-login';
+      const { bridgeService, flights, grant, run } = await setup(R0, {
+        publishBrowserLogin: false,
+      });
+      const browser = makeBrowserRecovery(flights, bridgeService);
+      const loginTokens = browserLoginPublication(R0).tokenset;
+      // The browser login with OPENID_REUSE_TOKENS on, as `oauth.js` calls it.
+      await browser.service.sendOpenIDAuthResponse({
+        tokenset: loginTokens,
+        user: { _id: ADMIN_USER_ID, openidId: 'sub-1', openidIssuer: ISSUER } as never,
+        existingRefreshToken: R0,
+        openidSubject: 'sub-1',
+        openidIssuer: ISSUER,
+        discardSessionTokens: true,
+        req: {
+          session: {
+            save: (callback: (error?: Error | null) => void) => callback(null),
+            reload: (callback: (error?: Error | null) => void) => callback(null),
+          },
+        } as never,
+        res: {} as never,
+      });
+      expect((await run()).status).toBe(200); // the admin spends R0; the bridge points to R1
+
+      const outcome = await browser.recover(R0).then(
+        (result) => ({ refreshToken: result.tokenset?.refresh_token }),
+        (error: unknown) => ({ error }),
+      );
+
+      expect(outcome).not.toEqual({ refreshToken: R0 });
+      expect(outcome).toEqual({
+        error: expect.objectContaining({ name: 'ProviderSessionUnavailableError', status: 503 }),
+      });
+      expect(grant).toHaveBeenCalledTimes(1);
+    });
+
+    it('(d) answers a browser retry that meets an admin-written bridge result with a retryable 503', async () => {
+      const R0 = 'refresh-shared-d2';
+      const { bridgeService, flights } = await setup(R0, { publishBrowserLogin: false });
+      await bridgeService.storeRefreshTokenBridge({
+        oldRefreshToken: R0,
+        newRefreshToken: `${R0}-r`,
+        userId: ADMIN_USER_ID,
+        openidIssuer: ISSUER,
+      });
+      await completeFlightAs(flights, bridgeFlightKey(bridgeService, R0), {
+        access_token: `at-${R0}-r`,
+        refresh_token: `${R0}-r-r`,
+        __identityClaims: { sub: 'sub-1', iss: ISSUER, sid: SID },
+      });
+
+      const browser = makeBrowserRecovery(flights, bridgeService);
+      const error = await browser.recover(R0).catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({ name: 'ProviderSessionUnavailableError', status: 503 });
+      expect(browser.refreshOpenIDSession).not.toHaveBeenCalled();
+    });
+
+    describe('(e) with a record that older code left under the bridge flight key', () => {
+      async function setupBridged(R0: string, record: TokenResult | SharedOpenIDRefreshResult) {
+        const context = await setup(R0, { publishBrowserLogin: false });
+        await context.bridgeService.storeRefreshTokenBridge({
+          oldRefreshToken: R0,
+          newRefreshToken: `${R0}-r`,
+          userId: ADMIN_USER_ID,
+          openidIssuer: ISSUER,
+          providerSession: context.ref,
+        });
+        await completeFlightAs(context.flights, bridgeFlightKey(context.bridgeService, R0), record);
+        return context;
+      }
+
+      it('answers 503, not 502, when the record is the browser publication of R0 itself', async () => {
+        const R0 = 'refresh-old-login';
+        const { grant, run } = await setupBridged(R0, browserLoginPublication(R0));
+
+        const retry = await run();
+
+        expect(retry.status).toBe(503);
+        expect(grant).not.toHaveBeenCalled();
+      });
+
+      it('answers 503, not 502, when the record has no access token', async () => {
+        const R0 = 'refresh-old-incomplete';
+        const { grant, run } = await setupBridged(R0, {
+          refresh_token: `${R0}-r-r`,
+          __identityClaims: { sub: 'sub-1', iss: ISSUER, sid: SID },
+        });
+
+        const retry = await run();
+
+        expect(retry.status).toBe(503);
+        expect(grant).not.toHaveBeenCalled();
+      });
+
+      it('answers 200 with the successor tokens of an admin grant written by older code', async () => {
+        const R0 = 'refresh-old-admin';
+        const { grant, run } = await setupBridged(R0, {
+          access_token: `at-${R0}-r`,
+          refresh_token: `${R0}-r-r`,
+          __identityClaims: { sub: 'sub-1', iss: ISSUER, sid: SID },
+        });
+
+        const retry = await run();
+
+        expect(retry.status).toBe(200);
+        expect(retry.body.refreshToken).toBe(`${R0}-r-r`);
+        expect(grant).not.toHaveBeenCalled();
+      });
+
+      it('answers 200 with the successor tokens of a browser bridge recovery', async () => {
+        const R0 = 'refresh-old-browser-recovery';
+        const published = browserLoginPublication(`${R0}-r-r`);
+        const { grant, run } = await setupBridged(R0, published);
+
+        const retry = await run();
+
+        expect(retry.status).toBe(200);
+        expect(retry.body.refreshToken).toBe(`${R0}-r-r`);
+        expect(grant).not.toHaveBeenCalled();
+      });
+    });
+  },
+);
