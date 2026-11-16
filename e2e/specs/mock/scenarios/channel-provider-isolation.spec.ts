@@ -189,7 +189,7 @@ test.describe('Slack channel provider isolation', () => {
     }
   });
 
-  test('feedback on a restored provider refuses before any reply is read or any score is written @scenario:slack-feedback-refuses-another-provider-before-reading-a-reply-trace-or-exporting-a-score', async ({
+  test('feedback on a restored provider is refused and leaves every feedback row as it was @scenario:slack-feedback-refuses-another-provider-before-reading-a-reply-trace-or-exporting-a-score', async ({
     baseURL,
   }) => {
     inOneProject();
@@ -204,7 +204,7 @@ test.describe('Slack channel provider isolation', () => {
       expect(admitted.status, admitted.text).toBe(201);
       const { messageKey, messageId } = await deliverReply(channel, String(admitted.body.runId));
 
-      /** Control: a rating on a delivered reply is recorded and exported, so a refusal below is not a broken route. */
+      /** Control: a rating on a delivered reply is recorded and its export settles, so a refusal below is not a broken route. */
       const rated = await sendReaction(channel, reaction(actor, messageKey, '+1'));
       expect(rated.status, rated.text).toBe(200);
       expect(rated.body).toMatchObject({
@@ -231,7 +231,7 @@ test.describe('Slack channel provider isolation', () => {
         expect(await feedbackState(channel.channelId)).toEqual(settled);
       }
 
-      /** Once only the provider is restored, the same reaction on the same reply is recorded. */
+      /** Once only the provider is restored, a new reaction on the same reply is recorded. */
       await restoreProvider(channel, 'slack');
       const changed = await sendReaction(channel, reaction(actor, messageKey, '-1'));
       expect(changed.body).toMatchObject({ messageId, feedback: { rating: 'thumbsDown' } });
@@ -279,7 +279,7 @@ test.describe('Slack channel provider isolation', () => {
         ]);
       }
 
-      /** Once only the provider is restored, the same ticket, confirmation and event are accepted. */
+      /** Once only the provider is restored, the same ticket and confirmation are accepted and a new event is admitted. */
       await restoreProvider(channel, 'slack');
       const accept = await acceptTicket(owner, ticket.secret, ticket.revision);
       expect(accept.body).toMatchObject({ ok: true, value: { state: 'accepted' } });

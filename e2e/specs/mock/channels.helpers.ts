@@ -9,9 +9,10 @@ import { withMongo } from './db';
 
 /**
  * Real HTTP and database plumbing for the Slack channel scenarios. Only what happens outside this
- * app is written to Mongo: a Slack installation (activation verifies the bot token with Slack,
- * which a test must not reach), the reply a gateway delivered, and a row restored as another
- * provider. Every other state change goes through the routes under test.
+ * app is written to Mongo: a Slack installation or shared workspace install (activation and OAuth
+ * verify with Slack, which a test must not reach), the reply a gateway delivered, and a row
+ * restored as another provider. Every other state change goes through the routes under test, and
+ * an account deletes the agents it created when it closes.
  */
 
 export type Json = Record<string, unknown>;
@@ -35,6 +36,8 @@ export interface Account {
   user: User;
   /** The suite's own user: signed in as, never deleted. */
   persistent: boolean;
+  /** Agents this account created, each deleted once when it closes. */
+  agents: Set<string>;
 }
 
 export interface Slack {
@@ -116,7 +119,8 @@ async function signIn(
   const login = await api.post('/api/auth/login', { data });
   expect(login.ok(), await login.text()).toBeTruthy();
   const body = (await login.json()) as { token: string; user: { _id: string } };
-  return { api, token: body.token, userId: body.user._id, user, persistent: !register };
+  const agents = new Set<string>();
+  return { api, token: body.token, userId: body.user._id, user, persistent: !register, agents };
 }
 
 export const openAccount = (baseURL: string | undefined, label: string): Promise<Account> =>
@@ -133,7 +137,14 @@ export const openAccount = (baseURL: string | undefined, label: string): Promise
 export const openAdmin = (baseURL: string | undefined): Promise<Account> =>
   signIn(baseURL, getE2EUser(), false);
 
+/** Deletes the account's agents through the owner route, then the account unless it is the suite's. */
 export async function closeAccount(account: Account): Promise<void> {
+  for (const id of account.agents) {
+    const removed = await send(account.api, 'DELETE', `/api/agents/${id}`, {
+      headers: bearer(account.token),
+    });
+    expect.soft(removed.status, removed.text).toBe(200);
+  }
   await account.api.dispose();
   if (!account.persistent) {
     await cleanupUser(account.user);
@@ -169,6 +180,7 @@ export async function createAgent(owner: Account): Promise<string> {
     data: { name: 'Channel agent', tools: [], ...model },
   });
   expect(created.status, created.text).toBe(201);
+  owner.agents.add(created.body.id);
   return created.body.id;
 }
 
