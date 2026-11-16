@@ -91,7 +91,7 @@ async function mockLinkApi(page: Page) {
 
 async function openHandoff(page: Page) {
   await page.goto(`/channels/link#${ticket}`);
-  await expect(page.getByRole('heading', { name: 'Connect your channel account' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Connect to LibreChat' })).toBeVisible();
   expect(page.url()).not.toContain(ticket);
 }
 
