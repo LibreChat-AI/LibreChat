@@ -7,10 +7,12 @@ import type {
   DiscordGatewayDriverOptions,
   DiscordGatewayDispatch,
 } from './socket';
+import type { DiscordApplicationObservation } from './observe';
 import type { DiscordGatewayStopReason } from './recovery';
 import type { Logger } from '../types';
 import { createDiscordGatewayDriver } from './socket';
 import { DiscordGatewayFailure } from './recovery';
+import { safeDiscordObserver } from './observe';
 
 export interface DiscordGatewayOwner {
   applicationId: string;
@@ -79,6 +81,8 @@ export interface DiscordGatewayDependencies {
   dispatch(event: DiscordGatewayEvent, signal: AbortSignal): Promise<void>;
   log: Logger;
   createDriver?: (options: DiscordGatewayDriverOptions) => DiscordGatewayDriver;
+  /** Optional telemetry. It never changes session, checkpoint or ownership behavior. */
+  observe?: (observation: DiscordApplicationObservation) => void;
 }
 const reference = z
   .string()
@@ -167,6 +171,9 @@ export class OwnedDiscordGateway {
     this.controller.signal.addEventListener('abort', () => resolve(), { once: true }),
   );
   private readonly sessions = new Map<number, HotSession>();
+  /** Shards whose live session became non-resumable and have not been READY since. */
+  private readonly gaps = new Set<number>();
+  private readonly observe: (observation: DiscordApplicationObservation) => void;
   private readonly queue: QueuedEvent[] = [];
   private driver?: DiscordGatewayDriver;
   private expiresAt = 0;
@@ -195,6 +202,7 @@ export class OwnedDiscordGateway {
     config: z.input<typeof discordChannelConfigSchema>,
   ) {
     this.application = applicationSchema.parse(application);
+    this.observe = safeDiscordObserver(deps.observe);
     const parsed = discordChannelConfigSchema.parse(config);
     this.policy = parsed.gateway;
     this.enabled = parsed.enabled && parsed.gateway.enabled;
@@ -303,7 +311,7 @@ export class OwnedDiscordGateway {
           if (this.stopped) return;
           this.assertOwned();
           if (!session) {
-            this.sessions.delete(shardId);
+            if (this.sessions.delete(shardId)) this.gaps.add(shardId);
             this.checkpointRevision++;
             await this.persist([{ shardId, session: null }]);
             return;
@@ -340,23 +348,39 @@ export class OwnedDiscordGateway {
             return;
           }
           session.verified = true;
+          this.observe({ type: 'session', event: 'ready', shardId });
+          if (this.gaps.delete(shardId)) this.observe({ type: 'session', event: 'gap', shardId });
           this.checkpointRevision++;
           session.barrier = this.persist([
             { shardId, session: { ...session.info, sequence: session.processed } },
           ]);
           void session.barrier.catch(() => this.stop('checkpoint'));
         },
-        resumed: () => {
-          if (!this.stopped) this.deps.log.info('discord_gateway_resumed');
+        resumed: (shardId) => {
+          if (this.stopped) return;
+          this.deps.log.info('discord_gateway_resumed');
+          this.observe({ type: 'session', event: 'resumed', shardId });
         },
         dispatch: (event) => this.receive(event),
-        closed: (code) => {
+        closed: (code, shardId) => {
+          const fatal = code === 4004 || [4010, 4011, 4012, 4013, 4014].includes(code);
+          if (!this.stopped)
+            this.observe({
+              type: 'session',
+              event: fatal ? 'closed_fatal' : 'closed_transient',
+              shardId,
+            });
           if (code === 4004) void this.stop('credentials');
-          else if ([4010, 4011, 4012, 4013, 4014].includes(code)) void this.stop('configuration');
+          else if (fatal) void this.stop('configuration');
           else if (!this.stopped) this.deps.log.warn('discord_gateway_reconnecting');
         },
         error: () => {
-          if (!this.stopped) this.deps.log.warn('discord_gateway_error');
+          if (this.stopped) return;
+          this.deps.log.warn('discord_gateway_error');
+          this.observe({ type: 'session', event: 'error' });
+        },
+        heartbeat: (shardId, latencyMs) => {
+          if (!this.stopped) this.observe({ type: 'heartbeat', shardId, latencyMs });
         },
       };
       this.driver = (this.deps.createDriver ?? createDiscordGatewayDriver)(options);
@@ -561,6 +585,7 @@ export class OwnedDiscordGateway {
     this.stopped = true;
     this.stopReason = reason;
     this.stoppedAt = Date.now();
+    this.observe({ type: 'stop', reason });
     this.controller.abort();
     clearTimeout(this.expiryTimer);
     clearTimeout(this.renewalTimer);

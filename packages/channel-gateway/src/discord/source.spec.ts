@@ -1,3 +1,4 @@
+import type { DiscordApplicationObservation } from './observe';
 import { DiscordClient } from './client';
 
 const input = {
@@ -172,4 +173,155 @@ it('does not convert malformed membership or operational failures into durable p
   await expect(
     actorFixture({ status: 503 }).client.inspectGuildTextActorSource(actorInput),
   ).rejects.toMatchObject({ outcome: 'unknown', message: 'Discord operation was not confirmed' });
+});
+
+describe('bot permission observation', () => {
+  type Seen = Extract<DiscordApplicationObservation, { type: 'permission' }>;
+  const watch = (transport: typeof fetch) => {
+    const observed: Seen[] = [];
+    const client = new DiscordClient(
+      { ...options, observe: (observation) => observed.push(observation) },
+      transport,
+    );
+    return { client, observed };
+  };
+  const answer =
+    (
+      member: (path: string) => Response,
+      other: (path: string) => Response = () => Response.json(channel),
+    ) =>
+    async (url: Parameters<typeof fetch>[0]) => {
+      const path = new URL(String(url)).pathname;
+      return path.includes('/permissions/member/') ? member(path) : other(path);
+    };
+
+  it('reports a usable bot inspection as ok, once', async () => {
+    const f = watch(answer(() => Response.json({ permissions })));
+    expect(await f.client.inspectGuildTextSource(input)).not.toBeNull();
+    expect(f.observed).toEqual([{ type: 'permission', outcome: 'ok' }]);
+  });
+
+  it.each([
+    ['missing permission bits', () => Response.json({ permissions: '2048' }), undefined],
+    ['a refused permission read', () => Response.json({}, { status: 403 }), undefined],
+    [
+      'a refused channel read',
+      () => Response.json({ permissions }),
+      () => Response.json({}, { status: 403 }),
+    ],
+  ] as const)('reports %s as denied, once', async (_name, member, other) => {
+    const f = watch(answer(member, other));
+    expect(await f.client.inspectGuildTextSource(input)).toBeNull();
+    expect(f.observed).toEqual([{ type: 'permission', outcome: 'denied' }]);
+  });
+
+  it.each([
+    [
+      'a missing channel or member',
+      () => Response.json({}, { status: 404 }),
+      () => Response.json({}, { status: 404 }),
+    ],
+    [
+      'a thread',
+      () => Response.json({ permissions }),
+      () => Response.json({ ...channel, type: 11 }),
+    ],
+    [
+      'another guild',
+      () => Response.json({ permissions }),
+      () => Response.json({ ...channel, guild_id: '999999999999999999' }),
+    ],
+    [
+      'a hidden channel',
+      () => Response.json({ permissions }),
+      () => Response.json({ ...channel, flags: 1 << 17 }),
+    ],
+  ] as const)(
+    'reports nothing for %s, which says nothing about permissions',
+    async (_name, member, other) => {
+      const f = watch(answer(member, other));
+      expect(await f.client.inspectGuildTextSource(input)).toBeNull();
+      expect(f.observed).toEqual([]);
+    },
+  );
+
+  it.each([401, 429, 503])(
+    'reports nothing when HTTP %s makes the answer unknown',
+    async (status) => {
+      const f = watch(
+        answer(
+          () => Response.json({}, { status }),
+          () => Response.json({}, { status }),
+        ),
+      );
+      await expect(f.client.inspectGuildTextSource(input)).rejects.toBeDefined();
+      const network = watch(async () => {
+        throw new Error('private transport detail');
+      });
+      await expect(network.client.inspectGuildTextSource(input)).rejects.toBeDefined();
+      expect([...f.observed, ...network.observed]).toEqual([]);
+    },
+  );
+
+  it('never reports the actor, whatever the actor can see', async () => {
+    const actor = (bits: string, member: Response) => (path: string) =>
+      path.endsWith(`/member/${actorInput.authorId}`)
+        ? Response.json({ permissions: bits })
+        : member;
+    const run = async (bits: string, status: number) => {
+      const f = watch(
+        answer(
+          (path) =>
+            path.endsWith(`/member/${actorInput.authorId}`)
+              ? Response.json({ permissions: bits })
+              : Response.json({ permissions }),
+          (path) =>
+            path.includes('/members/')
+              ? Response.json({ user: { id: actorInput.authorId } }, { status })
+              : Response.json(channel),
+        ),
+      );
+      await f.client.inspectGuildTextActorSource(actorInput).catch(() => undefined);
+      return f.observed;
+    };
+    void actor;
+    for (const [bits, status] of [
+      ['1024', 200],
+      ['2048', 200],
+      ['0', 200],
+      ['1024', 403],
+      ['1024', 404],
+    ] as const)
+      expect(await run(bits, status)).toEqual([{ type: 'permission', outcome: 'ok' }]);
+    const botDenied = watch(
+      answer(
+        (path) =>
+          path.endsWith(`/member/${actorInput.authorId}`)
+            ? Response.json({ permissions: '1024' })
+            : Response.json({}, { status: 403 }),
+        () => Response.json(channel),
+      ),
+    );
+    expect(await botDenied.client.inspectGuildTextActorSource(actorInput)).toBeNull();
+    expect(botDenied.observed).toEqual([{ type: 'permission', outcome: 'denied' }]);
+  });
+
+  it('keeps the existing answer when the observer throws', async () => {
+    const client = new DiscordClient(
+      {
+        ...options,
+        observe: () => {
+          throw new Error('sink unavailable');
+        },
+      },
+      answer(() => Response.json({ permissions })),
+    );
+    expect(await client.inspectGuildTextSource(input)).toMatchObject({ kind: 'guild_text' });
+  });
+
+  it('carries only the closed outcome', async () => {
+    const f = watch(answer(() => Response.json({ permissions })));
+    await f.client.inspectGuildTextSource(input);
+    expect(JSON.stringify(f.observed)).toBe('[{"type":"permission","outcome":"ok"}]');
+  });
 });

@@ -28,6 +28,8 @@ export interface DiscordGatewayDriverOptions {
   resumed(shardId: number): void;
   closed(code: number, shardId: number): void;
   error(): void;
+  /** Round trip of one acknowledged heartbeat. The shard id is for health only, never a label. */
+  heartbeat?(shardId: number, latencyMs: number): void;
 }
 
 function requestHeaders(input: Parameters<RESTOptions['makeRequest']>[1]['headers']): Headers {
@@ -167,6 +169,9 @@ export function createDiscordGatewayDriver(
   manager.on(WebSocketShardEvents.Resumed, ({ shardId }) => options.resumed(shardId));
   manager.on(WebSocketShardEvents.Closed, ({ code, shardId }) => options.closed(code, shardId));
   manager.on(WebSocketShardEvents.Error, options.error);
+  manager.on(WebSocketShardEvents.HeartbeatComplete, ({ shardId, latency }) =>
+    options.heartbeat?.(shardId, latency),
+  );
   return {
     connect: () => manager.connect(),
     destroy: async () => {

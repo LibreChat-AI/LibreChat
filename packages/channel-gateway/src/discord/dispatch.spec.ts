@@ -1,5 +1,6 @@
 import { discordChannelConfigSchema } from 'librechat-data-provider';
 import type { DiscordGatewayMessage } from 'librechat-data-provider';
+import type { DiscordApplicationObservation } from './observe';
 import { DiscordGatewayControlClient } from './ownership';
 import { DiscordRuntimeClient } from './discovery';
 import { dispatchDiscordEvent } from './dispatch';
@@ -286,3 +287,21 @@ describe('guild lifecycle dispatch', () => {
     ).rejects.toMatchObject({ status });
   });
 });
+
+it.each([
+  [200, [{ type: 'permission', outcome: 'ok' }]],
+  [403, [{ type: 'permission', outcome: 'denied' }]],
+  [404, []],
+] as const)(
+  'reports the bot own channel permission from a mention, and never the author, for source status %s',
+  async (sourceStatus, expected) => {
+    const f = fixture(200, sourceStatus);
+    const observed: DiscordApplicationObservation[] = [];
+    await dispatchDiscordEvent(
+      { ...f.deps, observe: (item) => observed.push(item) },
+      event,
+      f.controller.signal,
+    ).catch(() => undefined);
+    expect(observed).toEqual(expected);
+  },
+);

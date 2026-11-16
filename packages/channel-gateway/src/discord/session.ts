@@ -5,6 +5,7 @@ import type {
   DiscordGatewayOwner,
 } from './gateway';
 import type { DiscordGatewayControlClient } from './ownership';
+import type { DiscordApplicationObserver } from './observe';
 import type { Logger } from '../types';
 import { OwnedDiscordGateway } from './gateway';
 
@@ -20,6 +21,7 @@ export async function runDiscordSession(
       signal: AbortSignal,
     ): Promise<void>;
     createDriver?: DiscordGatewayDependencies['createDriver'];
+    observe?: DiscordApplicationObserver;
     log: Logger;
   },
   signal: AbortSignal,
@@ -40,6 +42,7 @@ export async function runDiscordSession(
       ownerId: deps.owner.ownerId,
       log: deps.log,
       createDriver: deps.createDriver,
+      observe: deps.observe,
       ownership: {
         // Renew the existing lease; a late startup must never reacquire a released owner.
         acquire: (owner, leaseMs) => deps.ownership.renew(owner, leaseMs, signal),

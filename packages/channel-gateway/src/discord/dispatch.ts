@@ -2,6 +2,7 @@ import { discordMentionPrompt } from 'librechat-data-provider';
 import type { DiscordChannelConfig, DiscordGatewayBootstrap } from 'librechat-data-provider';
 import type { DiscordGatewayEvent, DiscordGatewayOwner } from './gateway';
 import type { DiscordGatewayControlClient } from './ownership';
+import type { DiscordApplicationObserver } from './observe';
 import type { DiscordRuntimeClient } from './discovery';
 import type { DiscordRateCoordinator } from './rates';
 import { DiscordClient } from './client';
@@ -16,6 +17,7 @@ export async function dispatchDiscordEvent(
     runtime: DiscordRuntimeClient;
     gateway: DiscordGatewayControlClient;
     transport: typeof fetch;
+    observe?: DiscordApplicationObserver;
   },
   event: DiscordGatewayEvent,
   signal: AbortSignal,
@@ -46,6 +48,7 @@ export async function dispatchDiscordEvent(
       botToken: deps.application.botToken,
       timeoutMs: deps.policy.requestTimeoutMs,
       maxResponseBytes: deps.policy.maxResponseBytes,
+      observe: deps.observe,
     },
     deps.transport,
     deps.rates,
