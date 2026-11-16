@@ -15,6 +15,7 @@ import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
 import { createAgentTriggerDeliveryModel } from './triggerDelivery';
 import { createToolApprovalGrantModel } from './toolApprovalGrant';
 import { createSkillUploadIntentModel } from './skillUploadIntent';
+import { createProviderSessionModel } from './providerSession';
 import { createSubagentContentModel } from './subagentContent';
 import { createChannelIdentityModel } from './channelIdentity';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
@@ -129,6 +130,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   ScheduleRun: ReturnType<typeof createScheduleRunModel>;
   RefreshTokenBridge: ReturnType<typeof createRefreshTokenBridgeModel>;
   OpenIDRefreshFlight: ReturnType<typeof createOpenIDRefreshFlightModel>;
+  ProviderSession: ReturnType<typeof createProviderSessionModel>;
   ResourceLock: ReturnType<typeof createResourceLockModel>;
 } {
   const models = {
@@ -194,6 +196,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     ScheduleRun: createScheduleRunModel(mongoose),
     RefreshTokenBridge: createRefreshTokenBridgeModel(mongoose),
     OpenIDRefreshFlight: createOpenIDRefreshFlightModel(mongoose),
+    ProviderSession: createProviderSessionModel(mongoose),
     ResourceLock: createResourceLockModel(mongoose),
   };
   /**

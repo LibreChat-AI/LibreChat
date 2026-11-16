@@ -3,7 +3,7 @@ import {
   CREDENTIAL_RETIREMENT_INCOMPLETE_CODE,
   TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE,
 } from 'librechat-data-provider';
-import type { TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
+import type { AuthMethod, TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { TwoFactorEnrollmentDependencies, StoredTwoFactorAccount } from './twoFactor';
 import type { UserDocumentId } from '~/auth/verification';
@@ -35,6 +35,9 @@ type ChallengeRequest = Request<Record<string, string>, object, LoginChallengeBo
 type SetupRequest = Request<Record<string, string>, object, SetupBody> & {
   user?: { id: string };
   twoFactorEnrollmentNonce?: string;
+  /** The login method carried by the setup/acknowledgement/finalization token this request
+   *  presented, stamped by the matching `require...` middleware in `./twoFactor`. */
+  twoFactorEnrollmentAuthMethod?: AuthMethod;
 };
 type CancelRequest = Request & {
   user?: { id: string };
@@ -92,6 +95,7 @@ export interface EnrollmentControllerDependencies
     res: Response,
     unused: null,
     req: Request,
+    options?: { authMethod?: AuthMethod },
   ) => Promise<string>;
 }
 
@@ -207,7 +211,9 @@ export function createEnrollmentControllers(
       }
 
       const userData = sanitizeUser(user);
-      const authToken = await deps.setAuthTokens(user._id, res, null, req);
+      const authToken = await deps.setAuthTokens(user._id, res, null, req, {
+        authMethod: credential.authMethod ?? 'local',
+      });
       const retirement = await recheckMintedCredential(
         () => deps.getUserById(credential.userId, TOKEN_RETIREMENT_FIELDS),
         () => revokeMintedSession(res, user, credential.userId),
@@ -246,6 +252,7 @@ export function createEnrollmentControllers(
         userId,
         result.acknowledgementNonce,
         process.env.JWT_SECRET!,
+        req.twoFactorEnrollmentAuthMethod,
       );
       return res.status(200).json({ backupCodes: result.plainCodes, acknowledgementToken });
     } catch (err) {
@@ -272,6 +279,7 @@ export function createEnrollmentControllers(
         userId,
         result.finalizationNonce,
         process.env.JWT_SECRET!,
+        req.twoFactorEnrollmentAuthMethod,
       );
       return res.status(200).json({ finalizationToken });
     } catch (err) {
@@ -304,7 +312,9 @@ export function createEnrollmentControllers(
       if (!retired) {
         return res.status(500).json(RETIREMENT_INCOMPLETE_BODY);
       }
-      const authToken = await deps.setAuthTokens(result.user._id, res, null, req);
+      const authToken = await deps.setAuthTokens(result.user._id, res, null, req, {
+        authMethod: req.twoFactorEnrollmentAuthMethod ?? 'local',
+      });
       const retirement = await recheckMintedCredential(
         () => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS),
         () => revokeMintedSession(res, result.user, userId),
