@@ -79,13 +79,14 @@ test.describe('Discord installation ownership', () => {
       const renewed = ok(await reconfigure());
       expect(renewed.revision).not.toBe(updated.revision);
 
-      /** The real erasure route removes the owner account, so everyone else stays refused. */
+      /** The real erasure route removes the owner account and the application rows it owned. */
       const erased = await send(owner.api, 'DELETE', '/api/user/delete', {
         headers: bearer(owner.token),
       });
       expect(erased.status, erased.text).toBe(200);
+      expect(await stored()).toBeNull();
       const afterErasure = () => configure(admin, { expectedRevision: renewed.revision });
-      await refuses('principal_unavailable', afterErasure, [stored]);
+      await refuses('application_changed', afterErasure, [stored]);
     });
   });
 
@@ -135,11 +136,13 @@ test.describe('Discord installation ownership', () => {
       );
       expect(await world.touch(scopeOf(applicationId, created.revision, back))).toBe(true);
 
-      /** The real erasure route trips the same fence for the very scope that was just admitted. */
+      /** The real erasure route removes the owner's rows, so the admitted scope stops admitting. */
       const erased = await send(owner.api, 'DELETE', '/api/user/delete', {
         headers: bearer(owner.token),
       });
       expect(erased.status, erased.text).toBe(200);
+      const guildRow = rowOf(GUILDS, { installationId: back.installationId });
+      expect(await Promise.all([stored(), guildRow()])).toEqual([null, null]);
       expect(await world.touch(scopeOf(applicationId, created.revision, back))).toBe(false);
     });
   });
