@@ -544,3 +544,184 @@ it('routes verified DM commands through the production app while Gateway message
       );
   }
 });
+
+describe('a Gateway session that fails while its application stays owned', () => {
+  const recovery = {
+    fatalRetryMinMs: 1000,
+    fatalRetryMaxMs: 2000,
+    retryMaxMs: 1000,
+    resetAfterMs: 1000,
+  };
+  const heldPolicy = discordChannelConfigSchema.parse({
+    enabled: true,
+    gateway: {
+      enabled: true,
+      pollIntervalMs: 100,
+      ownershipLeaseMs: 5000,
+      maxApplications: 1,
+      recovery,
+    },
+  });
+  jest.setTimeout(20_000);
+
+  function harness() {
+    const startedAt = Date.now();
+    const marks: { path: string; at: number; revision?: string }[] = [];
+    const warns: string[] = [];
+    let revision = 'revision-a';
+    let queued = false;
+    const after = (path: string) => marks.filter((mark) => mark.path.endsWith(path));
+    const transport: typeof fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+      marks.push({
+        path: url.pathname,
+        at: Date.now() - startedAt,
+        revision: body.owner?.applicationRevision,
+      });
+      const path = url.pathname;
+      if (url.hostname === 'discord.com') return Response.json({ id: eventId });
+      if (path.endsWith('/runtime/applications'))
+        return Response.json({
+          applications: [{ applicationId, applicationRevision: revision, tenantId: 'canonical' }],
+        });
+      if (path.endsWith('/runtime/channels')) return Response.json({ channels: [] });
+      if (path.endsWith('/gateway/bootstrap'))
+        return Response.json({
+          applicationId,
+          applicationRevision: body.owner.applicationRevision,
+          botUserId: '456',
+          botToken: 'private-token',
+          policy: heldPolicy.gateway,
+        });
+      if (path.endsWith('/gateway/load'))
+        return Response.json({
+          applicationId,
+          applicationRevision: body.owner.applicationRevision,
+          botUserId: '456',
+          checkpoints: [],
+        });
+      if (/\/gateway\/(acquire|renew|release|save)$/.test(path))
+        return new Response(null, { status: 204 });
+      if (path.endsWith('/inbox/claim')) {
+        if (!queued) return new Response(null, { status: 204 });
+        queued = false;
+        return Response.json({
+          fence: { applicationId, eventId, owner: body.owner, epoch: 1 },
+          applicationRevision: revision,
+          token: 'interaction-token',
+          expiresAt: Date.now() + 10_000,
+          reply: { content: 'Private reply' },
+        });
+      }
+      if (path.endsWith('/inbox/finish')) return new Response(null, { status: 204 });
+      throw new Error('Unexpected service request ' + path);
+    };
+    // Every attempt is closed by Discord with 4014 (a disallowed intent), a fatal Gateway stop.
+    const createDriver = (driver: DiscordGatewayDriverOptions) => ({
+      async connect() {
+        driver.closed(4014, 0);
+        await new Promise<void>(() => undefined);
+      },
+      destroy: async () => undefined,
+    });
+    const app = new DiscordGatewayApp(
+      config,
+      heldPolicy,
+      {
+        info: () => undefined,
+        warn: (event: string) => void warns.push(event),
+        error: () => undefined,
+      },
+      transport,
+      createDriver,
+    );
+    const sessions = () => after('/gateway/bootstrap');
+    const waitForSessions = async (count: number) => {
+      while (sessions().length < count) await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+    return {
+      app,
+      marks,
+      warns,
+      after,
+      sessions,
+      waitForSessions,
+      queueReply: () => {
+        queued = true;
+      },
+      rotate: () => {
+        revision = 'revision-b';
+      },
+    };
+  }
+
+  it('keeps the lease and answers inbox work while a fatal stop holds the next session', async () => {
+    const h = harness();
+    const running = h.app.run(controller.signal);
+    await h.waitForSessions(1);
+    h.queueReply();
+    await h.waitForSessions(3);
+    const [first, second, third] = h.sessions();
+    controller.abort();
+    await running;
+    // The fatal ladder applies to the session alone: 1 s, then 2 s, never an immediate retry.
+    expect(second.at - first.at).toBeGreaterThanOrEqual(900);
+    expect(second.at - first.at).toBeLessThan(1600);
+    expect(third.at - second.at).toBeGreaterThanOrEqual(1900);
+    expect(third.at - second.at).toBeLessThan(2700);
+    const between = (mark: { at: number }) => mark.at > first.at && mark.at < second.at;
+    expect(h.after('/inbox/claim').filter(between).length).toBeGreaterThanOrEqual(7);
+    const replies = h.marks.filter((mark) => mark.path.includes('/webhooks/'));
+    expect(replies).toHaveLength(1);
+    expect(between(replies[0])).toBe(true);
+    expect(h.after('/inbox/finish').filter(between)).toHaveLength(1);
+    // One lease for the whole time, released once at shutdown.
+    expect(h.after('/gateway/acquire')).toHaveLength(1);
+    expect(h.after('/gateway/release')).toHaveLength(1);
+    expect(h.marks.at(-1)?.path.endsWith('/gateway/release')).toBe(true);
+    expect(h.warns.filter((event) => event === 'discord_application_quarantined')).toHaveLength(3);
+    expect(h.warns).not.toContain('discord_application_runtime_unavailable');
+  });
+
+  it('starts a new owner at once for a new revision and gives it a fresh ladder', async () => {
+    const h = harness();
+    const running = h.app.run(controller.signal);
+    await h.waitForSessions(1);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    h.rotate();
+    await h.waitForSessions(3);
+    const [first, second, third] = h.sessions();
+    controller.abort();
+    await running;
+    expect([first.revision, second.revision, third.revision]).toEqual([
+      'revision-a',
+      'revision-b',
+      'revision-b',
+    ]);
+    // The previous revision's hold (1 s) is bypassed, and the new owner starts at the minimum.
+    expect(second.at - first.at).toBeLessThan(900);
+    expect(third.at - second.at).toBeGreaterThanOrEqual(900);
+    expect(third.at - second.at).toBeLessThan(1600);
+    expect(h.after('/gateway/acquire').map((mark) => mark.revision)).toEqual([
+      'revision-a',
+      'revision-b',
+    ]);
+    expect(h.after('/gateway/release').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('stops promptly during a hold and releases the lease exactly once', async () => {
+    const h = harness();
+    const running = h.app.run(controller.signal);
+    await h.waitForSessions(1);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const abortedAt = Date.now();
+    controller.abort();
+    await running;
+    expect(Date.now() - abortedAt).toBeLessThan(500);
+    expect(h.sessions()).toHaveLength(1);
+    expect(h.after('/gateway/acquire')).toHaveLength(1);
+    expect(h.after('/gateway/release')).toHaveLength(1);
+    expect(h.app.ready).toBe(false);
+  });
+});

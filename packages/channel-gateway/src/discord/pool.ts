@@ -3,13 +3,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { discordChannelConfigSchema } from 'librechat-data-provider';
 import type { DiscordChannelConfig } from 'librechat-data-provider';
 import type { DiscordGatewayOwner } from './gateway';
+import type { DiscordRetryState } from './recovery';
 import type { Logger } from '../types';
-import { DiscordGatewayFailure } from './recovery';
+import { discordRetryDelay } from './recovery';
 
-interface RecoveryState {
+interface RecoveryState extends DiscordRetryState {
   revision: string;
-  fatalFailures: number;
-  transientFailures: number;
   until: number;
   seenRound: number;
 }
@@ -112,22 +111,8 @@ export async function runDiscordApplications(
                   recovery.delete(application.applicationId);
                 return;
               }
-              const failure = error instanceof DiscordGatewayFailure ? error : undefined;
-              if (failure && failure.healthyForMs >= policy.recovery.resetAfterMs) {
-                tracked.fatalFailures = 0;
-                tracked.transientFailures = 0;
-              }
-              const fatal = failure?.fatal === true;
-              const count = fatal
-                ? (tracked.fatalFailures = Math.min(31, tracked.fatalFailures + 1))
-                : (tracked.transientFailures = Math.min(31, tracked.transientFailures + 1));
-              const base = fatal ? policy.recovery.fatalRetryMinMs : policy.pollIntervalMs;
-              const cap = fatal ? policy.recovery.fatalRetryMaxMs : policy.recovery.retryMaxMs;
-              const wait = Math.min(cap, base * 2 ** (count - 1));
-              const sample = random();
-              const jitter = Number.isFinite(sample) ? Math.max(0, Math.min(1, sample)) : 1;
-              tracked.until =
-                now() + (fatal ? wait : Math.max(1, Math.round(wait * (0.5 + jitter / 2))));
+              const { fatal, waitMs } = discordRetryDelay(tracked, error, policy, random);
+              tracked.until = now() + waitMs;
               deps.log.warn(
                 fatal
                   ? 'discord_application_quarantined'
