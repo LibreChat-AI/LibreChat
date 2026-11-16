@@ -5,6 +5,7 @@ import { discordChannelConfigSchema } from 'librechat-data-provider';
 import { ApplicationFlags, GatewayDispatchEvents } from 'discord-api-types/v10';
 import type { AddressInfo } from 'node:net';
 import type { DiscordGatewayDriverOptions } from './socket';
+import { DiscordIdentifyRefusal } from './recovery';
 import { DiscordGatewayApp } from './app';
 import { loadBootstrap } from '../config';
 
@@ -577,7 +578,13 @@ describe('a Gateway session that fails while its application stays owned', () =>
   });
   jest.setTimeout(20_000);
 
-  function harness(options: { silent?: boolean } = {}) {
+  function harness(
+    options: {
+      silent?: boolean;
+      /** How every attempt fails. A throw rejects the connect, as a refused budget or a failed read does. */
+      connect?: (driver: DiscordGatewayDriverOptions) => void;
+    } = {},
+  ) {
     const policy = options.silent ? startupPolicy : heldPolicy;
     const startedAt = Date.now();
     const marks: { path: string; at: number; revision?: string }[] = [];
@@ -631,11 +638,12 @@ describe('a Gateway session that fails while its application stays owned', () =>
       if (path.endsWith('/inbox/finish')) return new Response(null, { status: 204 });
       throw new Error('Unexpected service request ' + path);
     };
-    // Every attempt is closed by Discord with 4014 (a disallowed intent), a fatal Gateway stop, or,
-    // when silent, never answers at all.
+    // Every attempt is closed by Discord with 4014 (a disallowed intent), a fatal Gateway stop, or
+    // fails as `connect` says, or, when silent, never answers at all.
     const createDriver = (driver: DiscordGatewayDriverOptions) => ({
       async connect() {
-        if (!options.silent) driver.closed(4014, 0);
+        if (options.connect) options.connect(driver);
+        else if (!options.silent) driver.closed(4014, 0);
         await new Promise<void>(() => undefined);
       },
       destroy: async () => undefined,
@@ -745,16 +753,70 @@ describe('a Gateway session that fails while its application stays owned', () =>
     expect(h.after('/inbox/finish').filter(during)).toHaveLength(1);
     expect(h.after('/gateway/acquire')).toHaveLength(1);
     expect(h.after('/gateway/release')).toHaveLength(0);
-    // The failure is transient, so the next session comes after the short poll based delay.
+    // A session that could not start holds the next one on the fatal ladder (1 s here), not the short
+    // poll based delay (about 100 ms) of an ordinary failure, so a Gateway that never answers cannot
+    // spend an IDENTIFY every minute.
     await h.waitForSessions(2);
-    expect(h.warns).toContain('discord_application_runtime_unavailable');
-    expect(h.warns).not.toContain('discord_application_quarantined');
+    const [, second] = h.sessions();
+    expect(second.at - first.at - waited).toBeGreaterThanOrEqual(900);
+    expect(h.warns).toContain('discord_application_quarantined');
+    expect(h.warns).not.toContain('discord_application_runtime_unavailable');
     const abortedAt = Date.now();
     controller.abort();
     await running;
     expect(Date.now() - abortedAt).toBeLessThan(1500);
     expect(h.after('/gateway/acquire')).toHaveLength(1);
     expect(h.after('/gateway/release')).toHaveLength(1);
+  });
+
+  it('holds a refused startup on the fatal ladder, doubling to its cap, while the REST workers keep working', async () => {
+    const h = harness({
+      connect: () => {
+        throw new DiscordIdentifyRefusal('exhausted');
+      },
+    });
+    const running = h.app.run(controller.signal);
+    await h.waitForSessions(1);
+    h.queueReply();
+    await h.waitForSessions(3);
+    const [first, second, third] = h.sessions();
+    controller.abort();
+    await running;
+    // 1 s, then 2 s (the cap here): a spent budget is never retried at the short ordinary delay.
+    expect(second.at - first.at).toBeGreaterThanOrEqual(900);
+    expect(second.at - first.at).toBeLessThan(1600);
+    expect(third.at - second.at).toBeGreaterThanOrEqual(1900);
+    expect(third.at - second.at).toBeLessThan(2700);
+    const between = (mark: { at: number }) => mark.at > first.at && mark.at < second.at;
+    expect(h.after('/inbox/claim').filter(between).length).toBeGreaterThanOrEqual(7);
+    expect(h.after('/inbox/finish').filter(between)).toHaveLength(1);
+    expect(h.after('/gateway/acquire')).toHaveLength(1);
+    expect(h.after('/gateway/release')).toHaveLength(1);
+    const logged = (event: string) => h.warns.filter((warn) => warn === event).length;
+    expect(logged('discord_gateway_identify_refused:exhausted')).toBeGreaterThanOrEqual(2);
+    expect(logged('discord_application_quarantined')).toBeGreaterThanOrEqual(2);
+    expect(h.warns).not.toContain('discord_application_runtime_unavailable');
+  });
+
+  it('keeps a failure that is not a refused startup on the short transient ladder', async () => {
+    const h = harness({
+      connect: () => {
+        throw new Error('private transport detail');
+      },
+    });
+    const running = h.app.run(controller.signal);
+    await h.waitForSessions(4);
+    const [first, , , fourth] = h.sessions();
+    controller.abort();
+    await running;
+    // Poll based delays with jitter: at most 100, 200 and 400 ms. On the fatal ladder these gaps are 5 s.
+    expect(fourth.at - first.at).toBeLessThan(1200);
+    expect(h.warns).toContain('discord_application_runtime_unavailable');
+    expect(h.warns).not.toContain('discord_application_quarantined');
+    expect(h.warns.filter((warn) => warn.startsWith('discord_gateway_identify_refused'))).toEqual(
+      [],
+    );
+    expect(JSON.stringify(h.warns)).not.toMatch(/private/);
   });
 
   it('stops promptly during a hold and releases the lease exactly once', async () => {

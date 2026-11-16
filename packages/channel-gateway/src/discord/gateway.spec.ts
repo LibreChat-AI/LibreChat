@@ -154,6 +154,8 @@ function fixture(
     connect?: () => Promise<void>;
     /** A Gateway that never answers: connecting never settles and no shard ever gets READY. */
     silent?: boolean;
+    /** Connecting rejects with this error before any shard gets READY. */
+    fail?: unknown;
     ready?: DiscordGatewayReady;
     replay?: DiscordGatewayDispatch;
   } = {};
@@ -177,6 +179,7 @@ function fixture(
       createDriver(options) {
         drivers.push(options);
         if (hooks.silent) return { destroy, connect: () => new Promise<void>(() => undefined) };
+        if (hooks.fail !== undefined) return { destroy, connect: () => Promise.reject(hooks.fail) };
         return {
           destroy,
           async connect() {
@@ -742,15 +745,23 @@ describe('owned Discord Gateway IDENTIFY refusal', () => {
   beforeEach(() => jest.useFakeTimers({ now: 1_700_000_000_000 }));
   afterEach(() => jest.useRealTimers());
 
+  // A refusal never reaches Discord, so only the session budget decides which ladder holds the next
+  // session: a refused or unanswered IDENTIFY is a startup failure, a failed read is not.
   test.each([
-    ['a spent budget', new DiscordIdentifyRefusal('exhausted'), 'failed', 'exhausted'],
-    ['an unreadable budget', new DiscordIdentifyRefusal('invalid'), 'failed', 'invalid'],
-    ['an unanswered IDENTIFY', new DiscordIdentifyRefusal('retry'), 'failed', 'retry'],
-    ['a rejected token', new DiscordGatewayFailure('credentials'), 'credentials', 'unconfirmed'],
-    ['a failed read', new Error('private transport detail'), 'failed', 'unconfirmed'],
+    ['a spent budget', new DiscordIdentifyRefusal('exhausted'), 'startup', true, 'exhausted'],
+    ['an unreadable budget', new DiscordIdentifyRefusal('invalid'), 'startup', true, 'invalid'],
+    ['an unanswered IDENTIFY', new DiscordIdentifyRefusal('retry'), 'startup', true, 'retry'],
+    [
+      'a rejected token',
+      new DiscordGatewayFailure('credentials'),
+      'credentials',
+      true,
+      'unconfirmed',
+    ],
+    ['a failed read', new Error('private transport detail'), 'failed', false, 'unconfirmed'],
   ] as const)(
     'stops the session once for %s, naming only a closed reason',
-    async (_name, error, stop, reason) => {
+    async (_name, error, stop, fatal, reason) => {
       const observed: DiscordApplicationObservation[] = [];
       const f = fixture(shared(), '123', '456', {}, undefined, (item) => observed.push(item));
       await f.start();
@@ -768,10 +779,52 @@ describe('owned Discord Gateway IDENTIFY refusal', () => {
       expect(observed.filter((item) => item.type === 'stop')).toEqual([
         { type: 'stop', reason: stop },
       ]);
-      expect(f.gateway.failure).toMatchObject({ reason: stop });
+      expect(f.gateway.failure).toMatchObject({ reason: stop, fatal });
       expect(JSON.stringify(jest.mocked(f.log.warn).mock.calls)).not.toMatch(/private|token/);
     },
   );
+
+  test.each(['exhausted', 'invalid'] as const)(
+    'a budget refused before any socket opens (%s) is a startup failure that names its reason',
+    async (reason) => {
+      const observed: DiscordApplicationObservation[] = [];
+      const f = fixture(shared(), '123', '456', {}, undefined, (item) => observed.push(item));
+      f.hooks.fail = new DiscordIdentifyRefusal(reason);
+      await expect(f.start()).rejects.toMatchObject({ reason: 'startup', fatal: true });
+      expect(f.log.warn).toHaveBeenCalledWith(`discord_gateway_identify_refused:${reason}`);
+      expect(f.log.warn).toHaveBeenCalledWith('discord_gateway_start_unavailable');
+      expect(observed.filter((item) => item.type === 'stop')).toEqual([
+        { type: 'stop', reason: 'startup' },
+      ]);
+      expect(f.destroy).toHaveBeenCalledTimes(1);
+      expect(f.store.locks.size).toBe(0);
+    },
+  );
+
+  test('a connect that failed for any other reason stays an ordinary failure', async () => {
+    const f = fixture();
+    f.hooks.fail = new Error('private transport detail');
+    await expect(f.start()).rejects.toMatchObject({ reason: 'failed', fatal: false });
+    expect(f.log.warn).toHaveBeenCalledWith('discord_gateway_start_unavailable');
+    expect(
+      jest
+        .mocked(f.log.warn)
+        .mock.calls.filter(([event]) =>
+          String(event).startsWith('discord_gateway_identify_refused'),
+        ),
+    ).toHaveLength(0);
+    expect(JSON.stringify(jest.mocked(f.log.warn).mock.calls)).not.toMatch(/private|token/);
+  });
+
+  test('a refusal after a verified session carries its lifetime, so the ladder starts again', async () => {
+    const f = fixture();
+    await f.start();
+    jest.setSystemTime(Date.now() + 130_000);
+    f.drivers[0].identifyRefused?.(new DiscordIdentifyRefusal('retry'));
+    await f.gateway.closed;
+    expect(f.gateway.failure).toMatchObject({ reason: 'startup', fatal: true });
+    expect(f.gateway.failure?.healthyForMs).toBeGreaterThanOrEqual(130_000);
+  });
 });
 
 describe('owned Discord Gateway startup bound', () => {
@@ -790,7 +843,7 @@ describe('owned Discord Gateway startup bound', () => {
     expect(outcome).not.toHaveBeenCalled();
     expect(f.log.warn).not.toHaveBeenCalledWith('discord_gateway_start_timeout');
     await jest.advanceTimersByTimeAsync(1);
-    await expect(started).rejects.toMatchObject({ reason: 'failed', fatal: false });
+    await expect(started).rejects.toMatchObject({ reason: 'startup', fatal: true });
     expect(f.log.warn).toHaveBeenCalledWith('discord_gateway_start_timeout');
     expect(f.destroy).toHaveBeenCalledTimes(1);
     expect(f.store.locks.size).toBe(0);
@@ -806,7 +859,7 @@ describe('owned Discord Gateway startup bound', () => {
     await jest.advanceTimersByTimeAsync(5000 + 2 * 6500 - 1);
     expect(outcome).not.toHaveBeenCalled();
     await jest.advanceTimersByTimeAsync(1);
-    await expect(started).rejects.toMatchObject({ reason: 'failed' });
+    await expect(started).rejects.toMatchObject({ reason: 'startup' });
     expect(jest.getTimerCount()).toBe(0);
   });
 
@@ -877,7 +930,8 @@ describe('owned Discord Gateway against a real Gateway socket', () => {
       { enabled: true, gateway: { enabled: true, handshakeTimeoutMs: 1000, readyTimeoutMs: 5000 } },
     );
     await expect(gateway.start(new AbortController().signal)).rejects.toMatchObject({
-      reason: 'failed',
+      reason: 'startup',
+      fatal: true,
     });
     expect(seen.identifies).toBe(1);
     expect(log.warn).toHaveBeenCalledWith('discord_gateway_identify_refused:retry');
@@ -928,7 +982,8 @@ describe('owned Discord Gateway against a real Gateway socket', () => {
     );
     const startedAt = Date.now();
     await expect(gateway.start(new AbortController().signal)).rejects.toMatchObject({
-      reason: 'failed',
+      reason: 'startup',
+      fatal: true,
     });
     const elapsed = Date.now() - startedAt;
     // 3 x 1000 + 1000 ms. Without the deadline the SDK would reconnect every 1.5 s for as long as it ran.

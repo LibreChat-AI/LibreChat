@@ -19,6 +19,50 @@ describe('Discord retry ladder', () => {
     expect(state).toEqual({ fatalFailures: 5, transientFailures: 0 });
   });
 
+  test.each([
+    ['credentials', true],
+    ['configuration', true],
+    ['identity', true],
+    ['startup', true],
+    ['checkpoint', false],
+    ['failed', false],
+    ['backpressure', false],
+    ['dispatch', false],
+  ] as const)('a %s failure is fatal: %s', (reason, fatal) => {
+    expect(new DiscordGatewayFailure(reason).fatal).toBe(fatal);
+  });
+
+  test('a session that cannot start keeps the fatal ladder however long it goes on', () => {
+    // The delay comes from policy alone: a startup failure carries none, and Discord's own reset time
+    // is never read, so a spent budget costs one retry per rung and a Gateway that is down never faster.
+    const policy = gateway({ fatalRetryMinMs: 30_000, fatalRetryMaxMs: 900_000 }, 1000);
+    const state = fresh();
+    const waits = Array.from(
+      { length: 9 },
+      () => discordRetryDelay(state, new DiscordGatewayFailure('startup'), policy, () => 0).waitMs,
+    );
+    expect(waits).toEqual([
+      30_000, 60_000, 120_000, 240_000, 480_000, 900_000, 900_000, 900_000, 900_000,
+    ]);
+    expect(state).toEqual({ fatalFailures: 9, transientFailures: 0 });
+  });
+
+  test('a verified session starts both ladders again, so a transient failure after startup failures is short', () => {
+    const policy = gateway({ resetAfterMs: 120_000, fatalRetryMinMs: 30_000 }, 1000);
+    const state = { fatalFailures: 6, transientFailures: 0 };
+    const dropped = new DiscordGatewayFailure('failed', 120_000);
+    expect(discordRetryDelay(state, dropped, policy, () => 1)).toEqual({
+      fatal: false,
+      waitMs: 1000,
+    });
+    expect(state).toEqual({ fatalFailures: 0, transientFailures: 1 });
+    // A session that did not last the reset window does not erase the startup failures counted so far.
+    const early = new DiscordGatewayFailure('startup', 119_999);
+    expect(discordRetryDelay(state, early, policy)).toEqual({ fatal: true, waitMs: 30_000 });
+    expect(discordRetryDelay(state, early, policy)).toEqual({ fatal: true, waitMs: 60_000 });
+    expect(state).toEqual({ fatalFailures: 2, transientFailures: 1 });
+  });
+
   test('a transient delay starts at the poll interval and takes equal jitter below the cap', () => {
     const policy = gateway({ retryMaxMs: 8000 }, 1000);
     const state = fresh();
