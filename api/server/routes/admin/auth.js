@@ -45,6 +45,7 @@ const {
   storeRefreshTokenBridge,
   deleteRefreshTokenBridges,
   createRefreshTokenBridgeFlightKey,
+  createAdminRefreshGrantFlightKey,
   OPENID_REFRESH_BRIDGE_GRACE_MS,
 } = require('~/server/services/RefreshTokenBridge');
 const {
@@ -836,6 +837,7 @@ router.post(
           prepared,
           {
             createRefreshTokenBridgeFlightKey,
+            createAdminRefreshGrantFlightKey,
             acquireOpenIDRefreshFlight,
             completeOpenIDRefreshFlight,
             assertOpenIDRefreshFlightAvailable,

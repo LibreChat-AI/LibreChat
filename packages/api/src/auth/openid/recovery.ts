@@ -31,6 +31,7 @@ import {
   toOpenIDLogArgument,
 } from './errors';
 import {
+  ProviderSessionUnavailableError,
   extractProviderSessionRef,
   isProviderSessionUnavailableError,
   isSameProviderSessionRef,
@@ -551,6 +552,17 @@ export function createOpenIDRefreshRecoveryService(
     return resolveOpenIDRefreshResult({ tokenset, strategyName });
   }
 
+  /** An admin bridged grant also completes the bridge flight, with the tokens at the top level
+   *  and no browser publication. A browser reader cannot publish that result, so it answers a
+   *  retryable `503` and keeps the browser's cookies, instead of a sign-in redirect. */
+  function assertBrowserPublication(result: SharedOpenIDRefreshResult | null): void {
+    if (result && !result.tokenset && (result as Partial<TokenResult>).access_token) {
+      throw new ProviderSessionUnavailableError(
+        'OpenID refresh bridge result belongs to an admin refresh',
+      );
+    }
+  }
+
   async function recoverOpenIDRefreshBridge({
     req,
     res,
@@ -587,6 +599,15 @@ export function createOpenIDRefreshRecoveryService(
     const flight = await acquireOpenIDRefreshFlight({ key });
     if (!flight.acquired) {
       const resolved = await waitForOpenIDRefreshFlight({ key });
+      assertBrowserPublication(resolved);
+      if (resolved?.tokenset?.refresh_token === refreshToken) {
+        /** A publication of the presented token itself (the login publication when
+         *  `OPENID_REUSE_TOKENS` is on), not a result that replaces it. Its tokens are spent, and
+         *  its completed flight holds the key, so the successor cannot be granted until it ends. */
+        throw new ProviderSessionUnavailableError(
+          'OpenID refresh bridge flight holds a publication of the presented token',
+        );
+      }
       if (!resolved?.appAuthToken || !resolved.__flightOwnerId) {
         throw new Error('OpenID refresh bridge coordination is temporarily unavailable');
       }
@@ -890,6 +911,7 @@ export function createOpenIDRefreshRecoveryService(
         const flight = await acquireOpenIDRefreshFlight({ key });
         if (!flight.acquired) {
           const shared = await waitForOpenIDRefreshFlight({ key });
+          assertBrowserPublication(shared);
           if (!shared?.appAuthToken || !shared.__flightOwnerId) {
             throw new Error('OpenID authentication publication is temporarily unavailable');
           }
