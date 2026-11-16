@@ -332,14 +332,17 @@ describe('Discord native Gateway health', () => {
     expect(level(health)).toBe('healthy');
   });
 
-  test('a fatal stop fails and nothing else recovers it inside the entry', () => {
+  test('a fatal stop fails until the next READY or RESUMED, and an acknowledgement does not recover it', () => {
     const health = create();
     const entry = health.entry(owner(), { shards: 1 });
     entry.native('up', 0);
     entry.fatal();
-    entry.native('up', 0);
     entry.native('ack', 0);
     expect(level(health)).toBe('failing');
+    entry.native('closed', 0);
+    expect(level(health)).toBe('failing');
+    entry.native('up', 0);
+    expect(level(health)).toBe('healthy');
   });
 
   test('the weakest shard decides, and an unreported shard keeps the application unknown', () => {

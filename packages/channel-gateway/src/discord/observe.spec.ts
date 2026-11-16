@@ -572,8 +572,8 @@ describe('Discord Gateway observations', () => {
     }
   });
 
-  test.each(['shutdown', 'lost', 'checkpoint', 'failed', 'backpressure', 'dispatch'] as const)(
-    'a %s stop is counted and does not mark a fatal failure',
+  test.each(['shutdown', 'lost'] as const)(
+    'a %s stop ends the owner, is counted and marks no failure',
     async (reason) => {
       const { registry, health, telemetry } = setup();
       const scope = telemetry.application(owner(), { shards: 1 });
@@ -581,6 +581,42 @@ describe('Discord Gateway observations', () => {
       scope.observe({ type: 'stop', reason });
       expect(nativeOf(health)).toBe('healthy');
       expect(value(await scrape(registry), 'gateway_stop_total', { reason })).toBe(1);
+    },
+  );
+
+  test.each(['checkpoint', 'failed', 'backpressure', 'dispatch'] as const)(
+    'a %s stop leaves every shard down until the next session is READY, without a fatal failure',
+    async (reason) => {
+      const { registry, health, telemetry } = setup();
+      const scope = telemetry.application(owner(), { shards: 2 });
+      scope.observe({ type: 'session', event: 'ready', shardId: 0 });
+      scope.observe({ type: 'session', event: 'ready', shardId: 1 });
+      expect(nativeOf(health)).toBe('healthy');
+      scope.observe({ type: 'stop', reason });
+      expect(nativeOf(health)).toBe('degraded');
+      expect(only(health.snapshot().credentials)).toBe('healthy');
+      scope.observe({ type: 'session', event: 'ready', shardId: 0 });
+      expect(nativeOf(health)).toBe('degraded');
+      scope.observe({ type: 'session', event: 'ready', shardId: 1 });
+      expect(nativeOf(health)).toBe('healthy');
+      expect(value(await scrape(registry), 'gateway_stop_total', { reason })).toBe(1);
+    },
+  );
+
+  test.each(['credentials', 'configuration', 'identity'] as const)(
+    'the next READY recovers the Gateway after a %s stop of an application that stays owned',
+    (reason) => {
+      const { health, telemetry } = setup();
+      const scope = telemetry.application(owner(), { shards: 1 });
+      scope.observe({ type: 'session', event: 'ready', shardId: 0 });
+      scope.observe({ type: 'stop', reason });
+      expect(nativeOf(health)).toBe('failing');
+      expect(health.snapshot().applications).toBe(1);
+      scope.observe({ type: 'heartbeat', shardId: 0, latencyMs: 20 });
+      expect(nativeOf(health)).toBe('failing');
+      scope.observe({ type: 'session', event: 'ready', shardId: 0 });
+      expect(nativeOf(health)).toBe('healthy');
+      expect(only(health.snapshot().credentials)).toBe('healthy');
     },
   );
 
