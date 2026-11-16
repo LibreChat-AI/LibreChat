@@ -5,6 +5,7 @@ import type { Agents, TMessage } from 'librechat-data-provider';
 import type { Run, IState } from '@librechat/agents';
 import type { ExecuteAgentRunParams, AgentExecutionConnection } from '../remote/host';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import type { ResponsePreviewHandler, ResponsePreviewJobs } from './preview';
 import type { MarkToolApprovalAllowAlwaysOptions } from '../hitl/allow';
 import type { AgentExecutionEnrollment } from '../remote/lifecycle';
 import type { ResponseTerminalCompletion } from './foreground';
@@ -45,6 +46,7 @@ import { buildPendingBackgroundResponse } from './background';
 import { resolveResponseContinuation } from './persistence';
 import { captureRunPendingAction } from '../hitl/capture';
 import { cleanupResponseCheckpoint } from './checkpoint';
+import { createResponsePreviewHandler } from './preview';
 import { createResponseRetirement } from './retirement';
 import { collectReachableAgents } from '../traversal';
 import { pauseResponseForReview } from './pause';
@@ -127,6 +129,7 @@ export interface ResponseExecutionRuntime {
   ) => Promise<T | undefined>;
   /** A rebuilt graph restores messages from its checkpoint, not from a fresh input turn. */
   graphMessages: <T>(messages: T[]) => T[];
+  previewHandler: (handler: ResponsePreviewHandler) => ResponsePreviewHandler;
   toolContext: (execution: { createdAt: number }) => {
     streamId: string | null;
     jobCreatedAt?: number;
@@ -163,7 +166,7 @@ export function createResponseExecutionRuntime(
       GenerationJobManagerClass,
       'getJob' | 'abortJob' | 'finishProviderTerminalPersistence'
     > &
-      Partial<Pick<GenerationJobManagerClass, 'updateMetadata'>>;
+      Partial<Pick<GenerationJobManagerClass, 'updateMetadata'> & ResponsePreviewJobs>;
     pluginHookSource?: MarkToolApprovalAllowAlwaysOptions['pluginHookSource'];
     toolApprovalStorage?: Parameters<typeof createRun>[0]['toolApprovalStorage'];
     addConvoToolApprovalAllows?: Parameters<
@@ -736,6 +739,35 @@ export function createResponseExecutionRuntime(
       return undefined;
     },
     graphMessages: (messages) => (admission?.resume ? [] : messages),
+    previewHandler(handler) {
+      const channels = (req as ServerRequest).config?.endpoints?.agents?.channels;
+      const discord = channels?.discord;
+      const jobs = continuation.jobs;
+      if (
+        !admission ||
+        !enrolledExecution ||
+        enrolledExecution.signal.aborted ||
+        !/^channel:[a-zA-Z0-9_-]{1,80}$/.test(admission.record.requestKey) ||
+        !channels?.enabled ||
+        !discord?.enabled ||
+        discord.streaming.mode !== 'partial' ||
+        !jobs?.getResumeState ||
+        !jobs.setContentParts ||
+        !jobs.getJobStore
+      )
+        return handler;
+      return createResponsePreviewHandler(handler, {
+        jobs: {
+          getResumeState: jobs.getResumeState.bind(jobs),
+          setContentParts: jobs.setContentParts.bind(jobs),
+          getJobStore: jobs.getJobStore.bind(jobs),
+          getJob: jobs.getJob.bind(jobs),
+        },
+        record: admission.record,
+        execution: enrolledExecution,
+        maxChars: discord.streaming.maxPreviewChars,
+      });
+    },
     async processRun(run, input, config, options) {
       if (!admission?.resume) {
         if (!admission || !interactive || !continuation.jobs)
