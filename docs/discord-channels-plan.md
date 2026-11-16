@@ -1,28 +1,14 @@
 # Discord Provider for Agent Channels
 
-Status: implementation in progress, authorized on 2026-11-15. The provider is being delivered as a dependency stack. This document records the design and acceptance gates; it is not a claim of production readiness.
+This document defines the Discord Channels design, scope and acceptance requirements.
+The provider is implemented as a dependency stack; implementation alone does not establish
+release readiness. See [the operator guide](discord-channels.md) for current configuration,
+recovery procedures and the dedicated verification checklist.
 
-Current implementation and verification:
-
-| Area                                                                                     | State                                                                                                                                                                                  |
-| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Provider contracts, organization applications, guild installations and explicit bindings | Implemented with focused compatibility and authority tests                                                                                                                             |
-| Signed HTTP commands, account consent, durable execution and text delivery               | Implemented with signature, replay, transaction, recovery and built-process tests                                                                                                      |
-| Optional Gateway mentions, resumable sessions and guild removal                          | Queued mention output validated for text and native threads, with actor-scoped mixed-ingress continuity                                                                                |
-| Account and organization settings                                                        | Seven prior browser cases remain unchanged; four Discord scenario tags are now literal and discoverable                                                                                |
-| Feedback                                                                                 | Guild, thread and DM receipt-bound feedback independently reviewed; malformed restored scopes covered by 49 storage tests                                                              |
-| Native threads                                                                           | Signed commands and Gateway mentions share stable actor-scoped thread lanes; fresh parent and membership checks validated                                                              |
-| Direct messages                                                                          | Queued output, signed controls and feedback pass 29 integration cases; four backend acceptance scenarios pass with precise replay, revocation, cleanup and secret-retention assertions |
-| Consent and destination access                                                           | New prompts require native confirmation predating the event; current bot and actor access is checked before text output                                                                |
-| Deployment                                                                               | Compose and Helm configuration validated; a built Node process smoke passes; local Docker execution remains unverified                                                                 |
-| Startup performance                                                                      | Lighthouse passes with 250 ms per-query latency: median LCP 2.12 s, CLS 0.013 and TBT 196 ms                                                                                           |
-| Release gates                                                                            | Integrated checks and focused timeout retries pass; final acceptance integration, live Discord verification and published-head closeout remain open                                    |
-
-Independent reviews of native threads, Gateway mentions, DM output, DM controls, feedback and final route activation are clean. The four backend acceptance scenarios cover both preserved guild flows and signed DM selection, output, feedback and revocation. The hardened scenarios pass on their committed content, including a run with hostile inherited Langfuse settings. A loopback negative control verifies that the opt-in configuration prevents export to an inherited collector. Route composition passes 12 API tests, a Gateway typecheck and a built-process smoke. The integrated Gateway suite passes 904 tests, and the dedicated native integration suites pass 43 tests.
-
-Precheck at `57b57598b1` passes static checks and six workspace lanes. The data-schema lane passes 175 suites but fails three suites during Mongo startup, before their assertions. All three pass unchanged on a serial retry (35 tests). The original precheck record remains failed; it must be replaced by a clean release-head run. The installed precheck has no Gateway lane, so its 904-test result is recorded separately. These checks do not establish live Discord readiness.
-
-The original worktree's unrelated lockfile change remains outside the feature. See [the operator guide](discord-channels.md) for configuration and deployment. The dedicated test application, server, text channel and public/private threads have been inspected through Discord. The real management API accepts the application credentials and registers slash commands. The built Gateway starts, but public interaction endpoint verification is still blocked by ingress connectivity; the OAuth installation also requires the test owner to finish browser authorization. Editable credentials and runtime logs remain outside Git. Runtime verification uses a temporary local Mongo replica set and a unique Redis namespace. The shared/lab Mongo instance is standalone and is left untouched. The local Docker daemon is stopped, so container execution remains unverified. Never put a bot token in this document, chat, screenshots or test output.
+Release acceptance requires the complete integrated checks, real Discord OAuth and messaging
+flows, and CI and review closeout on the published head. Mocked tests do not establish those
+external results. Keep credentials, local runtime details and per-head verification records
+outside this design document.
 
 ## 1. Recommendation and scope
 
@@ -143,7 +129,7 @@ Migration must be additive: read legacy Slack records as Slack only where their 
 
 ## 6. Ingress, acknowledgement, and durable admission
 
-For the initial release, expose a dedicated HTTPS interaction route, for example `/discord/interactions/:applicationId`. This is a proposed route, not an existing API. Preserve the raw body and verify `X-Signature-Ed25519` over timestamp plus exact body bytes before parsing or acting. Validate header lengths, request size, bounded timestamp freshness, application identity, interaction schema, and supported context. Reject invalid signatures with 401. Handle Discord's PING verification without starting work.
+The dedicated HTTPS interaction route is `/discord/:applicationId/interactions`. Preserve the raw body and verify `X-Signature-Ed25519` over timestamp plus exact body bytes before parsing or acting. Validate header lengths, request size, bounded timestamp freshness, application identity, interaction schema, and supported context. Reject invalid signatures with 401. Handle Discord's PING verification without starting work.
 
 Discord requires an initial response within **3 seconds**. Defer valid potentially slow commands promptly, preferably privately for setup/status/errors. Do not run agent execution, OAuth exchanges, or unbounded configuration reads on the acknowledgement path. Use a bounded, revision-aware verification-key lookup; never let a stale key cache outlive rotation policy.
 

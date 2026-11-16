@@ -325,6 +325,40 @@ after Discord accepted a message. Refresh run status and inspect the destination
 manually submitting another prompt. Restarting a gateway is not a reason to replay old
 interaction requests or clear deduplication records.
 
+## Rollback and Uninstall
+
+Disable only `endpoints.agents.channels.discord.enabled` to stop new Discord setup and
+admission. Do not disable the shared `channels.enabled` setting when Slack must keep working.
+Restart or roll out the API configuration using the deployment's normal procedure. Removing
+only the public HTTP route does not stop WebSocket mentions or ordinary DMs; stopping only
+WebSocket ingestion does not stop signed slash commands.
+
+For a full rollback, remove public routing to the Discord interaction endpoint and stop the
+Discord gateway with its normal termination signal. Preserve the API long enough to inspect
+and cancel outstanding runs through the authorized controls. Cancellation is a request,
+not proof that an external tool action or a Discord message was undone. Record uncertain
+send outcomes before changing versions. Do not clear inbox receipts, run receipts, thread
+pins or consent records to force a retry.
+
+Back up MongoDB together with the encryption keys before changing versions. Roll back API
+and gateway images together to a known compatible release. Older gateways reject delivery
+plans with an unsupported renderer version; they cannot safely finish a newer saved plan.
+Keep Discord disabled when rolling back to a release without Discord support. Retained
+Discord records are not a reason to drop shared collections, indexes or Slack data. Resume
+with compatible versions and current authority checks, then complete the verification
+checklist before reopening ingress.
+
+To uninstall, remove bindings and disconnect each server through organization settings;
+users can revoke account links and DM selections through account settings. Confirm those
+operations succeeded before removing the Discord gateway deployment and public route.
+Remove the bot from the test or production server through Discord, and revoke its bot token
+and OAuth client secret in the Developer Portal if the application will no longer be used.
+Do not revoke an application used by another deployment without coordinating its migration.
+Remove that deployment's private secret references only after no component needs them.
+Removing a bot does not delete its historical messages; handle that separately under the
+server's retention policy. Keep opaque replay and thread-routing records for their intended
+retention periods instead of manually deleting database rows.
+
 ## Dedicated Verification Checklist
 
 Use a dedicated Discord test application, server, text channels and LibreChat test accounts.
