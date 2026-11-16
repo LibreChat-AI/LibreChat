@@ -19,8 +19,8 @@ import {
 import { clearCloudFrontCookies } from '~/cdn';
 
 type LoginUser = StoredTwoFactorAccount & { __v?: number };
-/** `authMethod` is set by a caller chained ahead of this controller (e.g. passkey) to override
- *  `defaultAuthMethod` for that one request. */
+/** `authMethod` is set by the credential check that ran ahead of this controller (local, LDAP,
+ *  passkey); it falls back to `'local'` when nothing set it. */
 type LoginRequest = Request & { user?: LoginUser; authMethod?: AuthMethod };
 
 export interface LoginDependencies {
@@ -35,9 +35,6 @@ export interface LoginDependencies {
     req: Request,
     options?: { authMethod?: AuthMethod },
   ) => Promise<string>;
-  /** The method this controller's mount records for a request that did not override it, e.g.
-   *  `'ldap'` on a deployment with `LDAP_URL` set, otherwise `'local'`. */
-  defaultAuthMethod: AuthMethod;
 }
 
 export function createLoginController(deps: LoginDependencies) {
@@ -73,10 +70,7 @@ export function createLoginController(deps: LoginDependencies) {
       }
 
       if (req.user.twoFactorEnabled) {
-        const tempToken = deps.generate2FATempToken(
-          req.user._id,
-          req.authMethod ?? deps.defaultAuthMethod,
-        );
+        const tempToken = deps.generate2FATempToken(req.user._id, req.authMethod ?? 'local');
         if (await wasPasswordRevokedDuringLogin(req.user)) {
           return refuseRevokedLogin(res, req.user);
         }
@@ -92,7 +86,7 @@ export function createLoginController(deps: LoginDependencies) {
         const tempToken = generateTwoFactorSetupToken(
           req.user._id.toString(),
           process.env.JWT_SECRET!,
-          req.authMethod ?? deps.defaultAuthMethod,
+          req.authMethod ?? 'local',
         );
         if (await wasPasswordRevokedDuringLogin(req.user)) {
           return refuseRevokedLogin(res, req.user);
@@ -110,7 +104,7 @@ export function createLoginController(deps: LoginDependencies) {
 
       const loginUser = req.user;
       const token = await deps.setAuthTokens(loginUser._id, res, null, req, {
-        authMethod: req.authMethod ?? deps.defaultAuthMethod,
+        authMethod: req.authMethod ?? 'local',
       });
       const revoked = await recheckMintedCredential(
         () => wasPasswordRevokedDuringLogin(loginUser),

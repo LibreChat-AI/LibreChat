@@ -1,32 +1,16 @@
-const {
-  createLoginController,
-  clearCloudFrontCookies,
-  resolveDefaultLoginAuthMethod,
-} = require('@librechat/api');
+const { createLoginController, clearCloudFrontCookies } = require('@librechat/api');
 const { generate2FATempToken } = require('~/server/services/twoFactorService');
 const { getUserById, deleteAllUserSessions } = require('~/models');
 const { setAuthTokens } = require('~/server/services/AuthService');
 
-const sharedDeps = {
+/** Records `req.authMethod` on the minted session, falling back to `'local'`. Every credential
+ *  check that runs ahead of this controller (local, LDAP, passkey) sets `req.authMethod`. */
+const loginController = createLoginController({
   generate2FATempToken,
   getUserById,
   deleteAllUserSessions,
   setAuthTokens,
   clearCloudFrontCookies,
-};
-
-/** Matches the strategy `routes/auth.js` mounts for `/login`, so the recorded `authMethod`
- *  reflects which credential check actually ran. */
-const loginController = createLoginController({
-  ...sharedDeps,
-  defaultAuthMethod: resolveDefaultLoginAuthMethod(),
 });
 
-/** `routes/admin/auth.js` mounts `/login/local` behind `requireLocalAuth` regardless of whether
- *  this deployment also has LDAP configured, so its recorded `authMethod` is always `'local'`. */
-const localLoginController = createLoginController({
-  ...sharedDeps,
-  defaultAuthMethod: 'local',
-});
-
-module.exports = { loginController, localLoginController };
+module.exports = { loginController };

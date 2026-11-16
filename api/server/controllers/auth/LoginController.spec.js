@@ -227,74 +227,30 @@ describe('loginController', () => {
     });
   });
 
-  it('records ldap as the auth method when LDAP is configured for this deployment', async () => {
-    process.env.LDAP_URL = 'ldap://directory.example.com';
-    process.env.LDAP_USER_SEARCH_BASE = 'ou=users,dc=example,dc=com';
-    let ldapLoginController;
-    try {
-      jest.isolateModules(() => {
-        jest.doMock('@librechat/data-schemas', () => ({
-          logger: { error: jest.fn(), warn: jest.fn() },
-        }));
-        jest.doMock('@librechat/api', () => ({
-          ...jest.requireActual('@librechat/api'),
-          clearCloudFrontCookies: (...args) => mockClearCloudFrontCookies(...args),
-        }));
-        jest.doMock('~/server/services/twoFactorService', () => ({
-          generate2FATempToken: (...args) => mockGenerate2FATempToken(...args),
-        }));
-        jest.doMock('~/server/services/AuthService', () => ({
-          setAuthTokens: (...args) => mockSetAuthTokens(...args),
-        }));
-        jest.doMock('~/models', () => ({
-          getUserById: (...args) => mockGetUserById(...args),
-          deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
-        }));
-        ldapLoginController = require('./LoginController').loginController;
-      });
+  /** `requireLdapAuth` sets `req.authMethod = 'ldap'` on its success path; this controller only
+   *  carries that value through, it never reads deployment config itself. */
+  it('records ldap as the auth method when the preceding credential check set it', async () => {
+    const req = { user: { _id: 'user-12', email: 'user@example.com' }, authMethod: 'ldap' };
+    const res = createResponse();
 
-      const req = { user: { _id: 'user-12', email: 'user@example.com' } };
-      const res = createResponse();
-      await ldapLoginController(req, res);
+    await loginController(req, res);
 
-      expect(mockSetAuthTokens).toHaveBeenCalledWith('user-12', res, null, req, {
-        authMethod: 'ldap',
-      });
-    } finally {
-      delete process.env.LDAP_URL;
-      delete process.env.LDAP_USER_SEARCH_BASE;
-    }
+    expect(mockSetAuthTokens).toHaveBeenCalledWith('user-12', res, null, req, {
+      authMethod: 'ldap',
+    });
   });
 
-  it('records local as the auth method for the admin local login path even when LDAP is configured', async () => {
+  /** Both `/login` (behind `requireLdapAuth`) and `/admin/login/local` (always behind
+   *  `requireLocalAuth`) mount this same controller; `requireLocalAuth` never sets
+   *  `req.authMethod`, so it falls back to `'local'` even when LDAP is configured. */
+  it('records local as the auth method for a local credential check even when LDAP is configured', async () => {
     process.env.LDAP_URL = 'ldap://directory.example.com';
     process.env.LDAP_USER_SEARCH_BASE = 'ou=users,dc=example,dc=com';
-    let adminLocalLoginController;
     try {
-      jest.isolateModules(() => {
-        jest.doMock('@librechat/data-schemas', () => ({
-          logger: { error: jest.fn(), warn: jest.fn() },
-        }));
-        jest.doMock('@librechat/api', () => ({
-          ...jest.requireActual('@librechat/api'),
-          clearCloudFrontCookies: (...args) => mockClearCloudFrontCookies(...args),
-        }));
-        jest.doMock('~/server/services/twoFactorService', () => ({
-          generate2FATempToken: (...args) => mockGenerate2FATempToken(...args),
-        }));
-        jest.doMock('~/server/services/AuthService', () => ({
-          setAuthTokens: (...args) => mockSetAuthTokens(...args),
-        }));
-        jest.doMock('~/models', () => ({
-          getUserById: (...args) => mockGetUserById(...args),
-          deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
-        }));
-        adminLocalLoginController = require('./LoginController').localLoginController;
-      });
-
       const req = { user: { _id: 'user-13', email: 'admin@example.com' } };
       const res = createResponse();
-      await adminLocalLoginController(req, res);
+
+      await loginController(req, res);
 
       expect(mockSetAuthTokens).toHaveBeenCalledWith('user-13', res, null, req, {
         authMethod: 'local',
