@@ -107,9 +107,10 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
     `https://gateway.example/discord/${app.applicationId}/interactions`,
   );
   await expect(discord.getByText(translations.com_ui_discord_health_invalid)).toBeVisible();
-  await expect(
-    discord.locator(`time[datetime="${new Date(observedBefore).toISOString()}"]`),
-  ).toBeVisible();
+  const recorded = discord.locator(`time[datetime="${new Date(observedBefore).toISOString()}"]`);
+  await expect(recorded).toBeVisible();
+  /** The time is when the status was last recorded, not a promise of a live or most recent check. */
+  await expect(recorded.locator('..')).toContainText('Last recorded check');
   const update = discord.getByRole('button', {
     name: 'Update credentials for Browser application',
   });
