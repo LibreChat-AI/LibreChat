@@ -25,6 +25,11 @@ jest.mock('librechat-data-provider', () => {
     },
   };
 });
+const mockClipboard = jest.fn();
+jest.mock('copy-to-clipboard', () => ({
+  __esModule: true,
+  default: (...args: unknown[]) => mockClipboard(...args),
+}));
 const link: ChannelLinkView = {
   linkId: 'link',
   revision: 'link-v1',
@@ -73,6 +78,7 @@ async function openCode(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Generate Code' }));
 }
 beforeEach(() => {
+  mockClipboard.mockReset().mockReturnValue(true);
   jest
     .mocked(dataService.getAgentById)
     .mockReset()
@@ -352,4 +358,23 @@ test('shows the agent name once it loads and falls back to the id when it cannot
   page();
   await waitFor(() => expect(screen.getAllByText('agent_abc123').length).toBeGreaterThan(0));
   expect(screen.queryByText('Support agent')).not.toBeInTheDocument();
+});
+
+test('copies the temporary selection code explicitly and offers manual copy on failure', async () => {
+  const f = page();
+  await openCode(f.user);
+  await f.user.click(await screen.findByRole('button', { name: 'Copy code' }));
+  expect(mockClipboard).toHaveBeenCalledWith(
+    secret,
+    expect.objectContaining({ format: 'text/plain' }),
+  );
+  expect(screen.getByText('Copied')).toBeVisible();
+  mockClipboard.mockReturnValue(false);
+  await f.user.click(screen.getByRole('button', { name: 'Copy code' }));
+  expect(
+    await screen.findByText('Copy did not work. Select the text above and copy it manually.'),
+  ).toBeVisible();
+  expect(screen.getByLabelText('Selection code')).toHaveValue(secret);
+  await f.user.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
 });

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { atom, Provider, useAtom } from 'jotai';
 import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
 import {
@@ -30,8 +30,8 @@ import type {
   DiscordDmSelectionView,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
+import { useLocalize, useCopyToClipboard } from '~/hooks';
 import { LinkAgentName } from './Links';
-import { useLocalize } from '~/hooks';
 
 const editorAtom = atom<ChannelLinkView | null>(null);
 const confirmAtom = atom<DiscordDmSelectionView | null>(null);
@@ -70,6 +70,9 @@ function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: str
   const codeInput = useRef<HTMLInputElement>(null);
   const [code, setCode] = useAtom(codeAtom);
   const [expired, setExpired] = useAtom(expiredAtom);
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const copyCode = useCopyToClipboard({ text: code?.code });
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -105,6 +108,8 @@ function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: str
     onMutate: async () => {
       setCode(null);
       setExpired(false);
+      setCopied(false);
+      setCopyFailed(false);
       await cancelReads();
     },
     onError: cancelReads,
@@ -150,6 +155,20 @@ function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: str
               0: new Date(code.expiresAtMs).toLocaleString(),
             })}
           </p>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setCopied(false);
+              setCopyFailed(!copyCode(setCopied));
+            }}
+          >
+            {localize('com_ui_discord_dm_copy_code')}
+          </Button>
+          {copied && <p role="status">{localize('com_ui_copied')}</p>}
+          {copyFailed && (
+            <Alert variant="warning">{localize('com_ui_channel_handoff_copy_failed')}</Alert>
+          )}
         </div>
       )}
       {!code && (

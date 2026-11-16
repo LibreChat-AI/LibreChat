@@ -18,6 +18,10 @@ it.each([
   '/reset-password',
   '/verify',
   '/oauth/success',
+  '/channels/link',
+  '/app/channels/link',
+  '/%63hannels/link',
+  '/channels/%6cink',
   '/',
   '/app/login/2fa',
   '/LOGIN/2fa',
@@ -29,6 +33,35 @@ it.each([
 it('keeps chat and other ordinary application routes recordable', () => {
   expect(isReplayRouteAllowed('/c/new')).toBe(true);
   expect(isReplayRouteAllowed('/search')).toBe(true);
+});
+
+it('drops scannable channel-link QR geometry before a replay snapshot can leave the browser', () => {
+  const event = sanitizeReplayEvent(
+    {
+      type: 2,
+      timestamp: 1,
+      data: {
+        initialOffset: { top: 0, left: 0 },
+        node: {
+          type: 2,
+          id: 1,
+          tagName: 'svg',
+          attributes: {},
+          childNodes: [
+            {
+              type: 2,
+              id: 2,
+              tagName: 'path',
+              attributes: { d: 'synthetic-scannable-bearer-geometry' },
+              childNodes: [],
+            },
+          ],
+        },
+      },
+    },
+    '/channels/link',
+  );
+  expect(event).toEqual({ type: 0, timestamp: 1, data: {} });
 });
 
 it('strips credentials, query strings and fragments without changing useful URL paths', () => {

@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { CircleX } from 'lucide-react';
-import { useSearchParams } from 'react-router-dom';
+import { Button } from '@librechat/client';
+import { Link, useSearchParams } from 'react-router-dom';
 import { discordOAuthErrorCodeSchema } from 'librechat-data-provider';
 import { announceOAuthSettled } from '~/data-provider';
 import { discordCallbackLabels } from './discord';
@@ -54,6 +55,11 @@ export default function OAuthError() {
   return (
     <Shell icon={CircleX} tone="error" title={localize('com_ui_oauth_error_title')}>
       <p className="text-text-secondary text-sm">{getErrorMessage(error)}</p>
+      {errorCode && (
+        <Button asChild variant="default" className="mt-6 w-full">
+          <Link to="/">{localize('com_ui_channel_link_go_home')}</Link>
+        </Button>
+      )}
     </Shell>
   );
 }
