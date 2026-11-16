@@ -25,6 +25,16 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
       type: String,
       required: true,
     },
+    sdk_runtime: {
+      type: new Schema(
+        {
+          id: { type: String, required: true },
+          protocolVersion: { type: Number, enum: [1], required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     model: {
       type: String,
       required: true,

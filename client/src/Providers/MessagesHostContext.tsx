@@ -32,6 +32,7 @@ import useConversationSeenSource from '~/hooks/Conversations/seenSource';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
+import { FLAT_THREAD } from '~/components/Chat/Messages/Thread/flag';
 import MessageAudio from '~/components/Chat/Messages/MessageAudio';
 import { useAssistantsMapContext } from './AssistantsMapContext';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
@@ -156,6 +157,7 @@ export const appMessagesHost: MessagesHost = {
   useSeenSource: useConversationSeenSource,
   renderMessageIcon: (props) => <MessageIcon {...props} />,
   useMaximizeChatSpace: () => useRecoilValue(store.maximizeChatSpace),
+  useFlatThread: () => FLAT_THREAD,
   useHideSelectedAuthor,
   useAgentsMap: useAgentsMapContext,
   renderMessageBody: (props) => <MessageContent {...props} />,

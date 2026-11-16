@@ -22,7 +22,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 describe('dropSupersededTenantIndexes', () => {
@@ -246,8 +246,8 @@ describe('dropSupersededTenantIndexes', () => {
     });
 
     afterAll(async () => {
-      await freshConnection.close();
-      await freshServer.stop();
+      await freshConnection?.close();
+      await freshServer?.stop();
     });
 
     it('skips all indexes gracefully (no errors)', async () => {
@@ -274,8 +274,8 @@ describe('dropSupersededTenantIndexes', () => {
     });
 
     afterAll(async () => {
-      await partialConnection.close();
-      await partialServer.stop();
+      await partialConnection?.close();
+      await partialServer?.stop();
     });
 
     it('drops existing indexes and skips missing ones', async () => {

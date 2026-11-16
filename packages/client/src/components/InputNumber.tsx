@@ -5,7 +5,7 @@ import * as React from 'react';
 import RCInputNumber from 'rc-input-number';
 import * as InputNumberPrimitive from 'rc-input-number';
 import type { ValueType } from '@rc-component/mini-decimal';
-import { cn, disabledWithinFillClasses } from '~/utils';
+import { cn, disabledWithinFillClasses, disabledWithinPartsClasses } from '~/utils';
 import './InputNumber.css';
 
 // TODO help needed
@@ -34,6 +34,7 @@ const InputNumber: React.ForwardRefExoticComponent<
         className={cn(
           'border-border-control text-text-primary placeholder:text-text-tertiary flex max-h-5 w-full rounded-md border bg-transparent px-3 py-2 text-sm focus:outline-hidden has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50',
           disabledWithinFillClasses,
+          props.disabled === true && disabledWithinPartsClasses,
           INPUT_NUMBER_VARIANTS[variant],
           className ?? '',
         )}

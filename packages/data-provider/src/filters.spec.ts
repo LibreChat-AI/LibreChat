@@ -1,3 +1,4 @@
+import { RE2JS } from 're2js';
 import {
   filtersConfigSchema,
   MESSAGE_FILTER_FIELDS,
@@ -16,8 +17,50 @@ import {
   hasActiveFiltersConfig,
   hasActivePiiFields,
   hasActivePiiPatterns,
+  setPiiRegexProgramSizer,
 } from './filters';
 import { configSchema, messageFilterPiiSchema } from './config';
+
+/** The server registers RE2 at startup (`configureMessageFilterRegexValidator`); do the same here. */
+const re2Sizer = (pattern: string): number | null => {
+  try {
+    const compiled = RE2JS.compile(pattern);
+    try {
+      return compiled.programSize();
+    } finally {
+      compiled.reset();
+    }
+  } catch {
+    return null;
+  }
+};
+
+beforeEach(() => {
+  setPiiRegexProgramSizer(re2Sizer);
+});
+
+describe('PII regex program sizer', () => {
+  const parses = (regex: string) =>
+    filtersConfigSchema.safeParse({
+      messages: { pii: { customPatterns: [{ id: 'org', label: 'Org', regex }] } },
+    }).success;
+
+  it('rejects every custom pattern until an engine is registered', () => {
+    setPiiRegexProgramSizer(() => null);
+    expect(parses('ORG-[A-Z0-9]+')).toBe(false);
+  });
+
+  it('accepts patterns the registered engine can compile', () => {
+    expect(parses('ORG-[A-Z0-9]+')).toBe(true);
+    expect(parses('(a)\\1')).toBe(false);
+  });
+
+  it('measures with the engine registered last, not a cached answer', () => {
+    expect(parses('ORG-[A-Z0-9]+')).toBe(true);
+    setPiiRegexProgramSizer(() => null);
+    expect(parses('ORG-[A-Z0-9]+')).toBe(false);
+  });
+});
 
 describe('filtersConfigSchema', () => {
   it('accepts source-first PII configuration with closed fields', () => {

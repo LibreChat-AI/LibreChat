@@ -1,4 +1,6 @@
-import { Radio, Checkbox } from '@librechat/client';
+import { useId } from 'react';
+import { Bot, Layers } from 'lucide-react';
+import { Radio, ChoiceCards } from '@librechat/client';
 import { useFormContext, useWatch } from 'react-hook-form';
 import { Tools, MemoryScope, ArtifactModes, AgentCapabilities } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks/useLocalize';
@@ -105,32 +107,32 @@ interface MemoryConfigProps {
 
 function MemoryConfig({ value, onChange }: MemoryConfigProps) {
   const localize = useLocalize();
-  const isolated = value === MemoryScope.agent;
+  const titleId = useId();
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center">
-        <Checkbox
-          id="memory-scope-checkbox"
-          checked={isolated}
-          onCheckedChange={(checked) =>
-            onChange(checked === true ? MemoryScope.agent : MemoryScope.user)
-          }
-          className="relative float-start me-2 inline-flex cursor-pointer"
-          value={isolated.toString()}
-          aria-labelledby="memory-scope-label"
-        />
-        <label
-          id="memory-scope-label"
-          htmlFor="memory-scope-checkbox"
-          className="text-text-primary cursor-pointer text-sm font-medium"
-        >
-          {localize('com_agents_memory_scope')}
-        </label>
-      </div>
-      <p className="text-text-secondary text-sm leading-relaxed">
-        {localize('com_agents_memory_scope_info')}
-      </p>
+      <h3 id={titleId} className="text-text-primary text-sm font-medium">
+        {localize('com_agents_memory_scope_title')}
+      </h3>
+      <ChoiceCards
+        aria-labelledby={titleId}
+        value={value === MemoryScope.agent ? MemoryScope.agent : MemoryScope.user}
+        onChange={(next) => onChange(next as MemoryScope)}
+        options={[
+          {
+            value: MemoryScope.user,
+            label: localize('com_agents_memory_scope_shared'),
+            description: localize('com_agents_memory_scope_shared_info'),
+            icon: <Layers className="size-5" strokeWidth={1.5} />,
+          },
+          {
+            value: MemoryScope.agent,
+            label: localize('com_agents_memory_scope_agent'),
+            description: localize('com_agents_memory_scope_info'),
+            icon: <Bot className="size-5" strokeWidth={1.5} />,
+          },
+        ]}
+      />
     </div>
   );
 }

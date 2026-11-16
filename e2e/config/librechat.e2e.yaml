@@ -177,9 +177,27 @@ fileConfig:
           'text/markdown': 'provider'
 
 endpoints:
+  google:
+    tokenConfig:
+      gemini-2.5-flash: { prompt: 1.23, completion: 4.56, cacheRead: 0.09 }
   # Default capabilities plus run_in_background (off by default upstream) so the
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
+    sdkRuntimes:
+      remote-example:
+        remote:
+          url: ws://127.0.0.1:8804/sdk
+          secret: e2e-remote-sdk-fixture-secret-not-a-production-key
+        roles: [ADMIN, USER]
+      remote-recovery:
+        remote:
+          url: ws://127.0.0.1:8806/sdk
+          secret: e2e-remote-sdk-fixture-secret-not-a-production-key
+          recovery: {}
+        roles: [ADMIN, USER]
+      e2e-sdk:
+        module: ./e2e/setup/sdk-runtime.cjs
+        roles: [ADMIN]
     subagentActivity:
       contentRecoveryEnabled: true
     fileSharing:
@@ -225,6 +243,7 @@ endpoints:
       # pauses the probe.
       allowAlways: true
       ask:
+        - 'inspect_example'
         - 'mcp:e2e-memory:approval_*'
       reason: E2E approval required before running {tool}.
       hooks:
@@ -469,6 +488,18 @@ modelSpecs:
       preset:
         endpoint: 'Mock Provider A'
         model: 'mock-model-a'
+
+    - name: 'e2e-native-google-billing'
+      label: 'Google Billing Fixture'
+      preset:
+        endpoint: google
+        model: gemini-2.5-flash
+
+    - name: 'e2e-native-hydrogen'
+      label: 'Hydrogen Fixture'
+      preset:
+        endpoint: google
+        model: gemini-4-hydrogen
 
 # Short enough that a stalled fake RAG query fails the tool call well inside a test.
 timeouts:

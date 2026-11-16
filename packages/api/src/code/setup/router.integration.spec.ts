@@ -193,7 +193,7 @@ describe('browser setup HTTP protocol boundary', () => {
       else process.env[name] = value;
     }
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   });
 
   function app(options: { registrationUnavailable?: boolean } = {}) {

@@ -46,7 +46,6 @@ const PeoplePickerAdminSettings = () => {
       menuId="people-picker-role-dropdown"
       mutation={mutation}
       trigger={trigger}
-      showAdminWarning={false}
     />
   );
 };

@@ -1,4 +1,5 @@
 import type { MessagePartsHost } from '../react/host';
+import { emptyToolCallChrome } from '../react/host';
 
 /** A parts host that renders nothing app-specific: no markdown, icons, files or preferences. */
 export function createMessagePartsHost(
@@ -33,6 +34,7 @@ export function createMessagePartsHost(
     usePaneConversationId: () => null,
     useLiveAppliedSteer: () => [false, () => undefined],
     useShare: () => ({}),
+    useToolCallChrome: emptyToolCallChrome,
     ...overrides,
   };
 }

@@ -12,11 +12,11 @@ export {
   CollapsibleText,
 } from '@librechat/chat/components';
 export {
-  default as Reasoning,
-  ReasoningMarker,
+  Reasoning,
   ReasoningCompact,
+  ReasoningMarker,
   StreamingThoughtPeek,
-} from './Reasoning';
+} from '@librechat/chat/components';
 export { default as LogContent } from './LogContent';
 export { default as ExecuteCode } from './ExecuteCode';
 export { default as SkillCall } from './SkillCall';

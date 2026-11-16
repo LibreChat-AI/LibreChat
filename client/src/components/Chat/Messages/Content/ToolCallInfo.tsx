@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { hasToolParams } from '@librechat/chat';
 import { useExpandCollapse } from '@librechat/chat/components';
-import { OutputRenderer } from './ToolOutput';
+import OutputRenderer from './ToolOutput/OutputRenderer';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

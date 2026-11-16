@@ -21,7 +21,7 @@ describe('conversation import cleanup methods', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   it('removes only the generated IDs for the authenticated owner and tenant', async () => {
