@@ -3,11 +3,13 @@ import type { Document } from 'mongodb';
 import type { Account } from '../channels.helpers';
 import {
   APPS,
+  GUILDS,
   fenceCount,
   inOrg,
   ok,
   refuses,
   rowOf,
+  scopeOf,
   snowflake,
   within,
 } from '../discord-installations.helpers';
@@ -15,8 +17,8 @@ import { CHANNELS_ENABLED, bearer, send } from '../channels.helpers';
 import { inOneProject } from './lint.helpers';
 
 /**
- * Who may own and change a Discord application: real accounts, another organization, and an owner
- * who is deleting or erased through the real route.
+ * Who may own, change and admit through a Discord application: real accounts, another
+ * organization, and an owner who is deleting or erased through the real route.
  * Enabled with E2E_CHANNELS=true against a MongoDB that supports transactions.
  */
 
@@ -84,6 +86,61 @@ test.describe('Discord installation ownership', () => {
       expect(erased.status, erased.text).toBe(200);
       const afterErasure = () => configure(admin, { expectedRevision: renewed.revision });
       await refuses('principal_unavailable', afterErasure, [stored]);
+    });
+  });
+
+  test('an owner who is deleting or erased fences installs and admission @scenario:discord-installation-owner-erasure-and-admission-fences', async ({
+    baseURL,
+  }) => {
+    inOneProject();
+    await within(baseURL, ['discord-owner', 'discord-admin'], async (world, [owner, admin]) => {
+      const { store, methods } = world;
+      const [app, guild] = [world.app(), { guildId: snowflake(), guildName: 'Sandbox' }];
+      const { applicationId } = app;
+      const stored = rowOf(APPS, { applicationId });
+      const created = ok(await store.configureApplication({ actorId: owner.userId, ...app }));
+      const install = (actor: Account, extra: Document = {}) =>
+        store.connectGuild({
+          actorId: actor.userId,
+          applicationId,
+          applicationRevision: created.revision,
+          ...guild,
+          ...extra,
+        });
+
+      /** An owner who is deleting blocks installs and admission but not a disconnect. */
+      const installed = ok(await install(owner));
+      const fence = new Date();
+      expect(await methods.beginAgentTriggerUserDeletion(owner.userId, fence)).toBe('acquired');
+      const extra = { guildId: snowflake(), guildName: 'Second' };
+      const second = rowOf(GUILDS, { applicationId, guildId: extra.guildId });
+      await refuses('principal_unavailable', () => install(admin, extra), [stored, second]);
+      expect(await world.touch(scopeOf(applicationId, created.revision, installed))).toBe(false);
+      const left = ok(
+        await store.disconnectGuild({
+          actorId: admin.userId,
+          installationId: installed.installationId,
+          expectedRevision: installed.revision,
+        }),
+      );
+      expect(left.status).toBe('disconnected');
+
+      /** Cancelling the deletion restores reconnect and admission. */
+      expect(await methods.cancelAgentTriggerUserDeletion(owner.userId, fence)).toBe(true);
+      const back = ok(
+        await install(admin, {
+          installationId: left.installationId,
+          expectedRevision: left.revision,
+        }),
+      );
+      expect(await world.touch(scopeOf(applicationId, created.revision, back))).toBe(true);
+
+      /** The real erasure route trips the same fence for the very scope that was just admitted. */
+      const erased = await send(owner.api, 'DELETE', '/api/user/delete', {
+        headers: bearer(owner.token),
+      });
+      expect(erased.status, erased.text).toBe(200);
+      expect(await world.touch(scopeOf(applicationId, created.revision, back))).toBe(false);
     });
   });
 });

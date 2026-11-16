@@ -7,9 +7,16 @@ import {
   createModels,
   tenantStorage,
   supportsTransactions,
+  withRequiredTransaction,
+  touchDiscordInstallation,
   createDiscordInstallationStorage,
 } from '@librechat/data-schemas';
-import type { DiscordStorageError, DiscordStorageResult } from '@librechat/data-schemas';
+import type {
+  DiscordStorageError,
+  DiscordStorageResult,
+  DiscordInstallationScope,
+} from '@librechat/data-schemas';
+import type { DiscordGuild } from 'librechat-data-provider';
 import type { Db, Document } from 'mongodb';
 import type { Account } from './channels.helpers';
 import { closeAccount, openAccount } from './channels.helpers';
@@ -24,7 +31,7 @@ import { getMongoUri, withMongo } from './db';
  */
 
 type Row = Document | null;
-export const APPS = 'discordapplications';
+export const [APPS, GUILDS] = ['discordapplications', 'discordguilds'];
 const FENCES = 'responsescopes';
 export const snowflake = (): string => `1${randomInt(1e8, 1e9)}${randomInt(1e8, 1e9)}`;
 export const secret = (kind: string): string => `e2e-${kind}-${randomUUID()}`;
@@ -79,6 +86,18 @@ export function ok<T>(result: DiscordStorageResult<T>): T {
 export const inOrg = <T>(tenantId: string, work: () => Promise<T>): Promise<T> =>
   tenantStorage.run({ tenantId }, work);
 
+export const scopeOf = (
+  applicationId: string,
+  expectedApplicationRevision: string,
+  guild: DiscordGuild,
+): DiscordInstallationScope => ({
+  applicationId,
+  expectedApplicationRevision,
+  installationId: guild.installationId,
+  guildId: guild.guildId,
+  expectedRevision: guild.revision,
+});
+
 /** The storage under test on its own connection, plus exact-id cleanup of everything it creates. */
 async function open() {
   const mongo = new mongoose.Mongoose();
@@ -121,12 +140,16 @@ async function open() {
       return String(user._id);
     },
     track: (...accounts: Account[]) => made.actors.push(...accounts.map(({ userId }) => userId)),
+    /** Admission as a run would join it: inside a real transaction. */
+    touch: (scope: DiscordInstallationScope) =>
+      withRequiredTransaction(mongo, (session) => touchDiscordInstallation(mongo, scope, session)),
     async close() {
       const tenants = [undefined, ...made.orgs];
       const fences = [...made.actors, ...made.users].flatMap((id) =>
         tenants.map((tenantId) => scopeKey(id, tenantId)),
       );
       await withMongo(async (db) => {
+        await db.collection(GUILDS).deleteMany({ applicationId: { $in: made.apps } });
         await db.collection(APPS).deleteMany({ applicationId: { $in: made.apps } });
         const ids = made.users.map((id) => new ObjectId(id));
         await db.collection('users').deleteMany({ _id: { $in: ids } });

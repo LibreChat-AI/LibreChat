@@ -4,6 +4,7 @@ import {
   createChannelFeedbackModel,
 } from './channelFeedback';
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
+import { createDiscordApplicationModel, createDiscordGuildModel } from './discord';
 import { createChannelRunModel, createChannelLaneModel } from './channelRun';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
 import { createScheduleModel, createScheduleRunModel } from './schedule';
@@ -23,7 +24,6 @@ import { createCodeEnvironmentModel } from './codeEnvironment';
 import { createSkillDeletionModel } from './skillDeletion';
 import { createAgentCategoryModel } from './agentCategory';
 import { createResponseScopeModel } from './responseScope';
-import { createDiscordApplicationModel } from './discord';
 import { createChannelScopeModel } from './channelScope';
 import { createResourceLockModel } from './resourceLock';
 import { createStoredResponseModel } from './response';
@@ -86,6 +86,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AgentApiKey: ReturnType<typeof createAgentApiKeyModel>;
   AgentChannel: ReturnType<typeof createAgentChannelModel>;
   DiscordApplication: ReturnType<typeof createDiscordApplicationModel>;
+  DiscordGuild: ReturnType<typeof createDiscordGuildModel>;
   ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
   ChannelScope: ReturnType<typeof createChannelScopeModel>;
   ChannelRun: ReturnType<typeof createChannelRunModel>;
@@ -153,6 +154,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AgentApiKey: createAgentApiKeyModel(mongoose),
     AgentChannel: createAgentChannelModel(mongoose),
     DiscordApplication: createDiscordApplicationModel(mongoose),
+    DiscordGuild: createDiscordGuildModel(mongoose),
     ChannelIdentity: createChannelIdentityModel(mongoose),
     ChannelScope: createChannelScopeModel(mongoose),
     ChannelRun: createChannelRunModel(mongoose),
