@@ -1,12 +1,12 @@
 import { nanoid } from 'nanoid';
 import { channelSnowflakeSchema, discordPublicKeySchema } from 'librechat-data-provider';
-import type { DiscordApplication } from 'librechat-data-provider';
+import type { DiscordApplication, DiscordGuild } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { DiscordApplicationRecord } from '~/models/discord';
+import { createDiscordApplicationModel, createDiscordGuildModel } from '~/models/discord';
 import { prepareChannelOwnerAdmission, touchChannelOwnerAdmission } from './channelOwner';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createResponseScopeModel } from '~/models/responseScope';
-import { createDiscordApplicationModel } from '~/models/discord';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createChannelIndexGate } from './channelIndexes';
 import { createUserModel } from '~/models/user';
@@ -14,6 +14,8 @@ import { createUserModel } from '~/models/user';
 export type DiscordStorageError =
   | 'application_in_use'
   | 'application_changed'
+  | 'application_unavailable'
+  | 'installation_changed'
   | 'principal_unavailable';
 export type DiscordStorageResult<T> =
   | { ok: true; value: T }
@@ -30,6 +32,25 @@ export interface ConfigureDiscordApplicationRecord {
   expectedRevision?: string;
 }
 
+export interface ConnectDiscordGuild {
+  actorId: string;
+  applicationId: string;
+  applicationRevision: string;
+  guildId: string;
+  guildName: string;
+  installationId?: string;
+  expectedRevision?: string;
+}
+
+export interface DiscordInstallationScope {
+  expectedApplicationRevision: string;
+  tenantId?: string;
+  installationId: string;
+  applicationId: string;
+  guildId: string;
+  expectedRevision: string;
+}
+
 export interface DiscordInstallationStorage {
   configureApplication(
     input: ConfigureDiscordApplicationRecord,
@@ -40,6 +61,14 @@ export interface DiscordInstallationStorage {
     cursor?: string,
     limit?: number,
   ): Promise<{ applications: DiscordApplication[]; next?: string }>;
+  connectGuild(input: ConnectDiscordGuild): Promise<DiscordStorageResult<DiscordGuild>>;
+  readGuild(installationId: string): Promise<DiscordGuild | null>;
+  listGuilds(cursor?: string, limit?: number): Promise<{ guilds: DiscordGuild[]; next?: string }>;
+  disconnectGuild(input: {
+    actorId: string;
+    installationId: string;
+    expectedRevision: string;
+  }): Promise<DiscordStorageResult<DiscordGuild>>;
 }
 
 const failure = (
@@ -63,6 +92,20 @@ function applicationMetadata(record: DiscordApplication): DiscordApplication {
     publicKey: record.publicKey,
     ...(record.name !== undefined ? { name: record.name } : {}),
     createdBy: record.createdBy,
+    revision: record.revision,
+    authorityWrites: record.authorityWrites,
+  };
+}
+
+function guildMetadata(record: DiscordGuild): DiscordGuild {
+  return {
+    tenantId: record.tenantId,
+    installationId: record.installationId,
+    applicationId: record.applicationId,
+    guildId: record.guildId,
+    guildName: record.guildName,
+    createdBy: record.createdBy,
+    status: record.status,
     revision: record.revision,
     authorityWrites: record.authorityWrites,
   };
@@ -93,13 +136,55 @@ function pageLimit(limit: number): void {
     throw new TypeError('Invalid Discord metadata page size');
 }
 
+/** Joins admission to credential rotation, owner erasure and disconnect/reconnect fences. */
+export async function touchDiscordInstallation(
+  mongoose: typeof import('mongoose'),
+  scope: DiscordInstallationScope,
+  session: ClientSession,
+): Promise<boolean> {
+  const tenantId = tenant();
+  if ((scope.tenantId || undefined) !== tenantId)
+    throw new TypeError('Discord installation tenant does not match authenticated scope');
+  if (!scope.expectedRevision || !scope.expectedApplicationRevision) return false;
+  const application = await createDiscordApplicationModel(mongoose)
+    .findOneAndUpdate(
+      {
+        applicationId: scope.applicationId,
+        tenantId: tenantId ?? null,
+        revision: scope.expectedApplicationRevision,
+      },
+      { $inc: { authorityWrites: 1 } },
+      { new: true, session },
+    )
+    .lean();
+  if (!application || !(await activeOwner(mongoose, application.createdBy, tenantId, session)))
+    return false;
+  const guild = await createDiscordGuildModel(mongoose)
+    .findOneAndUpdate(
+      {
+        tenantId: tenantId ?? null,
+        installationId: scope.installationId,
+        applicationId: scope.applicationId,
+        guildId: scope.guildId,
+        revision: scope.expectedRevision,
+        status: 'active',
+      },
+      { $inc: { authorityWrites: 1 } },
+      { new: true, session },
+    )
+    .lean();
+  return Boolean(guild && (await activeOwner(mongoose, guild.createdBy, tenantId, session)));
+}
+
 /** The owning service authorizes administrators and verifies provider metadata before writes. */
 export function createDiscordInstallationStorage(
   mongoose: typeof import('mongoose'),
 ): DiscordInstallationStorage {
   const applications = createDiscordApplicationModel(mongoose);
+  const guilds = createDiscordGuildModel(mongoose);
   const ensureIndexes = createChannelIndexGate(() => [
     applications,
+    guilds,
     createUserModel(mongoose),
     createResponseScopeModel(mongoose),
   ]);
@@ -247,6 +332,141 @@ export function createDiscordInstallationStorage(
         applications: page,
         ...(records.length > limit ? { next: page[page.length - 1].applicationId } : {}),
       };
+    },
+    async connectGuild(input) {
+      channelSnowflakeSchema.parse(input.applicationId);
+      channelSnowflakeSchema.parse(input.guildId);
+      if (!input.guildName || input.guildName.length > 256)
+        throw new TypeError('Invalid Discord guild name');
+      return mutate(input.actorId, async (session, tenantId) => {
+        const application = await applications
+          .findOneAndUpdate(
+            {
+              applicationId: input.applicationId,
+              tenantId: tenantId ?? null,
+              revision: input.applicationRevision,
+            },
+            { $inc: { authorityWrites: 1 } },
+            { new: true, session },
+          )
+          .lean();
+        if (!application) return failure('application_changed');
+        if (!(await activeOwner(mongoose, application.createdBy, tenantId, session)))
+          return failure('principal_unavailable');
+        const current = await guilds
+          .findOne({
+            tenantId: tenantId ?? null,
+            applicationId: input.applicationId,
+            guildId: input.guildId,
+          })
+          .session(session)
+          .lean();
+        if (
+          current
+            ? current.revision !== input.expectedRevision ||
+              (input.installationId !== undefined &&
+                current.installationId !== input.installationId)
+            : input.expectedRevision !== undefined || input.installationId !== undefined
+        )
+          return failure('installation_changed');
+        if (current && !(await activeOwner(mongoose, current.createdBy, tenantId, session)))
+          return failure('principal_unavailable');
+        if (current) {
+          const saved = await guilds
+            .findOneAndUpdate(
+              {
+                installationId: current.installationId,
+                tenantId: tenantId ?? null,
+                revision: input.expectedRevision,
+              },
+              {
+                $set: { guildName: input.guildName, status: 'active', revision: nanoid() },
+                $inc: { authorityWrites: 1 },
+              },
+              { new: true, session, runValidators: true },
+            )
+            .lean();
+          return saved
+            ? { ok: true, value: guildMetadata(saved) }
+            : failure('installation_changed');
+        }
+        const [saved] = await guilds.create(
+          [
+            {
+              tenantId,
+              installationId: nanoid(),
+              applicationId: input.applicationId,
+              guildId: input.guildId,
+              guildName: input.guildName,
+              createdBy: input.actorId,
+              status: 'active',
+              revision: nanoid(),
+              authorityWrites: 0,
+            },
+          ],
+          { session },
+        );
+        return { ok: true, value: guildMetadata(saved) };
+      });
+    },
+    async readGuild(installationId) {
+      const record = await guilds
+        .findOne({ installationId, tenantId: tenant() ?? null })
+        .read('primary')
+        .lean();
+      return record ? guildMetadata(record) : null;
+    },
+    async listGuilds(cursor, limit = 50) {
+      pageLimit(limit);
+      const records = await guilds
+        .find({
+          tenantId: tenant() ?? null,
+          ...(cursor ? { installationId: { $gt: cursor } } : {}),
+        })
+        .sort({ installationId: 1 })
+        .limit(limit + 1)
+        .read('primary')
+        .lean();
+      const page = records.slice(0, limit).map(guildMetadata);
+      return {
+        guilds: page,
+        ...(records.length > limit ? { next: page[page.length - 1].installationId } : {}),
+      };
+    },
+    async disconnectGuild(input) {
+      return mutate(input.actorId, async (session, tenantId) => {
+        const current = await guilds
+          .findOne({
+            installationId: input.installationId,
+            tenantId: tenantId ?? null,
+            revision: input.expectedRevision,
+            status: 'active',
+          })
+          .session(session)
+          .lean();
+        if (!current) return failure('installation_changed');
+        const application = await applications.updateOne(
+          {
+            applicationId: current.applicationId,
+            tenantId: tenantId ?? null,
+          },
+          { $inc: { authorityWrites: 1 } },
+          { session },
+        );
+        if (!application.matchedCount) return failure('application_unavailable');
+        const saved = await guilds
+          .findOneAndUpdate(
+            {
+              installationId: current.installationId,
+              tenantId: tenantId ?? null,
+              revision: input.expectedRevision,
+            },
+            { $set: { status: 'disconnected', revision: nanoid() }, $inc: { authorityWrites: 1 } },
+            { new: true, session },
+          )
+          .lean();
+        return saved ? { ok: true, value: guildMetadata(saved) } : failure('installation_changed');
+      });
     },
   };
 }

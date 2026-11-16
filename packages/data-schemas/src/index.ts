@@ -211,11 +211,13 @@ export * from './postgres/favorite';
 export * from './postgres/import';
 export * from './postgres/mongo';
 
-export { createDiscordInstallationStorage } from './methods/discord';
+export { createDiscordInstallationStorage, touchDiscordInstallation } from './methods/discord';
 export type {
   DiscordInstallationStorage,
+  DiscordInstallationScope,
   DiscordStorageResult,
   DiscordStorageError,
   ConfigureDiscordApplicationRecord,
+  ConnectDiscordGuild,
 } from './methods/discord';
 export type { DiscordApplicationRecord } from './models/discord';
