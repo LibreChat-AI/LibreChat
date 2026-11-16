@@ -29,11 +29,23 @@ export default function Handoff({
     hostname === '[::1]';
 
   return (
-    <main className="bg-surface-primary text-text-primary flex min-h-screen items-center justify-center p-6">
-      <section aria-labelledby={`${id}-title`} className="w-full max-w-lg space-y-5">
-        <h1 id={`${id}-title`} className="text-2xl font-semibold">
-          {localize(ticket ? 'com_ui_channel_handoff_title' : 'com_ui_channel_link_unusable_title')}
-        </h1>
+    <main className="bg-surface-primary text-text-primary flex min-h-screen flex-col items-center justify-center px-4 py-8">
+      <section
+        aria-labelledby={`${id}-title`}
+        className="border-border-light bg-surface-secondary w-full max-w-lg space-y-5 overflow-hidden rounded-2xl border p-6 shadow-sm sm:p-7"
+      >
+        <header className="space-y-3">
+          <h1 id={`${id}-title`} className="text-2xl font-semibold tracking-tight">
+            {localize(
+              ticket ? 'com_ui_channel_handoff_title' : 'com_ui_channel_link_unusable_title',
+            )}
+          </h1>
+          {ticket && (
+            <p className="text-text-secondary text-sm leading-6">
+              {localize('com_ui_channel_handoff_description')}
+            </p>
+          )}
+        </header>
         {!ticket ? (
           <>
             <Alert variant="warning">{localize('com_ui_channel_link_invalid')}</Alert>
@@ -43,9 +55,6 @@ export default function Handoff({
           </>
         ) : (
           <>
-            <p className="text-text-secondary text-sm">
-              {localize('com_ui_channel_handoff_description')}
-            </p>
             {!canResume && (
               <Alert variant="warning">{localize('com_ui_channel_handoff_storage')}</Alert>
             )}

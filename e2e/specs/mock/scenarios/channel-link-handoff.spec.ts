@@ -120,7 +120,7 @@ for (const theme of ['light', 'dark'] as const) {
     await page.keyboard.press('Enter');
     await expect(phone).toHaveAttribute('aria-expanded', 'true');
     await expect(
-      page.getByText('This address only opens on this computer.', { exact: false }),
+      page.getByText('This address only works on this computer.', { exact: false }),
     ).toBeVisible();
     await page.keyboard.press('Tab');
     await expect(page.getByLabel('Private account linking URL')).toBeFocused();
