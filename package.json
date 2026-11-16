@@ -170,7 +170,8 @@
     "lighthouse": "npm run e2e:prepare && npm run lighthouse:run",
     "lighthouse:run": "playwright test --config=e2e/playwright.config.lighthouse.ts",
     "lighthouse:regression": "cross-env LIGHTHOUSE_REGRESSION=serial-reads npm run lighthouse:run",
-    "postgres": "node config/postgres.js"
+    "postgres": "node config/postgres.js",
+    "e2e:openid:keycloak": "playwright test --config=e2e/playwright.config.keycloak.ts"
   },
   "repository": {
     "type": "git",
