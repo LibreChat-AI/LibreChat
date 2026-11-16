@@ -1,3 +1,5 @@
+import { discordChannelConfigSchema } from 'librechat-data-provider';
+import type { DiscordChannelConfig } from 'librechat-data-provider';
 import type { DiscordGatewayOwner } from './gateway';
 
 export const discordHealthConcerns = ['workers', 'credentials', 'permissions', 'native'] as const;
@@ -17,16 +19,9 @@ export type DiscordDiscoverySource = 'applications' | 'channels';
 export type DiscordLevelCounts = Record<DiscordHealthLevel, number>;
 export type DiscordQuarantineSummary = Readonly<Record<DiscordQuarantineReason, number>>;
 
-export interface DiscordHealthPolicy {
-  /** Continuous signals (discovery, Gateway heartbeat) older than this no longer count as live. */
-  staleAfterMs: number;
-  /** Event driven observations (credentials, permissions) older than this decay to unknown. */
-  observationTtlMs: number;
-}
-export const DEFAULT_DISCORD_HEALTH_POLICY: Readonly<DiscordHealthPolicy> = {
-  staleAfterMs: 120_000,
-  observationTtlMs: 3_600_000,
-};
+export type DiscordHealthPolicy = DiscordChannelConfig['health'];
+export const DEFAULT_DISCORD_HEALTH_POLICY: Readonly<DiscordHealthPolicy> =
+  discordChannelConfigSchema.parse({}).health;
 
 export interface DiscordHealthOptions extends Partial<DiscordHealthPolicy> {
   now?: () => number;
@@ -87,8 +82,6 @@ interface Source {
   last?: 'ok' | 'failed';
 }
 
-const permissionWindow = 3;
-const taskWindow = 8;
 type Live = Exclude<DiscordHealthLevel, 'disabled'>;
 const severity: Record<Live, number> = { healthy: 0, unknown: 1, degraded: 2, failing: 3 };
 const worst = (left: Live, right: Live): Live => (severity[right] > severity[left] ? right : left);
@@ -108,13 +101,15 @@ function credentialLevel(tracked: Tracked, now: number, ttl: number): Live {
   return latest.ok ? 'healthy' : 'failing';
 }
 
-/** Three denied outcomes in a row fail; fewer than three denials cannot prove more than degraded. */
-function permissionLevel(tracked: Tracked, now: number, ttl: number): Live {
-  const recent = tracked.permissions.filter((outcome) => age(now, outcome.at) <= ttl);
+/** A full window of denied outcomes fails; fewer denials cannot prove more than degraded. */
+function permissionLevel(tracked: Tracked, now: number, policy: DiscordHealthPolicy): Live {
+  const recent = tracked.permissions.filter(
+    (outcome) => age(now, outcome.at) <= policy.observationTtlMs,
+  );
   if (!recent.length) return 'unknown';
   const denied = recent.filter((outcome) => !outcome.ok).length;
   if (!denied) return 'healthy';
-  return denied === permissionWindow ? 'failing' : 'degraded';
+  return denied === policy.permissionWindow ? 'failing' : 'degraded';
 }
 
 function shardLevel(shard: Shard, now: number, stale: number): Live {
@@ -161,6 +156,8 @@ export class DiscordHealth {
     const policy = {
       staleAfterMs: options.staleAfterMs ?? DEFAULT_DISCORD_HEALTH_POLICY.staleAfterMs,
       observationTtlMs: options.observationTtlMs ?? DEFAULT_DISCORD_HEALTH_POLICY.observationTtlMs,
+      permissionWindow: options.permissionWindow ?? DEFAULT_DISCORD_HEALTH_POLICY.permissionWindow,
+      taskWindow: options.taskWindow ?? DEFAULT_DISCORD_HEALTH_POLICY.taskWindow,
     };
     if (Object.values(policy).some((value) => !Number.isSafeInteger(value) || value <= 0))
       throw new TypeError('Invalid Discord health policy');
@@ -202,7 +199,7 @@ export class DiscordHealth {
       },
       permission: (result) => {
         current.permissions.push({ at: this.now(), ok: result === 'ok' });
-        if (current.permissions.length > permissionWindow) current.permissions.shift();
+        if (current.permissions.length > this.policy.permissionWindow) current.permissions.shift();
       },
       native: (signal, shardId) => this.signal(current, signal, shardId),
       fatal: () => {
@@ -228,7 +225,7 @@ export class DiscordHealth {
   /** One unit of worker or reply delivery work. A recent window made only of failures degrades. */
   task(ok: boolean): void {
     this.tasks.push({ at: this.now(), ok });
-    if (this.tasks.length > taskWindow) this.tasks.shift();
+    if (this.tasks.length > this.policy.taskWindow) this.tasks.shift();
   }
 
   snapshot(): DiscordHealthSnapshot {
@@ -239,7 +236,7 @@ export class DiscordHealth {
     const native = emptyCounts();
     for (const record of this.tracked.values()) {
       credentials[credentialLevel(record, now, observationTtlMs)]++;
-      permissions[permissionLevel(record, now, observationTtlMs)]++;
+      permissions[permissionLevel(record, now, this.policy)]++;
       native[nativeLevel(record, now, staleAfterMs)]++;
     }
     const held = this.held();

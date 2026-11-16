@@ -135,3 +135,31 @@ it('bounds Discord fatal and transient recovery independently without changing S
     'recovery',
   );
 });
+
+it('keeps Discord health windows bounded, optional and separate from retry policy', () => {
+  expect(discordChannelConfigSchema.parse({}).health).toEqual({
+    staleAfterMs: 120000,
+    observationTtlMs: 3600000,
+    permissionWindow: 3,
+    taskWindow: 8,
+  });
+  expect(discordChannelConfigSchema.parse({ health: { taskWindow: 100 } }).health).toEqual({
+    staleAfterMs: 120000,
+    observationTtlMs: 3600000,
+    permissionWindow: 3,
+    taskWindow: 100,
+  });
+  for (const health of [
+    { staleAfterMs: 59999 },
+    { staleAfterMs: 3600001 },
+    { staleAfterMs: 120000.5 },
+    { observationTtlMs: 59999 },
+    { observationTtlMs: 86400001 },
+    { permissionWindow: 0 },
+    { permissionWindow: 21 },
+    { taskWindow: 0 },
+    { taskWindow: 101 },
+    { retryMaxMs: 60000 },
+  ])
+    expect(discordChannelConfigSchema.safeParse({ health }).success).toBe(false);
+});
