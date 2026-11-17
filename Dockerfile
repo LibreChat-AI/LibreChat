@@ -1,4 +1,4 @@
-# v0.8.9-rc1
+# v0.8.9
 
 # Base node image
 FROM docker.io/library/node:24.22.3-alpine AS node

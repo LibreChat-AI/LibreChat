@@ -1,6 +1,6 @@
 {
   "name": "LibreChat",
-  "version": "v0.8.9-rc1",
+  "version": "v0.8.9",
   "description": "",
   "packageManager": "npm@11.13.0",
   "scarfSettings": {
