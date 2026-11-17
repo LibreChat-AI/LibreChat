@@ -40,7 +40,9 @@ export function createAgentTriggerDeliveryModel(
         });
       const [indexes, collectionInfo] = await Promise.all([
         existingIndexes,
-        model.db.db!.listCollections({ name }).next(),
+        Promise.resolve().then(() =>
+          model.db.db!.listCollections({ name }, { nameOnly: false }).next(),
+        ),
       ]);
       const [keys, indexOptions] = toCreate[pollingIndex];
       const collation: CollationOptions = indexOptions.collation ??
