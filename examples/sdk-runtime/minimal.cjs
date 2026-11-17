@@ -1,7 +1,15 @@
 const { Run, Providers, FakeChatModel } = require('@librechat/agents');
 
 /** Smallest key-free example: a real SDK Run, streamed through the native Agents UI. */
-async function createMinimalRun({ config, compileOptions, identity, agent, signal, hostTools }) {
+async function createMinimalRun({
+  config,
+  compileOptions,
+  identity,
+  agent,
+  signal,
+  hostTools,
+  hostModel,
+}) {
   const run = await Run.create({
     ...config,
     returnContent: true,
@@ -22,10 +30,12 @@ async function createMinimalRun({ config, compileOptions, identity, agent, signa
       ],
     },
   });
-  run.Graph.overrideModel = new FakeChatModel({
-    responses: ['Hello from the separate SDK runtime.'],
-    sleep: 10,
-  });
+  run.Graph.overrideModel =
+    hostModel ??
+    new FakeChatModel({
+      responses: ['Hello from the separate SDK runtime.'],
+      sleep: 10,
+    });
   return run;
 }
 module.exports = { createMinimalRun };

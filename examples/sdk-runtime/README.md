@@ -144,3 +144,21 @@ See [host provider-text services](../../docs/sdk/agents.md#host-provider-text-se
 for admission ownership, encrypted journal payloads, and the remaining model/input
 policy guards. The existing factories retain `input.config`, including the new
 provider-text protection adapter, for both the minimal and custom-graph examples.
+
+## Host-owned model benchmark
+
+With SDK 4.2.8 and this bridge on both sides, start the example worker as above, then run:
+
+```bash
+SDK_BENCHMARK_HOST_MODEL=true node examples/sdk-runtime/benchmark.cjs
+```
+
+The model now executes in the host benchmark process. The separate worker still owns the custom
+plan/inspect/review/refine graph and its example tool. Both the local and remote runs use the same
+SDK host-model facade and deterministic model. Add `SDK_BENCHMARK_PROTECTION=true` for the existing
+text-policy path, and `SDK_RUNTIME_RECOVERY=true` for Redis recovery. These are benchmark options,
+not saved-agent rollout toggles. The minimal and complex factories both retain `input.hostModel`
+when supplied; neither needs a provider credential for a host-owned model.
+
+See [host model transport](../../docs/sdk/agents.md#host-model-transport) for streaming credit,
+encryption, cancellation, callback ownership, and the remaining builder/policy rollout gates.

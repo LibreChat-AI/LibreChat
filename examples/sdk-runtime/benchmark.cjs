@@ -1,6 +1,9 @@
 const { performance } = require('node:perf_hooks');
 const { randomUUID } = require('node:crypto');
 const {
+  HostChatModel,
+  HostModelAdmission,
+  createHostModelService,
   GraphEvents,
   Providers,
   ProviderTextAdmission,
@@ -8,7 +11,10 @@ const {
 } = require('@librechat/agents');
 const { HumanMessage } = require('@librechat/agents/langchain/messages');
 const { createRemoteSdkRun } = require('@librechat/api/sdk');
-const { createExampleRun } = require('./agent.cjs');
+const { convertToOpenAITool } = require('@langchain/core/utils/function_calling');
+const { createExampleRun, createExampleModel, createExampleTool } = require('./agent.cjs');
+const hostOwnedModel = process.env.SDK_BENCHMARK_HOST_MODEL === 'true';
+const modelAdmission = new HostModelAdmission({ maxConcurrentCalls: 4, maxRequestBytes: 4194304 });
 
 const protectedOutput = process.env.SDK_BENCHMARK_PROTECTION === 'true';
 const admission = new ProviderTextAdmission({
@@ -57,20 +63,37 @@ async function measure(remote) {
       agentId: identity.agentId,
     },
   };
+  const model = hostOwnedModel
+    ? createHostModelService({
+        identity,
+        model: createExampleModel(),
+        descriptor: {
+          version: 1,
+          reference: 'primary',
+          provider: Providers.OPENAI,
+          model: 'deterministic-host',
+          streaming: true,
+          tools: [convertToOpenAITool(createExampleTool())],
+        },
+        admission: modelAdmission,
+        limits: { timeoutMs: 10000, maxRequestBytes: 1048576, maxResponseBytes: 4194304 },
+      })
+    : undefined;
   const run = remote
     ? await createRemoteSdkRun({
         config,
         identity,
-        ...(protectedOutput && {
-          hostServices: {
+        hostServices: {
+          model,
+          ...(protectedOutput && {
             providerText: createHostProviderTextService({
               identity,
               policy,
               admission,
               inspectionTimeoutMs: 5000,
             }),
-          },
-        }),
+          }),
+        },
         remote: {
           url: process.env.SDK_RUNTIME_URL || 'ws://127.0.0.1:8804/sdk',
           secret: process.env.SDK_RUNTIME_SECRET || '',
@@ -82,6 +105,9 @@ async function measure(remote) {
     : await createExampleRun({
         config,
         identity,
+        hostModel: model
+          ? new HostChatModel({ identity, ...model }).bindTools(model.descriptor.tools)
+          : undefined,
         compileOptions: {},
         signal: new AbortController().signal,
         agent: { id: identity.agentId },
@@ -110,6 +136,7 @@ async function main() {
       {
         mode: 'deterministic custom graph, five warm samples',
         protectedOutput,
+        hostOwnedModel,
         local,
         remote,
         median: {

@@ -28,6 +28,7 @@ import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { createHostToolService } from './hostTools';
 import { createSnapshotReceiver } from './snapshot';
 import { createHostPolicyChannel } from './policy';
+import { createHostModelChannel } from './model';
 import { createSdkPeer } from './peer';
 
 /** Construct a real local Run whose execution is delegated to one operator-trusted runtime. */
@@ -219,6 +220,7 @@ export async function createRemoteSdkRun({
     snapshot = undefined;
     let settled = false;
     const hostInvocations = new Set<Promise<unknown>>();
+    let hostModelChannel: ReturnType<typeof createHostModelChannel> | undefined;
     const result = new Promise<RemoteSdkSnapshot>((resolve, reject) => {
       const finish = (value?: RemoteSdkSnapshot) => {
         if (settled) return;
@@ -231,6 +233,14 @@ export async function createRemoteSdkRun({
           );
         else resolve(value);
       };
+      hostModelChannel = hostServices?.model
+        ? createHostModelChannel({
+            model: hostServices.model,
+            peer: { call: (...args) => peer.call(...args) },
+            limits,
+            signal: execution.signal,
+          })
+        : undefined;
       let hostToolInvoke: ReturnType<typeof createHostToolService> | undefined;
       const peer = createSdkPeer(socket, {
         ...limits,
@@ -268,6 +278,16 @@ export async function createRemoteSdkRun({
         onCall: async (method, data, _timeoutMs, signal) => {
           if (execution.signal.aborted || options.signal?.aborted)
             throw new Error('SDK runtime execution stopped');
+          if (method === 'model.invoke' || method === 'model.stream') {
+            if (!hostModelChannel) throw new Error('Host model is unavailable');
+            const invocation = hostModelChannel.call(method, data, signal);
+            hostInvocations.add(invocation);
+            try {
+              return await invocation;
+            } finally {
+              hostInvocations.delete(invocation);
+            }
+          }
           if (method === 'policy.providerText') {
             if (!providerText) throw new Error('Host provider policy is unavailable');
             return providerText.inspect(
@@ -401,6 +421,7 @@ export async function createRemoteSdkRun({
         'agents' in config.graphConfig ? config.graphConfig.agents[0] : config.graphConfig;
       const start: RemoteSdkStart = {
         transportVersion: 2,
+        model: hostModelChannel?.descriptor,
         providerText: providerText?.descriptor,
         hostTools: descriptors.length ? descriptors : undefined,
         operation,
@@ -441,9 +462,12 @@ export async function createRemoteSdkRun({
           transportVersion?: number;
           hostTools?: number;
           providerText?: number;
+          hostModel?: number;
         };
         if (capabilities?.transportVersion !== 2)
           throw new Error('Worker transport capability unavailable');
+        if (hostServices?.model && capabilities?.hostModel !== 1)
+          throw new Error('Worker host model capability unavailable');
         if (providerText && capabilities?.providerText !== 1)
           throw new Error('Worker provider policy capability unavailable');
         if (descriptors.length) {
@@ -460,6 +484,7 @@ export async function createRemoteSdkRun({
     } finally {
       execution.abort();
       providerText?.dispose();
+      hostModelChannel?.dispose();
       // A failed/cancelled remote run may leave host cleanup running. Keep the host
       // execution enrolled until those handlers drain, even if the wire has closed.
       await Promise.allSettled([...hostInvocations]);

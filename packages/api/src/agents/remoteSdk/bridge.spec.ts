@@ -3,10 +3,13 @@ import jwt from 'jsonwebtoken';
 import { randomUUID } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 import { tool } from '@librechat/agents/langchain/tools';
+import { ChatGenerationChunk } from '@langchain/core/outputs';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
 import {
   createHostProviderTextService,
+  createHostModelService,
+  HostModelAdmission,
   ProviderTextAdmission,
   Run,
   Providers,
@@ -1197,47 +1200,119 @@ describe('remote host provider-text protection', () => {
   });
 });
 
-it('rejects a worker without protected-text capability before factory admission', async () => {
-  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-  await new Promise<void>((resolve) => server.once('listening', resolve));
-  const methods: string[] = [];
-  server.on('connection', (socket) =>
-    createSdkPeer(socket, {
-      maxFrameBytes: 65536,
-      maxBufferedBytes: 131072,
-      timeoutMs: 2000,
-      onClose: () => undefined,
-      onFrame: async () => undefined,
-      onCall: async (method) => {
-        methods.push(method);
-        return { transportVersion: 2, hostTools: 2 };
+it.each(['providerText', 'model'] as const)(
+  'rejects a worker without %s capability before factory admission',
+  async (capability) => {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const methods: string[] = [];
+    server.on('connection', (socket) =>
+      createSdkPeer(socket, {
+        maxFrameBytes: 65536,
+        maxBufferedBytes: 131072,
+        timeoutMs: 2000,
+        onClose: () => undefined,
+        onFrame: async () => undefined,
+        onCall: async (method) => {
+          methods.push(method);
+          return { transportVersion: 2, hostTools: 2 };
+        },
+      }),
+    );
+    const providerText = createHostProviderTextService({
+      identity,
+      policy: {
+        version: 1,
+        timeoutMs: 1000,
+        maxAttemptBytes: 4096,
+        maxBufferedBytes: 8192,
+        classify: () => 'prose',
+        inspect: () => ({ version: 1, ok: false, error: { code: 'blocked' } }),
       },
-    }),
-  );
-  const providerText = createHostProviderTextService({
+    });
+    try {
+      const run = await createRemoteSdkRun({
+        config: hostConfig(),
+        identity,
+        remote: { url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, secret },
+        hostServices:
+          capability === 'providerText' ? { providerText } : { model: nativeModelBinding() },
+      });
+      await expect(run.processStream({ messages: [] }, invocation())).rejects.toThrow(
+        'SDK runtime execution failed',
+      );
+      expect(methods).toEqual(['capabilities']);
+    } finally {
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
+
+function nativeModelBinding() {
+  const model = new TestModel({});
+  model._streamResponseChunks = async function* () {
+    for (const text of ['host ', 'model ', 'reply'])
+      yield new ChatGenerationChunk({ text, message: new AIMessageChunk({ content: text }) });
+  };
+  return createHostModelService({
     identity,
-    policy: {
+    model,
+    descriptor: {
       version: 1,
-      timeoutMs: 1000,
-      maxAttemptBytes: 4096,
-      maxBufferedBytes: 8192,
-      classify: () => 'prose',
-      inspect: () => ({ version: 1, ok: false, error: { code: 'blocked' } }),
+      reference: 'primary',
+      provider: Providers.OPENAI,
+      model: 'host-native',
+      streaming: true,
+      tools: [],
     },
+    admission: new HostModelAdmission({ maxConcurrentCalls: 2, maxRequestBytes: 65536 }),
+    limits: { timeoutMs: 3000, maxRequestBytes: 65536, maxResponseBytes: 65536 },
   });
+}
+it('runs the host-native model through worker graph events and terminal persistence', async () => {
+  const runtime = await fixture(async (input) => {
+    const run = await factory(input);
+    run.Graph!.overrideModel = input.hostModel;
+    return run;
+  });
+  try {
+    const deltas: unknown[] = [];
+    const config = hostConfig();
+    config.customHandlers = {
+      [GraphEvents.ON_MESSAGE_DELTA]: {
+        handle: async (_event, data) => {
+          deltas.push(data);
+        },
+      },
+    };
+    const run = await createRemoteSdkRun({
+      config,
+      identity,
+      remote: runtime.remote,
+      hostServices: { model: nativeModelBinding() },
+    });
+    const content = await run.processStream({ messages: [new HumanMessage('go')] }, invocation());
+    expect(JSON.stringify(content)).toContain('host model reply');
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(JSON.stringify(run.getRunMessages())).toContain('host model reply');
+  } finally {
+    await runtime.close();
+  }
+});
+it('refuses a worker factory that drops the required host model', async () => {
+  const runtime = await fixture();
   try {
     const run = await createRemoteSdkRun({
       config: hostConfig(),
       identity,
-      remote: { url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, secret },
-      hostServices: { providerText },
+      remote: runtime.remote,
+      hostServices: { model: nativeModelBinding() },
     });
-    await expect(run.processStream({ messages: [] }, invocation())).rejects.toThrow(
-      'SDK runtime execution failed',
-    );
-    expect(methods).toEqual(['capabilities']);
+    await expect(
+      run.processStream({ messages: [new HumanMessage('go')] }, invocation()),
+    ).rejects.toThrow('execution failed');
   } finally {
-    for (const socket of server.clients) socket.terminate();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await runtime.close();
   }
 });
