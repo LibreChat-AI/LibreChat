@@ -130,6 +130,63 @@ test.each([
   },
 );
 
+test.each([true, false])(
+  'preserves the legacy index with collection-default collation and autoIndex=%s',
+  async (autoIndex) => {
+    const collection = await connect(autoIndex);
+    await database.connection.createCollection(collection.name, {
+      collation: { locale: 'en', strength: 2, numericOrdering: true },
+    });
+    await collection.createIndex(POLLING_KEYS, { name: LEGACY_NAME });
+    const before = (await collection.listIndexes().toArray()).find(
+      (index) => index.name === LEGACY_NAME,
+    );
+    const model = createAgentTriggerDeliveryModel(database);
+
+    await expect(model.init()).resolves.toBeUndefined();
+    await createIndexesWithRetry(model);
+    await createIndexesWithRetry(model);
+
+    const indexes = await model.listIndexes();
+    expect(indexes.find((index) => index.name === LEGACY_NAME)).toEqual(before);
+    expect(indexes.some((index) => index.name === BACKGROUND_POLL_INDEX)).toBe(false);
+    expect(indexes).toHaveLength(triggerDeliverySchema.indexes().length + 1);
+  },
+);
+
+test('does not reuse a simple-collation override on a collated collection', async () => {
+  const collection = await connect();
+  await database.connection.createCollection(collection.name, { collation: { locale: 'en' } });
+  await collection.createIndex(POLLING_KEYS, {
+    name: LEGACY_NAME,
+    collation: { locale: 'simple' },
+  });
+  const model = createAgentTriggerDeliveryModel(database);
+
+  await createIndexesWithRetry(model);
+
+  const indexes = await model.listIndexes();
+  expect(indexes).toContainEqual(
+    expect.objectContaining({
+      name: BACKGROUND_POLL_INDEX,
+      collation: expect.objectContaining({ locale: 'en' }),
+    }),
+  );
+  expect(indexes).toContainEqual(expect.objectContaining({ name: LEGACY_NAME }));
+});
+
+test('does not reuse an index-level collation override on a simple collection', async () => {
+  const collection = await connect();
+  await collection.createIndex(POLLING_KEYS, { name: LEGACY_NAME, collation: { locale: 'en' } });
+  const model = createAgentTriggerDeliveryModel(database);
+
+  await createIndexesWithRetry(model);
+
+  const indexes = await model.listIndexes();
+  expect(indexes.find((index) => index.name === BACKGROUND_POLL_INDEX)?.collation).toBeUndefined();
+  expect(indexes).toContainEqual(expect.objectContaining({ name: LEGACY_NAME }));
+});
+
 test('reuses a custom short name without submitting the legacy name to Cosmos', async () => {
   const collection = await connect(true);
   await collection.createIndex(POLLING_KEYS, { name: 'custom_background_poll' });
@@ -235,6 +292,18 @@ test('respects an explicitly empty index subset', async () => {
   await model.createIndexes(options);
 
   expect(createIndex).not.toHaveBeenCalled();
+});
+
+test('propagates collection metadata failures instead of assuming simple collation', async () => {
+  await connect();
+  const model = createAgentTriggerDeliveryModel(database);
+  await model.init();
+  const error = new mongoose.mongo.MongoServerError({ ok: 0, code: 13, errmsg: 'Unauthorized' });
+  jest.spyOn(database.connection.db!, 'listCollections').mockImplementation(() => {
+    throw error;
+  });
+
+  await expect(createIndexesWithRetry(model)).rejects.toBe(error);
 });
 
 test('propagates index-list failures instead of treating the collection as missing', async () => {

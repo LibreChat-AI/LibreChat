@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { CreateIndexesOptions, IndexDescriptionInfo } from 'mongodb';
+import type { CollationOptions, CreateIndexesOptions, IndexDescriptionInfo } from 'mongodb';
 import type { IndexDefinition, IndexOptions, Model } from 'mongoose';
 import type { IAgentTriggerDeliveryDocument } from '~/types/triggerDelivery';
 import triggerDeliverySchema, { BACKGROUND_POLL_INDEX } from '~/schema/triggerDelivery';
@@ -28,13 +28,24 @@ export function createAgentTriggerDeliveryModel(
     const toCreate = [...(options.toCreate ?? model.schema.indexes())];
     const pollingIndex = toCreate.findIndex(([, index]) => index.name === BACKGROUND_POLL_INDEX);
     if (pollingIndex >= 0) {
-      const indexes: IndexDescriptionInfo[] = await model.listIndexes().catch((error: unknown) => {
-        if (error instanceof mongoose.mongo.MongoServerError && error.code === 26) {
-          return [];
-        }
-        throw error;
-      });
+      const { name } = model.collection;
+      await model.db.asPromise();
+      const existingIndexes: Promise<IndexDescriptionInfo[]> = model
+        .listIndexes()
+        .catch((error: unknown) => {
+          if (error instanceof mongoose.mongo.MongoServerError && error.code === 26) {
+            return [];
+          }
+          throw error;
+        });
+      const [indexes, collectionInfo] = await Promise.all([
+        existingIndexes,
+        model.db.db!.listCollections({ name }).next(),
+      ]);
       const [keys, indexOptions] = toCreate[pollingIndex];
+      const collation: CollationOptions = indexOptions.collation ??
+        model.schema.options.collation ??
+        collectionInfo?.options?.collation ?? { locale: 'simple' };
       const orderedKeys = Object.entries(keys);
       const equivalent = indexes.find(
         (index) =>
@@ -44,10 +55,7 @@ export function createAgentTriggerDeliveryModel(
           Boolean(index.hidden) === Boolean(indexOptions.hidden) &&
           index.expireAfterSeconds === indexOptions.expireAfterSeconds &&
           isDeepStrictEqual(index.partialFilterExpression, indexOptions.partialFilterExpression) &&
-          isDeepStrictEqual(
-            index.collation ?? { locale: 'simple' },
-            indexOptions.collation ?? model.schema.options.collation ?? { locale: 'simple' },
-          ),
+          isDeepStrictEqual(index.collation ?? { locale: 'simple' }, collation),
       );
       if (equivalent) {
         toCreate[pollingIndex] = [keys, { ...indexOptions, name: equivalent.name }];
