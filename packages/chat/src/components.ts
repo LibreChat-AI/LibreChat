@@ -377,3 +377,5 @@ export {
   getSourceDomains,
   getUniqueDomainSources,
 } from './components/parts/sources';
+
+export { HiddenAttachmentsContext, useVisibleAttachments } from './components/parts/media';
