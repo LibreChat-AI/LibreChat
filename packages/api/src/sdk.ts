@@ -3,6 +3,7 @@ export { createRemoteSdkRun } from './agents/remoteSdk/client';
 export type { RemoteSdkServerOptions } from './agents/remoteSdk/server';
 export type { SdkAgentIdentity } from './agents/remoteSdk/identity';
 export type {
+  RemoteSdkHostServices,
   RemoteSdkOptions,
   RemoteSdkResumeState,
   RemoteSdkFactoryInput,

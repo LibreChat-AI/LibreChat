@@ -130,3 +130,17 @@ Run `npm run test:cache-integration:sdk --workspace=@librechat/api` against loca
 fault-injection tests, and the Redis Playwright lane's `remote-sdk-recovery.spec.ts` for a real
 LibreChat custom-graph approval, wire outage, reconnection and saved-history test. Set
 `SDK_RUNTIME_RECOVERY=true` for `benchmark.cjs` to include Redis journal overhead.
+
+## Protected provider-text benchmark
+
+With SDK 4.2.7 and this bridge on both sides, run
+`SDK_BENCHMARK_PROTECTION=true node examples/sdk-runtime/benchmark.cjs` against the
+example worker. Add `SDK_RUNTIME_RECOVERY=true` to include Redis recovery. Both
+local and remote executions use the same deterministic pass-through output policy;
+the remote path adds host inspection through the SDK contract. This benchmark does
+not implement a production PII detector or enable protected saved-agent chat.
+
+See [host provider-text services](../../docs/sdk/agents.md#host-provider-text-service)
+for admission ownership, encrypted journal payloads, and the remaining model/input
+policy guards. The existing factories retain `input.config`, including the new
+provider-text protection adapter, for both the minimal and custom-graph examples.

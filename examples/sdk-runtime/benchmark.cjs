@@ -1,9 +1,33 @@
 const { performance } = require('node:perf_hooks');
 const { randomUUID } = require('node:crypto');
-const { GraphEvents, Providers } = require('@librechat/agents');
+const {
+  GraphEvents,
+  Providers,
+  ProviderTextAdmission,
+  createHostProviderTextService,
+} = require('@librechat/agents');
 const { HumanMessage } = require('@librechat/agents/langchain/messages');
 const { createRemoteSdkRun } = require('@librechat/api/sdk');
 const { createExampleRun } = require('./agent.cjs');
+
+const protectedOutput = process.env.SDK_BENCHMARK_PROTECTION === 'true';
+const admission = new ProviderTextAdmission({
+  maxConcurrentInspections: 4,
+  maxBufferedBytes: 4194304,
+});
+// A deterministic pass-through policy measures bridge cost, not production PII detection.
+const policy = {
+  version: 1,
+  timeoutMs: 10000,
+  maxAttemptBytes: 1048576,
+  maxBufferedBytes: 4194304,
+  classify: () => 'prose',
+  inspect: ({ content }) => ({
+    version: 1,
+    ok: true,
+    value: { content, replacements: 0, categories: [] },
+  }),
+};
 
 async function measure(remote) {
   const identity = {
@@ -17,6 +41,7 @@ async function measure(remote) {
   const started = performance.now();
   const config = {
     runId: identity.runId,
+    ...(protectedOutput && { providerTextProtection: policy }),
     returnContent: true,
     tokenCounter: () => 1,
     customHandlers: {
@@ -36,6 +61,16 @@ async function measure(remote) {
     ? await createRemoteSdkRun({
         config,
         identity,
+        ...(protectedOutput && {
+          hostServices: {
+            providerText: createHostProviderTextService({
+              identity,
+              policy,
+              admission,
+              inspectionTimeoutMs: 5000,
+            }),
+          },
+        }),
         remote: {
           url: process.env.SDK_RUNTIME_URL || 'ws://127.0.0.1:8804/sdk',
           secret: process.env.SDK_RUNTIME_SECRET || '',
@@ -74,6 +109,7 @@ async function main() {
     JSON.stringify(
       {
         mode: 'deterministic custom graph, five warm samples',
+        protectedOutput,
         local,
         remote,
         median: {
