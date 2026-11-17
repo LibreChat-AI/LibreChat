@@ -17,6 +17,11 @@ import { isEnabled } from '~/utils/common';
 
 export const mcpToolPattern: RegExp = new RegExp(`^.+${Constants.mcp_delimiter}.+$`);
 
+/** Covers current model-facing keys and the older local `mcp:server:tool` form. */
+export function isAgentMCPToolKeyCandidate(key: string): boolean {
+  return key.includes(Constants.mcp_delimiter) || key.startsWith('mcp:');
+}
+
 function isMCPServerConfig(config: unknown): config is ParsedServerConfig {
   return MCPOptionsSchema.safeParse(config).success;
 }
@@ -122,11 +127,31 @@ export function normalizeAgentToolKeys(params: {
   const rewritableNames = rawServerNames.filter(
     (name) => normalizeServerName(name) !== name && !shadowed.has(name),
   );
-  if (rewritableNames.length === 0) {
+  const legacyColonCandidates = [...(tools ?? []), ...Object.keys(toolOptions ?? {})].some((key) =>
+    key.startsWith('mcp:'),
+  );
+  if (rewritableNames.length === 0 && !legacyColonCandidates) {
     return { tools, toolOptions };
   }
 
+  /** Older local VX agent documents stored tools as `mcp:<server>:<tool>`.
+   * Resolve the server against the caller's already-authorized registry names
+   * (longest first, since a server name may itself contain `:`). Unknown and
+   * shadowed servers stay untouched and therefore fail closed in the loader. */
+  const legacyServerNames = rawServerNames
+    .filter((name) => !shadowed.has(name))
+    .sort((a, b) => b.length - a.length);
+
   const rewriteKey = (key: string): string => {
+    if (key.startsWith('mcp:')) {
+      const rawServerName = legacyServerNames.find((name) => key.startsWith(`mcp:${name}:`));
+      if (rawServerName) {
+        const toolName = key.slice(`mcp:${rawServerName}:`.length);
+        if (toolName.length > 0) {
+          return `${toolName}${Constants.mcp_delimiter}${normalizeServerName(rawServerName)}`;
+        }
+      }
+    }
     if (
       !key.includes(Constants.mcp_delimiter) ||
       isMCPAllPlaceholder(key) ||

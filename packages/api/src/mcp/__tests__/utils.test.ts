@@ -3,6 +3,7 @@ import {
   buildOAuthToolCallName,
   normalizeServerName,
   normalizeAgentToolKeys,
+  isAgentMCPToolKeyCandidate,
   findShadowedServerNames,
   splitMCPToolKey,
   redactAllServerSecrets,
@@ -114,6 +115,43 @@ describe('findShadowedServerNames', () => {
 describe('normalizeAgentToolKeys', () => {
   const rawServerNames = ['plain', 'Connector: Company'];
 
+  it('converts exact legacy mcp:<server>:<tool> keys using authorized server names', () => {
+    const result = normalizeAgentToolKeys({
+      tools: ['mcp:plain:search', 'mcp:Connector: Company:lookup'],
+      toolOptions: {
+        'mcp:plain:search': { defer_loading: true },
+        'mcp:Connector: Company:lookup': { describe_intent: true },
+      },
+      rawServerNames,
+    });
+
+    expect(result.tools).toEqual(['search_mcp_plain', 'lookup_mcp_Connector__Company']);
+    expect(result.toolOptions).toEqual({
+      search_mcp_plain: { defer_loading: true },
+      lookup_mcp_Connector__Company: { describe_intent: true },
+    });
+  });
+
+  it('converts the stored NOSTROMO state tool key to LibreChat’s model-facing key', () => {
+    const result = normalizeAgentToolKeys({
+      tools: ['mcp:nostromo-local:nostromo_estado'],
+      toolOptions: undefined,
+      rawServerNames: ['nostromo-local'],
+    });
+
+    expect(result.tools).toEqual(['nostromo_estado_mcp_nostromo-local']);
+  });
+
+  it('leaves unknown or shadowed legacy colon keys unchanged', () => {
+    const result = normalizeAgentToolKeys({
+      tools: ['mcp:unknown:search', 'mcp:shadow!:lookup'],
+      toolOptions: undefined,
+      rawServerNames: ['shadow', 'shadow!'],
+    });
+
+    expect(result.tools).toEqual(['mcp:unknown:search', 'mcp:shadow!:lookup']);
+  });
+
   it('rewrites legacy raw-keyed tools and tool_options to the normalized form', () => {
     const { tools, toolOptions } = normalizeAgentToolKeys({
       tools: ['web_search', 'search_mcp_plain', 'search_mcp_Connector: Company'],
@@ -216,6 +254,14 @@ describe('normalizeAgentToolKeys', () => {
     expect(result.toolOptions).toEqual({
       'search_mcp_Sales:Force': { run_in_background: true },
     });
+  });
+});
+
+describe('isAgentMCPToolKeyCandidate', () => {
+  it('recognizes model-facing and legacy colon-form MCP keys', () => {
+    expect(isAgentMCPToolKeyCandidate('nostromo_estado_mcp_nostromo-local')).toBe(true);
+    expect(isAgentMCPToolKeyCandidate('mcp:nostromo-local:nostromo_estado')).toBe(true);
+    expect(isAgentMCPToolKeyCandidate('web_search')).toBe(false);
   });
 });
 

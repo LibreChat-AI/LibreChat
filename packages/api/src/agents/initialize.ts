@@ -100,6 +100,7 @@ import {
   requiresEphemeralUserConnection,
   splitMCPToolKey,
   normalizeAgentToolKeys,
+  isAgentMCPToolKeyCandidate,
 } from '~/mcp/utils';
 import {
   createStatefulCodeEnvironmentPolicyError,
@@ -1163,8 +1164,8 @@ export async function initializeAgent(
   };
   const hasMCPKeyCandidates =
     (agent.tools ?? []).some(
-      (tool) => typeof tool === 'string' && tool.includes(Constants.mcp_delimiter),
-    ) || Object.keys(agent.tool_options ?? {}).some((key) => key.includes(Constants.mcp_delimiter));
+      (tool) => typeof tool === 'string' && isAgentMCPToolKeyCandidate(tool),
+    ) || Object.keys(agent.tool_options ?? {}).some((key) => isAgentMCPToolKeyCandidate(key));
   /**
    * The COMPLETE audit set actually resolved this initialization — from the
    * agent-key heal or the skill-prime heal — threaded to the tool loader so
