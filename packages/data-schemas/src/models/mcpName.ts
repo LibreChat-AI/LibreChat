@@ -7,10 +7,14 @@ interface MCPName {
   tenantId?: string;
 }
 
-const schema = new Schema<MCPName>({ name: { type: String, required: true, unique: true } });
+export const mcpNameSchema: Schema<MCPName> = new Schema<MCPName>({
+  name: { type: String, required: true },
+  tenantId: { type: String },
+});
+mcpNameSchema.index({ name: 1, tenantId: 1 }, { unique: true });
 
 /** Durable reservations survive server and account deletion. */
 export function createMCPNameModel(mongoose: typeof import('mongoose')): Model<MCPName> {
-  applyTenantIsolation(schema);
-  return mongoose.models.MCPName || mongoose.model<MCPName>('MCPName', schema);
+  applyTenantIsolation(mcpNameSchema);
+  return mongoose.models.MCPName || mongoose.model<MCPName>('MCPName', mcpNameSchema);
 }

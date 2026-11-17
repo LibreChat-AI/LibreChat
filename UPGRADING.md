@@ -126,3 +126,57 @@ have been dropped. Keep writers stopped, correct the reported problem, and rerun
 A later failure can leave a partial migration; rerunning safely completes it.
 Index builds may take time on large collections. Do not drop all indexes to
 resolve a failure.
+
+### MCP name reservations
+
+The original durable reservation implementation omitted persisted tenant identity.
+The corrected release stores `tenantId` and uses a unique `{ name, tenantId }` index.
+Existing tenantless reservations remain global tombstones because their original
+ownership cannot be recovered safely. Never delete or reassign them.
+
+For deployments that need to keep chat available, use the targeted migration below
+instead of the broad offline tenant-index migration. It touches only `mcpnames`:
+no document rewrites, no changes to other collections, and no startup flag.
+
+1. Back up the database and rehearse against the same DocumentDB engine/version.
+   Tests cover real MongoDB; a dry run is not a DocumentDB compatibility test.
+2. Temporarily reject MCP creation/deletion and account-erasure requests at your
+   deployment edge (including base-path aliases). Upstream routes include
+   `POST /api/mcp/servers`, `DELETE /api/mcp/servers/:serverName`, and
+   `DELETE /api/user/delete`. Also pause CLI/admin/background erasure and any
+   direct reservation writers; audit fork-specific paths. Let already admitted
+   operations finish. This is an operational gate, not a built-in application toggle.
+   Leave chat, reads and ordinary API traffic running.
+3. Roll every API replica and other writer onto this corrected release while
+   keeping the gate closed. Verify image digests and terminate/drain old processes,
+   jobs and scripts. Do not rely on a rolling deployment having merely started.
+   Avoid rollback or automatic scale-up onto old images during this procedure.
+4. From a single maintenance container using the updated image, the deployment's
+   writer `MONGO_URI`, credentials and TLS settings, run from `/app`:
+
+   ```sh
+   npm run migrate:mcp-reservations:dry-run
+   npm run migrate:mcp-reservations -- --writers-upgraded
+   ```
+
+   The acknowledgement asserts that **all writers** now persist tenant identity
+   and honor legacy tombstones; the command cannot discover or fence old replicas.
+   Do not use it to skip the preceding rollout. Automatic model index creation is
+   disabled in the maintenance process. Index operations run serially and use the
+   existing DocumentDB index-build retry/polling helper. Run only one migrator.
+5. Require exit status zero. Inspect `db.mcpnames.getIndexes()`: the full unique
+   `name_1_tenantId_1` index must exist and the legacy `name_1` must be absent.
+   Test cross-tenant same-title creation and single/bulk deletion in staging,
+   then remove the temporary gate. Keep all writers on the corrected code.
+
+The command builds and verifies the compound constraint **before** dropping the
+old global constraint. It preserves custom indexes and legacy documents. The dry
+run only reports index presence; it does not build indexes or validate permissions.
+If a build fails, the old constraint remains. If dropping fails, both constraints
+may remain; leave the gate closed and rerun after resolving the error. A completed
+run is idempotent. Database index builds may still consume resources or briefly
+block operations, depending on the engine; this avoids an API shutdown, not every
+possible latency spike. Do not use the broad migration on a live database.
+
+The original offline procedure remains available when all writers can be stopped:
+`npm run migrate:tenant-indexes`. It also covers collections beyond `mcpnames`.
