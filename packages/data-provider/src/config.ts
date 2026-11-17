@@ -3142,7 +3142,14 @@ export const lookupConcurrencySchema = z.object({
 
 export type TLookupConcurrency = z.infer<typeof lookupConcurrencySchema>;
 
+export const adminRefreshRateLimitSchema = z.object({
+  windowMs: z.number().int().positive().max(2_147_483_647).default(60_000),
+  max: z.number().int().positive().default(120),
+});
+
 export const rateLimitSchema = z.object({
+  /** Admin token renewal has an IP budget separate from sign-in attempts. */
+  adminRefresh: adminRefreshRateLimitSchema.optional(),
   twoFactorManagement: z
     .object({
       /** Shared budget; setup needs enable, verify, and confirm within five minutes. */
