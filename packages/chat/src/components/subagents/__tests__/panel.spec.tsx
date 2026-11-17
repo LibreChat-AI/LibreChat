@@ -319,11 +319,13 @@ jest.mock('../followed', () => ({
     threadId,
     agentId,
     followed,
+    briefAuthor,
     controls,
     onCancelControl,
   }: {
     threadId: string;
     agentId?: string;
+    briefAuthor?: { label: string };
     followed: { isLoading: boolean };
     controls?: Array<{ controlId?: string; status: string }>;
     onCancelControl?: (controlId: string) => void;
@@ -338,6 +340,7 @@ jest.mock('../followed', () => ({
         data-testid="followed-thread"
         data-thread={threadId}
         data-agent={agentId}
+        data-brief-author={briefAuthor?.label}
         data-loading={String(followed.isLoading)}
         data-receipt-scope={JSON.stringify(scope)}
         data-controls={(controls ?? []).map((control) => control.status).join(',')}
@@ -4751,6 +4754,8 @@ describe('SubagentThreadPanel', () => {
       const thread = screen.getByTestId('followed-thread');
       expect(thread).toHaveAttribute('data-thread', 'child-thread');
       expect(thread).toHaveAttribute('data-agent', 'agent-1');
+      /** The brief is the dispatching agent's turn; unresolved here, so its fallback name. */
+      expect(thread).toHaveAttribute('data-brief-author', 'com_ui_subagent_parent_agent');
       expect(thread).toHaveAttribute(
         'data-receipt-scope',
         JSON.stringify({

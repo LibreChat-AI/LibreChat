@@ -201,6 +201,22 @@ describe('FollowedChildThread', () => {
     });
   });
 
+  it("draws the child's brief as the turn of the agent that sent it, not the reader's", () => {
+    mount(followedChat(), {}, { briefAuthor: { label: 'Lead agent', icon: <span>LA</span> } });
+
+    const brief = screen.getByRole('heading', { name: /Lead agent/ });
+    expect(brief).toBeVisible();
+    expect(brief).not.toHaveClass('sr-only');
+    expect(brief).toHaveTextContent('LA');
+    expect(rows()[0]).toBe('task:user=Investigate the release.');
+  });
+
+  it('leaves a brief with no known sender as a plain user-side turn', () => {
+    mount(followedChat());
+
+    expect(screen.queryByText('LA')).toBeNull();
+  });
+
   it("reads a tool call's full output through the host's parent-scoped query", () => {
     const useThreadToolContent = jest.fn() as unknown as ToolContentQuery;
     mount(followedChat(), { useThreadToolContent });

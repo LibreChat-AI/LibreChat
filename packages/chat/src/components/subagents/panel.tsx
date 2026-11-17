@@ -190,6 +190,11 @@ export default function SubagentThreadPanel({
     selection.partIndex,
     selection.durable?.threadId,
   );
+  /** The brief is the dispatching agent's turn, drawn with its name and face. */
+  const briefAuthor = useMemo(
+    () => ({ icon: parentAuthor.icon, label: parentAuthor.name }),
+    [parentAuthor.icon, parentAuthor.name],
+  );
   const threadId = selection.durable?.threadId ?? '';
   const taskId = selection.durable?.taskId ?? '';
   const receiptScope = useMemo(
@@ -1752,6 +1757,7 @@ export default function SubagentThreadPanel({
                 threadId={threadId}
                 followed={followed}
                 agentId={taskView?.agentId ?? foregroundAgentId}
+                briefAuthor={briefAuthor}
                 controls={activity.controls}
                 controlsTruncated={activity.controlsTruncated}
                 onCancelControl={

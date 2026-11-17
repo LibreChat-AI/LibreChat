@@ -2,11 +2,13 @@ import { useMemo } from 'react';
 import { buildTree } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
+import type { TMessageAuthor } from '../../react/messages/author';
 import type { MessagesHost } from '../../react/messages/host';
 import type { ChatScreenMessagesSlots } from './messages';
 import type { FollowedChat } from '../../react/follow';
 import { useMessagesHost, inertSeenSource, MessagesHostProvider } from '../../react/messages/host';
 import { ChatContext, useChatContext } from '../../react/chat/context';
+import { UserTurnAuthorContext } from '../../react/messages/author';
 import { useFollowedContract } from '../../react/chat/followed';
 import ScreenMessages from './messages';
 
@@ -19,6 +21,8 @@ export type FollowedThreadProps = {
   conversation: TConversation | null;
   /** Replacements for the list's slots, over the ones a followed conversation leaves empty. */
   slots?: ChatScreenMessagesSlots;
+  /** Who wrote the conversation's user-side turns, when the reader did not. */
+  userAuthor?: TMessageAuthor;
 };
 
 const none = (): null => null;
@@ -69,6 +73,7 @@ export default function FollowedThread({
   index,
   conversation,
   slots,
+  userAuthor,
 }: FollowedThreadProps): ReactElement {
   const contract = useFollowedContract({ id, followed, index, conversation });
   const { messages } = followed;
@@ -78,12 +83,14 @@ export default function FollowedThread({
   return (
     <ChatContext.Provider value={contract}>
       <MessagesHostProvider host={messagesHost}>
-        <ScreenMessages
-          messagesTree={messagesTree}
-          messages={messages}
-          slots={listSlots}
-          primary={false}
-        />
+        <UserTurnAuthorContext.Provider value={userAuthor}>
+          <ScreenMessages
+            messagesTree={messagesTree}
+            messages={messages}
+            slots={listSlots}
+            primary={false}
+          />
+        </UserTurnAuthorContext.Provider>
       </MessagesHostProvider>
     </ChatContext.Provider>
   );
