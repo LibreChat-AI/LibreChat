@@ -478,6 +478,12 @@ jobs:
           CI: 'true'
           E2E_ALLOW_EMAIL_CHANGE: 'false'
 
+      - name: Run Responses compaction integration
+        if: matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/')
+        run: npx playwright test --config=e2e/playwright.config.responses.ts --retries=0
+        env:
+          CI: 'true'
+
       # Reports and traces are debugging aids that no job downloads, so an upload that fails must
       # not fail a shard whose tests passed. On 2026-11-11 the artifact service answered every
       # request with an HTML page: each upload retried for 9 to 10.5 minutes before it failed,
@@ -504,7 +510,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: playwright-test-results-${{ matrix.artifact }}
-          path: e2e/specs/.test-results/**
+          path: |
+            e2e/specs/.test-results/**
+            e2e/responses/.test-results/**
           retention-days: 7
           if-no-files-found: ignore
 

@@ -45,3 +45,12 @@ describe('private text cipher', () => {
     expect(() => cipher.open(envelope, binding)).toThrow('Private message text is unavailable.');
   });
 });
+
+it('keeps compaction and private-message encryption in separate domains', () => {
+  const compact = createPrivateTextCipher('ab'.repeat(32), 'librechat-responses-compaction-v1');
+  const envelope = compact.seal('context', binding);
+  expect(() => cipher.open(envelope, binding)).toThrow();
+  expect(() => compact.open(legacyEnvelope, binding)).toThrow();
+  expect(compact.open(envelope, binding)).toBe('context');
+  expect(cipher.open(legacyEnvelope, binding)).toBe('private message');
+});

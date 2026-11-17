@@ -7,13 +7,14 @@ export interface PrivateTextCipher {
 }
 
 /** Uses the deployment credential key, domain-separated from credential encryption. */
-export function createPrivateTextCipher(hexKey: string): PrivateTextCipher {
+export function createPrivateTextCipher(
+  hexKey: string,
+  domain = 'librechat-owner-text-v1',
+): PrivateTextCipher {
   if (!/^[a-fA-F0-9]{64}$/.test(hexKey)) {
     throw new Error('Private message encryption is unavailable.');
   }
-  const key = Buffer.from(
-    hkdfSync('sha256', Buffer.from(hexKey, 'hex'), '', 'librechat-owner-text-v1', 32),
-  );
+  const key = Buffer.from(hkdfSync('sha256', Buffer.from(hexKey, 'hex'), '', domain, 32));
   const aad = (binding: readonly string[]) =>
     Buffer.from(JSON.stringify(['owner-text-v1', ...binding]));
   return {

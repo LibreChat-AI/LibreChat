@@ -20,6 +20,8 @@
  * @see https://openresponses.org/specification
  */
 const express = require('express');
+const { logger } = require('@librechat/data-schemas');
+const { createResponseCompaction } = require('@librechat/api');
 const {
   createResponse,
   getResponse,
@@ -41,6 +43,12 @@ const router = express.Router();
 const background = createBackgroundResponseHandlers({
   create: createResponse,
   retrieve: getResponse,
+});
+
+const compaction = createResponseCompaction({
+  create: createResponse,
+  getKey: () => process.env.CREDS_KEY ?? '',
+  onError: logger.error.bind(logger, '[Responses compaction]'),
 });
 
 router.use(preAuthTenantMiddleware);
@@ -90,7 +98,8 @@ router.use(checkRemoteAgentsFeature);
  *   "usage": { ... }
  * }
  */
-router.post('/', checkAgentPermission, background.create);
+router.post('/compact', checkAgentPermission, compaction.expand, compaction.create);
+router.post('/', checkAgentPermission, compaction.expand, background.create);
 router.post('/:id/cancel', background.cancel);
 
 /**

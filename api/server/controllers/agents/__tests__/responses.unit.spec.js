@@ -226,6 +226,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').createStoredForegroundResponseReader(...args),
   createResponseAccountingSnapshot: (...args) =>
     jest.requireActual('@librechat/api').createResponseAccountingSnapshot(...args),
+  responseRunOperation: (...args) =>
+    jest.requireActual('@librechat/api').responseRunOperation(...args),
   withResponsePersistenceErrors: (...args) =>
     jest.requireActual('@librechat/api').withResponsePersistenceErrors(...args),
   createFileProvisionRecovery: () =>
@@ -1163,6 +1165,63 @@ describe('createResponse controller', () => {
       expect.anything(),
     );
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ store: true }));
+  });
+
+  it('prepares standalone compaction without tool loaders and selects the shared summarize-only path', async () => {
+    const api = require('@librechat/api');
+    req.config.endpoints.agents.responses = { compaction: { enabled: true } };
+    req.body.input = [
+      { type: 'function_call', call_id: 'previous', name: 'prior_client', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'previous', output: 'result' },
+    ];
+    const compact = jest
+      .requireActual('@librechat/api')
+      .createResponseCompaction({ create: createResponse, getKey: () => 'ab'.repeat(32) });
+    await compact.create(req, res, jest.fn());
+    expect(api.initializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        loadTools: undefined,
+        codeEnvAvailable: false,
+        fileSearchAvailable: false,
+        skillAuthoringAvailable: false,
+        agent: expect.objectContaining({ tools: [], tool_resources: {}, skills: [], edges: [] }),
+      }),
+      expect.anything(),
+    );
+    expect(api.buildRunToolSet).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      new Set(['prior_client']),
+      expect.anything(),
+      true,
+    );
+    expect(api.createRun).toHaveBeenCalledWith(
+      expect.objectContaining({ summarizeOnly: true, summarizeFullWindow: true }),
+    );
+  });
+
+  it.each([
+    { id: 'local-sdk', protocolVersion: 1 },
+    { id: 'remote-sdk', protocolVersion: 1 },
+  ])('rejects SDK runtime %p before compaction initializes or executes it', async (sdk_runtime) => {
+    const api = require('@librechat/api');
+    const db = require('~/models');
+    req.config.endpoints.agents.responses = { compaction: { enabled: true } };
+    const agent = await db.getAgent();
+    db.getAgent.mockResolvedValueOnce({ ...agent, sdk_runtime });
+    const compact = jest
+      .requireActual('@librechat/api')
+      .createResponseCompaction({ create: createResponse, getKey: () => 'ab'.repeat(32) });
+    await compact.create(req, res, jest.fn());
+    expect(api.initializeAgent).not.toHaveBeenCalled();
+    expect(api.createRun).not.toHaveBeenCalled();
+    expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+      res,
+      409,
+      expect.any(String),
+      'invalid_request',
+      'compaction_unavailable',
+    );
   });
 
   it('continues a stored response ID in its owner-scoped conversation', async () => {

@@ -66,6 +66,7 @@ const {
   createResponseAccountingSnapshot,
   withResponsePersistenceErrors,
   createResponseExecutionRuntime,
+  responseRunOperation,
   GenerationJobManager,
   getPluginHookSource,
   writeDone,
@@ -351,6 +352,7 @@ async function loadPreviousMessages(conversationId, userId, previousResponseId) 
  */
 const executeResponse = async (envelope, { req, res }) => {
   const appConfig = req.config;
+  const responseOperation = responseRunOperation(req);
   const requestStartTime = envelope.receivedAt;
   const request = envelope.payload;
   const { principal } = envelope;
@@ -722,7 +724,7 @@ const executeResponse = async (envelope, { req, res }) => {
       });
 
       const primaryConfig = await initializeAgent(
-        {
+        responseOperation.initialize({
           runtime: agentRuntime,
           loadTools,
           requestFiles: [],
@@ -757,7 +759,7 @@ const executeResponse = async (envelope, { req, res }) => {
           defaultActiveOnShare,
           manualSkills,
           signal: execution.signal,
-        },
+        }),
         dbMethods,
       );
 
@@ -981,7 +983,7 @@ const executeResponse = async (envelope, { req, res }) => {
       const toolSet = buildRunToolSet(
         primaryConfig,
         handoffAgentConfigs.values(),
-        undefined,
+        responseOperation.replayToolNames,
         allMessages,
         true,
       );
@@ -1198,7 +1200,8 @@ const executeResponse = async (envelope, { req, res }) => {
           summarizationConfig,
           appConfig,
           signal: execution.signal,
-          customHandlers: handlers,
+          customHandlers: responseOperation.handlers(handlers),
+          ...responseOperation.runOptions,
           initialSessions,
           requestBody: mcpRequestBody,
           user: { ...createSafeUser(req.user), id: userId },
@@ -1427,7 +1430,8 @@ const executeResponse = async (envelope, { req, res }) => {
           summarizationConfig,
           appConfig,
           signal: execution.signal,
-          customHandlers: handlers,
+          customHandlers: responseOperation.handlers(handlers),
+          ...responseOperation.runOptions,
           initialSessions,
           requestBody: mcpRequestBody,
           user: { ...createSafeUser(req.user), id: userId },
