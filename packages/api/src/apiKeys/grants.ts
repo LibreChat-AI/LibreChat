@@ -173,6 +173,8 @@ export function createAgentKeyMCPGrantHost(deps: {
       const user = req.user;
       if (source?.type !== 'remote_api' || source.keyId == null || !user) return;
       signal?.throwIfAborted();
+      // Resolved again, fail-closed, and not read from the request: a config that fell back to
+      // the deployment's base during an override outage must not read as "unrestricted".
       if ((await integrationsFor(user)).mode !== 'delegated') return;
       const context = getMCPRequestContext(req, res);
       // An agent the run cannot name, a request with nowhere to hold the check, or a key the
