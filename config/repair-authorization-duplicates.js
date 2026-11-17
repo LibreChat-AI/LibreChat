@@ -18,8 +18,17 @@ const { repairAuthorizationDuplicates } = require('@librechat/data-schemas');
     return;
   }
   try {
-    const connect = require('./connect');
-    await connect();
+    if (!process.env.MONGO_URI) {
+      throw new Error('MONGO_URI is required');
+    }
+    // Maintenance owns one primary connection; do not import application bootstrapping or seeders.
+    await mongoose.connect(process.env.MONGO_URI, {
+      autoIndex: false,
+      autoCreate: false,
+      readPreference: 'primary',
+      maxPoolSize: 1,
+      serverSelectionTimeoutMS: 10_000,
+    });
     const dryRun = !args.includes('--apply');
     const reports = await repairAuthorizationDuplicates(mongoose.connection, {
       dryRun,
