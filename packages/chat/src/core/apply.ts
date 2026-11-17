@@ -1,5 +1,6 @@
 import { StepEvents } from 'librechat-data-provider';
 import type {
+  Agents,
   TMessage,
   ChatEvent,
   ChatFrame,
@@ -9,6 +10,7 @@ import type {
   ChatCreatedFrame,
 } from 'librechat-data-provider';
 import type { StepEvent, StepEffect, StepContext } from './reducer';
+import type { Placement, PlacementContext } from './parts/place';
 import type { ChatEventContext } from './chat';
 import {
   reduceStep,
@@ -18,10 +20,19 @@ import {
   syncStreamMessage,
   createStreamState,
 } from './reducer';
+import {
+  placeSteer,
+  oauthPromptSteps,
+  placeActivityLabel,
+  placePendingAction,
+  placeReasoningLabel,
+} from './parts/place';
 import { buildResumeEventSubmission, buildSubmissionFromResumeState } from './resumable/resume';
+import { getStepEventId, isOAuthStepEvent } from './resumable/events';
 import { buildCreatedInitialResponse } from './resumable/messages';
 import { placeResumedResponse } from './resumable/placement';
 import { normalizeFrame } from './transport/frames';
+import { getEditPrefix } from './steps/content';
 import { mergeFinalFrame } from './chat';
 
 /** A step's side channel that is not a write to the message list. */
@@ -38,7 +49,11 @@ export type EventApplierInit = {
 };
 
 export type EventApplier = {
-  /** `ChatInit.applyEvent`: folds a turn's `created`, `sync`, `step` and `final` frames in. */
+  /**
+   * `ChatInit.applyEvent`: folds in every frame that writes a message. That is a turn's
+   * `created`, `sync`, `step` and `final` frames, and the side frames a stream carries beside its
+   * deltas: an injected steer, an activity label, a reasoning title and a pause.
+   */
   applyEvent: (event: ChatEvent, context: ChatEventContext) => void;
   /** Writes the streamed tokens a scheduled flush still holds. */
   flush: () => void;
@@ -47,6 +62,51 @@ export type EventApplier = {
 };
 
 type HeldFlush = { responses: Set<string>; summaries: Set<string>; messages: TMessage[] };
+
+/** A frame that writes onto a response beside the stream's deltas. */
+type SideFrame = Extract<
+  ChatEvent,
+  { type: 'steer_applied' | 'activity_label' | 'reasoning_label' | 'pending_action' }
+>;
+
+const sideTypes = new Set<ChatEvent['type']>([
+  'steer_applied',
+  'activity_label',
+  'reasoning_label',
+  'pending_action',
+]);
+
+const isSideFrame = (event: ChatEvent): event is SideFrame => sideTypes.has(event.type);
+
+/** How the turn's list differs from the index space the server claims; see `PlacementContext`. */
+const placementContext = (submission: EventSubmission): PlacementContext => {
+  const userMessageId = submission.userMessage?.messageId;
+  return {
+    placeholderIds: [
+      submission.initialResponse?.messageId,
+      userMessageId ? `${userMessageId}_` : undefined,
+    ],
+    prefixLength: getEditPrefix(submission).editPrefixOffset,
+    foldedFirstPart: submission.editPrefixFirstPartFolded === true,
+  };
+};
+
+const locate = (
+  frame: SideFrame,
+  messages: TMessage[],
+  context: PlacementContext,
+): Placement | undefined => {
+  if (frame.type === 'steer_applied') {
+    return placeSteer(messages, frame.data, context);
+  }
+  if (frame.type === 'activity_label') {
+    return placeActivityLabel(messages, frame.data, context);
+  }
+  if (frame.type === 'reasoning_label') {
+    return placeReasoningLabel(messages, frame.data, context);
+  }
+  return placePendingAction(messages, frame.data);
+};
 
 const stepContext = (submission: EventSubmission, context: ChatEventContext): StepContext => ({
   submission,
@@ -137,9 +197,13 @@ function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventS
  * uses there. A `Chat` constructed with it holds, for the same frames, the messages main chat
  * holds.
  *
+ * Side frames are placed by the functions main chat's `ResponsePatcher` calls. One whose target
+ * has not been drawn yet waits and is placed again when the list next changes, instead of being
+ * retried on a timer: every event is applied in order here, so the list only changes when one is.
+ *
  * Stateful, one per `Chat`: it keeps the streaming copy of each response between events. Frames
- * that describe something other than message content (usage, titles, attachments, steers, labels
- * and pauses) are left to `onEvent`.
+ * that describe something beside the message list (usage, titles, attachments, the composer's
+ * steer chips) are left to `onEvent`.
  */
 export function createEventApplier(init: EventApplierInit = {}): EventApplier {
   const stream = createStreamState();
@@ -147,6 +211,8 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
   let context: ChatEventContext | undefined;
   /** Steps that arrived before a frame named the turn they belong to. */
   let early: StepEvent[] = [];
+  /** Side frames whose target has not been drawn yet, oldest first. */
+  let waiting: SideFrame[] = [];
   let held: HeldFlush | undefined;
   let cancel: (() => void) | undefined;
 
@@ -174,6 +240,7 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     resetStreamState(stream);
     submission = undefined;
     early = [];
+    waiting = [];
   };
 
   const settle = (effects: StepEffect[]): void => {
@@ -187,7 +254,57 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
       (effect.type === 'flush' ? held.responses : held.summaries).add(effect.messageId);
     }
     if (held != null && init.schedule != null) {
-      cancel ??= init.schedule(flush);
+      cancel ??= init.schedule(land);
+    }
+  };
+
+  /** Places one side frame; false while what it targets has yet to be drawn. */
+  const place = (frame: SideFrame): boolean => {
+    if (submission == null || context == null) {
+      return false;
+    }
+    const messages = context.messages;
+    const placement = locate(frame, messages, placementContext(submission));
+    if (placement == null) {
+      return false;
+    }
+    if (placement.changed) {
+      const next = [...messages];
+      next[placement.index] = placement.message;
+      context.write(next);
+      /**
+       * A regenerate-shaped turn seeds its reply from the submission's placeholder, not from the
+       * list, so a frame placed on that placeholder is carried there too or the first run step
+       * drops it.
+       */
+      if (placement.message.messageId === submission.initialResponse?.messageId) {
+        submission = { ...submission, initialResponse: placement.message };
+      }
+      settle(syncStreamMessage(stream, placement.message));
+    }
+    return placement.settled;
+  };
+
+  const retry = (): void => {
+    if (waiting.length > 0) {
+      waiting = waiting.filter((frame) => !place(frame));
+    }
+  };
+
+  /** Writes the held tokens, then places what was waiting on them. */
+  function land(): void {
+    flush();
+    retry();
+  }
+
+  /**
+   * Held tokens land first: a placement reads the list and then replaces the streaming copy, so
+   * placing ahead of them would lose them.
+   */
+  const side = (frame: SideFrame): void => {
+    land();
+    if (!place(frame)) {
+      waiting.push(frame);
     }
   };
 
@@ -199,13 +316,31 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     settle(reduceStep(stream, event, stepContext(submission, context)));
   };
 
-  /** Frames a snapshot carries beside its content; only the graph's step events write messages. */
-  const replay = (frames: ReadonlyArray<object> | undefined): void => {
+  /**
+   * The frames a snapshot carries beside its content, in order. `withheld` names the steps that
+   * a pending OAuth prompt redraws, whose own OAuth events are skipped.
+   */
+  const replay = (
+    frames: ReadonlyArray<object> | undefined,
+    withheld?: ReadonlySet<string>,
+  ): void => {
     for (const frame of frames ?? []) {
       const event = normalizeFrame(frame as ChatFrame);
-      if (event?.type === 'step') {
-        step(event.data as StepEvent);
+      if (event == null) {
+        continue;
       }
+      if (isSideFrame(event)) {
+        side(event);
+        continue;
+      }
+      if (event.type !== 'step') {
+        continue;
+      }
+      const stepId = getStepEventId(event.data);
+      if (stepId != null && withheld?.has(stepId) === true && isOAuthStepEvent(event.data)) {
+        continue;
+      }
+      step(event.data as StepEvent);
     }
   };
 
@@ -213,7 +348,8 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     if (!data.message?.messageId) {
       return;
     }
-    const waiting = early;
+    const steps = early;
+    const sides = waiting;
     reset();
     const next = createdSubmission(data, ctx.messages);
     /** The list with the turn's message in it, which a regeneration's steps build on. */
@@ -221,7 +357,8 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
       ctx.write(next.messages);
     }
     submission = next;
-    for (const event of waiting) {
+    waiting = sides;
+    for (const event of steps) {
       step(event);
     }
   };
@@ -235,6 +372,7 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     /** What a scheduled write holds predates the snapshot, and so do steps not yet placed. */
     drop();
     early = [];
+    waiting = [];
     const conversationId =
       resumeState.conversationId ??
       resumeState.userMessage?.conversationId ??
@@ -274,7 +412,21 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
       settle(syncStreamMessage(stream, placement.response));
     }
 
-    replay(resumeState.replayEvents);
+    /** A step paused on an OAuth prompt is drawn from the prompt, which holds the live sign-in
+     *  link; the step's own replayed OAuth events may hold one that has since been replaced. */
+    const prompts = resumeState.pendingOAuthPrompts ?? [];
+    const prompted = new Set(prompts.map((prompt) => prompt.stepId));
+    for (const prompt of prompts) {
+      for (const event of oauthPromptSteps(prompt)) {
+        step(event);
+      }
+    }
+    /** The run is paused: its controls are drawn again after a reload or a dropped connection. */
+    if (resumeState.pendingAction != null) {
+      side({ type: 'pending_action', data: resumeState.pendingAction as Agents.PendingAction });
+    }
+
+    replay(resumeState.replayEvents, prompted);
     replay(data.pendingEvents);
   };
 
@@ -291,14 +443,18 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
       drop();
       mergeFinalFrame(settledFinal(event.data, submission, ctx.messages), ctx);
       reset();
+    } else if (isSideFrame(event)) {
+      side(event);
     } else if (event.type === 'abort' || event.type === 'error') {
       /** A turn that stops here keeps every token it streamed. */
-      flush();
+      land();
     }
     if (init.schedule == null) {
-      flush();
+      land();
+    } else if (held == null) {
+      retry();
     }
   };
 
-  return { applyEvent, flush, reset };
+  return { applyEvent, flush: land, reset };
 }

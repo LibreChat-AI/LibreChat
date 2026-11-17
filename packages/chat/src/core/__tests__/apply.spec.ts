@@ -501,6 +501,424 @@ describe('createEventApplier', () => {
   });
 });
 
+describe('side frames', () => {
+  const toolOpened = (id: string, index: number, callId: string): ChatEvent =>
+    ({
+      type: 'step',
+      data: {
+        event: StepEvents.ON_RUN_STEP,
+        data: {
+          id,
+          runId: 'resp-1',
+          index,
+          type: StepTypes.TOOL_CALLS,
+          stepDetails: {
+            type: StepTypes.TOOL_CALLS,
+            tool_calls: [{ id: callId, name: 'search', args: '', type: 'tool_call' }],
+          },
+          usage: null,
+        },
+      },
+    }) as ChatEvent;
+
+  const thought = (id: string, think: string): ChatEvent =>
+    ({
+      type: 'step',
+      data: {
+        event: StepEvents.ON_REASONING_DELTA,
+        data: { id, delta: { content: [{ type: ContentTypes.THINK, think }] } },
+      },
+    }) as ChatEvent;
+
+  const steerPart = {
+    type: ContentTypes.STEER,
+    [ContentTypes.STEER]: 'Go deeper',
+    steerId: 'steer-1',
+  };
+  const steered = (index: number): ChatEvent =>
+    ({
+      type: 'steer_applied',
+      data: { steerId: 'steer-1', index, responseMessageId: 'resp-1', part: steerPart },
+    }) as ChatEvent;
+
+  const labelled = (index: number): ChatEvent =>
+    ({
+      type: 'activity_label',
+      data: {
+        index,
+        responseMessageId: 'resp-1',
+        part: { type: ContentTypes.ACTIVITY_LABEL, [ContentTypes.ACTIVITY_LABEL]: 'Searching' },
+      },
+    }) as ChatEvent;
+
+  const titled: ChatEvent = {
+    type: 'reasoning_label',
+    data: {
+      index: 0,
+      stepId: 'reasoning-1',
+      revision: 1,
+      label: 'Weighing sources',
+      status: 'streaming',
+      responseMessageId: 'resp-1',
+    },
+  } as ChatEvent;
+
+  const pause = (...callIds: string[]): Agents.PendingAction =>
+    ({
+      actionId: 'action-1',
+      conversationId: 'thread-1',
+      responseMessageId: 'resp-1',
+      payload: {
+        type: 'tool_approval',
+        action_requests: callIds.map((id) => ({
+          tool_call_id: id,
+          name: 'search',
+          arguments: '{}',
+        })),
+        review_configs: callIds.map((id) => ({
+          tool_call_id: id,
+          allowed_decisions: ['approve', 'reject'],
+        })),
+      },
+    }) as unknown as Agents.PendingAction;
+  const paused = (...callIds: string[]): ChatEvent => ({
+    type: 'pending_action',
+    data: pause(...callIds),
+  });
+
+  const parts = (messages: TMessage[]) => response(messages)?.content ?? [];
+  const approvalOf = (part: unknown) =>
+    (part as { tool_call?: { approval?: { actionId?: string } } } | undefined)?.tool_call?.approval
+      ?.actionId;
+
+  it('places an injected steer at the index the server claimed, between what streams around it', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+    applyEvent(snapshot('Before'), context);
+
+    applyEvent(steered(1), context);
+    applyEvent(opened('s2', 2), context);
+    applyEvent(token('s2', 'After'), context);
+
+    expect(parts(read())[1]).toEqual(steerPart);
+    expect(textOf(read())).toEqual(['Before', undefined, 'After']);
+  });
+
+  it('writes a replayed steer once', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, writes, read } = createList();
+    applyEvent(snapshot('Before'), context);
+    applyEvent(steered(1), context);
+    const before = writes.length;
+
+    applyEvent(steered(1), context);
+
+    expect(writes).toHaveLength(before);
+    expect(parts(read())).toHaveLength(2);
+  });
+
+  it('keeps a steer injected before the first run step when that step renames the reply', () => {
+    const optimistic: TMessage = {
+      messageId: 'user-1_',
+      conversationId: 'thread-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [],
+    };
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, optimistic]);
+    applyEvent(created, context);
+
+    applyEvent(steered(0), context);
+    expect(read()[1]).toMatchObject({ messageId: 'user-1_', content: [steerPart] });
+
+    applyEvent(opened('s1', 1), context);
+    applyEvent(token('s1', 'On it'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+    expect(parts(read())[0]).toEqual(steerPart);
+    expect(textOf(read())).toEqual([undefined, 'On it']);
+  });
+
+  it('keeps a steer placed on the placeholder of a regeneration, which seeds from the submission', () => {
+    const saved: TMessage = {
+      messageId: 'resp-0',
+      conversationId: 'thread-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [{ type: ContentTypes.TEXT, text: 'Earlier answer' }],
+    };
+    const optimistic: TMessage = {
+      messageId: 'user-1_',
+      conversationId: 'thread-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [],
+    };
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, saved, optimistic]);
+    applyEvent(created, context);
+
+    applyEvent(steered(0), context);
+    expect(read()[2]).toMatchObject({ messageId: 'user-1_', content: [steerPart] });
+
+    applyEvent(opened('s1', 1), context);
+    applyEvent(token('s1', 'On it'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-0', 'resp-1']);
+    expect(parts(read())[0]).toEqual(steerPart);
+    expect(textOf(read())).toEqual([undefined, 'On it']);
+  });
+
+  it('holds a steer that arrives before the turn is named, then places it', () => {
+    const optimistic: TMessage = {
+      messageId: 'user-1_',
+      conversationId: 'thread-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [],
+    };
+    const { applyEvent } = createEventApplier();
+    const { context, writes, read } = createList([user, optimistic]);
+
+    applyEvent(steered(0), context);
+    expect(writes).toHaveLength(0);
+
+    applyEvent(created, context);
+
+    expect(read()[1]).toMatchObject({ messageId: 'user-1_', content: [steerPart] });
+  });
+
+  it('drops a frame that was waiting when a snapshot arrives, since the snapshot holds it', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+
+    applyEvent(steered(1), context);
+    applyEvent(snapshot('Before'), context);
+
+    expect(parts(read())).toHaveLength(1);
+  });
+
+  it('places an activity label at its claimed index beside the tools it heads', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+    applyEvent(snapshot('Looking'), context);
+    applyEvent(toolOpened('t1', 2, 'call-1'), context);
+
+    applyEvent(labelled(1), context);
+
+    expect(parts(read())[1]).toMatchObject({ type: ContentTypes.ACTIVITY_LABEL });
+    expect(parts(read())[2]).toMatchObject({ type: ContentTypes.TOOL_CALL });
+  });
+
+  it('titles a reasoning part that is drawn after its title arrives', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+    applyEvent(snapshot(''), context);
+
+    applyEvent(titled, context);
+    expect(parts(read())[0]).toBeUndefined();
+
+    applyEvent(thought('s0', 'Comparing the two reports'), context);
+
+    expect(parts(read())[0]).toMatchObject({
+      type: ContentTypes.THINK,
+      think: 'Comparing the two reports',
+      reasoning_label: 'Weighing sources',
+    });
+  });
+
+  it('draws a pause on its tool call, and on a sibling call drawn later', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+    applyEvent(snapshot('Checking'), context);
+    applyEvent(toolOpened('t1', 1, 'call-1'), context);
+
+    applyEvent(paused('call-1', 'call-2'), context);
+    expect(approvalOf(parts(read())[1])).toBe('action-1');
+
+    applyEvent(toolOpened('t2', 2, 'call-2'), context);
+
+    expect(approvalOf(parts(read())[2])).toBe('action-1');
+  });
+
+  it('draws the pause a snapshot was taken under', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+    const call = {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: { id: 'call-1', name: 'search', args: '{}', type: 'tool_call' },
+    };
+    const withPause = snapshot('', {
+      aggregatedContent: [call] as never,
+      runSteps: [],
+      pendingAction: pause('call-1') as never,
+    });
+
+    applyEvent(withPause, context);
+
+    expect(approvalOf(parts(read())[0])).toBe('action-1');
+  });
+
+  it('draws a pending OAuth prompt as its tool call, once, with the sign-in link', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+    const oauthStep = {
+      id: 'oauth-step',
+      runId: 'resp-1',
+      index: 1,
+      type: StepTypes.TOOL_CALLS,
+      stepDetails: {
+        type: StepTypes.TOOL_CALLS,
+        tool_calls: [{ id: 'call-oauth', name: 'oauth_mcp_github', args: '', type: 'tool_call' }],
+      },
+      usage: null,
+    };
+    const withPrompt = snapshot('Signing in', {
+      runSteps: [runStep('s0', 0), oauthStep] as never,
+      pendingOAuthPrompts: [
+        {
+          stepId: 'oauth-step',
+          runId: 'resp-1',
+          index: 1,
+          toolCallId: 'call-oauth',
+          toolName: 'oauth_mcp_github',
+          authURL: 'https://example.test/authorize',
+        },
+      ],
+    });
+
+    applyEvent(withPrompt, context);
+
+    expect(parts(read())).toHaveLength(2);
+    expect(parts(read())[1]).toMatchObject({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: { id: 'call-oauth', auth: 'https://example.test/authorize' },
+    });
+  });
+
+  it('keeps the live sign-in link over one a replayed step event still carries', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+    const withStaleLink = snapshot('Signing in', {
+      pendingOAuthPrompts: [
+        {
+          stepId: 'oauth-step',
+          runId: 'resp-1',
+          index: 1,
+          toolCallId: 'call-oauth',
+          toolName: 'oauth_mcp_github',
+          authURL: 'https://example.test/authorize',
+        },
+      ],
+      replayEvents: [
+        {
+          event: StepEvents.ON_RUN_STEP_DELTA,
+          data: {
+            id: 'oauth-step',
+            delta: {
+              type: StepTypes.TOOL_CALLS,
+              tool_calls: [{ id: 'call-oauth', name: 'oauth_mcp_github', args: '' }],
+              auth: 'https://example.test/replaced',
+            },
+          },
+        },
+      ],
+    });
+
+    applyEvent(withStaleLink, context);
+
+    expect(parts(read())[1]).toMatchObject({
+      tool_call: { id: 'call-oauth', auth: 'https://example.test/authorize' },
+    });
+  });
+
+  it('places the side frames a snapshot replays, in order with its steps', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+    const withGap = snapshot('Before', {
+      replayEvents: [{ event: 'on_steer_applied', data: (steered(1) as { data: object }).data }],
+    }) as Extract<ChatEvent, { type: 'sync' }>;
+    withGap.data.pendingEvents = [
+      { event: StepEvents.ON_RUN_STEP, data: runStep('s2', 2) },
+      delta('s2', 'After'),
+    ] as never;
+
+    applyEvent(withGap, context);
+
+    expect(parts(read())[1]).toEqual(steerPart);
+    expect(textOf(read())).toEqual(['Before', undefined, 'After']);
+  });
+
+  it('forgets a frame still waiting when the turn ends', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+    applyEvent(snapshot('Done'), context);
+    applyEvent(
+      {
+        type: 'steer_applied',
+        data: { ...(steered(1) as { data: object }).data, responseMessageId: 'other' },
+      } as ChatEvent,
+      context,
+    );
+
+    applyEvent(final('Done'), context);
+    applyEvent(snapshot('Done'), context);
+
+    expect(parts(read())).toHaveLength(1);
+  });
+
+  describe('with a scheduler', () => {
+    const frames = () => {
+      const queue: Array<() => void> = [];
+      return {
+        schedule: (flush: () => void) => {
+          queue.push(flush);
+          return () => undefined;
+        },
+        run: () => queue.splice(0).forEach((flush) => flush()),
+      };
+    };
+
+    it('lands the held tokens before placing, so neither is lost', () => {
+      const frame = frames();
+      const { applyEvent } = createEventApplier({ schedule: frame.schedule });
+      const { context, read } = createList();
+      applyEvent(snapshot('Be'), context);
+      applyEvent(token('s0', 'fore'), context);
+
+      applyEvent(steered(1), context);
+      applyEvent(token('s0', '!'), context);
+      frame.run();
+
+      expect(parts(read())[1]).toEqual(steerPart);
+      expect(textOf(read())[0]).toBe('Before!');
+    });
+
+    it('does not write per token while a frame waits on a part that is not drawn', () => {
+      const frame = frames();
+      const { applyEvent } = createEventApplier({ schedule: frame.schedule });
+      const { context, writes, read } = createList();
+      applyEvent(snapshot('a'), context);
+      applyEvent(titled, context);
+      const before = writes.length;
+
+      applyEvent(token('s0', 'b'), context);
+      applyEvent(token('s0', 'c'), context);
+      applyEvent(token('s0', 'd'), context);
+
+      expect(writes).toHaveLength(before);
+      frame.run();
+      expect(writes).toHaveLength(before + 1);
+      expect(textOf(read())[0]).toBe('abcd');
+    });
+  });
+});
+
 describe('a Chat that applies events the way main chat does', () => {
   const createState = (initial: TMessage[]): ChatState => {
     let messages = initial;
