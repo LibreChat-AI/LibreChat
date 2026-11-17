@@ -137,11 +137,18 @@ export function createMCPServerMethods(
       .select('serverName')
       .lean<Array<{ serverName: string }>>();
 
-    const reservations = await mongoose.models.MCPName.find({
-      name: { $regex: matchingNamePattern },
-    })
-      .select('name')
-      .lean<Array<{ name: string }>>();
+    // Old reservations lost their tenant identity. Treat them as global tombstones;
+    // assigning them to a guessed tenant could resurrect a retired capability name.
+    const [reservations, legacyReservations] = await Promise.all([
+      mongoose.models.MCPName.find({ name: { $regex: matchingNamePattern } })
+        .select('name')
+        .lean<Array<{ name: string }>>(),
+      // Deliberately bypass tenant filtering only for these tenantless rows.
+      mongoose.models.MCPName.collection
+        .find({ name: { $regex: matchingNamePattern }, tenantId: { $in: [null, ''] } })
+        .project<{ name: string }>({ name: 1 })
+        .toArray(),
+    ]);
     const referenced = await mongoose.models.Agent?.find({
       mcpServerNames: { $regex: matchingNamePattern },
     })
@@ -152,6 +159,7 @@ export function createMCPServerMethods(
         agent.mcpServerNames.filter((name) => matchingNamePattern.test(name)),
       ),
       ...reservations.map((entry) => entry.name),
+      ...legacyReservations.map((entry) => entry.name),
       ...existing.map((server) => server.serverName),
       ...Array.from(reservedServerNames).filter((serverName) =>
         matchingNamePattern.test(serverName),

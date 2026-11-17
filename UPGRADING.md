@@ -126,3 +126,14 @@ have been dropped. Keep writers stopped, correct the reported problem, and rerun
 A later failure can leave a partial migration; rerunning safely completes it.
 Index builds may take time on large collections. Do not drop all indexes to
 resolve a failure.
+
+### MCP name reservations
+
+Deployments that ran the original durable MCP name reservation implementation must
+run the offline tenant-index migration above before resuming writers with this update.
+It builds the unique `{ name, tenantId }` index on `mcpnames` before dropping the old
+global `name_1` index. Stop every old API replica and other writer for the upgrade.
+New reservations persist their tenant identity, allowing independent tenants to use
+the same title. Existing tenantless reservations cannot be reliably attributed to
+a tenant and remain global tombstones: their names stay unavailable to new servers
+in every tenant, preserving retired-name protection. Do not delete or reassign them.
