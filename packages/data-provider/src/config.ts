@@ -1149,8 +1149,9 @@ const remoteApiAuthSchema = z.object({
 
 /**
  * Which of the key owner's MCP servers a run started with an API key may use.
- * `owner`: every server the owner can use, as before. `delegated`: only the servers and
- * tools the owner approved for that key and that agent; anything else is refused.
+ * `delegated`, the default: only the servers and tools the owner approved for that key and
+ * that agent; anything else is refused. `owner`: every server the owner can use, which is how
+ * key runs behaved before grants existed.
  */
 const remoteApiIntegrationsSchema = z.object({
   mode: z.enum(['owner', 'delegated']).optional(),
