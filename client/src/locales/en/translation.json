@@ -4195,7 +4195,6 @@
   "com_ui_discord_dm_link_first": "Link your Discord account to an agent in a server channel and confirm it in Discord before selecting that agent for direct messages.",
   "com_ui_discord_dm_select_for": "Use for DMs: agent {{0}}, Discord user {{1}}, server {{2}}",
   "com_ui_discord_dm_select": "Use for DMs",
-  "com_ui_discord_dm_empty": "No Discord DM selections yet.",
   "com_ui_discord_dm_destination": "Discord DM channel: {{0}}",
   "com_ui_discord_dm_revoke_for": "Revoke DM Selection: agent {{0}}, channel {{1}}",
   "com_ui_discord_dm_revoke": "Revoke DM Selection",
