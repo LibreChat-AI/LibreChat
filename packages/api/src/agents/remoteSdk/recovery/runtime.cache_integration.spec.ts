@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import jwt from 'jsonwebtoken';
 import { randomUUID } from 'node:crypto';
 import { createServer, connect } from 'node:net';
+import { request as httpRequest } from 'node:http';
 import { tool } from '@librechat/agents/langchain/tools';
 import { setTimeout as delay } from 'node:timers/promises';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
@@ -91,7 +93,11 @@ function hostConfig(handle: () => Promise<void>) {
     },
   };
 }
-async function fixture(makeRun = factory, ownerId?: string) {
+async function fixture(
+  makeRun = factory,
+  ownerId?: string,
+  authorize: () => boolean | Promise<boolean> = () => true,
+) {
   const createRun = jest.fn(makeRun);
   const errors: unknown[] = [];
   const journalPrefix = `${prefix}:${randomUUID()}`;
@@ -115,7 +121,7 @@ async function fixture(makeRun = factory, ownerId?: string) {
       runtimeId: identity.runtimeId,
       secret,
       createRun,
-      authorize: () => true,
+      authorize,
       recovery: { journal, maxDisconnectMs: 5000, ownerId },
       onError: (error) => errors.push(error),
     });
@@ -162,6 +168,7 @@ async function fixture(makeRun = factory, ownerId?: string) {
       return false;
     },
     createRun,
+    sessionIds: () => [...sessionScopes.keys()],
     errors,
     connections: () => connections,
     drop: () => {
@@ -789,3 +796,146 @@ it('does not publish a session admitted concurrently with shutdown', async () =>
   release();
   await expect(admission).rejects.toThrow('closed');
 });
+
+it.each(['invalid', 'half-closed'])(
+  'does not cancel an active execution when an authenticated %s reattachment cannot upgrade',
+  async (mode) => {
+    let started!: () => void;
+    const generating = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: () => void;
+    const generation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let workerSignal: AbortSignal | undefined;
+    let authorize = async () => true;
+    let releaseAdmission = () => {};
+    const runtime = await fixture(
+      async (input) => {
+        workerSignal = input.signal;
+        const run = await factory(input);
+        const model = new TestModel({});
+        model._generate = async () => {
+          started();
+          await generation;
+          input.signal.throwIfAborted();
+          return {
+            generations: [
+              { text: 'complete', message: new AIMessageChunk({ content: 'complete' }) },
+            ],
+          };
+        };
+        run.Graph!.overrideModel = model;
+        return run;
+      },
+      undefined,
+      () => authorize(),
+    );
+    let outcome: Promise<unknown> | undefined;
+    try {
+      const run = await createRemoteSdkRun({
+        config: hostConfig(async () => undefined),
+        identity,
+        remote: runtime.remote,
+      });
+      outcome = run
+        .processStream(
+          { messages: [new HumanMessage('hello')] },
+          { version: 'v2', configurable: { thread_id: identity.conversationId } },
+        )
+        .catch((error: Error) => error);
+      await generating;
+      const token = jwt.sign(
+        {
+          protocolVersion: 1,
+          identity,
+          threadId: identity.conversationId,
+          invocationId: randomUUID(),
+          recovery: { sessionId: runtime.sessionIds()[0], after: 0, resume: true },
+        },
+        secret,
+        {
+          algorithm: 'HS256',
+          audience: identity.runtimeId,
+          issuer: 'librechat-sdk',
+          expiresIn: '60s',
+        },
+      );
+      if (mode === 'invalid') {
+        const status = await new Promise<number | undefined>((resolve, reject) => {
+          const req = httpRequest(
+            {
+              host: '127.0.0.1',
+              port: (runtime.runtime.server.address() as AddressInfo).port,
+              path: '/sdk',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Connection: 'Upgrade',
+                Upgrade: 'websocket',
+                'Sec-WebSocket-Version': '13',
+                'Sec-WebSocket-Key': 'invalid',
+              },
+            },
+            (res) => {
+              res.resume();
+              res.once('end', () => resolve(res.statusCode));
+            },
+          );
+          req.once('error', reject);
+          req.end();
+        });
+        expect(status).toBe(400);
+      } else {
+        let entered!: () => void;
+        const admission = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const held = new Promise<void>((resolve) => {
+          releaseAdmission = resolve;
+        });
+        authorize = async () => {
+          entered();
+          await held;
+          return true;
+        };
+        const ended = new Promise<void>((resolve) => {
+          runtime.runtime.server.once('connection', (socket) =>
+            socket.once('end', () => resolve()),
+          );
+        });
+        const closed = new Promise<void>((resolve, reject) => {
+          const wire = connect(
+            {
+              host: '127.0.0.1',
+              port: (runtime.runtime.server.address() as AddressInfo).port,
+              allowHalfOpen: true,
+            },
+            () => {
+              wire.end(
+                `GET /sdk HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`,
+              );
+            },
+          );
+          wire.setTimeout(3000, () => wire.destroy(new Error('Half-closed upgrade retained')));
+          wire.resume();
+          wire.once('close', () => resolve());
+          wire.once('error', reject);
+        });
+        await Promise.all([admission, ended]);
+        releaseAdmission();
+        await closed;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(workerSignal?.aborted).toBe(false);
+      release();
+      expect(JSON.stringify(await outcome)).toContain('complete');
+      expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseAdmission();
+      release();
+      await outcome;
+      await runtime.close();
+    }
+  },
+);
