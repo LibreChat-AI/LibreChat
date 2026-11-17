@@ -43,7 +43,6 @@ import {
   groupSequentialToolCalls,
 } from '~/utils';
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
-import { EmptyText, AgentUpdate, AttachmentGroup, AGENT_STYLE_TOOLS } from './Parts';
 import { MCPAppSuppressionContext, MCPAppViews } from '~/components/MCPUIResource';
 import { useStoredSubagentHints } from '~/components/Chat/Subagents/attachments';
 import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
@@ -51,7 +50,9 @@ import { isPreviewedToolCallPart, PreviewedToolCallPart } from './hydration';
 import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
 import { useMCPAppsPolicy } from '~/Providers/MCPAppsPolicyContext';
+import { EmptyText, AgentUpdate, AttachmentGroup } from './Parts';
 import { selectToolCallUIResources } from '~/utils/mcpApps';
+import { AGENT_STYLE_TOOLS } from './Parts/OpenAIImageGen';
 import ActivityPhaseGroup from './ActivityPhaseGroup';
 import EditContentParts from './EditContentParts';
 import ApprovalProvider from './ApprovalContext';
@@ -638,10 +639,9 @@ const ContentPartsBody = memo(function ContentPartsBody({
   );
   const inheritedHiddenFiles = useContext(HiddenAttachmentsContext);
   const fileRows = useMemo(() => {
-    const rows = new Map<
-      TMessageContentParts,
-      { key: string; files: TAttachment[]; source: TAttachment[] }
-    >();
+    type FileRow = { key: string; files: TAttachment[]; source: TAttachment[] };
+    const rows = new Map<TMessageContentParts, FileRow>();
+    const ownerByFile = new Map<string, { row: FileRow; index: number }>();
     if (
       nestedActivityPhase ||
       hideAttachments ||
@@ -661,13 +661,24 @@ const ContentPartsBody = memo(function ContentPartsBody({
       const files = collectPhaseAttachments([part])?.filter(
         (file) => isFileOutput(file) && !inheritedHiddenFiles?.has(file),
       );
-      if (files?.length) {
-        rows.set(part, {
-          key: `files-${mediaScope}-${getToolCallId(part)}-${getPartKeyIndex(part, absoluteIndexAt(index))}`,
-          files,
-          source: attachmentsForPart(part) ?? files,
-        });
+      if (!files?.length) continue;
+      const row: FileRow = {
+        key: `files-${mediaScope}-${getToolCallId(part)}-${getPartKeyIndex(part, absoluteIndexAt(index))}`,
+        files: [],
+        source: attachmentsForPart(part) ?? files,
+      };
+      for (const file of files) {
+        const identity = attachmentRenderKey(file);
+        const owner = identity == null ? undefined : ownerByFile.get(identity);
+        if (owner != null) {
+          owner.row.files[owner.index] = file;
+          continue;
+        }
+        if (identity != null) ownerByFile.set(identity, { row, index: row.files.length });
+        row.files.push(file);
       }
+      // Keep source-only entries so legacy duplicates are suppressed at every matching part.
+      rows.set(part, row);
     }
     return rows;
   }, [
@@ -702,7 +713,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
     const rows: ReactElement[] = [];
     for (const part of parts) {
       const row = part == null ? undefined : fileRows.get(part);
-      if (row == null) continue;
+      if (row == null || row.files.length === 0) continue;
       rows.push(
         <HiddenAttachmentsContext.Provider key={row.key} value={inheritedHiddenFiles}>
           <AttachmentGroup attachments={row.files} />
@@ -1723,7 +1734,7 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
             )}
             <SubagentAttachmentsContext.Provider value={nestedAttachments}>
               {appContent ?? (
-                <MCPAppSuppressionContext.Provider value={suppressedAppAttachments}>
+                <MCPAppSuppressionContext.Provider key="body-0" value={suppressedAppAttachments}>
                   <SoleToolContext.Provider value={undefined}>
                     <ContentPartsBody
                       {...props}

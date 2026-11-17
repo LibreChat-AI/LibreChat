@@ -83,7 +83,7 @@ jest.mock('~/components/MCPUIResource', () => {
           ui_resources: [resource],
         })) ?? attachments;
       const visible = (selectedAttachments ?? []).filter(
-        (attachment) => !suppressed?.has(attachment),
+        (attachment) => attachment.ui_resources != null && !suppressed?.has(attachment),
       );
       if (visible.length === 0) {
         return null;
@@ -156,7 +156,6 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('../Parts', () => ({
-  AGENT_STYLE_TOOLS: new Set(['image_gen_oai', 'image_edit_oai', 'gemini_image_gen']),
   StreamingThoughtPeek: ({ text }: { text: string }) => (
     <div data-testid="streaming-thought-peek">{text}</div>
   ),
@@ -164,7 +163,11 @@ jest.mock('../Parts', () => ({
     const { useVisibleAttachments } = jest.requireActual<
       typeof import('@librechat/chat/components')
     >('@librechat/chat/components');
-    const attachments = useVisibleAttachments(source);
+    const { Tools } =
+      jest.requireActual<typeof import('librechat-data-provider')>('librechat-data-provider');
+    const attachments = useVisibleAttachments(source)?.filter(
+      (file) => file.type !== Tools.ui_resources,
+    );
     const { isSubmitting } = jest
       .requireActual<typeof import('~/Providers/MessageContext')>('~/Providers/MessageContext')
       .useMessageContext();
@@ -1869,6 +1872,63 @@ describe('ContentParts integration: phase media row', () => {
       within(screen.getByTestId('activity-phase-panel')).queryByTestId('attachment-group'),
     ).toBeNull();
   });
+
+  it('keeps a generated file mounted when the same tool also publishes an MCP App', async () => {
+    const call = makeMcpToolCall('chart');
+    const image = imageAttachment('chart', 'chart.png');
+    const app = {
+      type: Tools.ui_resources,
+      toolCallId: 'chart',
+      [Tools.ui_resources]: [
+        {
+          resourceId: 'app',
+          uri: 'ui://demo/view',
+          mimeType: 'text/html;profile=mcp-app',
+          toolName: 'show_app',
+          serverName: 'demo',
+        },
+      ],
+    } as TAttachment;
+    const frame = (attachments: TAttachment[]) => (
+      <RecoilRoot>
+        <ContentParts {...baseProps} content={[call]} attachments={attachments} />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame([image]));
+    const row = screen.getByTestId('attachment-group');
+    rerender(frame([image, app]));
+    expect(screen.getByTestId('attachment-group')).toBe(row);
+    expect(screen.getByTestId('mcp-app-attachments')).toBeInTheDocument();
+    await act(async () => {});
+  });
+
+  it.each([false, true])(
+    'deduplicates legacy shared files while retaining step-scoped outputs (scoped %s)',
+    (scoped) => {
+      const first = makeMcpToolCall('call_0', true, 'step-a');
+      const second = makeMcpToolCall('call_0', true, 'step-b');
+      const shared = {
+        ...imageAttachment('call_0', 'shared.png'),
+        file_id: 'shared',
+      } as TAttachment;
+      const attachments = scoped
+        ? [
+            { ...shared, stepId: 'step-a' },
+            { ...shared, stepId: 'step-b' },
+          ]
+        : [shared];
+      renderContentParts({
+        ...baseProps,
+        content: [first, second, makePhasePart(0, 2, 'Generated charts')],
+        attachments,
+      });
+      const rows = screen.getAllByTestId('attachment-group');
+      expect(rows).toHaveLength(scoped ? 2 : 1);
+      expect(rows.map((row) => row.getAttribute('data-count'))).toEqual(
+        scoped ? ['1', '1'] : ['1'],
+      );
+    },
+  );
 
   it.each([true, false])(
     'shows the latest record when a tool writes the same file twice (phase %s)',
