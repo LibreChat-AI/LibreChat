@@ -46,7 +46,6 @@ import { FailedRevealContext } from '../reveal';
 import { FOLD_GLYPH_SELECTOR } from '../rows';
 import { litFoldPath } from '../rail';
 
-const mockMCPServerNames: string[] = [];
 let mockIndexedChildren = new Map<string, ParentSubagentSummary>();
 
 type CardMessage = {
@@ -96,7 +95,6 @@ function SubagentCall(props: SubagentCallProps) {
       message={currentMessage}
       agentsMap={agents}
       localize={localize}
-      mcpServerNames={mockMCPServerNames}
       renderAgentIcon={(agent) =>
         agent?.avatar?.filepath != null ? (
           <img alt={agent.name ?? ''} src={agent.avatar.filepath} />
@@ -111,10 +109,32 @@ function SubagentCall(props: SubagentCallProps) {
     />
   );
 }
-const partsHost = createMessagePartsHost();
+/** A part as one line, so a spec reads which row the thread's renderer was handed. */
+const partLine = (part: object | undefined): string => {
+  const {
+    text,
+    think,
+    tool_call: toolCall,
+  } = (part ?? {}) as {
+    text?: string;
+    think?: string;
+    tool_call?: { name?: string };
+  };
+  return toolCall?.name ?? text ?? think ?? '';
+};
+const partsHost = createMessagePartsHost({
+  renderContentParts: ({ content }) => (
+    <div data-testid="thread-row">{content.map(partLine).join('|')}</div>
+  ),
+});
+
+const mockUseThreadChat = jest.fn();
+const mockRefetchIndex = jest.fn(async () => ({ data: undefined }));
+let seedQueries: ((client: QueryClient) => void) | undefined;
 
 const subagentsHost = createSubagentsHost({
   useAgentsMap: () => agents,
+  useThreadChat: (...args) => mockUseThreadChat(...args),
 });
 
 const streamHost = {
@@ -125,7 +145,7 @@ const streamHost = {
       childrenTruncated: false,
     },
     isError: false,
-    refetch: async () => ({ data: undefined }),
+    refetch: mockRefetchIndex,
   }),
 } as unknown as StreamHost;
 
@@ -158,9 +178,11 @@ function Providers({
     seed?.(created);
     return created;
   });
-  const [queryClient] = useState(
-    () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
-  );
+  const [queryClient] = useState(() => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedQueries?.(client);
+    return client;
+  });
   const card = (
     <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
       <MessagePartsHostProvider host={partsHost}>{children}</MessagePartsHostProvider>
@@ -169,17 +191,18 @@ function Providers({
   return (
     <QueryClientProvider client={queryClient}>
       <StreamHostProvider host={streamHost}>
-        <ParentSubagentsProvider conversationId="parent-conversation" enabled>
-          <JotaiProvider store={store}>
-            <SubagentsHostProvider host={subagentsHost}>
+        {/* The page's followers read the subagents host, so it sits above the index provider. */}
+        <SubagentsHostProvider host={subagentsHost}>
+          <ParentSubagentsProvider conversationId="parent-conversation" enabled>
+            <JotaiProvider store={store}>
               {withSurface ? (
                 <ChatSurfaceProvider value={surface}>{card}</ChatSurfaceProvider>
               ) : (
                 card
               )}
-            </SubagentsHostProvider>
-          </JotaiProvider>
-        </ParentSubagentsProvider>
+            </JotaiProvider>
+          </ParentSubagentsProvider>
+        </SubagentsHostProvider>
       </StreamHostProvider>
     </QueryClientProvider>
   );
@@ -187,9 +210,11 @@ function Providers({
 
 afterEach(() => {
   jest.useRealTimers();
-  mockMCPServerNames.length = 0;
   mockIndexedChildren = new Map();
   currentMessage = defaultMessage;
+  seedQueries = undefined;
+  mockUseThreadChat.mockReset();
+  mockRefetchIndex.mockClear();
 });
 
 function foldEvents(events: SubagentUpdateEvent[]): {
@@ -477,7 +502,7 @@ describe('SubagentCall', () => {
     expect(rendered.getSelection()).toBeNull();
   });
 
-  it('keeps the compact semantic ticker while selecting the shared panel', async () => {
+  it('shows the row the child is on, drawn by the thread renderer, over the card and not in its button', () => {
     const progress = progressFromEvents({
       subagentRunId: 'child-run',
       subagentType: 'self',
@@ -499,10 +524,16 @@ describe('SubagentCall', () => {
       progress,
     });
 
-    await waitFor(() => expect(screen.getByText('Using')).toBeInTheDocument());
-    expect(screen.getByText('Working…')).toBeInTheDocument();
-    expect(screen.queryByText('Writing')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Running agent' }));
+    /** One row: the newest part, not the ones before it. */
+    const row = screen.getByTestId('thread-row');
+    expect(row).toHaveTextContent('calculator');
+    expect(row).not.toHaveTextContent('Working…');
+    const preview = row.closest('[data-subagent-preview]');
+    expect(preview).toHaveAttribute('aria-hidden', 'true');
+    expect(preview).toHaveAttribute('inert');
+    const card = screen.getByRole('button', { name: 'Running agent' });
+    expect(card.contains(row)).toBe(false);
+    fireEvent.click(card);
 
     expect(rendered.getSelection()).toEqual(
       expect.objectContaining({
@@ -516,43 +547,28 @@ describe('SubagentCall', () => {
     expect(rendered.getSelection()?.durable).toBeUndefined();
   });
 
-  it('preserves a configured MCP server boundary in the live ticker', () => {
-    mockMCPServerNames.push('Google_mcp_Workspace');
-    renderWithState({
-      toolCallId: 'call_mcp_ticker',
+  it('says it is waiting until the child has a row, and shows none once it is done', () => {
+    const rendered = renderWithState({
+      toolCallId: 'call-waiting',
       initialProgress: 0.3,
       isSubmitting: true,
-      progress: progressFromEvents({
-        subagentRunId: 'run_a',
-        subagentType: 'self',
-        status: 'run_step',
-        events: [
-          {
-            runId: 'p',
-            subagentRunId: 'run_a',
-            subagentType: 'self',
-            phase: 'run_step',
-            data: {
-              stepDetails: {
-                type: 'tool_calls',
-                tool_calls: [
-                  {
-                    id: 'c1',
-                    name: 'search_documents_mcp_Google_mcp_Workspace',
-                  },
-                ],
-              },
-            },
-            timestamp: '',
-          } as SubagentUpdateEvent,
-        ],
-      }),
     });
+    expect(screen.getByText('Waiting for first update…')).toBeInTheDocument();
+    expect(screen.queryByTestId('thread-row')).toBeNull();
 
-    expect(screen.getByText('Google_mcp_Workspace')).toBeInTheDocument();
+    rendered.setProgress(
+      progressFromEvents({
+        subagentRunId: 'child-run',
+        subagentType: 'self',
+        status: 'stop',
+        events: [event('message_delta', { delta: { content: [{ type: 'text', text: 'Done' }] } })],
+      }),
+    );
+    expect(screen.queryByText('Waiting for first update…')).toBeNull();
+    expect(screen.queryByTestId('thread-row')).toBeNull();
   });
 
-  it('refreshes a long ticker preview only after the throttle window', () => {
+  it('refreshes a long live row only after the throttle window', () => {
     jest.useFakeTimers();
     const progressFor = (text: string) =>
       progressFromEvents({
@@ -569,11 +585,91 @@ describe('SubagentCall', () => {
       isSubmitting: true,
       progress: progressFor(first),
     });
-    const card = within(screen.getByRole('button', { name: 'Running agent' }));
     rendered.setProgress(progressFor(second));
-    expect(card.getByText(first)).toBeInTheDocument();
+    expect(screen.getByTestId('thread-row')).toHaveTextContent(first);
     act(() => jest.advanceTimersByTime(SUBAGENT_TICKER_THROTTLE_MS));
-    expect(card.getByText(second)).toBeInTheDocument();
+    expect(screen.getByTestId('thread-row')).toHaveTextContent(second);
+  });
+
+  describe('a detached child', () => {
+    const detachedOutput = JSON.stringify({
+      background_task_id: 'task-1',
+      subagent_thread_id: 'child-thread-1',
+      tool: 'subagent',
+      subagent_type: 'agent_reviewer',
+      status: 'running',
+      message: 'Started subagent background task. Poll with background_task_id task-1.',
+    });
+    const indexed = (status: ParentSubagentSummary['status']) =>
+      new Map([
+        [
+          'child-thread-1',
+          {
+            threadId: 'child-thread-1',
+            status,
+            latestTaskId: 'task-1',
+            agentId: 'agent_reviewer',
+            tasks: [{ taskId: 'task-1', status }],
+          } as ParentSubagentSummary,
+        ],
+      ]);
+    const threadMessages = [
+      { messageId: 'task-1:user', isCreatedByUser: true, text: 'Review it' },
+      {
+        messageId: 'task-1:assistant',
+        parentMessageId: 'task-1:user',
+        isCreatedByUser: false,
+        text: '',
+        content: [
+          { type: 'text', text: 'Reading the diff' },
+          { type: 'tool_call', tool_call: { id: 'c1', name: 'read_file', args: '{}' } },
+        ],
+      },
+    ];
+    const mountDetached = () =>
+      renderWithState({
+        toolCallId: 'detached-live',
+        initialProgress: 1,
+        output: detachedOutput,
+        toolArgs: { subagent_type: 'agent_reviewer', run_in_background: true },
+      });
+
+    beforeEach(() => {
+      mockUseThreadChat.mockReturnValue({ messages: [], isLoading: true });
+      seedQueries = (client) => client.setQueryData(['messages', 'child-thread-1'], threadMessages);
+    });
+
+    it('is followed while it runs, once, and shows the row its thread is on', () => {
+      mockIndexedChildren = indexed('running');
+      mountDetached();
+
+      expect(mockUseThreadChat).toHaveBeenCalledWith('parent-conversation', 'child-thread-1', {
+        live: true,
+        enabled: true,
+      });
+      expect(screen.getByTestId('thread-row')).toHaveTextContent('read_file');
+      /** Named by the index, which is all that names a child once the parent's stream is gone. */
+      expect(
+        screen.getByRole('button', {
+          name: 'Code Reviewer com_ui_subagent_thread_status_running',
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it('is not followed and shows no row once it has finished', () => {
+      mockIndexedChildren = indexed('completed');
+      mountDetached();
+
+      expect(mockUseThreadChat).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('thread-row')).toBeNull();
+    });
+
+    it('asks the index to look again for a child it does not list, once', async () => {
+      mountDetached();
+
+      await waitFor(() => expect(mockRefetchIndex).toHaveBeenCalledTimes(1));
+      expect(mockUseThreadChat).not.toHaveBeenCalled();
+    });
   });
 
   it('opens a foreground legacy invocation in the shared panel with persisted activity', () => {
