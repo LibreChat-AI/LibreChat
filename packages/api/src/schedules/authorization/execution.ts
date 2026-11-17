@@ -7,10 +7,10 @@ import type { ParsedServerConfig, RequestScopedMCPConnectionStore } from '~/mcp/
 import type { MCPToolsSnapshot } from '~/mcp/connection';
 import type { ScheduledMCPAuthority } from './contract';
 import type { ScheduledTokenContext } from '../context';
+import { getScheduledMCPToolDefinitionDigest, ScheduledMCPPolicyError } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { ScheduleMCPConsentError } from './service';
-import { ScheduledMCPPolicyError } from './policy';
 import { isOwnedAbortError } from '~/utils/errors';
 import { waitUntilDeadline } from '~/mcp/utils';
 
@@ -197,6 +197,9 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
                   stage,
                   ...(manual && { manual: true }),
                   selection: { agentId: agentId!, tools: [selectionName] },
+                  definitions: {
+                    [selectionName]: getScheduledMCPToolDefinitionDigest(definitions[0]),
+                  },
                 },
                 { signal },
               );

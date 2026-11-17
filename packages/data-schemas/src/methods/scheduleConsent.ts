@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { scheduledMCPEnrollmentSchema } from 'librechat-data-provider';
+import { scheduledMCPEnrollmentSchema, scheduledMCPToolPinSchema } from 'librechat-data-provider';
 import type { ScheduledMCPIdentity, ScheduledMCPEnrollment } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import type { IScheduleDocument } from '~/types/schedule';
@@ -29,6 +29,24 @@ export interface ScheduleMCPConsentStorage {
     revision: string;
     consentId: string;
     requireEnabled?: boolean;
+  }) => Promise<boolean>;
+  /**
+   * Records the definition an allowed tool had on first use. False when the tool already has
+   * a pin or the grant is no longer the live one; the caller reads again to tell which.
+   */
+  pinScheduleMCPToolDefinition: (input: {
+    identity: ScheduledMCPIdentity;
+    revision: string;
+    consentId: string;
+    tool: string;
+    digest: string;
+  }) => Promise<boolean>;
+  /** Marks a pinned tool as changed. The mark stays until the owner confirms again. */
+  flagScheduleMCPToolChange: (input: {
+    identity: ScheduledMCPIdentity;
+    revision: string;
+    consentId: string;
+    tool: string;
   }) => Promise<boolean>;
 }
 
@@ -151,6 +169,43 @@ export function createScheduleMCPConsentStorage(
           ],
         },
         { $set: { 'mcpConsent.revision': input.revision } },
+        { timestamps: false },
+      );
+      return result.matchedCount === 1;
+    },
+    async pinScheduleMCPToolDefinition(input) {
+      const pin = scheduledMCPToolPinSchema.parse({ tool: input.tool, digest: input.digest });
+      const result = await model().updateOne(
+        {
+          ...scope(input.identity),
+          ...revisionFilter(input.revision),
+          agent_id: input.identity.agentId,
+          'mcpConsent.consents': {
+            $elemMatch: {
+              id: input.consentId,
+              revision: input.revision,
+              revokedAtMs: null,
+              // No entry for this tool yet, and room for one more.
+              'definitions.tool': { $ne: pin.tool },
+              'definitions.255': { $exists: false },
+            },
+          },
+        },
+        { $push: { 'mcpConsent.consents.$.definitions': pin } },
+        { timestamps: false },
+      );
+      return result.matchedCount === 1;
+    },
+    async flagScheduleMCPToolChange(input) {
+      const result = await model().updateOne(
+        {
+          ...scope(input.identity),
+          ...revisionFilter(input.revision),
+          'mcpConsent.consents': {
+            $elemMatch: { id: input.consentId, 'definitions.tool': input.tool },
+          },
+        },
+        { $addToSet: { 'mcpConsent.consents.$.changedTools': input.tool } },
         { timestamps: false },
       );
       return result.matchedCount === 1;

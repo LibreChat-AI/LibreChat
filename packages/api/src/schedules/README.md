@@ -60,8 +60,26 @@ agent still selects it. Anything else is refused with `tool_policy_denied`.
 - Names, MCP annotations and remembered chat approvals confer nothing.
 
 The operator-declared `mcpConsent.readOnlyPolicy` list is retired. The loader warns when the key
-is still present and ignores it. Tool definitions are not pinned yet: a server that changes what
-an allowed tool does keeps that tool allowed until the pinning follow-up lands.
+is still present and ignores it.
+
+### A tool that changes after it was allowed
+
+The owner allows a tool by name, so the grant also remembers what the tool was. The first
+authorized use of a tool (activation preflight or a run) stores a SHA-256 of its whole live
+definition on the grant: name, description, input and output schemas, annotations. Every later
+use compares the live definition with that pin.
+
+- A different definition is refused with `binding_mismatch` before `tools/call`, and the tool is
+  marked as changed on the grant. It stays refused even if the server restores the old
+  definition. The grant's other tools stay allowed.
+- The consent view reports `changed` and names the tool. Confirming again with the tool ticked
+  accepts what the server offers now: the tool is pinned afresh at its next use.
+- Confirming again keeps the pins of tools that were not marked, so a renewal cannot quietly
+  accept a definition swapped since the last run.
+- A grant made before pins existed is pinned at its next use.
+
+The pin is trust on first use. The consent offer does not connect to the server, so a
+definition that changes between confirming and the first use is the one that gets pinned.
 
 ## Host token-provider context
 

@@ -1,9 +1,13 @@
 import type {
+  ScheduledMCPIdentity,
+  ScheduledMCPTarget,
+  ScheduledMCPEnrollment,
+} from 'librechat-data-provider';
+import type {
   ScheduleMCPConsentStorage,
   ScheduleConsentSnapshot,
   IUser,
 } from '@librechat/data-schemas';
-import type { ScheduledMCPIdentity, ScheduledMCPTarget } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig } from '~/mcp/types';
 import { getScheduledMCPConfigurationRevision } from './configuration';
@@ -19,6 +23,36 @@ export function allowOffered(targets: readonly ScheduledMCPTarget[]): Record<str
       [...new Set(target.permittedTools.flatMap((selection) => selection.tools))],
     ]),
   );
+}
+
+/** The two pin writes over an enrollment a fake keeps in memory, with the real fences. */
+export function pinStorage(
+  current: () => ScheduledMCPEnrollment | null | undefined,
+): Pick<ScheduleMCPConsentStorage, 'pinScheduleMCPToolDefinition' | 'flagScheduleMCPToolChange'> {
+  const find = (revision: string, consentId: string) => {
+    const enrollment = current();
+    if (enrollment?.revision !== revision) return;
+    return enrollment.consents.find((consent) => consent.id === consentId);
+  };
+  return {
+    pinScheduleMCPToolDefinition: async ({ revision, consentId, tool, digest }) => {
+      const consent = find(revision, consentId);
+      if (
+        !consent ||
+        consent.revokedAtMs != null ||
+        consent.definitions?.some((pin) => pin.tool === tool)
+      )
+        return false;
+      consent.definitions = [...(consent.definitions ?? []), { tool, digest }];
+      return true;
+    },
+    flagScheduleMCPToolChange: async ({ revision, consentId, tool }) => {
+      const consent = find(revision, consentId);
+      if (!consent?.definitions?.some((pin) => pin.tool === tool)) return false;
+      consent.changedTools = [...new Set([...(consent.changedTools ?? []), tool])];
+      return true;
+    },
+  };
 }
 
 export const readTool: Tool = {
@@ -97,6 +131,7 @@ export async function executionFixture(
           (c) => c.revokedAtMs == null && c.absoluteExpiresAtMs > time,
         ),
     ),
+    ...pinStorage(() => snapshot.enrollment),
   };
   const service = createScheduleMCPConsentService({
     storage,

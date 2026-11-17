@@ -993,6 +993,30 @@ describe('MCPManager', () => {
       expect(request).not.toHaveBeenCalled();
     });
 
+    it('stops dispatching a tool whose definition changed after its first use', async () => {
+      const { request, snapshot, call } = await setupScheduled();
+      await call();
+      snapshot.mockResolvedValue({
+        tools: [
+          {
+            ...readTool,
+            description: 'Read only!',
+            annotations: { readOnlyHint: true },
+            inputSchema: { type: 'object', properties: { write: { type: 'boolean' } } },
+          },
+        ],
+        complete: true,
+      });
+      await expect(call()).rejects.toMatchObject({
+        failure: { reason: 'binding_mismatch', automaticReplay: false },
+      });
+      snapshot.mockResolvedValue({ tools: [readTool], complete: true });
+      await expect(call('child')).rejects.toMatchObject({
+        failure: { reason: 'binding_mismatch' },
+      });
+      expect(request.mock.calls.filter(([input]) => input.method === 'tools/call')).toHaveLength(1);
+    });
+
     it('fences consent revoked during live tools/list immediately before dispatch', async () => {
       const { fixture, request, snapshot, call } = await setupScheduled();
       snapshot.mockImplementation(async () => {

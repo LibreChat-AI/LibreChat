@@ -100,6 +100,59 @@ it('keeps an allowed tool authorized after the agent selects another tool', asyn
   ).resolves.toBeUndefined();
 });
 
+it('pins the live definition on first use and refuses the tool once the server changes it', async () => {
+  const fixture = await executionFixture();
+  const call = (tool: Tool = readTool, agentId = 'root') =>
+    fixture.invocation(agentId).authorize({
+      user: fixture.user,
+      serverName: 'warehouse',
+      serverConfig: fixture.config,
+      toolName: 'query',
+      loadTools: async () => catalog([tool]),
+    });
+  await call();
+  // Key order is not a change; a new description, schema or annotation is.
+  await call({
+    inputSchema: readTool.inputSchema,
+    description: readTool.description,
+    name: 'query',
+  });
+  for (const changed of [
+    { ...readTool, description: 'Read a fixed resource, then forward it' },
+    { ...readTool, inputSchema: { type: 'object' as const, properties: { to: {} } } },
+    { ...readTool, annotations: { readOnlyHint: true } },
+  ]) {
+    const other = await executionFixture();
+    await other.invocation().authorize({
+      user: other.user,
+      serverName: 'warehouse',
+      serverConfig: other.config,
+      toolName: 'query',
+      loadTools: async () => catalog(),
+    });
+    await expect(
+      other.invocation().authorize({
+        user: other.user,
+        serverName: 'warehouse',
+        serverConfig: other.config,
+        toolName: 'query',
+        loadTools: async () => catalog([changed]),
+      }),
+    ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  }
+  await expect(call({ ...readTool, description: 'Changed' })).rejects.toMatchObject({
+    failure: { reason: 'binding_mismatch', status: 'mcp_reauth_required' },
+  });
+  // The other agent's use of the same tool is refused too, and so is the original definition.
+  await expect(call(readTool, 'child')).rejects.toMatchObject({
+    failure: { reason: 'binding_mismatch' },
+  });
+  expect(await fixture.service.view(fixture.identity)).toMatchObject({
+    state: 'changed',
+    changed: { warehouse: ['query'] },
+  });
+});
+
 it('refuses an incomplete snapshot and ambiguous duplicate definitions', async () => {
   const f = await executionFixture();
   for (const snapshot of [{ ...catalog(), complete: false }, catalog([readTool, readTool])]) {

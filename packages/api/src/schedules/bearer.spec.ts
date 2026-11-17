@@ -36,6 +36,7 @@ import { createScheduleMCPConsentService } from './authorization/service';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { restoreExecutionContext } from '~/agents/authority/context';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
+import { pinStorage } from './authorization/execution.helper';
 import { createScheduleMCPPreflight } from './mcp';
 import { FlowStateManager } from '~/flow/manager';
 import { MCPConnection } from '~/mcp/connection';
@@ -102,6 +103,7 @@ async function bearerFixture(serverConfig = config) {
       snapshot.enrollment.consents.every(
         (c) => c.revokedAtMs == null && c.absoluteExpiresAtMs > time,
       ),
+    ...pinStorage(() => snapshot.enrollment),
   };
   const resolveEnrollment = jest.fn(async () => [structuredClone(target)]);
   const consent = createScheduleMCPConsentService({

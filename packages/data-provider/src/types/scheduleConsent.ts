@@ -95,6 +95,15 @@ export const scheduledMCPTargetSchema = z
   .strict();
 export type ScheduledMCPTarget = z.infer<typeof scheduledMCPTargetSchema>;
 
+/** What an allowed tool looked like the first time an authorized run used it. */
+export const scheduledMCPToolPinSchema = z
+  .object({
+    tool: identifier,
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export type ScheduledMCPToolPin = z.infer<typeof scheduledMCPToolPinSchema>;
+
 export const scheduledMCPConsentSchema = scheduledMCPTargetSchema
   .extend({
     id: identifier,
@@ -103,6 +112,10 @@ export const scheduledMCPConsentSchema = scheduledMCPTargetSchema
     grantedAtMs: timestamp,
     absoluteExpiresAtMs: timestamp,
     revokedAtMs: timestamp.nullable(),
+    /** Absent until a tool is first used. One entry per tool, never rewritten. */
+    definitions: z.array(scheduledMCPToolPinSchema).max(256).optional(),
+    /** Tools a run saw with a definition other than their pin. Refused until confirmed again. */
+    changedTools: z.array(identifier).max(256).optional(),
   })
   .strict()
   .refine((value) => value.absoluteExpiresAtMs > value.grantedAtMs);
@@ -145,5 +158,7 @@ export interface ScheduleMCPConsentView {
   targets: ScheduledMCPTarget[];
   /** The tools the stored grant allows, by server. Empty when there is none. */
   allowed: Record<string, string[]>;
+  /** Allowed tools whose definition changed since first use, by server. Refused until confirmed again. */
+  changed: Record<string, string[]>;
   offer: { digest: string; maxLifetimeHours: number } | null;
 }

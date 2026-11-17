@@ -36,13 +36,20 @@ function offeredTools(target: ScheduledMCPTarget): string[] {
   return [...new Set(target.permittedTools.flatMap((selection) => selection.tools))].sort();
 }
 
-/** The owner's starting point: what the stored grant already allows and is still on offer. */
+/**
+ * The owner's starting point: what the stored grant already allows and is still on offer.
+ * A tool whose definition changed starts unticked, so allowing the new one is a decision.
+ */
 function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
   return Object.fromEntries(
     data.targets.map((target) => {
       const offered = offeredTools(target);
       const allowed = data.allowed[target.resource.serverName] ?? [];
-      return [target.resource.serverName, offered.filter((tool) => allowed.includes(tool))];
+      const changed = data.changed[target.resource.serverName] ?? [];
+      return [
+        target.resource.serverName,
+        offered.filter((tool) => allowed.includes(tool) && !changed.includes(tool)),
+      ];
     }),
   );
 }
@@ -166,15 +173,25 @@ export default function Consent({
                           serverName={target.resource.serverName}
                           offered={offeredTools(target)}
                           chosen={choice[target.resource.serverName] ?? []}
+                          changed={data.changed[target.resource.serverName] ?? []}
                           disabled={busy}
                           onChange={(tools) => setTools(target.resource.serverName, tools)}
                         />
                       ) : (
-                        <p className="text-text-secondary text-xs">
-                          {localize('com_ui_schedule_consent_allowed', {
-                            tools: (data.allowed[target.resource.serverName] ?? []).join(', '),
-                          })}
-                        </p>
+                        <>
+                          <p className="text-text-secondary text-xs">
+                            {localize('com_ui_schedule_consent_allowed', {
+                              tools: (data.allowed[target.resource.serverName] ?? []).join(', '),
+                            })}
+                          </p>
+                          {(data.changed[target.resource.serverName] ?? []).length > 0 && (
+                            <p className="text-status-warning text-xs">
+                              {localize('com_ui_schedule_consent_changed_tools', {
+                                tools: data.changed[target.resource.serverName].join(', '),
+                              })}
+                            </p>
+                          )}
+                        </>
                       )}
                     </li>
                   ))}
@@ -234,12 +251,15 @@ function ToolChoice({
   serverName,
   offered,
   chosen,
+  changed,
   disabled,
   onChange,
 }: {
   serverName: string;
   offered: string[];
   chosen: string[];
+  /** Tools the server changed since they were allowed. Refused until confirmed again. */
+  changed: string[];
   disabled: boolean;
   onChange: (tools: string[]) => void;
 }) {
@@ -263,27 +283,35 @@ function ToolChoice({
       </div>
       <ul className="space-y-1 pl-6">
         {offered.map((tool) => (
-          <li key={tool} className="flex items-center gap-2">
-            <Checkbox
-              id={`${groupId}-${tool}`}
-              checked={chosen.includes(tool)}
-              disabled={disabled}
-              aria-labelledby={`${groupId}-${tool}-label`}
-              onCheckedChange={(checked) =>
-                onChange(
-                  checked === true
-                    ? offered.filter((name) => name === tool || chosen.includes(name))
-                    : chosen.filter((name) => name !== tool),
-                )
-              }
-            />
-            <Label
-              id={`${groupId}-${tool}-label`}
-              htmlFor={`${groupId}-${tool}`}
-              className="text-xs break-all"
-            >
-              {tool}
-            </Label>
+          <li key={tool}>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id={`${groupId}-${tool}`}
+                checked={chosen.includes(tool)}
+                disabled={disabled}
+                aria-labelledby={`${groupId}-${tool}-label`}
+                aria-describedby={changed.includes(tool) ? `${groupId}-${tool}-changed` : undefined}
+                onCheckedChange={(checked) =>
+                  onChange(
+                    checked === true
+                      ? offered.filter((name) => name === tool || chosen.includes(name))
+                      : chosen.filter((name) => name !== tool),
+                  )
+                }
+              />
+              <Label
+                id={`${groupId}-${tool}-label`}
+                htmlFor={`${groupId}-${tool}`}
+                className="text-xs break-all"
+              >
+                {tool}
+              </Label>
+            </div>
+            {changed.includes(tool) && (
+              <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
+                {localize('com_ui_schedule_consent_tool_changed')}
+              </p>
+            )}
           </li>
         ))}
       </ul>
