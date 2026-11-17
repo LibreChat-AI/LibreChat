@@ -17,15 +17,7 @@ const {
 async function createExampleRun(input, { complex = true, stepDelayMs = 0 } = {}) {
   if (!Number.isSafeInteger(stepDelayMs) || stepDelayMs < 0 || stepDelayMs > 30000)
     throw new Error('Invalid example delay');
-  const inspect = tool(
-    async ({ topic }) =>
-      JSON.stringify({ topic, findings: ['Plan prepared', 'Read-only inspection finished'] }),
-    {
-      name: 'inspect_example',
-      description: 'Read-only inspection of the example fixture.',
-      schema: z.object({ topic: z.string() }),
-    },
-  );
+  const inspect = createExampleTool();
   const live = process.env.SDK_EXAMPLE_LIVE_MODEL === 'true';
   const run = await Run.create({
     ...input.config,
@@ -57,50 +49,8 @@ async function createExampleRun(input, { complex = true, stepDelayMs = 0 } = {})
     },
   });
   if (!run.Graph) throw new Error('SDK graph was not initialized');
-  if (!live) {
-    const model = new FakeChatModel({});
-    model._generate = async (messages) => ({
-      generations: [
-        {
-          text: '',
-          message: new AIMessageChunk(
-            !complex
-              ? { content: 'Hello from the separate SDK runtime.' }
-              : messages.some((message) => message.getType() === 'tool')
-                ? {
-                    content: messages.some(
-                      (message) =>
-                        message.getType() === 'human' &&
-                        message.content === 'Summarize the reviewed findings concisely.',
-                    )
-                      ? 'Custom graph complete: inspected the fixture, reviewed the findings, and prepared the result.'
-                      : 'Inspection complete; reviewing the findings.',
-                  }
-                : {
-                    content: 'I will inspect the fixture.',
-                    tool_calls: [
-                      {
-                        id: 'example-inspection',
-                        name: 'inspect_example',
-                        args: { topic: 'runtime bridge' },
-                      },
-                    ],
-                  },
-          ),
-        },
-      ],
-    });
-    model._streamResponseChunks = async function* (messages) {
-      const { generations } = await this._generate(messages);
-      for (const generation of generations) {
-        yield new ChatGenerationChunk({
-          ...generation,
-          text: typeof generation.message.content === 'string' ? generation.message.content : '',
-        });
-      }
-    };
-    run.Graph.overrideModel = model;
-  }
+  if (input.hostModel) run.Graph.overrideModel = input.hostModel;
+  else if (!live) run.Graph.overrideModel = createExampleModel(complex);
   if (complex) {
     // Retain the SDK's compiled agent node: native tools, hooks, events, and approvals stay intact.
     const agent = run.graphRunnable;
@@ -135,4 +85,62 @@ async function createExampleRun(input, { complex = true, stepDelayMs = 0 } = {})
   }
   return run;
 }
-module.exports = { createExampleRun };
+function createExampleTool() {
+  return tool(
+    async ({ topic }) =>
+      JSON.stringify({ topic, findings: ['Plan prepared', 'Read-only inspection finished'] }),
+    {
+      name: 'inspect_example',
+      description: 'Read-only inspection of the example fixture.',
+      schema: z.object({ topic: z.string() }),
+    },
+  );
+}
+
+function createExampleModel(complex = true) {
+  const model = new FakeChatModel({});
+  model.bindTools = () => model;
+  model._generate = async (messages) => ({
+    generations: [
+      {
+        text: '',
+        message: new AIMessageChunk(
+          !complex
+            ? { content: 'Hello from the separate SDK runtime.' }
+            : messages.some((message) => message.getType() === 'tool')
+              ? {
+                  content: messages.some(
+                    (message) =>
+                      message.getType() === 'human' &&
+                      message.content === 'Summarize the reviewed findings concisely.',
+                  )
+                    ? 'Custom graph complete: inspected the fixture, reviewed the findings, and prepared the result.'
+                    : 'Inspection complete; reviewing the findings.',
+                }
+              : {
+                  content: 'I will inspect the fixture.',
+                  tool_calls: [
+                    {
+                      id: 'example-inspection',
+                      name: 'inspect_example',
+                      args: { topic: 'runtime bridge' },
+                    },
+                  ],
+                },
+        ),
+      },
+    ],
+  });
+  model._streamResponseChunks = async function* (messages) {
+    const { generations } = await this._generate(messages);
+    for (const generation of generations) {
+      yield new ChatGenerationChunk({
+        ...generation,
+        text: typeof generation.message.content === 'string' ? generation.message.content : '',
+      });
+    }
+  };
+  return model;
+}
+
+module.exports = { createExampleRun, createExampleModel, createExampleTool };

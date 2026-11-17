@@ -1,5 +1,8 @@
 import type {
   createHostProviderTextService,
+  createHostModelService,
+  HostModelDescriptor,
+  HostChatModel,
   HostProviderTextDescriptor,
   HostToolDescriptor,
   HostToolBindings,
@@ -55,11 +58,13 @@ export type SdkRunOptions = Parameters<SdkRun['processStream']>[1];
 export type SdkEventData = Parameters<EventHandler['handle']>[1];
 /** Explicit host-owned capabilities; never reconstructed from worker claims or YAML. */
 export interface RemoteSdkHostServices {
+  model?: ReturnType<typeof createHostModelService>;
   providerText?: ReturnType<typeof createHostProviderTextService>;
 }
 
 export interface RemoteSdkStart {
   transportVersion: 2;
+  model?: { version: 1; publicKey: string; descriptor: HostModelDescriptor };
   providerText?: { version: 1; publicKey: string; limits: HostProviderTextDescriptor };
   hostTools?: HostToolDescriptor[];
   operation: 'start' | 'resume';
@@ -94,6 +99,8 @@ export interface RemoteSdkSnapshot {
   runSteps?: ReturnType<NonNullable<SdkRun['Graph']>['createRunStepResumeState']>;
 }
 export interface RemoteSdkFactoryInput {
+  /** Retain this model as Graph.overrideModel when supplied by the authenticated host. */
+  hostModel?: HostChatModel;
   hostTools?: HostToolBindings;
   identity: Readonly<SdkAgentIdentity>;
   /** Host-owned event, hook, and checkpoint adapters. Retain these in the returned Run. */

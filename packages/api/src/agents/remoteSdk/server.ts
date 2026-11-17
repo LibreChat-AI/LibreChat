@@ -9,7 +9,12 @@ import {
   HOOK_EVENTS,
   GraphEvents,
 } from '@librechat/agents';
-import type { EventHandler, AggregatedHookResult, HookOutput } from '@librechat/agents';
+import type {
+  HostModelDescriptor,
+  EventHandler,
+  AggregatedHookResult,
+  HookOutput,
+} from '@librechat/agents';
 import type { Duplex } from 'node:stream';
 import type { Server } from 'node:http';
 import type { RemoteSdkFactoryInput, RemoteSdkLimits, RemoteSdkStart, SdkRun } from './types';
@@ -21,6 +26,7 @@ import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { RECOVERY_HEADER_BYTES } from './recovery/socket';
 import { createWorkerToolService } from './hostTools';
 import { RemoteSdkCheckpointer } from './checkpoint';
+import { createWorkerModelChannel } from './model';
 import { sendSnapshot } from './snapshot';
 import { createSdkPeer } from './peer';
 
@@ -45,6 +51,15 @@ const claimSchema = z.object({
 });
 const startSchema = z.object({
   transportVersion: z.literal(2),
+  // The SDK HostChatModel constructor owns descriptor validation.
+  model: z
+    .object({
+      version: z.literal(1),
+      publicKey: z.string().length(60),
+      descriptor: z.custom<HostModelDescriptor>(),
+    })
+    .strict()
+    .optional(),
   providerText: policyDescriptorSchema.optional(),
   hostTools: z
     .array(
@@ -248,6 +263,11 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
           call: (method, data, _timeoutMs, signal) =>
             peer.call(method, data, method === 'tools' ? limits.maxRunMs : undefined, signal),
         });
+        const workerModel = createWorkerModelChannel({
+          peer: { call: (...args) => peer.call(...args) },
+          limits,
+          signal: controller.signal,
+        });
         const peer = createSdkPeer(transport, {
           ...limits,
           timeoutMs: limits.rpcTimeoutMs,
@@ -256,9 +276,10 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
           onFrame: async () => {
             throw new Error('Unexpected runtime frame');
           },
-          onCall: async (method, data) => {
+          onCall: async (method, data, _timeoutMs, signal) => {
             if (method === 'capabilities')
-              return { transportVersion: 2, hostTools: 2, providerText: 1 };
+              return { transportVersion: 2, hostTools: 2, providerText: 1, hostModel: 1 };
+            if (method === 'model.chunk') return workerModel.accept(data, signal);
             if (method === 'tool.result') return workerTools.accept(data);
             if (method === 'tool.session') return workerTools.accept(data, 'session');
             if (method !== 'run' || started) throw new Error('SDK execution already admitted');
@@ -339,11 +360,13 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                   limits,
                 })
               : undefined;
+            const hostModel = request.model ? workerModel.bind(identity, request.model) : undefined;
             const execute = async () => {
               await recovered?.begin();
               const run = await options.createRun({
                 identity,
                 hostTools,
+                hostModel,
                 config: {
                   runId: identity.runId,
                   customHandlers: { ...handlers, ...hostTools?.customHandlers },
@@ -369,6 +392,8 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                 run.Graph.providerTextProtection !== providerTextProtection
               )
                 throw new Error('SDK runtime omitted required provider protection');
+              if (hostModel && run.Graph.overrideModel !== hostModel)
+                throw new Error('SDK runtime omitted required host model');
               if (hostTools) {
                 const names = new Set(
                   run.Graph.agentContexts

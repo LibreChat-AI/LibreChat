@@ -5,10 +5,13 @@ import { createServer, connect } from 'node:net';
 import { request as httpRequest } from 'node:http';
 import { tool } from '@librechat/agents/langchain/tools';
 import { setTimeout as delay } from 'node:timers/promises';
+import { ChatGenerationChunk } from '@langchain/core/outputs';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
 import {
   createHostProviderTextService,
+  createHostModelService,
+  HostModelAdmission,
   ProviderTextAdmission,
   Run,
   Providers,
@@ -1012,6 +1015,93 @@ it('recovers a policy reply after a wire outage without repeating inspection or 
     expect(runtime.journalEntries.join('')).not.toContain(raw);
     expect(runtime.errors).toEqual([]);
     expect(admission.snapshot().inspections).toBe(0);
+  } finally {
+    await runtime.close();
+  }
+});
+
+it('resumes host model chunks after disconnect without another provider invocation', async () => {
+  const runtime = await fixture(async (input) => {
+    const run = await factory(input);
+    run.Graph!.overrideModel = input.hostModel;
+    return run;
+  });
+  const native = new TestModel({});
+  let invocations = 0;
+  let hostStarts = 0;
+  native._streamResponseChunks = async function* () {
+    invocations++;
+    yield new ChatGenerationChunk({ text: 'first ', message: new AIMessageChunk('first ') });
+    runtime.drop();
+    await delay(50);
+    yield new ChatGenerationChunk({
+      text: 'PRIVATE-CANDIDATE ',
+      message: new AIMessageChunk('PRIVATE-CANDIDATE '),
+    });
+    yield new ChatGenerationChunk({ text: 'third', message: new AIMessageChunk('third') });
+  };
+  const admission = new HostModelAdmission({ maxConcurrentCalls: 1, maxRequestBytes: 65536 });
+  const model = createHostModelService({
+    identity,
+    model: native,
+    admission,
+    descriptor: {
+      version: 1,
+      reference: 'primary',
+      provider: Providers.OPENAI,
+      model: 'native',
+      streaming: true,
+      tools: [],
+    },
+    limits: { timeoutMs: 5000, maxRequestBytes: 65536, maxResponseBytes: 65536 },
+    config: {
+      callbacks: [
+        {
+          handleChatModelStart: () => {
+            hostStarts++;
+          },
+        },
+      ],
+    },
+  });
+  const providerText = createHostProviderTextService({
+    identity,
+    policy: {
+      version: 1,
+      timeoutMs: 5000,
+      maxAttemptBytes: 65536,
+      maxBufferedBytes: 131072,
+      classify: () => 'prose',
+      inspect: ({ content }) => ({
+        version: 1,
+        ok: true,
+        value: {
+          content: content.replaceAll('PRIVATE-CANDIDATE', 'approved'),
+          replacements: 1,
+          categories: [],
+        },
+      }),
+    },
+  });
+  try {
+    const run = await createRemoteSdkRun({
+      config: hostConfig(async () => {}),
+      identity,
+      remote: runtime.remote,
+      hostServices: { model, providerText },
+    });
+    const content = await run.processStream(
+      { messages: [new HumanMessage('go')] },
+      { version: 'v2', configurable: { thread_id: identity.conversationId } },
+    );
+    expect(JSON.stringify(content)).toContain('first approved third');
+    expect(runtime.journalEntries.join('')).not.toContain('PRIVATE-CANDIDATE');
+    expect(invocations).toBe(1);
+    expect(hostStarts).toBe(1);
+    expect(runtime.connections()).toBeGreaterThan(1);
+    expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    expect(runtime.errors).toEqual([]);
+    expect(admission.snapshot().calls).toBe(0);
   } finally {
     await runtime.close();
   }
