@@ -65,8 +65,17 @@ export async function executionFixture(
   stage: 'activation' | 'invoke' | 'resume' = 'invoke',
   tool: Tool = readTool,
   url = 'https://resource.example/mcp',
-  /** `offered` adds tools the agents select; `allow` is what the owner picks (default: `tool`). */
-  choice: { offered?: string[]; allow?: string[] } = {},
+  /**
+   * `offered` adds tools the agents select; `allow` is what the owner picks (default: `tool`);
+   * `ask` are the allowed tools the owner approves call by call; `approvedToolCalls` are the
+   * calls the owner approved in the request that resumed the run.
+   */
+  choice: {
+    offered?: string[];
+    allow?: string[];
+    ask?: string[];
+    approvedToolCalls?: string[];
+  } = {},
 ) {
   let time = 1000;
   let allowed = true;
@@ -138,6 +147,7 @@ export async function executionFixture(
     resolveEnrollment,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     canUse: async () => allowed,
+    canPause: async () => true,
     now: () => time,
   });
   const offer = await service.view(identity);
@@ -146,10 +156,13 @@ export async function executionFixture(
     expectedRevision: null,
     lifetimeHours: 1,
     allow: { warehouse: choice.allow ?? [tool.name] },
+    ...(choice.ask && { ask: { warehouse: choice.ask } }),
   });
   const loadAuthorization = jest.fn(async () => ({ authority: service.authority }));
   const factory = createScheduleMCPExecution({ storage, loadAuthorization });
-  const execution = (await factory.resolve(identity, stage))!;
+  const execution = (await factory.resolve(identity, stage, {
+    approvedToolCalls: choice.approvedToolCalls,
+  }))!;
   return {
     identity,
     config,

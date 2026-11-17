@@ -60,6 +60,7 @@ import {
   type MCPAppBindingSubject,
   type MCPAppRuntimeTarget,
 } from './apps/binding';
+import { assertToolApprovalTransportEpoch, getToolApprovalTransportCallId } from '~/tools/approval';
 import { getMCPAppToolsPublicationGeneration, getMCPToolsChangedGeneration } from './toolsChanged';
 import { mcpOptionsContainGraphTokenPlaceholder, preProcessGraphTokens } from '~/utils/graph';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from './openid';
@@ -70,7 +71,6 @@ import { formatToolContent, selectResolvedAppResource } from './parsers';
 import { MCPServersInitializer } from './registry/MCPServersInitializer';
 import { OboTokenResolutionError, resolveOboToken } from '~/mcp/oauth';
 import { MCPServerCatalogRecoveryTracker } from './catalog/recovery';
-import { assertToolApprovalTransportEpoch } from '~/tools/approval';
 import { getToolUiResourceUri, isToolHiddenFromApp } from './apps';
 import { MCPServerInspector } from './registry/MCPServerInspector';
 import { MCPServersRegistry } from './registry/MCPServersRegistry';
@@ -2021,6 +2021,7 @@ Please follow these instructions when using tools from the respective MCP server
             toolName,
             loadTools: () => connection!.fetchToolsSnapshot(undefined, options?.signal),
             signal: options?.signal,
+            toolCallId: getToolApprovalTransportCallId(),
           });
           options?.signal?.throwIfAborted();
           await assertToolApprovalTransportEpoch(

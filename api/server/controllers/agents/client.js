@@ -70,6 +70,7 @@ const {
   collectAttachedCodeApprovalPolicies,
   collectAttachedCodeRoutePolicies,
   buildAttachedCodeEnvironmentAdmissionHooks,
+  buildScheduledApprovalAdmissionHooks,
   resolveAttachedCodeApprovalMode,
   resolvePersistedCodeApprovalMode,
   getCodeApprovalPreservedFields,
@@ -4609,9 +4610,11 @@ class AgentClient extends BaseClient {
         collectAttachedCodeApprovalPolicies(topLevelAgents),
         agentsEConfig?.toolApproval?.enabled !== false,
       );
+      const scheduledMCPExecution = getScheduleMCPExecution(getMCPRequestContext(this.options.req));
       const effectiveToolApprovalPolicy = resolveToolApprovalPolicy({
         endpoint: agentsEConfig?.toolApproval,
         attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
+        ownerApproval: scheduledMCPExecution?.mayAsk === true,
       });
       const resolvedToolApprovalHooks = isHITLEnabled(effectiveToolApprovalPolicy)
         ? buildToolApprovalHooks({
@@ -4629,6 +4632,7 @@ class AgentClient extends BaseClient {
           codeApprovalMode,
           collectAttachedCodeRoutePolicies(topLevelAgents),
         ),
+        ...buildScheduledApprovalAdmissionHooks(scheduledMCPExecution),
       ];
       const askUserQuestionAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);
       const runCanPause = canAgentGraphPause({

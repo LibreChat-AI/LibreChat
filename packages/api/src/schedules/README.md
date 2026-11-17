@@ -62,6 +62,29 @@ agent still selects it. Anything else is refused with `tool_policy_denied`.
 The operator-declared `mcpConsent.readOnlyPolicy` list is retired. The loader warns when the key
 is still present and ignores it.
 
+### A tool the owner approves call by call
+
+Beside allowing a tool, the owner can set it to "ask me first". The grant stores those tools
+(`askTools`), always a subset of the allowed ones.
+
+- **In a run**, the schedule's `PreToolUse` hook answers `ask` for such a tool. The run pauses
+  like any tool approval: the schedule shows "Needs approval" and links to the conversation,
+  where the owner approves, edits or rejects that use.
+- **At the MCP call**, `ScheduledMCPInvocation.authorize` refuses the tool with
+  `approval_required` unless the call's id is one the owner approved in the request that
+  resumed the run. A hook that times out contributes nothing, so this check, not the hook,
+  is what keeps an unapproved call from running.
+- **Approvals do not carry over.** They come from the validated decisions of one resume
+  request and name tool calls, not tools. The next use asks again.
+- **The readiness check** calls nothing and is not asked.
+
+A paused scheduled run needs a shared generation store (Redis streams) and a durable
+checkpointer, and `endpoints.agents.toolApproval.enabled` must not be `false`. Where that
+holds, a grant that asks turns the approval machinery on for its runs in `bypass` mode, so no
+other tool starts prompting. Where it does not, the consent view reports `approval: false`,
+the dialog offers no "ask me first", and confirming with `ask` is rejected: a tool nobody can
+approve would only ever be refused.
+
 ### A schedule its owner never authorized
 
 A schedule with no grant keeps using its MCP tools unrestricted, as it did before consent

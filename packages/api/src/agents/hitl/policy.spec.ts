@@ -92,6 +92,26 @@ describe('resolveToolApprovalPolicy', () => {
     });
   });
 
+  test('lets a grant whose owner approves tools call by call pause a run on its own', () => {
+    expect(resolveToolApprovalPolicy({ ownerApproval: true })).toEqual({
+      enabled: true,
+      mode: 'bypass',
+    });
+    expect(resolveToolApprovalPolicy({ endpoint: { deny: ['rm'] }, ownerApproval: true })).toEqual({
+      enabled: true,
+      mode: 'bypass',
+      deny: ['rm'],
+    });
+    expect(resolveToolApprovalPolicy({ ownerApproval: false })).toBeUndefined();
+  });
+
+  test('keeps the administrator in charge of a run whose owner approves tools', () => {
+    const off: TToolApprovalPolicy = { enabled: false };
+    expect(resolveToolApprovalPolicy({ endpoint: off, ownerApproval: true })).toBe(off);
+    const on: TToolApprovalPolicy = { enabled: true, mode: 'default' };
+    expect(resolveToolApprovalPolicy({ endpoint: on, ownerApproval: true })).toBe(on);
+  });
+
   test.each(['default', 'dontAsk', 'bypass'] as const)(
     'preserves an enabled endpoint %s policy when BYOM is active',
     (mode) => {

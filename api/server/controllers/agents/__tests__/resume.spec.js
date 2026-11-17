@@ -1398,6 +1398,8 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         agentId: AGENT_ID,
         source: { type: 'schedule', id: 'schedule-1', manual: false, resumed: true },
       });
+      // The owner's validated decisions, not the request body, name what may now run.
+      expect(mockInitializeClient.mock.calls[0][0].approvedToolCalls).toEqual(['tc1']);
 
       expect(mockClaimScheduleResume).toHaveBeenCalledWith('schedule-1', scheduledFor, {
         expectedConfigRevision: 4,

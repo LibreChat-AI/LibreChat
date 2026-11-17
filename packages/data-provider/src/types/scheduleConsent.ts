@@ -116,6 +116,8 @@ export const scheduledMCPConsentSchema = scheduledMCPTargetSchema
     definitions: z.array(scheduledMCPToolPinSchema).max(256).optional(),
     /** Tools a run saw with a definition other than their pin. Refused until confirmed again. */
     changedTools: z.array(identifier).max(256).optional(),
+    /** Allowed tools the owner wants to approve call by call. A run pauses before each use. */
+    askTools: z.array(identifier).max(256).optional(),
   })
   .strict()
   .refine((value) => value.absoluteExpiresAtMs > value.grantedAtMs);
@@ -144,6 +146,14 @@ export const confirmScheduleMCPConsentSchema = z
       .record(identifier, z.array(identifier).max(256))
       .refine((value) => Object.keys(value).length <= 32)
       .refine((value) => Object.values(value).some((tools) => tools.length > 0)),
+    /**
+     * Of the allowed tools, the ones the owner wants to approve call by call, by server.
+     * Each must also be listed in `allow`.
+     */
+    ask: z
+      .record(identifier, z.array(identifier).max(256))
+      .refine((value) => Object.keys(value).length <= 32)
+      .optional(),
   })
   .strict();
 export type ConfirmScheduleMCPConsent = z.infer<typeof confirmScheduleMCPConsentSchema>;
@@ -160,6 +170,10 @@ export interface ScheduleMCPConsentView {
   allowed: Record<string, string[]>;
   /** Allowed tools whose definition changed since first use, by server. Refused until confirmed again. */
   changed: Record<string, string[]>;
+  /** Allowed tools the stored grant asks the owner about before each use, by server. */
+  asking: Record<string, string[]>;
+  /** Whether a scheduled run can pause for the owner's approval on this deployment. */
+  approval: boolean;
   /** With no grant: whether the schedule's MCP tools are refused until the owner confirms. */
   required: boolean;
   /** With no grant and not yet required: when the operator's deadline makes it so. */

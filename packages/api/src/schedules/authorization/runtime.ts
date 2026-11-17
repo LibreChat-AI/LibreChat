@@ -47,6 +47,8 @@ export function createScheduleMCPRuntimeHost(
       scheduleManual?: boolean;
       scheduleMCPCompletion?: ScheduledMCPIdentity;
     };
+    /** Tool calls the owner approved in the request that resumes this run. */
+    approvedToolCalls?: readonly string[];
   }) => Promise<void>;
 } {
   function createEvaluation(enrollment: ScheduleMCPEnrollmentDeps) {
@@ -173,6 +175,8 @@ export function createScheduleMCPRuntimeHost(
           manual: restoredContext
             ? restoredJob?.scheduleId === scheduleId && restoredJob.scheduleManual === true
             : fresh?.manual === true,
+          // Only a resumed run can carry approvals: a fresh occurrence has asked nobody yet.
+          ...(restoredContext && { approvedToolCalls: input.approvedToolCalls }),
         });
       }, input.signal),
   };

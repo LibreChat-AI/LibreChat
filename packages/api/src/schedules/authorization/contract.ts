@@ -51,6 +51,8 @@ export type ScheduledMCPAuthorizationResult =
       readonly consentRevision: string;
       readonly policyRevision: string;
       readonly validUntilMs: number;
+      /** The owner approves each use of this tool. The caller must hold that approval. */
+      readonly approvalRequired?: true;
     }
   | { readonly state: 'denied'; readonly failure: ScheduledMCPFailure }
   | { readonly state: 'cancelled' };

@@ -449,6 +449,26 @@ describe('initializeClient — processAgent ACL gate', () => {
     }
   });
 
+  it('hands the approved tool calls of a resumed request to scheduled preparation', async () => {
+    const req = makeReq();
+    req._isScheduledFire = true;
+    const host = require('~/server/services/Schedules/consent');
+    const prepare = jest.spyOn(host, 'prepare').mockResolvedValue(undefined);
+    mockInitializeAgent.mockImplementationOnce(async () => makePrimaryConfig([]));
+    try {
+      await initializeClient({
+        req,
+        res: {},
+        endpointOption: makeEndpointOption(),
+        signal: new AbortController().signal,
+        approvedToolCalls: ['tc1'],
+      });
+      expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ approvedToolCalls: ['tc1'] }));
+    } finally {
+      prepare.mockRestore();
+    }
+  });
+
   it('preserves the owning cancellation before scheduled preparation begins', async () => {
     const req = makeReq();
     req._isScheduledFire = true;

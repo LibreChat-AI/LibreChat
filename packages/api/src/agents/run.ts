@@ -2961,6 +2961,7 @@ export async function createRun({
   const toolApprovalPolicy = resolveToolApprovalPolicy({
     endpoint: agentsEndpointConfig?.toolApproval,
     attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
+    ownerApproval: scheduledMCPExecution?.mayAsk === true,
   });
   // Every caller needs the policy hooks, including API-key ingresses. Only
   // AgentClient supports pause/resume; the SDK blocks `ask` without HITL enabled.

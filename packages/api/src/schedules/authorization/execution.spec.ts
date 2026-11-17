@@ -1,10 +1,10 @@
 import { Constants } from '@librechat/agents';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { bindScheduledMCPInvocation, collectApprovedToolCalls } from './execution';
+import { createScheduledMCPRunPolicy, SCHEDULE_APPROVAL_REASON } from './run';
 import { executionFixture, readTool } from './execution.helper';
-import { bindScheduledMCPInvocation } from './execution';
 import { createMCPRequestContext } from '~/mcp/request';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
-import { createScheduledMCPRunPolicy } from './run';
 import { ScheduledMCPPolicyError } from './policy';
 
 const catalog = (tools: Tool[] = [readTool]) => ({ tools, complete: true });
@@ -454,3 +454,108 @@ it.each(['consent_revoked', 'rbac_denied', 'binding_mismatch'] as const)(
     ).rejects.toBe(error);
   },
 );
+
+describe('a tool the owner approves call by call', () => {
+  const use = (
+    fixture: Awaited<ReturnType<typeof executionFixture>>,
+    extra: { toolCallId?: string; readiness?: true } = {},
+    agentId = 'root',
+  ) =>
+    fixture.invocation(agentId).authorize({
+      user: fixture.user,
+      serverName: 'warehouse',
+      serverConfig: fixture.config,
+      toolName: 'query',
+      loadTools: async () => catalog(),
+      ...extra,
+    });
+  const refused = { failure: { reason: 'approval_required', automaticReplay: false } };
+
+  it('is refused when the call carries no approval, whatever the run hook did', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { ask: ['query'] });
+    await expect(use(fixture)).rejects.toMatchObject(refused);
+    await expect(use(fixture, { toolCallId: 'call-1' })).rejects.toMatchObject(refused);
+  });
+
+  it('runs the call the owner approved, and only that call', async () => {
+    const fixture = await executionFixture('resume', readTool, undefined, {
+      ask: ['query'],
+      approvedToolCalls: ['call-1'],
+    });
+    await expect(use(fixture, { toolCallId: 'call-1' })).resolves.toBeUndefined();
+    await expect(use(fixture, { toolCallId: 'call-1' }, 'child')).resolves.toBeUndefined();
+    await expect(use(fixture, { toolCallId: 'call-2' })).rejects.toMatchObject(refused);
+    await expect(use(fixture)).rejects.toMatchObject(refused);
+  });
+
+  it('passes a readiness check, which calls nothing', async () => {
+    const fixture = await executionFixture('activation', readTool, undefined, { ask: ['query'] });
+    await expect(use(fixture, { readiness: true })).resolves.toBeUndefined();
+  });
+
+  it('leaves a tool the owner simply allowed alone', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['list'],
+      allow: ['list', 'query'],
+      ask: ['list'],
+    });
+    await expect(use(fixture)).resolves.toBeUndefined();
+  });
+
+  it('tells the run which tools to pause for, by either spelling of the server', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['list'],
+      allow: ['list', 'query'],
+      ask: ['query'],
+    });
+    expect(fixture.execution.mayAsk).toBe(true);
+    expect(fixture.execution.asksAbout('root', 'query_mcp_warehouse')).toBe(true);
+    expect(fixture.execution.asksAbout('child', 'query_mcp_warehouse')).toBe(true);
+    expect(fixture.execution.asksAbout('root', 'list_mcp_warehouse')).toBe(false);
+    expect(fixture.execution.asksAbout('other', 'query_mcp_warehouse')).toBe(false);
+    expect((await executionFixture()).execution.mayAsk).toBe(false);
+  });
+
+  it('pauses the run for it and for nothing else', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['list'],
+      allow: ['list', 'query'],
+      ask: ['query'],
+    });
+    const agent = {
+      id: 'root',
+      toolDefinitions: ['query', 'list', 'write'].map((name) => ({
+        name: `${name}_mcp_warehouse`,
+        toolType: 'mcp',
+        serverName: 'warehouse',
+      })),
+    };
+    const policy = createScheduledMCPRunPolicy(fixture.execution, [agent]);
+    const decide = (toolName: string, executingAgentId = 'root') =>
+      policy.hook(
+        { toolName, toolInput: {}, executingAgentId } as Parameters<typeof policy.hook>[0],
+        new AbortController().signal,
+      );
+    expect(await decide('query_mcp_warehouse')).toEqual({
+      decision: 'ask',
+      reason: SCHEDULE_APPROVAL_REASON,
+    });
+    expect(await decide('list_mcp_warehouse')).toEqual({});
+    expect(await decide('execute_code')).toMatchObject({ decision: 'deny' });
+  });
+});
+
+it('reads approvals only from a validated resume value', () => {
+  expect(
+    collectApprovedToolCalls({
+      a: { type: 'approve' },
+      b: { type: 'edit', updatedInput: {} },
+      c: { type: 'reject' },
+      d: { type: 'respond', responseText: 'no' },
+      e: null,
+      f: 'approve',
+    }),
+  ).toEqual(['a', 'b']);
+  for (const value of [undefined, null, 'approve', [{ type: 'approve' }], { answers: {} }])
+    expect(collectApprovedToolCalls(value)).toEqual([]);
+});

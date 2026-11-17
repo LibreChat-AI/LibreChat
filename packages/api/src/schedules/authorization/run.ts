@@ -30,7 +30,11 @@ export interface ScheduledMCPPolicyAgent {
   }[];
 }
 
-/** No direct actions, arbitrary code or unclassified tools in an enrolled read-only run. */
+/** Shown on the approval card. The owner chose this for the tool; no policy fired. */
+export const SCHEDULE_APPROVAL_REASON =
+  'You asked to approve each use of this tool when this schedule runs.';
+
+/** No direct actions, arbitrary code or unlisted tools in an enrolled run. */
 export function createScheduledMCPRunPolicy(
   execution: ScheduleMCPExecution,
   agents: readonly ScheduledMCPPolicyAgent[],
@@ -148,7 +152,12 @@ export function createScheduledMCPRunPolicy(
     registerAgent,
     hook: async (input) => {
       const error = await failure(input);
-      return error ? { decision: 'deny', reason: error.message } : {};
+      if (error) return { decision: 'deny', reason: error.message };
+      // Pauses the run where it can pause. The call itself is checked again when it is made.
+      return input.executingAgentId != null &&
+        execution.asksAbout(input.executingAgentId, input.toolName)
+        ? { decision: 'ask', reason: SCHEDULE_APPROVAL_REASON }
+        : {};
     },
     // Separate hook: a failed or timed-out receipt must never erase the immediate deny.
     receipt: async (input) => {

@@ -476,6 +476,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                             toolName: definitions.length === 1 ? definitions[0].name : '',
                             loadTools: async () => snapshot,
                             signal,
+                            readiness: true,
                           }),
                         );
                       }
