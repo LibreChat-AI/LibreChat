@@ -103,6 +103,7 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   await expect(discord.getByRole('button', { name: 'Add application' })).toBeDisabled();
   failed = false;
   await discord.getByRole('button', { name: 'Retry', exact: true }).click();
+  await discord.getByText('Setup details', { exact: true }).click();
   await expect(discord.getByLabel('Interactions endpoint URL')).toHaveValue(
     `https://gateway.example/discord/${app.applicationId}/interactions`,
   );
@@ -110,7 +111,7 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   const recorded = discord.locator(`time[datetime="${new Date(observedBefore).toISOString()}"]`);
   await expect(recorded).toBeVisible();
   /** The time is when the status was last recorded, not a promise of a live or most recent check. */
-  await expect(recorded.locator('..')).toContainText('Last recorded check');
+  await expect(recorded.locator('..')).toContainText('Checked:');
   const update = discord.getByRole('button', {
     name: 'Update credentials for Browser application',
   });
@@ -118,9 +119,7 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   await expect(discord.getByLabel('Application ID')).toHaveAttribute('readonly');
   await discord.getByLabel('Bot token', { exact: true }).fill('browser-test-placeholder-token');
   await discord.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(
-    discord.getByText('Application saved. Credentials are never returned.'),
-  ).toBeVisible();
+  await expect(discord.getByText('Application saved.')).toBeVisible();
   await expect(discord.getByText(translations.com_ui_discord_health_valid)).toBeVisible();
   await expect(discord.getByText(translations.com_ui_discord_health_invalid)).toHaveCount(0);
   await expect(
@@ -138,9 +137,7 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   await update.click();
   await expect(discord.getByLabel('Bot token', { exact: true })).toHaveValue('');
   await discord.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await discord
-    .getByRole('button', { name: 'Register or update /librechat commands for Browser application' })
-    .click();
+  await discord.getByRole('button', { name: 'Update commands for Browser application' }).click();
   await expect(
     discord.getByText('Registered /librechat commands. Discord may take time to show the update.'),
   ).toBeVisible();

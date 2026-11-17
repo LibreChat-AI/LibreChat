@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { Alert, Button, Input } from '@librechat/client';
+import { Alert, Button, Textarea } from '@librechat/client';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
 
 /** The private fragment is rendered locally and never sent to a QR service or preview API. */
@@ -32,7 +32,7 @@ export default function Handoff({
     <main className="bg-surface-primary text-text-primary flex min-h-screen flex-col items-center justify-center px-4 py-8">
       <section
         aria-labelledby={`${id}-title`}
-        className="border-border-light bg-surface-secondary w-full max-w-lg space-y-5 overflow-hidden rounded-2xl border p-6 shadow-sm sm:p-7"
+        className="border-border-light bg-surface-secondary w-full max-w-sm space-y-5 overflow-hidden rounded-2xl border p-6 shadow-sm sm:p-7"
       >
         <header className="space-y-3">
           <h1 id={`${id}-title`} className="text-2xl font-semibold tracking-tight">
@@ -40,11 +40,6 @@ export default function Handoff({
               ticket ? 'com_ui_channel_handoff_title' : 'com_ui_channel_link_unusable_title',
             )}
           </h1>
-          {ticket && (
-            <p className="text-text-secondary text-sm leading-6">
-              {localize('com_ui_channel_handoff_description')}
-            </p>
-          )}
         </header>
         {!ticket ? (
           <>
@@ -55,28 +50,29 @@ export default function Handoff({
           </>
         ) : (
           <>
-            {!canResume && (
-              <Alert variant="warning">{localize('com_ui_channel_handoff_storage')}</Alert>
-            )}
             <div className="flex flex-wrap gap-2">
               <Button type="button" onClick={onContinue}>
                 {localize('com_ui_channel_handoff_continue')}
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                aria-expanded={phone}
-                aria-controls={phone ? `${id}-phone` : undefined}
-                onClick={() => setPhone((value) => !value)}
-              >
-                {localize('com_ui_channel_handoff_phone')}
-              </Button>
+              {!localOnly && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-expanded={phone}
+                  aria-controls={phone ? `${id}-phone` : undefined}
+                  onClick={() => setPhone((value) => !value)}
+                >
+                  {localize('com_ui_channel_handoff_phone')}
+                </Button>
+              )}
             </div>
-            {phone && (
-              <div id={`${id}-phone`} className="space-y-3">
-                {localOnly && (
-                  <Alert variant="warning">{localize('com_ui_channel_handoff_localhost')}</Alert>
-                )}
+            {!canResume && (
+              <p className="text-text-secondary text-sm">
+                {localize('com_ui_channel_handoff_storage')}
+              </p>
+            )}
+            {phone && !localOnly && (
+              <div id={`${id}-phone`} className="space-y-3 text-center">
                 <p className="text-text-secondary text-sm">
                   {localize('com_ui_channel_handoff_scan')}
                 </p>
@@ -89,15 +85,6 @@ export default function Handoff({
                     title={localize('com_ui_channel_handoff_qr')}
                   />
                 </div>
-                <Input
-                  readOnly
-                  autoComplete="off"
-                  spellCheck={false}
-                  dir="ltr"
-                  value={handoffUrl}
-                  aria-label={localize('com_ui_channel_handoff_private_link')}
-                  onFocus={(event) => event.currentTarget.select()}
-                />
                 <Button
                   type="button"
                   variant="ghost"
@@ -106,25 +93,38 @@ export default function Handoff({
                     setCopyFailed(!copy(setCopied));
                   }}
                 >
-                  {localize('com_ui_copy_link')}
+                  {localize(copied ? 'com_ui_copied' : 'com_ui_copy_link')}
                 </Button>
-                <p role="status" className="text-text-secondary text-sm">
+                <span role="status" className="sr-only">
                   {copied ? localize('com_ui_copied') : ''}
-                </p>
+                </span>
                 {copyFailed && (
-                  <Alert variant="warning">{localize('com_ui_channel_handoff_copy_failed')}</Alert>
+                  <div className="space-y-2 text-left">
+                    <p
+                      id={`${id}-copy-error`}
+                      role="status"
+                      className="text-text-secondary text-sm"
+                    >
+                      {localize('com_ui_channel_handoff_copy_failed')}
+                    </p>
+                    <Textarea
+                      rows={3}
+                      readOnly
+                      autoComplete="off"
+                      spellCheck={false}
+                      dir="ltr"
+                      value={handoffUrl}
+                      aria-label={localize('com_ui_channel_handoff_private_link')}
+                      aria-describedby={`${id}-copy-error`}
+                      onFocus={(event) => event.currentTarget.select()}
+                    />
+                  </div>
                 )}
                 <p className="text-text-secondary text-sm">
                   {localize('com_ui_channel_handoff_privacy')}
                 </p>
               </div>
             )}
-            <p className="text-text-secondary text-sm">
-              {localize('com_ui_channel_handoff_expiry')}
-            </p>
-            <p className="text-text-secondary text-sm">
-              {localize('com_ui_channel_handoff_confirmation')}
-            </p>
           </>
         )}
       </section>

@@ -1,3 +1,4 @@
+/** @jest-environment-options {"url":"https://chat.example.test"} */
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { QRCodeSVG } from 'qrcode.react';
@@ -454,18 +455,15 @@ test('offers private phone handoff before login without reading account data', a
   expect(document.body.textContent).not.toContain('U1');
   await userEvent.click(screen.getByRole('button', { name: 'com_ui_channel_handoff_phone' }));
   const url = `${window.location.origin}/channels/link#${ticket}`;
-  expect(screen.getByLabelText('com_ui_channel_handoff_private_link')).toHaveValue(url);
+  expect(screen.queryByLabelText('com_ui_channel_handoff_private_link')).not.toBeInTheDocument();
   expect(jest.mocked(QRCodeSVG).mock.calls.at(-1)?.[0].value).toBe(url);
   expect(screen.getByText('com_ui_channel_handoff_privacy')).toBeVisible();
-  expect(screen.getByText('com_ui_channel_handoff_expiry')).toBeVisible();
-  expect(screen.getByText('com_ui_channel_handoff_confirmation')).toBeVisible();
-  expect(screen.getByText('com_ui_channel_handoff_localhost')).toBeVisible();
   await userEvent.click(screen.getByRole('button', { name: 'com_ui_copy_link' }));
   expect(mockClipboard).toHaveBeenCalledWith(
     url,
     expect.objectContaining({ format: 'text/plain' }),
   );
-  expect(screen.getByRole('status')).toHaveTextContent('com_ui_copied');
+  expect(screen.getByRole('button', { name: 'com_ui_copied' })).toBeVisible();
   expect(window.location.href).not.toContain(ticket);
   expect(mockAuthUrls.every((authUrl) => !authUrl.includes(ticket))).toBe(true);
   expect(post).not.toHaveBeenCalled();
@@ -479,13 +477,12 @@ test('phone handoff permits manual copy when clipboard access fails', async () =
     await screen.findByRole('button', { name: 'com_ui_channel_handoff_phone' }),
   );
   await userEvent.click(screen.getByRole('button', { name: 'com_ui_copy_link' }));
-  expect(screen.getByText('com_ui_channel_handoff_localhost')).toBeVisible();
   expect(screen.getByText('com_ui_channel_handoff_copy_failed')).toBeVisible();
   const input = screen.getByLabelText('com_ui_channel_handoff_private_link');
   await userEvent.click(input);
   expect(input).toHaveFocus();
   expect(
-    window.getSelection()?.toString() || (input as HTMLInputElement).selectionEnd,
+    window.getSelection()?.toString() || (input as HTMLTextAreaElement).selectionEnd,
   ).toBeTruthy();
 });
 
@@ -497,7 +494,7 @@ test('blocked storage warns before sign-in and still allows private phone handof
   renderRoute();
   expect(await screen.findByText('com_ui_channel_handoff_storage')).toBeVisible();
   await userEvent.click(screen.getByRole('button', { name: 'com_ui_channel_handoff_phone' }));
-  expect(screen.getByLabelText('com_ui_channel_handoff_private_link')).toHaveValue(
+  expect(jest.mocked(QRCodeSVG).mock.calls.at(-1)?.[0].value).toBe(
     `${window.location.origin}/channels/link#${ticket}`,
   );
   expect(window.location.hash).toBe('');
@@ -530,7 +527,7 @@ test('phone handoff disappears when the tab ticket expires', async () => {
   renderRoute();
   const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
   await user.click(await screen.findByRole('button', { name: 'com_ui_channel_handoff_phone' }));
-  expect(screen.getByLabelText('com_ui_channel_handoff_private_link')).toBeVisible();
+  expect(screen.getByRole('img', { name: 'com_ui_channel_handoff_qr' })).toBeVisible();
   await act(async () => {
     await jest.advanceTimersByTimeAsync(1000);
   });

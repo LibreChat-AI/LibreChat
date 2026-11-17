@@ -2196,6 +2196,10 @@ test('allows authorized Discord management across binding creators without gener
   await user.click(manage);
   expect(await screen.findByText('com_ui_discord_binding_assigned')).toBeVisible();
   expect(screen.getByRole('button', { name: 'com_ui_discord_binding_remove' })).toBeEnabled();
+  const provider = screen.getByRole('button', { name: 'com_ui_channels_connection_details' });
+  expect(provider.querySelector('img[src$="slack.svg"]')).toBeNull();
+  expect(provider.querySelector('svg')).not.toBeNull();
+  expect(screen.queryByText('com_ui_discord_binding_channel_help')).toBeNull();
 });
 
 test('selects a Discord server with the keyboard without submitting the builder', async () => {

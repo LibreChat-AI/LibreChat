@@ -67,7 +67,7 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-async function page() {
+async function page({ configuration = true } = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     logger: { log: () => {}, warn: () => {}, error: () => {} },
@@ -81,7 +81,14 @@ async function page() {
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'com_ui_discord_app_create' })).toBeEnabled(),
   );
-  return { ...view, client, user: userEvent.setup() };
+  const user = userEvent.setup();
+  // Configuration scenarios enter through the same disclosure as a person using the app.
+  if (configuration) {
+    for (const summary of screen.getAllByText('com_ui_discord_setup_details')) {
+      await user.click(summary);
+    }
+  }
+  return { ...view, client, user };
 }
 /** A rotation whose save is rejected, settled and ready to be dismissed with Refresh. */
 async function failedSave() {
@@ -1698,4 +1705,27 @@ test('does not carry a failed page from one account into the next account retry'
   await user.click(retryOf(await loadFailure()));
   expect(await screen.findByText('Engineering')).toBeVisible();
   expect(cursors()).toEqual([undefined, 'c2', undefined, undefined]);
+});
+
+test('keeps setup details quiet until opened without hiding connection actions', async () => {
+  const { user } = await page({ configuration: false });
+  expect(screen.getByRole('button', { name: 'com_ui_discord_connect_named' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_commands_named' })).not.toBeVisible();
+  expect(screen.getByLabelText('com_ui_discord_callback')).not.toBeVisible();
+  await user.click(screen.getByText('com_ui_discord_setup_details'));
+  expect(screen.getByRole('button', { name: 'com_ui_discord_commands_named' })).toBeVisible();
+  expect(screen.getByLabelText('com_ui_discord_callback')).toBeVisible();
+  expect(dataService.registerDiscordCommands).not.toHaveBeenCalled();
+});
+
+test('reveals a command failure even when setup details were closed while waiting', async () => {
+  const pending = deferred<never>();
+  jest.mocked(dataService.registerDiscordCommands).mockReturnValueOnce(pending.promise);
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
+  await user.click(screen.getByText('com_ui_discord_setup_details'));
+  await act(async () => pending.reject(new Error('safe')));
+  expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'com_ui_refresh' })).toBeVisible();
 });

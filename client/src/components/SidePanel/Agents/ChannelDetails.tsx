@@ -1,5 +1,6 @@
 import {
   Button,
+  DiscordIcon,
   HoverCard,
   HoverCardContent,
   HoverCardPortal,
@@ -59,11 +60,21 @@ export function ChannelDetails({ channel }: { channel: AgentChannel }) {
           {channel.slack.appId}
         </Row>
       )}
+      {channel.type === 'discord' && channel.discord && (
+        <>
+          <Row label={localize('com_ui_channel_link_discord_server')} mono>
+            {channel.discord.guildId}
+          </Row>
+          <Row label={localize('com_ui_discord_application_id')} mono>
+            {channel.discord.applicationId}
+          </Row>
+        </>
+      )}
     </dl>
   );
 }
 
-/** The Slack mark with a dot for the connection's state; hovering or focusing it shows the details. */
+/** The provider mark and connection state; hovering or focusing reveals the details. */
 export function ChannelHeaderIcon({ channel }: { channel: AgentChannel }) {
   const localize = useLocalize();
   return (
@@ -76,7 +87,11 @@ export function ChannelHeaderIcon({ channel }: { channel: AgentChannel }) {
           aria-label={localize('com_ui_channels_connection_details')}
         >
           <span className="border-border-light bg-surface-secondary flex size-10 items-center justify-center rounded-xl border">
-            <img src="assets/slack.svg" alt="" className="size-5" />
+            {channel.type === 'discord' ? (
+              <DiscordIcon className="size-5" />
+            ) : (
+              <img src="assets/slack.svg" alt="" className="size-5" />
+            )}
           </span>
           <span
             aria-hidden="true"

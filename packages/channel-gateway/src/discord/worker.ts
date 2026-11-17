@@ -212,28 +212,28 @@ function assertBinding(
 export function discordProgressText(run: ChannelRunView, bundle?: ChannelBundle): string {
   if (terminalSnapshot(run)) {
     if (run.snapshot?.status === 'completed')
-      return 'The agent finished. Delivery is not confirmed yet. If the reply does not arrive, use /librechat status to open the saved session.';
+      return 'Reply ready; delivery is not confirmed yet. Use /librechat status if it does not arrive.';
     if (run.snapshot?.status === 'cancelled')
-      return 'Stopped. Actions already completed may still have taken effect.';
-    return 'The agent could not finish this request. Sending the result...';
+      return 'Stopped. Completed actions may still have taken effect.';
+    return 'Request failed. Sending the saved result...';
   }
   if (run.snapshot?.recovery === 'execution_state_unavailable')
     return (
       (run.cancellationRequested ? 'Stop requested. ' : '') +
-      'I cannot confirm this request’s status. Use /librechat status to check the saved session before trying again, since some actions may already have run. If the status stays unavailable, contact an administrator.'
+      'Status unavailable. Check /librechat status before retrying; some actions may already have run.'
     );
-  if (run.cancellationRequested) return 'Stop requested. Waiting for the agent to confirm.';
+  if (run.cancellationRequested) return 'Stop requested.';
   if (run.snapshot?.status === 'requires_action')
     return pendingReview(run)
-      ? 'Your input is needed. Select Review request to view it privately, or use /librechat status.'
-      : 'Waiting for input. The review is unavailable or has expired. Use /librechat status to check.';
+      ? 'Waiting for your review.'
+      : 'Review unavailable. Use /librechat status to check.';
   if (
     bundle?.channel.type === 'discord' &&
     'discord' in bundle &&
     bundle.discord.streaming.mode === 'partial' &&
     run.snapshot?.previewText?.trim()
   )
-    return `Draft reply, still working:\n\n${renderDiscordPreview(run.snapshot.previewText, bundle.discord.streaming.maxPreviewChars)}`;
+    return `_Draft_\n\n${renderDiscordPreview(run.snapshot.previewText, bundle.discord.streaming.maxPreviewChars)}`;
   return 'Working...';
 }
 
@@ -358,13 +358,12 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
       let text = snapshot.text;
       if (snapshot.status === 'failed')
         text =
-          'The agent could not finish this request. Use /librechat status to check the saved session before retrying, since some actions may already have run.';
+          'This request could not finish. Check /librechat status before retrying; some actions may already have run.';
       else if (snapshot.status === 'cancelled')
-        text = 'This request was stopped. Actions already completed may still have taken effect.';
-      else if (!text.trim()) text = 'The agent finished without a text reply.';
+        text = 'Stopped. Completed actions may still have taken effect.';
+      else if (!text.trim()) text = 'No text reply was returned.';
       if (snapshot.artifacts?.length || snapshot.artifactsUnavailable)
-        text +=
-          '\n\nAttachments are unavailable in Discord. Use /librechat status to open the saved session.';
+        text += '\n\nFor attachments, open the saved session with /librechat status.';
       const url = sessionURL(run);
       const link = url && traceText(url).length <= 2000 ? url : undefined;
       const feedback =

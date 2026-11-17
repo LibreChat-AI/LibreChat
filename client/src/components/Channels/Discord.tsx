@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef } from 'react';
+import { Pencil } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { atom, Provider, useAtom } from 'jotai';
 import {
@@ -28,6 +29,8 @@ import {
   AlertDialogTitle,
   Button,
   DiscordIcon,
+  IconButton,
+  TooltipAnchor,
   Input,
   Label,
   OGDialog,
@@ -602,12 +605,6 @@ function Setup({
           </Button>
         </Alert>
       )}
-      {setup?.oauthCallbackUrl && (
-        <div>
-          <Label htmlFor={`${id}-callback`}>{localize('com_ui_discord_callback')}</Label>
-          <Input id={`${id}-callback`} readOnly value={setup.oauthCallbackUrl} />
-        </div>
-      )}
       <div className="flex items-center justify-between gap-2">
         <h3 ref={appsHeading} tabIndex={-1} className="text-sm font-semibold">
           {localize('com_ui_discord_apps')}
@@ -635,6 +632,12 @@ function Setup({
           <p className="text-text-secondary text-sm">
             {localize(editor === 'new' ? 'com_ui_discord_credentials' : 'com_ui_discord_rotation')}
           </p>
+          {editor === 'new' && setup?.oauthCallbackUrl && (
+            <div>
+              <Label htmlFor={`${id}-callback`}>{localize('com_ui_discord_callback')}</Label>
+              <Input id={`${id}-callback`} readOnly value={setup.oauthCallbackUrl} />
+            </div>
+          )}
           {(['applicationId', 'name', 'botToken', 'clientSecret'] as const).map((field) => {
             const secret = field === 'botToken' || field === 'clientSecret';
             const labels = {
@@ -709,21 +712,30 @@ function Setup({
             key={app.applicationId}
             className="border-border-light space-y-2 rounded-lg border p-3"
           >
-            <p className="text-sm font-medium">{app.name || app.applicationId}</p>
-            <p className="text-text-secondary text-xs break-all">{app.applicationId}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="min-w-0 truncate text-sm font-medium">
+                {app.name || app.applicationId}
+              </p>
+              <TooltipAnchor
+                description={localize('com_ui_discord_app_rotate')}
+                render={
+                  <IconButton
+                    label={localize('com_ui_discord_rotate_named', {
+                      0: app.name || app.applicationId,
+                    })}
+                    variant="ghost"
+                    size="sm"
+                    shape="control"
+                    disabled={disabled}
+                    onClick={(event) => edit(app, event.currentTarget)}
+                  >
+                    <Pencil className="size-4" aria-hidden="true" />
+                  </IconButton>
+                }
+              />
+            </div>
             <CredentialHealth app={app} />
             <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={disabled}
-                aria-label={localize('com_ui_discord_rotate_named', {
-                  0: app.name || app.applicationId,
-                })}
-                onClick={(event) => edit(app, event.currentTarget)}
-              >
-                {localize('com_ui_discord_app_rotate')}
-              </Button>
               <Button
                 type="button"
                 disabled={disabled}
@@ -735,72 +747,102 @@ function Setup({
                 {localize('com_ui_discord_connect')}
               </Button>
             </div>
-            <div className="space-y-2">
-              <Button
-                type="button"
-                variant="submit"
-                disabled={disabled || (commands.isError && commandAppId === app.applicationId)}
-                aria-label={localize('com_ui_discord_commands_named', {
-                  0: app.name || app.applicationId,
-                })}
-                aria-busy={commandAppId === app.applicationId && commands.isLoading}
-                onClick={(event) => {
-                  commandTrigger.current = event.currentTarget;
-                  commands.mutate({
-                    applicationId: app.applicationId,
-                    expectedRevision: app.revision,
-                    manifestVersion: DISCORD_COMMAND_MANIFEST_VERSION,
-                  });
-                }}
-              >
-                {localize(
-                  commandAppId === app.applicationId && commands.isLoading
-                    ? 'com_ui_discord_commands_registering'
-                    : 'com_ui_discord_commands_register',
+            <details
+              className="group border-border-light border-t pt-2"
+              open={(commandAppId === app.applicationId && commands.isError) || undefined}
+            >
+              <summary className="text-text-secondary cursor-pointer text-sm">
+                {localize('com_ui_discord_setup_details')}
+              </summary>
+              <div className="mt-3 space-y-3">
+                {app.name && (
+                  <p className="text-text-secondary text-xs break-all">
+                    {localize('com_ui_discord_application_id')}: {app.applicationId}
+                  </p>
                 )}
-              </Button>
-              <p className="text-text-secondary text-xs">
-                {localize('com_ui_discord_commands_help')}
-              </p>
-              {commands.isSuccess &&
-                commandAppId === app.applicationId &&
-                commands.variables?.expectedRevision === app.revision && (
-                  <p role="status">{localize('com_ui_discord_commands_success')}</p>
+                <p className="text-text-secondary text-xs">
+                  {localize('com_ui_discord_health_help')}
+                </p>
+                {setup?.oauthCallbackUrl && (
+                  <div>
+                    <Label htmlFor={`${id}-callback-${app.applicationId}`}>
+                      {localize('com_ui_discord_callback')}
+                    </Label>
+                    <Input
+                      id={`${id}-callback-${app.applicationId}`}
+                      readOnly
+                      value={setup.oauthCallbackUrl}
+                    />
+                  </div>
                 )}
-              {commandAppId === app.applicationId && commands.isError && (
-                <Alert ref={reveal} tabIndex={-1} variant="error">
-                  <p>{localize(errorLabel(commands.error))}</p>
+                <div className="space-y-2">
                   <Button
                     type="button"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => {
-                      setRestore({ trigger: commandTrigger.current });
-                      commands.reset();
-                      reconcile.mutate();
+                    variant="submit"
+                    disabled={disabled || (commands.isError && commandAppId === app.applicationId)}
+                    aria-label={localize('com_ui_discord_commands_named', {
+                      0: app.name || app.applicationId,
+                    })}
+                    aria-busy={commandAppId === app.applicationId && commands.isLoading}
+                    onClick={(event) => {
+                      commandTrigger.current = event.currentTarget;
+                      commands.mutate({
+                        applicationId: app.applicationId,
+                        expectedRevision: app.revision,
+                        manifestVersion: DISCORD_COMMAND_MANIFEST_VERSION,
+                      });
                     }}
                   >
-                    {localize('com_ui_refresh')}
+                    {localize(
+                      commandAppId === app.applicationId && commands.isLoading
+                        ? 'com_ui_discord_commands_registering'
+                        : 'com_ui_discord_commands_register',
+                    )}
                   </Button>
-                </Alert>
-              )}
-            </div>
-            {setup?.interactionBaseUrl ? (
-              <div>
-                <Label htmlFor={`${id}-ingress-${app.applicationId}`}>
-                  {localize('com_ui_discord_interactions')}
-                </Label>
-                <Input
-                  id={`${id}-ingress-${app.applicationId}`}
-                  readOnly
-                  value={`${setup.interactionBaseUrl}${encodeURIComponent(app.applicationId)}/interactions`}
-                />
+                  <p className="text-text-secondary text-xs">
+                    {localize('com_ui_discord_commands_help')}
+                  </p>
+                  {commands.isSuccess &&
+                    commandAppId === app.applicationId &&
+                    commands.variables?.expectedRevision === app.revision && (
+                      <p role="status">{localize('com_ui_discord_commands_success')}</p>
+                    )}
+                  {commandAppId === app.applicationId && commands.isError && (
+                    <Alert ref={reveal} tabIndex={-1} variant="error">
+                      <p>{localize(errorLabel(commands.error))}</p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => {
+                          setRestore({ trigger: commandTrigger.current });
+                          commands.reset();
+                          reconcile.mutate();
+                        }}
+                      >
+                        {localize('com_ui_refresh')}
+                      </Button>
+                    </Alert>
+                  )}
+                </div>
+                {setup?.interactionBaseUrl ? (
+                  <div>
+                    <Label htmlFor={`${id}-ingress-${app.applicationId}`}>
+                      {localize('com_ui_discord_interactions')}
+                    </Label>
+                    <Input
+                      id={`${id}-ingress-${app.applicationId}`}
+                      readOnly
+                      value={`${setup.interactionBaseUrl}${encodeURIComponent(app.applicationId)}/interactions`}
+                    />
+                  </div>
+                ) : (
+                  <p className="text-text-secondary text-xs">
+                    {localize('com_ui_discord_ingress_required')}
+                  </p>
+                )}
               </div>
-            ) : (
-              <p className="text-text-secondary text-xs">
-                {localize('com_ui_discord_ingress_required')}
-              </p>
-            )}
+            </details>
           </li>
         ))}
       </ul>

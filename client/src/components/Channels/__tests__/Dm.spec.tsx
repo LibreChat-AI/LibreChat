@@ -330,7 +330,7 @@ test('an initial list failure can be retried without issuing a code', async () =
   jest.mocked(dataService.listDiscordDmSelections).mockRejectedValueOnce(new Error('temporary'));
   const f = page();
   await f.user.click(await screen.findByRole('button', { name: 'Retry' }));
-  await screen.findByText('No Discord DM selections yet.');
+  await screen.findByRole('button', { name: /^Use for DMs/ });
   expect(dataService.issueDiscordDmCode).not.toHaveBeenCalled();
 });
 
@@ -368,11 +368,11 @@ test('copies the temporary selection code explicitly and offers manual copy on f
     secret,
     expect.objectContaining({ format: 'text/plain' }),
   );
-  expect(screen.getByText('Copied')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Copied' })).toBeVisible();
   mockClipboard.mockReturnValue(false);
-  await f.user.click(screen.getByRole('button', { name: 'Copy code' }));
+  await f.user.click(screen.getByRole('button', { name: 'Copied' }));
   expect(
-    await screen.findByText('Copy did not work. Select the text above and copy it manually.'),
+    await screen.findByText('Select the link below to copy it manually.'),
   ).toBeVisible();
   expect(screen.getByLabelText('Selection code')).toHaveValue(secret);
   await f.user.click(screen.getByRole('button', { name: 'Cancel' }));
