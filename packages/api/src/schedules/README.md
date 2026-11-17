@@ -123,6 +123,37 @@ use compares the live definition with that pin.
 The pin is trust on first use. The consent offer does not connect to the server, so a
 definition that changes between confirming and the first use is the one that gets pinned.
 
+## Grants held by an API key
+
+The same consent service, storage writes and per-call check also serve a second subject: a
+personal agent API key, per agent (`packages/api/src/apiKeys/grants.ts`). The grant lives on
+the key's document (`AgentApiKey.mcpGrants.<agentId>`), so it dies with the key.
+
+```yaml
+endpoints:
+  agents:
+    remoteApi:
+      integrations:
+        mode: delegated # default `owner`: every server the key's owner can use
+        maxLifetimeHours: 168
+        resources: # the servers a key may be granted, as for schedules
+          warehouse: { url: ..., credentialMode: ..., issuer: ..., audience: ..., scopes: [] }
+```
+
+Under `delegated`, a run started with a personal key (chat completions, Responses, and a
+background Responses worker) is put under that key's grant for the agent before any tool is
+loaded. A key with no grant for the agent may not use MCP tools at all (`consent_missing`).
+What differs from a schedule's grant:
+
+- It limits MCP tools only. The agent's other tools are untouched, and an agent that has them
+  can still be granted.
+- A remote run cannot pause for approval, so "ask me first" is not offered for a key.
+- A run started with an OIDC token, or with a key issued to an integration (a channel), names
+  no personal key and is not restricted.
+
+Routes: `GET`, `POST` and `DELETE /api/api-keys/:id/agents/:agentId/mcp-consent`, with the same
+bodies and view as a schedule's.
+
 ## Host token-provider context
 
 `createMCPPreflight` and `createInitializeClient` accept a

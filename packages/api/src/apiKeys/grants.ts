@@ -12,9 +12,9 @@ import type {
   ScheduleMCPEnrollmentDeps,
   ScheduleMCPExecutionFactory,
 } from '~/schedules';
-import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { ExecutionContext } from '~/agents/authority/context';
 import type { CheckAccessParams } from '~/middleware/access';
+import type { ApiKeyAuthRequest } from './middleware';
 import {
   ScheduledMCPPolicyError,
   createScheduleMCPExecution,
@@ -22,7 +22,9 @@ import {
   createScheduleMCPConsentHandlers,
   createScheduleMCPEnrollmentResolver,
 } from '~/schedules';
+import { getBackgroundResponseWorkerRecord } from '~/agents/responses/worker';
 import { getAppConfigOptionsFromUser } from '~/app/service';
+import { getMCPRequestContext } from '~/mcp/request';
 import { checkAccess } from '~/middleware/access';
 
 export interface RemoteIntegrations {
@@ -42,6 +44,16 @@ export function resolveRemoteIntegrations(appConfig?: AppConfig): RemoteIntegrat
   };
 }
 
+/**
+ * The personal API key a remote request runs under: the one it authenticated with, or, for a
+ * background Responses worker, the one its admitted record was created with. A key issued to
+ * an integration is not the owner's personal key and holds no grants.
+ */
+export function getRemoteRunKeyId(req: ApiKeyAuthRequest): string | undefined {
+  if (req.apiKeyBound === true) return undefined;
+  return req.apiKeyId ?? getBackgroundResponseWorkerRecord(req)?.sourceKeyId ?? undefined;
+}
+
 export interface AgentKeyMCPGrantHost {
   service: ScheduleMCPConsentService<AgentKeyMCPIdentity>;
   handlers: ScheduleMCPConsentHandlers;
@@ -52,8 +64,9 @@ export interface AgentKeyMCPGrantHost {
    * and for a run no personal key started.
    */
   prepare: (input: {
-    user: { id: string; tenantId?: string; role?: string };
-    context: RequestScopedMCPConnectionStore;
+    /** The authenticated request. Its MCP tools are built against this request's context. */
+    req: ApiKeyAuthRequest;
+    res?: Parameters<typeof getMCPRequestContext>[1];
     executionContext?: ExecutionContext;
     signal?: AbortSignal;
   }) => Promise<void>;
@@ -154,15 +167,17 @@ export function createAgentKeyMCPGrantHost(deps: {
     service,
     handlers,
     execution,
-    async prepare({ user, context, executionContext, signal }) {
+    async prepare({ req, res, executionContext, signal }) {
       const source = executionContext?.source;
       const agentId = executionContext?.agentId;
-      if (source?.type !== 'remote_api' || source.keyId == null) return;
+      const user = req.user;
+      if (source?.type !== 'remote_api' || source.keyId == null || !user) return;
       signal?.throwIfAborted();
       if ((await integrationsFor(user)).mode !== 'delegated') return;
-      // An agent the run cannot name, or a key the store no longer finds, is not a reason to
-      // run unrestricted.
-      if (!agentId) throw new ScheduledMCPPolicyError('binding_mismatch', '');
+      const context = getMCPRequestContext(req, res);
+      // An agent the run cannot name, a request with nowhere to hold the check, or a key the
+      // store no longer finds, is not a reason to run unrestricted.
+      if (!agentId || !context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
       const identity: AgentKeyMCPIdentity = {
         keyId: source.keyId,
         ownerId: user.id,
