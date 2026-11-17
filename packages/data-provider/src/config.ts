@@ -1775,6 +1775,10 @@ export const codeEnvironmentUserConfigSchema = z
          * worker advertises linked-worktree lanes. Omission allows it; `false` keeps every
          * request scoped to its checkout. */
         linkedWorktrees: z.boolean().optional(),
+        /** Send a background Bash command as detached when the worker advertises detached
+         * commands, so it stops holding its worktree while it runs. Omission allows it;
+         * `false` keeps every command holding its worktree until it ends. */
+        detachedCommands: z.boolean().optional(),
         /** Permit explicit per-conversation checkout choices after every API replica supports
          * them. Omission preserves automatic worker isolation and hides the selector. */
         allowCheckoutSelection: z.boolean().optional().default(false),

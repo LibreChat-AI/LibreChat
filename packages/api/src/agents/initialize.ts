@@ -2435,6 +2435,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
     });
     toolDefinitions = codeExecResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.execute_code, codeExecResult.toolNames);
@@ -2720,6 +2721,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
       skillStates: params.skillStates,
       defaultActiveOnShare: params.defaultActiveOnShare,
       maxCatalogSkills: getMaxCatalogSkills(runtime),
