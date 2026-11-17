@@ -4,6 +4,7 @@ import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
+  TInsightsAgentVersion,
   TInsightsDailyPoint,
   TInsightsParams,
   TInsightsResponse,
@@ -72,14 +73,27 @@ jest.mock('~/data-provider', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string, options?: { count?: number; name?: string; label?: string }) => {
-    if (options?.count != null) {
-      return `${key}:${options.count}`;
-    }
-    if (options?.name) return `${key}:${options.name}`;
-    if (options?.label) return `${key}:${options.label}`;
-    return key;
-  },
+  useLocalize:
+    () =>
+    (
+      key: string,
+      options?: {
+        count?: number;
+        name?: string;
+        label?: string;
+        versions?: string;
+        versionNumber?: number;
+      },
+    ) => {
+      if (options?.count != null) {
+        return `${key}:${options.count}`;
+      }
+      if (options?.name) return `${key}:${options.name}`;
+      if (options?.label) return `${key}:${options.label}`;
+      if (options?.versions) return `${key}:${options.versions}`;
+      if (options?.versionNumber != null) return `${key}:${options.versionNumber}`;
+      return key;
+    },
   useAuthContext: () => ({ user: { id: 'user-1' } }),
   useDocumentTitle: () => undefined,
 }));
@@ -457,98 +471,79 @@ describe('InsightsView agent selection', () => {
     expect(panel.queryByRole('table')).not.toBeInTheDocument();
   });
 
-  it('shows saved versions and timestamps for one selected agent in aggregate-only mode', () => {
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: {
-        agents: insightsData.agents,
-        summary: insightsData.summary,
-        daily: [],
-        models: [],
-        agentVersions: [
-          { agentId: 'agent-1', version: 1, savedAt: '2026-09-01T12:00:00.000Z' },
-          { agentId: 'agent-1', version: 2, savedAt: null },
-          { agentId: 'agent-1', version: 3, savedAt: '2026-10-03T12:00:00.000Z' },
-        ],
-      },
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
-    renderView('/insights?agentIds=agent-1');
-    const panel = metricCard('com_insights_agent_versions');
-    expect(panel.getByText('com_insights_agent_versions_definition')).toBeInTheDocument();
-    expect(
-      panel
-        .getAllByRole('row')
-        .slice(1)
-        .map((row) => within(row).getAllByRole('cell')[1].textContent),
-    ).toEqual(['1', '2', '3']);
-    expect(panel.getByText('com_insights_version_date_unavailable')).toBeInTheDocument();
-    expect(panel.getByRole('table').querySelectorAll('time')[0]).toHaveAttribute(
-      'datetime',
-      '2026-09-01T12:00:00.000Z',
-    );
+  const versionedData = (agentVersions: TInsightsAgentVersion[]) => ({
+    ...insightsData,
+    daily: ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05'].map((date) =>
+      dailyPoint(date, 0.1),
+    ),
+    agentVersions,
   });
 
-  it('shows the empty history state for a single legacy agent', () => {
+  it('marks saved agent versions on every trend chart for one selected agent', () => {
     mockUseInsightsQuery.mockImplementation((params) => ({
-      data: { ...insightsData, agentVersions: [] },
+      data: versionedData([
+        { agentId: 'agent-1', version: 1, savedAt: '2026-09-01T12:00:00.000Z', active: false },
+        { agentId: 'agent-1', version: 2, savedAt: '2026-10-03T12:00:00.000Z', active: true },
+        { agentId: 'agent-1', version: 3, savedAt: null, active: false },
+      ]),
       isLoading: false,
       isFetching: false,
       error: null,
       params,
     }));
     renderView('/insights?agentIds=agent-1');
-    const panel = metricCard('com_insights_agent_versions');
-    expect(panel.getByText('com_insights_no_agent_versions')).toBeInTheDocument();
-    expect(panel.queryByRole('table')).not.toBeInTheDocument();
+
+    for (const title of ['com_insights_messages', 'com_insights_spend', 'com_insights_failed']) {
+      const trend = metricCard(title).getByRole('img');
+      expect(within(trend).getAllByTestId('insights-version-marker')).toHaveLength(1);
+      expect(trend).toHaveAccessibleName(
+        expect.stringContaining('com_insights_version_saved_marker:2'),
+      );
+    }
+    const trend = metricCard('com_insights_messages').getByRole('img');
+    // The tag above each saved version's line is shown without hovering.
+    expect(within(trend).getByText('com_insights_version_tag:2')).toBeVisible();
+    fireEvent.focus(trend);
+    expect(within(trend).getByText('com_ui_agent_version_title:2')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'com_insights_agent_versions' }),
+    ).not.toBeInTheDocument();
   });
 
   it.each(['/insights', '/insights?agentIds=agent-1&agentIds=agent-2'])(
-    'shows versions with agent names when several agents are selected: %s',
+    'does not mark versions when several agents are selected: %s',
     (path) => {
       mockUseInsightsQuery.mockImplementation((params) => ({
-        data: {
-          ...insightsData,
-          agentVersions: [
-            { agentId: 'agent-1', version: 1, savedAt: '2026-09-01T12:00:00.000Z' },
-            { agentId: 'agent-2', version: 1, savedAt: '2026-10-01T12:00:00.000Z' },
-          ],
-        },
+        data: versionedData([
+          { agentId: 'agent-1', version: 1, savedAt: '2026-10-02T12:00:00.000Z', active: true },
+          { agentId: 'agent-2', version: 1, savedAt: '2026-10-03T12:00:00.000Z', active: true },
+        ]),
         isLoading: false,
         isFetching: false,
         error: null,
         params,
       }));
       renderView(path);
-      const panel = metricCard('com_insights_agent_versions');
-      expect(panel.getByText('Alpha')).toBeInTheDocument();
-      expect(panel.getByText('Beta')).toBeInTheDocument();
-      expect(panel.getAllByRole('row')).toHaveLength(3);
+      const trend = metricCard('com_insights_messages').getByRole('img');
+      expect(within(trend).queryByTestId('insights-version-marker')).not.toBeInTheDocument();
+      expect(within(trend).queryByText(/com_insights_version_tag/)).not.toBeInTheDocument();
+      fireEvent.focus(trend);
+      expect(within(trend).queryByText(/com_ui_agent_version_title/)).not.toBeInTheDocument();
     },
   );
 
-  it.each([false, true])(
-    'keeps version history inside the dashboard loading/error flow: error=%s',
-    (isError) => {
-      mockUseInsightsQuery.mockImplementation((params) => ({
-        data: undefined,
-        isLoading: !isError,
-        isFetching: !isError,
-        isError,
-        error: isError ? new Error('request failed') : null,
-        params,
-      }));
-      renderView('/insights?agentIds=agent-1');
-      expect(
-        screen.getByText(isError ? 'com_insights_load_error' : 'com_insights_loading'),
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByRole('heading', { name: 'com_insights_agent_versions' }),
-      ).not.toBeInTheDocument();
-    },
-  );
+  it('shows no version markers for an agent without saved versions', () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: versionedData([]),
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+    renderView('/insights?agentIds=agent-1');
+    const trend = metricCard('com_insights_messages').getByRole('img');
+    expect(within(trend).queryByTestId('insights-version-marker')).not.toBeInTheDocument();
+  });
 
   it('plots missing daily spend as zero in the line and tooltip', () => {
     const spend = [0.0001, 0.0002, null, 0.0003, 0, null];

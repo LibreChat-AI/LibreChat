@@ -11,8 +11,6 @@ import {
 } from 'librechat-data-provider';
 import type {
   InsightsRange,
-  TInsightsAgent,
-  TInsightsAgentVersion,
   TInsightsChurnedUser,
   TInsightsConversation,
   TInsightsModel,
@@ -27,11 +25,14 @@ import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { LocalizedDateRangePicker } from '~/components/ui';
 import { getRollingDateRange } from './dateRange';
+import { getVersionDays } from './versions';
 import { cn } from '~/utils';
 
 type ShortcutRange = Exclude<InsightsRange, 'custom'>;
 type Localize = ReturnType<typeof useLocalize>;
 type SparklinePoint = { date: string; value: number };
+/** One entry per sparkline point: the agent version label for that day, and whether one was saved. */
+type VersionMark = { label: string | null; saved: boolean; tag?: string };
 type CustomDateRange = { startDate: Date; endDate: Date };
 
 type KpiCardData = {
@@ -155,16 +156,25 @@ function LoadingState({ message }: { message: string }) {
   );
 }
 
+/** Keeps a version tag inside the card when its line sits near either edge. */
+function tagAlignment(position: number) {
+  if (position < 8) return '';
+  if (position > 92) return '-translate-x-full';
+  return '-translate-x-1/2';
+}
+
 function Sparkline({
   values,
   label,
   locale,
   format,
+  versionMarks,
 }: {
   values: SparklinePoint[];
   label: string;
   locale: string;
   format?: 'currency';
+  versionMarks?: VersionMark[];
 }) {
   const patternId = useId().replace(/:/g, '');
   const [activeIndex, setActiveIndex] = useState<number>();
@@ -187,20 +197,36 @@ function Sparkline({
   const line = points.map((point) => `${point.x},${point.y}`).join(' ');
   const area = `M 0 56 L ${points.map((point) => `${point.x} ${point.y}`).join(' L ')} L 300 56 Z`;
   const activePoint = activeIndex == null ? undefined : points[activeIndex];
+  const activeVersion = activeIndex == null ? undefined : versionMarks?.[activeIndex]?.label;
   const formatter = new Intl.DateTimeFormat(locale, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
     timeZone: 'UTC',
   });
+  const savedVersions = points.flatMap((point, index) => {
+    const mark = versionMarks?.[index];
+    return mark?.saved && mark.label
+      ? [
+          {
+            x: point.x,
+            tag: mark.tag,
+            description: `${formatter.format(new Date(point.date))}: ${mark.label}`,
+          },
+        ]
+      : [];
+  });
 
   return (
     <div
       dir="ltr"
-      className="text-status-info relative mt-2 h-14 w-full outline-hidden"
+      className={cn(
+        'text-status-info relative h-14 w-full outline-hidden',
+        savedVersions.length > 0 ? 'mt-7' : 'mt-2',
+      )}
       role="img"
       tabIndex={0}
-      aria-label={label}
+      aria-label={[label, ...savedVersions.map(({ description }) => description)].join('. ')}
       onFocus={() => setActiveIndex(points.length - 1)}
       onBlur={() => setActiveIndex(undefined)}
       onMouseLeave={() => setActiveIndex(undefined)}
@@ -234,7 +260,38 @@ function Sparkline({
           strokeWidth="2"
           vectorEffect="non-scaling-stroke"
         />
+        {savedVersions.map(({ x }) => (
+          <line
+            key={x}
+            data-testid="insights-version-marker"
+            className="text-text-secondary"
+            x1={x}
+            x2={x}
+            y1={0}
+            y2={56}
+            stroke="currentColor"
+            strokeWidth="1"
+            strokeDasharray="3 3"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
       </svg>
+      {savedVersions.map(({ x, tag }) => {
+        const position = (x / 300) * 100;
+        return tag ? (
+          <span
+            key={x}
+            aria-hidden="true"
+            className={cn(
+              'text-text-secondary pointer-events-none absolute bottom-full mb-1 text-xs whitespace-nowrap',
+              tagAlignment(position),
+            )}
+            style={{ left: `${position}%` }}
+          >
+            {tag}
+          </span>
+        ) : null;
+      })}
       {activePoint && (
         <>
           <span
@@ -254,6 +311,7 @@ function Sparkline({
           >
             {formatter.format(new Date(activePoint.date))}{' '}
             <strong>{formatMetric(activePoint.value, locale, format)}</strong>
+            {activeVersion && <span className="text-text-secondary block">{activeVersion}</span>}
           </span>
         </>
       )}
@@ -265,10 +323,12 @@ function KpiCard({
   card,
   locale,
   headingLevel: Heading = 'h2',
+  versionMarks,
 }: {
   card: KpiCardData;
   locale: string;
   headingLevel?: 'h2' | 'h3';
+  versionMarks?: VersionMark[];
 }) {
   const localize = useLocalize();
   return (
@@ -298,6 +358,7 @@ function KpiCard({
         label={localize('com_insights_sparkline_accessibility', { label: card.title })}
         locale={locale}
         format={card.format}
+        versionMarks={versionMarks}
       />
     </Panel>
   );
@@ -435,71 +496,6 @@ function ModelsTable({
                       {value(row, locale)}
                     </td>
                   ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </TablePanel>
-  );
-}
-
-function AgentVersionsTable({
-  agents,
-  rows,
-  localize,
-  locale,
-  timeZone,
-}: {
-  agents: TInsightsAgent[];
-  rows: TInsightsAgentVersion[];
-  localize: Localize;
-  locale: string;
-  timeZone: string;
-}) {
-  const names = new Map(agents.map(({ id, name }) => [id, name]));
-  return (
-    <TablePanel title={localize('com_insights_agent_versions')}>
-      <p className="text-text-secondary -mt-1 mb-3 text-sm">
-        {localize('com_insights_agent_versions_definition')}
-      </p>
-      {rows.length === 0 ? (
-        <EmptyState message={localize('com_insights_no_agent_versions')} />
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="border-border-medium text-text-secondary border-b text-xs">
-              <tr>
-                <th scope="col" className="px-2 py-2 font-medium">
-                  {localize('com_insights_agent')}
-                </th>
-                <th scope="col" className="px-2 py-2 font-medium">
-                  {localize('com_insights_version')}
-                </th>
-                <th scope="col" className="px-2 py-2 font-medium">
-                  {localize('com_insights_version_saved')}
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-border-light divide-y">
-              {rows.map(({ agentId, version, savedAt }) => (
-                <tr key={`${agentId}:${version}`} className="hover:bg-surface-hover">
-                  <td className="px-2 py-3">{names.get(agentId) ?? agentId}</td>
-                  <td className="px-2 py-3 tabular-nums">{formatExactValue(version, locale)}</td>
-                  <td className="px-2 py-3">
-                    {savedAt == null ? (
-                      localize('com_insights_version_date_unavailable')
-                    ) : (
-                      <time dateTime={savedAt}>
-                        {new Intl.DateTimeFormat(locale, {
-                          dateStyle: 'medium',
-                          timeStyle: 'short',
-                          timeZone,
-                        }).format(new Date(savedAt))}
-                      </time>
-                    )}
-                  </td>
                 </tr>
               ))}
             </tbody>
@@ -822,6 +818,36 @@ export default function InsightsView() {
     setUrlSearchParams(clearAgentFilters(urlSearchParams), { replace: true });
     setPage(1);
   }, [isRecoveringAgentFilters, setUrlSearchParams, urlSearchParams]);
+
+  /** Version numbers only mean something within one agent, so marks need a single agent. */
+  const versionDays = useMemo(() => {
+    if (!data?.agentVersions || effectiveAgentIds.length !== 1) return undefined;
+    const versions = data.agentVersions.filter(({ agentId }) => agentId === effectiveAgentIds[0]);
+    if (versions.length === 0) return undefined;
+    return getVersionDays(data.daily, versions, timeZone);
+  }, [data, effectiveAgentIds, timeZone]);
+
+  const versionMarks = useMemo<VersionMark[] | undefined>(() => {
+    if (!versionDays) return undefined;
+    return versionDays.map(({ inUse, saved, restored }) => {
+      if (saved.length > 0) {
+        return {
+          saved: true,
+          label: localize('com_insights_version_saved_marker', { versions: saved.join(', ') }),
+          tag: saved
+            .map((versionNumber) => localize('com_insights_version_tag', { versionNumber }))
+            .join(', '),
+        };
+      }
+      if (inUse == null) return { saved: false, label: null };
+      return {
+        saved: false,
+        label: restored
+          ? localize('com_insights_version_restored', { versionNumber: inUse })
+          : localize('com_ui_agent_version_title', { versionNumber: inUse }),
+      };
+    });
+  }, [localize, versionDays]);
 
   const kpiCards = useMemo<KpiCardData[]>(() => {
     if (!data) {
@@ -1160,7 +1186,7 @@ export default function InsightsView() {
               </p>
               <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {kpiCards.map((card) => (
-                  <KpiCard key={card.id} card={card} locale={locale} />
+                  <KpiCard key={card.id} card={card} locale={locale} versionMarks={versionMarks} />
                 ))}
               </div>
               <section aria-labelledby={`${sectionId}-outcomes`}>
@@ -1169,7 +1195,13 @@ export default function InsightsView() {
                 </h2>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                   {outcomeCards.map((card) => (
-                    <KpiCard key={card.id} card={card} locale={locale} headingLevel="h3" />
+                    <KpiCard
+                      key={card.id}
+                      card={card}
+                      locale={locale}
+                      headingLevel="h3"
+                      versionMarks={versionMarks}
+                    />
                   ))}
                 </div>
               </section>
@@ -1179,7 +1211,13 @@ export default function InsightsView() {
                 </h2>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {feedbackCards.map((card) => (
-                    <KpiCard key={card.id} card={card} locale={locale} headingLevel="h3" />
+                    <KpiCard
+                      key={card.id}
+                      card={card}
+                      locale={locale}
+                      headingLevel="h3"
+                      versionMarks={versionMarks}
+                    />
                   ))}
                 </div>
                 <Panel className="mt-3">
@@ -1205,15 +1243,6 @@ export default function InsightsView() {
                 </Panel>
               </section>
               <ModelsTable rows={data.models} localize={localize} locale={locale} />
-              {data.agentVersions !== undefined && (
-                <AgentVersionsTable
-                  agents={data.agents}
-                  rows={data.agentVersions}
-                  localize={localize}
-                  locale={locale}
-                  timeZone={timeZone}
-                />
-              )}
               {(data.topUsers || data.churnedUsers) && (
                 <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,36.25rem),1fr))] gap-3">
                   {data.topUsers && (

@@ -27,6 +27,8 @@ export type TInsightsAgentVersion = {
   agentId: string;
   version: number;
   savedAt: string | null;
+  /** The version whose settings match the agent's current ones, as the version panel marks it. */
+  active: boolean;
 };
 
 export type TInsightsResponseOutcomes = {

@@ -1,3 +1,4 @@
+import _ from 'lodash';
 import {
   FEEDBACK_TAGS,
   CREDITS_PER_USD,
@@ -336,6 +337,51 @@ const emptyModel = (model: string | null): TInsightsModel => ({
   spendUSD: null,
 });
 
+type VersionSettings = {
+  name?: unknown;
+  description?: unknown;
+  instructions?: unknown;
+  instructionsPrompt?: unknown;
+  artifacts?: unknown;
+  edges?: unknown;
+  tools?: unknown[];
+  capabilities?: unknown[];
+  updatedAt?: Date | string | null;
+};
+
+const sameSortedList = (left?: unknown[], right?: unknown[]) => {
+  if (!left && !right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  const sortedRight = right.map(String).sort();
+  return left
+    .map(String)
+    .sort()
+    .every((value, index) => value === sortedRight[index]);
+};
+
+/** The agent builder's version panel (`isActiveVersion`) marks as active the newest saved version
+ *  whose settings match the agent's current ones; Insights reports the same version. */
+const matchesCurrentSettings = (version: VersionSettings, current: VersionSettings) =>
+  version.name === current.name &&
+  version.description === current.description &&
+  version.instructions === current.instructions &&
+  version.artifacts === current.artifacts &&
+  _.isEqual(version.instructionsPrompt ?? null, current.instructionsPrompt ?? null) &&
+  _.isEqual(version.edges ?? [], current.edges ?? []) &&
+  sameSortedList(version.tools, current.tools) &&
+  sameSortedList(version.capabilities, current.capabilities);
+
+const comparedSettings = [
+  'name',
+  'description',
+  'instructions',
+  'instructionsPrompt',
+  'artifacts',
+  'edges',
+  'tools',
+  'capabilities',
+] as const;
+
 async function getSavedVersions(
   mongoose: typeof import('mongoose'),
   agentIds: string[],
@@ -344,20 +390,39 @@ async function getSavedVersions(
   const Agent = mongoose.models.Agent as Model<IAgent>;
   const agents = await Agent.find(
     { id: { $in: agentIds }, ...tenantMatch(tenantId) },
-    { id: 1, 'versions.updatedAt': 1, _id: 0 },
+    {
+      id: 1,
+      _id: 0,
+      'versions.updatedAt': 1,
+      ...Object.fromEntries(
+        comparedSettings.flatMap((field) => [
+          [field, 1],
+          [`versions.${field}`, 1],
+        ]),
+      ),
+    },
   )
     .sort({ id: 1 })
-    .lean<Array<{ id: string; versions?: Array<{ updatedAt?: Date | string | null }> }>>();
-  return agents.flatMap((agent) =>
-    (agent.versions ?? []).map((snapshot, index) => {
+    .lean<Array<VersionSettings & { id: string; versions?: VersionSettings[] }>>();
+  return agents.flatMap((agent) => {
+    const versions = agent.versions ?? [];
+    let activeIndex = -1;
+    for (let index = versions.length - 1; index >= 0; index--) {
+      if (matchesCurrentSettings(versions[index] ?? {}, agent)) {
+        activeIndex = index;
+        break;
+      }
+    }
+    return versions.map((snapshot, index) => {
       const date = snapshot?.updatedAt == null ? null : new Date(snapshot.updatedAt);
       return {
         agentId: agent.id,
         version: index + 1,
         savedAt: date != null && !Number.isNaN(date.getTime()) ? date.toISOString() : null,
+        active: index === activeIndex,
       };
-    }),
-  );
+    });
+  });
 }
 
 const emptyFeedback = (): TInsightsFeedback => ({

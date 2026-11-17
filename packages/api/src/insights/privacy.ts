@@ -63,10 +63,11 @@ export function toAggregateInsightsResponse(
       spendUSD: model.spendUSD,
     })),
     ...(insights.agentVersions !== undefined && {
-      agentVersions: insights.agentVersions.map(({ agentId, version, savedAt }) => ({
+      agentVersions: insights.agentVersions.map(({ agentId, version, savedAt, active }) => ({
         agentId,
         version,
         savedAt,
+        active,
       })),
     }),
   };

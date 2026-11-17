@@ -123,6 +123,34 @@ beforeEach(async () => {
 });
 
 describe('Insights methods', () => {
+  it('marks a restored version active by the version panel rule, not by save order', async () => {
+    const savedAt = (day: number) => new Date(`2026-10-0${day}T12:00:00Z`);
+    await mongoose.models.Agent.collection.insertOne({
+      id: 'agent-a',
+      tenantId: 'tenant-a',
+      // Restored to version 1: current settings equal it; tool order does not matter.
+      name: 'Agent',
+      instructions: 'first',
+      tools: ['search', 'code'],
+      versions: [
+        { name: 'Agent', instructions: 'first', tools: ['code', 'search'], updatedAt: savedAt(1) },
+        { name: 'Agent', instructions: 'second', tools: ['code', 'search'], updatedAt: savedAt(2) },
+        { name: 'Agent', instructions: 'first', tools: ['code'], updatedAt: savedAt(3) },
+      ],
+    });
+    const result = await createInsightsMethods(mongoose).getInsights({
+      tenantId: 'tenant-a',
+      agentIds: ['agent-a'],
+      showDetails: false,
+    });
+    expect(result.agentVersions?.map(({ version, active }) => [version, active])).toEqual([
+      [1, true],
+      [2, false],
+      [3, false],
+    ]);
+    expect(JSON.stringify(result.agentVersions)).not.toContain('first');
+  });
+
   it('returns only saved version numbers and dates for the selected tenant and agent', async () => {
     const privateValue = 'private-snapshot-content';
     await mongoose.models.Agent.collection.insertMany([
@@ -157,15 +185,16 @@ describe('Insights methods', () => {
       toTimestamp: '2026-10-07T23:59:59Z',
     };
     const result = await methods.getInsights(options);
+    // The newest version matching the agent's current settings is active, as in the version panel.
     expect(result.agentVersions).toEqual([
-      { agentId: 'agent-a', version: 1, savedAt: '2026-09-01T12:00:00.000Z' },
-      { agentId: 'agent-a', version: 2, savedAt: null },
-      { agentId: 'agent-a', version: 3, savedAt: null },
-      { agentId: 'agent-a', version: 4, savedAt: '2026-10-03T12:00:00.000Z' },
+      { agentId: 'agent-a', version: 1, savedAt: '2026-09-01T12:00:00.000Z', active: false },
+      { agentId: 'agent-a', version: 2, savedAt: null, active: false },
+      { agentId: 'agent-a', version: 3, savedAt: null, active: false },
+      { agentId: 'agent-a', version: 4, savedAt: '2026-10-03T12:00:00.000Z', active: true },
     ]);
     expect(findAgent).toHaveBeenCalledWith(
       { id: { $in: ['agent-a'] }, tenantId: 'tenant-a' },
-      { id: 1, 'versions.updatedAt': 1, _id: 0 },
+      expect.objectContaining({ id: 1, _id: 0, 'versions.updatedAt': 1, instructions: 1 }),
     );
     expect(JSON.stringify(result)).not.toContain(privateValue);
     expect(
@@ -208,8 +237,8 @@ describe('Insights methods', () => {
       showDetails: false,
     });
     expect(result.agentVersions).toEqual([
-      { agentId: 'agent-a', version: 1, savedAt: '2026-10-03T12:00:00.000Z' },
-      { agentId: 'agent-b', version: 1, savedAt: '2026-10-03T12:00:00.000Z' },
+      { agentId: 'agent-a', version: 1, savedAt: '2026-10-03T12:00:00.000Z', active: true },
+      { agentId: 'agent-b', version: 1, savedAt: '2026-10-03T12:00:00.000Z', active: true },
     ]);
   });
 

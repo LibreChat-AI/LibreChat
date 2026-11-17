@@ -437,6 +437,7 @@ describe('Insights handlers', () => {
             agentId: 'agent-a',
             version: 2,
             savedAt: '2026-10-01T12:00:00.000Z',
+            active: true,
             instructions: privateValue,
             updatedBy: privateValue,
           },
@@ -465,7 +466,9 @@ describe('Insights handlers', () => {
       );
       expect(json).toHaveBeenCalledWith({
         agents: [{ id: 'agent-a', name: 'Alpha' }],
-        agentVersions: [{ agentId: 'agent-a', version: 2, savedAt: '2026-10-01T12:00:00.000Z' }],
+        agentVersions: [
+          { agentId: 'agent-a', version: 2, savedAt: '2026-10-01T12:00:00.000Z', active: true },
+        ],
         summary,
         daily: [
           {
