@@ -1,9 +1,10 @@
 import type {
+  MCPGrantConsent,
+  MCPGrantIdentity,
   ScheduleMCPOutcome,
   ScheduledMCPFailureReason,
   ScheduledMCPIdentity,
   ScheduledMCPResource,
-  ScheduledMCPConsent,
   ScheduledMCPToolSelection,
 } from 'librechat-data-provider';
 export type {
@@ -24,13 +25,17 @@ export interface ScheduledMCPFailure {
   readonly automaticReplay: false;
 }
 
-export type ScheduledMCPConsentLookupResult =
-  | { readonly state: 'found'; readonly consent: ScheduledMCPConsent }
+export type ScheduledMCPConsentLookupResult<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+> =
+  | { readonly state: 'found'; readonly consent: MCPGrantConsent<Identity> }
   | { readonly state: 'missing' }
   | { readonly state: 'unavailable' };
 
-export interface ScheduledMCPAuthorizationRequest {
-  readonly identity: ScheduledMCPIdentity;
+export interface ScheduledMCPAuthorizationRequest<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+> {
+  readonly identity: Identity;
   readonly resource: ScheduledMCPResource;
   readonly stage: 'activation' | 'mint' | 'invoke' | 'resume';
   /** Set only by the owner-authorized manual trigger or its verified resume metadata. */
@@ -57,15 +62,15 @@ export type ScheduledMCPAuthorizationResult =
   | { readonly state: 'denied'; readonly failure: ScheduledMCPFailure }
   | { readonly state: 'cancelled' };
 
-export interface ScheduledMCPAuthority {
+export interface ScheduledMCPAuthority<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
   readonly lookupConsent: (
-    identity: ScheduledMCPIdentity,
+    identity: Identity,
     resource: ScheduledMCPResource,
     options: { signal?: AbortSignal },
-  ) => Promise<ScheduledMCPConsentLookupResult>;
+  ) => Promise<ScheduledMCPConsentLookupResult<Identity>>;
   /** Rechecks live consent, RBAC, schedule/graph binding and trusted tool policy at each stage. */
   readonly authorize: (
-    request: ScheduledMCPAuthorizationRequest,
+    request: ScheduledMCPAuthorizationRequest<Identity>,
     options: { signal?: AbortSignal },
   ) => Promise<ScheduledMCPAuthorizationResult>;
 }

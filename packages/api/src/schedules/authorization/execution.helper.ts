@@ -27,7 +27,7 @@ export function allowOffered(targets: readonly ScheduledMCPTarget[]): Record<str
 
 /** What admission checks in its write: no tool in use is marked or pinned to another digest. */
 export function admitsDefinitions(
-  enrollment: ScheduledMCPEnrollment | null | undefined,
+  enrollment: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
   consentId: string,
   definitions: Readonly<Record<string, string>> = {},
 ): boolean {
@@ -41,8 +41,8 @@ export function admitsDefinitions(
 
 /** What a confirmation checks in its write: no pin or mark was added to the grant it read. */
 export function untouchedSince(
-  enrollment: ScheduledMCPEnrollment | null | undefined,
-  basis: ScheduledMCPEnrollment | null | undefined,
+  enrollment: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
+  basis: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
 ): boolean {
   return (basis?.consents ?? []).every((seen) => {
     const stored = enrollment?.consents.find((item) => item.id === seen.id);

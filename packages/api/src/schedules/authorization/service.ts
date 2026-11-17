@@ -1,15 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { scheduledMCPTargetSchema } from 'librechat-data-provider';
 import type {
+  MCPGrantConsent,
+  MCPGrantIdentity,
+  MCPGrantEnrollment,
   ScheduledMCPIdentity,
   ScheduledMCPResource,
   ScheduledMCPTarget,
-  ScheduledMCPConsent,
   ScheduleMCPConsentView,
   ConfirmScheduleMCPConsent,
-  ScheduledMCPEnrollment,
 } from 'librechat-data-provider';
-import type { ScheduleMCPConsentStorage } from '@librechat/data-schemas';
+import type { MCPConsentStorage } from '@librechat/data-schemas';
 import type { ScheduledMCPAuthority, ScheduledMCPFailureReason } from './contract';
 import { getScheduledMCPPolicyRevision } from './policy';
 import { failureFixtures } from './failures';
@@ -36,20 +37,23 @@ function requiresGrant(
       (limits.requireAfterMs != null && nowMs >= limits.requireAfterMs))
   );
 }
-export type ScheduleMCPEnrollmentResolver = (
-  identity: ScheduledMCPIdentity,
+export type ScheduleMCPEnrollmentResolver<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+> = (
+  identity: Identity,
   options: { signal?: AbortSignal },
 ) => Promise<readonly ScheduledMCPTarget[]>;
 
-export interface ScheduleMCPConsentDeps {
-  storage: ScheduleMCPConsentStorage;
-  getLimits: (identity: ScheduledMCPIdentity) => Promise<ScheduleMCPConsentLimits>;
+/** The grant's subject is a schedule unless said otherwise: an API key and agent is the other. */
+export interface ScheduleMCPConsentDeps<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
+  storage: MCPConsentStorage<Identity>;
+  getLimits: (identity: Identity) => Promise<ScheduleMCPConsentLimits>;
   /** Loads current user/tenant/role and schedule/agent/resource access; no role snapshot. */
-  canUse: (identity: ScheduledMCPIdentity, options: { signal?: AbortSignal }) => Promise<boolean>;
+  canUse: (identity: Identity, options: { signal?: AbortSignal }) => Promise<boolean>;
   /** What the owner can be offered now: reachable agents' selected tools, per declared server. */
-  resolveEnrollment?: ScheduleMCPEnrollmentResolver;
-  /** Whether a scheduled run can pause for the owner's approval here. Absent, it cannot. */
-  canPause?: (identity: ScheduledMCPIdentity) => Promise<boolean>;
+  resolveEnrollment?: ScheduleMCPEnrollmentResolver<Identity>;
+  /** Whether a run of this subject can pause for the owner's approval here. Absent, it cannot. */
+  canPause?: (identity: Identity) => Promise<boolean>;
   now?: () => number;
 }
 
@@ -204,7 +208,9 @@ function coversGrant(
 }
 
 /** Allowed tools the grant asks the owner about before each use, by server. */
-function askingTools(consents: readonly ScheduledMCPConsent[]): Record<string, string[]> {
+function askingTools(
+  consents: readonly MCPGrantConsent<MCPGrantIdentity>[],
+): Record<string, string[]> {
   return Object.fromEntries(
     consents
       .filter((consent) => consent.askTools?.length)
@@ -213,7 +219,9 @@ function askingTools(consents: readonly ScheduledMCPConsent[]): Record<string, s
 }
 
 /** Allowed tools a run saw with a definition other than their pin, by server. */
-function changedTools(consents: readonly ScheduledMCPConsent[]): Record<string, string[]> {
+function changedTools(
+  consents: readonly MCPGrantConsent<MCPGrantIdentity>[],
+): Record<string, string[]> {
   return Object.fromEntries(
     consents
       .filter((consent) => consent.changedTools?.length)
@@ -228,8 +236,8 @@ function changedTools(consents: readonly ScheduledMCPConsent[]): Record<string, 
  */
 function carriedPins(
   target: ScheduledMCPTarget,
-  prior?: ScheduledMCPConsent,
-): Pick<ScheduledMCPConsent, 'definitions'> {
+  prior?: MCPGrantConsent<MCPGrantIdentity>,
+): Pick<MCPGrantConsent<MCPGrantIdentity>, 'definitions'> {
   if (!prior?.definitions || !sameResource(prior.resource, target.resource)) return {};
   const allowed = new Set(target.permittedTools.flatMap((selection) => selection.tools));
   const marked = new Set(prior.changedTools);
@@ -245,7 +253,7 @@ function carriedPins(
  * confirm past the mark; it is told the offer changed and reads it again.
  */
 function offerDigest(
-  identity: ScheduledMCPIdentity,
+  identity: MCPGrantIdentity,
   configRevision: number,
   targets: readonly ScheduledMCPTarget[],
   changed: Record<string, string[]>,
@@ -263,40 +271,37 @@ function offerDigest(
     .digest('hex');
 }
 
-export interface ScheduleMCPConsentService {
-  view: (
-    identity: ScheduledMCPIdentity,
-    options?: { signal?: AbortSignal },
-  ) => Promise<ScheduleMCPConsentView>;
+export interface ScheduleMCPConsentService<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+> {
+  view: (identity: Identity, options?: { signal?: AbortSignal }) => Promise<ScheduleMCPConsentView>;
   confirm: (
-    identity: ScheduledMCPIdentity,
+    identity: Identity,
     input: ConfirmScheduleMCPConsent,
     options?: { signal?: AbortSignal },
   ) => Promise<ScheduleMCPConsentView>;
-  revoke: (identity: ScheduledMCPIdentity, revision: string) => Promise<void>;
+  revoke: (identity: Identity, revision: string) => Promise<void>;
   /** Whether this schedule has no grant and its MCP tools are refused until it gets one. */
-  requiresGrant: (identity: ScheduledMCPIdentity) => Promise<boolean>;
-  authority: ScheduledMCPAuthority;
+  requiresGrant: (identity: Identity) => Promise<boolean>;
+  authority: ScheduledMCPAuthority<Identity>;
 }
 
-export function createScheduleMCPConsentService(
-  deps: ScheduleMCPConsentDeps,
-): ScheduleMCPConsentService {
+export function createScheduleMCPConsentService<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+>(deps: ScheduleMCPConsentDeps<Identity>): ScheduleMCPConsentService<Identity> {
   const now = deps.now ?? Date.now;
   const denial = (reason: ScheduledMCPFailureReason) => ({
     state: 'denied' as const,
     failure: failureFixtures[reason],
   });
-  const identityMatches = (a: ScheduledMCPIdentity, b: ScheduledMCPIdentity): boolean =>
-    a.scheduleId === b.scheduleId &&
-    a.ownerId === b.ownerId &&
-    a.tenantId === b.tenantId &&
-    a.agentId === b.agentId &&
-    a.invocationMode === 'delegated' &&
-    b.invocationMode === 'delegated';
+  /** Field by field, whatever the subject: its id, owner, tenant and agent must all agree. */
+  const fields = (identity: Identity): string =>
+    JSON.stringify(Object.entries(identity).sort(([a], [b]) => (a < b ? -1 : Number(a > b))));
+  const identityMatches = (a: Identity, b: Identity): boolean =>
+    a.invocationMode === 'delegated' && fields(a) === fields(b);
 
   async function view(
-    identity: ScheduledMCPIdentity,
+    identity: Identity,
     options: { signal?: AbortSignal } = {},
   ): Promise<ScheduleMCPConsentView> {
     options.signal?.throwIfAborted();
@@ -407,7 +412,7 @@ export function createScheduleMCPConsentService(
   }
 
   async function confirm(
-    identity: ScheduledMCPIdentity,
+    identity: Identity,
     input: ConfirmScheduleMCPConsent,
     options: { signal?: AbortSignal } = {},
   ): Promise<ScheduleMCPConsentView> {
@@ -449,7 +454,7 @@ export function createScheduleMCPConsentService(
     options.signal?.throwIfAborted();
     const grantedAtMs = now();
     const revision = randomUUID();
-    const enrollment: ScheduledMCPEnrollment = {
+    const enrollment: MCPGrantEnrollment<Identity> = {
       version: 1,
       revision,
       scheduleRevision: snapshot.configRevision,
@@ -484,13 +489,13 @@ export function createScheduleMCPConsentService(
     return view(identity, options);
   }
 
-  async function revoke(identity: ScheduledMCPIdentity, revision: string): Promise<void> {
+  async function revoke(identity: Identity, revision: string): Promise<void> {
     // Revocation remains available after access, resource configuration or agent changes.
     if (!(await deps.storage.revokeScheduleMCPConsent(identity, revision)))
       throw new ScheduleMCPConsentError('consent_changed');
   }
 
-  async function requiresGrantFor(identity: ScheduledMCPIdentity): Promise<boolean> {
+  async function requiresGrantFor(identity: Identity): Promise<boolean> {
     const [snapshot, limits] = await Promise.all([
       deps.storage.readScheduleMCPConsent(identity),
       deps.getLimits(identity),
@@ -503,7 +508,7 @@ export function createScheduleMCPConsentService(
     );
   }
 
-  const authority: ScheduledMCPAuthority = {
+  const authority: ScheduledMCPAuthority<Identity> = {
     async lookupConsent(identity, resource, options) {
       options.signal?.throwIfAborted();
       const row = await deps.storage.readScheduleMCPConsent(identity);
@@ -565,12 +570,12 @@ export function createScheduleMCPConsentService(
       const live = Object.entries(request.definitions ?? {}).filter(([tool]) =>
         request.selection.tools.includes(tool),
       );
-      const pinned = (source: ScheduledMCPConsent, tool: string, digest: string) =>
+      const pinned = (source: MCPGrantConsent<Identity>, tool: string, digest: string) =>
         !source.changedTools?.includes(tool) &&
         source.definitions?.find((pin) => pin.tool === tool)?.digest === digest;
       const grant = { identity: request.identity, revision: enrollment!.revision };
       /** Marks every tool `source` pins to a definition other than the one this request saw. */
-      const markDisagreements = async (source: ScheduledMCPConsent): Promise<boolean> => {
+      const markDisagreements = async (source: MCPGrantConsent<Identity>): Promise<boolean> => {
         const tools = live
           .filter(([tool, digest]) =>
             source.definitions?.some((pin) => pin.tool === tool && pin.digest !== digest),

@@ -6,8 +6,8 @@ import {
   stripServerNamePrefix,
   buildServerNameAliases,
 } from 'librechat-data-provider';
-import type { ScheduleMCPConsentStorage } from '@librechat/data-schemas';
-import type { ScheduledMCPIdentity } from 'librechat-data-provider';
+import type { MCPGrantIdentity, ScheduledMCPIdentity } from 'librechat-data-provider';
+import type { MCPConsentStorage } from '@librechat/data-schemas';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig, RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
@@ -22,8 +22,8 @@ import { ScheduleMCPConsentError } from './service';
 import { isOwnedAbortError } from '~/utils/errors';
 import { waitUntilDeadline } from '~/mcp/utils';
 
-export interface ScheduledMCPInvocation {
-  readonly identity: ScheduledMCPIdentity;
+export interface ScheduledMCPInvocation<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
+  readonly identity: Identity;
   /** False only for a monitored legacy occurrence. */
   readonly enrolled?: boolean;
   readonly agentId?: string;
@@ -41,8 +41,8 @@ export interface ScheduledMCPInvocation {
   }) => Promise<void>;
 }
 
-export interface ScheduleMCPExecution {
-  readonly identity: ScheduledMCPIdentity;
+export interface ScheduleMCPExecution<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
+  readonly identity: Identity;
   readonly stage: 'activation' | 'invoke' | 'resume';
   /** Trusted admission provenance retained through credential/session preparation. */
   readonly manual?: boolean;
@@ -65,17 +65,26 @@ export interface ScheduleMCPExecution {
   readonly asksAbout: (agentId: string, toolKey: string) => boolean;
   /** Whether the owner approves each use of any of these names, whichever agent calls it. */
   readonly asksAboutAny: (toolKeys: readonly string[]) => boolean;
-  readonly bind: (agentId: string | undefined, selectionName: string) => ScheduledMCPInvocation;
+  readonly bind: (
+    agentId: string | undefined,
+    selectionName: string,
+  ) => ScheduledMCPInvocation<Identity>;
 }
 
-const executions = new WeakMap<RequestScopedMCPConnectionStore, ScheduleMCPExecution>();
+const executions = new WeakMap<
+  RequestScopedMCPConnectionStore,
+  ScheduleMCPExecution<MCPGrantIdentity>
+>();
 
-/** Captured at tool construction. Runnable config cannot remove or replace this guard. */
+/**
+ * Captured at tool construction. Runnable config cannot remove or replace this guard.
+ * Whatever the grant's subject, a schedule or an API key, the tool is checked the same way.
+ */
 export function bindScheduledMCPInvocation(
   context: RequestScopedMCPConnectionStore | undefined,
   agentId: string | undefined,
   selectionName: string,
-): ScheduledMCPInvocation | undefined {
+): ScheduledMCPInvocation<MCPGrantIdentity> | undefined {
   return context && executions.get(context)?.bind(agentId, selectionName);
 }
 
@@ -108,20 +117,30 @@ export function scheduleAsksEveryUse(
   };
 }
 
+function actsForSchedule(
+  execution: ScheduleMCPExecution<MCPGrantIdentity>,
+): execution is ScheduleMCPExecution {
+  return 'scheduleId' in execution.identity;
+}
+
+/** The run's execution when it acts for a schedule. A run that acts for an API key has none. */
 export function getScheduleMCPExecution(
   context?: RequestScopedMCPConnectionStore,
 ): ScheduleMCPExecution | undefined {
-  return context && executions.get(context);
+  const execution = context && executions.get(context);
+  return execution && actsForSchedule(execution) ? execution : undefined;
 }
 
-export interface ScheduleMCPExecutionDeps {
-  storage: ScheduleMCPConsentStorage;
+export interface ScheduleMCPExecutionDeps<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+> {
+  storage: MCPConsentStorage<Identity>;
   /** Fresh for each call; only this attempt may reuse its principal/configuration. */
-  loadAuthorization: (identity: ScheduledMCPIdentity) => Promise<{
-    authority: ScheduledMCPAuthority;
+  loadAuthorization: (identity: Identity) => Promise<{
+    authority: ScheduledMCPAuthority<Identity>;
   }>;
-  /** Whether a schedule with no grant has lost its exemption. Absent, it never does. */
-  requiresGrant?: (identity: ScheduledMCPIdentity) => Promise<boolean>;
+  /** Whether a subject with no grant may not use MCP tools. Absent, it always may. */
+  requiresGrant?: (identity: Identity) => Promise<boolean>;
 }
 
 export interface ScheduleMCPExecutionOptions {
@@ -131,25 +150,31 @@ export interface ScheduleMCPExecutionOptions {
   approvedToolCalls?: readonly string[];
 }
 
-export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
+export interface ScheduleMCPExecutionFactory<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+> {
   resolve: (
-    identity: ScheduledMCPIdentity,
+    identity: Identity,
     stage: ScheduleMCPExecution['stage'],
     options?: ScheduleMCPExecutionOptions,
-  ) => Promise<ScheduleMCPExecution | undefined>;
+  ) => Promise<ScheduleMCPExecution<Identity> | undefined>;
   attach: (
     context: RequestScopedMCPConnectionStore,
-    identity: ScheduledMCPIdentity,
+    identity: Identity,
     stage: ScheduleMCPExecution['stage'],
     requireEnrollment?: boolean,
     options?: ScheduleMCPExecutionOptions,
   ) => Promise<void>;
-} {
+}
+
+export function createScheduleMCPExecution<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+>(deps: ScheduleMCPExecutionDeps<Identity>): ScheduleMCPExecutionFactory<Identity> {
   async function resolve(
-    identity: ScheduledMCPIdentity,
+    identity: Identity,
     stage: ScheduleMCPExecution['stage'],
     options: ScheduleMCPExecutionOptions = {},
-  ): Promise<ScheduleMCPExecution | undefined> {
+  ): Promise<ScheduleMCPExecution<Identity> | undefined> {
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (snapshot?.compatible === false) throw new ScheduledMCPPolicyError('binding_mismatch', '');
     if (!snapshot) return;
@@ -250,7 +275,7 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
       asksAbout: (agentId: string, toolKey: string) => asking.get(agentId)?.has(toolKey) === true,
       asksAboutAny: (toolKeys: readonly string[]) =>
         toolKeys.some((key) => [...asking.values()].some((keys) => keys.has(key))),
-      bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation {
+      bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation<Identity> {
         return Object.freeze({
           identity: capturedIdentity,
           agentId,
@@ -264,7 +289,7 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
             signal,
             toolCallId,
             readiness,
-          }: Parameters<ScheduledMCPInvocation['authorize']>[0]): Promise<void> {
+          }: Parameters<ScheduledMCPInvocation<Identity>['authorize']>[0]): Promise<void> {
             signal?.throwIfAborted();
             const deny = (
               reason: ConstructorParameters<typeof ScheduledMCPPolicyError>[0],

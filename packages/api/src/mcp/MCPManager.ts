@@ -4,6 +4,7 @@ import { CallToolResultSchema, ErrorCode, McpError } from '@modelcontextprotocol
 import { Permissions, PermissionTypes, DEFAULT_MCP_APPS_POLICY } from 'librechat-data-provider';
 import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
+import type { MCPGrantIdentity } from 'librechat-data-provider';
 import type { TMCPAppsPolicy } from 'librechat-data-provider';
 import type {
   OboTokenResolver,
@@ -1551,7 +1552,8 @@ Please follow these instructions when using tools from the respective MCP server
     /** See {@link t.UserConnectionContext.unattended}. */
     unattended?: boolean;
     scheduledBearerInvocation?: ScheduledMCPBearerInvocation;
-    scheduledMCPInvocation?: ScheduledMCPInvocation;
+    /** The grant a run acts under, whether a schedule's or an API key's. */
+    scheduledMCPInvocation?: ScheduledMCPInvocation<MCPGrantIdentity>;
     user?: IUser;
     serverName: string;
     /** Pre-resolved config from tool creation context — avoids readThrough TTL and cross-tenant issues */
