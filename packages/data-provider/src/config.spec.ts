@@ -3534,6 +3534,7 @@ describe('remote SDK runtime configuration', () => {
     });
     expect(result.sdkHostModels).toEqual({
       maxConcurrentCalls: 32,
+      maxAdmissionEntries: 4096,
       maxBufferedRequestBytes: 67108864,
       timeoutMs: 60000,
       maxRequestBytes: 4194304,

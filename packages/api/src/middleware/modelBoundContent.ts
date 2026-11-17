@@ -691,6 +691,8 @@ export interface ModelBoundChatModelCallback {
 }
 
 export interface InitialModelBoundAdmissionCallback {
+  /** True only after the starting-root admission barrier has completed. */
+  readonly isAdmitted?: () => boolean;
   readonly name: 'librechat-initial-model-bound-admission';
   readonly raiseError: true;
   readonly awaitHandlers: true;
@@ -3401,6 +3403,7 @@ export function createInitialModelBoundAdmissionCallback(
   };
 
   const callback: InitialModelBoundAdmissionCallback = {
+    isAdmitted: () => allowed,
     name: 'librechat-initial-model-bound-admission',
     raiseError: true,
     awaitHandlers: true,

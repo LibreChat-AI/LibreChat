@@ -24,6 +24,7 @@ import { policyDescriptorSchema, createWorkerProviderTextPolicy } from './policy
 import { createRuntimeRecovery, recoveryClaimSchema } from './recovery/server';
 import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { RECOVERY_HEADER_BYTES } from './recovery/socket';
+import { createWorkerModelLifecycle } from './admission';
 import { createWorkerToolService } from './hostTools';
 import { RemoteSdkCheckpointer } from './checkpoint';
 import { createWorkerModelChannel } from './model';
@@ -51,6 +52,10 @@ const claimSchema = z.object({
 });
 const startSchema = z.object({
   transportVersion: z.literal(2),
+  modelAdmission: z
+    .object({ version: z.literal(1), maxEntries: z.number().int().min(16).max(65536) })
+    .strict()
+    .optional(),
   // The SDK HostChatModel constructor owns descriptor validation.
   model: z
     .object({
@@ -292,6 +297,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                 providerText: 1,
                 hostModel: 1,
                 builderModel: 1,
+                modelAdmission: 1,
               };
             if (method === 'model.chunk') return workerModel.accept(data, signal);
             if (method === 'tool.result') return workerTools.accept(data);
@@ -299,6 +305,10 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
             if (method !== 'run' || started) throw new Error('SDK execution already admitted');
             started = true;
             const request = startSchema.parse(data) as RemoteSdkStart;
+            if (request.modelAdmission && request.providerText)
+              throw new Error(
+                'Combined model admission and provider-text protection is unsupported',
+              );
             const identity = Object.freeze(claim.identity);
             if (
               request.agent.id !== identity.agentId ||
@@ -374,7 +384,18 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                   limits,
                 })
               : undefined;
-            const hostModel = request.model ? workerModel.bind(identity, request.model) : undefined;
+            if (request.modelAdmission && !request.model)
+              throw new Error('Model admission requires a host model');
+            const modelLifecycle = request.modelAdmission
+              ? createWorkerModelLifecycle(
+                  identity.agentId,
+                  request.modelAdmission.maxEntries,
+                  peer,
+                )
+              : undefined;
+            const hostModel = request.model
+              ? workerModel.bind(identity, request.model, modelLifecycle)
+              : undefined;
             const profile = request.agent.model;
             if (
               profile &&
@@ -439,6 +460,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
               }
               const callerOptions = {
                 ...request.options,
+                ...(modelLifecycle && { callbacks: [modelLifecycle.callback] }),
                 version: 'v2' as const,
                 signal: controller.signal,
               };

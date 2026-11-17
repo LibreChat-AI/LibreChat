@@ -4,6 +4,7 @@ import type { TAgentsEndpoint } from 'librechat-data-provider';
 import type { RunConfig } from '@librechat/agents';
 import type { RemoteSdkHostServices } from './types';
 import type { SdkAgentIdentity } from './identity';
+import { createHostModelLifecycle } from './admission';
 
 type Limits = NonNullable<NonNullable<TAgentsEndpoint>['sdkHostModels']>;
 
@@ -62,12 +63,15 @@ export function createSdkModelHost(
       signal?.throwIfAborted();
       const model = createModel({ provider: agent.provider, clientOptions: agent.clientOptions });
       if (!(model instanceof BaseChatModel)) throw new SdkHostModelError();
+      const modelLifecycle = createHostModelLifecycle(identity.agentId, limits.maxAdmissionEntries);
+      model.callbacks = modelLifecycle.wrapCallbacks(model.callbacks);
       const modelProfile = {
         provider: agent.provider,
         name: modelName,
         streaming: agent.clientOptions?.streaming !== false,
       };
       return {
+        modelLifecycle,
         modelProfile,
         model: createHostModelService({
           identity,

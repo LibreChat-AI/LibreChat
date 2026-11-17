@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
@@ -9,8 +10,8 @@ import type { HostModelDescriptor, HostModelRequest } from '@librechat/agents';
 import type { AddressInfo } from 'node:net';
 import { createHostModelChannel, createWorkerModelChannel } from './model';
 import { createPolicyReceiver, createPolicySender } from './sealed';
+import { encodeSdkValue, decodeSdkValue } from './wire';
 import { remoteSdkLimits } from './types';
-import { encodeSdkValue } from './wire';
 import { createSdkPeer } from './peer';
 
 const identity = {
@@ -105,6 +106,42 @@ async function fixture(model = new FakeChatModel({}), tools: HostModelDescriptor
   };
 }
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+it('preserves the strict older-host request shape without negotiated admission', async () => {
+  const receiver = createPolicyReceiver(limits.maxFrameBytes, 'model');
+  const controller = new AbortController();
+  const call = jest.fn(async (_method: string, data: unknown) => {
+    const operation = z
+      .object({ id: z.string().uuid(), publicKey: z.string().length(60), request: z.unknown() })
+      .strict()
+      .parse(decodeSdkValue(JSON.parse(receiver.open(data))));
+    const seal = createPolicySender(operation.publicKey, limits.maxFrameBytes, 'model');
+    return {
+      version: 1,
+      ok: true,
+      message: seal(
+        JSON.stringify(
+          encodeSdkValue({ id: operation.id, message: new AIMessage('legacy reply') }),
+        ),
+      ),
+    };
+  });
+  const worker = createWorkerModelChannel({ peer: { call }, limits, signal: controller.signal });
+  try {
+    const model = worker.bind(identity, {
+      version: 1,
+      publicKey: receiver.publicKey,
+      descriptor,
+    });
+    await expect(model.invoke([...request.messages])).resolves.toMatchObject({
+      content: 'legacy reply',
+    });
+    expect(call).toHaveBeenCalledTimes(1);
+  } finally {
+    controller.abort();
+    receiver.dispose();
+  }
+});
 
 it('streams native tool fragments, rich content and typed metadata over a real socket', async () => {
   const native = new FakeChatModel({});

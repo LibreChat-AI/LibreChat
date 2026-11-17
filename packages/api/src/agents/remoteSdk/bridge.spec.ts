@@ -4,8 +4,9 @@ import { randomUUID } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 import { tool } from '@librechat/agents/langchain/tools';
 import { ChatGenerationChunk } from '@langchain/core/outputs';
-import { agentsEndpointSchema } from 'librechat-data-provider';
+import { ensureHandler } from '@langchain/core/callbacks/manager';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
+import { agentsEndpointSchema, FileSources } from 'librechat-data-provider';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
 import {
   createHostProviderTextService,
@@ -19,12 +20,29 @@ import {
   MemorySaver,
   HookRegistry,
 } from '@librechat/agents';
-import type { AppConfig, IUser } from '@librechat/data-schemas';
+import type { IUser } from '@librechat/data-schemas';
 import type { RunConfig } from '@librechat/agents';
 import type { AddressInfo } from 'node:net';
+import type { Request } from 'express';
+import type { InitialModelBoundAdmissionCallback } from '../../middleware/modelBoundContent';
 import type { RemoteSdkServerOptions } from './server';
 import type { RemoteSdkFactoryInput } from './types';
+import {
+  createPrivateTextInitialAdmissionCallback,
+  getPrivateTextModelHooks,
+  withPrivateTextAdmissionConfig,
+} from '../../protection/private/admission';
+import {
+  createPrivateTextIngress,
+  stampPrivateTextMessage,
+  getPrivateTextInspectionTokens,
+} from '../../protection/private/submission';
+import {
+  createInitialModelBoundAdmissionCallback,
+  createModelBoundChatModelCallback,
+} from '../../middleware/modelBoundContent';
 import { createSdkAgentRun, resolveSdkAgentBinding } from '../sdk';
+import { createHostModelLifecycle } from './admission';
 import { createRun as createHostRun } from '../run';
 import { createRemoteSdkServer } from './server';
 import { createSdkModelHost } from './builder';
@@ -1205,7 +1223,7 @@ describe('remote host provider-text protection', () => {
   });
 });
 
-it.each(['providerText', 'model', 'builderModel'] as const)(
+it.each(['providerText', 'model', 'builderModel', 'modelAdmission'] as const)(
   'rejects a worker without %s capability before factory admission',
   async (capability) => {
     const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -1223,7 +1241,9 @@ it.each(['providerText', 'model', 'builderModel'] as const)(
           return {
             transportVersion: 2,
             hostTools: 2,
-            ...(capability === 'builderModel' ? { hostModel: 1 } : {}),
+            ...(['builderModel', 'modelAdmission'].includes(capability)
+              ? { hostModel: 1, ...(capability === 'modelAdmission' ? { builderModel: 1 } : {}) }
+              : {}),
           };
         },
       }),
@@ -1249,6 +1269,9 @@ it.each(['providerText', 'model', 'builderModel'] as const)(
             ? { providerText }
             : {
                 model: nativeModelBinding(),
+                ...(capability === 'modelAdmission'
+                  ? { modelLifecycle: createHostModelLifecycle(identity.agentId, 16) }
+                  : {}),
                 ...(capability === 'builderModel'
                   ? {
                       modelProfile: {
@@ -1260,9 +1283,23 @@ it.each(['providerText', 'model', 'builderModel'] as const)(
                   : {}),
               },
       });
-      await expect(run.processStream({ messages: [] }, invocation())).rejects.toThrow(
-        'SDK runtime execution failed',
-      );
+      await expect(
+        run.processStream(
+          { messages: [] },
+          {
+            ...invocation(),
+            callbacks: [
+              admissionCallback(
+                createInitialModelBoundAdmissionCallback({
+                  agentIds: [identity.agentId],
+                  isActive: () => true,
+                  onAllowed: () => {},
+                }),
+              ),
+            ],
+          },
+        ),
+      ).rejects.toThrow('SDK runtime execution failed');
       expect(methods).toEqual(['capabilities']);
     } finally {
       for (const socket of server.clients) socket.terminate();
@@ -1366,6 +1403,23 @@ describe('saved-agent builder host model', () => {
           message: new AIMessageChunk({ content: 'builder reply' }),
         });
       };
+      const filters = {
+        messages: {
+          pii: {
+            fields: ['text' as const],
+            starterPatterns: [],
+            customPatterns: [{ id: 'private', label: 'Private', regex: 'PRIVATE-CALLBACK' }],
+          },
+        },
+      };
+      const policy = createModelBoundChatModelCallback({ filters });
+      Object.assign(native, { callbacks: [policy] });
+      const persisted = jest.fn();
+      const initial = createInitialModelBoundAdmissionCallback({
+        agentIds: [identity.agentId],
+        isActive: () => true,
+        onAllowed: persisted,
+      });
       const initialize = jest.fn(() => native);
       const delta = jest.fn();
       const run = await createHostRun({
@@ -1374,7 +1428,14 @@ describe('saved-agent builder host model', () => {
         signal: new AbortController().signal,
         tokenCounter: () => 1,
         user: { id: identity.userId, role: 'ADMIN', tenantId: identity.tenantId } as IUser,
-        appConfig: { endpoints: { agents: endpoint } } as AppConfig,
+        appConfig: {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          filters,
+          endpoints: { agents: endpoint },
+        },
+        modelCallbacks: [policy],
         sdkModelHost: createSdkModelHost(endpoint.sdkHostModels, initialize),
         agents: [
           {
@@ -1400,7 +1461,11 @@ describe('saved-agent builder host model', () => {
         ],
         customHandlers: { [GraphEvents.ON_MESSAGE_DELTA]: { handle: delta } },
       });
-      await run.processStream({ messages: [new HumanMessage('hello')] }, invocation());
+      await run.processStream(
+        { messages: [new HumanMessage('hello')] },
+        { ...invocation(), callbacks: [admissionCallback(initial)] },
+      );
+      expect(persisted).toHaveBeenCalledTimes(1);
       expect(initialize).toHaveBeenCalledWith(
         expect.objectContaining({
           provider: Providers.OPENAI,
@@ -1509,4 +1574,291 @@ describe('saved-agent builder host model', () => {
       }),
     ).rejects.toMatchObject({ code: 'sdk_runtime_unavailable' });
   });
+});
+
+function admissionCallback(initial: InitialModelBoundAdmissionCallback) {
+  // The host callback inspects lineage only. LangChain's native-message type is wider than its policy projection.
+  return ensureHandler({
+    ...initial,
+    handleChatModelStart: (_model, _messages, runId, parent, extra, tags, metadata) =>
+      initial.handleChatModelStart(undefined, [], runId, parent, extra, tags, metadata),
+  });
+}
+
+describe('remote native policy admission', () => {
+  it('rejects combined output protection and initial admission before worker execution', async () => {
+    const createRun = jest.fn(factory);
+    const runtime = await fixture(createRun);
+    try {
+      const initial = createInitialModelBoundAdmissionCallback({
+        agentIds: [identity.agentId],
+        isActive: () => true,
+        onAllowed: jest.fn(),
+      });
+      const run = await createRemoteSdkRun({
+        config: hostConfig(),
+        identity,
+        remote: runtime.remote,
+        hostServices: {
+          model: nativeModelBinding(),
+          modelLifecycle: createHostModelLifecycle(identity.agentId, 16),
+          providerText: createHostProviderTextService({
+            identity,
+            policy: {
+              version: 1,
+              timeoutMs: 1000,
+              maxAttemptBytes: 4096,
+              maxBufferedBytes: 8192,
+              classify: () => 'prose',
+              inspect: () => ({ version: 1, ok: false, error: { code: 'blocked' } }),
+            },
+          }),
+        },
+      });
+      await expect(
+        run.processStream(
+          { messages: [] },
+          { ...invocation(), callbacks: [admissionCallback(initial)] },
+        ),
+      ).rejects.toThrow('SDK invocation context support');
+      expect(createRun).not.toHaveBeenCalled();
+    } finally {
+      await runtime.close();
+    }
+  });
+  it('does not persist a deferred message when a partially streamed model is cancelled', async () => {
+    const persisted = jest.fn();
+    const initial = createInitialModelBoundAdmissionCallback({
+      agentIds: [identity.agentId],
+      isActive: () => true,
+      onAllowed: persisted,
+    });
+    const abort = new AbortController();
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runtime = await fixture(async (input) => {
+      const run = await factory(input);
+      run.Graph!.overrideModel = input.hostModel;
+      return run;
+    });
+    try {
+      const model = new TestModel({});
+      model._streamResponseChunks = async function* () {
+        yield new ChatGenerationChunk({
+          text: 'partial',
+          message: new AIMessageChunk({ content: 'partial' }),
+        });
+        entered();
+        await pending;
+      };
+      const run = await createSdkAgentRun({
+        config: hostConfig(),
+        identity,
+        signal: abort.signal,
+        registration: {
+          binding: { id: 'custom', protocolVersion: 1 },
+          remote: { ...runtime.remote, hostModel: true },
+        },
+        modelHost: createSdkModelHost(
+          agentsEndpointSchema.parse({ sdkHostModels: {} }).sdkHostModels,
+          () => model,
+        ),
+      });
+      const execution = run.processStream(
+        { messages: [new HumanMessage('safe')] },
+        { ...invocation(), signal: abort.signal, callbacks: [admissionCallback(initial)] },
+      );
+      void execution.catch(() => {});
+      await started;
+      abort.abort();
+      release();
+      await expect(execution).rejects.toThrow('cancelled');
+      expect(persisted).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await runtime.close();
+    }
+  });
+  it.each([false, true])(
+    'admits deferred persistence only after the safe model node (blocked=%s)',
+    async (blocked) => {
+      const persisted = jest.fn();
+      const nativeCall = jest.fn();
+      const log = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const callback = createModelBoundChatModelCallback({
+        filters: {
+          messages: {
+            pii: {
+              fields: ['text'],
+              starterPatterns: [],
+              customPatterns: [{ id: 'private', label: 'private', regex: 'PRIVATE-CALLBACK' }],
+            },
+          },
+        },
+      });
+      const initial = createInitialModelBoundAdmissionCallback({
+        agentIds: [identity.agentId],
+        isActive: () => true,
+        onAllowed: persisted,
+      });
+      const runtime = await fixture(async (input) => {
+        const run = await factory(input);
+        run.Graph!.overrideModel = input.hostModel;
+        return run;
+      });
+      try {
+        const model = new TestModel({});
+        Object.assign(model, { callbacks: [callback] });
+        model._streamResponseChunks = async function* () {
+          nativeCall();
+          expect(persisted).not.toHaveBeenCalled();
+          yield new ChatGenerationChunk({
+            text: 'safe reply',
+            message: new AIMessageChunk({ content: 'safe reply' }),
+          });
+        };
+        const endpoint = agentsEndpointSchema.parse({ sdkHostModels: {} });
+        const run = await createSdkAgentRun({
+          config: hostConfig(),
+          identity,
+          registration: {
+            binding: { id: 'custom', protocolVersion: 1 },
+            remote: { ...runtime.remote, hostModel: true },
+          },
+          modelHost: createSdkModelHost(endpoint.sdkHostModels, () => model),
+        });
+        const promise = run.processStream(
+          { messages: [new HumanMessage(blocked ? 'PRIVATE-CALLBACK' : 'safe input')] },
+          { ...invocation(), callbacks: [admissionCallback(initial)] },
+        );
+        if (blocked) {
+          await expect(promise).rejects.toMatchObject({ code: 'content_filter_block' });
+          expect(nativeCall).not.toHaveBeenCalled();
+          expect(persisted).not.toHaveBeenCalled();
+        } else {
+          await expect(promise).resolves.toBeDefined();
+          expect(nativeCall).toHaveBeenCalledTimes(1);
+          expect(persisted).toHaveBeenCalledTimes(1);
+        }
+      } finally {
+        log.mockRestore();
+        await runtime.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'commits captured private text before provider execution (persistence failure=%s)',
+    async (failPersistence) => {
+      const filters = {
+        messages: {
+          pii: {
+            action: 'redact' as const,
+            fields: ['text' as const],
+            starterPatterns: [],
+            customPatterns: [
+              {
+                id: 'email',
+                label: 'Email',
+                regex: 'alice@example\\.com',
+                category: 'email' as const,
+              },
+            ],
+          },
+        },
+      };
+      const req = {
+        path: '/',
+        user: { id: identity.userId },
+        body: { text: 'alice@example.com', clientRequestId: 'private-remote' },
+      } as unknown as Request;
+      createPrivateTextIngress({
+        getFilters: () => filters,
+        getLegacyPii: () => undefined,
+        getKey: () => 'ab'.repeat(32),
+      })(req, {} as never, jest.fn());
+      const message = stampPrivateTextMessage(req, {
+        messageId: 'user',
+        conversationId: identity.conversationId,
+        text: req.body.text,
+        isCreatedByUser: true,
+      });
+      const persisted = jest.fn(async () => {
+        if (failPersistence) throw new Error('persistence unavailable');
+        return { message };
+      });
+      const cancelled = jest.fn();
+      const created = jest.fn();
+      const nativeCall = jest.fn();
+      const initial = createPrivateTextInitialAdmissionCallback(req, {
+        agentIds: [identity.agentId],
+        start: persisted,
+        cancel: cancelled,
+        onPersisted: created,
+      })!;
+      const callback = createModelBoundChatModelCallback(
+        {
+          filters,
+          storedMessages: [message],
+          privateTextTokens: getPrivateTextInspectionTokens([message]),
+        },
+        getPrivateTextModelHooks(req, initial, persisted, cancelled, created),
+      );
+      const log = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const runtime = await fixture(async (input) => {
+        const run = await factory(input);
+        run.Graph!.overrideModel = input.hostModel;
+        return run;
+      });
+      try {
+        const model = new TestModel({});
+        Object.assign(model, { callbacks: [callback] });
+        model._streamResponseChunks = async function* () {
+          expect(created).toHaveBeenCalledTimes(1);
+          nativeCall();
+          yield new ChatGenerationChunk({
+            text: 'safe reply',
+            message: new AIMessageChunk({ content: 'safe reply' }),
+          });
+        };
+        const run = await createSdkAgentRun({
+          config: hostConfig(),
+          identity,
+          registration: {
+            binding: { id: 'custom', protocolVersion: 1 },
+            remote: { ...runtime.remote, hostModel: true },
+          },
+          modelHost: createSdkModelHost(
+            agentsEndpointSchema.parse({ sdkHostModels: {} }).sdkHostModels,
+            () => model,
+          ),
+        });
+        const promise = run.processStream(
+          { messages: [new HumanMessage(req.body.text)] },
+          {
+            ...withPrivateTextAdmissionConfig(invocation(), initial),
+            callbacks: [admissionCallback(initial)],
+          },
+        );
+        if (failPersistence) {
+          await expect(promise).rejects.toThrow('SDK runtime execution failed');
+          expect(nativeCall).not.toHaveBeenCalled();
+          expect(cancelled).toHaveBeenCalled();
+        } else {
+          await expect(promise).resolves.toBeDefined();
+          expect(nativeCall).toHaveBeenCalledTimes(1);
+        }
+        expect(persisted).toHaveBeenCalledTimes(1);
+      } finally {
+        log.mockRestore();
+        await runtime.close();
+      }
+    },
+  );
 });

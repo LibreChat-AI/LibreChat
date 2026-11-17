@@ -2495,6 +2495,10 @@ export async function createRun({
     user?.role,
     hasModelBoundContentProtection(appConfig?.filters) ||
       hasActivePiiPatterns(appConfig?.messageFilter?.pii),
+    sdkModelHost != null &&
+      modelCallbacks?.some(
+        (callback) => callback.name === 'librechat-model-bound-content-filter',
+      ) === true,
   );
   const runFilesActive =
     runFiles?.activate(

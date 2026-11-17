@@ -169,6 +169,8 @@ Enable `endpoints.agents.sdkHostModels: {}` and `remote.hostModel: true` on the 
 runtime registration to select the saved agent's primary model and parameters. Both examples
 consume `input.agent.model` and retain `input.hostModel`; model credentials stay in LibreChat.
 The custom graph keeps its plan/review/refine nodes and uses the host-authorized tool schemas.
-This mode requires updated workers with `builderModel: 1`. It currently rejects active model/PII
-protection, local graph tools and provider fallbacks; see [the parity matrix](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
+This mode requires updated workers with `builderModel: 1` and, for initial persistence admission,
+`modelAdmission: 1`. Protected chat uses native host input callbacks. Protected API callers without
+those callbacks, local graph tools, provider fallbacks, and the combination of initial admission
+with provider-text output protection remain gated; see [the parity matrix](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
 and [configuration](../../docs/sdk/agents.md#saved-agent-builder-models) before enabling it.

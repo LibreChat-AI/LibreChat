@@ -85,6 +85,7 @@ export function resolveSdkAgentBinding(
   endpoint: RuntimeConfig | undefined,
   role: string | undefined,
   modelProtectionActive = false,
+  hostPolicySupported = false,
 ): SdkRegistration | undefined {
   if (!agents.some((agent) => agent.sdk_runtime != null)) return undefined;
   const binding = agents[0]?.sdk_runtime;
@@ -100,7 +101,11 @@ export function resolveSdkAgentBinding(
   if (role == null || !configured.roles.includes(role)) {
     throw new SdkAgentRuntimeError('sdk_runtime_forbidden');
   }
-  if ('remote' in configured && modelProtectionActive) {
+  if (
+    'remote' in configured &&
+    modelProtectionActive &&
+    !(configured.remote.hostModel && hostPolicySupported)
+  ) {
     throw new SdkAgentRuntimeError('sdk_runtime_policy_unsupported');
   }
   return 'module' in configured
