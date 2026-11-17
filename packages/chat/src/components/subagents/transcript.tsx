@@ -106,7 +106,13 @@ function ControlMessage(props: ControlMessageProps) {
   });
 }
 
-function SubagentControlHistory({
+/**
+ * The guidance sent to a task, oldest first, leaving out what `content` already shows where it
+ * was injected: an applied steer is a part of the reply, and drawing its receipt as well would
+ * show it twice. What is left is guidance still waiting to be taken, with the control that
+ * withdraws it, and guidance that failed or was refused.
+ */
+export function SubagentControlHistory({
   controls,
   onCancelControl,
   content,
@@ -114,7 +120,7 @@ function SubagentControlHistory({
   content: TMessageContentParts[];
   controls: NonNullable<ChildActivity['controls']>;
   onCancelControl?: (controlId: string) => void;
-}) {
+}): ReactNode {
   const localize = useLocalize();
   if (controls.length === 0) return null;
   /** Storage keeps actionable accepted receipts ahead of bounded terminal history.

@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { ParentSubagentIndex, SubagentThreadView, TMessage } from 'librechat-data-provider';
-import type { BrowserContext, Locator, Page, Request } from '@playwright/test';
+import type { BrowserContext, Locator, Page } from '@playwright/test';
 import type { AgentDetail } from './agents.helpers';
 import {
   MOCK_ENDPOINTS,
@@ -21,9 +21,14 @@ import history from '../../fixtures/subagent-history.cjs';
 import { openChatHistory } from './scenarios/sidebar';
 
 const DETACHED_ACTIVITY_MARKER = 'E2E_SUBAGENT_ACTIVITY:';
-/** The activity hook's first reconnect is scheduled after 500 ms. */
+/** Long enough for a stream that was going to reattach on its own to have done so. */
 const ACTIVITY_RECONNECT_GUARD_MS = 1_000;
+/** The bounded activity feed, which a followed thread no longer reads. */
 const ACTIVITY_PATH = /\/api\/convos\/[^/]+\/subagents\/[^/]+\/tasks\/[^/]+\/activity$/;
+/** A generation's stream; the last segment is the conversation, here a child thread. */
+const GENERATION_STREAM_PATH = /\/api\/agents\/chat\/stream\/([^/]+)$/;
+/** A child thread's messages, read through its parent. */
+const THREAD_MESSAGES_PATH = /\/api\/convos\/[^/]+\/subagents\/([^/]+)\/messages$/;
 
 async function createAgent(
   page: Page,
@@ -112,23 +117,23 @@ test.describe('detached subagent activity', () => {
     const parentName = uniqueAgentName('E2E Activity Parent');
     const createdAgentIds: string[] = [];
     const activityRequests: string[] = [];
-    const endedActivityRequests: string[] = [];
+    /** The thread each generation stream was opened for, and each read of a thread's messages. */
+    const streamAttaches: string[] = [];
+    const messageReads: string[] = [];
     page.on('request', (request) => {
       const url = new URL(request.url());
       if (ACTIVITY_PATH.test(url.pathname)) {
         activityRequests.push(url.pathname);
       }
-    });
-    /** The stream ends either way once the child is terminal: the server closes it after the final
-     *  frame, or the panel aborts it on the durable terminal status, whichever arrives first. */
-    const recordEndedActivity = (request: Request) => {
-      const url = new URL(request.url());
-      if (ACTIVITY_PATH.test(url.pathname)) {
-        endedActivityRequests.push(url.pathname);
+      const stream = GENERATION_STREAM_PATH.exec(url.pathname);
+      if (stream != null) {
+        streamAttaches.push(decodeURIComponent(stream[1]));
       }
-    };
-    page.on('requestfinished', recordEndedActivity);
-    page.on('requestfailed', recordEndedActivity);
+      const read = THREAD_MESSAGES_PATH.exec(url.pathname);
+      if (read != null) {
+        messageReads.push(decodeURIComponent(read[1]));
+      }
+    });
     const activityStreams = await recordActivityStreams(page);
 
     try {
@@ -158,30 +163,36 @@ test.describe('detached subagent activity', () => {
       const cards = page.locator('[data-subagent-tool-call^="call_e2e_subagent_activity_"]');
       await expect(cards).toHaveCount(2, { timeout: 30_000 });
       await expect(cards.first()).toHaveAttribute('data-subagent-thread', /.+/);
-      const activityResponsePromise = page.waitForResponse((candidate) => {
-        const url = new URL(candidate.url());
-        return ACTIVITY_PATH.test(url.pathname);
+      const firstThreadId = (await cards.first().getAttribute('data-subagent-thread')) ?? '';
+      const threadReadPromise = page.waitForResponse((candidate) => {
+        const read = THREAD_MESSAGES_PATH.exec(new URL(candidate.url()).pathname);
+        return read != null && decodeURIComponent(read[1]) === firstThreadId;
       });
       await cards.first().click();
 
+      /** The child's thread opens as a conversation: its messages, read through the parent, and
+       *  its own generation stream while it runs. The bounded activity feed is not read at all. */
       const panel = childActivityPanel(page);
-      await activityResponsePromise;
+      expect((await threadReadPromise).ok()).toBeTruthy();
       await expect(panel).toBeVisible();
       await expect(panel).toContainText('child-1-phase-10');
       await expect(panel.getByText('Running', { exact: true })).toHaveCount(0);
-      await expect.poll(() => activityRequests.length).toBe(1);
 
       await expect(panel).toContainText(`E2E detached child 1 complete ${label}`, {
         timeout: 30_000,
       });
       await expect(panel.getByText('Completed', { exact: true })).toHaveCount(0);
-      await expect.poll(() => endedActivityRequests.length).toBe(1);
-      const [activityStreamBody, ...otherStreams] = await activityStreams();
-      expect(otherStreams).toHaveLength(0);
-      expect(activityStreamBody).toContain('"event":"on_subagent_update"');
-      expect(activityStreamBody).toContain('"phase":"message_delta"');
+      const attachesOf = (threadId: string) =>
+        streamAttaches.filter((attached) => attached === threadId).length;
+      /** At most one attachment, and none added once the run is over: a finished child is read
+       *  from its stored messages, and a running one is followed by a single stream. */
+      const attaches = attachesOf(firstThreadId);
+      expect(attaches).toBeLessThanOrEqual(1);
       await page.waitForTimeout(ACTIVITY_RECONNECT_GUARD_MS);
-      expect(activityRequests).toHaveLength(1);
+      expect(attachesOf(firstThreadId)).toBe(attaches);
+      expect(messageReads).toContain(firstThreadId);
+      expect(activityRequests).toHaveLength(0);
+      expect(await activityStreams()).toHaveLength(0);
 
       await panel.getByRole('button', { name: 'Close' }).click();
       await expect(panel).not.toBeVisible();
@@ -221,11 +232,20 @@ const HISTORY_FOLDS =
   '[data-fold-root] > div > button[aria-expanded="false"]:visible, ' +
   '[data-testid="activity-phase-card"] > div > div > button[aria-expanded="false"]:visible';
 
+/** How long a click waits for a fold that was counted a moment ago. */
+const FOLD_CLICK_TIMEOUT_MS = 1_000;
+
 async function expandHistory(surface: Locator): Promise<void> {
   for (let depth = 0; depth < 32; depth++) {
     const collapsed = surface.locator(HISTORY_FOLDS);
     if ((await collapsed.count()) === 0) return;
-    await collapsed.first().click();
+    /** A fold can be gone by the time it is clicked: a running call's card is one, and it is
+     *  replaced by the call's own row when the call ends. One that is gone needs no expanding,
+     *  and a click left waiting for it would hold the caller's poll until that times out. */
+    await collapsed
+      .first()
+      .click({ timeout: FOLD_CLICK_TIMEOUT_MS })
+      .catch(() => undefined);
   }
   await expect(surface.locator(HISTORY_FOLDS), 'history folds must be reachable').toHaveCount(0);
 }
@@ -293,7 +313,8 @@ async function steerPlacement(
 ): Promise<{ before: boolean; after: boolean }> {
   return steer.evaluate(
     (node, texts) => {
-      const root = node.closest('[data-subagent-conversation]');
+      /** The durable view's own root, or the message list that draws a followed thread. */
+      const root = node.closest('[data-subagent-conversation], [data-conversation-id]');
       const find = (text: string): Element | undefined => {
         if (root == null) return undefined;
         return [...root.querySelectorAll('*')].find(
@@ -581,4 +602,191 @@ test.describe('subagent chat retained-history parity', () => {
       }
     });
   }
+
+  test('late open draws a steer the child already took where it took it, ahead of what came after', async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const label = `history-steered-${Date.now().toString(36)}-${testInfo.retry}`;
+    const gates = history.control(label);
+    const createdAgentIds: string[] = [];
+    let primaryError: unknown;
+    try {
+      await page.addInitScript(() => localStorage.setItem('autoExpandTools', 'false'));
+      await page.goto('/c/new');
+      const token = await getAccessToken(page);
+      const worker = await createAgent(
+        page,
+        token,
+        uniqueAgentName('E2E History Worker'),
+        { enabled: true, allowSelf: true },
+        [history.TOOL_NAME],
+      );
+      createdAgentIds.push(worker.id);
+      await selectAgent(page, worker.name!);
+      const sent = await sendMessageAndWaitForCompletion(page, history.prompt(label, 'self'));
+      expect(sent.ok()).toBeTruthy();
+      await expect(page).toHaveURL(/\/c\/(?!new(?:\/|$))[^/]+$/);
+      const conversationId = decodeURIComponent(new URL(page.url()).pathname.split('/')[2]);
+      await gates.wait('ready', { timeoutMs: 45_000 });
+
+      /** Guidance goes in, and the child takes it and keeps working, all before anyone opens
+       *  the panel. Nothing was listening while it happened. */
+      const threadPath = await historyThreadPath(page, token, conversationId, label);
+      const [threadEndpoint, query] = threadPath.split('?');
+      const marker = `END_OF_PARENT_GUIDANCE_${label}`;
+      const controlled = await requestJson<{ receipt: { status: string } }>(page, {
+        path: `${threadEndpoint}/control`,
+        token,
+        method: 'POST',
+        body: {
+          taskId: new URLSearchParams(query).get('taskId'),
+          invocationId: `history-early-guidance-${label}`,
+          action: 'steer',
+          message: `Check the release notes as well. ${marker}`,
+        },
+      });
+      expect(controlled.receipt.status).toBe('accepted');
+      await gates.signal('advance');
+      await gates.wait('live', { timeoutMs: 15_000 });
+
+      const surface = await openHistoryChild(page, label);
+      const steer = surface.locator('[data-steer-render]').filter({ hasText: marker });
+      await expect(steer).toHaveCount(1, { timeout: 20_000 });
+      await assertHistoryCalls(surface, label, history.CALL_COUNT + 1);
+      expect(await gates.has('done'), 'the steer is placed while the child still runs').toBe(false);
+
+      await gates.signal('complete');
+      await gates.wait('done', { timeoutMs: 10_000 });
+      const live = history.liveText(label);
+      const completed = history.completionText(label);
+      await expect(surface.getByText(completed, { exact: true })).toHaveCount(1, {
+        timeout: 20_000,
+      });
+      await expect(surface.locator('[data-lc-fade]')).toHaveCount(0, { timeout: 20_000 });
+      /** After the work it interrupted and before the work that followed it, never at the end. */
+      expect(await steerPlacement(steer, live, completed)).toEqual({ before: true, after: true });
+    } catch (error) {
+      primaryError = error;
+      throw error;
+    } finally {
+      try {
+        await gates.release();
+        if (primaryError == null && (await gates.has('ready'))) {
+          await gates.wait('done', { timeoutMs: 10_000 });
+        }
+        if (await gates.has('done')) await rm(gates.directory, { recursive: true, force: true });
+      } finally {
+        for (const agentId of createdAgentIds.reverse()) {
+          await cleanupAgent(page, agentId);
+        }
+      }
+    }
+  });
+
+  test('guidance the child has not taken yet waits after the last row and can be withdrawn', async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const label = `history-withdrawn-${Date.now().toString(36)}-${testInfo.retry}`;
+    const gates = history.control(label);
+    const createdAgentIds: string[] = [];
+    let primaryError: unknown;
+    try {
+      await page.addInitScript(() => localStorage.setItem('autoExpandTools', 'false'));
+      await page.goto('/c/new');
+      const token = await getAccessToken(page);
+      const worker = await createAgent(
+        page,
+        token,
+        uniqueAgentName('E2E History Worker'),
+        { enabled: true, allowSelf: true },
+        [history.TOOL_NAME],
+      );
+      createdAgentIds.push(worker.id);
+      await selectAgent(page, worker.name!);
+      const sent = await sendMessageAndWaitForCompletion(page, history.prompt(label, 'self'));
+      expect(sent.ok()).toBeTruthy();
+      await expect(page).toHaveURL(/\/c\/(?!new(?:\/|$))[^/]+$/);
+      const conversationId = decodeURIComponent(new URL(page.url()).pathname.split('/')[2]);
+      await gates.wait('ready', { timeoutMs: 45_000 });
+
+      const surface = await openHistoryChild(page, label);
+      await assertHistoryCalls(surface, label);
+
+      /** The child is held before its next tool boundary, so the guidance stays waiting. */
+      const threadPath = await historyThreadPath(page, token, conversationId, label);
+      const [threadEndpoint, query] = threadPath.split('?');
+      const marker = `END_OF_PARENT_GUIDANCE_${label}`;
+      const controlled = await requestJson<{ receipt: { status: string } }>(page, {
+        path: `${threadEndpoint}/control`,
+        token,
+        method: 'POST',
+        body: {
+          taskId: new URLSearchParams(query).get('taskId'),
+          invocationId: `history-withdrawn-guidance-${label}`,
+          action: 'steer',
+          message: `Check the release notes as well. ${marker}`,
+        },
+      });
+      expect(controlled.receipt.status).toBe('accepted');
+
+      const waiting = surface.locator('[data-steer-render]').filter({ hasText: marker });
+      await expect(waiting).toHaveCount(1, { timeout: 20_000 });
+      const lastCall = historyRows(surface, label).last();
+      expect(
+        await waiting.evaluate(
+          (node, row) =>
+            row != null &&
+            Boolean(row.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING),
+          await lastCall.elementHandle(),
+        ),
+        'waiting guidance sits after everything the child has done',
+      ).toBe(true);
+
+      const withdraw = surface.getByRole('button', { name: 'Withdraw', exact: true });
+      await expect(withdraw).toHaveCount(1);
+      const withdrawn = page.waitForResponse(
+        (response) =>
+          response.request().method() === 'POST' &&
+          new URL(response.url()).pathname.endsWith('/control') &&
+          (response.request().postDataJSON() as { action?: string } | null)?.action ===
+            'cancel_message',
+      );
+      await withdraw.click();
+      expect((await withdrawn).ok()).toBeTruthy();
+      await expect(withdraw).toHaveCount(0, { timeout: 20_000 });
+
+      /** Withdrawn guidance is never taken: the child finishes without it in its reply. */
+      await gates.signal('advance');
+      await gates.wait('live', { timeoutMs: 15_000 });
+      await gates.signal('complete');
+      await gates.wait('done', { timeoutMs: 10_000 });
+      const completed = history.completionText(label);
+      await expect(surface.getByText(completed, { exact: true })).toHaveCount(1, {
+        timeout: 20_000,
+      });
+      await expect(surface.locator('[data-lc-fade]')).toHaveCount(0, { timeout: 20_000 });
+      const remaining = await waiting.count();
+      if (remaining > 0) {
+        const placement = await steerPlacement(waiting.first(), history.liveText(label), completed);
+        expect(placement.after, 'a withdrawn receipt stays out of the reply').toBe(false);
+      }
+    } catch (error) {
+      primaryError = error;
+      throw error;
+    } finally {
+      try {
+        await gates.release();
+        if (primaryError == null && (await gates.has('ready'))) {
+          await gates.wait('done', { timeoutMs: 10_000 });
+        }
+        if (await gates.has('done')) await rm(gates.directory, { recursive: true, force: true });
+      } finally {
+        for (const agentId of createdAgentIds.reverse()) {
+          await cleanupAgent(page, agentId);
+        }
+      }
+    }
+  });
 });

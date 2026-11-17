@@ -14,6 +14,7 @@ import type { SteerReceiptState } from '../../components/composer/steering/Recei
 import type { ToolContentQuery } from '../parts/disclosure';
 import type { MessagePartsHost } from '../host';
 import type { TaskContentScope } from './scope';
+import type { FollowedChat } from '../follow';
 
 /** One guidance message sent to a child, drawn as the main chat draws a steer. */
 export type SubagentSteerProps = {
@@ -150,6 +151,22 @@ export interface SubagentsHost {
     taskId: string,
     options: SubagentThreadReadOptions,
   ) => SubagentThreadRead;
+  /**
+   * Follows a child thread through its parent conversation: its stored messages, and the
+   * generation running under it for as long as one is. Called on every render, so
+   * `enabled: false` follows nothing. Without it the panel draws every thread from its durable
+   * view.
+   */
+  useThreadChat?: (
+    parentConversationId: string,
+    threadId: string,
+    options: { live: boolean; enabled: boolean },
+  ) => FollowedChat;
+  /**
+   * Reads the full output of a tool call in a followed child thread, through the parent named by
+   * the task scope around it. Without it a followed thread's tool calls stay previews.
+   */
+  useThreadToolContent?: ToolContentQuery;
   /** Fetches one page of a child thread outside the cached read: a task's exact view, or the
    *  history before `cursor`. */
   loadThread: (

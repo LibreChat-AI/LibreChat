@@ -234,6 +234,100 @@ describe('useFollowChat', () => {
     expect(textOf(result.current.messages)).toEqual(['New run']);
   });
 
+  it('reads the stored messages again when the caller sees the run end with no stream', async () => {
+    const { transport, streams } = createTransport(idle);
+    const { result, rerender, loadMessages } = setup({ transport, live: true });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await settle();
+    expect(streams).toHaveLength(0);
+    const reads = loadMessages.mock.calls.length;
+
+    loadMessages.mockResolvedValue([brief, answer('Finished elsewhere')]);
+    rerender({ id: 'thread-1', transport, loadMessages, live: false });
+
+    await waitFor(() => expect(loadMessages).toHaveBeenCalledTimes(reads + 1));
+    await waitFor(() => expect(textOf(result.current.messages)).toEqual(['Finished elsewhere']));
+  });
+
+  it('says whether there is a generation to follow', async () => {
+    const { transport, streams, setStatus } = createTransport(running);
+    const { result } = setup({ transport, live: true });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    expect(result.current.isFollowing).toBe(true);
+    expect(result.current.isUnattached).toBe(false);
+
+    setStatus(idle);
+    act(() => streams[0].push(final('Done')));
+    await waitFor(() => expect(result.current.isFollowing).toBe(false));
+    /** A run followed to its end was reached, whatever the caller still believes is running. */
+    expect(result.current.isUnattached).toBe(false);
+  });
+
+  it('says a run the caller knows of has no stream only once an attachment found none', async () => {
+    const { transport } = createTransport(idle);
+    let release: (messages: TMessage[]) => void = () => undefined;
+    const loadMessages = jest.fn(
+      () =>
+        new Promise<TMessage[]>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const { result } = setup({ transport, loadMessages, live: true });
+    await settle();
+    expect(result.current.isUnattached).toBe(false);
+
+    loadMessages.mockResolvedValue([brief]);
+    await act(async () => release([brief]));
+    await waitFor(() => expect(result.current.isUnattached).toBe(true));
+    expect(result.current.isFollowing).toBe(false);
+    expect(transport.reconnectToStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('says the stream is gone once a dropped one could not be attached again', async () => {
+    const { transport, streams } = createTransport(running);
+    const { result } = setup({ transport, live: true });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    act(() => streams[0].push(snapshot('Partial')));
+    await settle();
+
+    jest.useFakeTimers();
+    try {
+      (transport.reconnectToStream as jest.Mock).mockRejectedValue(
+        Object.assign(new Error('offline'), { code: 'ERR_NETWORK' }),
+      );
+      await act(async () => {
+        streams[0].push({ type: 'error', status: 0 });
+        await jest.advanceTimersByTimeAsync(getReconnectDelay(1));
+      });
+      /** Still trying: a dropped stream is not a missing one. */
+      expect(result.current.isFollowing).toBe(true);
+      expect(result.current.isUnattached).toBe(false);
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+
+    await waitFor(() => expect(result.current.isUnattached).toBe(true));
+    expect(result.current.isFollowing).toBe(false);
+    expect(textOf(result.current.messages)).toEqual(['Partial']);
+  });
+
+  it('follows nothing while disabled, and starts when enabled', async () => {
+    const { transport, streams } = createTransport(running);
+    const { result, rerender, loadMessages } = setup({ transport, enabled: false });
+    await settle();
+
+    expect(loadMessages).not.toHaveBeenCalled();
+    expect(transport.getStatus).not.toHaveBeenCalled();
+    expect(result.current).toMatchObject({ chat: undefined, isLoading: false, messages: [] });
+
+    rerender({ id: 'thread-1', transport, loadMessages, enabled: true });
+    await waitFor(() => expect(streams).toHaveLength(1));
+  });
+
   it('does not attach on a live signal before the stored messages are in', async () => {
     const { transport, streams } = createTransport(running);
     let release: (messages: TMessage[]) => void = () => undefined;
