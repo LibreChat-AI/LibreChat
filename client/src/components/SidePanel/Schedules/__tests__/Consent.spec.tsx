@@ -45,6 +45,7 @@ const view: ScheduleMCPConsentView = {
     },
   ],
   allowed: {},
+  changed: {},
   offer: { digest: 'a'.repeat(64), maxLifetimeHours: 24 },
 };
 function display() {
@@ -169,6 +170,45 @@ it('drops ticks for a server or tool that leaves the offer while the dialog is o
       expect.objectContaining({ offerDigest: 'b'.repeat(64), allow: { warehouse: ['query'] } }),
     ),
   );
+});
+it('leaves a tool the server changed unticked and says why, until the owner allows it again', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    state: 'changed',
+    revision: 'grant',
+    expiresAtMs: Date.now() + 60_000,
+    allowed: { warehouse: ['export', 'query'] },
+    changed: { warehouse: ['query'] },
+  });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  const changed = await screen.findByRole('checkbox', { name: 'query' });
+  expect(changed).not.toBeChecked();
+  expect(changed).toHaveAccessibleDescription('com_ui_schedule_consent_tool_changed');
+  const unchanged = screen.getByRole('checkbox', { name: 'export' });
+  expect(unchanged).toBeChecked();
+  expect(unchanged).not.toHaveAccessibleDescription();
+  await userEvent.click(changed);
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({ allow: { warehouse: ['export', 'query'] } }),
+    ),
+  );
+});
+it('names the changed tools when there is nothing to confirm', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    state: 'changed',
+    revision: 'grant',
+    allowed: { warehouse: ['export', 'query'] },
+    changed: { warehouse: ['query'] },
+    offer: null,
+  });
+  display();
+  expect(await screen.findByText('com_ui_schedule_consent_changed_tools')).toBeVisible();
+  expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
 });
 it('lists the allowed tools without boxes when there is nothing to confirm', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({

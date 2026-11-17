@@ -36,6 +36,11 @@ export interface ScheduledMCPAuthorizationRequest {
   /** Set only by the owner-authorized manual trigger or its verified resume metadata. */
   readonly manual?: boolean;
   readonly selection: ScheduledMCPToolSelection;
+  /**
+   * Digest of each selected tool's live definition, by tool. A tool is pinned to the first
+   * one seen and refused once it differs. Absent at mint, where no catalog is read.
+   */
+  readonly definitions?: Readonly<Record<string, string>>;
 }
 
 /** Ephemeral observation, not a transferable grant or permission to cache an allow decision. */

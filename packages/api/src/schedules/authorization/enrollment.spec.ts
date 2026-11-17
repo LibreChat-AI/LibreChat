@@ -6,9 +6,9 @@ import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { ScheduleMCPEnrollmentDeps } from './enrollment';
 import type { ParsedServerConfig } from '~/mcp/types';
 import { createScheduleMCPEnrollmentResolver } from './enrollment';
+import { allowOffered, pinStorage } from './execution.helper';
 import { createScheduleMCPConsentService } from './service';
 import { createResolveAgentFireAccess } from '../access';
-import { allowOffered } from './execution.helper';
 
 const identity: ScheduledMCPIdentity = {
   scheduleId: 's',
@@ -224,6 +224,7 @@ it.each<Partial<Extract<ParsedServerConfig, { type: 'http' | 'streamable-http' }
     },
     revokeScheduleMCPConsent: async () => true,
     admitScheduleMCPConsent: admit,
+    ...pinStorage(() => snapshot.enrollment),
   };
   const service = createScheduleMCPConsentService({
     storage,
@@ -344,6 +345,7 @@ it('does not offer owner consent for recipient-defining custom user variables', 
       confirmScheduleMCPConsent: confirm,
       revokeScheduleMCPConsent: async () => true,
       admitScheduleMCPConsent: async () => true,
+      ...pinStorage(() => snapshot.enrollment),
     },
     resolveEnrollment: resolve,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),

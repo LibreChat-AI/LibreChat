@@ -2,6 +2,7 @@ import type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from '@librec
 import type { ScheduledMCPIdentity, ScheduledMCPTarget } from 'librechat-data-provider';
 import { createScheduleMCPConsentHandlers } from './handlers';
 import { createScheduleMCPConsentService } from './service';
+import { pinStorage } from './execution.helper';
 
 const identity: ScheduledMCPIdentity = {
   scheduleId: 's',
@@ -26,6 +27,10 @@ const target: ScheduledMCPTarget = {
   ],
   policyRevision: 'p1',
 };
+const jestPins = (pins: ReturnType<typeof pinStorage>) => ({
+  pinScheduleMCPToolDefinition: jest.fn(pins.pinScheduleMCPToolDefinition),
+  flagScheduleMCPToolChange: jest.fn(pins.flagScheduleMCPToolChange),
+});
 function setup() {
   let time = 1000;
   const snapshot: ScheduleConsentSnapshot = {
@@ -65,6 +70,7 @@ function setup() {
           (c) => c.revokedAtMs == null && c.absoluteExpiresAtMs > time,
         ),
     ),
+    ...jestPins(pinStorage(() => snapshot.enrollment)),
   };
   const service = createScheduleMCPConsentService({
     storage,
@@ -384,5 +390,131 @@ it('offers no overwrite of an incompatible stored grant', async () => {
     state: 'unsupported',
     offer: null,
     revision: null,
+  });
+});
+
+describe('definition pins', () => {
+  const first = 'a'.repeat(64);
+  const second = 'b'.repeat(64);
+  const use = (digest: string, tool = 'query') => ({
+    ...request('invoke'),
+    selection: { agentId: 'root', tools: [tool] },
+    definitions: { [tool]: digest },
+  });
+  const consent = (s: ReturnType<typeof setup>) => s.snapshot.enrollment!.consents[0];
+
+  it('pins a tool on first use and refuses it once the definition differs', async () => {
+    const s = setup();
+    await s.enroll();
+    expect(consent(s).definitions).toBeUndefined();
+    expect(await s.service.authority.authorize(use(first), {})).toMatchObject({
+      state: 'authorized',
+    });
+    expect(consent(s).definitions).toEqual([{ tool: 'query', digest: first }]);
+    expect(await s.service.authority.authorize(use(first), {})).toMatchObject({
+      state: 'authorized',
+    });
+    expect(await s.service.authority.authorize(use(second), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'binding_mismatch', recovery: 'authorize' },
+    });
+    expect(consent(s).definitions).toEqual([{ tool: 'query', digest: first }]);
+    expect(await s.service.view(identity)).toMatchObject({
+      state: 'changed',
+      changed: { warehouse: ['query'] },
+    });
+  });
+
+  it('keeps a changed tool refused after the server restores the old definition', async () => {
+    const s = setup();
+    await s.enroll();
+    await s.service.authority.authorize(use(first), {});
+    await s.service.authority.authorize(use(second), {});
+    expect(await s.service.authority.authorize(use(first), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'binding_mismatch' },
+    });
+  });
+
+  it('refuses only the changed tool and still mints for the server', async () => {
+    const s = setup();
+    s.changeTarget({ ...target, permittedTools: [{ agentId: 'root', tools: ['list', 'query'] }] });
+    await s.enroll({ warehouse: ['list', 'query'] });
+    await s.service.authority.authorize(use(first), {});
+    await s.service.authority.authorize(use(second), {});
+    expect(await s.service.authority.authorize(use(first, 'list'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    expect(
+      await s.service.authority.authorize(
+        { ...request('mint'), selection: { agentId: 'root', tools: ['list', 'query'] } },
+        {},
+      ),
+    ).toMatchObject({ state: 'authorized' });
+  });
+
+  it('carries pins through a renewal and re-pins a changed tool the owner allows again', async () => {
+    const s = setup();
+    s.changeTarget({ ...target, permittedTools: [{ agentId: 'root', tools: ['list', 'query'] }] });
+    await s.enroll({ warehouse: ['list', 'query'] });
+    await s.service.authority.authorize(use(first), {});
+    await s.service.authority.authorize(use(first, 'list'), {});
+    await s.service.authority.authorize(use(second), {});
+    const renewed = await s.enroll({ warehouse: ['list', 'query'] });
+    expect(renewed).toMatchObject({ state: 'active', changed: {} });
+    // `list` keeps its pin, so a definition swapped before the renewal is still caught.
+    expect(consent(s).definitions).toEqual([{ tool: 'list', digest: first }]);
+    expect(await s.service.authority.authorize(use(second, 'list'), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'binding_mismatch' },
+    });
+    expect(await s.service.authority.authorize(use(second), {})).toMatchObject({
+      state: 'authorized',
+    });
+    expect(consent(s).definitions).toContainEqual({ tool: 'query', digest: second });
+  });
+
+  it('drops pins when the grant moves to a different recipient', async () => {
+    const s = setup();
+    await s.enroll();
+    await s.service.authority.authorize(use(first), {});
+    s.changeTarget({
+      ...target,
+      resource: { ...target.resource, url: 'https://other.example/mcp' },
+    });
+    await s.enroll();
+    expect(consent(s).definitions).toBeUndefined();
+  });
+
+  it('accepts a pin another replica wrote first only when it matches', async () => {
+    const s = setup();
+    await s.enroll();
+    const lose = (digest: string) =>
+      jest
+        .mocked(s.storage.pinScheduleMCPToolDefinition)
+        .mockImplementationOnce(async ({ tool }) => {
+          consent(s).definitions = [{ tool, digest }];
+          return false;
+        });
+    lose(first);
+    expect(await s.service.authority.authorize(use(first), {})).toMatchObject({
+      state: 'authorized',
+    });
+    consent(s).definitions = undefined;
+    lose(second);
+    expect(await s.service.authority.authorize(use(first), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'binding_mismatch' },
+    });
+  });
+
+  it('does not authorize a first use whose pin could not be stored', async () => {
+    const s = setup();
+    await s.enroll();
+    jest.mocked(s.storage.pinScheduleMCPToolDefinition).mockResolvedValueOnce(false);
+    expect(await s.service.authority.authorize(use(first), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'binding_mismatch' },
+    });
   });
 });
