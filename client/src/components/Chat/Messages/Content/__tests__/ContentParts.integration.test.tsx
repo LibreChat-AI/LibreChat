@@ -156,13 +156,19 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('../Parts', () => ({
+  AGENT_STYLE_TOOLS: new Set(['image_gen_oai', 'image_edit_oai', 'gemini_image_gen']),
   StreamingThoughtPeek: ({ text }: { text: string }) => (
     <div data-testid="streaming-thought-peek">{text}</div>
   ),
-  AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => {
+  AttachmentGroup: ({ attachments: source }: { attachments?: TAttachment[] }) => {
+    const { useVisibleAttachments } = jest.requireActual<
+      typeof import('@librechat/chat/components')
+    >('@librechat/chat/components');
+    const attachments = useVisibleAttachments(source);
     const { isSubmitting } = jest
       .requireActual<typeof import('~/Providers/MessageContext')>('~/Providers/MessageContext')
       .useMessageContext();
+    if (!attachments?.length) return null;
     return (
       <div
         data-testid="attachment-group"
@@ -443,9 +449,9 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     });
 
     const groups = screen.getAllByTestId('attachment-group');
-    // One AttachmentGroup hoisted at the group level — inner ToolCalls skip rendering theirs.
-    expect(groups).toHaveLength(1);
-    expect(groups[0].getAttribute('data-count')).toBe('2');
+    // Output ownership stays with each producing call when the activity group changes.
+    expect(groups).toHaveLength(2);
+    expect(groups.map((row) => row.getAttribute('data-count'))).toEqual(['1', '1']);
   });
 
   it('marks grouped artifacts as history while another response regenerates', () => {
@@ -459,17 +465,25 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
       content,
       attachments,
     });
-    expect(screen.getByTestId('attachment-group')).toHaveAttribute('data-submitting', 'false');
+    expect(
+      screen
+        .getAllByTestId('attachment-group')
+        .every((row) => row.getAttribute('data-submitting') === 'false'),
+    ).toBe(true);
 
     rerender(
       <RecoilRoot>
         <ContentParts {...baseProps} isSubmitting content={content} attachments={attachments} />
       </RecoilRoot>,
     );
-    expect(screen.getByTestId('attachment-group')).toHaveAttribute('data-submitting', 'true');
+    expect(
+      screen
+        .getAllByTestId('attachment-group')
+        .every((row) => row.getAttribute('data-submitting') === 'true'),
+    ).toBe(true);
   });
 
-  it('does not group a single tool call — image renders inline (no hoist)', () => {
+  it('keeps a single call output beside the tool without adding a tool group', () => {
     const content = [makeMcpToolCall('t1')];
     const attachments = [imageAttachment('t1', 'a.png')];
 
@@ -479,7 +493,7 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
       attachments,
     });
 
-    // Single tool call: AttachmentGroup is rendered by ToolCall, not hoisted.
+    // A single tool still has one output row and no activity-group label.
     const groups = screen.queryAllByTestId('attachment-group');
     expect(groups).toHaveLength(1);
     expect(groups[0].getAttribute('data-count')).toBe('1');
@@ -506,9 +520,11 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     });
 
     const groups = screen.getAllByTestId('attachment-group');
-    expect(groups).toHaveLength(1);
-    // Both image and file are in the hoisted group.
-    expect(groups[0].getAttribute('data-count')).toBe('2');
+    expect(groups).toHaveLength(2);
+    expect(groups.map((row) => row.getAttribute('data-paths'))).toEqual([
+      '/files/a.png',
+      '/files/doc.pdf',
+    ]);
   });
 
   it('renders no AttachmentGroup when grouped tool calls have no attachments', () => {
@@ -1817,26 +1833,26 @@ describe('ContentParts integration: phase media row', () => {
   ];
   const phaseAttachments = [imageAttachment('t1', 'a.png'), imageAttachment('t2', 'b.png')];
 
-  it("lifts a phase's files into a media row the fold cannot hide", () => {
+  it("lifts a phase's files into stable rows the fold cannot hide", () => {
     renderContentParts({ ...baseProps, content: phaseContent(), attachments: phaseAttachments });
 
     const rows = screen.getAllByTestId('attachment-group');
-    expect(rows).toHaveLength(1);
-    expect(rows[0].getAttribute('data-count')).toBe('2');
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.getAttribute('data-count'))).toEqual(['1', '1']);
     // The row is a sibling of the collapsed card, not a child of its panel.
     expect(
       within(screen.getByTestId('activity-phase-panel')).queryByTestId('attachment-group'),
     ).toBeNull();
   });
 
-  it('still shows one row once the reader expands the phase', () => {
+  it('still shows each output once the reader expands the phase', () => {
     renderContentParts({ ...baseProps, content: phaseContent(), attachments: phaseAttachments });
 
     fireEvent.click(screen.getByRole('button', { name: 'Generated five mortgage charts' }));
 
     const rows = screen.getAllByTestId('attachment-group');
-    expect(rows).toHaveLength(1);
-    expect(rows[0].getAttribute('data-count')).toBe('2');
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.getAttribute('data-count'))).toEqual(['1', '1']);
   });
 
   it('lifts the file of a lone tool call too, not just a grouped batch', () => {
@@ -1854,20 +1870,85 @@ describe('ContentParts integration: phase media row', () => {
     ).toBeNull();
   });
 
-  it('shows the latest record when a tool writes the same file twice', () => {
-    // Both records name one stored file; the later carries the fresher
-    // lifecycle fields. Hoisting makes this row the only surface for it, so a
-    // first-seen dedup would pin the stale record on screen.
-    const stale = { ...imageAttachment('t1', 'a.png'), file_id: 'f1' } as TAttachment;
-    const fresh = { ...stale, filepath: '/files/a.png?v=2' } as TAttachment;
-    const content = [makeMcpToolCall('t1'), makePhasePart(0, 1, 'Redrew the chart')];
+  it.each([true, false])(
+    'shows the latest record when a tool writes the same file twice (phase %s)',
+    (phase) => {
+      // Both records name one stored file; the later carries the fresher
+      // lifecycle fields. Hoisting makes this row the only surface for it, so a
+      // first-seen dedup would pin the stale record on screen.
+      const stale = { ...imageAttachment('t1', 'a.png'), file_id: 'f1' } as TAttachment;
+      const fresh = { ...stale, filepath: '/files/a.png?v=2' } as TAttachment;
+      const content = [
+        makeMcpToolCall('t1'),
+        ...(phase ? [makePhasePart(0, 1, 'Redrew the chart')] : []),
+      ];
 
-    renderContentParts({ ...baseProps, content, attachments: [stale, fresh] });
+      renderContentParts({ ...baseProps, content, attachments: [stale, fresh] });
 
-    const row = screen.getByTestId('attachment-group');
-    expect(row.getAttribute('data-count')).toBe('1');
-    expect(row.getAttribute('data-paths')).toBe('/files/a.png?v=2');
-  });
+      const row = screen.getByTestId('attachment-group');
+      expect(row.getAttribute('data-count')).toBe('1');
+      expect(row.getAttribute('data-paths')).toBe('/files/a.png?v=2');
+    },
+  );
+
+  it.each([true, false])(
+    'keeps the output row mounted through the exported chat phases (live folding %s)',
+    async (foldLiveActivity) => {
+      const batch = (id: string, label: string): TMessageContentParts => ({
+        type: ContentTypes.ACTIVITY_LABEL,
+        activity_label: label,
+        tool_call_ids: [id],
+        status: 'ok',
+        pending: false,
+      });
+      // The exported response: a skill phase, query, prose, chart, answer, then summary.
+      const content: TMessageContentParts[] = [
+        { type: ContentTypes.THINK, think: 'Load the warehouse guidance.' },
+        makeMcpToolCall('skill'),
+        batch('skill', 'Loaded guidance'),
+        { type: ContentTypes.THINK, think: 'Query annual prices.' },
+        makeTextPart('Let us query the annual price trend.'),
+        makePhasePart(0, 4, 'Prepared the query'),
+        makeMcpToolCall('query'),
+        batch('query', 'Queried annual prices'),
+        makeTextPart('Now let us chart the query results.'),
+        makeMcpToolCall('chart'),
+        batch('chart', 'Created the chart'),
+        makeTextPart('Here is the chart and CSV.'),
+        makePhasePart(6, 11, 'Charted query results'),
+      ];
+      const files = [imageAttachment('chart', 'chart.png')];
+      const frame = (parts: TMessageContentParts[], settled = false, sibling = false) => {
+        const messageId = settled ? 'response' : 'request_';
+        return (
+          <RecoilRoot>
+            <ContentParts
+              {...baseProps}
+              messageId={sibling ? 'sibling' : messageId}
+              conversationId="conversation"
+              renderOwnerId={settled ? undefined : 'request'}
+              isSubmitting={!settled}
+              foldLiveActivity={foldLiveActivity}
+              content={parts}
+              attachments={files}
+            />
+          </RecoilRoot>
+        );
+      };
+      const { rerender } = render(frame(content.slice(0, 11)));
+      const row = screen.getByTestId('attachment-group');
+      rerender(frame(content.slice(0, 12)));
+      expect(screen.getByTestId('attachment-group')).toBe(row);
+      rerender(frame(content));
+      expect(screen.getByTestId('attachment-group')).toBe(row);
+      rerender(frame(content, true));
+      expect(screen.getByTestId('attachment-group')).toBe(row);
+      // A real sibling switch starts a fresh output surface, even when it reused a file.
+      rerender(frame(content, true, true));
+      expect(screen.getByTestId('attachment-group')).not.toBe(row);
+      await act(async () => {});
+    },
+  );
 
   it('renders no row for a phase that produced nothing', () => {
     renderContentParts({ ...baseProps, content: phaseContent() });
