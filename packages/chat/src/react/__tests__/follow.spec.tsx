@@ -8,6 +8,7 @@ import type { TMessage, ChatEvent } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { ChatStream, ChatTransport, ChatStreamStatus } from '../../core';
 import type { FollowChatOptions } from '../follow';
+import { MAX_RETRIES, getReconnectDelay } from '../../core';
 import { useFollowChat } from '../follow';
 
 type TestStream = ChatStream & { push(event: ChatEvent): void; closed: boolean };
@@ -250,6 +251,92 @@ describe('useFollowChat', () => {
 
     await act(async () => release([brief]));
     await waitFor(() => expect(streams).toHaveLength(1));
+  });
+
+  it('attaches to a run signalled while the stored messages were still being read', async () => {
+    const { transport, streams, setStatus } = createTransport(idle);
+    let release: (messages: TMessage[]) => void = () => undefined;
+    const loadMessages = jest.fn(
+      () =>
+        new Promise<TMessage[]>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const { result, rerender } = setup({ transport, loadMessages });
+    await settle();
+    expect(transport.getStatus).toHaveBeenCalledTimes(1);
+
+    setStatus(running);
+    rerender({ id: 'thread-1', transport, loadMessages, live: true });
+    await settle();
+    expect(streams).toHaveLength(0);
+
+    await act(async () => release([brief]));
+    await waitFor(() => expect(streams).toHaveLength(1));
+    expect(result.current.isLoading).toBe(false);
+  });
+
+  it('keeps what a dropped stream showed and attaches again instead of reading stored rows', async () => {
+    const { transport, streams } = createTransport(running);
+    const { result, loadMessages } = setup({ transport });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    act(() => streams[0].push(snapshot('Partial')));
+    await settle();
+    expect(loadMessages).toHaveBeenCalledTimes(1);
+
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        streams[0].push({ type: 'error', status: 0 });
+        await jest.advanceTimersByTimeAsync(getReconnectDelay(1) - 1);
+      });
+      expect(streams).toHaveLength(1);
+      expect(loadMessages).toHaveBeenCalledTimes(1);
+      expect(textOf(result.current.messages)).toEqual(['Partial']);
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1);
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+    await waitFor(() => expect(streams).toHaveLength(2));
+    expect(loadMessages).toHaveBeenCalledTimes(1);
+
+    act(() => streams[1].push(snapshot('Partial and more')));
+    await settle();
+    expect(textOf(result.current.messages)).toEqual(['Partial and more']);
+
+    loadMessages.mockResolvedValue([brief, answer('Stored')]);
+    act(() => streams[1].push(final('Partial and more')));
+    await waitFor(() => expect(textOf(result.current.messages)).toEqual(['Stored']));
+    expect(loadMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops attaching after the reconnect schedule runs out, with what it showed still there', async () => {
+    const { transport, streams } = createTransport(running);
+    const { result, loadMessages } = setup({ transport });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    act(() => streams[0].push(snapshot('Partial')));
+    await settle();
+
+    jest.useFakeTimers();
+    try {
+      (transport.reconnectToStream as jest.Mock).mockRejectedValue(
+        Object.assign(new Error('offline'), { code: 'ERR_NETWORK' }),
+      );
+      await act(async () => {
+        streams[0].push({ type: 'error', status: 0 });
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(transport.reconnectToStream).toHaveBeenCalledTimes(1 + MAX_RETRIES);
+    expect(loadMessages).toHaveBeenCalledTimes(1);
+    expect(textOf(result.current.messages)).toEqual(['Partial']);
+    expect(result.current.status).toBe('error');
   });
 
   it('leaves the conversation it was following when the id changes', async () => {

@@ -8,7 +8,7 @@ import type {
   ChatFinishResult,
   EventApplierEffect,
 } from '../core';
-import { Chat, createEventApplier } from '../core';
+import { Chat, MAX_RETRIES, getReconnectDelay, createEventApplier } from '../core';
 import { ReactQueryChatState } from './state';
 import { useSnapshot } from './snapshot';
 
@@ -24,7 +24,8 @@ export type FollowChatOptions = {
   loadMessages: () => Promise<TMessage[]>;
   /**
    * Whether the caller knows a generation is running. Turning true attaches to it, which covers a
-   * run that starts after the conversation was opened.
+   * run that starts after the conversation was opened; one signalled while the stored messages
+   * are still being read is attached to once they are in.
    */
   live?: boolean;
   /** Live status a step reports beside the message list. */
@@ -51,6 +52,8 @@ export type FollowedChat = {
 
 type Entry = { id: string; chat: Chat; attach: () => Promise<void> };
 type Load = { id: string; attempt: number; state: 'loading' | 'ready' | 'error' };
+/** One attachment: how it ended, unset when nothing was running, and whether it delivered anything. */
+type Attachment = { finished?: ChatFinishResult; received: boolean };
 
 const noMessages: TMessage[] = [];
 const unsubscribed = (): (() => void) => () => undefined;
@@ -68,8 +71,10 @@ const perFrame = (flush: () => void): (() => void) => {
 /**
  * Follows one conversation the reader does not drive: shows its stored messages, attaches to the
  * generation running under it and applies that stream the way main chat does, then reads the
- * stored messages again once the generation ends. The conversation is a core `Chat` over the
- * message cache, so anything that reads `[QueryKeys.messages, id]` sees what it writes.
+ * stored messages again once the generation ends. A stream that drops is not an end: what it
+ * showed stays, and the attachment is made again on main chat's reconnect schedule. The
+ * conversation is a core `Chat` over the message cache, so anything that reads
+ * `[QueryKeys.messages, id]` sees what it writes.
  *
  * A subagent's child thread is the first of these; a side chat is the same thing with a send.
  */
@@ -83,8 +88,8 @@ export function useFollowChat({
   onFinish,
 }: FollowChatOptions): FollowedChat {
   const queryClient = useQueryClient();
-  const host = useRef({ transport, loadMessages, onEffect, onEvent, onFinish });
-  host.current = { transport, loadMessages, onEffect, onEvent, onFinish };
+  const host = useRef({ transport, loadMessages, live, onEffect, onEvent, onFinish });
+  host.current = { transport, loadMessages, live, onEffect, onEvent, onFinish };
   const [attempt, setAttempt] = useState(0);
   const [entry, setEntry] = useState<Entry>();
   const [load, setLoad] = useState<Load>({ id, attempt, state: 'loading' });
@@ -93,6 +98,8 @@ export function useFollowChat({
     let stale = false;
     let loaded = false;
     let attaching = false;
+    let attachment: Attachment | undefined;
+    let wake: (() => void) | undefined;
     const applier = createEventApplier({
       schedule: perFrame,
       onEffect: (effect) => host.current.onEffect?.(effect),
@@ -112,9 +119,35 @@ export function useFollowChat({
         throw new Error('A followed conversation takes no turns');
       },
       applyEvent: applier.applyEvent,
-      onEvent: (event) => host.current.onEvent?.(event),
-      onFinish: (result) => host.current.onFinish?.(result),
+      onEvent: (event) => {
+        if (attachment != null) {
+          attachment.received = true;
+        }
+        host.current.onEvent?.(event);
+      },
+      onFinish: (result) => {
+        if (attachment != null) {
+          attachment.finished = result;
+        }
+        host.current.onFinish?.(result);
+      },
     });
+
+    const pause = (delay: number): Promise<void> =>
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, delay);
+        wake = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+
+    const follow = async (): Promise<Attachment> => {
+      const current: Attachment = { received: false };
+      attachment = current;
+      await chat.resumeStream();
+      return current;
+    };
 
     const read = async (): Promise<void> => {
       const messages = await host.current.loadMessages();
@@ -123,14 +156,29 @@ export function useFollowChat({
       }
     };
 
-    /** Follows whatever is running to its end, then takes the stored rows as the result. */
+    /**
+     * Follows whatever is running to its end, then takes the stored rows as the result. A dropped
+     * stream leaves the generation running, so the rows it showed are kept, not replaced by
+     * stored ones that may not hold them yet, and the attachment is made again. An attachment
+     * that delivered something starts the count of failed ones over.
+     */
     const attach = async (): Promise<void> => {
       if (stale || !loaded || attaching) {
         return;
       }
       attaching = true;
       try {
-        await chat.resumeStream();
+        for (let failures = 0; !stale; ) {
+          const { finished, received } = await follow();
+          if (finished?.isDisconnect !== true) {
+            break;
+          }
+          failures = received ? 1 : failures + 1;
+          if (failures > MAX_RETRIES) {
+            return;
+          }
+          await pause(getReconnectDelay(failures));
+        }
         await read();
       } catch {
         /** The chat reports a stream failure itself; a failed re-read leaves what it streamed. */
@@ -149,7 +197,8 @@ export function useFollowChat({
         }
         loaded = true;
         setLoad({ id, attempt, state: 'ready' });
-        if (status?.active === true) {
+        /** A run the caller signalled during the read had nothing to attach to until now. */
+        if (status?.active === true || host.current.live) {
           await attach();
         }
       } catch {
@@ -165,6 +214,7 @@ export function useFollowChat({
 
     return () => {
       stale = true;
+      wake?.();
       applier.reset();
       chat.dispose();
     };
