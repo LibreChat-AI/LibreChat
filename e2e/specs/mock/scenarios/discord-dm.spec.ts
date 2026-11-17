@@ -70,7 +70,7 @@ for (const [theme, scenario] of scenarios) {
     await select.click();
     const codeDialog = page.getByRole('dialog', { name: 'Use for DMs', exact: true });
     await expect(
-      codeDialog.getByText('Confirm in Discord to switch the agent for this bot’s DMs.', {
+      codeDialog.getByText('Confirm in Discord to switch the agent for your DMs with this bot.', {
         exact: false,
       }),
     ).toBeVisible();

@@ -51,7 +51,11 @@ export default function Handoff({
         ) : (
           <>
             <div className="flex flex-wrap gap-2">
-              <Button type="button" onClick={onContinue}>
+              <Button
+                type="button"
+                onClick={onContinue}
+                aria-describedby={!canResume ? `${id}-storage` : undefined}
+              >
                 {localize('com_ui_channel_handoff_continue')}
               </Button>
               {!localOnly && (
@@ -67,7 +71,7 @@ export default function Handoff({
               )}
             </div>
             {!canResume && (
-              <p className="text-text-secondary text-sm">
+              <p id={`${id}-storage`} className="text-text-secondary text-sm">
                 {localize('com_ui_channel_handoff_storage')}
               </p>
             )}
@@ -96,15 +100,12 @@ export default function Handoff({
                   {localize(copied ? 'com_ui_copied' : 'com_ui_copy_link')}
                 </Button>
                 <span role="status" className="sr-only">
-                  {copied ? localize('com_ui_copied') : ''}
+                  {copyFailed && localize('com_ui_channel_handoff_copy_failed')}
+                  {!copyFailed && copied && localize('com_ui_copied')}
                 </span>
                 {copyFailed && (
                   <div className="space-y-2 text-left">
-                    <p
-                      id={`${id}-copy-error`}
-                      role="status"
-                      className="text-text-secondary text-sm"
-                    >
+                    <p id={`${id}-copy-error`} className="text-text-secondary text-sm">
                       {localize('com_ui_channel_handoff_copy_failed')}
                     </p>
                     <Textarea

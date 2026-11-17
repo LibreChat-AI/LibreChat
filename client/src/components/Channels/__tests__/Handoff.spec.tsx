@@ -20,7 +20,12 @@ test.each([true, false])(
     expect(screen.queryByRole('img')).not.toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    if (!canResume) expect(screen.getByText('com_ui_channel_handoff_storage')).toBeVisible();
+    if (!canResume) {
+      expect(screen.getByText('com_ui_channel_handoff_storage')).toBeVisible();
+      expect(
+        screen.getByRole('button', { name: 'com_ui_channel_handoff_continue' }),
+      ).toHaveAccessibleDescription('com_ui_channel_handoff_storage');
+    }
     await userEvent.click(screen.getByRole('button', { name: 'com_ui_channel_handoff_continue' }));
     expect(onContinue).toHaveBeenCalledTimes(1);
   },

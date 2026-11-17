@@ -249,6 +249,14 @@ function Setup({
   const reveal = useCallback((node: HTMLDivElement | null) => {
     node?.focus();
   }, []);
+  const revealCommand = useCallback(
+    (node: HTMLDivElement | null) => {
+      const details = node?.closest('details');
+      if (details) details.open = true;
+      reveal(node);
+    },
+    [reveal],
+  );
   const revealFlow = useCallback(
     (node: HTMLDivElement | null) => {
       flowAlert.current = node;
@@ -747,10 +755,7 @@ function Setup({
                 {localize('com_ui_discord_connect')}
               </Button>
             </div>
-            <details
-              className="group border-border-light border-t pt-2"
-              open={(commandAppId === app.applicationId && commands.isError) || undefined}
-            >
+            <details className="group border-border-light border-t pt-2">
               <summary className="text-text-secondary cursor-pointer text-sm">
                 {localize('com_ui_discord_setup_details')}
               </summary>
@@ -808,7 +813,7 @@ function Setup({
                       <p role="status">{localize('com_ui_discord_commands_success')}</p>
                     )}
                   {commandAppId === app.applicationId && commands.isError && (
-                    <Alert ref={reveal} tabIndex={-1} variant="error">
+                    <Alert ref={revealCommand} tabIndex={-1} variant="error">
                       <p>{localize(errorLabel(commands.error))}</p>
                       <Button
                         type="button"

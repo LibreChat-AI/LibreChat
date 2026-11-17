@@ -207,10 +207,7 @@ test('failed clipboard copying leaves a selectable private link @scenario:channe
   await page.getByRole('button', { name: 'Use my phone', exact: true }).click();
   await expect(page.getByLabel('Private account linking URL')).toHaveCount(0);
   await page.getByRole('button', { name: 'Copy link', exact: true }).click();
-  await expect(page.getByText('Select the link below to copy it manually.')).toHaveAttribute(
-    'role',
-    'status',
-  );
+  await expect(page.getByRole('status')).toHaveText('Select the link below to copy it manually.');
   const input = page.getByLabel('Private account linking URL');
   await input.focus();
   expect(

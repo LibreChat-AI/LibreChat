@@ -714,6 +714,7 @@ describe('Discord durable worker delivery', () => {
     };
     expect(discordProgressText(f.state)).toContain('Status unavailable');
     expect(discordProgressText(f.state)).toContain('some actions may already have run');
+    expect(discordProgressText(f.state)).toContain('Ask an administrator if it stays unavailable.');
     expect(discordProgressText(f.state)).not.toContain('private review');
   });
 
@@ -1643,7 +1644,7 @@ describe('Discord quiet drafts and complete documents', () => {
     await f.execute();
     expect(f.writes.filter((write) => write.body.document)).toHaveLength(1);
     expect(f.writes[0].body.document).toBe(text);
-    expect(f.writes[0].body.content).toBe('Full reply attached.');
+    expect(f.writes[0].body.content).toBe('The complete reply is attached as reply.md.');
     expect(f.writes).toHaveLength(1);
     expect(
       f.writes[0].body.components?.[0].components.map((button) =>

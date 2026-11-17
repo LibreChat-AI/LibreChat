@@ -220,7 +220,7 @@ export function discordProgressText(run: ChannelRunView, bundle?: ChannelBundle)
   if (run.snapshot?.recovery === 'execution_state_unavailable')
     return (
       (run.cancellationRequested ? 'Stop requested. ' : '') +
-      'Status unavailable. Check /librechat status before retrying; some actions may already have run.'
+      'Status unavailable. Check /librechat status before retrying; some actions may already have run. Ask an administrator if it stays unavailable.'
     );
   if (run.cancellationRequested) return 'Stop requested.';
   if (run.snapshot?.status === 'requires_action')

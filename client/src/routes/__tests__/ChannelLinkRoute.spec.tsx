@@ -477,7 +477,7 @@ test('phone handoff permits manual copy when clipboard access fails', async () =
     await screen.findByRole('button', { name: 'com_ui_channel_handoff_phone' }),
   );
   await userEvent.click(screen.getByRole('button', { name: 'com_ui_copy_link' }));
-  expect(screen.getByText('com_ui_channel_handoff_copy_failed')).toBeVisible();
+  expect(screen.getByRole('status')).toHaveTextContent('com_ui_channel_handoff_copy_failed');
   const input = screen.getByLabelText('com_ui_channel_handoff_private_link');
   await userEvent.click(input);
   expect(input).toHaveFocus();

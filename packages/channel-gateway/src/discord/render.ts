@@ -245,9 +245,9 @@ export function discordAnswerFits(text: string, maxParts: number): boolean {
 
 function documentCaption(artifactsUnavailable = false): string {
   return (
-    'Full reply attached.' +
+    'The complete reply is attached as reply.md.' +
     (artifactsUnavailable
-      ? '\n\nFor other attachments, open the saved session with /librechat status.'
+      ? '\n\nOther attachments are unavailable in Discord. Use /librechat status to open the saved session.'
       : '')
   );
 }

@@ -4198,6 +4198,6 @@
   "com_ui_discord_dm_destination": "Discord DM channel: {{0}}",
   "com_ui_discord_dm_revoke_for": "Revoke DM Selection: agent {{0}}, channel {{1}}",
   "com_ui_discord_dm_revoke": "Revoke DM Selection",
-  "com_ui_discord_dm_confirmation": "Confirm in Discord to switch the agent for this bot’s DMs. Your server link stays connected.",
+  "com_ui_discord_dm_confirmation": "Confirm in Discord to switch the agent for your DMs with this bot. Your server link stays connected.",
   "com_ui_discord_dm_revoke_help": "Stop using this agent in the selected direct message. Requests still waiting to run or deliver will lose this selection. Your server account link stays active."
 }

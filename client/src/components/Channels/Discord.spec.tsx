@@ -1729,3 +1729,19 @@ test('reveals a command failure even when setup details were closed while waitin
   expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
   expect(screen.getByRole('button', { name: 'com_ui_refresh' })).toBeVisible();
 });
+
+test('keeps command setup details open while Refresh restores focus', async () => {
+  const { user } = await page();
+  const { origin, dismiss } = await failedCommand(user);
+  const details = origin.closest('details');
+  expect(details).toHaveAttribute('open');
+  const reads = deferred<{ applications: DiscordApplication[] }>();
+  jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
+  await dismiss();
+  expect(details).toHaveAttribute('open');
+  await act(async () => reads.resolve({ applications: [app] }));
+  await waitFor(() => expect(origin).toBeEnabled());
+  expect(origin).toBeVisible();
+  await waitFor(() => expect(origin).toHaveFocus());
+  expect(details).toHaveAttribute('open');
+});
