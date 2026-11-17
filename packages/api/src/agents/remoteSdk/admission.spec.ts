@@ -4,7 +4,15 @@ import {
   createInitialModelBoundAdmissionCallback,
   createModelBoundChatModelCallback,
 } from '../../middleware/modelBoundContent';
-import { createHostModelLifecycle, createWorkerModelLifecycle } from './admission';
+import {
+  createHostModelLifecycle,
+  createWorkerModelLifecycle,
+  supportsModelInvocationContext,
+} from './admission';
+
+it('installs an SDK that exercises combined admission and output protection', () => {
+  expect(supportsModelInvocationContext).toBe(true);
+});
 
 function fixture() {
   const persist = jest.fn();
