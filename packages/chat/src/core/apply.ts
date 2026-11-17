@@ -272,6 +272,14 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
       const next = [...messages];
       next[placement.index] = placement.message;
       context.write(next);
+      /**
+       * A regenerate-shaped turn seeds its reply from the submission's placeholder, not from the
+       * list, so a frame placed on that placeholder is carried there too or the first run step
+       * drops it.
+       */
+      if (placement.message.messageId === submission.initialResponse?.messageId) {
+        submission = { ...submission, initialResponse: placement.message };
+      }
       settle(syncStreamMessage(stream, placement.message));
     }
     return placement.settled;

@@ -641,6 +641,38 @@ describe('side frames', () => {
     expect(textOf(read())).toEqual([undefined, 'On it']);
   });
 
+  it('keeps a steer placed on the placeholder of a regeneration, which seeds from the submission', () => {
+    const saved: TMessage = {
+      messageId: 'resp-0',
+      conversationId: 'thread-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [{ type: ContentTypes.TEXT, text: 'Earlier answer' }],
+    };
+    const optimistic: TMessage = {
+      messageId: 'user-1_',
+      conversationId: 'thread-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [],
+    };
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, saved, optimistic]);
+    applyEvent(created, context);
+
+    applyEvent(steered(0), context);
+    expect(read()[2]).toMatchObject({ messageId: 'user-1_', content: [steerPart] });
+
+    applyEvent(opened('s1', 1), context);
+    applyEvent(token('s1', 'On it'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-0', 'resp-1']);
+    expect(parts(read())[0]).toEqual(steerPart);
+    expect(textOf(read())).toEqual([undefined, 'On it']);
+  });
+
   it('holds a steer that arrives before the turn is named, then places it', () => {
     const optimistic: TMessage = {
       messageId: 'user-1_',
