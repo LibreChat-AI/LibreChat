@@ -54,6 +54,12 @@ export type FollowedChat = {
    * to attach to.
    */
   isFollowing: boolean;
+  /**
+   * Whether the last attachment left nothing to follow: no generation was running, or its stream
+   * dropped and could not be attached again. With `live` set, the run is out of this chat's reach.
+   * False until an attachment has been tried, so a caller does not read "not yet" as "never".
+   */
+  isUnattached: boolean;
   /** Whether the stored messages could not be read; `retry` reads them again. */
   isLoadError: boolean;
   retry: () => void;
@@ -107,6 +113,7 @@ export function useFollowChat({
   const [entry, setEntry] = useState<Entry>();
   const [load, setLoad] = useState<Load>({ id, attempt, state: 'loading' });
   const [following, setFollowing] = useState(false);
+  const [unattached, setUnattached] = useState(false);
   const wasLive = useRef(false);
 
   useEffect(() => {
@@ -195,14 +202,19 @@ export function useFollowChat({
       }
       attaching = true;
       setFollowing(true);
+      setUnattached(false);
+      /** Whether a generation was reached and not lost for good. */
+      let reached = false;
       try {
         for (let failures = 0; !stale; ) {
           const { finished, received } = await follow();
+          reached ||= received || finished != null;
           if (finished?.isDisconnect !== true) {
             break;
           }
           failures = received ? 1 : failures + 1;
           if (failures > MAX_RETRIES) {
+            reached = false;
             return;
           }
           await pause(getReconnectDelay(failures));
@@ -219,6 +231,7 @@ export function useFollowChat({
         reading = false;
         if (!stale) {
           setFollowing(false);
+          setUnattached(!reached);
         }
       }
       if (owed) {
@@ -271,6 +284,7 @@ export function useFollowChat({
     setEntry({ id, chat, attach, settle });
     setLoad({ id, attempt, state: 'loading' });
     setFollowing(false);
+    setUnattached(false);
     void open();
 
     return () => {
@@ -315,6 +329,7 @@ export function useFollowChat({
     error,
     isLoading: state === 'loading',
     isFollowing: following && current != null,
+    isUnattached: unattached && current != null,
     isLoadError: state === 'error',
     retry,
   };

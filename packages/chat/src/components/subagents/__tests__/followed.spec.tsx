@@ -52,6 +52,7 @@ const followedChat = (overrides: Partial<FollowedChat> = {}): FollowedChat => ({
   error: undefined,
   isLoading: false,
   isFollowing: false,
+  isUnattached: false,
   isLoadError: false,
   retry: () => undefined,
   ...overrides,

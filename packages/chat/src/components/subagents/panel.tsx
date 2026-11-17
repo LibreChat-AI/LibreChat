@@ -13,6 +13,7 @@ import {
   useToastContext,
 } from '@librechat/client';
 import type {
+  TMessage,
   ParentSubagentTaskSummary,
   SubagentControlAction,
   SubagentControlReceipt,
@@ -73,6 +74,17 @@ const TERMINAL_CONTROL_REASONS = new Set([
   'task_cancelled',
   'task_failed',
 ]);
+
+/**
+ * Whether a stored reply came without the parts it was built from. A child's result row keeps
+ * its content only when it was streamed and fits the row's budget; otherwise its tool calls and
+ * intermediate output live in the durable projection alone, which a conversation cannot draw.
+ */
+const repliesLackParts = (messages: readonly TMessage[]): boolean =>
+  messages.some(
+    (message) =>
+      !message.isCreatedByUser && !(Array.isArray(message.content) && message.content.length > 0),
+  );
 
 const isTerminalControlReason = (reason?: string): boolean =>
   reason != null && TERMINAL_CONTROL_REASONS.has(reason);
@@ -309,30 +321,31 @@ export default function SubagentThreadPanel({
     live: followLive,
     enabled: followable,
   });
-  /** The durable view stays the reader in two cases: the thread's messages could not be read (a
-   *  server without the route), and a running task with no generation to attach to (a server
-   *  that gives children no generation job). */
+  /** Rows that are not being streamed into: the stored ones, as first read or as read again at
+   *  a run's end. */
+  const followedSettled = followed != null && !followed.isLoading && !followed.isFollowing;
+  const followedMessages = followed?.messages;
+  const historyUnstored = useMemo(
+    () => followedSettled && followedMessages != null && repliesLackParts(followedMessages),
+    [followedSettled, followedMessages],
+  );
+  /** The durable view is the reader when the thread cannot be shown as a conversation: its
+   *  messages could not be read (a server without the route), a running task has no stream left
+   *  to follow (a server that gives children no generation job, or a stream lost for good), or
+   *  its stored replies do not hold their own history. An attachment not yet tried is none of
+   *  these. */
   const unfollowable =
     followed != null &&
-    (followed.isLoadError || (followLive && !followed.isLoading && !followed.isFollowing));
-  const isFollowing = followed?.isFollowing === true;
-  /** Decided once per thread, so the body does not swap when a followed run ends or when a run
-   *  the durable view was drawing ends. */
-  const [followMode, setFollowMode] = useState<{
-    threadId: string;
-    value: 'followed' | 'durable';
-  }>();
+    (followed.isLoadError || (followLive && followed.isUnattached) || historyUnstored);
+  /** Kept once chosen for a thread, so the body does not swap back when the run the durable view
+   *  was drawing ends. */
+  const [durableThreadId, setDurableThreadId] = useState<string>();
   useEffect(() => {
-    if (!followable || !(isFollowing || unfollowable)) return;
-    const value = isFollowing ? 'followed' : 'durable';
-    setFollowMode((current) => (current?.threadId === threadId ? current : { threadId, value }));
-  }, [followable, isFollowing, threadId, unfollowable]);
-  const decidedFollow = followMode?.threadId === threadId ? followMode.value : undefined;
-  const follows =
-    followable &&
-    followed != null &&
-    decidedFollow !== 'durable' &&
-    (decidedFollow === 'followed' || !unfollowable);
+    if (followable && unfollowable) {
+      setDurableThreadId(threadId);
+    }
+  }, [followable, threadId, unfollowable]);
+  const follows = followable && followed != null && durableThreadId !== threadId && !unfollowable;
   const contentStream = panelStore.useActivityStream(
     selection,
     !follows && (!durableTerminal || eventTaskRunning),

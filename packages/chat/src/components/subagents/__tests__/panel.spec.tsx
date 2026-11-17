@@ -4685,10 +4685,21 @@ describe('SubagentThreadPanel', () => {
       error: undefined,
       isLoading: false,
       isFollowing: false,
+      isUnattached: false,
       isLoadError: false,
       retry: jest.fn(),
       ...overrides,
     });
+
+    const reply = (content?: TMessage['content']): TMessage =>
+      ({
+        messageId: 'task:assistant',
+        conversationId: 'child-thread',
+        parentMessageId: 'task:user',
+        isCreatedByUser: false,
+        text: 'Done',
+        ...(content == null ? {} : { content }),
+      }) as TMessage;
 
     const view = (status: SubagentThreadView['status']) =>
       mockUseSubagentThreadQuery.mockReturnValue({
@@ -4765,13 +4776,73 @@ describe('SubagentThreadPanel', () => {
 
     it('keeps the durable view for a running task with no generation to follow', () => {
       view('running');
-      mockUseThreadChat.mockReturnValue(followedChat());
+      mockUseThreadChat.mockReturnValue(followedChat({ isUnattached: true }));
 
       mount();
 
       expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
       expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
       expect(mockUseSubagentActivityStream).toHaveBeenLastCalledWith(selection, true);
+    });
+
+    it('does not take an attachment that has not started yet for one that found nothing', () => {
+      view('running');
+      mockUseThreadChat.mockReturnValue(followedChat());
+      const { rerender } = mount();
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
+
+      mockUseThreadChat.mockReturnValue(followedChat({ isFollowing: true, status: 'streaming' }));
+      remount(rerender);
+
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
+      expect(screen.queryByTestId('subagent-conversation')).not.toBeInTheDocument();
+      expect(mockUseSubagentActivityStream).toHaveBeenLastCalledWith(selection, false);
+    });
+
+    it('hands a run back to the durable view when its followed stream is lost for good', () => {
+      view('running');
+      mockUseThreadChat.mockReturnValue(followedChat({ isFollowing: true, status: 'streaming' }));
+      const { rerender } = mount();
+      expect(mockUseSubagentActivityStream).toHaveBeenLastCalledWith(selection, false);
+
+      mockUseThreadChat.mockReturnValue(followedChat({ isUnattached: true, status: 'error' }));
+      remount(rerender);
+
+      expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
+      expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
+      expect(mockUseSubagentActivityStream).toHaveBeenLastCalledWith(selection, true);
+    });
+
+    it('keeps the durable view for a finished thread whose stored reply lacks its parts', () => {
+      view('completed');
+      mockUseThreadChat.mockReturnValue(followedChat({ messages: [reply()] }));
+
+      mount();
+
+      expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
+      expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
+    });
+
+    it('draws a finished thread whose stored reply holds its parts as a conversation', () => {
+      view('completed');
+      mockUseThreadChat.mockReturnValue(
+        followedChat({ messages: [reply([{ type: ContentTypes.TEXT, text: 'Done' }])] }),
+      );
+
+      mount();
+
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
+    });
+
+    it('does not judge a reply still being streamed by the parts it has so far', () => {
+      view('running');
+      mockUseThreadChat.mockReturnValue(
+        followedChat({ isFollowing: true, status: 'streaming', messages: [reply()] }),
+      );
+
+      mount();
+
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
     });
 
     it("keeps the durable view when the thread's messages cannot be read", () => {
@@ -4799,11 +4870,12 @@ describe('SubagentThreadPanel', () => {
 
     it('stays on the durable view it chose when that run ends', () => {
       view('running');
-      mockUseThreadChat.mockReturnValue(followedChat());
+      mockUseThreadChat.mockReturnValue(followedChat({ isUnattached: true }));
       const { rerender } = mount();
       expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
 
       view('completed');
+      mockUseThreadChat.mockReturnValue(followedChat());
       remount(rerender);
 
       expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
