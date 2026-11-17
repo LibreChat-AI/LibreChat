@@ -116,7 +116,7 @@ export interface ScheduleMCPExecutionFactory<
     stage: ScheduleMCPExecution['stage'],
     requireEnrollment?: boolean,
     options?: ScheduleMCPExecutionOptions,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 }
 
 export function createScheduleMCPExecution<
@@ -312,6 +312,7 @@ export function createScheduleMCPExecution<
       if ((!execution || !execution.enrolled) && requireEnrollment)
         throw new ScheduledMCPPolicyError('consent_missing', '');
       if (execution) executions.set(context, execution);
+      return execution != null;
     },
   };
 }
