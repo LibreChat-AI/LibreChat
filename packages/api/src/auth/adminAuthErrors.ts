@@ -25,3 +25,25 @@ export function mapAdminAuthError(error: unknown): AdminAuthErrorResponse | null
   }
   return null;
 }
+
+/** Only an explicit invalid grant confirms that the user's renewal credentials were rejected. */
+export function mapAdminRefreshError(error: unknown): AdminAuthErrorResponse {
+  const mapped = mapAdminAuthError(error);
+  if (mapped) {
+    return mapped;
+  }
+  const status =
+    typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined;
+  const rejected =
+    typeof error === 'object' &&
+    error !== null &&
+    (('error' in error && error.error === 'invalid_grant') ||
+      ('code' in error && error.code === 'invalid_grant'));
+  if (rejected && (status === undefined || status === 400 || status === 401)) {
+    return { status: 401, body: { error: 'Refresh failed', error_code: 'REFRESH_FAILED' } };
+  }
+  return {
+    status: 503,
+    body: { error: 'Session renewal unavailable', error_code: 'AUTH_SESSION_CHECK_UNAVAILABLE' },
+  };
+}
