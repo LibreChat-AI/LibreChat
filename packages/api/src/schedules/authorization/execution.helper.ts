@@ -1,9 +1,11 @@
 import type {
+  MCPGrantIdentity,
+  MCPGrantEnrollment,
   ScheduledMCPIdentity,
   ScheduledMCPTarget,
-  ScheduledMCPEnrollment,
 } from 'librechat-data-provider';
 import type {
+  MCPConsentStorage,
   ScheduleMCPConsentStorage,
   ScheduleConsentSnapshot,
   IUser,
@@ -55,9 +57,9 @@ export function untouchedSince(
 }
 
 /** The two pin writes over an enrollment a fake keeps in memory, with the real fences. */
-export function pinStorage(
-  current: () => ScheduledMCPEnrollment | null | undefined,
-): Pick<ScheduleMCPConsentStorage, 'pinScheduleMCPToolDefinition' | 'flagScheduleMCPToolChange'> {
+export function pinStorage<Identity extends MCPGrantIdentity = ScheduledMCPIdentity>(
+  current: () => MCPGrantEnrollment<Identity> | null | undefined,
+): Pick<MCPConsentStorage<Identity>, 'pinScheduleMCPToolDefinition' | 'flagScheduleMCPToolChange'> {
   const find = (revision: string, consentId: string) => {
     const enrollment = current();
     if (enrollment?.revision !== revision) return;
