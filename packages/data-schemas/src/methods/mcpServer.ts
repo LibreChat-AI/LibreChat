@@ -8,6 +8,7 @@ import {
 import type { Model, RootFilterQuery, Types } from 'mongoose';
 import type { MCPOptions } from 'librechat-data-provider';
 import type { MCPServerDocument } from '../types';
+import { runAsSystem } from '~/config/tenantContext';
 import { permissionBitSupersets } from './aclEntry';
 import logger from '~/config/winston';
 
@@ -144,10 +145,14 @@ export function createMCPServerMethods(
         .select('name')
         .lean<Array<{ name: string }>>(),
       // Deliberately bypass tenant filtering only for these tenantless rows.
-      mongoose.models.MCPName.collection
-        .find({ name: { $regex: matchingNamePattern }, tenantId: { $in: [null, ''] } })
-        .project<{ name: string }>({ name: 1 })
-        .toArray(),
+      runAsSystem(async () =>
+        mongoose.models.MCPName.find({
+          name: { $regex: matchingNamePattern },
+          tenantId: { $in: [null, ''] },
+        })
+          .select('name')
+          .lean<Array<{ name: string }>>(),
+      ),
     ]);
     const referenced = await mongoose.models.Agent?.find({
       mcpServerNames: { $regex: matchingNamePattern },
