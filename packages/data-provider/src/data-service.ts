@@ -2235,3 +2235,23 @@ export function revokeScheduleMCPConsent(id: string, expectedRevision: string): 
     data: { expectedRevision },
   });
 }
+
+export function getApiKeyMCPConsent(id: string, agentId: string): Promise<ScheduleMCPConsentView> {
+  return request.get(endpoints.apiKeyMCPConsent(id, agentId));
+}
+export function confirmApiKeyMCPConsent(
+  id: string,
+  agentId: string,
+  payload: ConfirmScheduleMCPConsent,
+): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.apiKeyMCPConsent(id, agentId), payload);
+}
+export function revokeApiKeyMCPConsent(
+  id: string,
+  agentId: string,
+  expectedRevision: string,
+): Promise<void> {
+  return request.deleteWithOptions(endpoints.apiKeyMCPConsent(id, agentId), {
+    data: { expectedRevision },
+  });
+}
