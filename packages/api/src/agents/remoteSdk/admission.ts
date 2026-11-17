@@ -18,6 +18,12 @@ export const modelAttemptSchema: z.ZodType<RemoteModelAttempt> = z
   .object({ nodeId: z.string().uuid(), modelId: z.string().uuid() })
   .strict();
 const nodeEndSchema = z.object({ nodeId: z.string().uuid(), completed: z.boolean() }).strict();
+const invocationContextSchema = z
+  .object({ version: z.literal(1), runId: z.string().uuid() })
+  .strict();
+/** Additive SDK capability: older SDKs keep the input-only model adapter during rollout. */
+export const supportsModelInvocationContext: boolean =
+  'invocationContextVersion' in HostChatModel && HostChatModel.invocationContextVersion === 1;
 const blocked = () => new HostModelServiceError('blocked');
 
 /** Run each iterator operation inside its scope; constructing an async generator does not enter it. */
@@ -248,7 +254,7 @@ export function createHostModelLifecycle(agentId: string, maxEntries: number): H
 
 export interface WorkerModelLifecycle {
   callback: BaseCallbackHandler;
-  current(): RemoteModelAttempt | undefined;
+  current(context?: unknown): RemoteModelAttempt | undefined;
   model(options: ConstructorParameters<typeof HostChatModel>[0]): HostChatModel;
 }
 
@@ -310,13 +316,23 @@ export function createWorkerModelLifecycle(
     }
   }
   return {
-    current() {
+    current(context) {
       if (admitted) return undefined;
+      if (supportsModelInvocationContext) {
+        const { runId } = invocationContextSchema.parse(context);
+        const attempt = models.get(runId);
+        if (!attempt) throw blocked();
+        attemptedNodes.add(attempt.nodeId);
+        return attempt;
+      }
       const value = storage.getStore();
       if (!value) throw blocked();
       return value;
     },
-    model: (options) => new CorrelatedHostModel(options),
+    model: (options) =>
+      supportsModelInvocationContext
+        ? new HostChatModel(options)
+        : new CorrelatedHostModel(options),
     callback: ensureHandler({
       name: 'librechat-remote-model-admission',
       raiseError: true,

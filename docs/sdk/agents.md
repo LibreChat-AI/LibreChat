@@ -162,7 +162,7 @@ adapters and unverified behaviors remain release gates for products that depend 
 | Approval after browser reload and worker restart            | Approve verified with host Mongo checkpoints                                                                                       | Edit/reject, ask-user questions, and repeated/batched interruptions need remote browser tests.                                                                                      |
 | Stop and browser reconnection to an active job              | Verified; stop reaches the worker abort signal and persists no error                                                               | Cancellation is cooperative and cannot undo completed tool effects.                                                                                                                 |
 | Host-worker connection recovery                             | Opt-in same-worker live reattachment; durable terminal replay after restart                                                        | No host-process adoption, live cross-worker migration, or arbitrary in-flight graph restart. Started executions never automatically rerun.                                          |
-| Model/PII/provider-text protection                          | Host-model chat supports input/PII callbacks and initial persistence admission; explicit provider-text transport remains available | Combining initial admission with provider-text output protection requires SDK invocation-context support. Protected Responses/OpenAI callers without native callbacks remain gated. |
+| Model/PII/provider-text protection                          | Host-model chat supports input/PII callbacks and initial persistence admission; explicit provider-text transport remains available | Combined admission/output protection is capability-negotiated with SDK invocation context. Published SDK 4.2.8 remains gated; protected API callers without native callbacks still need integration. |
 | Stream circuit breakers and tool-policy hooks               | Forwarded to the worker; hook failure stops execution                                                                              | Domain tools must also authorize signed caller identity; trusted factories must retain the supplied adapters.                                                                       |
 | Agent-builder model, parameters, tools, capabilities        | Opt-in saved-agent primary model settings execute on the host; host schema tools are available                                     | Worker must retain the host model/profile. Fallbacks, local graph tools, and context/summary policy still require adapters.                                                         |
 | Host MCP, web/code/browser tools, user tool credentials     | Authorized root-agent schema tools execute through host RPC                                                                        | Host credentials remain local; child-agent authorization and broader host-service parity remain separate integrations.                                                              |
@@ -266,7 +266,7 @@ trusted code and must install it on every applicable SDK Run. This output-text a
 supply input/model callbacks, authoritative builder model selection, host model
 credentials, or policy for model calls made outside the SDK. SDK 4.2.7 also provides
 `HostChatModel` and `createHostModelService` for host-owned model execution; those
-contracts have the authenticated transport below. The input-admission adapter and this output-protection adapter currently cannot be combined, as explained below.
+contracts have the authenticated transport below. Combining the input-admission and output-protection adapters requires SDK invocation context and the additional worker capability described below.
 
 The worker buffers a complete model attempt through the same SDK release boundary
 as local execution, then sends one `policy.providerText` RPC. Only canonical approved
@@ -416,11 +416,28 @@ the registration uses the injected host model. Thus protected chat can opt in, w
 Responses/OpenAI-compatible callers without that callback remain gated. Local graph tools and
 provider fallbacks retain their earlier explicit rejection.
 
-**Remaining limitation:** the SDK provider-text output-protection wrapper deliberately withholds
-raw callback managers from its underlying model. Until the SDK preserves a separate invocation
-identity, combining that wrapper with initial remote admission is rejected on both sides before
-graph execution. Existing programmatic output protection without an initial barrier continues to
-work. Do not disable output protection to enable this combination.
+### Combining input admission and output protection
+
+With [SDK invocation-context support](https://github.com/LibreChat-AI/agents/pull/704),
+the worker uses the native `HostChatModel` service context to correlate each model
+attempt with its root graph callback. The context contains only a version and run ID;
+raw callback managers remain suppressed by the output-protection boundary. Correlation
+still requires an enrolled root callback and the authenticated host's observed native
+success. Input rejection prevents provider execution; output rejection prevents ordinary
+deferred persistence. Approved output reaches native events and persistence once.
+
+This combination requires the additive `modelAdmissionWithProviderText: 1` worker
+capability, advertised only when its installed SDK supports invocation context. The
+host checks it before factory execution, and the worker independently rejects unsupported
+combined requests. `modelAdmission: 1` is unchanged, preserving older host behavior.
+SDK 4.2.8 retains the existing input-only adapter and does **not** enable the combination.
+No dependency version changes are included here: release the SDK source change separately,
+then upgrade the worker's SDK. Old workers fail closed rather than weakening protection.
+
+Callers still explicitly supply the host provider-text service; this negotiation does
+not automatically install product output policies or enable protected API callers lacking
+native input callbacks. Separate-process and live-recovery tests cover the combined service
+path. Provider-specific UI acceptance, billing and tracing remain separate work.
 
 Before initial admission, child/summary model calls without root lineage and concurrent root
 attempts fail closed; parallel/composed admission needs its own ownership contract. This does not

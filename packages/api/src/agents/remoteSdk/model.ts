@@ -211,7 +211,7 @@ export function createWorkerModelChannel(options: {
   let receiver: ReturnType<typeof createPolicyReceiver> | undefined;
   let seal: ReturnType<typeof createPolicySender> | undefined;
   let lifecycle: WorkerModelLifecycle | undefined;
-  const encodeRequest = (id: string, request: HostModelRequest) => {
+  const encodeRequest = (id: string, request: HostModelRequest, context?: unknown) => {
     if (!receiver || !seal) throw new HostModelServiceError('incompatible');
     return sealValue(
       seal,
@@ -219,7 +219,7 @@ export function createWorkerModelChannel(options: {
         id,
         publicKey: receiver.publicKey,
         request,
-        ...(lifecycle && { context: lifecycle.current() }),
+        ...(lifecycle && { context: lifecycle.current(context) }),
       },
       options.limits.maxFrameBytes,
     );
@@ -242,12 +242,12 @@ export function createWorkerModelChannel(options: {
   options.signal.addEventListener('abort', dispose, { once: true });
   const service: HostModelService = {
     version: 1,
-    invoke: async (request, signal) => {
+    invoke: async (request, signal, context?: unknown) => {
       const id = randomUUID();
       const result = reply(
         await options.peer.call(
           'model.invoke',
-          encodeRequest(id, request),
+          encodeRequest(id, request, context),
           options.limits.maxRunMs,
           signal ? AbortSignal.any([options.signal, signal]) : options.signal,
         ),
@@ -259,9 +259,9 @@ export function createWorkerModelChannel(options: {
         throw new HostModelServiceError('incompatible');
       return value.message;
     },
-    stream: async function* (request, signal) {
+    stream: async function* (request, signal, context?: unknown) {
       const id = randomUUID();
-      const payload = encodeRequest(id, request);
+      const payload = encodeRequest(id, request, context);
       const controller = new AbortController();
       const boundSignal = AbortSignal.any([
         options.signal,

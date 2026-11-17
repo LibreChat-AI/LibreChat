@@ -171,6 +171,7 @@ consume `input.agent.model` and retain `input.hostModel`; model credentials stay
 The custom graph keeps its plan/review/refine nodes and uses the host-authorized tool schemas.
 This mode requires updated workers with `builderModel: 1` and, for initial persistence admission,
 `modelAdmission: 1`. Protected chat uses native host input callbacks. Protected API callers without
-those callbacks, local graph tools, provider fallbacks, and the combination of initial admission
-with provider-text output protection remain gated; see [the parity matrix](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
+those callbacks, local graph tools and provider fallbacks remain gated. Combining initial admission
+with explicit provider-text output protection requires `modelAdmissionWithProviderText: 1`, advertised
+only with SDK invocation-context support (agents #704); published SDK 4.2.8 stays gated. See [the parity matrix](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
 and [configuration](../../docs/sdk/agents.md#saved-agent-builder-models) before enabling it.

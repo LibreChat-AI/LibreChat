@@ -20,11 +20,11 @@ import type { Server } from 'node:http';
 import type { RemoteSdkFactoryInput, RemoteSdkLimits, RemoteSdkStart, SdkRun } from './types';
 import type { RuntimeRecoveryOptions } from './recovery/server';
 import type { SdkAgentIdentity } from './identity';
+import { createWorkerModelLifecycle, supportsModelInvocationContext } from './admission';
 import { policyDescriptorSchema, createWorkerProviderTextPolicy } from './policy';
 import { createRuntimeRecovery, recoveryClaimSchema } from './recovery/server';
 import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { RECOVERY_HEADER_BYTES } from './recovery/socket';
-import { createWorkerModelLifecycle } from './admission';
 import { createWorkerToolService } from './hostTools';
 import { RemoteSdkCheckpointer } from './checkpoint';
 import { createWorkerModelChannel } from './model';
@@ -298,6 +298,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                 hostModel: 1,
                 builderModel: 1,
                 modelAdmission: 1,
+                ...(supportsModelInvocationContext && { modelAdmissionWithProviderText: 1 }),
               };
             if (method === 'model.chunk') return workerModel.accept(data, signal);
             if (method === 'tool.result') return workerTools.accept(data);
@@ -305,7 +306,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
             if (method !== 'run' || started) throw new Error('SDK execution already admitted');
             started = true;
             const request = startSchema.parse(data) as RemoteSdkStart;
-            if (request.modelAdmission && request.providerText)
+            if (request.modelAdmission && request.providerText && !supportsModelInvocationContext)
               throw new Error(
                 'Combined model admission and provider-text protection is unsupported',
               );

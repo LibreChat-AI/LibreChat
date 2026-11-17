@@ -821,7 +821,8 @@ endpoints:
   #   # Optional primary-model execution for remote SDK agents. Budgets are per process.
   #   # Restart to change budgets; workers must support builderModel: 1.
   #   # Initial protected-chat admission also requires modelAdmission: 1 on workers.
-  #   # Local graph tools, provider fallbacks and combined output protection remain gated.
+  #   # Combined output protection requires modelAdmissionWithProviderText: 1 and an explicit policy service.
+  #   # Local graph tools and provider fallbacks remain gated.
   #   sdkHostModels:
   #     maxConcurrentCalls: 32
   #     maxAdmissionEntries: 4096
