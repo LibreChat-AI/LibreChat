@@ -3,7 +3,6 @@ import { RefreshCw, Trash2 } from 'lucide-react';
 import { Button, Spinner } from '@librechat/client';
 import { useLocalize, useMCPServerManager } from '~/hooks';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
-import { openInNewTab } from '~/utils';
 
 interface ServerInitializationSectionProps {
   sidePanel?: boolean;
@@ -98,8 +97,17 @@ export default function ServerInitializationSection({
           >
             {localize('com_ui_cancel')}
           </Button>
-          <Button variant="submit" onClick={() => openInNewTab(serverOAuthUrl)} className="flex-1">
-            {localize('com_ui_continue_oauth')}
+          <Button
+            asChild
+            variant="submit"
+            className="flex-1"
+          >
+            {/* A real anchor navigates with genuine user activation everywhere; a scripted
+               click() carries no user activation in WebKit and reaches Electron shells as a
+               window-open request nothing may handle. See #18252. */}
+            <a href={serverOAuthUrl} target="_blank" rel="noopener noreferrer">
+              {localize('com_ui_continue_oauth')}
+            </a>
           </Button>
         </div>
       </>
