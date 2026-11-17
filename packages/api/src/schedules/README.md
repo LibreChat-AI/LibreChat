@@ -62,6 +62,25 @@ agent still selects it. Anything else is refused with `tool_policy_denied`.
 The operator-declared `mcpConsent.readOnlyPolicy` list is retired. The loader warns when the key
 is still present and ignores it.
 
+### A schedule its owner never authorized
+
+A schedule with no grant keeps using its MCP tools unrestricted, as it did before consent
+existed. That exemption ends in two ways, and only while `mcpConsent.enabled` is on:
+
+- **The owner edits the schedule.** Any edit other than pausing or resuming it marks the
+  schedule (`mcpConsentRequired`).
+- **The operator's deadline passes.** `interface.schedules.mcpConsent.requireAfter` is an ISO
+  8601 instant with an offset, for example `2027-01-01T00:00:00Z`. Unset, there is no deadline.
+
+From then on each MCP call of that schedule is refused with `consent_missing`, at the readiness
+check and in a run, until the owner confirms in the authorization dialog. The run itself still
+starts, so a schedule that uses no MCP tools is unaffected. The consent view reports `required`,
+or `requireAfterMs` while the deadline is still ahead.
+
+A schedule whose agent uses an MCP server the operator has not declared under
+`mcpConsent.resources` cannot be authorized, so the deadline stops it until the server is
+declared. Declare every server scheduled agents rely on before setting the date.
+
 ### A tool that changes after it was allowed
 
 The owner allows a tool by name, so the grant also remembers what the tool was. The first

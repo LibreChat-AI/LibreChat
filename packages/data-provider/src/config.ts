@@ -3628,6 +3628,11 @@ export const interfaceSchema = z
             .object({
               enabled: z.boolean().optional(),
               maxLifetimeHours: z.number().int().min(1).max(8760).optional(),
+              /**
+               * From this instant a schedule its owner never authorized can no longer use
+               * MCP tools. Unset, such schedules keep running until their next edit.
+               */
+              requireAfter: z.string().datetime({ offset: true }).optional(),
               resources: z.record(z.string(), scheduledMCPResourceBindingSchema).optional(),
             })
             .optional(),

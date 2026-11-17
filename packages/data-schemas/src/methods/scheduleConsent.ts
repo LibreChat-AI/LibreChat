@@ -10,6 +10,8 @@ export interface ScheduleConsentSnapshot {
   enabled: boolean;
   configRevision: number;
   enrollment: ScheduledMCPEnrollment | null;
+  /** The owner edited this schedule without ever authorizing it. */
+  required?: boolean;
 }
 
 export interface ScheduleMCPConsentStorage {
@@ -78,7 +80,7 @@ export function createScheduleMCPConsentStorage(
     async readScheduleMCPConsent(identity) {
       const row = await model()
         .findOne(scope(identity))
-        .select('agent_id enabled configRevision mcpConsent')
+        .select('agent_id enabled configRevision mcpConsent mcpConsentRequired')
         .read('primary')
         .lean();
       if (!row) return null;
@@ -89,6 +91,7 @@ export function createScheduleMCPConsentStorage(
         configRevision: row.configRevision ?? 0,
         enrollment: parsed.success ? parsed.data : null,
         compatible: row.mcpConsent === undefined || parsed.success,
+        ...(row.mcpConsentRequired === true && { required: true }),
       };
     },
     async confirmScheduleMCPConsent(input) {

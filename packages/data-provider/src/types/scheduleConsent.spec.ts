@@ -22,6 +22,19 @@ it('keeps scheduled consent opt-in and bounds its absolute lifetime', () => {
     }).success,
   ).toBe(false);
 });
+it('takes the deadline for never-authorized schedules as an instant with an offset', () => {
+  const parse = (requireAfter: unknown) =>
+    configSchema.safeParse({
+      version: '1.3.8',
+      interface: { schedules: { mcpConsent: { requireAfter } } },
+    }).success;
+  expect(parse('2027-01-01T00:00:00Z')).toBe(true);
+  expect(parse('2027-01-01T00:00:00+02:00')).toBe(true);
+  expect(parse('2027-01-01')).toBe(false);
+  expect(parse('2027-01-01T00:00:00')).toBe(false);
+  expect(parse(1798761600000)).toBe(false);
+});
+
 it('requires an explicit tenant binding and delegated mode', () => {
   const identity = { scheduleId: 's', ownerId: 'u', agentId: 'a', invocationMode: 'delegated' };
   expect(scheduledMCPIdentitySchema.safeParse(identity).success).toBe(false);

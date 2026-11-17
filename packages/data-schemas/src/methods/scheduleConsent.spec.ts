@@ -297,6 +297,35 @@ it('uses only classic update operators for confirmation, revocation and admissio
   }
 });
 
+it('reports the edit mark of a schedule that was never authorized, and keeps it through a grant', async () => {
+  expect((await storage.readScheduleMCPConsent(identity))?.required).toBeUndefined();
+  const updated = await createScheduleMethods(mongoose).updateScheduleById(
+    identity.scheduleId,
+    owner,
+    { name: 'Renamed', mcpConsentRequired: true },
+    undefined,
+    { expectedConfigRevision: 0 },
+  );
+  expect(updated?.mcpConsentRequired).toBe(true);
+  expect(await storage.readScheduleMCPConsent(identity)).toMatchObject({
+    required: true,
+    enrollment: null,
+    configRevision: 1,
+  });
+  expect(
+    await storage.confirmScheduleMCPConsent({
+      identity,
+      expectedConfigRevision: 1,
+      expectedRevision: null,
+      enrollment: enrollment('grant-1', { scheduleRevision: 1 }),
+    }),
+  ).toBe(true);
+  expect(await storage.readScheduleMCPConsent(identity)).toMatchObject({
+    required: true,
+    enrollment: { revision: 'grant-1' },
+  });
+});
+
 describe('definition pins', () => {
   const first = 'a'.repeat(64);
   const second = 'b'.repeat(64);

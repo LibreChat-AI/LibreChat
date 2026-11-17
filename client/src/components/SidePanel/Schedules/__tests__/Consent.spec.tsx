@@ -46,6 +46,8 @@ const view: ScheduleMCPConsentView = {
   ],
   allowed: {},
   changed: {},
+  required: false,
+  requireAfterMs: null,
   offer: { digest: 'a'.repeat(64), maxLifetimeHours: 24 },
 };
 function display() {
@@ -176,6 +178,26 @@ it('names the changed tools when there is nothing to confirm', async () => {
   display();
   expect(await screen.findByText('com_ui_schedule_consent_changed_tools')).toBeVisible();
   expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+});
+it('says nothing about a requirement where the schedule is free to run unauthorized', async () => {
+  display();
+  expect(await screen.findByText('com_ui_schedule_consent_missing')).toBeVisible();
+  expect(screen.queryByText('com_ui_schedule_consent_required')).not.toBeInTheDocument();
+  expect(screen.queryByText('com_ui_schedule_consent_required_after')).not.toBeInTheDocument();
+});
+it('tells the owner when the schedule stops working without authorization', async () => {
+  jest
+    .mocked(dataService.getScheduleMCPConsent)
+    .mockResolvedValue({ ...view, requireAfterMs: Date.now() + 86_400_000 });
+  display();
+  expect(await screen.findByText('com_ui_schedule_consent_required_after')).toBeVisible();
+  expect(screen.queryByText('com_ui_schedule_consent_required')).not.toBeInTheDocument();
+});
+it('tells the owner the schedule is refused MCP tools until they confirm', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({ ...view, required: true });
+  display();
+  expect(await screen.findByText('com_ui_schedule_consent_required')).toBeVisible();
+  expect(screen.queryByText('com_ui_schedule_consent_required_after')).not.toBeInTheDocument();
 });
 it('lists the allowed tools without boxes when there is nothing to confirm', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({

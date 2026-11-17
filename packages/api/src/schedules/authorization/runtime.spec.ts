@@ -650,3 +650,141 @@ it('preserves typed denials and owned cancellation at the preparation boundary',
     ),
   ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
 });
+
+describe('a schedule its owner never authorized', () => {
+  async function unauthorized() {
+    const f = await setup();
+    f.snapshot.enrollment = null;
+    f.row.mcpConsent = undefined;
+    const consent = (f.config.interfaceConfig!.schedules as { mcpConsent: object }).mcpConsent;
+    const call = async () => {
+      const context = createMCPRequestContext();
+      await f.host.prepare({ req: f.req, context });
+      return bindScheduledMCPInvocation(context, 'root', 'query')!.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+      });
+    };
+    /** `Date.now()` is pinned to 1000 by `setup`. */
+    const setDeadline = (ms: number) =>
+      Object.assign(consent, { requireAfter: new Date(ms).toISOString() });
+    return { ...f, consent, call, setDeadline };
+  }
+  const missing = {
+    failure: { reason: 'consent_missing', status: 'mcp_reauth_required', recovery: 'authorize' },
+  };
+
+  it('keeps using MCP tools with no deadline, and until one that has not passed', async () => {
+    const f = await unauthorized();
+    await expect(f.call()).resolves.toBeUndefined();
+    f.setDeadline(1001);
+    await expect(f.call()).resolves.toBeUndefined();
+    expect(await f.host.consent.service.view(f.identity)).toMatchObject({
+      state: 'missing',
+      required: false,
+      requireAfterMs: 1001,
+    });
+  });
+
+  it('is refused MCP tools from the operator deadline on, at readiness and in a run', async () => {
+    const f = await unauthorized();
+    f.setDeadline(1000);
+    await expect(f.call()).rejects.toMatchObject(missing);
+    await expect(f.check()).rejects.toMatchObject({
+      code: 'mcp_reauth_required',
+      outcomes: [expect.objectContaining({ server: 'warehouse', reason: 'consent_missing' })],
+    });
+    expect(await f.host.consent.service.view(f.identity)).toMatchObject({
+      state: 'missing',
+      required: true,
+      requireAfterMs: null,
+    });
+  });
+
+  it('is refused MCP tools once its owner has edited it, with no deadline set', async () => {
+    const f = await unauthorized();
+    f.snapshot.required = true;
+    await expect(f.call()).rejects.toMatchObject(missing);
+  });
+
+  it('is left alone where consent is off, whatever the deadline or the edit mark', async () => {
+    const f = await unauthorized();
+    f.setDeadline(0);
+    f.snapshot.required = true;
+    Object.assign(f.consent, { enabled: false });
+    await expect(f.call()).resolves.toBeUndefined();
+    await expect(f.check()).resolves.toBeDefined();
+  });
+
+  it('runs again once the owner confirms', async () => {
+    const f = await unauthorized();
+    f.setDeadline(0);
+    await expect(f.call()).rejects.toMatchObject(missing);
+    const offer = await f.host.consent.service.view(f.identity);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow: allowOffered(offer.targets),
+    });
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    await expect(f.call()).resolves.toBeUndefined();
+    expect(await f.host.consent.service.view(f.identity)).toMatchObject({
+      state: 'active',
+      required: false,
+      requireAfterMs: null,
+    });
+  });
+
+  it('asks once per run, and not at all for a run that calls no MCP tool', async () => {
+    const f = await unauthorized();
+    f.setDeadline(1001);
+    const context = createMCPRequestContext();
+    f.getAppConfig.mockClear();
+    f.findUser.mockClear();
+    await f.host.prepare({ req: f.req, context });
+    expect(f.getAppConfig).not.toHaveBeenCalled();
+    expect(f.findUser).not.toHaveBeenCalled();
+    const guard = bindScheduledMCPInvocation(context, 'root', 'query')!;
+    const use = () =>
+      guard.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+      });
+    await use();
+    const reads = f.findUser.mock.calls.length;
+    expect(reads).toBeGreaterThan(0);
+    await use();
+    expect(f.findUser).toHaveBeenCalledTimes(reads);
+  });
+
+  it('does not treat a failed lookup as permission, and looks again on the next call', async () => {
+    const f = await unauthorized();
+    f.setDeadline(1001);
+    const context = createMCPRequestContext();
+    await f.host.prepare({ req: f.req, context });
+    f.getAppConfig.mockRejectedValueOnce(new Error('PRIVATE config store'));
+    const guard = bindScheduledMCPInvocation(context, 'root', 'query')!;
+    const use = () =>
+      guard.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+      });
+    let failure: unknown;
+    await use().catch((error) => {
+      failure = error;
+    });
+    expect(failure).toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+    expect(String(failure)).not.toContain('PRIVATE');
+    await expect(use()).resolves.toBeUndefined();
+  });
+});

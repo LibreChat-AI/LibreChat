@@ -1040,6 +1040,15 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // cadence one, or a name/prompt edit would silently leave it dead.
     const needsArming = existing.nextRunAt == null;
     const update: Partial<ISchedule> = { ...editedFields } as Partial<ISchedule>;
+    // Editing a schedule its owner never authorized ends its exemption: from here on its
+    // MCP tools need a grant. Pausing or resuming it is not an edit.
+    if (
+      limits.mcpConsent?.enabled === true &&
+      existing.mcpConsent === undefined &&
+      existing.mcpConsentRequired !== true &&
+      Object.keys(editedFields).some((key) => key !== 'enabled')
+    )
+      update.mcpConsentRequired = true;
     // `chatProjectId` is resolved, not copied: an operator pin rewrites it even when
     // this PATCH never mentioned the field, so the row converges on the policy
     // instead of drifting until the owner happens to touch the picker.
