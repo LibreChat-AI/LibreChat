@@ -62,6 +62,7 @@ import { getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantConte
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
+import { attributeEarlierRecords } from './insights/attribution';
 import { prepareSubagentContentDeletion } from './subagentContent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { runAfterTransaction } from '~/utils/postCommit';
@@ -2788,6 +2789,19 @@ export function createConversationMethods(
       if (!conversation) {
         logger.debug('[saveConvo] Conversation not found, skipping update');
         return null;
+      }
+
+      if (conversationResult.lastErrorObject?.updatedExisting === false) {
+        /** `initial_agent_id` is not selected back, so pass the value this insert just wrote.
+         *  Statistics attribution must never fail the conversation save itself. */
+        try {
+          await attributeEarlierRecords(mongoose, {
+            ...(conversation.toObject() as Record<string, unknown>),
+            initial_agent_id: initialAgentId,
+          });
+        } catch (error) {
+          logger.error('[saveConvo] Failed to attribute earlier Insights records', error);
+        }
       }
 
       /** `$setOnInsert` only reaches a chat this save creates, yet a chat whose earlier turns never

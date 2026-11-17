@@ -1,5 +1,5 @@
+import { Types } from 'mongoose';
 import type { AnyBulkWriteOperation } from 'mongodb';
-import type { Types } from 'mongoose';
 import type { InsightsRecordIdentity } from './attribution';
 import { resolveInsightsAttributions, insightsIdentityKey } from './attribution';
 import { runAsSystem } from '~/config/tenantContext';
@@ -7,7 +7,9 @@ import { runAsSystem } from '~/config/tenantContext';
 type IndexedRecord = InsightsRecordIdentity & { _id: Types.ObjectId; insightsAgentId?: string };
 
 export type InsightsBackfillOptions = {
-  collection: 'messages' | 'transactions';
+  /** Run `conversations` first: it gives legacy agent conversations a fixed root agent, which
+   *  the message and transaction passes then copy onto their records. */
+  collection: 'conversations' | 'messages' | 'transactions';
   after?: string;
   batchSize: number;
   apply?: boolean;
@@ -26,6 +28,9 @@ export async function backfillInsightsAttribution(
   }
   const db = mongoose.connection.db;
   if (!db) throw new Error('Insights backfill requires a database connection');
+  if (options.collection === 'conversations') {
+    return backfillLegacyRootAgents(db, options);
+  }
   const collection = db.collection<IndexedRecord>(options.collection);
   const records = await collection
     .find(options.after ? { _id: { $gt: new mongoose.Types.ObjectId(options.after) } } : {}, {
@@ -67,6 +72,51 @@ export async function backfillInsightsAttribution(
     updated: result?.modifiedCount ?? operations.length,
     ...(records.length === options.batchSize && {
       nextAfter: records[records.length - 1]?._id.toString(),
+    }),
+  };
+}
+
+type LegacyConversation = { _id: Types.ObjectId; agent_id?: unknown; initial_agent_id?: unknown };
+
+/** Legacy agent conversations predate `initial_agent_id`; their root is their current agent. */
+async function backfillLegacyRootAgents(
+  db: NonNullable<(typeof import('mongoose'))['connection']['db']>,
+  options: InsightsBackfillOptions,
+): Promise<{ processed: number; updated: number; nextAfter?: string }> {
+  const collection = db.collection<LegacyConversation>('conversations');
+  const conversations = await collection
+    .find(
+      {
+        ...(options.after && { _id: { $gt: new Types.ObjectId(options.after) } }),
+        initial_agent_id: { $exists: false },
+      },
+      { projection: { _id: 1, agent_id: 1 } },
+    )
+    .sort({ _id: 1 })
+    .limit(options.batchSize)
+    .toArray();
+  const operations: AnyBulkWriteOperation<LegacyConversation>[] = [];
+  for (const conversation of conversations) {
+    const agentId = conversation.agent_id;
+    if (typeof agentId !== 'string' || agentId.trim() === '') continue;
+    operations.push({
+      updateOne: {
+        filter: { _id: conversation._id, initial_agent_id: { $exists: false }, agent_id: agentId },
+        update: { $set: { initial_agent_id: agentId } },
+      },
+    });
+  }
+  const result =
+    options.apply && operations.length > 0
+      ? // This explicit cross-tenant migration uses native records and identity-scoped filters.
+        // eslint-disable-next-line no-restricted-syntax
+        await collection.bulkWrite(operations, { ordered: false })
+      : undefined;
+  return {
+    processed: conversations.length,
+    updated: result?.modifiedCount ?? operations.length,
+    ...(conversations.length === options.batchSize && {
+      nextAfter: conversations[conversations.length - 1]?._id.toString(),
     }),
   };
 }

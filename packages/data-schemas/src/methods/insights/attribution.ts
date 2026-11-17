@@ -13,6 +13,7 @@ export type InsightsConversationContext = {
   tenantId?: string;
   initial_agent_id?: string | null;
   subagentThread?: object | null;
+  isTemporary?: boolean | null;
 };
 
 export function insightsIdentityKey(record: InsightsRecordIdentity): string {
@@ -32,9 +33,15 @@ export async function resolveInsightsAttributions(
     identities.set(insightsIdentityKey(record), record);
   }
   const result = new Map<string, string>();
+  /** `initial_agent_id` is not selected when the app loads a conversation, so a loaded copy
+   *  without it says nothing about the root: only a copy that settles the hint skips the read. */
   const conversations = cachedConversations.filter((conversation) => {
     const key = insightsIdentityKey(conversation);
-    if (!identities.has(key)) return false;
+    const decisive =
+      Object.prototype.hasOwnProperty.call(conversation, 'initial_agent_id') ||
+      Object.prototype.hasOwnProperty.call(conversation, 'subagentThread') ||
+      conversation.isTemporary === true;
+    if (!decisive || !identities.has(key)) return false;
     identities.delete(key);
     return true;
   });
@@ -55,11 +62,17 @@ export async function resolveInsightsAttributions(
           tenantId: 1,
           initial_agent_id: 1,
           subagentThread: 1,
+          isTemporary: 1,
         },
       ).lean<InsightsConversationContext[]>()),
     );
   for (const conversation of conversations) {
-    if (Object.prototype.hasOwnProperty.call(conversation, 'subagentThread')) {
+    /** Insights reads trust the hint without re-checking the conversation, so every chat it
+     *  must not count is marked here: sub-agent threads and temporary chats. */
+    if (
+      Object.prototype.hasOwnProperty.call(conversation, 'subagentThread') ||
+      conversation.isTemporary === true
+    ) {
       result.set(insightsIdentityKey(conversation), '');
       continue;
     }
@@ -93,4 +106,42 @@ export async function withInsightsAttribution<
     const hint = attributions.get(insightsIdentityKey(record));
     return { ...fields, ...(hint !== undefined && { insightsAgentId: hint }) };
   });
+}
+
+/** A new conversation's first records are saved before the conversation exists, so they could not
+ *  resolve a hint then. When the conversation is created, those records receive it. */
+export async function attributeEarlierRecords(
+  mongoose: typeof import('mongoose'),
+  saved: Record<string, unknown>,
+): Promise<void> {
+  const { conversationId, user, tenantId } = saved;
+  if (typeof conversationId !== 'string' || typeof user !== 'string') return;
+  const conversation: InsightsConversationContext = {
+    conversationId,
+    user,
+    ...(typeof tenantId === 'string' && { tenantId }),
+    ...(Object.prototype.hasOwnProperty.call(saved, 'initial_agent_id') && {
+      initial_agent_id: saved.initial_agent_id as string | null,
+    }),
+    ...(Object.prototype.hasOwnProperty.call(saved, 'subagentThread') && {
+      subagentThread: saved.subagentThread as object | null,
+    }),
+    ...(saved.isTemporary === true && { isTemporary: true }),
+  };
+  const hint = (await resolveInsightsAttributions(mongoose, [conversation], [conversation])).get(
+    insightsIdentityKey(conversation),
+  );
+  if (hint === undefined) return;
+  const filter = { conversationId, user, insightsAgentId: { $exists: false } };
+  const update = { $set: { insightsAgentId: hint } };
+  /** Transactions store the owner as an ObjectId. */
+  const models = [
+    mongoose.models.Message,
+    ...(mongoose.isValidObjectId(user) ? [mongoose.models.Transaction] : []),
+  ];
+  await Promise.all(
+    models
+      .filter((model) => model != null)
+      .map((model) => model.updateMany(filter, update, { timestamps: false })),
+  );
 }

@@ -2,10 +2,11 @@ import mongoose from 'mongoose';
 import { FEEDBACK_TAGS } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { TFeedbackTagKey } from 'librechat-data-provider';
+import { createInsightsMethods as createIndexedInsightsMethods } from './insights';
+import { backfillInsightsAttribution } from './insights/backfill';
 import { createTransactionModel } from '../models/transaction';
 import { createConversationModel } from '../models/convo';
 import { createMessageModel } from '../models/message';
-import { createInsightsMethods } from './insights';
 import { createAgentModel } from '../models/agent';
 import { createUserModel } from '../models/user';
 
@@ -53,6 +54,32 @@ const fixtures = {
       ),
   },
 };
+
+/** Fixtures are inserted directly, like data from before the migration, so every read first
+ * runs the real migration: hints come from the production attribution rule. */
+async function migrateInsightsAttribution() {
+  for (const collection of ['conversations', 'messages', 'transactions'] as const) {
+    let after: string | undefined;
+    do {
+      const result = await backfillInsightsAttribution(mongoose, {
+        collection,
+        batchSize: 1000,
+        after,
+        apply: true,
+      });
+      after = result.nextAfter;
+    } while (after);
+  }
+}
+
+function createInsightsMethods(connection: typeof mongoose) {
+  const methods = createIndexedInsightsMethods(connection);
+  const getInsights = async (options?: Parameters<typeof methods.getInsights>[0]) => {
+    await migrateInsightsAttribution();
+    return methods.getInsights(options);
+  };
+  return { ...methods, getInsights: getInsights as typeof methods.getInsights };
+}
 
 function createScopedInsightsMethods() {
   const methods = createInsightsMethods(mongoose);
@@ -432,9 +459,17 @@ describe('Insights methods', () => {
           spendUSD: count ? 0.25 : null,
         });
       }
+      // Reads never write; only the migration gives a legacy agent conversation a fixed root.
+      const fields: { initial_agent_id?: unknown; agent_id?: unknown } = attribution;
+      const legacyRoot =
+        !('initial_agent_id' in fields) &&
+        typeof fields.agent_id === 'string' &&
+        fields.agent_id !== ''
+          ? { initial_agent_id: fields.agent_id }
+          : {};
       expect(
         await mongoose.models.Conversation.collection.findOne({ _id: conversation._id }),
-      ).toEqual(conversation);
+      ).toEqual({ ...conversation, ...legacyRoot });
     },
   );
 
@@ -571,7 +606,8 @@ describe('Insights methods', () => {
     expect(JSON.stringify(aggregate)).not.toContain(privateValue);
     expect(userFind).not.toHaveBeenCalled();
     expect(conversationAggregate).toHaveBeenCalledTimes(1);
-    expect(messageAggregate).toHaveBeenCalledTimes(3);
+    // Messages per day, unique users, users per day, and replies for the Models table.
+    expect(messageAggregate).toHaveBeenCalledTimes(4);
     const pipelines = [
       ...conversationAggregate.mock.calls,
       ...messageAggregate.mock.calls,

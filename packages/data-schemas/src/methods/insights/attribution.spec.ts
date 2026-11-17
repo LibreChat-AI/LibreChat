@@ -3,6 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { resolveInsightsAttributions, insightsIdentityKey } from './attribution';
 import { createTransactionModel } from '../../models/transaction';
 import { createConversationModel } from '../../models/convo';
+import { createConversationMethods } from '../conversation';
 import { createMessageModel } from '../../models/message';
 import { createTransactionMethods } from '../transaction';
 import { backfillInsightsAttribution } from './backfill';
@@ -34,7 +35,7 @@ beforeEach(async () => {
   await Promise.all(Object.values(mongoose.models).map((model) => model.deleteMany({})));
 });
 
-it('derives immutable root hints for writes, ignores forged hints, and validates a deleted conversation at read time', async () => {
+it('derives immutable root hints for writes, ignores forged hints, and keeps spend of a deleted conversation', async () => {
   await mongoose.models.Conversation.collection.insertOne({
     conversationId,
     user: owner.toString(),
@@ -80,13 +81,15 @@ it('derives immutable root hints for writes, ignores forged hints, and validates
     (await methods.getInsights({ agentIds: ['agent-a'], showDetails: false })).summary
       .totalResponses,
   ).toBe(1);
+  // Deleting a conversation deletes its messages; its usage ledger rows are retained.
   await mongoose.models.Conversation.deleteMany({});
+  await mongoose.models.Message.deleteMany({ conversationId });
   const deleted = await methods.getInsights({ agentIds: ['agent-a'], showDetails: false });
   expect(deleted.summary.totalResponses).toBe(0);
-  expect(deleted.summary.spendUSD).toBeNull();
+  expect(deleted.summary.spendUSD).toBeGreaterThan(0);
 });
 
-it('keeps legacy attribution live when a conversation switches agents', async () => {
+it('fixes a legacy conversation root at migration time', async () => {
   await mongoose.models.Conversation.collection.insertOne({
     conversationId,
     user: owner.toString(),
@@ -105,22 +108,24 @@ it('keeps legacy attribution live when a conversation switches agents', async ()
     await mongoose.models.Message.collection.findOne({ messageId: 'legacy-reply' }),
   ).not.toHaveProperty('insightsAgentId');
   const methods = createInsightsMethods(mongoose);
+  const responses = async (agentId: string) =>
+    (await methods.getInsights({ agentIds: [agentId], showDetails: false })).summary.totalResponses;
+  expect(await responses('agent-a')).toBe(0);
+
+  for (const collection of ['conversations', 'messages'] as const) {
+    await backfillInsightsAttribution(mongoose, { collection, batchSize: 10, apply: true });
+  }
   expect(
-    (await methods.getInsights({ agentIds: ['agent-a'], showDetails: false })).summary
-      .totalResponses,
-  ).toBe(1);
+    (await mongoose.models.Conversation.collection.findOne({ conversationId }))?.initial_agent_id,
+  ).toBe('agent-a');
+  expect(await responses('agent-a')).toBe(1);
+
   await mongoose.models.Conversation.updateOne(
     { conversationId },
     { $set: { agent_id: 'agent-b' } },
   );
-  expect(
-    (await methods.getInsights({ agentIds: ['agent-a'], showDetails: false })).summary
-      .totalResponses,
-  ).toBe(0);
-  expect(
-    (await methods.getInsights({ agentIds: ['agent-b'], showDetails: false })).summary
-      .totalResponses,
-  ).toBe(1);
+  expect(await responses('agent-a')).toBe(1);
+  expect(await responses('agent-b')).toBe(0);
 });
 
 it('reuses the trusted loaded conversation for message and batched usage writes', async () => {
@@ -166,6 +171,111 @@ it('reuses the trusted loaded conversation for message and batched usage writes'
   }
 });
 
+it('gives records saved before their conversation the hint once the conversation is created', async () => {
+  const messages = createMessageMethods(mongoose);
+  const conversations = createConversationMethods(mongoose, messages);
+  const transactions = createTransactionMethods(mongoose, {
+    getMultiplier: () => 1,
+    getCacheMultiplier: () => null,
+  });
+  const hintOf = async (collection: 'Message' | 'Transaction', messageId: string) =>
+    (await mongoose.models[collection].collection.findOne({ messageId }))?.insightsAgentId;
+
+  // A new agent chat: the first prompt is saved before the conversation exists.
+  await messages.saveMessage(
+    { userId: owner.toString() },
+    { conversationId, messageId: 'first-prompt', isCreatedByUser: true },
+  );
+  await transactions.bulkInsertTransactions([
+    {
+      user: owner.toString(),
+      conversationId,
+      messageId: 'first-prompt',
+      tokenType: 'prompt',
+      tokenValue: -1,
+    },
+  ]);
+  expect(await hintOf('Message', 'first-prompt')).toBeUndefined();
+  expect(await hintOf('Transaction', 'first-prompt')).toBeUndefined();
+  await conversations.saveConvo(
+    { userId: owner.toString() },
+    { conversationId, endpoint: 'agents', agent_id: 'agent-a' },
+    { initialAgentId: 'agent-a' },
+  );
+  expect(await hintOf('Message', 'first-prompt')).toBe('agent-a');
+  expect(await hintOf('Transaction', 'first-prompt')).toBe('agent-a');
+
+  // A new chat without an agent is marked as not counted.
+  await messages.saveMessage(
+    { userId: owner.toString() },
+    {
+      conversationId: '22222222-2222-4222-8222-222222222222',
+      messageId: 'plain-prompt',
+      isCreatedByUser: true,
+    },
+  );
+  await conversations.saveConvo(
+    { userId: owner.toString() },
+    { conversationId: '22222222-2222-4222-8222-222222222222', endpoint: 'openAI' },
+  );
+  expect(await hintOf('Message', 'plain-prompt')).toBe('');
+
+  // Saving an existing conversation again does not touch records that already have a hint.
+  await mongoose.models.Message.collection.updateOne(
+    { messageId: 'first-prompt' },
+    { $set: { insightsAgentId: 'kept' } },
+  );
+  await conversations.saveConvo(
+    { userId: owner.toString() },
+    { conversationId, endpoint: 'agents', agent_id: 'agent-a', title: 'Renamed' },
+  );
+  expect(await hintOf('Message', 'first-prompt')).toBe('kept');
+});
+
+it('attributes chat writes made with the conversation as the app loads it', async () => {
+  const messages = createMessageMethods(mongoose);
+  const conversations = createConversationMethods(mongoose, messages);
+  await conversations.saveConvo(
+    { userId: owner.toString() },
+    { conversationId, endpoint: 'agents', agent_id: 'agent-a' },
+    { initialAgentId: 'agent-a' },
+  );
+  // A chat turn keeps the loaded conversation on the request; the root agent is not selected.
+  const loaded = await conversations.getConvo(owner.toString(), conversationId);
+  expect(loaded).not.toBeNull();
+  expect(loaded).not.toHaveProperty('initial_agent_id');
+  const insightsConversation = {
+    conversationId,
+    user: owner.toString(),
+    ...(loaded?.isTemporary === true && { isTemporary: true }),
+  };
+  await messages.saveMessage(
+    { userId: owner.toString(), insightsConversation },
+    { conversationId, messageId: 'chat-reply', isCreatedByUser: false },
+  );
+  await createTransactionMethods(mongoose, {
+    getMultiplier: () => 1,
+    getCacheMultiplier: () => null,
+  }).bulkInsertTransactions([
+    {
+      user: owner.toString(),
+      conversationId,
+      messageId: 'chat-reply',
+      tokenType: 'completion',
+      tokenValue: -2,
+      insightsConversation,
+    },
+  ]);
+  expect(
+    (await mongoose.models.Message.collection.findOne({ messageId: 'chat-reply' }))
+      ?.insightsAgentId,
+  ).toBe('agent-a');
+  expect(
+    (await mongoose.models.Transaction.collection.findOne({ messageId: 'chat-reply' }))
+      ?.insightsAgentId,
+  ).toBe('agent-a');
+});
+
 it('resolves only matching tenant/owner identities and distinguishes unattributed from legacy records', async () => {
   await mongoose.models.Conversation.collection.insertMany([
     {
@@ -192,6 +302,12 @@ it('resolves only matching tenant/owner identities and distinguishes unattribute
       initial_agent_id: 'agent-a',
       subagentThread: null,
     },
+    {
+      conversationId: 'temporary',
+      user: owner.toString(),
+      initial_agent_id: 'agent-a',
+      isTemporary: true,
+    },
   ]);
   const identities = [
     { conversationId: 'shared', user: owner.toString(), tenantId: 'tenant-a' },
@@ -200,6 +316,7 @@ it('resolves only matching tenant/owner identities and distinguishes unattribute
     { conversationId: 'shared', user: 'outsider', tenantId: 'tenant-a' },
     { conversationId: 'unattributed', user: owner.toString() },
     { conversationId: 'child', user: owner.toString() },
+    { conversationId: 'temporary', user: owner.toString() },
   ];
   const hints = await resolveInsightsAttributions(mongoose, identities);
   expect(identities.map((identity) => hints.get(insightsIdentityKey(identity)))).toEqual([
@@ -209,10 +326,11 @@ it('resolves only matching tenant/owner identities and distinguishes unattribute
     undefined,
     '',
     '',
+    '',
   ]);
 });
 
-it('backfills in resumable batches without changing metrics and is idempotent', async () => {
+it('backfills in resumable batches, fixes legacy roots and is idempotent', async () => {
   const now = new Date();
   await mongoose.models.Conversation.collection.insertMany([
     { conversationId, user: owner.toString(), initial_agent_id: 'agent-a', createdAt: now },
@@ -245,26 +363,35 @@ it('backfills in resumable batches without changing metrics and is idempotent', 
   ]);
   const methods = createInsightsMethods(mongoose);
   const options = { agentIds: ['agent-a'], showDetails: false as const };
-  const before = await methods.getInsights(options);
-  const dry = await backfillInsightsAttribution(mongoose, { collection: 'messages', batchSize: 2 });
-  expect(dry.updated).toBe(2);
+  expect((await methods.getInsights(options)).summary.totalMessages).toBe(0);
+  const dry = await backfillInsightsAttribution(mongoose, {
+    collection: 'conversations',
+    batchSize: 2,
+  });
+  expect(dry.updated).toBe(1);
   expect(
-    await mongoose.models.Message.collection.countDocuments({ insightsAgentId: { $exists: true } }),
-  ).toBe(0);
-  let after: string | undefined;
-  do {
-    const result = await backfillInsightsAttribution(mongoose, {
-      collection: 'messages',
-      batchSize: 2,
-      after,
-      apply: true,
-    });
-    after = result.nextAfter;
-  } while (after);
-  expect((await methods.getInsights(options)).summary).toEqual(before.summary);
+    await mongoose.models.Conversation.collection.countDocuments({
+      initial_agent_id: { $exists: true },
+    }),
+  ).toBe(1);
+  for (const collection of ['conversations', 'messages'] as const) {
+    let after: string | undefined;
+    do {
+      const result = await backfillInsightsAttribution(mongoose, {
+        collection,
+        batchSize: 2,
+        after,
+        apply: true,
+      });
+      after = result.nextAfter;
+    } while (after);
+  }
+  const summary = (await methods.getInsights(options)).summary;
+  expect(summary.totalMessages).toBe(3);
+  expect(summary.totalResponses).toBe(2);
   expect(
     await mongoose.models.Message.collection.countDocuments({ insightsAgentId: 'agent-a' }),
-  ).toBe(2);
+  ).toBe(3);
   expect(
     (
       await backfillInsightsAttribution(mongoose, {
@@ -283,9 +410,9 @@ it('backfills in resumable batches without changing metrics and is idempotent', 
     batchSize: 10,
     apply: true,
   });
-  expect(await mongoose.models.Message.collection.findOne({ messageId: 'c' })).not.toHaveProperty(
-    'insightsAgentId',
-  );
+  expect(
+    (await mongoose.models.Message.collection.findOne({ messageId: 'c' }))?.insightsAgentId,
+  ).toBe('agent-a');
 });
 
 it('uses the root-period index without reading unrelated agents or old messages', async () => {

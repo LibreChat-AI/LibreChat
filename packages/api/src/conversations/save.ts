@@ -108,6 +108,7 @@ export function getConversationWriteContext(
           ...(Object.prototype.hasOwnProperty.call(resolved, 'subagentThread') && {
             subagentThread: resolved.subagentThread,
           }),
+          ...(resolved.isTemporary === true && { isTemporary: true }),
         },
       }),
   };

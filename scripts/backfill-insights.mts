@@ -4,11 +4,12 @@ import { readFileSync, existsSync } from 'node:fs';
 import { createModels, backfillInsightsAttribution } from '@librechat/data-schemas';
 
 if (process.argv.includes('--help')) {
-  console.log(`Usage: node scripts/backfill-insights.mts [--apply] [--collection=messages|transactions|both]
+  console.log(`Usage: node scripts/backfill-insights.mts [--apply] [--collection=conversations|messages|transactions|all]
   [--batch-size=1000] [--after=OBJECT_ID]
 
 Uses MONGO_URI from the environment or .env. Defaults to a read-only dry run.
---apply creates the Insights indexes and updates attribution hints.
+--apply gives legacy agent conversations a fixed root agent, creates the Insights indexes
+and updates attribution hints. The default runs conversations, messages, then transactions.
 --after resumes one collection after a printed cursor.`);
   process.exit(0);
 }
@@ -19,7 +20,7 @@ const value = (name: string, fallback?: string) => {
 };
 const apply = process.argv.includes('--apply');
 const batchSize = Number(value('batch-size', '1000'));
-const selected = value('collection', 'both');
+const selected = value('collection', 'all');
 const after = value('after');
 if (!Number.isInteger(batchSize) || batchSize < 1) {
   throw new Error('--batch-size must be a positive integer');
@@ -27,10 +28,10 @@ if (!Number.isInteger(batchSize) || batchSize < 1) {
 if (after && !mongoose.Types.ObjectId.isValid(after)) {
   throw new Error('--after must be an ObjectId');
 }
-if (!['messages', 'transactions', 'both'].includes(selected ?? '')) {
-  throw new Error('Use --collection=messages, transactions or both');
+if (!['conversations', 'messages', 'transactions', 'all'].includes(selected ?? '')) {
+  throw new Error('Use --collection=conversations, messages, transactions or all');
 }
-if (after && selected === 'both') throw new Error('--after requires one --collection');
+if (after && selected === 'all') throw new Error('--after requires one --collection');
 const config = existsSync('.env') ? dotenv.parse(readFileSync('.env')) : {};
 const uri = process.env.MONGO_URI ?? config.MONGO_URI;
 if (!uri) throw new Error('MONGO_URI is required');
@@ -40,11 +41,11 @@ try {
   await mongoose.connect(uri);
   createModels(mongoose);
   const collections =
-    selected === 'both'
-      ? (['messages', 'transactions'] as const)
-      : [selected as 'messages' | 'transactions'];
+    selected === 'all'
+      ? (['conversations', 'messages', 'transactions'] as const)
+      : [selected as 'conversations' | 'messages' | 'transactions'];
   for (const collection of collections) {
-    if (apply) {
+    if (apply && collection !== 'conversations') {
       await mongoose.connection.db
         ?.collection(collection)
         .createIndex(
