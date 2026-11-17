@@ -287,6 +287,74 @@ describe('createEventApplier', () => {
     expect(read()[2].parentMessageId).toBe('user-1');
   });
 
+  it('leaves the leaf a compaction names as it is and starts the summary under it', () => {
+    const leaf: TMessage = {
+      messageId: 'resp-0',
+      conversationId: 'thread-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [{ type: ContentTypes.TEXT, text: 'Earlier answer' }],
+    };
+    const anchor: ChatEvent = {
+      type: 'created',
+      data: {
+        created: true,
+        message: {
+          messageId: 'resp-0',
+          conversationId: 'thread-1',
+          parentMessageId: 'user-1',
+          isCreatedByUser: false,
+          text: '',
+        },
+      },
+    };
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, leaf]);
+
+    applyEvent(anchor, context);
+    expect(read()).toEqual([user, leaf]);
+    expect(read()[1]).toBe(leaf);
+
+    applyEvent(opened('s0', 0), context);
+    applyEvent(token('s0', 'Summary'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-0', 'resp-1']);
+    expect(read()[1]).toBe(leaf);
+    expect(read()[2]).toMatchObject({ parentMessageId: 'resp-0', isCreatedByUser: false });
+    expect(textOf(read())).toEqual(['Summary']);
+  });
+
+  it('keeps the text of a user leaf a compaction names', () => {
+    const anchor: ChatEvent = {
+      type: 'created',
+      data: { created: true, message: { ...user, text: '' } },
+    };
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user]);
+
+    applyEvent(anchor, context);
+    applyEvent(opened('s0', 0), context);
+    applyEvent(token('s0', 'Summary'), context);
+
+    expect(read()[0]).toBe(user);
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+    expect(read()[1].parentMessageId).toBe('user-1');
+  });
+
+  it('keeps the user turn a regeneration snapshot placed on an empty list', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList();
+
+    applyEvent(snapshot('Hel', { isRegenerate: true }), context);
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+
+    applyEvent(token('s0', 'lo'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+    expect(textOf(read())).toEqual(['Hello']);
+  });
+
   it('settles on the final frame and starts the next turn clean', () => {
     const { applyEvent } = createEventApplier();
     const { context, read } = createList();

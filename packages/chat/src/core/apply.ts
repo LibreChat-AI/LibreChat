@@ -56,15 +56,25 @@ const stepContext = (submission: EventSubmission, context: ChatEventContext): St
 /**
  * The turn a `created` frame names: its user message and the reply the turn starts from.
  *
- * Sharing the user message as a parent does not make a row this turn's: a regeneration's earlier
- * answers are its children too. Only a row under the id the frame names, or under the padded id a
- * turn draws its reply at before the server names it, is the reply to carry on from. Any other
- * reply already under the user message is a saved answer, so the turn is a regeneration: it
- * starts empty beside that answer and leaves it in place.
+ * A row the list already holds is never rewritten from the frame. A regeneration reuses a saved
+ * user turn, and a compaction makes no turn at all: its frame names the leaf it summarizes up to,
+ * with that leaf's author and no text. Only a message the list does not hold is a new turn to add.
+ *
+ * Sharing the user message as a parent does not make a row this turn's reply: a regeneration's
+ * earlier answers are its children too. Only a row under the id the frame names, or under the
+ * padded id a turn draws its reply at before the server names it, is the reply to carry on from.
+ * Any other reply already under the message is a saved answer, so the turn starts empty beside
+ * it and leaves it in place, as it does under a compaction's anchor.
  */
 function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventSubmission {
   const loaded = messages.find((message) => message.messageId === data.message.messageId);
-  const userMessage = { ...loaded, ...data.message, isCreatedByUser: true } as TMessage;
+  const anchored =
+    loaded == null
+      ? data.message.isCreatedByUser === false
+      : loaded.isCreatedByUser !== true || !data.message.text;
+  const userMessage =
+    loaded ??
+    ({ ...data.message, isCreatedByUser: data.message.isCreatedByUser !== false } as TMessage);
   const optimisticId = `${userMessage.messageId}_`;
   let placeholder: TMessage | undefined;
   let answered = false;
@@ -87,10 +97,9 @@ function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventS
   return {
     conversation: { conversationId: userMessage.conversationId },
     endpointOption: {},
-    isRegenerate: answered,
-    messages: loaded
-      ? messages.map((message) => (message === loaded ? userMessage : message))
-      : [...messages, userMessage],
+    isRegenerate: anchored || answered,
+    ...(anchored && { compact: true }),
+    messages: loaded != null || anchored ? messages : [...messages, userMessage],
     userMessage,
     initialResponse,
   } as EventSubmission;
@@ -181,8 +190,10 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     const waiting = early;
     reset();
     const next = createdSubmission(data, ctx.messages);
-    /** The list with the turn's user message in it, which a regeneration's steps build on. */
-    ctx.write(next.messages);
+    /** The list with the turn's message in it, which a regeneration's steps build on. */
+    if (next.messages !== ctx.messages) {
+      ctx.write(next.messages);
+    }
     submission = next;
     for (const event of waiting) {
       step(event);
@@ -232,6 +243,8 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
         next.editPrefixCleared = true;
       }
       ctx.write(placement.messages);
+      /** A regeneration's steps rebuild the list from this baseline, so it holds the placed turn. */
+      next.messages = placement.messages;
       settle(syncStreamMessage(stream, placement.response));
     }
 
