@@ -93,6 +93,19 @@ function currentChoice(
   );
 }
 
+/** Of the tools ticked to start with, the ones the stored grant asks about before each use. */
+function initialAsking(
+  data: ScheduleMCPConsentView,
+  choice: Record<string, string[]>,
+): Record<string, string[]> {
+  return Object.fromEntries(
+    Object.entries(choice).map(([serverName, tools]) => [
+      serverName,
+      tools.filter((tool) => (data.asking[serverName] ?? []).includes(tool)),
+    ]),
+  );
+}
+
 export default function Consent({
   canConfirm = true,
   id,
@@ -119,12 +132,33 @@ export default function Consent({
   const choosing = canConfirm && data?.offer != null;
   const choice = data ? currentChoice(data, edited) : {};
   const chosenCount = Object.values(choice).reduce((count, tools) => count + tools.length, 0);
-  const setTools = (serverName: string, tools: string[]) =>
+  /** Null until the owner changes an "ask me first" box. Only ever holds allowed tools. */
+  const [editedAsking, setEditedAsking] = useState<Record<string, string[]> | null>(null);
+  const canAsk = data?.approval === true;
+  const asking = editedAsking ?? (data && canAsk ? initialAsking(data, choice) : {});
+  const setTools = (serverName: string, tools: string[]) => {
     setEdited({
       choice: { ...choice, [serverName]: tools },
       revision: data?.revision ?? null,
       changed: data?.changed ?? {},
     });
+    // A tool that is no longer allowed has nothing left to ask about.
+    setEditedAsking({
+      ...asking,
+      [serverName]: (asking[serverName] ?? []).filter((tool) => tools.includes(tool)),
+    });
+  };
+  const setAsking = (serverName: string, tools: string[]) =>
+    setEditedAsking({ ...asking, [serverName]: tools });
+  /** Sent with the confirmation: only tools still ticked, since a tick can be dropped by a refetch. */
+  const ask = Object.fromEntries(
+    Object.entries(asking)
+      .map(([serverName, tools]): [string, string[]] => [
+        serverName,
+        tools.filter((tool) => (choice[serverName] ?? []).includes(tool)),
+      ])
+      .filter(([, tools]) => tools.length > 0),
+  );
   const commit = () => {
     if (!data?.offer || chosenCount === 0) return;
     setMessage(null);
@@ -134,10 +168,12 @@ export default function Consent({
         expectedRevision: data.revision,
         lifetimeHours: hours,
         allow: choice,
+        ...(Object.keys(ask).length > 0 && { ask }),
       },
       {
         onSuccess: () => {
           setEdited(null);
+          setEditedAsking(null);
           setMessage('success');
         },
         onError: () => setMessage('error'),
@@ -229,8 +265,10 @@ export default function Consent({
                           offered={offeredTools(target)}
                           chosen={choice[target.resource.serverName] ?? []}
                           changed={data.changed[target.resource.serverName] ?? []}
+                          asking={canAsk ? (asking[target.resource.serverName] ?? []) : null}
                           disabled={busy}
                           onChange={(tools) => setTools(target.resource.serverName, tools)}
+                          onAskingChange={(tools) => setAsking(target.resource.serverName, tools)}
                         />
                       ) : (
                         <>
@@ -239,6 +277,13 @@ export default function Consent({
                               tools: (data.allowed[target.resource.serverName] ?? []).join(', '),
                             })}
                           </p>
+                          {(data.asking[target.resource.serverName] ?? []).length > 0 && (
+                            <p className="text-text-secondary text-xs">
+                              {localize('com_ui_schedule_consent_asking', {
+                                tools: data.asking[target.resource.serverName].join(', '),
+                              })}
+                            </p>
+                          )}
                           {(data.changed[target.resource.serverName] ?? []).length > 0 && (
                             <p className="text-status-warning text-xs">
                               {localize('com_ui_schedule_consent_changed_tools', {
@@ -307,16 +352,21 @@ function ToolChoice({
   offered,
   chosen,
   changed,
+  asking,
   disabled,
   onChange,
+  onAskingChange,
 }: {
   serverName: string;
   offered: string[];
   chosen: string[];
   /** Tools the server changed since they were allowed. Refused until confirmed again. */
   changed: string[];
+  /** Allowed tools the owner approves call by call. Null where a scheduled run cannot pause. */
+  asking: string[] | null;
   disabled: boolean;
   onChange: (tools: string[]) => void;
+  onAskingChange: (tools: string[]) => void;
 }) {
   const localize = useLocalize();
   const groupId = useId();
@@ -361,6 +411,26 @@ function ToolChoice({
               >
                 {tool}
               </Label>
+              {asking && chosen.includes(tool) && (
+                <span className="ml-auto flex shrink-0 items-center gap-2">
+                  <Checkbox
+                    id={`${groupId}-${tool}-ask`}
+                    checked={asking.includes(tool)}
+                    disabled={disabled}
+                    aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
+                    onCheckedChange={(checked) =>
+                      onAskingChange(
+                        checked === true
+                          ? [...asking, tool]
+                          : asking.filter((name) => name !== tool),
+                      )
+                    }
+                  />
+                  <Label htmlFor={`${groupId}-${tool}-ask`} variant="secondary" className="text-xs">
+                    {localize('com_ui_schedule_consent_ask_first')}
+                  </Label>
+                </span>
+              )}
             </div>
             {changed.includes(tool) && (
               <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">

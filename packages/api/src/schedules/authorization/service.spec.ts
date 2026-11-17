@@ -41,6 +41,7 @@ function setup() {
   };
   let targets = [structuredClone(target)];
   let allowed = true;
+  let pausable = true;
   const storage: ScheduleMCPConsentStorage = {
     readScheduleMCPConsent: jest.fn(async () => structuredClone(snapshot)),
     confirmScheduleMCPConsent: jest.fn(async (input) => {
@@ -77,17 +78,22 @@ function setup() {
   const service = createScheduleMCPConsentService({
     storage,
     canUse: async () => allowed,
+    canPause: async () => pausable,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     resolveEnrollment: async () => targets,
     now: () => time,
   });
-  const enroll = async (allow: Record<string, string[]> = { warehouse: ['query'] }) => {
+  const enroll = async (
+    allow: Record<string, string[]> = { warehouse: ['query'] },
+    ask?: Record<string, string[]>,
+  ) => {
     const view = await service.view(identity);
     return service.confirm(identity, {
       offerDigest: view.offer!.digest,
       expectedRevision: view.revision,
       lifetimeHours: 1,
       allow,
+      ...(ask && { ask }),
     });
   };
   return {
@@ -103,6 +109,9 @@ function setup() {
     },
     deny: () => {
       allowed = false;
+    },
+    cannotPause: () => {
+      pausable = false;
     },
   };
 }
@@ -645,4 +654,72 @@ it('requires a grant only from a schedule that has none', async () => {
   await s.enroll();
   // The edit mark outlives the grant. Revoking it is then a refusal of its own, not this one.
   expect(await s.service.requiresGrant(identity)).toBe(false);
+});
+
+describe('tools the owner approves call by call', () => {
+  const both = { ...target, permittedTools: [{ agentId: 'root', tools: ['list', 'query'] }] };
+  const call = (tool: string) => ({
+    ...request('invoke'),
+    selection: { agentId: 'root', tools: [tool] },
+    definitions: { [tool]: 'a'.repeat(64) },
+  });
+
+  it('stores them on the grant, reports them, and says so on each use', async () => {
+    const s = setup();
+    s.changeTarget(both);
+    const view = await s.enroll({ warehouse: ['list', 'query'] }, { warehouse: ['query'] });
+    expect(view).toMatchObject({ state: 'active', asking: { warehouse: ['query'] } });
+    expect(s.snapshot.enrollment!.consents[0].askTools).toEqual(['query']);
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'authorized',
+      approvalRequired: true,
+    });
+    const allowed = await s.service.authority.authorize(call('list'), {});
+    expect(allowed).toMatchObject({ state: 'authorized' });
+    expect(allowed).not.toHaveProperty('approvalRequired');
+    // Minting a credential calls nothing, so nothing is asked.
+    expect(
+      await s.service.authority.authorize(
+        { ...request('mint'), selection: { agentId: 'root', tools: ['list', 'query'] } },
+        {},
+      ),
+    ).not.toHaveProperty('approvalRequired');
+  });
+
+  it('stores nothing when the owner asks about no tool', async () => {
+    const s = setup();
+    expect(await s.enroll({ warehouse: ['query'] }, { warehouse: [] })).toMatchObject({
+      asking: {},
+    });
+    expect(s.snapshot.enrollment!.consents[0]).not.toHaveProperty('askTools');
+  });
+
+  it.each([
+    ['a tool that is not allowed', { warehouse: ['list'] }],
+    ['a server that is not in the grant', { other: ['query'] }],
+  ])('rejects asking about %s without writing', async (_case, ask) => {
+    const s = setup();
+    s.changeTarget(both);
+    await expect(s.enroll({ warehouse: ['query'] }, ask)).rejects.toMatchObject({
+      code: 'consent_invalid',
+    });
+    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+  });
+
+  it('rejects it where a scheduled run cannot pause, and tells the dialog so', async () => {
+    const s = setup();
+    s.cannotPause();
+    expect(await s.service.view(identity)).toMatchObject({ approval: false });
+    await expect(
+      s.enroll({ warehouse: ['query'] }, { warehouse: ['query'] }),
+    ).rejects.toMatchObject({ code: 'consent_invalid' });
+    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(await s.enroll({ warehouse: ['query'] })).toMatchObject({ state: 'active' });
+  });
+
+  it('starts from nothing on each confirmation', async () => {
+    const s = setup();
+    await s.enroll({ warehouse: ['query'] }, { warehouse: ['query'] });
+    expect(await s.enroll({ warehouse: ['query'] })).toMatchObject({ asking: {} });
+  });
 });

@@ -10,6 +10,7 @@ import type { ScheduleMCPConsentStorage } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig, RequestScopedMCPConnectionStore } from '~/mcp/types';
+import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
 import type { MCPToolsSnapshot } from '~/mcp/connection';
 import type { ScheduledMCPAuthority } from './contract';
 import type { ScheduledTokenContext } from '../context';
@@ -33,6 +34,10 @@ export interface ScheduledMCPInvocation {
     toolName: string;
     loadTools: () => Promise<MCPToolsSnapshot>;
     signal?: AbortSignal;
+    /** The call being made, as the approval layer knows it. Absent when nothing can approve. */
+    toolCallId?: string;
+    /** A readiness check, which calls nothing. Anything else must hold the owner's approval. */
+    readiness?: true;
   }) => Promise<void>;
 }
 
@@ -54,6 +59,10 @@ export interface ScheduleMCPExecution {
    * tools the grant lists for the agent. A run that has no grant keeps them all.
    */
   readonly narrow: (agentId: string, toolKeys: readonly string[]) => string[];
+  /** Whether the grant asks the owner about any tool, so this run may pause. */
+  readonly mayAsk: boolean;
+  /** Whether the owner approves each use of this tool, by the name the run calls it. */
+  readonly asksAbout: (agentId: string, toolKey: string) => boolean;
   readonly bind: (agentId: string | undefined, selectionName: string) => ScheduledMCPInvocation;
 }
 
@@ -107,24 +116,31 @@ export interface ScheduleMCPExecutionDeps {
   requiresGrant?: (identity: ScheduledMCPIdentity) => Promise<boolean>;
 }
 
+export interface ScheduleMCPExecutionOptions {
+  manual?: boolean;
+  legacy?: boolean;
+  /** Tool calls the owner approved in the request that resumed this run. */
+  approvedToolCalls?: readonly string[];
+}
+
 export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
   resolve: (
     identity: ScheduledMCPIdentity,
     stage: ScheduleMCPExecution['stage'],
-    options?: { manual?: boolean; legacy?: boolean },
+    options?: ScheduleMCPExecutionOptions,
   ) => Promise<ScheduleMCPExecution | undefined>;
   attach: (
     context: RequestScopedMCPConnectionStore,
     identity: ScheduledMCPIdentity,
     stage: ScheduleMCPExecution['stage'],
     requireEnrollment?: boolean,
-    options?: { manual?: boolean; legacy?: boolean },
+    options?: ScheduleMCPExecutionOptions,
   ) => Promise<void>;
 } {
   async function resolve(
     identity: ScheduledMCPIdentity,
     stage: ScheduleMCPExecution['stage'],
-    options: { manual?: boolean; legacy?: boolean } = {},
+    options: ScheduleMCPExecutionOptions = {},
   ): Promise<ScheduleMCPExecution | undefined> {
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (snapshot?.compatible === false) throw new ScheduledMCPPolicyError('binding_mismatch', '');
@@ -157,6 +173,21 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
         serverName != null && granted.get(serverName)?.get(agentId)?.has(selectionName) === true
       );
     };
+    const approved = new Set(options.approvedToolCalls ?? []);
+    /** Every spelling a run may call an ask tool by, per agent. A miss is refused, not run. */
+    const asking = new Map<string, Set<string>>();
+    for (const consent of snapshot.enrollment?.consents ?? []) {
+      const { serverName } = consent.resource;
+      for (const { agentId, tools } of consent.permittedTools) {
+        const keys = asking.get(agentId) ?? new Set<string>();
+        for (const tool of tools) {
+          if (!consent.askTools?.includes(tool)) continue;
+          keys.add(`${tool}${Constants.mcp_delimiter}${serverName}`);
+          keys.add(`${tool}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`);
+        }
+        if (keys.size > 0) asking.set(agentId, keys);
+      }
+    }
     let fenced = false;
     /** Asked at the first MCP call, so a run that uses none pays nothing. Kept for the run. */
     let required: Promise<boolean> | undefined;
@@ -199,6 +230,8 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
         enrolled
           ? toolKeys.filter((key) => !isMCPToolSelection(key) || isGrantedKey(agentId, key))
           : [...toolKeys],
+      mayAsk: asking.size > 0,
+      asksAbout: (agentId: string, toolKey: string) => asking.get(agentId)?.has(toolKey) === true,
       bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation {
         return Object.freeze({
           identity: capturedIdentity,
@@ -211,6 +244,8 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
             toolName,
             loadTools,
             signal,
+            toolCallId,
+            readiness,
           }: Parameters<ScheduledMCPInvocation['authorize']>[0]): Promise<void> {
             signal?.throwIfAborted();
             const deny = (
@@ -285,6 +320,14 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
                 signal?.throwIfAborted();
                 deny('dependency_unavailable');
               }
+              // The pause is a hook, and a hook that times out says nothing. This is the gate.
+              if (
+                authorization.state === 'authorized' &&
+                authorization.approvalRequired &&
+                readiness !== true &&
+                !(toolCallId != null && approved.has(toolCallId))
+              )
+                deny('approval_required');
               signal?.throwIfAborted();
             } catch (error) {
               if (
@@ -309,6 +352,31 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
       if (execution) executions.set(context, execution);
     },
   };
+}
+
+/**
+ * Tells run admission that this schedule's grant can pause the run, so the requirements of
+ * a paused scheduled run are checked before any provider work. Never asked for a decision.
+ */
+export function buildScheduledApprovalAdmissionHooks(
+  execution?: Pick<ScheduleMCPExecution, 'mayAsk'>,
+): ResolvedToolApprovalHook[] {
+  return execution?.mayAsk === true ? [{ hook: async () => ({}) }] : [];
+}
+
+/** The tool calls the owner let through, as proposed or edited, in a validated resume value. */
+export function collectApprovedToolCalls(resumeValue: unknown): string[] {
+  if (resumeValue == null || typeof resumeValue !== 'object' || Array.isArray(resumeValue))
+    return [];
+  return Object.entries(resumeValue)
+    .filter(
+      ([, decision]) =>
+        decision != null &&
+        typeof decision === 'object' &&
+        'type' in decision &&
+        (decision.type === 'approve' || decision.type === 'edit'),
+    )
+    .map(([toolCallId]) => toolCallId);
 }
 
 /** The trusted trigger/resume host owns the context. No body-provided schedule opt-in. */

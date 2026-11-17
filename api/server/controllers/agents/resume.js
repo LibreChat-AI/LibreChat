@@ -53,6 +53,7 @@ const {
   PROJECT_CONTEXT_CHANGED_REASON,
   PROJECT_CONTEXT_CHANGED_RESPONSE,
   restoreExecutionContext,
+  collectApprovedToolCalls,
   recoverTurnMessageReference,
   applyForcedRetention,
   applyForcedTemporaryRequest,
@@ -1955,6 +1956,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       const result = await initializeClient({
         executionContext: restoreExecutionContext(req, job.metadata),
         scheduleJobIdentity: job.metadata,
+        approvedToolCalls: collectApprovedToolCalls(mapped.resumeValue),
         req,
         res,
         endpointOption: req.body.endpointOption,

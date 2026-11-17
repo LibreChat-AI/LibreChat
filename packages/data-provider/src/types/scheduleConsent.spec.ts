@@ -36,6 +36,22 @@ it('takes the deadline for never-authorized schedules as an instant with an offs
   expect(parse(1798761600000)).toBe(false);
 });
 
+it('takes the tools to ask about as an optional choice beside the allowed ones', () => {
+  const parse = (ask?: unknown) =>
+    confirmScheduleMCPConsentSchema.safeParse({
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
+      ...(ask !== undefined && { ask }),
+    }).success;
+  expect(parse()).toBe(true);
+  expect(parse({ warehouse: ['query'] })).toBe(true);
+  expect(parse({ warehouse: [] })).toBe(true);
+  expect(parse(['query'])).toBe(false);
+  expect(parse({ warehouse: 'query' })).toBe(false);
+});
+
 it('requires an explicit tenant binding and delegated mode', () => {
   const identity = { scheduleId: 's', ownerId: 'u', agentId: 'a', invocationMode: 'delegated' };
   expect(scheduledMCPIdentitySchema.safeParse(identity).success).toBe(false);

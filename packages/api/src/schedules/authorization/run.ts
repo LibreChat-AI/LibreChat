@@ -35,6 +35,10 @@ export interface ScheduledMCPPolicyAgent {
 export const SCHEDULE_TOOL_NOT_ALLOWED =
   'The owner of this schedule has not allowed this tool. Continue without it.';
 
+/** Shown on the approval card. The owner chose this for the tool; no policy fired. */
+export const SCHEDULE_APPROVAL_REASON =
+  'You asked to approve each use of this tool when this schedule runs.';
+
 /** No direct actions, arbitrary code or unlisted tools in an enrolled run. */
 export function createScheduledMCPRunPolicy(
   execution: ScheduleMCPExecution,
@@ -184,12 +188,15 @@ export function createScheduledMCPRunPolicy(
     hook: async (input) => {
       const error = await failure(input);
       if (error) return { decision: 'deny', reason: error.message };
+      if (input.executingAgentId == null) return {};
       // The owner left this tool out on purpose. The model is told and the run goes on: it is
       // not a failure of the schedule, so nothing is recorded against the run. Should this hook
       // be skipped, the call is still refused where it is made, and that refusal is recorded.
-      return input.executingAgentId != null &&
-        leftOut.get(input.executingAgentId)?.has(input.toolName) === true
-        ? { decision: 'deny', reason: SCHEDULE_TOOL_NOT_ALLOWED }
+      if (leftOut.get(input.executingAgentId)?.has(input.toolName) === true)
+        return { decision: 'deny', reason: SCHEDULE_TOOL_NOT_ALLOWED };
+      // Pauses the run where it can pause. The call itself is checked again when it is made.
+      return execution.asksAbout(input.executingAgentId, input.toolName)
+        ? { decision: 'ask', reason: SCHEDULE_APPROVAL_REASON }
         : {};
     },
     // Separate hook: a failed or timed-out receipt must never erase the immediate deny.

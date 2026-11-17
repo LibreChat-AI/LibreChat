@@ -83,7 +83,9 @@ async function setup() {
     identity: fixture.identity,
     enrolled: false,
   }));
+  let pausable = true;
   const host = createScheduleMCPRuntimeHost({
+    canPauseRuns: async () => pausable,
     getScheduleMCPCompletionState,
     methods: { ...fixture.storage, getScheduleById },
     findUser,
@@ -164,6 +166,9 @@ async function setup() {
     servers,
     setCandidates: (names: string[]) => {
       candidates = names;
+    },
+    cannotPause: () => {
+      pausable = false;
     },
     check: () =>
       preflight('root', fixture.user, {
@@ -888,5 +893,67 @@ describe('a schedule its owner never authorized', () => {
     expect(failure).toMatchObject({ failure: { reason: 'dependency_unavailable' } });
     expect(String(failure)).not.toContain('PRIVATE');
     await expect(use()).resolves.toBeUndefined();
+  });
+});
+
+describe('a tool the owner approves call by call', () => {
+  async function asking() {
+    const f = await setup();
+    const offer = await f.host.consent.service.view(f.identity);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+      allow: allowOffered(offer.targets),
+      ask: { warehouse: ['query'] },
+    });
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    const use = (context: ReturnType<typeof createMCPRequestContext>, toolCallId?: string) =>
+      bindScheduledMCPInvocation(context, 'root', 'query')!.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+        toolCallId,
+      });
+    return { ...f, use };
+  }
+  const refused = { failure: { reason: 'approval_required' } };
+
+  it('takes approvals only from the request that resumes a run', async () => {
+    const f = await asking();
+    const fresh = createMCPRequestContext();
+    await f.host.prepare({ req: f.req, context: fresh, approvedToolCalls: ['call-1'] });
+    expect(getScheduleMCPExecution(fresh)?.mayAsk).toBe(true);
+    await expect(f.use(fresh, 'call-1')).rejects.toMatchObject(refused);
+
+    const req = { user: f.user, _isScheduledFire: true, body: {} };
+    const resumed = createMCPRequestContext();
+    await f.host.prepare({
+      req,
+      context: resumed,
+      executionContext: restoreExecutionContext(req, {
+        userId: 'owner',
+        tenantId: 'tenant',
+        scheduleId: 'schedule',
+        agent_id: 'root',
+      }),
+      approvedToolCalls: ['call-1'],
+    });
+    await expect(f.use(resumed, 'call-1')).resolves.toBeUndefined();
+    await expect(f.use(resumed, 'call-2')).rejects.toMatchObject(refused);
+  });
+
+  it('does not fail the readiness check of a schedule that will ask', async () => {
+    const f = await asking();
+    await expect(f.check()).resolves.toBeDefined();
+  });
+
+  it('reports whether this deployment can pause a scheduled run', async () => {
+    const f = await setup();
+    expect(await f.host.consent.service.view(f.identity)).toMatchObject({ approval: true });
+    f.cannotPause();
+    expect(await f.host.consent.service.view(f.identity)).toMatchObject({ approval: false });
   });
 });
