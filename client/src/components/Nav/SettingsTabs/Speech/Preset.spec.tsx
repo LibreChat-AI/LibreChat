@@ -1,8 +1,8 @@
 import { RecoilRoot } from 'recoil';
 import { ToastContext } from '@librechat/client';
 import userEvent from '@testing-library/user-event';
+import { SpeechInputPresetSetting as Preset } from '../../Settings/SpeechControls';
 import { render, screen, waitFor } from 'test/layout-test-utils';
-import Preset from './Preset';
 import store from '~/store';
 
 const showToast = jest.fn();

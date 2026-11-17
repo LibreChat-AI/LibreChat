@@ -1,24 +1,15 @@
 import { useId } from 'react';
-import { useRecoilCallback, useRecoilValue } from 'recoil';
 import { Button, useToastContext } from '@librechat/client';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
-export default function Preset() {
+export default function Preset({ enabled, onApply }: { enabled: boolean; onApply: () => void }) {
   const id = useId();
   const localize = useLocalize();
   const { showToast } = useToastContext();
-  const speechToText = useRecoilValue(store.speechToText);
-  const applyPreset = useRecoilCallback(
-    ({ set }) =>
-      () => {
-        set(store.autoTranscribeAudio, true);
-        set(store.autoSendText, 3);
-        set(store.decibelValue, -45);
-        showToast({ message: localize('com_nav_speech_input_preset_applied') });
-      },
-    [localize, showToast],
-  );
+  const applyPreset = () => {
+    onApply();
+    showToast({ message: localize('com_nav_speech_input_preset_applied') });
+  };
 
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
@@ -36,7 +27,7 @@ export default function Preset() {
         className="shrink-0"
         aria-describedby={`${id}-label ${id}-description`}
         onClick={applyPreset}
-        disabled={!speechToText}
+        disabled={!enabled}
       >
         {localize('com_nav_apply_speech_input_preset')}
       </Button>

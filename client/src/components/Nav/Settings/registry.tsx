@@ -22,6 +22,7 @@ import {
   AutoSendTextSelector,
   DecibelSelector,
 } from '../SettingsTabs/Speech/STT';
+import { EngineSTTSetting, EngineTTSSetting, SpeechInputPresetSetting } from './SpeechControls';
 import EnableTwoFactorItem from '../SettingsTabs/Account/TwoFactorAuthentication';
 import LangfuseConnection from '../SettingsTabs/Integrations/LangfuseConnection';
 import ClockFormatSelector from '../SettingsTabs/General/ClockFormatSelector';
@@ -31,7 +32,6 @@ import WeekStartSelector from '../SettingsTabs/General/WeekStartSelector';
 import { ArchiveAllChats } from '../SettingsTabs/Data/ArchiveAllChats';
 import { toggleControl, ThemeSetting, LangSetting } from './controls';
 import BackupCodesItem from '../SettingsTabs/Account/BackupCodesItem';
-import { EngineSTTSetting, EngineTTSSetting } from './SpeechControls';
 import UiScaleSelector from '../SettingsTabs/General/UiScaleSelector';
 import FontSizeSelector from '../SettingsTabs/Chat/FontSizeSelector';
 import ChatTitleInTab from '../SettingsTabs/General/ChatTitleInTab';
@@ -61,7 +61,6 @@ import { showLiaAtom } from '~/components/Lia/store';
 import { autoScrollAtom } from '~/store/autoScroll';
 import Avatar from '../SettingsTabs/Account/Avatar';
 import ConnectedAccounts from './ConnectedAccounts';
-import Preset from '../SettingsTabs/Speech/Preset';
 import CodeEnvironments from './CodeEnvironments';
 import About from '../SettingsTabs/About/About';
 import ApiKeys from '../SettingsTabs/ApiKeys';
@@ -599,7 +598,7 @@ export const registry: SettingEntry[] = [
     section: 'stt',
     labelKey: 'com_nav_speech_input_preset',
     keywords: ['conversation', 'voice', 'speech', 'input', 'preset'],
-    Component: Preset,
+    Component: SpeechInputPresetSetting,
   },
 
   // Speech · Text-to-speech
