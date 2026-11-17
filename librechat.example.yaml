@@ -582,7 +582,7 @@ registration:
 #   imageFetchMs: 30000 # reading a stored image, by URL or from blob storage, to encode it for a provider
 #   toolsMs: 60000 # each call a built-in tool makes to its API (weather, Wolfram, web search)
 #   speechMs: 300000 # each text-to-speech or speech-to-text provider request
-#   imageGenerationMs: 300000 # each Stable Diffusion image generation request
+#   imageGenerationMs: 300000 # each Stable Diffusion or image_gen_oai generation request
 
 # Newest violations kept per user in the general violation log.
 # violationLog:
