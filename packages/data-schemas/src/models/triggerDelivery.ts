@@ -4,7 +4,6 @@ import type { IndexDefinition, IndexOptions, Model } from 'mongoose';
 import type { IAgentTriggerDeliveryDocument } from '~/types/triggerDelivery';
 import triggerDeliverySchema, { BACKGROUND_POLL_INDEX } from '~/schema/triggerDelivery';
 import { applyTenantIsolation } from '~/models/plugins/tenantIsolation';
-import { buildIndexWithRetry } from '~/utils/retry';
 
 interface DeliveryIndexBuildOptions extends CreateIndexesOptions {
   toCreate?: Array<[IndexDefinition, IndexOptions]>;
@@ -22,7 +21,7 @@ export function createAgentTriggerDeliveryModel(
     'AgentTriggerDelivery',
     triggerDeliverySchema,
   );
-  const ensureIndexes = model.ensureIndexes;
+  const ensureIndexes = model.ensureIndexes.bind(model);
 
   // Both automatic indexing and createIndexes() delegate to ensureIndexes().
   model.ensureIndexes = async (options: DeliveryIndexBuildOptions = {}) => {
@@ -54,10 +53,8 @@ export function createAgentTriggerDeliveryModel(
         toCreate[pollingIndex] = [keys, { ...indexOptions, name: equivalent.name }];
       }
     }
-    await buildIndexWithRetry(() => {
-      const buildOptions = { ...options, toCreate: [...toCreate] };
-      return ensureIndexes.call(model, buildOptions);
-    }, `ensureIndexes(${model.modelName})`);
+    const buildOptions = { ...options, toCreate };
+    return ensureIndexes(buildOptions);
   };
   return model;
 }

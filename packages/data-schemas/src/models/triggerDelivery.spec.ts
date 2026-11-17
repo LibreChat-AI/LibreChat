@@ -208,6 +208,23 @@ test('retries every required index after a partially failed build', async () => 
   expect(await model.listIndexes()).toHaveLength(triggerDeliverySchema.indexes().length + 1);
 });
 
+test('preserves the caller’s deadline while a peer is building indexes', async () => {
+  await connect();
+  const model = createAgentTriggerDeliveryModel(database);
+  await model.init();
+  jest.spyOn(model.collection, 'createIndex').mockRejectedValue(
+    new mongoose.mongo.MongoServerError({
+      ok: 0,
+      code: 40333,
+      errmsg: 'Existing index build in progress on the same collection.',
+    }),
+  );
+
+  await expect(
+    createIndexesWithRetry(model, { maxAttempts: 1, peerBuildDeadlineMs: 0 }),
+  ).rejects.toMatchObject({ code: 40333 });
+});
+
 test('respects an explicitly empty index subset', async () => {
   await connect();
   const model = createAgentTriggerDeliveryModel(database);
