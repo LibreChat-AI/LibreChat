@@ -1,9 +1,4 @@
-import {
-  normalizeServerName,
-  stripServerNamePrefix,
-  scheduledMCPReadOnlyPolicySchema,
-} from 'librechat-data-provider';
-import type { ScheduledMCPIdentity, ScheduledMCPReadOnlyPolicy } from 'librechat-data-provider';
+import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { ExecutionContext } from '~/agents/authority/context';
 import type { ScheduleMCPCompletionLookup } from './continuation';
@@ -34,7 +29,7 @@ type RuntimeRequest = Parameters<typeof readScheduleFireContext>[0] & {
 export function createScheduleMCPRuntimeHost(
   deps: Omit<
     Parameters<typeof createScheduleMCPConsentHost>[0],
-    'resolveEnrollment' | 'checkToolPolicy' | 'getLimits'
+    'resolveEnrollment' | 'getLimits'
   > & {
     enrollment: ScheduleMCPEnrollmentDeps;
     getScheduleMCPCompletionState?: ScheduleMCPCompletionLookup;
@@ -56,47 +51,13 @@ export function createScheduleMCPRuntimeHost(
 } {
   function createEvaluation(enrollment: ScheduleMCPEnrollmentDeps) {
     const resolveEnrollment = createScheduleMCPEnrollmentResolver(enrollment);
-    const getReadOnlyPolicy = async (
-      identity: ScheduledMCPIdentity,
-    ): Promise<Record<string, ScheduledMCPReadOnlyPolicy> | undefined> => {
-      const user = await enrollment.findUser(identity.ownerId);
-      if (!user || (user.tenantId ?? null) !== identity.tenantId) return;
-      user.id = identity.ownerId;
-      const config = await enrollment.getAppConfig({
-        ...getAppConfigOptionsFromUser(user),
-        failClosed: true,
-      });
-      const schedules = config?.interfaceConfig?.schedules;
-      const configured =
-        typeof schedules === 'object' ? schedules.mcpConsent?.readOnlyPolicy : undefined;
-      if (!configured) return;
-      const policy: Record<string, ScheduledMCPReadOnlyPolicy> = {};
-      for (const [name, value] of Object.entries(configured)) {
-        const parsed = scheduledMCPReadOnlyPolicySchema.safeParse(value);
-        if (parsed.success) policy[name] = parsed.data;
-      }
-      return policy;
-    };
     const consent = createScheduleMCPConsentHost({
       ...deps,
       findUser: enrollment.findUser,
       getLimits: createScheduleLimitsResolver((options = {}) => enrollment.getAppConfig(options)),
       resolveEnrollment,
-      checkToolPolicy: async (request) => {
-        const policy = (await getReadOnlyPolicy(request.identity))?.[request.resource.serverName];
-        if (!policy) return false;
-        return request.selection.tools.every(
-          (selection) =>
-            Object.keys(policy.tools).filter(
-              (name) =>
-                name === selection ||
-                stripServerNamePrefix(name, normalizeServerName(request.resource.serverName)) ===
-                  selection,
-            ).length === 1,
-        );
-      },
     });
-    return { consent, getReadOnlyPolicy };
+    return { consent };
   }
   const { consent } = createEvaluation(deps.enrollment);
   const execution = createScheduleMCPExecution({
@@ -118,10 +79,10 @@ export function createScheduleMCPRuntimeHost(
       const evaluation = createEvaluation({
         ...deps.enrollment,
         findUser: async () => user,
+        /** The base config carries the deployment-wide schedule stop that limits honour. */
         getAppConfig: async (options) => (options?.baseOnly ? base : config),
       });
-      const policy = await evaluation.getReadOnlyPolicy(identity);
-      return { authority: evaluation.consent.service.authority, policy };
+      return { authority: evaluation.consent.service.authority };
     },
   });
   return {

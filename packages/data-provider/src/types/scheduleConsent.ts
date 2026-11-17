@@ -23,22 +23,6 @@ const safeUrl = z
     }
   });
 
-/** Service policy for tools whose every admitted operation is read-only. Never inferred from MCP hints. */
-export const scheduledMCPReadOnlyPolicySchema = z
-  .object({
-    tools: z.record(
-      identifier,
-      z
-        .object({
-          effect: z.literal('read_only'),
-          definitionSha256: z.string().regex(/^[a-f0-9]{64}$/),
-        })
-        .strict(),
-    ),
-  })
-  .strict();
-export type ScheduledMCPReadOnlyPolicy = z.infer<typeof scheduledMCPReadOnlyPolicySchema>;
-
 export const scheduledMCPFailureReasonSchema = z.enum([
   'consent_missing',
   'consent_expired',
@@ -139,6 +123,14 @@ export const confirmScheduleMCPConsentSchema = z
     offerDigest: z.string().regex(/^[a-f0-9]{64}$/),
     expectedRevision: identifier.nullable(),
     lifetimeHours: z.number().int().min(1).max(8760),
+    /**
+     * The tools the owner allows, by server, chosen from the offer. A server left out, or
+     * listed with no tools, is not allowed. Anything not listed here is refused at run time.
+     */
+    allow: z
+      .record(identifier, z.array(identifier).max(256))
+      .refine((value) => Object.keys(value).length <= 32)
+      .refine((value) => Object.values(value).some((tools) => tools.length > 0)),
   })
   .strict();
 export type ConfirmScheduleMCPConsent = z.infer<typeof confirmScheduleMCPConsentSchema>;
@@ -149,6 +141,9 @@ export interface ScheduleMCPConsentView {
   state: 'missing' | 'active' | 'expired' | 'revoked' | 'changed' | 'unsupported';
   revision: string | null;
   expiresAtMs: number | null;
+  /** With an offer, every server and tool the owner may choose from; otherwise the stored grant. */
   targets: ScheduledMCPTarget[];
+  /** The tools the stored grant allows, by server. Empty when there is none. */
+  allowed: Record<string, string[]>;
   offer: { digest: string; maxLifetimeHours: number } | null;
 }

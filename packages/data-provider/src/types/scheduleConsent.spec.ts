@@ -3,7 +3,6 @@ import {
   scheduledMCPResourceSchema,
   scheduledMCPIdentitySchema,
   scheduledMCPEnrollmentSchema,
-  scheduledMCPReadOnlyPolicySchema,
 } from './scheduleConsent';
 import { scheduleMCPOutcomeSchema, readScheduleMCPOutcomes } from './schedules';
 import { configSchema } from '../config';
@@ -54,7 +53,12 @@ it.each([
   ).toBe(false);
 });
 it('accepts only a reviewed offer reference and bounded duration from the owner', () => {
-  const valid = { offerDigest: 'a'.repeat(64), expectedRevision: null, lifetimeHours: 1 };
+  const valid = {
+    offerDigest: 'a'.repeat(64),
+    expectedRevision: null,
+    lifetimeHours: 1,
+    allow: { warehouse: ['query'] },
+  };
   expect(confirmScheduleMCPConsentSchema.safeParse(valid).success).toBe(true);
   expect(
     confirmScheduleMCPConsentSchema.safeParse({ ...valid, accessToken: 'secret' }).success,
@@ -70,19 +74,48 @@ it('does not accept an unknown persisted consent version', () => {
   ).toBe(false);
 });
 
-it('requires an explicit read-only effect and a full-definition pin, not MCP hints', () => {
-  const pin = { effect: 'read_only', definitionSha256: 'a'.repeat(64) };
-  expect(scheduledMCPReadOnlyPolicySchema.safeParse({ tools: { query: pin } }).success).toBe(true);
-  for (const invalid of [
-    { definitionSha256: pin.definitionSha256 },
-    { ...pin, effect: 'write' },
-    { ...pin, definitionSha256: '' },
-    { ...pin, readOnlyHint: true },
-  ]) {
-    expect(scheduledMCPReadOnlyPolicySchema.safeParse({ tools: { query: invalid } }).success).toBe(
-      false,
-    );
-  }
+it.each([
+  ['no choice at all', undefined],
+  ['no servers', {}],
+  ['only servers with no tools', { warehouse: [], archive: [] }],
+  [
+    'more servers than a grant can hold',
+    Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`server-${index}`, ['query']])),
+  ],
+])('requires the owner to allow at least one tool: %s', (_label, allow) => {
+  expect(
+    confirmScheduleMCPConsentSchema.safeParse({
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow,
+    }).success,
+  ).toBe(false);
+});
+
+it('accepts a server the owner left with no tools beside one with a choice', () => {
+  expect(
+    confirmScheduleMCPConsentSchema.safeParse({
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow: { warehouse: ['query'], archive: [] },
+    }).success,
+  ).toBe(true);
+});
+
+it('no longer accepts the retired operator read-only list as schedule consent config', () => {
+  const config = configSchema.parse({
+    version: '1.3.8',
+    interface: {
+      schedules: {
+        mcpConsent: {
+          readOnlyPolicy: { warehouse: { tools: { query: { effect: 'read_only' } } } },
+        },
+      },
+    },
+  });
+  expect(config.interface?.schedules).toEqual({ mcpConsent: {} });
 });
 
 it('keeps legacy statuses and projects only public-safe policy denial fields', () => {

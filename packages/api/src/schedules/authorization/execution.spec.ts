@@ -1,6 +1,5 @@
 import { Constants } from '@librechat/agents';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { getScheduledMCPToolDefinitionDigest, isScheduledMCPToolReadOnly } from './policy';
 import { executionFixture, readTool } from './execution.helper';
 import { bindScheduledMCPInvocation } from './execution';
 import { createMCPRequestContext } from '~/mcp/request';
@@ -9,52 +8,6 @@ import { createScheduledMCPRunPolicy } from './run';
 import { ScheduledMCPPolicyError } from './policy';
 
 const catalog = (tools: Tool[] = [readTool]) => ({ tools, complete: true });
-
-it('requires a trusted exact-definition declaration, ignoring misleading names and annotations', () => {
-  const mutating: Tool = {
-    name: 'get_read_only_data',
-    inputSchema: { type: 'object' },
-    annotations: { readOnlyHint: true, destructiveHint: false },
-  };
-  expect(isScheduledMCPToolReadOnly(mutating)).toBe(false);
-  expect(
-    isScheduledMCPToolReadOnly(mutating, {
-      tools: {
-        query: {
-          effect: 'read_only',
-          definitionSha256: getScheduledMCPToolDefinitionDigest(readTool),
-        },
-      },
-    }),
-  ).toBe(false);
-  expect(
-    isScheduledMCPToolReadOnly(readTool, {
-      tools: {
-        query: {
-          effect: 'read_only',
-          definitionSha256: getScheduledMCPToolDefinitionDigest(readTool),
-        },
-      },
-    }),
-  ).toBe(true);
-});
-
-it('canonicalizes object key order without dropping policy-relevant definition fields', () => {
-  const left: Tool = {
-    name: 'read',
-    inputSchema: { type: 'object', properties: { x: { type: 'string', maxLength: 8 } } },
-  };
-  const right: Tool = {
-    inputSchema: { properties: { x: { maxLength: 8, type: 'string' } }, type: 'object' },
-    name: 'read',
-  };
-  expect(getScheduledMCPToolDefinitionDigest(left)).toBe(
-    getScheduledMCPToolDefinitionDigest(right),
-  );
-  expect(
-    getScheduledMCPToolDefinitionDigest({ ...right, outputSchema: { type: 'object' } }),
-  ).not.toBe(getScheduledMCPToolDefinitionDigest(left));
-});
 
 it.each(['root', 'child'])(
   'checks the actual %s operation through the real consent service',
@@ -96,16 +49,11 @@ it.each([
     },
   ],
   [
-    'selected tool change',
-    'binding_mismatch',
-    (f: Awaited<ReturnType<typeof executionFixture>>) => {
-      f.target.permittedTools[0].tools.push('write');
-    },
-  ],
-  [
-    'policy removal',
+    'the agent dropping the tool',
     'tool_policy_denied',
-    (f: Awaited<ReturnType<typeof executionFixture>>) => f.removePolicy(),
+    (f: Awaited<ReturnType<typeof executionFixture>>) => {
+      f.target.permittedTools[0].tools = ['other'];
+    },
   ],
 ] as const)('rechecks %s after admission on approval resume', async (_name, reason, change) => {
   const f = await executionFixture('resume');
@@ -121,18 +69,40 @@ it.each([
   ).rejects.toMatchObject({ failure: { reason, automaticReplay: false } });
 });
 
-it('refuses a changed catalog, an incomplete snapshot, and ambiguous duplicate definitions', async () => {
+it('refuses a tool the owner did not allow, even though the agent selects it', async () => {
+  const exportTool: Tool = { name: 'export', inputSchema: { type: 'object' } };
+  const f = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+  const input = {
+    user: f.user,
+    serverName: 'warehouse',
+    serverConfig: f.config,
+    loadTools: async () => catalog([readTool, exportTool]),
+  };
+
+  await expect(
+    f.invocation('root', 'export').authorize({ ...input, toolName: 'export' }),
+  ).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied', automaticReplay: false } });
+  await expect(f.invocation().authorize({ ...input, toolName: 'query' })).resolves.toBeUndefined();
+});
+
+it('keeps an allowed tool authorized after the agent selects another tool', async () => {
   const f = await executionFixture();
-  for (const snapshot of [
-    catalog([
-      {
-        ...readTool,
-        inputSchema: { type: 'object', properties: { mutation: { type: 'boolean' } } },
-      },
-    ]),
-    { ...catalog(), complete: false },
-    catalog([readTool, readTool]),
-  ]) {
+  f.target.permittedTools[0].tools.push('write');
+
+  await expect(
+    f.invocation().authorize({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: f.config,
+      toolName: 'query',
+      loadTools: async () => catalog(),
+    }),
+  ).resolves.toBeUndefined();
+});
+
+it('refuses an incomplete snapshot and ambiguous duplicate definitions', async () => {
+  const f = await executionFixture();
+  for (const snapshot of [{ ...catalog(), complete: false }, catalog([readTool, readTool])]) {
     await expect(
       f.invocation().authorize({
         user: f.user,

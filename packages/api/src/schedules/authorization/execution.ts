@@ -1,16 +1,16 @@
 import { DEFAULT_HOOK_TIMEOUT_MS } from '@librechat/agents';
 import { normalizeServerName, stripServerNamePrefix } from 'librechat-data-provider';
-import type { ScheduledMCPIdentity, ScheduledMCPReadOnlyPolicy } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage } from '@librechat/data-schemas';
+import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig, RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { MCPToolsSnapshot } from '~/mcp/connection';
 import type { ScheduledMCPAuthority } from './contract';
 import type { ScheduledTokenContext } from '../context';
-import { isScheduledMCPToolReadOnly, ScheduledMCPPolicyError } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { ScheduleMCPConsentError } from './service';
+import { ScheduledMCPPolicyError } from './policy';
 import { isOwnedAbortError } from '~/utils/errors';
 import { waitUntilDeadline } from '~/mcp/utils';
 
@@ -62,7 +62,6 @@ export interface ScheduleMCPExecutionDeps {
   /** Fresh for each call; only this attempt may reuse its principal/configuration. */
   loadAuthorization: (identity: ScheduledMCPIdentity) => Promise<{
     authority: ScheduledMCPAuthority;
-    policy?: Record<string, ScheduledMCPReadOnlyPolicy>;
   }>;
 }
 
@@ -190,12 +189,7 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
               signal?.throwIfAborted();
               if (catalog.authenticationError != null) deny('credential_rejected');
               const definitions = catalog.tools.filter((tool: Tool) => tool.name === toolName);
-              if (
-                !catalog.complete ||
-                definitions.length !== 1 ||
-                !isScheduledMCPToolReadOnly(definitions[0], evaluation.policy?.[serverName])
-              )
-                deny('tool_policy_denied');
+              if (!catalog.complete || definitions.length !== 1) deny('tool_policy_denied');
               const authorization = await evaluation.authority.authorize(
                 {
                   identity: capturedIdentity,

@@ -2,12 +2,10 @@ import { createHash } from 'node:crypto';
 import { Constants as AgentConstants } from '@librechat/agents';
 import { Constants, isActionTool } from 'librechat-data-provider';
 import type {
-  ScheduledMCPReadOnlyPolicy,
   ScheduledMCPToolSelection,
   ScheduledMCPFailureReason,
   ScheduleMCPOutcome,
 } from 'librechat-data-provider';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ScheduledMCPFailure } from './contract';
 import { failureFixtures } from './failures';
 
@@ -38,31 +36,13 @@ function canonical(value: unknown): unknown {
   return value;
 }
 
-/** A pin binds trusted service policy to the full upstream definition, not its hints. */
-export function getScheduledMCPToolDefinitionDigest(tool: Tool): string {
-  return createHash('sha256')
-    .update(JSON.stringify(canonical(tool)))
-    .digest('hex');
-}
-
+/** Identifies one set of permitted selections; a grant and its bearer cache entries bind to it. */
 export function getScheduledMCPPolicyRevision(
   selections: readonly ScheduledMCPToolSelection[],
-  policy?: ScheduledMCPReadOnlyPolicy,
 ): string {
   return createHash('sha256')
-    .update(JSON.stringify(canonical({ selections, policy: policy ?? null })))
+    .update(JSON.stringify(canonical({ selections })))
     .digest('hex');
-}
-
-export function isScheduledMCPToolReadOnly(
-  tool: Tool,
-  policy?: ScheduledMCPReadOnlyPolicy,
-): boolean {
-  const pin = policy?.tools[tool.name];
-  return (
-    pin?.effect === 'read_only' &&
-    pin.definitionSha256 === getScheduledMCPToolDefinitionDigest(tool)
-  );
 }
 
 /** Expected denial. Only the approved projection can reach a client or persisted run. */

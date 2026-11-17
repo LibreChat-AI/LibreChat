@@ -9,11 +9,8 @@ import type {
   ScheduledMCPEnrollment,
 } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage } from '@librechat/data-schemas';
-import type {
-  ScheduledMCPAuthority,
-  ScheduledMCPAuthorizationRequest,
-  ScheduledMCPFailureReason,
-} from './contract';
+import type { ScheduledMCPAuthority, ScheduledMCPFailureReason } from './contract';
+import { getScheduledMCPPolicyRevision } from './policy';
 import { failureFixtures } from './failures';
 
 export interface ScheduleMCPConsentLimits {
@@ -30,12 +27,8 @@ export interface ScheduleMCPConsentDeps {
   getLimits: (identity: ScheduledMCPIdentity) => Promise<ScheduleMCPConsentLimits>;
   /** Loads current user/tenant/role and schedule/agent/resource access; no role snapshot. */
   canUse: (identity: ScheduledMCPIdentity, options: { signal?: AbortSignal }) => Promise<boolean>;
+  /** What the owner can be offered now: reachable agents' selected tools, per declared server. */
   resolveEnrollment?: ScheduleMCPEnrollmentResolver;
-  /** Trusted tool classification and current graph reachability, never MCP annotations. */
-  checkToolPolicy?: (
-    request: ScheduledMCPAuthorizationRequest,
-    options: { signal?: AbortSignal },
-  ) => Promise<boolean>;
   now?: () => number;
 }
 
@@ -96,6 +89,65 @@ function sameResource(left: ScheduledMCPResource, right: ScheduledMCPResource): 
   return JSON.stringify(binding(left)) === JSON.stringify(binding(right));
 }
 
+/** The tools a grant allows on each server, across every agent that selected them. */
+function allowedTools(targets: readonly ScheduledMCPTarget[]): Record<string, string[]> {
+  return Object.fromEntries(
+    targets.map((target) => [
+      target.resource.serverName,
+      [...new Set(target.permittedTools.flatMap((selection) => selection.tools))].sort(),
+    ]),
+  );
+}
+
+/**
+ * Narrows the offer to what the owner chose. Every chosen server and tool must be on offer,
+ * and a server with nothing chosen is left out of the grant altogether.
+ */
+function selectAllowed(
+  offered: readonly ScheduledMCPTarget[],
+  allow: ConfirmScheduleMCPConsent['allow'],
+): ScheduledMCPTarget[] {
+  const chosen: ScheduledMCPTarget[] = [];
+  for (const [serverName, tools] of Object.entries(allow)) {
+    const target = offered.find((item) => item.resource.serverName === serverName);
+    const selected = new Set(tools);
+    if (!target || tools.some((tool) => !allowedTools([target])[serverName].includes(tool)))
+      throw new ScheduleMCPConsentError('consent_invalid');
+    const permittedTools = target.permittedTools
+      .map(({ agentId, tools: offeredTools }) => ({
+        agentId,
+        tools: offeredTools.filter((tool) => selected.has(tool)),
+      }))
+      .filter((selection) => selection.tools.length > 0);
+    if (permittedTools.length === 0) continue;
+    chosen.push({
+      resource: target.resource,
+      permittedTools,
+      policyRevision: getScheduledMCPPolicyRevision(permittedTools),
+    });
+  }
+  if (chosen.length === 0) throw new ScheduleMCPConsentError('consent_invalid');
+  return canonicalTargets(chosen);
+}
+
+/** Whether the grant still fits what is on offer: same recipients, and every allowed tool still selected. */
+function coversGrant(
+  offered: readonly ScheduledMCPTarget[],
+  granted: readonly ScheduledMCPTarget[],
+): boolean {
+  return granted.every((grant) => {
+    const target = offered.find((item) => item.resource.serverName === grant.resource.serverName);
+    return (
+      target != null &&
+      sameResource(target.resource, grant.resource) &&
+      grant.permittedTools.every(({ agentId, tools }) => {
+        const current = target.permittedTools.find((selection) => selection.agentId === agentId);
+        return current != null && tools.every((tool) => current.tools.includes(tool));
+      })
+    );
+  });
+}
+
 export interface ScheduleMCPConsentService {
   view: (
     identity: ScheduledMCPIdentity,
@@ -151,15 +203,24 @@ export function createScheduleMCPConsentService(
       enrollment.consents.some((c) => !identityMatches(c.identity, identity))
     )
       state = 'changed';
-    let targets: ScheduledMCPTarget[] =
+    const granted: ScheduledMCPTarget[] =
       enrollment?.consents.map(({ resource, permittedTools, policyRevision }) => ({
         resource,
         permittedTools,
         policyRevision,
       })) ?? [];
+    const allowedByServer = allowedTools(granted);
+    let targets = granted;
     let offer: ScheduleMCPConsentView['offer'] = null;
     if (snapshot.compatible === false) {
-      return { state: 'unsupported', revision: null, expiresAtMs: null, targets: [], offer: null };
+      return {
+        state: 'unsupported',
+        revision: null,
+        expiresAtMs: null,
+        targets: [],
+        allowed: {},
+        offer: null,
+      };
     }
     if (allowed && limits.enabled && deps.resolveEnrollment) {
       let resolved: readonly ScheduledMCPTarget[];
@@ -172,6 +233,7 @@ export function createScheduleMCPConsentService(
           revision: enrollment.revision,
           expiresAtMs,
           targets,
+          allowed: allowedByServer,
           offer: null,
         };
       }
@@ -181,6 +243,7 @@ export function createScheduleMCPConsentService(
           revision: enrollment?.revision ?? null,
           expiresAtMs,
           targets,
+          allowed: allowedByServer,
           offer: null,
         };
       targets = canonicalTargets(resolved);
@@ -188,23 +251,17 @@ export function createScheduleMCPConsentService(
         .update(JSON.stringify({ identity, configRevision: snapshot.configRevision, targets }))
         .digest('hex');
       offer = { digest, maxLifetimeHours: limits.maxLifetimeHours };
-      if (
-        state === 'active' &&
-        JSON.stringify(targets) !==
-          JSON.stringify(
-            canonicalTargets(
-              enrollment!.consents.map(({ resource, permittedTools, policyRevision }) => ({
-                resource,
-                permittedTools,
-                policyRevision,
-              })),
-            ),
-          )
-      )
-        state = 'changed';
+      if (state === 'active' && !coversGrant(targets, granted)) state = 'changed';
     } else if (!enrollment) state = 'unsupported';
     options.signal?.throwIfAborted();
-    return { state, revision: enrollment?.revision ?? null, expiresAtMs, targets, offer };
+    return {
+      state,
+      revision: enrollment?.revision ?? null,
+      expiresAtMs,
+      targets,
+      allowed: allowedByServer,
+      offer,
+    };
   }
 
   async function confirm(
@@ -237,6 +294,7 @@ export function createScheduleMCPConsentService(
       )
       .digest('hex');
     if (digest !== input.offerDigest) throw new ScheduleMCPConsentError('consent_changed');
+    const chosen = selectAllowed(current.targets, input.allow);
     options.signal?.throwIfAborted();
     const grantedAtMs = now();
     const revision = randomUUID();
@@ -244,7 +302,7 @@ export function createScheduleMCPConsentService(
       version: 1,
       revision,
       scheduleRevision: snapshot.configRevision,
-      consents: current.targets.map((target) => ({
+      consents: chosen.map((target) => ({
         ...target,
         identity,
         id: randomUUID(),
@@ -314,11 +372,7 @@ export function createScheduleMCPConsentService(
         throw error;
       }
       const target = targets.find((t) => t.resource.serverName === request.resource.serverName);
-      if (
-        !target ||
-        !sameResource(target.resource, consent.resource) ||
-        target.policyRevision !== consent.policyRevision
-      )
+      if (!target || !sameResource(target.resource, consent.resource))
         return denial('binding_mismatch');
       const selection = consent.permittedTools.find((s) => s.agentId === request.selection.agentId);
       const currentSelection = target.permittedTools.find(
@@ -332,8 +386,6 @@ export function createScheduleMCPConsentService(
           (tool) => !selection.tools.includes(tool) || !currentSelection.tools.includes(tool),
         )
       )
-        return denial('tool_policy_denied');
-      if (!deps.checkToolPolicy || !(await deps.checkToolPolicy(request, options)))
         return denial('tool_policy_denied');
       if (options.signal?.aborted) return { state: 'cancelled' };
       const admitted = await deps.storage.admitScheduleMCPConsent({

@@ -36,7 +36,6 @@ function setup() {
   };
   let targets = [structuredClone(target)];
   let allowed = true;
-  let policy = true;
   const storage: ScheduleMCPConsentStorage = {
     readScheduleMCPConsent: jest.fn(async () => structuredClone(snapshot)),
     confirmScheduleMCPConsent: jest.fn(async (input) => {
@@ -72,15 +71,15 @@ function setup() {
     canUse: async () => allowed,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     resolveEnrollment: async () => targets,
-    checkToolPolicy: async () => policy,
     now: () => time,
   });
-  const enroll = async () => {
+  const enroll = async (allow: Record<string, string[]> = { warehouse: ['query'] }) => {
     const view = await service.view(identity);
     return service.confirm(identity, {
       offerDigest: view.offer!.digest,
       expectedRevision: view.revision,
       lifetimeHours: 1,
+      allow,
     });
   };
   return {
@@ -91,14 +90,11 @@ function setup() {
     setTime: (value: number) => {
       time = value;
     },
-    changeTarget: (value: ScheduledMCPTarget) => {
-      targets = [value];
+    changeTarget: (...value: ScheduledMCPTarget[]) => {
+      targets = value;
     },
     deny: () => {
       allowed = false;
-    },
-    denyPolicy: () => {
-      policy = false;
     },
   };
 }
@@ -183,7 +179,7 @@ it.each(['url', 'issuer', 'audience', 'configurationRevision'] as const)(
     });
   },
 );
-it('requires enrolled child tools and authoritative tool policy', async () => {
+it('authorizes each agent only for tools it selected and the owner allowed', async () => {
   const s = setup();
   await s.enroll();
   expect(
@@ -198,7 +194,82 @@ it('requires enrolled child tools and authoritative tool policy', async () => {
       {},
     ),
   ).toMatchObject({ state: 'denied', failure: { reason: 'tool_policy_denied' } });
-  s.denyPolicy();
+});
+
+const offering = (tools: string[], serverName = 'warehouse'): ScheduledMCPTarget => ({
+  ...target,
+  resource: { ...target.resource, serverName },
+  permittedTools: [
+    { agentId: 'root', tools },
+    { agentId: 'child', tools },
+  ],
+});
+
+it('grants only the tools the owner chose from the offer', async () => {
+  const s = setup();
+  s.changeTarget(offering(['export', 'query']));
+  const view = await s.enroll({ warehouse: ['query'] });
+
+  expect(view).toMatchObject({ state: 'active', allowed: { warehouse: ['query'] } });
+  expect(view.targets[0].permittedTools[0].tools).toEqual(['export', 'query']);
+  expect(s.snapshot.enrollment!.consents[0].permittedTools).toEqual([
+    { agentId: 'child', tools: ['query'] },
+    { agentId: 'root', tools: ['query'] },
+  ]);
+  expect(await s.service.authority.authorize(request('invoke'), {})).toMatchObject({
+    state: 'authorized',
+  });
+  expect(
+    await s.service.authority.authorize(
+      { ...request('invoke'), selection: { agentId: 'root', tools: ['export'] } },
+      {},
+    ),
+  ).toMatchObject({ state: 'denied', failure: { reason: 'tool_policy_denied' } });
+});
+
+it('leaves a server out of the grant when the owner chose nothing on it', async () => {
+  const s = setup();
+  s.changeTarget(offering(['query']), offering(['read'], 'archive'));
+  const view = await s.enroll({ warehouse: ['query'], archive: [] });
+
+  expect(view.allowed).toEqual({ warehouse: ['query'] });
+  expect(s.snapshot.enrollment!.consents.map((c) => c.resource.serverName)).toEqual(['warehouse']);
+  expect(
+    await s.service.authority.authorize(
+      {
+        ...request('invoke'),
+        resource: { ...target.resource, serverName: 'archive' },
+        selection: { agentId: 'root', tools: ['read'] },
+      },
+      {},
+    ),
+  ).toMatchObject({ state: 'denied', failure: { reason: 'consent_missing' } });
+});
+
+it.each([
+  ['a server that is not on offer', { other: ['query'] }],
+  ['a tool that is not on offer', { warehouse: ['delete'] }],
+  ['nothing at all', { warehouse: [] }],
+])('rejects a choice of %s without writing', async (_label, allow) => {
+  const s = setup();
+  await expect(s.enroll(allow)).rejects.toMatchObject({ code: 'consent_invalid' });
+  expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+});
+
+it('stays active when the agent selects another tool, and changes when it drops an allowed one', async () => {
+  const s = setup();
+  await s.enroll();
+  s.changeTarget(offering(['query', 'write']));
+  expect((await s.service.view(identity)).state).toBe('active');
+  expect(await s.service.authority.authorize(request('invoke'), {})).toMatchObject({
+    state: 'authorized',
+  });
+
+  s.changeTarget(offering(['write']));
+  expect(await s.service.view(identity)).toMatchObject({
+    state: 'changed',
+    allowed: { warehouse: ['query'] },
+  });
   expect(await s.service.authority.authorize(request('invoke'), {})).toMatchObject({
     state: 'denied',
     failure: { reason: 'tool_policy_denied' },
@@ -212,6 +283,7 @@ it('rejects stale offers/excessive lifetimes without writing', async () => {
       offerDigest: view.offer!.digest,
       expectedRevision: null,
       lifetimeHours: 25,
+      allow: { warehouse: ['query'] },
     }),
   ).rejects.toMatchObject({ code: 'consent_invalid' });
   s.changeTarget({ ...target, policyRevision: 'p2' });
@@ -220,6 +292,7 @@ it('rejects stale offers/excessive lifetimes without writing', async () => {
       offerDigest: view.offer!.digest,
       expectedRevision: null,
       lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
     }),
   ).rejects.toMatchObject({ code: 'consent_changed' });
   expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
