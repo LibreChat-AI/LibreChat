@@ -1,3 +1,4 @@
+import type { ClassValue } from 'clsx';
 import { disabledFillClasses } from './theme';
 import { cn } from './utils';
 
@@ -70,3 +71,10 @@ export const composerControlClasses = (): string =>
      *  surface is under 1.2:1 and would leave the control with no visible boundary. */
     'hover:bg-surface-hover',
   );
+
+/**
+ * Merges composer class names so a later utility replaces one from the same theme group
+ * (`h-8` takes the place of `h-theme-control`, `gap-1.5` of `gap-theme-control-gap`).
+ * Chat components call this where they extend `composerControlClasses()`.
+ */
+export const mergeComposerClasses = (...inputs: ClassValue[]): string => cn(...inputs);

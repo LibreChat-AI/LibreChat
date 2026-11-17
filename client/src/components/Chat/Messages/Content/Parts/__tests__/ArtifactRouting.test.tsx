@@ -1,13 +1,43 @@
 import React from 'react';
 import { getDefaultStore } from 'jotai';
 import { RecoilRoot, useRecoilValue } from 'recoil';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { FilesHostProvider } from '@librechat/chat/react';
 import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
+import { render as renderRtl, screen, fireEvent, act } from '@testing-library/react';
+import type { RenderOptions } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
+import type { FilesHost } from '@librechat/chat/react';
 import type { MutableSnapshot } from 'recoil';
+import { classifyAttachment, renderAttachmentArtifact } from '../attachmentHost';
 import Attachment, { AttachmentGroup } from '../Attachment';
 import { MessageContext } from '~/Providers/MessageContext';
+import '~/Providers/MessagePartsHostContext';
+import '../renderers';
 import store from '~/store';
+
+const filesHost: FilesHost = {
+  renderEndpointIcon: () => null,
+  useDeleteFile: () => () => undefined,
+  getPreviewUrl: () => undefined,
+  useAttachmentDownload: () => () => undefined,
+  useAttachmentPreview: (attachment) => {
+    const status = (attachment as { status?: string } | undefined)?.status;
+    if (status === 'pending' || status === 'failed') {
+      return { status };
+    }
+    return { status: 'ready' };
+  },
+  useKnownFiles: () => [],
+  classifyAttachment,
+  renderAttachmentArtifact,
+};
+
+function render(ui: React.ReactElement, options?: Omit<RenderOptions, 'wrapper'>) {
+  return renderRtl(ui, {
+    ...options,
+    wrapper: ({ children }) => <FilesHostProvider host={filesHost}>{children}</FilesHostProvider>,
+  });
+}
 
 jest.mock('~/hooks', () => ({
   useLocalize:
@@ -879,7 +909,7 @@ describe('AttachmentGroup routing', () => {
     // render first and visually upstage the real artifact below it.
     // Both files route to the `fileAttachments` bucket (no text, no
     // panel-eligible extension) so the test exercises within-bucket
-    // ordering — sort is per-bucket, not cross-bucket.
+    // ordering. Sort is per-bucket, not cross-bucket.
     const empty = baseAttachment({
       file_id: 'empty-zip',
       filename: 'placeholder.zip',
@@ -890,14 +920,12 @@ describe('AttachmentGroup routing', () => {
       filename: 'archive.zip',
       bytes: 1024,
     });
-    const { container } = renderWith(<AttachmentGroup attachments={[empty, real]} />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_n_files' }));
-    const chips = Array.from(container.querySelectorAll('[data-testid="file-container"]'));
-    expect(chips.length).toBe(2);
-    const filenames = chips.map((c) => c.textContent ?? '');
-    // Real chip must render before the empty placeholder.
-    expect(filenames[0]).toMatch(/archive\.zip/);
-    expect(filenames[1]).toMatch(/placeholder\.zip/);
+    renderWith(<AttachmentGroup attachments={[empty, real]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Show 2 files' }));
+    const chips = screen.getAllByRole('button', { name: /\.zip$/ });
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveAccessibleName('archive.zip');
+    expect(chips[1]).toHaveAccessibleName('placeholder.zip');
   });
 
   it('keeps multiple downloadable files in their own collapsed group while images render outwardly', () => {
@@ -925,14 +953,16 @@ describe('AttachmentGroup routing', () => {
       <AttachmentGroup attachments={[first, second, json, image]} />,
     );
 
-    const toggle = screen.getByRole('button', { name: 'com_ui_show_n_files' });
+    const toggle = screen.getByRole('button', { name: 'Show 3 files' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     const panel = document.getElementById(toggle.getAttribute('aria-controls') ?? '');
     expect(panel?.firstElementChild).toHaveAttribute('aria-hidden', 'true');
     expect(screen.getByTestId('image')).toBeInTheDocument();
-    expect(screen.getAllByTestId('file-container').map((chip) => chip.textContent)).not.toContain(
-      'c.json',
-    );
+    expect(
+      screen
+        .getAllByRole('button', { hidden: true })
+        .map((chip) => chip.getAttribute('aria-label')),
+    ).not.toContain('c.json');
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
@@ -953,9 +983,8 @@ describe('AttachmentGroup routing', () => {
       filename: 'archive-deadbe.zip',
       bytes: 1024,
     });
-    const { container } = renderWith(<AttachmentGroup attachments={[sandboxFile]} />);
-    const chip = container.querySelector('[data-testid="file-container"]');
-    expect(chip?.textContent).toBe('archive-deadbe.zip');
+    renderWith(<AttachmentGroup attachments={[sandboxFile]} />);
+    expect(screen.getByRole('button', { name: 'archive-deadbe.zip' })).toBeInTheDocument();
   });
 
   it('strips the suffix and restores the dot for a sandbox dotfile rendered through FileContainer', () => {
@@ -970,9 +999,8 @@ describe('AttachmentGroup routing', () => {
       filename: '_.config-abcdef.zip',
       bytes: 12,
     });
-    const { container } = renderWith(<AttachmentGroup attachments={[sandboxDotfile]} />);
-    const chip = container.querySelector('[data-testid="file-container"]');
-    expect(chip?.textContent).toBe('.config.zip');
+    renderWith(<AttachmentGroup attachments={[sandboxDotfile]} />);
+    expect(screen.getByRole('button', { name: '.config.zip' })).toBeInTheDocument();
   });
 
   it('renders pending-preview chips in the panel-artifact row alongside resolved siblings', () => {
@@ -1102,9 +1130,11 @@ describe('AttachmentGroup routing', () => {
     // Mermaid render
     expect(screen.getByTestId('mermaid-render')).toBeInTheDocument();
     // JSON and plain zip are both downloadable file outputs, so they collapse together.
-    const toggle = screen.getByRole('button', { name: 'com_ui_show_n_files' });
+    const toggle = screen.getByRole('button', { name: 'Show 2 files' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    const chipLabels = screen.getAllByTestId('file-container').map((chip) => chip.textContent);
+    const chipLabels = screen
+      .getAllByRole('button', { hidden: true })
+      .map((chip) => chip.getAttribute('aria-label'));
     expect(chipLabels).toContain('archive.zip');
     expect(chipLabels).not.toContain('data.json');
 

@@ -224,7 +224,7 @@ describe('theme cache storage', () => {
  * - definitions with one or both mode blocks absent.
  * A new role, or a new fallback, joins by construction.
  */
-const PIN = { fingerprint: '1.6.11s6b78', digest: '1fjrln1' };
+const PIN = { fingerprint: '1.6.yvfxk0', digest: 'ixoe22' };
 
 const digestOf = (text: string): string => {
   let hash = 5381;
@@ -250,6 +250,7 @@ const SPECIAL_CANDIDATES = [
   'inherit',
   'ring',
   'border',
+  'dots',
   'none',
   'None',
   ' none ',
@@ -382,10 +383,37 @@ const colorOverrides = (tokens: readonly string[], mode: Mode): Record<string, s
  * `fontFamily` and `displayFontFamily`, carry distinct values and a role inheriting one of them
  * shows which it read.
  */
-const appearanceOverrides = (tokens: readonly string[]): Record<string, string> =>
-  Object.fromEntries(
+const appearanceOverrides = (tokens: readonly string[]): Record<string, string> => {
+  const chosen: Record<string, string> = Object.fromEntries(
     tokens.map((token, index) => [token, ACCEPTED[token][index % ACCEPTED[token].length]]),
   );
+  /**
+   * Positions are chosen per role, so a jointly validated pair can land on two values the
+   * validator accepts alone and rejects together (`switchWidth` and `switchHeight` on the same
+   * length). Repair those from the pairs the validator does accept, so that adding a role, which
+   * shifts the position of every role after it in each probe, cannot generate a fixture the
+   * resolver refuses. Repairing one pair can disturb another when a role sits in two, so this
+   * settles rather than passing once.
+   */
+  for (let pass = 0; pass < JOINTLY_VALIDATED.length; pass++) {
+    const broken = JOINTLY_VALIDATED.filter(
+      ([first, second]) =>
+        chosen[first] !== undefined &&
+        chosen[second] !== undefined &&
+        !isValidAppearance({ [first]: chosen[first], [second]: chosen[second] }),
+    );
+    if (broken.length === 0) {
+      break;
+    }
+    broken.forEach(([first, second]) => {
+      const accepted = ACCEPTED_PAIRS[`${first}+${second}`]?.[0];
+      if (accepted) {
+        [chosen[first], chosen[second]] = accepted;
+      }
+    });
+  }
+  return chosen;
+};
 
 const OVERRIDES: Record<Kind, (tokens: readonly string[], mode: Mode) => Overrides> = {
   colors: (tokens, mode) => ({ colors: colorOverrides(tokens, mode) }),

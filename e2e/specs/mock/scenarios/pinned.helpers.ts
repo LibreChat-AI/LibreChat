@@ -151,7 +151,12 @@ export async function dragRowOnto(
    *  decides a swap reads the offset at the moment it fires. A pointer that
    *  arrived in one last jump gets a single reading, taken while React may still
    *  be rendering the previous one; a real hand keeps sending events. These
-   *  repeats are that, bounded. */
+   *  repeats are that, bounded.
+   *
+   *  react-dnd delivers hover once per animation frame, so these moves and the
+   *  release can all land inside one frame, before any hover has seen the final
+   *  position. The drop handler settles that position itself; releasing without
+   *  waiting for a frame keeps that fast-release path under test. */
   for (let settle = 0; settle < 3; settle += 1) {
     await page.mouse.move(endX, endY + settle - 1, { steps: 2 });
   }

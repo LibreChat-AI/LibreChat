@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { expect, test } from '@playwright/test';
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import { NEW_CHAT_PATH, messagesView, selectMockEndpoint, sendMessage } from './helpers';
 
 const PHASE_ENDPOINT = { label: 'Mock Provider F', model: 'mock-model-f' };
@@ -37,6 +37,23 @@ async function selectEphemeralMCP(page: Page) {
   await expect(serverItem).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
   await expect(page.getByRole('listitem', { name: MCP_SERVER_TITLE, exact: true })).toBeVisible();
+}
+
+/**
+ * Opening a fold slides its header's new label in over the old one. A label's position is
+ * compared across a hover only once that slide (and any other finite header motion) has
+ * landed; measured mid-slide it differs from the settled one by a fraction of a pixel.
+ */
+async function settledBox(label: Locator) {
+  await label.evaluate((element) =>
+    Promise.all(
+      (element.closest('button') ?? element)
+        .getAnimations({ subtree: true })
+        .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+        .map((animation) => animation.finished.catch(() => null)),
+    ),
+  );
+  return label.boundingBox();
 }
 
 function collectPageProblems(page: Page): string[] {
@@ -227,13 +244,13 @@ test.describe('activity fold', () => {
       .locator('> div > [data-testid="fold-rail"]');
     const groupRail = group.locator('> div > [data-testid="fold-rail"]');
     const phaseLabel = header.getByText(PHASE_LABEL, { exact: true });
-    const beforeHover = await phaseLabel.boundingBox();
+    const beforeHover = await settledBox(phaseLabel);
     await phaseRail.hover();
     await expect(header.getByTestId('fold-rail-knob')).toBeVisible();
     expect(await phaseLabel.boundingBox()).toEqual(beforeHover);
 
     const groupLabel = groupHeader.locator('[role="status"]');
-    const beforeGroupHover = await groupLabel.boundingBox();
+    const beforeGroupHover = await settledBox(groupLabel);
     await groupRail.hover();
     await expect(groupHeader.getByTestId('fold-rail-knob')).toBeVisible();
     expect(await groupLabel.boundingBox()).toEqual(beforeGroupHover);

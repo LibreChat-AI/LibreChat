@@ -42,6 +42,210 @@ function deliverSequencedMessage(
 }
 
 describe('RedisEventTransport', () => {
+  it.each([
+    { mode: 'ordinary', removal: 'unsubscribe' },
+    { mode: 'frontier', removal: 'unsubscribe' },
+    { mode: 'replay', removal: 'unsubscribe' },
+    { mode: 'ordinary', removal: 'cleanup' },
+    { mode: 'frontier', removal: 'cleanup' },
+    { mode: 'replay', removal: 'cleanup' },
+  ] as const)(
+    'rejects $mode readiness first awaited after $removal and destroy',
+    async ({ mode, removal }) => {
+      const publisher = createMockPublisher();
+      const subscriber = createMockSubscriber();
+      subscriber.subscribe.mockImplementation(() => new Promise(() => undefined));
+      const transport = new RedisEventTransport(
+        publisher as unknown as Redis,
+        subscriber as unknown as Redis,
+      );
+      const options =
+        mode === 'replay'
+          ? { replay: { items: 10, bytes: 4096, ttlMs: 1000 } }
+          : { deferSequenceDelivery: true, captureSequenceFrontier: mode === 'frontier' };
+      const attachment = transport.subscribe(
+        'closed-before-await',
+        { onChunk: jest.fn() },
+        options,
+      );
+
+      if (removal === 'unsubscribe') attachment.unsubscribe();
+      else transport.cleanup('closed-before-await');
+      transport.destroy();
+
+      await expect(attachment.ready).rejects.toThrow('Redis event transport is closed.');
+      expect(publisher.eval).not.toHaveBeenCalled();
+      expect(transport.getTrackedStreamIds()).toEqual([]);
+    },
+  );
+
+  it.each(['abort', 'preempt'] as const)(
+    'rejects a pending %s registration explicitly awaited after destroy',
+    async (kind) => {
+      const subscriber = createMockSubscriber();
+      subscriber.subscribe.mockImplementation(() => new Promise(() => undefined));
+      const transport = new RedisEventTransport(
+        createMockPublisher() as unknown as Redis,
+        subscriber as unknown as Redis,
+      );
+      const registration =
+        kind === 'abort'
+          ? transport.onAbort('closed-control', jest.fn())
+          : transport.onPreempt('closed-control', jest.fn());
+
+      transport.cleanup('closed-control');
+      transport.destroy();
+
+      await expect(registration).rejects.toThrow('Redis event transport is closed.');
+      expect(transport.getTrackedStreamIds()).toEqual([]);
+    },
+  );
+
+  it('rejects both frontier readiness and synchronization when removed before their first await', async () => {
+    const publisher = createMockPublisher();
+    const subscriber = createMockSubscriber();
+    subscriber.subscribe.mockImplementation(() => new Promise(() => undefined));
+    const transport = new RedisEventTransport(
+      publisher as unknown as Redis,
+      subscriber as unknown as Redis,
+    );
+    const attachment = transport.subscribe(
+      'closed-frontier-sync',
+      { onChunk: jest.fn() },
+      {
+        deferSequenceDelivery: true,
+        captureSequenceFrontier: true,
+      },
+    );
+    const synchronized = attachment.syncReorderBuffer?.();
+
+    attachment.unsubscribe();
+    transport.destroy();
+
+    await Promise.all([
+      expect(attachment.ready).rejects.toThrow('Redis event transport is closed.'),
+      expect(synchronized).rejects.toThrow('Redis event transport is closed.'),
+    ]);
+    expect(publisher.eval).not.toHaveBeenCalled();
+  });
+
+  it.each(['frontier', 'replay'] as const)(
+    'preserves the original %s datastore readiness error',
+    async (mode) => {
+      const publisher = createMockPublisher();
+      const failure = new Error('fixture EVAL failure');
+      publisher.eval.mockRejectedValueOnce(failure);
+      const transport = new RedisEventTransport(
+        publisher as unknown as Redis,
+        createMockSubscriber() as unknown as Redis,
+      );
+      const options =
+        mode === 'replay'
+          ? { replay: { items: 10, bytes: 4096, ttlMs: 1000 } }
+          : { deferSequenceDelivery: true, captureSequenceFrontier: true };
+      const attachment = transport.subscribe('failed-readiness', { onChunk: jest.fn() }, options);
+      try {
+        await expect(attachment.ready).rejects.toBe(failure);
+      } finally {
+        attachment.unsubscribe();
+        transport.destroy();
+      }
+    },
+  );
+
+  it('preserves a GET failure even when cleanup removes the stream before synchronization settles', async () => {
+    const publisher = createMockPublisher();
+    let failRead!: (error: Error) => void;
+    publisher.get.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failRead = reject;
+        }),
+    );
+    const transport = new RedisEventTransport(
+      publisher as unknown as Redis,
+      createMockSubscriber() as unknown as Redis,
+    );
+    const attachment = transport.subscribe('removed-sync', { onChunk: jest.fn() });
+    await attachment.ready;
+    const synchronized = attachment.syncReorderBuffer?.();
+    transport.cleanup('removed-sync');
+    const failure = new Error('fixture GET failure');
+
+    failRead(failure);
+
+    await expect(synchronized).rejects.toBe(failure);
+    transport.destroy();
+  });
+
+  it('cancels a pending attachment locally and disconnects its subscriber only once', async () => {
+    jest.useFakeTimers();
+    const publisher = createMockPublisher();
+    const subscriber = { ...createMockSubscriber(), disconnect: jest.fn() };
+    subscriber.subscribe.mockImplementation(() => new Promise(() => undefined));
+    const transport = new RedisEventTransport(
+      publisher as unknown as Redis,
+      subscriber as unknown as Redis,
+    );
+    try {
+      const attachment = transport.subscribe('unacknowledged-close', { onChunk: jest.fn() });
+      const ready = attachment.ready?.then(
+        () => 'ready',
+        (error: unknown) => error,
+      );
+
+      transport.destroy();
+      transport.destroy();
+
+      expect(await ready).toBeInstanceOf(Error);
+      expect(subscriber.disconnect).toHaveBeenCalledTimes(1);
+      expect(subscriber.unsubscribe).not.toHaveBeenCalled();
+      jest.runAllTicks();
+      expect(jest.getTimerCount()).toBe(0);
+      expect(() => transport.subscribe('after-close', { onChunk: jest.fn() })).toThrow(
+        'Redis event transport is closed.',
+      );
+    } finally {
+      transport.destroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not publish a frontier or reopen a channel after destruction during subscribe', async () => {
+    const publisher = createMockPublisher();
+    const subscriber = createMockSubscriber();
+    let acknowledge!: () => void;
+    subscriber.subscribe.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          acknowledge = resolve;
+        }),
+    );
+    const transport = new RedisEventTransport(
+      publisher as unknown as Redis,
+      subscriber as unknown as Redis,
+    );
+    const attachment = transport.subscribe(
+      'destroyed-attachment',
+      { onChunk: jest.fn() },
+      {
+        deferSequenceDelivery: true,
+        captureSequenceFrontier: true,
+      },
+    );
+    const ready = attachment.ready?.then(
+      () => 'ready',
+      (error: unknown) => error,
+    );
+
+    transport.destroy();
+    acknowledge();
+
+    expect(await ready).toBeInstanceOf(Error);
+    expect(publisher.eval).not.toHaveBeenCalled();
+    expect(transport.getTrackedStreamIds()).toEqual([]);
+  });
+
   it('delivers tagged events and preserves legacy in-memory callback arity', () => {
     const transport = new InMemoryEventTransport();
     const onChunk = jest.fn();
@@ -1812,6 +2016,89 @@ describe('RedisEventTransport', () => {
     await manager.destroy();
   });
 
+  it.each([
+    { fenced: false, publishDuringRead: false },
+    { fenced: true, publishDuringRead: false },
+    { fenced: false, publishDuringRead: true },
+    { fenced: true, publishDuringRead: true },
+  ])(
+    'preserves resolved skills across preliminary metadata: %p',
+    async ({ fenced, publishDuringRead }) => {
+      const publisher = createMockPublisher();
+      const ownerSubscriber = createMockSubscriber();
+      const readerSubscriber = createMockSubscriber();
+      const ownerTransport = new RedisEventTransport(
+        publisher as unknown as Redis,
+        ownerSubscriber as unknown as Redis,
+      );
+      const readerTransport = new RedisEventTransport(
+        publisher as unknown as Redis,
+        readerSubscriber as unknown as Redis,
+      );
+      const readerHandler = getMessageHandler(readerSubscriber);
+      const streamId = 'cross-replica-preliminary-skills';
+      publisher.publish.mockImplementation(async (channel: string, payload: string) => {
+        if (readerTransport.getSubscriberCount(streamId) > 0) {
+          readerHandler(channel, payload);
+        }
+        return 1;
+      });
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+      const owner = new GenerationJobManagerClass();
+      owner.configure({ jobStore, eventTransport: ownerTransport, isRedis: true });
+      const reader = new GenerationJobManagerClass();
+      reader.configure({ jobStore, eventTransport: readerTransport, isRedis: true });
+      const message = {
+        messageId: 'user-1',
+        parentMessageId: 'parent-1',
+        conversationId: streamId,
+        text: 'Hello',
+      };
+      const job = await owner.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { userMessage: message },
+      });
+      const created = {
+        created: true as const,
+        message: {
+          ...message,
+          sender: 'User',
+          isCreatedByUser: true,
+          alwaysAppliedSkills: ['always-skill'],
+          manualSkills: ['manual-skill'],
+        },
+        streamId,
+      };
+      if (publishDuringRead) {
+        const getJob = jobStore.getJob.bind(jobStore);
+        jest.spyOn(jobStore, 'getJob').mockImplementationOnce(async (id) => {
+          const preliminary = await getJob(id);
+          await owner.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+          return preliminary;
+        });
+      }
+      const received: unknown[] = [];
+      const subscription = await reader.subscribe(
+        streamId,
+        (event) => received.push(event),
+        undefined,
+        undefined,
+        fenced ? { expectedCreatedAt: job.createdAt } : undefined,
+      );
+      try {
+        if (!publishDuringRead) {
+          expect(received).toEqual([]);
+          await owner.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+        }
+        await Promise.resolve();
+        expect(received).toEqual([created]);
+      } finally {
+        subscription?.unsubscribe();
+        await owner.destroy();
+        await reader.destroy();
+      }
+    },
+  );
+
   it('deduplicates a cross-replica created fallback when the original publishes later', async () => {
     const mockPublisher = createMockPublisher();
     const generatingSubscriber = createMockSubscriber();
@@ -2151,7 +2438,7 @@ describe('RedisEventTransport', () => {
     );
 
     const streamId = 'reorder-abort-listener-reuse-test';
-    transport.onAbort(streamId, () => {});
+    const disposeAbort = await transport.onAbort(streamId, () => {});
 
     const messageHandler = getMessageHandler(mockSubscriber);
     const channel = `stream:{${streamId}}:events`;
@@ -2172,6 +2459,7 @@ describe('RedisEventTransport', () => {
 
     expect(secondRunChunks.map((chunk) => (chunk as { index: number }).index)).toEqual([0]);
 
+    disposeAbort();
     transport.destroy();
   });
 });

@@ -2,11 +2,23 @@ import { useCallback, useEffect, useRef } from 'react';
 import { atom, useAtom } from 'jotai';
 import { useChatActions } from '@librechat/chat/react';
 import { Constants, isCompactedLeaf, isAssistantsEndpoint } from 'librechat-data-provider';
-import { useLatestMessage } from '~/hooks/Messages/useLatestMessage';
+import type { TMessage } from 'librechat-data-provider';
+import { useLatestMessageSelect } from '~/hooks/Messages/useLatestMessage';
 import { useChatContext } from '~/Providers/ChatContext';
 
 /** Conversation whose compaction this client submitted and is still streaming. */
 export const compactingConversationAtom = atom<string | null>(null);
+
+/**
+ * What compaction reads of the branch's leaf: its id, and whether a summary can be anchored on
+ * it. A reply streaming into the leaf changes neither, so the projection holds its identity and
+ * the action's readers sit out the stream.
+ */
+const pickLeaf = (tail: TMessage | null): { messageId: string; compactable: boolean } | null =>
+  tail && {
+    messageId: tail.messageId,
+    compactable: tail.parentMessageId != null && !isCompactedLeaf(tail),
+  };
 
 /**
  * An Assistants thread lives on the provider, so a summary inserted into the
@@ -25,7 +37,7 @@ export default function useCompactConversation() {
   const { index, conversation } = useChatContext();
   const { sendMessage, status } = useChatActions();
   const isSubmitting = status === 'submitted' || status === 'streaming';
-  const latestMessage = useLatestMessage(index);
+  const leaf = useLatestMessageSelect(index, pickLeaf);
   const [compactingConversation, setCompactingConversation] = useAtom(compactingConversationAtom);
 
   const conversationId = conversation?.conversationId;
@@ -34,12 +46,7 @@ export default function useCompactConversation() {
     conversationId !== Constants.NEW_CONVO &&
     conversationId !== Constants.PENDING_CONVO;
   const isCompacting = isSubmitting && compactingConversation === conversationId;
-  const canCompact =
-    hasConversation &&
-    !isSubmitting &&
-    latestMessage != null &&
-    latestMessage.parentMessageId != null &&
-    !isCompactedLeaf(latestMessage);
+  const canCompact = hasConversation && !isSubmitting && leaf != null && leaf.compactable;
 
   /** The marker lives from the submission until the turn it started settles:
    *  cleared on the submitting → idle edge, or on a mount that finds the
@@ -58,7 +65,7 @@ export default function useCompactConversation() {
   }, [isSubmitting, compactingConversation, setCompactingConversation]);
 
   const compact = useCallback(() => {
-    if (!canCompact || latestMessage == null || conversationId == null) {
+    if (!canCompact || leaf == null || conversationId == null) {
       return;
     }
     setCompactingConversation(conversationId);
@@ -68,15 +75,15 @@ export default function useCompactConversation() {
       {
         text: '',
         conversationId,
-        messageId: latestMessage.messageId,
-        parentMessageId: latestMessage.messageId,
+        messageId: leaf.messageId,
+        parentMessageId: leaf.messageId,
       },
       { compact: true },
     );
     if (accepted === false) {
       setCompactingConversation(null);
     }
-  }, [sendMessage, canCompact, conversationId, latestMessage, setCompactingConversation]);
+  }, [sendMessage, canCompact, conversationId, leaf, setCompactingConversation]);
 
   return { compact, canCompact, isCompacting };
 }

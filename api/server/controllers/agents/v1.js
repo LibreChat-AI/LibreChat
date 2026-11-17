@@ -53,6 +53,8 @@ const {
   applyInstructionsPromptUnset,
   instructionsContentForScan,
   authorizeAgentRestore,
+  applySdkAgentBindingWrite,
+  getSdkAgentWriteErrorStatus,
 } = require('@librechat/api');
 const {
   Time,
@@ -765,6 +767,12 @@ const createAgentHandler = async (req, res) => {
     normalizeToolResourceFiles(req.body?.tool_resources);
     const validatedData = agentCreateSchema.parse(req.body);
     const { tools = [], ...agentData } = removeNullishValues(validatedData);
+    applySdkAgentBindingWrite(
+      agentData,
+      validatedData.sdk_runtime,
+      req.config?.endpoints?.agents,
+      req.user?.role,
+    );
 
     if (
       (!isCodeInterpreterCapabilityEnabled(req) || !tools.includes(Tools.execute_code)) &&
@@ -1109,6 +1117,12 @@ const updateAgentHandler = async (req, res) => {
       ...rest
     } = validatedData;
     let updateData = removeNullishValues(rest);
+    applySdkAgentBindingWrite(
+      updateData,
+      validatedData.sdk_runtime,
+      req.config?.endpoints?.agents,
+      req.user?.role,
+    );
     if (codeEnvironmentIdField !== undefined) {
       updateData.code_environment_id = codeEnvironmentIdField;
     }
@@ -1339,17 +1353,16 @@ const updateAgentHandler = async (req, res) => {
             }
           }
           updateData.tools = nextTools;
-          /** The agent's MCP tools are retained verbatim here, so carry its resolved
-           *  names across too. Left unset when the agent has none stored, so
-           *  `updateAgent` can still derive rather than being pinned to an empty
-           *  index that would strip agent-scoped access. */
-          if (existingAgent.mcpServerNames?.length) {
-            updateData.mcpServerNames = existingAgent.mcpServerNames;
-          }
+          /** Retained strings alone cannot authorize a previously unindexed server. */
+          updateData.mcpServerNames = existingAgent.mcpServerNames ?? [];
         }
       } else if (hasToolUpdate) {
         const existingToolSet = new Set(existingTools);
-        const newMCPTools = requestedMCPTools.filter((t) => !existingToolSet.has(t));
+        const indexedNames = existingAgent.mcpServerNames ?? [];
+        const newMCPTools = requestedMCPTools.filter((tool) => {
+          const [, name] = splitMCPToolKey(tool, indexedNames);
+          return !existingToolSet.has(tool) || !indexedNames.includes(name);
+        });
         /** Names resolved during authorization of the newly added tools. */
         const resolvedServerNames = new Set();
 
@@ -1391,11 +1404,7 @@ const updateAgentHandler = async (req, res) => {
             }
           }
         }
-        /** Supplying `[]` would pin the index empty and suppress `updateAgent`'s
-         *  derivation, so only assert it when the result is authoritative: either we
-         *  resolved names, or no MCP tool survives and the index genuinely is empty. */
-        const retainsMCPTools = (updateData.tools ?? []).some(isMCPTool);
-        if (resolvedServerNames.size > 0 || !retainsMCPTools) {
+        if (hasToolUpdate) {
           updateData.mcpServerNames = Array.from(resolvedServerNames);
         }
       }
@@ -1415,6 +1424,10 @@ const updateAgentHandler = async (req, res) => {
       Object.keys(updateData).length > 0
         ? await db.updateAgent({ id }, updateData, {
             updatingUserId: req.user.id,
+            expectedMCPAccess: {
+              names: existingAgent.mcpServerNames ?? [],
+              updatedAt: existingAgent.updatedAt,
+            },
           })
         : existingAgent;
 
@@ -1519,6 +1532,12 @@ const duplicateAgentHandler = async (req, res) => {
       id: newAgentId,
       author: userId,
     });
+    applySdkAgentBindingWrite(
+      newAgentData,
+      newAgentData.sdk_runtime,
+      req.config?.endpoints?.agents,
+      req.user?.role,
+    );
     if (!validateAgentCodeEnvironmentAllowlist(req, res, newAgentData.code_environment_ids)) {
       return;
     }
@@ -1746,7 +1765,7 @@ const duplicateAgentHandler = async (req, res) => {
     if (error?.statusCode === 409) {
       return res.status(409).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message });
+    res.status(getSdkAgentWriteErrorStatus(error)).json({ error: error.message });
   }
 };
 
@@ -2096,6 +2115,12 @@ const revertAgentVersionHandler = async (req, res) => {
     if (!revertVersion) {
       return res.status(404).json({ error: `Version ${version_index} not found` });
     }
+    applySdkAgentBindingWrite(
+      revertVersion,
+      revertVersion.sdk_runtime,
+      req.config?.endpoints?.agents,
+      req.user?.role,
+    );
     if (!validateAgentCodeEnvironmentAllowlist(req, res, revertVersion.code_environment_ids)) {
       return;
     }
@@ -2260,7 +2285,7 @@ const revertAgentVersionHandler = async (req, res) => {
     if (error?.statusCode === 409) {
       return res.status(409).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message });
+    res.status(getSdkAgentWriteErrorStatus(error)).json({ error: error.message });
   }
 };
 /**

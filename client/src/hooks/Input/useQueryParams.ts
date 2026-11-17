@@ -45,6 +45,14 @@ import store from '~/store';
 
 const PROJECT_ID_SEARCH_PARAM = 'projectId';
 
+/** What the history observer reports while a submission waits for the history to settle. */
+const HISTORY_SETTLING_PROPS: Array<'status' | 'fetchStatus' | 'dataUpdatedAt'> = [
+  'status',
+  'fetchStatus',
+  'dataUpdatedAt',
+];
+const NO_PROPS: never[] = [];
+
 const injectAgentIntoAgentsMap = (
   queryClient: QueryClient,
   agent: AgentListResponse['data'][number],
@@ -88,6 +96,9 @@ export default function useQueryParams({
   const validSettingsRef = useRef<TPreset | null>(null);
   const settingsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const awaitingHistoryRef = useRef(false);
+  /** Mirrors the ref for the one thing that has to render on it: the history observer below
+   *  listens only while a submission is waiting. */
+  const [awaitingHistory, setAwaitingHistory] = useState(false);
   const requestIdRef = useRef(0);
   const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'preparing' | 'failed'>('idle');
 
@@ -273,6 +284,7 @@ export default function useQueryParams({
       requestIdRef.current += 1;
       attemptsRef.current = 0;
       awaitingHistoryRef.current = false;
+      setAwaitingHistory(false);
       processedRef.current = false;
       submissionHandledRef.current = false;
       pendingSubmitRef.current = false;
@@ -478,12 +490,15 @@ export default function useQueryParams({
     );
   }, [methods, ownsRequest]);
 
-  /** Consumes an auto-submit once, leaving a refused submission in the composer. */
+  /**
+   * Consumes an auto-submit once, leaving a refused submission in the composer. Callers reach it
+   * only with the requested settings in place, so the settings wait ends here even when the send
+   * itself still waits for the composer or the history.
+   */
   const processSubmission = useCallback(() => {
     if (
       routePendingRef.current ||
       !targetReadyRef.current ||
-      awaitsComposerRelease() ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
       !promptTextRef.current ||
@@ -497,8 +512,12 @@ export default function useQueryParams({
       clearTimeout(settingsTimeoutRef.current);
       settingsTimeoutRef.current = null;
     }
+    if (awaitsComposerRelease()) {
+      return;
+    }
 
     awaitingHistoryRef.current = isHistoryPending();
+    setAwaitingHistory(awaitingHistoryRef.current);
     if (awaitingHistoryRef.current) {
       return;
     }
@@ -556,6 +575,11 @@ export default function useQueryParams({
     settlePrompt,
   ]);
 
+  /**
+   * Bounds the wait for the requested settings, never the wait for the composer. The timer can
+   * fire between the commit that applied them and that commit's effects, so it reads them again
+   * before reporting a failure.
+   */
   const armSettingsTimeout = useCallback(() => {
     if (settingsTimeoutRef.current || routePendingRef.current || !targetReadyRef.current) return;
     const requestId = requestIdRef.current;
@@ -570,6 +594,10 @@ export default function useQueryParams({
         return;
       }
       if (!submissionHandledRef.current && pendingSubmitRef.current) {
+        if (areSettingsApplied()) {
+          processSubmission();
+          return;
+        }
         restoreUrlPrompt();
         pendingSubmitRef.current = false;
         submissionHandledRef.current = true;
@@ -579,21 +607,36 @@ export default function useQueryParams({
         clearConsumedSearchParams();
       }
     }, MAX_SETTINGS_WAIT_MS);
-  }, [ownsRequest, cancelRequest, restoreUrlPrompt, settlePrompt, clearConsumedSearchParams]);
+  }, [
+    ownsRequest,
+    cancelRequest,
+    areSettingsApplied,
+    processSubmission,
+    restoreUrlPrompt,
+    settlePrompt,
+    clearConsumedSearchParams,
+  ]);
 
   /** Observes the history the composer sends from, so a retry runs after the
-   * render that derives the latest message from it, not during the cache write. */
+   * render that derives the latest message from it, not during the cache write.
+   * Only while a submission waits on it: every streamed delta is a write to this
+   * query, and an observer that always listened would render the composer for
+   * each one. */
   const historyKey = [QueryKeys.messages, conversation?.conversationId ?? ''];
   const history = useQuery<TMessage[]>(
     historyKey,
     async () => queryClient.getQueryData<TMessage[]>(historyKey) ?? [],
-    { enabled: false },
+    {
+      enabled: false,
+      notifyOnChangeProps: awaitingHistory ? HISTORY_SETTLING_PROPS : NO_PROPS,
+    },
   );
   useEffect(() => {
     if (awaitingHistoryRef.current && !isHistoryPending()) {
       processSubmission();
     }
   }, [
+    awaitingHistory,
     history.status,
     history.fetchStatus,
     history.dataUpdatedAt,

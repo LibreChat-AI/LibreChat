@@ -1,6 +1,7 @@
 import React, { Profiler, useMemo, useState } from 'react';
 import { filesFamily, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
+import axios from 'axios';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
 import { getDefaultStore, useAtom } from 'jotai';
@@ -10,19 +11,37 @@ import { HTML5Backend } from 'react-dnd-html5-backend';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { FileContainer } from '@librechat/chat/components';
 import { pendingQuotesByConvoId } from '@librechat/chat/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QueryKeys, FileSources, EModelEndpoint } from 'librechat-data-provider';
 import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
-import type { TFile, TFileUpload, TConversation } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import type { TMessage, TFile, TFileUpload, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues, TAskFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks/useLocalize';
+import { createMessageCache } from '~/Providers/ChatHostContext';
 import { getDraft, getPendingDraftId, setDraft } from '~/utils';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { SteerHostTestProvider } from 'test/steerHost';
+import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
 import store from '~/store';
+
+const startupConfig = { interface: { contextUsage: true }, modelSpecs: { list: [] } };
+const originalAdapter = axios.defaults.adapter;
+
+beforeEach(() => {
+  axios.defaults.adapter = async (config) => {
+    if (config.url === '/api/config') {
+      return { data: startupConfig, status: 200, statusText: 'OK', headers: {}, config };
+    }
+    throw new Error('Composer fixture blocks external API requests');
+  };
+});
+
+afterEach(() => {
+  axios.defaults.adapter = originalAdapter;
+});
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();
@@ -98,6 +117,8 @@ class StubImage {
 let commits = 0;
 
 function Harness() {
+  const queryClient = useQueryClient();
+  const messageCache = useMemo(() => createMessageCache(queryClient), [queryClient]);
   const [files, setFiles] = useAtom(filesFamily(0));
   const [isSubmitting, setIsSubmitting] = useAtom(isSubmittingFamily(0));
   /* ChatView owns this read and passes it in; the harness stands in for it. */
@@ -119,9 +140,20 @@ function Harness() {
         setFilesLoading,
         newConversation: () => undefined,
         handleStopGenerating: () => undefined,
-        stopGenerating: () => undefined,
-        getMessages: () => undefined,
-        setMessages: () => undefined,
+        stopGenerating: () => Promise.resolve(),
+        getMessages: (targetConversationId?: string | null) =>
+          messageCache.read(targetConversationId ?? conversation.conversationId ?? ''),
+        messagesKey: conversation.conversationId ?? '',
+        latestMessageId: undefined,
+        latestMessageDepth: undefined,
+        subscribeMessages: (onChange: () => void) =>
+          messageCache.subscribe(conversation.conversationId ?? '', onChange),
+        getMessagesRevision: () => messageCache.revision(conversation.conversationId ?? ''),
+        useLiveAttachments: () => ({}),
+        getMappingOptions: () => ({}),
+        feedbackEnabled: false,
+        setMessages: (messages: TMessage[]) =>
+          messageCache.write(conversation.conversationId ?? '', messages),
         ask: (...args: Parameters<TAskFunction>) => {
           const result = mockAsk(...args);
           if (result !== false) {
@@ -139,8 +171,8 @@ function Harness() {
         setOptionSettings: () => undefined,
         handleRegenerate: () => undefined,
         handleContinue: () => undefined,
-      }) as unknown as React.ContextType<typeof ChatContext>,
-    [files, setFiles, isSubmitting, setIsSubmitting],
+      }) satisfies React.ContextType<typeof ChatContext>,
+    [files, setFiles, isSubmitting, setIsSubmitting, messageCache],
   );
 
   return (
@@ -170,7 +202,7 @@ function renderComposer({
   speechSettingsInitialized = false,
 }: { submitting?: boolean; quotes?: string[]; speechSettingsInitialized?: boolean } = {}) {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } },
   });
   /* These interaction tests exercise the destination menu. Unified-mode control
    * behavior has its own focused coverage, so opt this harness into the legacy menu
@@ -178,6 +210,8 @@ function renderComposer({
   queryClient.setQueryData([QueryKeys.fileConfig], {
     endpoints: { default: { legacyFileUploadUX: true } },
   });
+  queryClient.setQueryData(startupConfigKey(true), startupConfig);
+  queryClient.setQueryData(startupConfigKey(false), startupConfig);
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 

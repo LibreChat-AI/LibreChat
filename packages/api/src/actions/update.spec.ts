@@ -33,6 +33,7 @@ import {
   buildActionOAuthTokenDeleteQueries,
   legacyActionDomainEncode,
   planAgentActionUpdate,
+  getAgentActionWriteStatus,
 } from './update';
 
 const specFor = (serverUrl: string, operationId = 'echoMessage'): string =>
@@ -54,6 +55,16 @@ const toolFor = (name: string) => ({
   function: {
     name,
   },
+});
+
+describe('getAgentActionWriteStatus', () => {
+  it('maps revision conflicts to 409', () => {
+    expect(getAgentActionWriteStatus({ statusCode: 409 })).toBe(409);
+  });
+  it.each([undefined, null, new Error('database failure'), { statusCode: 403 }])(
+    'maps unexpected failures to a generic 500',
+    (error) => expect(getAgentActionWriteStatus(error)).toBe(500),
+  );
 });
 
 const storedServiceMetadata: ActionMetadata = {

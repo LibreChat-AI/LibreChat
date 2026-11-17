@@ -150,15 +150,18 @@ export const TooltipAnchor: ForwardRefExoticComponent<
   ref,
 ) {
   const tooltip = Ariakit.useTooltipStore({ placement: side });
-  const anchorElement = Ariakit.useStoreState(tooltip, 'anchorElement');
-  const open = Ariakit.useStoreState(tooltip, 'open');
 
   /** `side` is physical; resolve it against the anchor's own direction so `right` stays the
-   *  inline-end side in an RTL layout without every caller having to know. Re-resolved on each
-   *  open, since a language switch flips the document direction without remounting. */
+   *  inline-end side in an RTL layout without every caller having to know. The selector re-runs
+   *  on every store change, opening included, so a language switch that flips the direction
+   *  without remounting is still picked up. Selecting the resolved side, not the anchor element,
+   *  keeps each anchor to one render on mount: message rows mount hundreds of them at once. */
+  const placement = Ariakit.useStoreState(tooltip, (state) =>
+    resolveSide(side, state.anchorElement),
+  );
   useLayoutEffect(() => {
-    tooltip.setState('placement', resolveSide(side, anchorElement));
-  }, [tooltip, side, anchorElement, open]);
+    tooltip.setState('placement', placement);
+  }, [tooltip, placement]);
 
   /**
    * `role="button"` renders a plain element with no native activation, so Enter and

@@ -20,6 +20,12 @@ test('a running tool includes hidden time before and after expansion @scenario:r
     .getByRole('button', { name: /^E2E Memory\b/ })
     .click();
   await page.keyboard.press('Escape');
+  /** `setFixedTime` hands every timer the page starts from then on to Playwright's clock, which
+   *  runs one per task and falls seconds behind once the stream's cache notifications queue up.
+   *  The palette is still closing here; a leave timer started after the install waits behind
+   *  them, and the invisible popover covers the transcript and takes the click meant for the
+   *  tool row. It unmounts when the leave ends, so wait for that on the page's own clock. */
+  await expect(page.getByRole('dialog', { name: 'Attach and tools' })).toHaveCount(0);
   const start = await page.evaluate(() => Date.now());
   await page.clock.setFixedTime(start);
   await sendMessage(page, `E2E_INTERRUPT_TOOL_REPLY:${label}`);

@@ -2,11 +2,14 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { Copy, Check } from 'lucide';
-import rehypeKatex from 'rehype-katex';
 import supersub from 'remark-supersub';
 import ReactMarkdown from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
 import { Button, MorphIcon, TooltipAnchor, useToastContext } from '@librechat/client';
+import {
+  PROMPT_HIGHLIGHT,
+  toRehypePlugins,
+  useRehypeModules,
+} from '~/components/Chat/Messages/Content/rehype';
 import { codeNoExecution } from '~/components/Chat/Messages/Content/MarkdownComponents';
 import { PromptVariableGfm } from '../editor/Markdown';
 import { useLocalize } from '~/hooks';
@@ -16,6 +19,7 @@ interface PromptTextCardProps {
 }
 
 const PromptTextCard = ({ mainText }: PromptTextCardProps) => {
+  const rehypeModules = useRehypeModules(mainText);
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const [isCopied, setIsCopied] = useState(false);
@@ -82,12 +86,8 @@ const PromptTextCard = ({ mainText }: PromptTextCardProps) => {
             remarkGfm,
             [remarkMath, { singleDollarTextMath: false }],
           ]}
-          rehypePlugins={[
-            /** @ts-ignore */
-            [rehypeKatex],
-            /** @ts-ignore */
-            [rehypeHighlight, { ignoreMissing: true }],
-          ]}
+          /** @ts-ignore */
+          rehypePlugins={toRehypePlugins(rehypeModules, PROMPT_HIGHLIGHT)}
           /** @ts-ignore */
           components={{ p: PromptVariableGfm, code: codeNoExecution }}
           className="markdown prose light text-text-primary my-1 max-w-none break-words"

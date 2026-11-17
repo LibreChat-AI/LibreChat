@@ -21,7 +21,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 describe('KeyvMongo key index', () => {

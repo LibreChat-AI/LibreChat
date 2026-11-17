@@ -98,7 +98,7 @@ import { toClientPendingAction } from '~/agents/hitl/policy';
 import { markAbortedCompactionContent } from '~/agents/compaction';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { projectPendingMCPOAuthPrompts } from '~/mcp/oauth/resume';
-import { sanitizeJobMetadata } from './metadata';
+import { sanitizeJobMetadata, isListedChatJob } from './metadata';
 
 /** Terminal error surfaced to a client still attached when its approval window lapses. */
 const APPROVAL_EXPIRED_ERROR = 'Approval expired before a decision was made';
@@ -864,6 +864,8 @@ interface PreparedSubscription {
   runtime: RuntimeJobState;
   jobData: SerializableJobData | null;
   deferDeliveryUntilActivated: boolean;
+  /** Only suppress created when the resume snapshot included its authoritative metadata. */
+  createdEventCovered?: boolean;
 }
 
 type DeferredDelivery =
@@ -3156,6 +3158,8 @@ class GenerationJobManagerClass {
         agentEventDetachedActionProducerRequired: jobData.agentEventDetachedActionProducerRequired,
         agentEventDetachedTerminalEvidence: jobData.agentEventDetachedTerminalEvidence,
         agentEventBindingId: jobData.agentEventBindingId,
+        subagentTaskId: jobData.subagentTaskId,
+        subagentParentConversationId: jobData.subagentParentConversationId,
         agentEventExpectedAction: jobData.agentEventExpectedAction,
         agentEventSuspension: jobData.agentEventSuspension,
         scheduleId: jobData.scheduleId,
@@ -5274,7 +5278,8 @@ class GenerationJobManagerClass {
     }
 
     let subscriptionActive = true;
-    let createdEventDelivered = options?.skipBufferReplay === true;
+    let createdEventDelivered =
+      options?.skipBufferReplay === true && (prepared?.createdEventCovered ?? true);
     let terminalEventDelivered = false;
     let terminalEventQueued = false;
     let terminalPersistenceTimer: NodeJS.Timeout | null = null;
@@ -5574,7 +5579,11 @@ class GenerationJobManagerClass {
 
     let initialReplayUnavailable = false;
     const stillMatchesExpectedGeneration = async (): Promise<boolean> => {
-      if (options?.expectedCreatedAt == null && !needsDurableInitialReplay) {
+      if (
+        options?.expectedCreatedAt == null &&
+        !needsDurableInitialReplay &&
+        (!this._isRedis || options?.skipBufferReplay === true)
+      ) {
         return true;
       }
       const currentJob = await this.jobStore.getJob(streamId);
@@ -5583,11 +5592,15 @@ class GenerationJobManagerClass {
         (currentJob?.durableEventCount ?? 0) > 0 &&
         (currentJob?.status === 'running' || currentJob?.status === 'requires_action');
       const expectedCreatedAt = options?.expectedCreatedAt ?? runtime.createdAt;
-      return (
-        currentJob?.createdAt === expectedCreatedAt &&
-        runtime.createdAt === expectedCreatedAt &&
-        this.runtimeState.get(streamId) === runtime
-      );
+      if (
+        currentJob?.createdAt !== expectedCreatedAt ||
+        runtime.createdAt !== expectedCreatedAt ||
+        this.runtimeState.get(streamId) !== runtime
+      ) {
+        return false;
+      }
+      jobData = currentJob;
+      return true;
     };
 
     try {
@@ -5724,10 +5737,15 @@ class GenerationJobManagerClass {
               }
             }
           }
-        } else if (this._isRedis && hasEarlyReplaySubscribers && jobData?.userMessage) {
+        } else if (
+          this._isRedis &&
+          hasEarlyReplaySubscribers &&
+          jobData?.createdEventEmitted === true &&
+          jobData.userMessage
+        ) {
           /**
-           * Cross-replica fallback: metadata can be visible before the generating
-           * replica publishes `created`. Emit the fallback before releasing buffered
+           * Only replay metadata committed by `created`, not the preliminary turn
+           * saved before agent/skill initialization. Emit before releasing buffered
            * live events so `created` remains the first user-facing event. deliverChunk
            * suppresses the original publication whether it is already pending or
            * arrives after synchronization.
@@ -6175,7 +6193,11 @@ class GenerationJobManagerClass {
                 replayHandler(bufferedEvent);
               }
             }
-          } else if (hasEarlyReplaySubscribers && jobData?.userMessage) {
+          } else if (
+            hasEarlyReplaySubscribers &&
+            jobData?.createdEventEmitted === true &&
+            jobData.userMessage
+          ) {
             const fallbackCreatedEvent: t.ServerSentEvent = {
               created: true,
               message: {
@@ -6442,6 +6464,10 @@ class GenerationJobManagerClass {
     };
     let resumeState: t.ResumeState | null = null;
     let jobData: SerializableJobData | null = null;
+    let createdEventCovered = true;
+    const recordCreatedSnapshot = (covered: boolean): void => {
+      createdEventCovered = covered;
+    };
     const removeCaptureHandler = (): void => {
       runtime.resumeCaptureHandlers.delete(capturePendingEvent);
     };
@@ -6508,6 +6534,7 @@ class GenerationJobManagerClass {
           const [candidateState, candidateJob] = await Promise.all([
             this.getResumeState(streamId, options?.expectedCreatedAt, {
               durableOnly: false,
+              onCreatedSnapshot: recordCreatedSnapshot,
               onContentSnapshot: (snapshot) => {
                 recoveryContentSnapshot = snapshot;
               },
@@ -6540,6 +6567,7 @@ class GenerationJobManagerClass {
         [resumeState, jobData] = await Promise.all([
           this.getResumeState(streamId, options?.expectedCreatedAt, {
             durableOnly: pendingOverflow != null,
+            onCreatedSnapshot: recordCreatedSnapshot,
             onContentSnapshot: (snapshot) => {
               recoveryContentSnapshot = snapshot;
             },
@@ -6686,6 +6714,7 @@ class GenerationJobManagerClass {
           runtime,
           jobData,
           deferDeliveryUntilActivated: true,
+          createdEventCovered,
         },
       );
       if (pendingEvents.length > 0) {
@@ -6722,6 +6751,11 @@ class GenerationJobManagerClass {
       }
       if (!liveJob || liveJob.createdAt !== runtime.createdAt) {
         return cancelResumeSubscription();
+      }
+      if (!createdEventCovered && liveJob.createdEventEmitted === true && resumeState != null) {
+        /* Created can commit between the metadata snapshot and SUBSCRIBE. Reuse this
+           fenced read so a missed publication still hydrates skills in the sync. */
+        resumeState.userMessage = liveJob.userMessage;
       }
       const liveOverflow = liveJob.earlyBufferOverflow;
       if (liveOverflow != null) {
@@ -8706,6 +8740,24 @@ class GenerationJobManagerClass {
   }
 
   /**
+   * Keeps a silent run alive. A job's idle clock otherwise advances only with emitted chunks,
+   * so an owner whose run is working without output, such as a child waiting on a long tool
+   * call, calls this on its own heartbeat. Only the replica that owns the runtime may touch.
+   */
+  async touchJob(streamId: string, expectedCreatedAt: number): Promise<boolean> {
+    const runtime = this.runtimeState.get(streamId);
+    if (
+      !runtime ||
+      runtime.createdAt !== expectedCreatedAt ||
+      !this.isCurrentRuntime(streamId, runtime) ||
+      this.jobStore.touchJob == null
+    ) {
+      return false;
+    }
+    return this.jobStore.touchJob(streamId, expectedCreatedAt);
+  }
+
+  /**
    * Set reference to the graph's contentParts array.
    */
   setContentParts(
@@ -9059,6 +9111,7 @@ class GenerationJobManagerClass {
       /** Synchronous eligibility guard on both canonical reads; false means no snapshot. */
       readIf?: (job: Readonly<SerializableJobData>) => boolean;
       onContentSnapshot?: (snapshot: Awaited<ReturnType<IJobStore['getContentParts']>>) => void;
+      onCreatedSnapshot?: (createdEventEmitted: boolean) => void;
     },
   ): Promise<t.ResumeState | null> {
     const recoveryStartedAt =
@@ -9109,6 +9162,8 @@ class GenerationJobManagerClass {
       await this.completeJob(streamId, GENERATION_RECOVERY_FAILED_ERROR, jobData.createdAt);
       throw new Error(GENERATION_RECOVERY_FAILED_ERROR);
     }
+
+    options?.onCreatedSnapshot?.(jobData.createdEventEmitted === true);
 
     /** Independent reads (streamId-only): parallel to collapse 3 Redis round trips into 1.
      *  Safe despite readCachedGraph's cache-drop side effect — each call catches its own
@@ -9901,15 +9956,16 @@ class GenerationJobManagerClass {
   }
 
   /**
-   * Get active job IDs for a user.
-   * Returns conversation IDs of running jobs belonging to the user.
+   * The user's running chats: the stream ids a client lists as conversations.
+   * A job whose stream is a subagent child thread is left out. It still answers its own
+   * status and stream reads, and cleanup enumeration still counts it.
    * Performs self-healing cleanup of stale entries.
    *
    * @param userId - The user ID to query
    * @returns Array of conversation IDs with active jobs
    */
   async getActiveJobIdsForUser(userId: string, tenantId?: string): Promise<string[]> {
-    return this.jobStore.getActiveJobIdsByUser(userId, tenantId);
+    return this.jobStore.getActiveJobIdsByUser(userId, tenantId, isListedChatJob);
   }
 
   /** Returns every generation whose provider can still mutate user-owned data,

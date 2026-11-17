@@ -14,6 +14,7 @@
  */
 const http = require('http');
 const sharp = require('sharp');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = Number(process.env.E2E_FLUX_PORT) || 8794;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
@@ -148,6 +149,8 @@ const server = http.createServer(async (req, res) => {
 
   return send(res, 404, { detail: 'Not found' });
 });
+
+keepIdleConnections(server);
 
 Promise.all([createSample(2048), createSample(1200)])
   .then(([large, boundary]) => {

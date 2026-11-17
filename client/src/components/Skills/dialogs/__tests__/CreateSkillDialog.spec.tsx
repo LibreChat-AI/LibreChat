@@ -151,4 +151,15 @@ describe('CreateSkillDialog', () => {
     );
     expect(handleAgentSubmit).not.toHaveBeenCalled();
   });
+
+  it('enables vertical scrolling on the form container so footer buttons remain accessible', () => {
+    render(<CreateSkillDialog isOpen={true} setIsOpen={mockSetIsOpen} />);
+
+    const createButton = screen.getByRole('button', { name: 'Create' });
+    const form = createButton.closest('form');
+
+    expect(form).not.toBeNull();
+    expect(form).toHaveClass('max-h-[85vh]', 'overflow-y-auto');
+    expect(form).not.toHaveClass('overflow-hidden');
+  });
 });

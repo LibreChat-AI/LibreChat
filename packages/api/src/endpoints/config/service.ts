@@ -39,7 +39,10 @@ export function createModelsService(deps: ModelsServiceDeps): {
   modelController: (req: ServerRequest, res: Response) => Promise<Response>;
   loadModels: (req: ServerRequest) => Promise<TModelsConfig>;
   getModelsConfig: (req: ServerRequest) => Promise<TModelsConfig>;
-  getRequestModelsConfig: (req: ServerRequest) => Promise<RequestModelsConfigResult>;
+  getRequestModelsConfig: (
+    req: ServerRequest,
+    endpointOverride?: string,
+  ) => Promise<RequestModelsConfigResult>;
   getEndpointModelsConfig: (
     req: ServerRequest,
     endpoint: string | null | undefined,
@@ -104,8 +107,11 @@ export function createModelsService(deps: ModelsServiceDeps): {
     return pending;
   }
 
-  async function getRequestModelsConfig(req: ServerRequest): Promise<RequestModelsConfigResult> {
-    const endpoint = req.query.endpoint;
+  async function getRequestModelsConfig(
+    req: ServerRequest,
+    endpointOverride?: string,
+  ): Promise<RequestModelsConfigResult> {
+    const endpoint = endpointOverride ?? req.query.endpoint;
     if (endpoint != null && (typeof endpoint !== 'string' || endpoint.length === 0)) {
       return { ok: false, status: 400, error: 'Invalid endpoint' };
     }

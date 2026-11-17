@@ -94,9 +94,7 @@ test("an open fork menu holds an earlier reply's actions visible after the point
 
   await row.hover();
   await fork.click();
-  await expect(
-    page.getByRole('button', { name: 'Visible messages only', exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Fork conversation' })).toBeVisible();
   await page.mouse.move(0, 0);
   /** The open menu lights its trigger and keeps every action in the row opaque. */
   await expect.poll(() => paintedOpacity(copy)).toBe(1);

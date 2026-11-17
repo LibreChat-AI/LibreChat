@@ -2,30 +2,15 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
+import { setAppPartRenderers } from '../Parts/slots';
+import FilePreviewDialog from '../FilePreviewDialog';
+import Image from '../Image';
 import Files from '../Files';
 
 jest.mock('~/Providers', () => ({
   useFileMapContext: () => ({}),
   useShareContext: () => ({}),
 }));
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  FileContainer: ({
-    onClick,
-    buttonClassName,
-    file,
-  }: {
-    onClick: () => void;
-    buttonClassName?: string;
-    file: { textPreview?: string };
-  }) => (
-    <button className={buttonClassName} onClick={onClick}>
-      file action
-      {file.textPreview && <span>{file.textPreview}</span>}
-    </button>
-  ),
-}));
-
 jest.mock(
   '../Image',
   () =>
@@ -46,13 +31,25 @@ jest.mock(
       open ? <div>preview: {deliveryPath}</div> : null,
 );
 
+setAppPartRenderers({
+  renderMarkdown: () => null,
+  renderAgentIcon: () => null,
+  renderImage: (props) => <Image {...props} />,
+  renderFilePreview: (props) => <FilePreviewDialog {...props} />,
+});
+
 it('exposes extracted image text without changing ordinary image previews', () => {
   render(
     <Files
       message={
         {
           files: [
-            { file_id: 'text-image', type: 'image/png', llmDeliveryPath: 'text' },
+            {
+              file_id: 'text-image',
+              filename: 'extracted.png',
+              type: 'image/png',
+              llmDeliveryPath: 'text',
+            },
             { file_id: 'image', type: 'image/png' },
           ],
         } as TMessage
@@ -61,7 +58,7 @@ it('exposes extracted image text without changing ordinary image previews', () =
   );
   expect(screen.getAllByText('image preview')).toHaveLength(1);
   expect(screen.getByTestId('image-preview')).toHaveAttribute('data-aligned-right', 'true');
-  expect(screen.getByText('file action')).toHaveClass(
+  expect(screen.getByRole('button', { name: 'extracted.png' })).toHaveClass(
     'border-surface-user-message',
     'max-w-full',
     'bg-transparent',
@@ -71,7 +68,7 @@ it('exposes extracted image text without changing ordinary image previews', () =
     'mt-0',
     'shadow-none',
   );
-  fireEvent.click(screen.getByText('file action'));
+  fireEvent.click(screen.getByRole('button', { name: 'extracted.png' }));
   expect(screen.getByText('preview: text')).toBeInTheDocument();
 });
 

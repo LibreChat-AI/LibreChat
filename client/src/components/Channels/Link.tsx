@@ -10,6 +10,7 @@ import type {
   ChannelLinkView,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
+import { withBasePath } from '~/utils/redirect';
 import { useLocalize } from '~/hooks';
 
 export const linkErrorKeys: Record<ChannelIdentityError, TranslationKeys> = {
@@ -36,7 +37,13 @@ const pageCopy = {
     title: 'com_ui_channel_link_connected_title',
     description: 'com_ui_channel_link_connected_description',
   },
+  unusable: {
+    title: 'com_ui_channel_link_unusable_title',
+    description: 'com_ui_channel_link_unusable_description',
+  },
 } as const;
+
+const fatalErrors: ChannelIdentityError[] = ['invalid_ticket', 'expired', 'revoked', 'forbidden'];
 
 interface LinkProps {
   api: ChannelIdentityClient;
@@ -141,7 +148,18 @@ function OwnedLink({
   const accepted = data?.state === 'accepted';
   const active = data?.state === 'active';
   const nextStep = accepted || active;
-  const copy = accepted || active ? pageCopy[data.state] : pageCopy.pending;
+  const timedOut = data?.state === 'pending' && data.expiresAtMs <= Date.now();
+  /** A link that can never complete: say so instead of presenting the connect flow. */
+  const unusable =
+    !ticket ||
+    timedOut ||
+    data?.state === 'expired' ||
+    data?.state === 'revoked' ||
+    data?.state === 'unavailable' ||
+    (error != null && fatalErrors.includes(error));
+  let copy: (typeof pageCopy)[keyof typeof pageCopy] = pageCopy.pending;
+  if (unusable) copy = pageCopy.unusable;
+  else if (accepted || active) copy = pageCopy[data.state];
   const canReturnToSlack = nextStep && !error && !preview.isError;
   const retryable =
     preview.isError ||
@@ -161,27 +179,32 @@ function OwnedLink({
         </div>
         <section className="border-border-light bg-surface-secondary overflow-hidden rounded-2xl border shadow-sm">
           <div className="space-y-5 p-6 sm:p-7">
-            <ol
-              className="text-text-secondary flex items-center gap-3 text-xs font-medium"
-              aria-label={localize('com_ui_channel_link_steps')}
-            >
-              <li className="flex items-center gap-2" aria-current={!nextStep ? 'step' : undefined}>
-                <span className="bg-surface-tertiary text-text-primary flex size-6 items-center justify-center rounded-full">
-                  {nextStep ? <Check className="size-3.5" aria-hidden="true" /> : '1'}
-                </span>
-                {localize('com_ui_channel_link_step_account')}
-              </li>
-              <li
-                className="flex flex-1 items-center gap-2"
-                aria-current={accepted ? 'step' : undefined}
+            {!unusable && (
+              <ol
+                className="text-text-secondary flex items-center gap-3 text-xs font-medium"
+                aria-label={localize('com_ui_channel_link_steps')}
               >
-                <span className="bg-border-light me-1 h-px flex-1" aria-hidden="true" />
-                <span className="bg-surface-tertiary text-text-primary flex size-6 items-center justify-center rounded-full">
-                  {active ? <Check className="size-3.5" aria-hidden="true" /> : '2'}
-                </span>
-                {localize('com_ui_channel_link_step_slack')}
-              </li>
-            </ol>
+                <li
+                  className="flex items-center gap-2"
+                  aria-current={!nextStep ? 'step' : undefined}
+                >
+                  <span className="bg-surface-tertiary text-text-primary flex size-6 items-center justify-center rounded-full">
+                    {nextStep ? <Check className="size-3.5" aria-hidden="true" /> : '1'}
+                  </span>
+                  {localize('com_ui_channel_link_step_account')}
+                </li>
+                <li
+                  className="flex flex-1 items-center gap-2"
+                  aria-current={accepted ? 'step' : undefined}
+                >
+                  <span className="bg-border-light me-1 h-px flex-1" aria-hidden="true" />
+                  <span className="bg-surface-tertiary text-text-primary flex size-6 items-center justify-center rounded-full">
+                    {active ? <Check className="size-3.5" aria-hidden="true" /> : '2'}
+                  </span>
+                  {localize('com_ui_channel_link_step_slack')}
+                </li>
+              </ol>
+            )}
 
             <header className="space-y-3">
               <h1 id={`${id}-title`} className="text-2xl font-semibold tracking-tight">
@@ -231,7 +254,7 @@ function OwnedLink({
                 {localize('com_ui_channel_link_confirm_slack')}
               </Alert>
             )}
-            {data?.state === 'expired' && (
+            {(data?.state === 'expired' || timedOut) && (
               <Alert variant="warning">{localize('com_ui_channel_link_expired')}</Alert>
             )}
             {data?.state === 'revoked' && (
@@ -276,6 +299,11 @@ function OwnedLink({
                   {localize('com_ui_channel_link_open_slack')}
                   <ExternalLink className="size-4" aria-hidden="true" />
                 </a>
+              </Button>
+            )}
+            {unusable && (
+              <Button asChild size="lg" variant="outline" className="w-full">
+                <a href={withBasePath('/')}>{localize('com_ui_channel_link_go_home')}</a>
               </Button>
             )}
             {retryable && (

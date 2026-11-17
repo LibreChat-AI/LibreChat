@@ -37,13 +37,17 @@ type ButtonVariantOptions =
         | 'row-action-reveal'
         | 'section-header'
         | 'section-action'
+        | 'section-add'
         | 'header-action'
         | 'panel-back'
         | 'inline-edit'
         | 'card'
+        | 'activity-card'
+        | 'fold-header'
         | 'disclosure'
         | 'disclosure-line'
         | 'disclosure-panel'
+        | 'disclosure-search'
         | 'option'
         | 'text-action'
         | 'hint'
@@ -61,6 +65,7 @@ type ButtonVariantOptions =
         | 'dense'
         | 'compact'
         | 'icon'
+        | 'icon-inline'
         | 'icon-sm'
         | 'icon-xs'
         | 'icon-theme'
@@ -91,7 +96,7 @@ type ButtonVariantOptions =
  * `hover-button` is the marker the app's narrow-screen stylesheet keeps visible.
  */
 const messageHoverClasses =
-  'hover-button size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-text-primary group-has-[[data-hover-active]]:opacity-100 data-[hover-active]:bg-surface-hover data-[hover-active]:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent';
+  'hover-button size-auto rounded-lg p-1.5 transition-none text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-text-primary grouped-hover-active:opacity-100 data-[hover-active]:bg-surface-hover data-[hover-active]:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent';
 
 const buttonVariantRecipe = cva(
   [
@@ -156,7 +161,7 @@ const buttonVariantRecipe = cva(
          *  secondary ink, and the chosen entry, marked with `aria-pressed`, keeps the hover fill
          *  in the primary ink at semibold weight. */
         'popover-option':
-          'w-full justify-start gap-3 rounded-theme-control text-text-secondary duration-theme-normal hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:bg-surface-hover aria-pressed:font-semibold aria-pressed:text-text-primary',
+          'w-full justify-start gap-3 rounded-theme-control text-text-secondary transition-none hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:bg-surface-hover aria-pressed:font-semibold aria-pressed:text-text-primary',
         /** A text action that reads as a link in a list or footer: no fill at rest or under the pointer,
          *  and a ring flush against the control. */
         'inline-link':
@@ -216,6 +221,10 @@ const buttonVariantRecipe = cva(
          * One radius step inside the heading row, like every other control that
          * sits on one.
          */
+        /** The "Add" action in a panel section's header, beside its label: quiet ink that rises to
+         *  primary on a hover fill. */
+        'section-add':
+          'gap-1.5 rounded-lg text-xs font-medium text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary disabled:hover:bg-transparent disabled:hover:text-text-secondary',
         'section-action':
           'rounded-md text-text-secondary hover:bg-surface-active-alt hover:text-text-primary focus-visible:ring-inset focus-visible:ring-offset-0',
         /**
@@ -270,6 +279,12 @@ const buttonVariantRecipe = cva(
         'disclosure-line':
           'w-full justify-start gap-0 font-normal leading-4.5 focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
         /**
+         * A finished web search row: the same quiet disclosure as a tool header, at the status
+         * line's type size, with no color fade so the chevron beside it appears at once.
+         */
+        'disclosure-search':
+          'tool-status-text w-full justify-start font-normal text-text-secondary transition-none focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100 theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:text-text-secondary theme-disabled:hover:bg-transparent theme-disabled:hover:text-text-secondary theme-disabled:[&_*]:text-text-secondary',
+        /**
          * A full-width answer row in an option list, such as the choices of an
          * `ask_user_question`. The fill follows the pointer instantly rather than
          * easing, so moving down a list reads as a cursor, while locking and
@@ -282,6 +297,8 @@ const buttonVariantRecipe = cva(
          */
         option:
           'w-full select-none justify-start gap-2.5 whitespace-normal text-start font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all motion-reduce:transition-none motion-reduce:disabled:transition-none hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
+        'activity-card': '',
+        'fold-header': '',
         card: 'justify-start whitespace-normal rounded-2xl text-start font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
         /** A small text action in the secondary ink beside a status line, such as a failed
          *  steer's Retry or a pending one's Cancel; it rises to the primary ink under the pointer. */
@@ -347,6 +364,8 @@ const buttonVariantRecipe = cva(
          *  such as a clipped text's Show more. */
         'bare-xs': 'h-auto gap-1 p-0 text-xs',
         icon: 'size-theme-button',
+        /** A small icon that sits in a text row, such as a search row's details button. */
+        'icon-inline': 'size-auto rounded-md p-1',
         'icon-sm': 'size-theme-icon-button-sm p-0',
         'icon-xs': 'size-theme-button-xs',
         /**
@@ -400,6 +419,7 @@ const buttonVariantRecipe = cva(
         size: 'default',
         class: 'size-auto p-1.5',
       },
+      { variant: 'section-add', size: 'default', class: 'h-theme-button-xs px-2' },
       { variant: 'popover-option', size: 'default', class: 'h-auto p-2' },
       { variant: 'inline-link', size: 'default', class: 'h-auto p-0' },
       { variant: 'carousel-nav', size: 'default', class: 'h-auto p-2' },
@@ -416,6 +436,12 @@ const buttonVariantRecipe = cva(
         variant: 'disclosure',
         size: 'default',
         class: 'h-auto rounded-none p-0',
+      },
+      /* Sized by its glyph slot and status line, and pill-shaped so its focus ring hugs the row. */
+      {
+        variant: 'disclosure-search',
+        size: 'default',
+        class: 'h-auto rounded-full p-0',
       },
       /* Sized by the text it stands for, like `section-header`, so the default
        * size recipe must not pad it away from the content it lines up with. */
@@ -457,10 +483,26 @@ const buttonVariantRecipe = cva(
   },
 );
 
-const buttonVariants: (props?: ButtonVariantOptions) => string = (props) =>
-  buttonVariantRecipe(
-    props == null ? props : { ...props, shape: props.shape == null ? 'unset' : props.shape },
-  );
+/** A status card keeps native focus and its content-sized box. Unlike action buttons,
+ * unavailable details dim the whole card without replacing its surface or descendant ink. */
+const buttonVariants: (props?: ButtonVariantOptions) => string = (props) => {
+  if (props?.variant === 'fold-header') {
+    return cn(
+      'text-text-secondary hover:text-text-secondary focus-visible:ring-focus-subtle inline-flex h-auto items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
+      props.class,
+      props.className,
+    );
+  }
+  return props?.variant === 'activity-card'
+    ? cn(
+        'border-border-light bg-surface-secondary flex w-full flex-col gap-1 rounded-lg border px-3 py-2 text-start transition',
+        props.class,
+        props.className,
+      )
+    : buttonVariantRecipe(
+        props == null ? props : { ...props, shape: props.shape == null ? 'unset' : props.shape },
+      );
+};
 
 export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
@@ -476,6 +518,7 @@ const Button: React.ForwardRefExoticComponent<
     return (
       <Comp
         type={asChild ? undefined : type}
+        data-activity-card={variant === 'activity-card' || undefined}
         className={cn(buttonVariants({ variant, size, shape, className }))}
         ref={ref}
         {...props}

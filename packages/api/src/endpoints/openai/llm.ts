@@ -185,6 +185,22 @@ function isCanonicalOpenAIBaseURL(baseURL?: string | null): boolean {
   }
 }
 
+/**
+ * A `directEndpoint` sends every request to its configured URL, whichever API
+ * the SDK selected, so a URL naming Chat Completions fixes the request schema
+ * along with the destination.
+ */
+function isExactChatCompletionsURL(directEndpoint?: boolean, baseURL?: string | null): boolean {
+  if (directEndpoint !== true || !baseURL) {
+    return false;
+  }
+  try {
+    return /\/chat\/completions\/?$/.test(new URL(baseURL).pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function isNativeCyberRequest({
   model,
   endpoint,
@@ -640,6 +656,7 @@ export function getOpenAILLMConfig({
   defaultParams,
   inferenceParameters,
   useOpenRouter,
+  directEndpoint,
   requestIdentity,
   reasoningFormat = ReasoningParameterFormat.reasoningEffort,
   modelOptions: _modelOptions,
@@ -655,6 +672,7 @@ export function getOpenAILLMConfig({
   defaultParams?: Record<string, unknown>;
   inferenceParameters?: Record<string, unknown>;
   useOpenRouter?: boolean;
+  directEndpoint?: boolean;
   reasoningFormat?: ReasoningParameterFormat;
   azure?: false | t.AzureOptions;
 }): Pick<t.LLMConfigResult, 'llmConfig' | 'tools'> & {
@@ -1005,13 +1023,15 @@ export function getOpenAILLMConfig({
   /**
    * Route GPT-6 to Responses before invocation, including unset effort, so tools
    * bound later cannot accidentally reach Chat Completions with default reasoning.
+   * An exact Chat Completions URL stays on Chat Completions, since the request
+   * reaches that URL whichever API is selected.
    */
   if (
     firstPartyResponsesModel &&
     llmConfig.useResponsesApi == null &&
     !responsesApiExplicitlyOptedOut
   ) {
-    llmConfig.useResponsesApi = true;
+    llmConfig.useResponsesApi = !isExactChatCompletionsURL(directEndpoint, baseURL);
   }
 
   /**

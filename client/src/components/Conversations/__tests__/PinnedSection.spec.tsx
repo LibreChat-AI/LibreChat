@@ -506,6 +506,50 @@ describe('PinnedSection unified list', () => {
     expect(mockUpdatePinnedOrder).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['crossed', 10, ['Second', 'First']],
+    ['not crossed', 30, ['First', 'Second']],
+  ] as const)(
+    'settles a fast drop with the midpoint %s before the hover frame',
+    (_name, dropY, labels) => {
+      renderSection([pinnedConvo('c1', 'First'), pinnedConvo('c2', 'Second')]);
+      const [target, source] = screen
+        .getAllByTestId('pinned-convo')
+        .map((node) => node.parentElement as HTMLElement);
+      jest.spyOn(target, 'getBoundingClientRect').mockReturnValue({
+        top: 0,
+        bottom: 40,
+        left: 0,
+        right: 100,
+        width: 100,
+        height: 40,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+      // The HTML5 backend batches hover callbacks on RAF. Keep that callback
+      // pending so only the accepted drop can settle the final pointer position.
+      jest.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0);
+      const drag = (node: HTMLElement, type: string, clientY: number) =>
+        fireEvent(node, new MouseEvent(type, { bubbles: true, clientX: 10, clientY }));
+      drag(source, 'dragstart', 60);
+      drag(source, 'dragover', 60);
+      drag(target, 'dragover', dropY);
+      drag(target, 'drop', dropY);
+      drag(source, 'dragend', dropY);
+
+      expect(itemLabels()).toEqual(labels);
+      if (dropY < 20) {
+        expect(mockUpdatePinnedOrder).toHaveBeenCalledWith(
+          ['convo:c2', 'convo:c1'],
+          expect.anything(),
+        );
+      } else {
+        expect(mockUpdatePinnedOrder).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   /* An arrangement that arrives while the order is reconciling is held and
    * written when the fresh order lands. The flush runs on every settle, so it
    * has to stay quiet when there is nothing being held: reposting a committed

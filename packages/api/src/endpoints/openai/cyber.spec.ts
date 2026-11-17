@@ -1,3 +1,4 @@
+import fetch from 'node-fetch';
 import { createHash } from 'node:crypto';
 import { HumanMessage } from '@librechat/agents/langchain';
 import { Providers, initializeModel } from '@librechat/agents';
@@ -6,6 +7,8 @@ import type { OpenAIConfiguration, BaseInitializeParams } from '~/types';
 import { initializeOpenAI } from './initialize';
 import { getOpenAILLMConfig } from './llm';
 import { getOpenAIConfig } from './config';
+
+jest.mock('node-fetch', () => jest.fn());
 
 const model = 'gpt-6-cyber';
 const identity = { userId: 'authenticated-user', tenantId: 'tenant-a' };
@@ -433,4 +436,158 @@ describe('Cyber SDK-effective URL routing', () => {
       }
     },
   );
+});
+
+describe('Cyber exact endpoint contract', () => {
+  it.each([
+    { path: 'chat/completions', responses: false },
+    { path: 'responses', responses: true },
+  ])('matches the exact $path API with the installed SDK', async ({ path, responses }) => {
+    const exactURL = `https://api.openai.com/v1/${path}?route=cyber`;
+    const urls: string[] = [];
+    const bodies: Record<string, unknown>[] = [];
+    jest.mocked(fetch).mockImplementationOnce(async (url, init) => {
+      urls.push(String(url));
+      const body = JSON.parse(String(init?.body));
+      bodies.push(body);
+      const valid = responses ? Array.isArray(body.input) : Array.isArray(body.messages);
+      const { Response } = jest.requireActual<typeof import('node-fetch')>('node-fetch');
+      return new Response(
+        JSON.stringify(
+          valid
+            ? {
+                id: 'exact-cyber',
+                object: 'response',
+                status: 'completed',
+                model,
+                choices: [
+                  {
+                    index: 0,
+                    message: { role: 'assistant', content: 'OK' },
+                    finish_reason: 'stop',
+                  },
+                ],
+                output: [
+                  {
+                    type: 'message',
+                    id: 'msg_exact',
+                    role: 'assistant',
+                    status: 'completed',
+                    content: [{ type: 'output_text', text: 'OK', annotations: [] }],
+                  },
+                ],
+                usage: {
+                  prompt_tokens: 10,
+                  completion_tokens: 2,
+                  input_tokens: 10,
+                  output_tokens: 2,
+                  total_tokens: 12,
+                },
+              }
+            : {
+                error: {
+                  message: 'Wrong request schema for exact API path',
+                  type: 'invalid_request_error',
+                },
+              },
+        ),
+        { status: valid ? 200 : 400, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const { llmConfig, configOptions } = getOpenAIConfig(
+      'test-key',
+      {
+        directEndpoint: true,
+        reverseProxyUrl: exactURL,
+        streaming: false,
+        requestIdentity: identity,
+        modelOptions: { model, max_tokens: 1024 },
+        addParams: { maxRetries: 0, access_programs: { cyber: 'standard' } },
+      },
+      'Daybreak',
+    );
+    const llm = initializeModel({
+      provider: Providers.OPENAI,
+      clientOptions: {
+        ...llmConfig,
+        verbosity: undefined,
+        configuration: configOptions,
+      },
+    });
+    await llm.invoke('Verify exact API routing');
+    expect(urls).toEqual([exactURL]);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({
+      model,
+      access_programs: { cyber: 'standard' },
+      safety_identifier: safetyId(),
+      [responses ? 'max_output_tokens' : 'max_completion_tokens']: 1024,
+    });
+    expect(bodies[0]).not.toHaveProperty(responses ? 'messages' : 'input');
+    expect(bodies[0]).not.toHaveProperty('user');
+  });
+});
+
+it.each([
+  { options: {}, expected: false },
+  { options: { addParams: { useResponsesApi: true } }, expected: true },
+  { options: { modelOptions: { model, useResponsesApi: true } }, expected: true },
+  { options: { defaultParams: { useResponsesApi: true } }, expected: true },
+  { options: { dropParams: ['useResponsesApi'] }, expected: undefined },
+  {
+    options: { addParams: { useResponsesApi: true }, dropParams: ['useResponsesApi'] },
+    expected: undefined,
+  },
+])('preserves exact endpoint API overrides and drops: %j', ({ options, expected }) => {
+  const result = config({
+    directEndpoint: true,
+    baseURL: 'https://api.openai.com/v1/chat/completions/?route=cyber',
+    ...options,
+  });
+  expect(result.useResponsesApi).toBe(expected);
+  expect(result.modelKwargs).toMatchObject({
+    access_programs: { cyber: 'daybreak_red' },
+    safety_identifier: safetyId(),
+  });
+});
+
+it.each([
+  { baseURL: 'https://api.openai.com/v1/chat/completions', expected: false },
+  { baseURL: 'https://api.openai.com/v1/responses', expected: true },
+  { baseURL: 'https://api.openai.com/v1', expected: true },
+  { baseURL: 'https://api.openai.com/v1/chat/completions/batch', expected: true },
+  {
+    baseURL: 'https://api.openai.com/v1/responses',
+    addParams: { useResponsesApi: false },
+    expected: false,
+  },
+])('defaults the API from the exact URL path: %j', ({ expected, ...options }) => {
+  const result = config({ endpoint: 'Daybreak', directEndpoint: true, ...options });
+  expect(result.useResponsesApi).toBe(expected);
+  expect(result.modelKwargs).toMatchObject({
+    access_programs: { cyber: 'daybreak_red' },
+    safety_identifier: safetyId(),
+  });
+});
+
+it.each([
+  { baseURL: 'https://gateway.example/v1/chat/completions', directEndpoint: true },
+  { baseURL: 'https://gateway.example/v1/responses', directEndpoint: true },
+  {
+    baseURL: 'https://openrouter.ai/api/v1/chat/completions',
+    directEndpoint: true,
+    useOpenRouter: true,
+  },
+])('does not impose native Cyber routing or identity on exact gateways: %j', (options) => {
+  const result = config({ endpoint: 'Gateway', ...options });
+  expect(result.useResponsesApi).toBeUndefined();
+  expect(result.modelKwargs ?? {}).not.toHaveProperty('access_programs');
+  expect(result.modelKwargs ?? {}).not.toHaveProperty('safety_identifier');
+});
+
+it('does not infer an exact API schema when directEndpoint is disabled', () => {
+  expect(
+    config({ directEndpoint: false, baseURL: 'https://api.openai.com/v1/chat/completions' })
+      .useResponsesApi,
+  ).toBe(true);
 });

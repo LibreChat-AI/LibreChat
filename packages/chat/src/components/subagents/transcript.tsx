@@ -239,6 +239,7 @@ export function SubagentActivityScrollSurface({
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const followBottom = useRef(true);
   const { showScrollButton: scrollButtonPreference, maximizeChatSpace } = useChatSurface();
   const { renderJumpToLatest } = useSubagentsHost();
 
@@ -247,20 +248,21 @@ export function SubagentActivityScrollSurface({
     const content = contentRef.current;
     if (scroll == null || content == null || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
-      if (isAtBottom) scroll.scrollTop = scroll.scrollHeight;
+      if (followBottom.current) scroll.scrollTop = scroll.scrollHeight;
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [isAtBottom]);
+  }, []);
 
   const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
-    setIsAtBottom(
-      element.scrollHeight - element.scrollTop - element.clientHeight <= AT_BOTTOM_THRESHOLD_PX,
-    );
+    followBottom.current =
+      element.scrollHeight - element.scrollTop - element.clientHeight <= AT_BOTTOM_THRESHOLD_PX;
+    setIsAtBottom(followBottom.current);
   }, []);
 
   const scrollToBottom = useCallback(() => {
+    followBottom.current = true;
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: 'smooth',

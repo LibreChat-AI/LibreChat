@@ -155,7 +155,7 @@ afterAll(async () => {
     }
   }
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 describe('Agent Methods', () => {
@@ -942,6 +942,152 @@ describe('Agent Methods', () => {
 
       expect(updatedAgent!.mcpServerNames).toEqual(['authorizedServer']);
     });
+
+    test('an Action write cannot derive MCP access from a constructed tool key', async () => {
+      const { agentId, authorId } = createTestIds();
+      await createAgent({
+        id: agentId,
+        name: 'Action-only Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        tools: [],
+      });
+
+      const updated = await updateAgent(
+        { id: agentId },
+        { tools: ['lookup_action_x_mcp_private-server'] },
+        { preserveMCPAccess: true },
+      );
+
+      expect(updated!.mcpServerNames).toEqual([]);
+      expect(await methods.getAgentIdsByMCPServerName('private-server')).toEqual([]);
+    });
+
+    test('an Action write preserves existing MCP access without adding a new server', async () => {
+      const { agentId, authorId } = createTestIds();
+      const mcpTool = `get_action_version${Constants.mcp_delimiter}Google${Constants.mcp_delimiter}Workspace`;
+      const server = `Google${Constants.mcp_delimiter}Workspace`;
+      await createAgent({
+        id: agentId,
+        name: 'Mixed Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        tools: [mcpTool],
+        mcpServerNames: [server],
+      });
+
+      const updated = await updateAgent(
+        { id: agentId },
+        {
+          tools: [mcpTool, 'lookup_action_x_mcp_private-server'],
+          mcpServerNames: ['private-server'],
+        },
+        { preserveMCPAccess: true },
+      );
+
+      expect(updated!.mcpServerNames).toEqual([server]);
+      expect(await methods.getAgentIdsByMCPServerName('private-server')).toEqual([]);
+    });
+
+    test('an Action write fails closed for a legacy agent without an MCP index', async () => {
+      const { agentId, authorId } = createTestIds();
+      await createAgent({
+        id: agentId,
+        name: 'Legacy Action Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        tools: [],
+      });
+      await Agent.updateOne({ id: agentId }, { $unset: { mcpServerNames: 1 } });
+
+      const updated = await updateAgent(
+        { id: agentId },
+        { tools: ['lookup_action_x_mcp_private-server'] },
+        { preserveMCPAccess: true },
+      );
+
+      expect(updated!.mcpServerNames).toEqual([]);
+    });
+
+    test('an Action write drops existing MCP access when its last tool is removed', async () => {
+      const { agentId, authorId } = createTestIds();
+      await createAgent({
+        id: agentId,
+        name: 'Detached MCP Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        tools: ['search_mcp_existing-server'],
+        mcpServerNames: ['existing-server'],
+      });
+
+      const updated = await updateAgent(
+        { id: agentId },
+        { tools: ['lookup_action_api---example---com'] },
+        { preserveMCPAccess: true },
+      );
+
+      expect(updated!.mcpServerNames).toEqual([]);
+    });
+
+    test.each(['advanced', 'unchanged'])(
+      'an Action write cannot restore revoked MCP access with an %s timestamp',
+      async (revision) => {
+        const { agentId, authorId } = createTestIds();
+        const tools = ['search_mcp_existing-server'];
+        await createAgent({
+          id: agentId,
+          name: 'Concurrent Action Agent',
+          provider: 'test',
+          model: 'test-model',
+          author: authorId,
+          tools,
+          mcpServerNames: ['existing-server'],
+        });
+        const originalFindOne = Agent.findOne.bind(Agent);
+        const read = jest.spyOn(Agent, 'findOne').mockImplementationOnce((...args) => {
+          const query = originalFindOne(...args);
+          const originalExec = query.exec.bind(query);
+          jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+            const snapshot = await originalExec();
+            const snapshotRevision = snapshot?.get('updatedAt');
+            if (!(snapshotRevision instanceof Date)) {
+              throw new Error('Agent fixture has no revision');
+            }
+            await Agent.updateOne(
+              { id: agentId },
+              {
+                $set: {
+                  tools: [],
+                  mcpServerNames: [],
+                  updatedAt:
+                    revision === 'unchanged' ? snapshotRevision : new Date(Date.now() + 1000),
+                },
+              },
+              { timestamps: false },
+            );
+            return snapshot;
+          });
+          return query;
+        });
+
+        try {
+          await expect(
+            updateAgent(
+              { id: agentId },
+              { tools: [...tools, 'lookup_action_api---example---com'] },
+              { preserveMCPAccess: true },
+            ),
+          ).rejects.toThrow('Agent changed during Action update');
+        } finally {
+          read.mockRestore();
+        }
+        expect((await getAgent({ id: agentId }))!.mcpServerNames).toEqual([]);
+      },
+    );
 
     test('should prune nonexistent skill ids from the allowlist on create', async () => {
       const { agentId, authorId } = createTestIds();
@@ -3325,6 +3471,24 @@ describe('Agent Methods', () => {
       });
       spy.mockRestore();
       expect((await getAgent({ id: agentId }))?.name).toBe('Concurrent');
+    });
+
+    test('restores SDK bindings and removes them when reverting to a native version', async () => {
+      const id = `agent_${uuidv4()}`;
+      await createAgent({
+        id,
+        name: 'Native',
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+      });
+      const binding = { id: 'advisor', protocolVersion: 1 };
+      await updateAgent({ id }, { sdk_runtime: binding });
+      expect((await getAgent({ id }))?.sdk_runtime).toEqual(binding);
+      await revertAgentVersion({ id }, 0);
+      expect((await getAgent({ id }))?.sdk_runtime).toBeUndefined();
+      await revertAgentVersion({ id }, 1);
+      expect((await getAgent({ id }))?.sdk_runtime).toEqual(binding);
     });
 
     test('should unset a linked prompt-group instructions selection absent from the restored version', async () => {

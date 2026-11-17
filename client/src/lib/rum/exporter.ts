@@ -1,8 +1,9 @@
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace-base';
-import { sanitizeSpanAttributes, sanitizeUrlReferences } from './privacy';
+import { sanitizeSpanAttributes, sanitizeUrlReferences, isCredentialRequest } from './privacy';
 
 function sanitizeSpan(span: ReadableSpan): ReadableSpan {
+  const redactBody = isCredentialRequest(span.attributes);
   return {
     name: sanitizeUrlReferences(span.name),
     kind: span.kind,
@@ -16,17 +17,21 @@ function sanitizeSpan(span: ReadableSpan): ReadableSpan {
       ...span.status,
       ...(span.status.message ? { message: sanitizeUrlReferences(span.status.message) } : {}),
     },
-    attributes: sanitizeSpanAttributes(span.attributes),
-    resource: resourceFromAttributes(sanitizeSpanAttributes(span.resource.attributes)),
+    attributes: sanitizeSpanAttributes(span.attributes, redactBody),
+    resource: resourceFromAttributes(sanitizeSpanAttributes(span.resource.attributes, redactBody)),
     instrumentationScope: span.instrumentationScope,
     events: span.events.map((event) => ({
       ...event,
       name: sanitizeUrlReferences(event.name),
-      ...(event.attributes ? { attributes: sanitizeSpanAttributes(event.attributes) } : {}),
+      ...(event.attributes
+        ? { attributes: sanitizeSpanAttributes(event.attributes, redactBody) }
+        : {}),
     })),
     links: span.links.map((link) => ({
       ...link,
-      ...(link.attributes ? { attributes: sanitizeSpanAttributes(link.attributes) } : {}),
+      ...(link.attributes
+        ? { attributes: sanitizeSpanAttributes(link.attributes, redactBody) }
+        : {}),
     })),
     droppedAttributesCount: span.droppedAttributesCount,
     droppedEventsCount: span.droppedEventsCount,

@@ -1,4 +1,4 @@
-import { ContentTypes, SteerEvents } from 'librechat-data-provider';
+import { ContentTypes, SteerEvents, StepEvents } from 'librechat-data-provider';
 import type {
   SubagentContentAppendResult,
   SubagentContentMethods,
@@ -6,7 +6,11 @@ import type {
   SubagentContentScope,
 } from '@librechat/data-schemas';
 import type { SubagentUpdateEvent } from '@librechat/agents';
-import { readSubagentContent, SubagentContentJournal } from './subagentContent';
+import {
+  createSubagentContentFold,
+  SubagentContentJournal,
+  readSubagentContent,
+} from './subagentContent';
 
 const scope: SubagentContentScope = {
   user: 'owner',
@@ -833,5 +837,108 @@ it('journals applied steering in its reserved slot before later normalized SDK s
   expect(suffix.ok && suffix.value.events[0]).toEqual({
     sequence: 2,
     frame: { event: SteerEvents.ON_STEER_APPLIED, data: applied },
+  });
+});
+
+describe('createSubagentContentFold', () => {
+  type Frame = Parameters<ReturnType<typeof createSubagentContentFold>['apply']>[0];
+  const frame = (event: string, data: unknown): Frame => ({ event, data }) as Frame;
+  const toolStep = frame(StepEvents.ON_RUN_STEP, {
+    id: 'tool',
+    index: 0,
+    stepDetails: {
+      type: 'tool_calls',
+      tool_calls: [{ id: 'call', name: 'lookup', args: '{}', type: 'tool_call' }],
+    },
+  });
+
+  it('stamps a closed step onto its tool call', () => {
+    const fold = createSubagentContentFold();
+    fold.apply(toolStep);
+    fold.apply(
+      frame(StepEvents.ON_RUN_STEP_CLOSED, {
+        id: 'tool',
+        index: 0,
+        type: 'tool_calls',
+        status: 'cancelled',
+        created_at: 1000,
+        closed_at: 1500,
+      }),
+    );
+
+    const part = fold.aggregator.contentParts[0] as {
+      type?: string;
+      tool_call?: { runStepStatus?: string; runStepClosedAt?: number };
+    };
+    expect(part.type).toBe(ContentTypes.TOOL_CALL);
+    expect(part.tool_call).toMatchObject({ runStepStatus: 'cancelled', runStepClosedAt: 1500 });
+  });
+
+  it('ignores a close for a step it never saw', () => {
+    const fold = createSubagentContentFold();
+
+    expect(() =>
+      fold.apply(
+        frame(StepEvents.ON_RUN_STEP_CLOSED, {
+          id: 'unknown',
+          index: 0,
+          type: 'tool_calls',
+          status: 'completed',
+          closed_at: 1,
+        }),
+      ),
+    ).not.toThrow();
+    expect(fold.aggregator.contentParts).toHaveLength(0);
+  });
+
+  it('carries a commentary phase from the step onto its text', () => {
+    const fold = createSubagentContentFold();
+    fold.apply(
+      frame(StepEvents.ON_RUN_STEP, {
+        id: 'note',
+        index: 0,
+        stepDetails: {
+          type: 'message_creation',
+          message_creation: { message_id: 'note', phase: 'commentary' },
+        },
+      }),
+    );
+    fold.apply(
+      frame(StepEvents.ON_MESSAGE_DELTA, {
+        id: 'note',
+        delta: { content: [{ type: 'text', text: 'Checking the logs.' }] },
+      }),
+    );
+
+    expect(fold.aggregator.contentParts[0]).toMatchObject({
+      type: ContentTypes.TEXT,
+      text: 'Checking the logs.',
+      phase: 'commentary',
+    });
+  });
+
+  it('places an applied steer in its reserved slot and keeps folding after it', () => {
+    const fold = createSubagentContentFold();
+    const steer = { type: ContentTypes.STEER, steer: 'Focus on errors', steerId: 's1' };
+    fold.apply(frame(SteerEvents.ON_STEER_APPLIED, { steerId: 's1', index: 0, part: steer }));
+    fold.apply(
+      frame(StepEvents.ON_RUN_STEP, {
+        id: 'after',
+        index: 1,
+        stepDetails: { type: 'message_creation', message_creation: { message_id: 'after' } },
+      }),
+    );
+    fold.apply(
+      frame(StepEvents.ON_MESSAGE_DELTA, {
+        id: 'after',
+        delta: { content: [{ type: 'text', text: 'On it.' }] },
+      }),
+    );
+
+    expect(fold.aggregator.contentParts[0]).toEqual(steer);
+    expect(fold.aggregator.contentParts[1]).toMatchObject({
+      type: ContentTypes.TEXT,
+      text: 'On it.',
+    });
   });
 });

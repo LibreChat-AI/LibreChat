@@ -3,9 +3,9 @@ import download from 'downloadjs';
 import { toCanvas } from 'html-to-image';
 import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
-import { completeProgressiveRowMounts } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import { completeProgressiveRowMounts, revealOffscreenRows } from '@librechat/chat/react';
 import type { TMessage, TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { ScreenshotProvider, useScreenshot } from '~/hooks/ScreenshotContext';
@@ -22,6 +22,7 @@ jest.mock('html-to-image', () => ({ toCanvas: jest.fn() }));
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   completeProgressiveRowMounts: jest.fn(),
+  revealOffscreenRows: jest.fn(),
 }));
 
 const sourceId = '11111111-1111-4111-8111-111111111111';
@@ -100,8 +101,11 @@ function canvas() {
   });
   return element;
 }
+const resumeSkipping = jest.fn();
 beforeEach(() => {
+  resumeSkipping.mockClear();
   jest.mocked(completeProgressiveRowMounts).mockResolvedValue(undefined);
+  jest.mocked(revealOffscreenRows).mockReset().mockReturnValue(resumeSkipping);
   jest.mocked(toCanvas).mockResolvedValue(canvas());
 });
 
@@ -112,6 +116,31 @@ it('downloads an unchanged unprotected capture', async () => {
   });
   expect(toCanvas).toHaveBeenCalledWith(target, expect.anything());
   expect(download).toHaveBeenCalledTimes(1);
+});
+
+it('lays out every row before cloning the thread and resumes skipping afterwards', async () => {
+  jest.mocked(toCanvas).mockImplementation(async () => {
+    /** A clone has no remembered size: skipped rows would be copied at their fallback height. */
+    expect(revealOffscreenRows).toHaveBeenCalledTimes(1);
+    expect(resumeSkipping).not.toHaveBeenCalled();
+    return canvas();
+  });
+  const { result } = setup();
+  await act(async () => {
+    await result.current.exportConversation();
+  });
+  expect(toCanvas).toHaveBeenCalledTimes(1);
+  expect(resumeSkipping).toHaveBeenCalledTimes(1);
+});
+
+it('resumes skipping rows when the capture fails', async () => {
+  jest.mocked(toCanvas).mockRejectedValue(new Error('capture failed'));
+  const { result } = setup();
+  await act(async () => {
+    await result.current.exportConversation().catch(() => undefined);
+  });
+  expect(revealOffscreenRows).toHaveBeenCalledTimes(1);
+  expect(resumeSkipping).toHaveBeenCalledTimes(1);
 });
 
 it('rejects navigation to a protected transcript during progressive mounting', async () => {

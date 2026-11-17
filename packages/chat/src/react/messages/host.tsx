@@ -232,6 +232,9 @@ export interface MessagesHost {
   renderMessageIcon: (props: MessageIconProps) => ReactNode;
   /** Whether rows drop the reading-width cap and fill the pane. */
   useMaximizeChatSpace: () => boolean;
+  /** Whether the thread renders as a flat row list. The flat renderer is the default;
+   *  an app turns it off for the recursive tree. */
+  useFlatThread: () => boolean;
   /** Whether a response by the agent the header's model selector shows drops its avatar and name
    *  (`interface.messageAuthor: whenDifferent`). */
   useHideSelectedAuthor: () => boolean;
@@ -297,6 +300,7 @@ const fallbackHost: MessagesHost = {
   useMessageFeedback: () => noFeedback,
   renderMessageIcon: () => null,
   useMaximizeChatSpace: () => false,
+  useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
   useAgentsMap: () => undefined,
   renderMessageBody: () => null,

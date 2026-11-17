@@ -31,14 +31,16 @@ const probe = (page: Page, className: string) =>
 
 const elapsedReading = (page: Page) => messagesView(page).getByTestId('stream-elapsed');
 
-const readSweep = (page: Page) =>
-  elapsedReading(page).evaluate((element) => {
-    const style = getComputedStyle(element);
-    return {
-      animationName: style.animationName,
-      backgroundClip: style.backgroundClip,
-      dipAlpha: style.getPropertyValue('--shimmer-dip-alpha').trim(),
-    };
+const readDipAlpha = (page: Page) =>
+  page.evaluate(() => {
+    // Streaming can replace the footer between locator resolution and evaluate.
+    // Resolve the current node and read its styles in the same browser task.
+    const element = document.querySelector(
+      '[data-testid="messages-view"] [data-testid="stream-elapsed"]',
+    );
+    return element
+      ? getComputedStyle(element).getPropertyValue('--shimmer-dip-alpha').trim()
+      : null;
   });
 
 test.describe('shared part classes', () => {
@@ -81,17 +83,27 @@ test.describe('shared part classes', () => {
     expect(run.ok()).toBeTruthy();
     await expect(elapsedReading(page)).toBeVisible({ timeout: 15_000 });
 
-    const sweep = await readSweep(page);
-    expect(sweep.animationName).toBe('shimmer');
-    expect(sweep.backgroundClip).toBe('text');
-    expect(Number(sweep.dipAlpha)).toBeLessThan(1);
+    /** The sweep is two transforms that cancel, a band and the copy of the
+     *  label inside it, so the compositor can run it without a repaint. The
+     *  label itself must not animate: that is what put the sweep on the main
+     *  thread. */
+    await expect(elapsedReading(page).locator('.shimmer-band')).toHaveCSS(
+      'animation-name',
+      'shimmer-band',
+    );
+    await expect(elapsedReading(page).locator('.shimmer-copy')).toHaveCSS(
+      'animation-name',
+      'shimmer-copy',
+    );
+    await expect(elapsedReading(page)).toHaveCSS('animation-name', 'none');
+    await expect.poll(async () => Number(await readDipAlpha(page))).toBeLessThan(1);
 
     await page.emulateMedia({ contrast: 'more' });
     await expect(page.locator('html.high-contrast')).toHaveCount(1, { timeout: 5_000 });
-    await expect.poll(async () => (await readSweep(page)).dipAlpha).toBe('1');
+    await expect.poll(() => readDipAlpha(page)).toBe('1');
     await page.emulateMedia({ contrast: null });
 
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    await expect.poll(async () => (await readSweep(page)).animationName).toBe('none');
+    await expect(elapsedReading(page).locator('.shimmer-clip')).toHaveCSS('display', 'none');
   });
 });

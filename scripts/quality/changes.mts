@@ -50,6 +50,7 @@ export interface ChangedRange {
 
 export interface ChangedFile {
   file: string;
+  oldFile?: string;
   ranges: ChangedRange[];
 }
 
@@ -107,42 +108,97 @@ export function overlaps(start: number, end: number, ranges: ChangedRange[]): bo
   );
 }
 
-/** Compare the PR's head with its merge base, never with GitHub's synthetic merge commit. */
-export function changes(base: string, head = 'HEAD', cwd = process.cwd()) {
-  const mergeBase = git(['merge-base', base, head], cwd).trim();
-  // Treat a rename as deletion + addition so every function at the new path is included.
-  const files = git(
-    ['diff', '--no-renames', '--name-only', '-z', '--diff-filter=AM', mergeBase, head, '--'],
+interface FileStatus {
+  file: string;
+  oldFile?: string;
+}
+
+/** `-M --name-status -z` pairs renames; a trailing pathspec would split them into add+delete. */
+function statusFiles(base: string, head: string, cwd: string): FileStatus[] {
+  const raw = git(
+    [
+      'diff',
+      '-M',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--name-status',
+      '-z',
+      '--diff-filter=AMR',
+      base,
+      head,
+      '--',
+    ],
     cwd,
   )
     .split('\0')
     .filter(Boolean);
-  const sources = files.filter(isSource);
+  const files: FileStatus[] = [];
+  for (let index = 0; index < raw.length; ) {
+    const status = raw[index++];
+    if (status.startsWith('R')) {
+      const oldFile = raw[index++];
+      const file = raw[index++];
+      files.push({ file, oldFile });
+    } else {
+      files.push({ file: raw[index++] });
+    }
+  }
+  return files;
+}
+
+/** Diffing the two blobs directly isolates a rename's real edit; a pure rename diffs empty. */
+function fileRanges(status: FileStatus, base: string, head: string, cwd: string): ChangedRange[] {
+  if (status.oldFile !== undefined) {
+    return changedRanges(
+      git(
+        [
+          'diff',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--unified=0',
+          `${base}:${status.oldFile}`,
+          `${head}:${status.file}`,
+        ],
+        cwd,
+      ),
+    );
+  }
+  return changedRanges(
+    git(
+      [
+        'diff',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--no-renames',
+        '--unified=0',
+        base,
+        head,
+        '--',
+        status.file,
+      ],
+      cwd,
+    ),
+  );
+}
+
+/** Compare the PR's head with its merge base, never with GitHub's synthetic merge commit. */
+export function changes(base: string, head = 'HEAD', cwd = process.cwd()) {
+  const mergeBase = git(['merge-base', base, head], cwd).trim();
+  const statuses = statusFiles(mergeBase, head, cwd);
+  const sources = statuses.filter((status) => isSource(status.file));
   return {
     base: mergeBase,
     head: git(['rev-parse', '--verify', `${head}^{commit}`], cwd).trim(),
-    unsupported: sources.filter((file) => !workspaceFor(file)),
+    unsupported: sources
+      .filter((status) => !workspaceFor(status.file))
+      .map((status) => status.file),
     files: sources
-      .filter((file) => workspaceFor(file))
+      .filter((status) => workspaceFor(status.file))
       .map(
-        (file): ChangedFile => ({
-          file,
-          ranges: changedRanges(
-            git(
-              [
-                'diff',
-                '--no-ext-diff',
-                '--no-textconv',
-                '--no-renames',
-                '--unified=0',
-                mergeBase,
-                head,
-                '--',
-                file,
-              ],
-              cwd,
-            ),
-          ),
+        (status): ChangedFile => ({
+          file: status.file,
+          ...(status.oldFile !== undefined && { oldFile: status.oldFile }),
+          ranges: fileRanges(status, mergeBase, head, cwd),
         }),
       ),
   };
