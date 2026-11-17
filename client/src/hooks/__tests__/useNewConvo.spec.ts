@@ -95,9 +95,6 @@ jest.mock('~/Providers/ChatSettingsContext', () => ({
 jest.mock('recoil', () => ({
   useRecoilValue: (key: string) => {
     if (key === 'defaultPreset') return mockDefaultPreset;
-    if (key === 'saveBadgesState') {
-      return true;
-    }
     return null;
   },
   useSetRecoilState: (key: string) => (update: unknown) => mockSetEphemeralAgent(key, update),
@@ -235,7 +232,6 @@ jest.mock('~/store', () => ({
   ephemeralAgentByConvoId: (id: string) => id,
   default: {
     defaultPreset: 'defaultPreset',
-    saveBadgesState: 'saveBadgesState',
     useClearConvoState: () => jest.fn(),
     useSetConversationAtom: () => ({ setConversation: mockSetConversation }),
   },

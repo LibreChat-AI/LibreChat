@@ -22,8 +22,6 @@ import {
   AutoSendTextSelector,
   DecibelSelector,
 } from '../SettingsTabs/Speech/STT';
-import DisplayUsernameMessages from '../SettingsTabs/Account/DisplayUsernameMessages';
-import ConversationModeSwitch from '../SettingsTabs/Speech/ConversationModeSwitch';
 import EnableTwoFactorItem from '../SettingsTabs/Account/TwoFactorAuthentication';
 import LangfuseConnection from '../SettingsTabs/Integrations/LangfuseConnection';
 import ClockFormatSelector from '../SettingsTabs/General/ClockFormatSelector';
@@ -58,15 +56,16 @@ import Workspaces from '~/components/Channels/Workspaces';
 import Passkeys from '../SettingsTabs/Account/Passkeys';
 import { showThinkingAtom } from '~/store/showThinking';
 import ProviderKeys from '../SettingsTabs/ProviderKeys';
+import { STTEndpoints, TTSEndpoints } from '~/common';
 import { showLiaAtom } from '~/components/Lia/store';
 import { autoScrollAtom } from '~/store/autoScroll';
 import Avatar from '../SettingsTabs/Account/Avatar';
 import ConnectedAccounts from './ConnectedAccounts';
+import Preset from '../SettingsTabs/Speech/Preset';
 import CodeEnvironments from './CodeEnvironments';
 import About from '../SettingsTabs/About/About';
 import ApiKeys from '../SettingsTabs/ApiKeys';
 import MemoryToggle from './MemoryToggle';
-import { TTSEndpoints } from '~/common';
 import store from '~/store';
 
 const { GENERAL, CHAT, SPEECH, DATA, ACCOUNT, ABOUT } = SettingsTabValues;
@@ -339,18 +338,6 @@ export const registry: SettingEntry[] = [
       hoverCardText: 'com_nav_info_paste_long_text_as_file',
     }),
   },
-  {
-    id: 'saveBadgesState',
-    tab: CHAT,
-    section: 'sending',
-    labelKey: 'com_nav_save_badges_state',
-    Component: toggleControl({
-      stateAtom: store.saveBadgesState,
-      localizationKey: 'com_nav_save_badges_state',
-      switchId: 'showBadges',
-      hoverCardText: 'com_nav_info_save_badges_state',
-    }),
-  },
   // Chat · Commands
   {
     id: 'atCommand',
@@ -411,14 +398,6 @@ export const registry: SettingEntry[] = [
       switchId: 'collapseLongUserMessages',
       hoverCardText: 'com_nav_info_collapse_user_messages',
     }),
-  },
-  {
-    id: 'usernameDisplay',
-    tab: CHAT,
-    section: 'messages',
-    labelKey: 'com_nav_user_name_display',
-    keywords: ['username', 'name'],
-    Component: DisplayUsernameMessages,
   },
   {
     id: 'latexParsing',
@@ -541,6 +520,7 @@ export const registry: SettingEntry[] = [
     section: 'prompts',
     labelKey: 'com_nav_advanced_prompts',
     keywords: ['prompt'],
+    show: (ctx) => ctx.hasPrompts,
     Component: AdvancedPrompts,
   },
   {
@@ -548,6 +528,7 @@ export const registry: SettingEntry[] = [
     tab: CHAT,
     section: 'prompts',
     labelKey: 'com_nav_always_make_prod',
+    show: (ctx) => ctx.hasPrompts,
     Component: toggleControl({
       stateAtom: store.alwaysMakeProd,
       localizationKey: 'com_nav_always_make_prod',
@@ -559,6 +540,7 @@ export const registry: SettingEntry[] = [
     tab: CHAT,
     section: 'prompts',
     labelKey: 'com_nav_auto_send_prompts',
+    show: (ctx) => ctx.hasPrompts,
     Component: toggleControl({
       stateAtom: store.autoSendPrompts,
       localizationKey: 'com_nav_auto_send_prompts',
@@ -601,6 +583,7 @@ export const registry: SettingEntry[] = [
     tab: SPEECH,
     section: 'stt',
     labelKey: 'com_ui_settings_label_decibel',
+    show: (ctx) => ctx.engineSTT === STTEndpoints.external,
     Component: DecibelSelector,
   },
   {
@@ -610,6 +593,15 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_nav_auto_send_text',
     Component: AutoSendTextSelector,
   },
+  {
+    id: 'speechInputPreset',
+    tab: SPEECH,
+    section: 'stt',
+    labelKey: 'com_nav_speech_input_preset',
+    keywords: ['conversation', 'voice', 'speech', 'input', 'preset'],
+    Component: Preset,
+  },
+
   // Speech · Text-to-speech
   {
     id: 'textToSpeech',
@@ -633,13 +625,6 @@ export const registry: SettingEntry[] = [
     Component: VoiceDropdown,
   },
   {
-    id: 'conversationMode',
-    tab: SPEECH,
-    section: 'tts',
-    labelKey: 'com_ui_settings_label_conversation_mode',
-    Component: ConversationModeSwitch,
-  },
-  {
     id: 'automaticPlayback',
     tab: SPEECH,
     section: 'tts',
@@ -659,6 +644,7 @@ export const registry: SettingEntry[] = [
     tab: SPEECH,
     section: 'tts',
     labelKey: 'com_ui_settings_label_playback_rate',
+    show: (ctx) => ctx.engineTTS === TTSEndpoints.external,
     Component: PlaybackRate,
   },
   {
@@ -666,6 +652,7 @@ export const registry: SettingEntry[] = [
     tab: SPEECH,
     section: 'tts',
     labelKey: 'com_nav_enable_cache_tts',
+    show: (ctx) => ctx.engineTTS === TTSEndpoints.external,
     Component: CacheTTSSwitch,
   },
 

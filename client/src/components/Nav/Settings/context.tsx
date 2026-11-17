@@ -69,6 +69,7 @@ export function useSettingsContext(): SettingsContextValue {
   const hasRemoteAgentsBool = hasRemoteAgents === true;
   const hasMultiConvoBool = hasMultiConvo === true;
   const hasPromptsBool = hasPrompts === true;
+  const engineSTT = useRecoilValue<string>(store.engineSTT);
   const engineTTS = useRecoilValue<string>(store.engineTTS);
   const hasUserProvidedEndpoints = useProviderKeys().length > 0;
   const hasStatefulCodeSessions =
@@ -94,6 +95,7 @@ export function useSettingsContext(): SettingsContextValue {
       allowAccountDeletion,
       aboutEnabled,
       mascotAllowed,
+      engineSTT,
       engineTTS,
       langfuseConnectionAccess,
       langfusePromptSyncAccess,
@@ -122,6 +124,7 @@ export function useSettingsContext(): SettingsContextValue {
       allowAccountDeletion,
       aboutEnabled,
       mascotAllowed,
+      engineSTT,
       engineTTS,
       langfuseConnectionAccess,
       langfusePromptSyncAccess,
