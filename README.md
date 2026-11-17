@@ -52,7 +52,7 @@
 
 - **Chat Projects:** Organize conversations with shared instructions and reference files.
 - **Account protection:** Register passkeys, change your email, and manage stronger account security controls.
-- **Slack Agents:** Connect linked accounts to opt-in Slack Channels with approvals and feedback.
+- **Agent Channels (beta):** Connect Agents to Slack with linked accounts, approvals, and feedback.
 - **Background Responses:** Save, review, cancel, and recover Agent API responses independently of a chat connection.
 - **SDK-backed Agents (experimental):** Register local or remote runtimes with authorized host-tool access.
 - **Tools and prompts:** Use MCP Apps, deferred Tool Search, clearer approvals, and Langfuse prompts in the catalog and Agent instructions.
