@@ -14,6 +14,7 @@ import {
 } from './ref';
 import { isProviderSessionUnavailableError } from './errors';
 import { redirectToAuthFailure } from '~/oauth/callback';
+import { toOpenIDLogArgument } from '../errors';
 
 export interface OpenIDCallbackProviderSessionDeps {
   authorizer: ProviderSessionAuthorizer;
@@ -155,6 +156,7 @@ export interface PersistOpenIDAdminProviderSessionBindingDeps {
     previousRefreshToken: undefined,
     options: { providerSession: ProviderSessionRef | null; authMethod: 'openid' },
   ) => Promise<unknown>;
+  logger: OpenIDLogger;
 }
 
 export interface PersistOpenIDAdminProviderSessionBindingInput {
@@ -177,8 +179,19 @@ export async function persistOpenIDAdminProviderSessionBinding(
   if (mode === 'off') {
     return;
   }
-  await deps.storeOpenIDSession(input.userId, input.refreshToken, input.tenantId, undefined, {
-    providerSession: input.providerSession,
-    authMethod: 'openid',
-  });
+  try {
+    await deps.storeOpenIDSession(input.userId, input.refreshToken, input.tenantId, undefined, {
+      providerSession: input.providerSession,
+      authMethod: 'openid',
+    });
+  } catch (error) {
+    if (mode === 'enforce') {
+      throw error;
+    }
+    /** Mode `record` is best-effort: a store failure must not abort the admin OAuth login. */
+    deps.logger.warn(
+      '[OAuth] Failed to persist admin provider-session binding',
+      toOpenIDLogArgument(error),
+    );
+  }
 }

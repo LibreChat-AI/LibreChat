@@ -86,7 +86,7 @@ function createOAuthHandler(redirectUri = domains.client) {
         const expiresAt = Date.now() + sessionExpiry;
 
         await persistOpenIDAdminProviderSessionBinding(
-          { authorizer: getProviderSessionAuthorizer(), storeOpenIDSession },
+          { authorizer: getProviderSessionAuthorizer(), storeOpenIDSession, logger },
           {
             provider: req.user.provider,
             refreshToken,
