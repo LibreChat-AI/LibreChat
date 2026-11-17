@@ -9,15 +9,16 @@ import type {
 import type { AgentKeyMCPIdentity, MCPGrantEnrollment } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { Response } from 'express';
+import type { ApiKeyAuthRequest } from './middleware';
 import type { ServerRequest } from '~/types';
 import {
   getScheduleMCPExecution,
   bindScheduledMCPInvocation,
 } from '~/schedules/authorization/execution';
 import { createRemoteExecutionContext } from '~/agents/authority/context';
+import { createAgentKeyMCPGrantHost, getRemoteRunKeyId } from './grants';
 import { pinStorage } from '~/schedules/authorization/execution.helper';
-import { createMCPRequestContext } from '~/mcp/request';
-import { createAgentKeyMCPGrantHost } from './grants';
+import { getMCPRequestContext } from '~/mcp/request';
 
 const queryTool: Tool = {
   name: 'query',
@@ -137,10 +138,9 @@ function setup(
   /** A run of `agentId` started as the remote controllers start one. */
   /** `keyId: null` is a run no personal key started: a token, or a bound key. */
   const run = async (agentId = 'agent_a', keyId: string | null = 'key-1') => {
-    const context = createMCPRequestContext();
+    const req = { user } as ApiKeyAuthRequest;
     await host.prepare({
-      user,
-      context,
+      req,
       executionContext: createRemoteExecutionContext({
         principal: { userId: 'owner', tenantId: 'tenant', role: 'USER' },
         agentId,
@@ -149,6 +149,7 @@ function setup(
         ...(keyId && { keyId }),
       }),
     });
+    const context = getMCPRequestContext(req)!;
     const call = async (tool = 'query'): Promise<'unrestricted' | 'authorized'> => {
       const invocation = bindScheduledMCPInvocation(context, agentId, tool);
       if (!invocation) return 'unrestricted';
@@ -240,11 +241,9 @@ it('stops honouring a grant the owner revoked or that ran out', async () => {
 it('does not run unrestricted when the key or the agent cannot be established', async () => {
   const s = setup();
   await expect(s.run('agent_a', 'key-unknown')).rejects.toMatchObject(refused('binding_mismatch'));
-  const context = createMCPRequestContext();
   await expect(
     s.host.prepare({
-      user: s.user,
-      context,
+      req: { user: s.user } as ApiKeyAuthRequest,
       executionContext: createRemoteExecutionContext({
         principal: { userId: 'owner', tenantId: 'tenant' },
         protocol: 'responses',
@@ -258,9 +257,9 @@ it('does not run unrestricted when the key or the agent cannot be established', 
 it('does not restrict a run that no personal key started', async () => {
   const s = setup();
   await expect((await s.run('agent_a', null)).call()).resolves.toBe('unrestricted');
-  const context = createMCPRequestContext();
-  await s.host.prepare({ user: s.user, context });
-  expect(bindScheduledMCPInvocation(context, 'agent_a', 'query')).toBeUndefined();
+  const req = { user: s.user } as ApiKeyAuthRequest;
+  await s.host.prepare({ req });
+  expect(bindScheduledMCPInvocation(getMCPRequestContext(req), 'agent_a', 'query')).toBeUndefined();
 });
 
 it('limits only MCP tools: an agent with other tools can still be granted, and the run is not a schedule run', async () => {
@@ -310,4 +309,17 @@ it('answers the owner over HTTP by key and agent, and hides keys that are not th
   const hidden = await send('key-of-someone-else');
   expect(hidden.status).toHaveBeenCalledWith(404);
   expect(hidden.json).toHaveBeenCalledWith({ code: 'consent_not_found' });
+});
+
+describe('getRemoteRunKeyId', () => {
+  it('names the personal key a request authenticated with', () => {
+    expect(getRemoteRunKeyId({ apiKeyId: 'key-1' } as ApiKeyAuthRequest)).toBe('key-1');
+  });
+
+  it('names no key for a token, or for a key issued to an integration', () => {
+    expect(getRemoteRunKeyId({} as ApiKeyAuthRequest)).toBeUndefined();
+    expect(
+      getRemoteRunKeyId({ apiKeyId: 'key-1', apiKeyBound: true } as ApiKeyAuthRequest),
+    ).toBeUndefined();
+  });
 });

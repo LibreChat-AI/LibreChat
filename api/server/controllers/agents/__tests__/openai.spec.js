@@ -174,6 +174,11 @@ jest.mock('@librechat/agents', () => ({
   }),
 }));
 
+const mockPrepareKeyGrant = jest.fn(async () => undefined);
+jest.mock('~/server/services/ApiKeys/grants', () => ({
+  prepare: (...args) => mockPrepareKeyGrant(...args),
+}));
+
 jest.mock('@librechat/api', () => ({
   getModelEndUsage: (...args) => jest.requireActual('@librechat/api').getModelEndUsage(...args),
   createApiModelCallbacks: (...args) =>
@@ -238,6 +243,7 @@ jest.mock('@librechat/api', () => ({
   createRemoteExecutionContext: jest.fn((...args) =>
     jest.requireActual('@librechat/api').createRemoteExecutionContext(...args),
   ),
+  getRemoteRunKeyId: (...args) => jest.requireActual('@librechat/api').getRemoteRunKeyId(...args),
   resolveAdmittedCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
   createMCPRuntimeRequestBody: ({
@@ -1846,6 +1852,60 @@ describe('OpenAIChatCompletionController', () => {
       expect(loadAgentTools).toHaveBeenLastCalledWith(
         expect.objectContaining({ unattended: false }),
       );
+    });
+
+    it('puts a personal key run under its grant before any tool is loaded', async () => {
+      const { initializeAgent } = require('@librechat/api');
+      req.apiKeyId = 'key-1';
+      let initialized = false;
+      mockPrepareKeyGrant.mockImplementationOnce(async () => {
+        initialized = initializeAgent.mock.calls.length > 0;
+      });
+      initializeAgent.mockClear();
+      mockPrepareKeyGrant.mockClear();
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(mockPrepareKeyGrant).toHaveBeenCalledTimes(1);
+      expect(mockPrepareKeyGrant).toHaveBeenCalledWith({
+        req,
+        res,
+        signal: expect.any(AbortSignal),
+        executionContext: {
+          principal: { userId: 'user-123' },
+          agentId: 'agent-123',
+          source: {
+            type: 'remote_api',
+            protocol: 'chat.completions',
+            background: false,
+            keyId: 'key-1',
+          },
+          unattended: true,
+        },
+      });
+      expect(initialized).toBe(false);
+      expect(initializeAgent).toHaveBeenCalled();
+    });
+
+    it('names no key for a key issued to an integration, and loads nothing when the grant check fails', async () => {
+      const { initializeAgent } = require('@librechat/api');
+      req.apiKeyId = 'key-1';
+      req.apiKeyBound = true;
+      initializeAgent.mockClear();
+      mockPrepareKeyGrant.mockClear();
+      mockPrepareKeyGrant.mockRejectedValueOnce(
+        Object.assign(new Error('mcp_reauth_required'), {
+          statusCode: 403,
+          code: 'mcp_reauth_required',
+        }),
+      );
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(mockPrepareKeyGrant.mock.calls[0][0].executionContext.source).not.toHaveProperty(
+        'keyId',
+      );
+      expect(initializeAgent).not.toHaveBeenCalled();
     });
 
     it('threads the remote-agent permission boundary through initialization and tool loading', async () => {

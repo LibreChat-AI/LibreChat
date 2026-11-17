@@ -33,4 +33,18 @@ router.get('/:id', requireJwtAuth, checkRemoteAgentsUse, handlers.getApiKey);
 
 router.delete('/:id', requireJwtAuth, checkRemoteAgentsUse, handlers.deleteApiKey);
 
+/** The MCP servers and tools the owner lets a run started with this key use, per agent. */
+const grants = () => require('~/server/services/ApiKeys/grants').handlers;
+const grantPath = '/:id/agents/:agentId/mcp-consent';
+
+router.get(grantPath, requireJwtAuth, checkRemoteAgentsUse, (req, res) => grants().get(req, res));
+
+router.post(grantPath, requireJwtAuth, checkRemoteAgentsUse, (req, res) =>
+  grants().confirm(req, res),
+);
+
+router.delete(grantPath, requireJwtAuth, checkRemoteAgentsUse, (req, res) =>
+  grants().revoke(req, res),
+);
+
 module.exports = router;
