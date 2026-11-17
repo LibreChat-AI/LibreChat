@@ -149,7 +149,7 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   const commandFailure = discord.getByRole('alert');
   await expect(commandFailure).toBeFocused();
   await commandFailure.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(discord.locator('details').filter({ has: commands })).toHaveAttribute('open', '');
+  await expect(commands.locator('xpath=ancestor::details')).toHaveAttribute('open', '');
   await expect(commands).toBeVisible();
   await expect(commands).toBeFocused();
   await commands.click();
