@@ -232,6 +232,8 @@ jest.mock('@librechat/api', () => ({
   buildInitialToolSessions: jest.fn().mockReturnValue(mockInitialSessions),
   AgentRunEnvelopeError: MockAgentRunEnvelopeError,
   createAgentRunEnvelope: (...args) => mockCreateAgentRunEnvelope(...args),
+  createRemoteExecutionContext: (...args) =>
+    jest.requireActual('@librechat/api').createRemoteExecutionContext(...args),
   resolveAdmittedCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
   createMCPRuntimeRequestBody: ({
@@ -1768,8 +1770,14 @@ describe('OpenAIChatCompletionController', () => {
         model: 'gpt-4',
         tool_resources: { file_search: { file_ids: ['owner-file'] } },
       });
+      /** Nobody reads a chat-completions response in a browser, so tool loading must not prompt. */
+      const executionContext = {
+        principal: { userId: 'user-123' },
+        agentId: 'agent-123',
+        source: { type: 'remote_api', protocol: 'chat.completions', background: false },
+      };
       expect(loadAgentTools).toHaveBeenLastCalledWith(
-        expect.objectContaining({ agentResourceType: ResourceType.REMOTE_AGENT }),
+        expect.objectContaining({ agentResourceType: ResourceType.REMOTE_AGENT, executionContext }),
       );
 
       const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
@@ -1790,6 +1798,7 @@ describe('OpenAIChatCompletionController', () => {
           agentResourceType: ResourceType.REMOTE_AGENT,
           requestBody: initializeParams.requestBody,
           signal: effectiveSignal,
+          executionContext,
         }),
       );
       mockExecution.abort();

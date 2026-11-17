@@ -20,7 +20,7 @@ import type {
 } from '~/mcp/types';
 import type { ScheduleMCPFailureInput, ScheduleMCPSettlementBoundary } from './types';
 import type { ScheduleMCPEnrollmentResolver } from './authorization/service';
-import type { ScheduledTokenContext } from './context';
+import type { ExecutionContext } from '~/agents/authority/context';
 import {
   getMCPRequestContext,
   getMCPRequestSignal,
@@ -32,14 +32,15 @@ import {
   isMCPTransportAuthenticationError,
   createScheduledMCPTransportError,
 } from '~/mcp/errors';
+import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
 import { getScheduledMCPConfigurationRevision } from './authorization/configuration';
-import { readScheduleFireContext, isScheduleFireRequest } from './trigger';
 import { getScheduleMCPExecution } from './authorization/execution';
 import { ScheduleMCPConsentError } from './authorization/service';
 import { usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
 import { holdMCPRequestFailure } from '~/mcp/signal';
 import { awaitOboOperation } from '~/mcp/oauth/obo';
 import { isOwnedAbortError } from '~/utils/errors';
+import { isScheduleFireRequest } from './trigger';
 import { applyRequestHeaders } from '~/mcp/utils';
 
 export { ScheduledMCPBearerError } from '~/mcp/errors';
@@ -493,7 +494,7 @@ export function rejectScheduledMCPBearer(
 export function prepareScheduledMCPBearer(input: {
   req: Parameters<typeof isScheduleFireRequest>[0] & { user: { id: string; tenantId?: string } };
   context?: RequestScopedMCPConnectionStore;
-  restoredContext?: ScheduledTokenContext;
+  executionContext?: ExecutionContext;
   host?: ScheduledMCPBearerHost;
   signal?: AbortSignal;
   streamId?: string | null;
@@ -506,20 +507,10 @@ export function prepareScheduledMCPBearer(input: {
   const execution = getScheduleMCPExecution(context);
   if (!isScheduleFireRequest(input.req) && !execution) return;
   input.signal?.throwIfAborted();
-  const fire = readScheduleFireContext(input.req);
-  const root = input.restoredContext;
-  const identity =
-    execution?.identity ??
-    root ??
-    (fire && typeof input.req.body?.agent_id === 'string'
-      ? {
-          scheduleId: fire.scheduleId,
-          ownerId: input.req.user.id,
-          tenantId: input.req.user.tenantId,
-          agentId: input.req.body.agent_id,
-          invocationMode: 'delegated' as const,
-        }
-      : undefined);
+  const schedule = getScheduleSource(input.executionContext);
+  const identity = execution?.identity ?? toScheduledTokenContext(input.executionContext);
+  /** Only a resumed run with a complete restored identity re-enters at the resume stage. */
+  const resumed = schedule?.resumed === true && identity != null && !execution;
   if (context && !identity) {
     attachScheduledMCPBearer(context, {
       scheduleId: '',
@@ -561,9 +552,14 @@ export function prepareScheduledMCPBearer(input: {
     context,
     captured,
     input.host,
-    execution?.stage ?? (root ? 'resume' : 'invoke'),
+    execution?.stage ?? (resumed ? 'resume' : 'invoke'),
     input.signal,
-    { manual: execution?.manual === true || (!execution && fire?.manual === true), onFailure },
+    {
+      manual:
+        execution?.manual === true ||
+        (!execution && schedule?.resumed === false && schedule.manual),
+      onFailure,
+    },
   );
 }
 

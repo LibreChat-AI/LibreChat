@@ -15,6 +15,7 @@ import {
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
 import { createScheduleMCPExecution, getScheduleMCPExecution } from './execution';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { createScheduleExecutionContext } from '~/agents/authority/context';
 import { createAgentTriggerExecutionHost } from '~/agents/triggers/host';
 import { createAgentTriggerEnvelope } from '~/agents/triggers/envelope';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
@@ -1144,25 +1145,27 @@ it('stores only a safe preparation outage when initial authorization fails after
   });
   const provider = jest.fn();
   let failure: unknown;
+  const fire = {
+    user: { id: f.scope.userId, tenantId: 'tenant' },
+    _isScheduledFire: true,
+    _isAgentTrigger: true,
+    body: {
+      agent_id: 'root',
+      agentTrigger: {
+        version: 1,
+        event: {
+          type: 'schedule.occurrence',
+          occurredAt: 0,
+          source: { id: f.schedule.id, type: 'schedule' },
+        },
+      },
+    },
+  };
   try {
     await initializeWithScheduleMCPExecution(
       {
-        req: {
-          user: { id: f.scope.userId, tenantId: 'tenant' },
-          _isScheduledFire: true,
-          _isAgentTrigger: true,
-          body: {
-            agent_id: 'root',
-            agentTrigger: {
-              version: 1,
-              event: {
-                type: 'schedule.occurrence',
-                occurredAt: 0,
-                source: { id: f.schedule.id, type: 'schedule' },
-              },
-            },
-          },
-        },
+        req: fire,
+        executionContext: createScheduleExecutionContext(fire),
         context: createMCPRequestContext(),
       },
       () => host,

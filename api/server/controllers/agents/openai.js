@@ -14,6 +14,7 @@ const {
 const {
   writeSSE,
   createRun,
+  createRemoteExecutionContext,
   createChunk,
   applyContextToAgent,
   buildRunToolSet,
@@ -129,7 +130,7 @@ const filterFilesByRemoteAgentAccess = (params) =>
  * @param {boolean} [runtime.definitionsOnly=true] - When true, returns only serializable
  *   tool definitions without creating full tool instances (for event-driven mode)
  */
-function createToolLoader({ req, res, signal, definitionsOnly = true }) {
+function createToolLoader({ req, res, signal, executionContext, definitionsOnly = true }) {
   return async function loadTools({
     tools,
     model,
@@ -157,7 +158,7 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
         definitionsOnly,
         accessibleMcpServerNames,
         streamId: null, // No resumable stream for OpenAI compat
-        unattended: true,
+        executionContext,
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
@@ -292,6 +293,12 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
   const requestStartTime = envelope.receivedAt;
   const request = envelope.payload;
   const { principal } = envelope;
+  const executionContext = createRemoteExecutionContext({
+    principal,
+    agentId: request.model,
+    protocol: 'chat.completions',
+    background: false,
+  });
   // Request-backed tool adapters still observe the validated envelope payload;
   // shared initialization receives the transport-free runtime below.
   req.body = request;
@@ -531,7 +538,12 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         agentsEConfig?.backgroundTasks?.completionResultMaxChars;
 
       // Create tool loader
-      const loadTools = createToolLoader({ req, res, signal: execution.signal });
+      const loadTools = createToolLoader({
+        req,
+        res,
+        signal: execution.signal,
+        executionContext,
+      });
 
       // Initialize the agent first to check for disableStreaming
       const endpointOption = {
@@ -893,7 +905,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           const result = await loadToolsForExecution({
             req,
             res,
-            unattended: true,
+            executionContext,
             agentResourceType: ResourceType.REMOTE_AGENT,
             conversationId,
             requestBody: mcpRequestBody,

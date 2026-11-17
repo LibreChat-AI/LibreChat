@@ -2150,7 +2150,7 @@ function createInitializeClient(dependencies = {}) {
       params.req,
       dependencies.resolveUpstreamTokenProvider,
       params.signal,
-      params.scheduledTokenContext,
+      params.executionContext,
     );
     return initializeWithScheduleMCPExecution(
       {
@@ -2160,7 +2160,7 @@ function createInitializeClient(dependencies = {}) {
           params.req,
           params.res,
         ),
-        restoredContext: params.scheduledTokenContext,
+        executionContext: params.executionContext,
         restoredJob: params.scheduleJobIdentity,
       },
       () => require('~/server/services/Schedules/consent'),
@@ -2169,7 +2169,7 @@ function createInitializeClient(dependencies = {}) {
           {
             req: params.req,
             context: getMCPRequestContext(params.req),
-            restoredContext: params.scheduledTokenContext,
+            executionContext: params.executionContext,
             host: dependencies.scheduledBearerHost,
             signal: params.signal,
             streamId: params.req._resumableStreamId,
