@@ -1,4 +1,6 @@
 import type {
+  createHostProviderTextService,
+  HostProviderTextDescriptor,
   HostToolDescriptor,
   HostToolBindings,
   Run,
@@ -51,8 +53,14 @@ export type SdkRun = Awaited<ReturnType<typeof Run.create>>;
 export type SdkRunInput = Parameters<SdkRun['processStream']>[0];
 export type SdkRunOptions = Parameters<SdkRun['processStream']>[1];
 export type SdkEventData = Parameters<EventHandler['handle']>[1];
+/** Explicit host-owned capabilities; never reconstructed from worker claims or YAML. */
+export interface RemoteSdkHostServices {
+  providerText?: ReturnType<typeof createHostProviderTextService>;
+}
+
 export interface RemoteSdkStart {
   transportVersion: 2;
+  providerText?: { version: 1; publicKey: string; limits: HostProviderTextDescriptor };
   hostTools?: HostToolDescriptor[];
   operation: 'start' | 'resume';
   input: IState;
@@ -89,7 +97,15 @@ export interface RemoteSdkFactoryInput {
   hostTools?: HostToolBindings;
   identity: Readonly<SdkAgentIdentity>;
   /** Host-owned event, hook, and checkpoint adapters. Retain these in the returned Run. */
-  config: Pick<RunConfig, 'runId' | 'customHandlers' | 'hooks' | 'humanInTheLoop' | 'streamLimits'>;
+  config: Pick<
+    RunConfig,
+    | 'runId'
+    | 'customHandlers'
+    | 'hooks'
+    | 'humanInTheLoop'
+    | 'streamLimits'
+    | 'providerTextProtection'
+  >;
   compileOptions: NonNullable<RunConfig['graphConfig']['compileOptions']>;
   signal: AbortSignal;
   agent: RemoteSdkStart['agent'];

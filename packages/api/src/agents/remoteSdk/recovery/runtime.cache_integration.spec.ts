@@ -6,6 +6,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
 import {
+  createHostProviderTextService,
+  ProviderTextAdmission,
   Run,
   Providers,
   FakeChatModel,
@@ -104,6 +106,12 @@ async function fixture(makeRun = factory, ownerId?: string) {
     maxBatchFrames: 64,
     maxBatchBytes: 1048576,
   });
+  const journalEntries: string[] = [];
+  const append = journal.append.bind(journal);
+  journal.append = (session, lease, id, payloads, terminal) => {
+    journalEntries.push(...payloads);
+    return append(session, lease, id, payloads, terminal);
+  };
   const sessionScopes = new Map<string, string>();
   const read = journal.read.bind(journal);
   journal.read = (session, after, count) => {
@@ -162,6 +170,7 @@ async function fixture(makeRun = factory, ownerId?: string) {
       return false;
     },
     createRun,
+    journalEntries,
     errors,
     connections: () => connections,
     drop: () => {
@@ -788,4 +797,62 @@ it('does not publish a session admitted concurrently with shutdown', async () =>
   recovery.close();
   release();
   await expect(admission).rejects.toThrow('closed');
+});
+
+it('recovers a policy reply after a wire outage without repeating inspection or journaling raw output', async () => {
+  const raw = 'PRIVATE-PROVIDER-CANDIDATE';
+  const runtime = await fixture(async (input) => {
+    const run = await factory(input);
+    run.Graph!.overrideModel = new FakeChatModel({ responses: [raw], sleep: 1 });
+    return run;
+  });
+  const admission = new ProviderTextAdmission({
+    maxConcurrentInspections: 1,
+    maxBufferedBytes: 16384,
+  });
+  const inspect = jest.fn(async () => {
+    runtime.drop();
+    await delay(50);
+    return {
+      version: 1 as const,
+      ok: true as const,
+      value: { content: 'approved prose', replacements: 1, categories: [] },
+    };
+  });
+  const providerText = createHostProviderTextService({
+    identity,
+    admission,
+    inspectionTimeoutMs: 2000,
+    policy: {
+      version: 1,
+      timeoutMs: 10000,
+      maxAttemptBytes: 8192,
+      maxBufferedBytes: 16384,
+      classify: () => 'prose',
+      inspect,
+    },
+  });
+  try {
+    const run = await createRemoteSdkRun({
+      config: hostConfig(async () => undefined),
+      identity,
+      remote: runtime.remote,
+      hostServices: { providerText },
+    });
+    const content = await run.processStream(
+      { messages: [new HumanMessage('go')] },
+      { version: 'v2', configurable: { thread_id: identity.conversationId } },
+    );
+    expect(JSON.stringify(content)).toContain('approved prose');
+    expect(JSON.stringify(run.getRunMessages())).not.toContain(raw);
+    expect(runtime.connections()).toBeGreaterThan(1);
+    expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(runtime.journalEntries.join('')).toContain('policy.providerText');
+    expect(runtime.journalEntries.join('')).not.toContain(raw);
+    expect(runtime.errors).toEqual([]);
+    expect(admission.snapshot().inspections).toBe(0);
+  } finally {
+    await runtime.close();
+  }
 });

@@ -15,6 +15,7 @@ import type { Server } from 'node:http';
 import type { RemoteSdkFactoryInput, RemoteSdkLimits, RemoteSdkStart, SdkRun } from './types';
 import type { RuntimeRecoveryOptions } from './recovery/server';
 import type { SdkAgentIdentity } from './identity';
+import { policyDescriptorSchema, createWorkerProviderTextPolicy } from './policy';
 import { createRuntimeRecovery, recoveryClaimSchema } from './recovery/server';
 import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { RECOVERY_HEADER_BYTES } from './recovery/socket';
@@ -44,6 +45,7 @@ const claimSchema = z.object({
 });
 const startSchema = z.object({
   transportVersion: z.literal(2),
+  providerText: policyDescriptorSchema.optional(),
   hostTools: z
     .array(
       z.object({
@@ -263,7 +265,8 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
             throw new Error('Unexpected runtime frame');
           },
           onCall: async (method, data) => {
-            if (method === 'capabilities') return { transportVersion: 2, hostTools: 2 };
+            if (method === 'capabilities')
+              return { transportVersion: 2, hostTools: 2, providerText: 1 };
             if (method === 'tool.result') return workerTools.accept(data);
             if (method === 'tool.session') return workerTools.accept(data, 'session');
             if (method !== 'run' || started) throw new Error('SDK execution already admitted');
@@ -336,6 +339,14 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                   service: workerTools.service,
                 })
               : undefined;
+            const providerTextProtection = request.providerText
+              ? createWorkerProviderTextPolicy({
+                  descriptor: request.providerText,
+                  identity,
+                  peer,
+                  limits,
+                })
+              : undefined;
             const execute = async () => {
               await recovered?.begin();
               const run = await options.createRun({
@@ -347,6 +358,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                   hooks,
                   humanInTheLoop: request.humanInTheLoop,
                   streamLimits: request.streamLimits,
+                  providerTextProtection,
                 },
                 compileOptions: request.checkpoint
                   ? { checkpointer: new RemoteSdkCheckpointer(peer.call) }
@@ -360,6 +372,11 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                 run.Graph?.defaultAgentId !== identity.agentId
               )
                 throw new Error('SDK runtime run identity mismatch');
+              if (
+                providerTextProtection &&
+                run.Graph.providerTextProtection !== providerTextProtection
+              )
+                throw new Error('SDK runtime omitted required provider protection');
               if (hostTools) {
                 const names = new Set(
                   run.Graph.agentContexts
