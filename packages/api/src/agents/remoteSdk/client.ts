@@ -13,6 +13,7 @@ import {
 } from '@librechat/agents';
 import type { RunConfig, RunInterruptResult, RunStep, RunStepClosedEvent } from '@librechat/agents';
 import type {
+  RemoteSdkHostServices,
   RemoteSdkOptions,
   RemoteSdkSnapshot,
   RemoteSdkStart,
@@ -26,6 +27,7 @@ import { connectRecoveringSdkSocket } from './recovery/client';
 import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { createHostToolService } from './hostTools';
 import { createSnapshotReceiver } from './snapshot';
+import { createHostPolicyChannel } from './policy';
 import { createSdkPeer } from './peer';
 
 /** Construct a real local Run whose execution is delegated to one operator-trusted runtime. */
@@ -34,15 +36,17 @@ export async function createRemoteSdkRun({
   identity,
   remote,
   resumeState,
+  hostServices,
 }: {
   config: RunConfig;
+  hostServices?: RemoteSdkHostServices;
   identity: Readonly<SdkAgentIdentity>;
   remote: RemoteSdkOptions;
   resumeState?: RemoteSdkResumeState;
 }): ReturnType<typeof Run.create> {
   if (config.clientDelegatedToolNames?.length)
     throw new Error('Remote SDK client-owned tools require a supported ownership adapter');
-  if (config.providerTextProtection)
+  if (config.providerTextProtection && !hostServices?.providerText)
     throw new Error('Remote SDK provider protection requires a supported policy adapter');
   identity = Object.freeze({ ...identity });
   const limits = remoteSdkLimits(remote);
@@ -208,6 +212,9 @@ export async function createRemoteSdkRun({
         })
       : await legacy();
     const execution = new AbortController();
+    const providerText = hostServices?.providerText
+      ? createHostPolicyChannel(hostServices.providerText, limits)
+      : undefined;
     const terminal = createSnapshotReceiver(limits.maxBufferedBytes);
     snapshot = undefined;
     let settled = false;
@@ -261,6 +268,13 @@ export async function createRemoteSdkRun({
         onCall: async (method, data, _timeoutMs, signal) => {
           if (execution.signal.aborted || options.signal?.aborted)
             throw new Error('SDK runtime execution stopped');
+          if (method === 'policy.providerText') {
+            if (!providerText) throw new Error('Host provider policy is unavailable');
+            return providerText.inspect(
+              data,
+              signal ? AbortSignal.any([execution.signal, signal]) : execution.signal,
+            );
+          }
           if (method === 'tools') {
             if (!toolHandler || !descriptors.length) throw new Error('Host tools are unavailable');
             hostToolInvoke ??= createHostToolService({
@@ -387,6 +401,7 @@ export async function createRemoteSdkRun({
         'agents' in config.graphConfig ? config.graphConfig.agents[0] : config.graphConfig;
       const start: RemoteSdkStart = {
         transportVersion: 2,
+        providerText: providerText?.descriptor,
         hostTools: descriptors.length ? descriptors : undefined,
         operation,
         input,
@@ -425,9 +440,12 @@ export async function createRemoteSdkRun({
         const capabilities = (await peer.call('capabilities', null)) as {
           transportVersion?: number;
           hostTools?: number;
+          providerText?: number;
         };
         if (capabilities?.transportVersion !== 2)
           throw new Error('Worker transport capability unavailable');
+        if (providerText && capabilities?.providerText !== 1)
+          throw new Error('Worker provider policy capability unavailable');
         if (descriptors.length) {
           if (capabilities?.hostTools !== 2)
             throw new Error('Worker host tool capability unavailable');
@@ -441,6 +459,7 @@ export async function createRemoteSdkRun({
       return snapshot.content?.filter((part) => part != null);
     } finally {
       execution.abort();
+      providerText?.dispose();
       // A failed/cancelled remote run may leave host cleanup running. Keep the host
       // execution enrolled until those handlers drain, even if the wire has closed.
       await Promise.allSettled([...hostInvocations]);

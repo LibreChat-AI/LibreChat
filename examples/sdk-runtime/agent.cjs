@@ -4,6 +4,7 @@ const { Run, Providers } = require('@librechat/agents');
 const { AIMessageChunk, HumanMessage } = require('@librechat/agents/langchain/messages');
 const { tool } = require('@librechat/agents/langchain/tools');
 const { FakeChatModel } = require('@langchain/core/utils/testing');
+const { ChatGenerationChunk } = require('@langchain/core/outputs');
 const {
   Annotation,
   StateGraph,
@@ -89,6 +90,15 @@ async function createExampleRun(input, { complex = true, stepDelayMs = 0 } = {})
         },
       ],
     });
+    model._streamResponseChunks = async function* (messages) {
+      const { generations } = await this._generate(messages);
+      for (const generation of generations) {
+        yield new ChatGenerationChunk({
+          ...generation,
+          text: typeof generation.message.content === 'string' ? generation.message.content : '',
+        });
+      }
+    };
     run.Graph.overrideModel = model;
   }
   if (complex) {

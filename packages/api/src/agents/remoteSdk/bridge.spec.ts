@@ -6,6 +6,8 @@ import { tool } from '@librechat/agents/langchain/tools';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
 import {
+  createHostProviderTextService,
+  ProviderTextAdmission,
   Run,
   Providers,
   GraphEvents,
@@ -1112,5 +1114,130 @@ it('rejects an old host transport before constructing the worker graph', async (
   } finally {
     socket.terminate();
     await runtime.close();
+  }
+});
+
+describe('remote host provider-text protection', () => {
+  const binding = () =>
+    createHostProviderTextService({
+      identity,
+      admission: new ProviderTextAdmission({
+        maxConcurrentInspections: 2,
+        maxBufferedBytes: 16384,
+      }),
+      inspectionTimeoutMs: 1000,
+      policy: {
+        version: 1,
+        timeoutMs: 10000,
+        maxAttemptBytes: 8192,
+        maxBufferedBytes: 16384,
+        classify: () => 'prose',
+        inspect: ({ content }) => ({
+          version: 1,
+          ok: true,
+          value: {
+            content: content.replaceAll('PRIVATE', '[redacted]'),
+            replacements: 1,
+            categories: [],
+          },
+        }),
+      },
+    });
+  it('releases only host-approved output through real remote SDK handlers and final persistence', async () => {
+    const runtime = await fixture(async (input) => {
+      const run = await factory(input);
+      run.Graph!.overrideModel = new FakeChatModel({ responses: ['PRIVATE prose'], sleep: 1 });
+      return run;
+    });
+    const visible: string[] = [];
+    try {
+      const run = await createRemoteSdkRun({
+        config: {
+          ...hostConfig(),
+          customHandlers: {
+            [GraphEvents.ON_MESSAGE_DELTA]: {
+              handle: async (_event, data) => {
+                visible.push(JSON.stringify(data));
+              },
+            },
+          },
+        },
+        identity,
+        remote: runtime.remote,
+        hostServices: { providerText: binding() },
+      });
+      const content = await run.processStream({ messages: [new HumanMessage('go')] }, invocation());
+      expect(JSON.stringify(content)).toContain('[redacted]');
+      expect(JSON.stringify(content)).not.toContain('PRIVATE');
+      expect(visible.join('')).toContain('[redacted]');
+      expect(visible.join('')).not.toContain('PRIVATE');
+      expect(JSON.stringify(run.getRunMessages())).not.toContain('PRIVATE');
+    } finally {
+      await runtime.close();
+    }
+  });
+  it('fails before model execution when a trusted factory omits the supplied protection', async () => {
+    const runtime = await fixture((input) =>
+      factory({ ...input, config: { ...input.config, providerTextProtection: undefined } }),
+    );
+    try {
+      const run = await createRemoteSdkRun({
+        config: hostConfig(),
+        identity,
+        remote: runtime.remote,
+        hostServices: { providerText: binding() },
+      });
+      await expect(
+        run.processStream({ messages: [new HumanMessage('go')] }, invocation()),
+      ).rejects.toThrow('SDK runtime execution failed');
+      expect(run.getRunMessages()).toEqual([]);
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+it('rejects a worker without protected-text capability before factory admission', async () => {
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const methods: string[] = [];
+  server.on('connection', (socket) =>
+    createSdkPeer(socket, {
+      maxFrameBytes: 65536,
+      maxBufferedBytes: 131072,
+      timeoutMs: 2000,
+      onClose: () => undefined,
+      onFrame: async () => undefined,
+      onCall: async (method) => {
+        methods.push(method);
+        return { transportVersion: 2, hostTools: 2 };
+      },
+    }),
+  );
+  const providerText = createHostProviderTextService({
+    identity,
+    policy: {
+      version: 1,
+      timeoutMs: 1000,
+      maxAttemptBytes: 4096,
+      maxBufferedBytes: 8192,
+      classify: () => 'prose',
+      inspect: () => ({ version: 1, ok: false, error: { code: 'blocked' } }),
+    },
+  });
+  try {
+    const run = await createRemoteSdkRun({
+      config: hostConfig(),
+      identity,
+      remote: { url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, secret },
+      hostServices: { providerText },
+    });
+    await expect(run.processStream({ messages: [] }, invocation())).rejects.toThrow(
+      'SDK runtime execution failed',
+    );
+    expect(methods).toEqual(['capabilities']);
+  } finally {
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
