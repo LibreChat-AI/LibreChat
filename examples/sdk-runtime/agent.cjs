@@ -22,7 +22,7 @@ async function createExampleRun(input, { complex = true, stepDelayMs = 0 } = {})
   const run = await Run.create({
     ...input.config,
     returnContent: true,
-    tokenCounter: live ? undefined : () => 1,
+    tokenCounter: live || input.agent.model ? undefined : () => 1,
     graphConfig: {
       type: 'standard',
       signal: input.signal,
@@ -30,19 +30,21 @@ async function createExampleRun(input, { complex = true, stepDelayMs = 0 } = {})
       agents: [
         {
           agentId: input.identity.agentId,
-          provider: Providers.OPENAI,
+          provider: input.agent.model?.provider ?? Providers.OPENAI,
           ...(input.hostTools
             ? {
                 tools: [],
-                graphTools: [inspect],
+                graphTools: input.agent.model ? [] : [inspect],
                 toolDefinitions: input.hostTools.toolDefinitions,
               }
-            : { tools: [inspect] }),
-          instructions: `${input.agent.instructions ?? ''}\nInspect the request using inspect_example, then explain the findings.`,
+            : { tools: input.agent.model ? [] : [inspect] }),
+          instructions: input.agent.model
+            ? input.agent.instructions
+            : `${input.agent.instructions ?? ''}\nInspect the request using inspect_example, then explain the findings.`,
           clientOptions: {
-            model: process.env.SDK_EXAMPLE_MODEL || 'gpt-4.1-mini',
+            model: input.agent.model?.name ?? (process.env.SDK_EXAMPLE_MODEL || 'gpt-4.1-mini'),
             apiKey: process.env.OPENAI_API_KEY,
-            streaming: live,
+            streaming: input.agent.model?.streaming ?? live,
           },
         },
       ],
@@ -104,37 +106,33 @@ function createExampleModel(complex = true) {
       throw new Error('Host model did not receive the example tool schema');
     return model;
   };
-  model._generate = async (messages) => ({
-    generations: [
-      {
-        text: '',
-        message: new AIMessageChunk(
-          !complex
-            ? { content: 'Hello from the separate SDK runtime.' }
-            : messages.some((message) => message.getType() === 'tool')
-              ? {
-                  content: messages.some(
-                    (message) =>
-                      message.getType() === 'human' &&
-                      message.content === 'Summarize the reviewed findings concisely.',
-                  )
-                    ? 'Custom graph complete: inspected the fixture, reviewed the findings, and prepared the result.'
-                    : 'Inspection complete; reviewing the findings.',
-                }
-              : {
-                  content: 'I will inspect the fixture.',
-                  tool_calls: [
-                    {
-                      id: 'example-inspection',
-                      name: 'inspect_example',
-                      args: { topic: 'runtime bridge' },
-                    },
-                  ],
-                },
-        ),
-      },
-    ],
-  });
+  model._generate = async (messages) => {
+    let response = { content: 'Hello from the separate SDK runtime.' };
+    if (complex && messages.some((message) => message.getType() === 'tool')) {
+      const reviewed = messages.some(
+        (message) =>
+          message.getType() === 'human' &&
+          message.content === 'Summarize the reviewed findings concisely.',
+      );
+      response = {
+        content: reviewed
+          ? 'Custom graph complete: inspected the fixture, reviewed the findings, and prepared the result.'
+          : 'Inspection complete; reviewing the findings.',
+      };
+    } else if (complex) {
+      response = {
+        content: 'I will inspect the fixture.',
+        tool_calls: [
+          {
+            id: 'example-inspection',
+            name: 'inspect_example',
+            args: { topic: 'runtime bridge' },
+          },
+        ],
+      };
+    }
+    return { generations: [{ text: '', message: new AIMessageChunk(response) }] };
+  };
   model._streamResponseChunks = async function* (messages) {
     const { generations } = await this._generate(messages);
     for (const generation of generations) {

@@ -107,7 +107,7 @@ credentials. Keep secrets separate per trusted runtime deployment and restrict n
 The `@librechat/api/sdk` entry exports `createRemoteSdkServer` and `createRemoteSdkRun`. The server
 factory must return an actual `@librechat/agents` Run with the supplied run and saved-agent IDs,
 and preserve supplied handlers, hooks, checkpointer, and cancellation signal. Workers own their
-installed tools and custom graph. Model configuration and credentials remain worker-owned unless the caller supplies the explicit host model binding below. Host model callbacks,
+installed tools and custom graph. Model configuration and credentials remain worker-owned unless the operator enables saved-agent host models or the caller supplies the explicit host model binding below. Host model callbacks,
 provider clients, native tool registries, and arbitrary RunConfig closures do not cross the wire.
 Remote execution therefore fails closed on deployments with active model-bound content/PII
 protection until its saved-agent adapter is wired. Explicit programmatic provider-text and model bindings are described below.
@@ -165,7 +165,7 @@ adapters and unverified behaviors remain release gates for products that depend 
 | Host-worker connection recovery                             | Opt-in same-worker live reattachment; durable terminal replay after restart                             | No host-process adoption, live cross-worker migration, or arbitrary in-flight graph restart. Started executions never automatically rerun.            |
 | Model/PII/provider-text protection                          | Explicit SDK host-service adapter supports protected provider text; saved-agent model/PII guard remains | Builder models, input/model callbacks and product policy wiring remain required before protected product rollout.                                     |
 | Stream circuit breakers and tool-policy hooks               | Forwarded to the worker; hook failure stops execution                                                   | Domain tools must also authorize signed caller identity; trusted factories must retain the supplied adapters.                                         |
-| Agent-builder model, parameters, tools, capabilities        | Name/instructions/identity are passed; explicit host model binding and host schema tools are available  | Native model transport is implemented; saved-agent builder wiring is still required to make settings authoritative.                                   |
+| Agent-builder model, parameters, tools, capabilities        | Opt-in saved-agent primary model settings execute on the host; host schema tools are available          | Worker must retain the host model/profile. Fallbacks, local graph tools, and context/summary policy still require adapters.                           |
 | Host MCP, web/code/browser tools, user tool credentials     | Authorized root-agent schema tools execute through host RPC                                             | Host credentials remain local; child-agent authorization and broader host-service parity remain separate integrations.                                |
 | Uploaded files, generated artifacts, download authorization | Message data can cross the wire                                                                         | Host file services, sandbox storage, and artifact authorization do not have remote adapters; attachment/file parity is not established.               |
 | Live steering and mid-stream preemption                     | Not integrated                                                                                          | A remote execution-control adapter and acceptance tests are required.                                                                                 |
@@ -355,6 +355,48 @@ duplicate trace spans; transport tests do not establish production accounting or
 This transport binds one host model per execution. Multi-model routing and per-child model
 ownership are not implemented by this binding.
 
-Saved-agent builder/model/PII wiring is still gated. This programmatic transport does not select
-builder models, instantiate provider credentials from a browser, or remove the existing protected
-saved-agent guard. Those require authenticated product wiring and end-to-end policy acceptance.
+### Saved-agent builder models
+
+Operators can opt individual remote registrations into the authenticated saved-agent model path:
+
+```yaml
+endpoints:
+  agents:
+    sdkHostModels:
+      maxConcurrentCalls: 32
+      maxBufferedRequestBytes: 67108864
+      timeoutMs: 60000
+      maxRequestBytes: 4194304
+      maxResponseBytes: 4194304
+    sdkRuntimes:
+      schema-advisor:
+        roles: [ADMIN]
+        remote:
+          url: wss://runtime.example/sdk
+          secret: ${SDK_RUNTIME_SECRET}
+          hostModel: true
+```
+
+Both switches are explicit; existing registrations retain their worker model behavior. The host
+uses the saved agent's already-resolved provider, model parameters, credentials, and intrinsic
+callbacks. Only the public provider/model/streaming profile and authorized tool schemas reach the
+worker. The worker factory must use `input.agent.model` when constructing its primary agent and
+retain `input.hostModel` as `run.Graph.overrideModel`; the minimal and custom-graph examples show
+both. A mismatched profile or missing `builderModel: 1` capability fails before graph execution.
+Upgrade workers before enabling this option. Trusted custom graph code must use the supplied
+facade for every applicable model call; this is not isolation from arbitrary operator code.
+
+One admission owner is created at server startup and shared across chat, resume, Responses and
+OpenAI-compatible routes. Cancellation does not free capacity until retained provider work settles.
+These budgets are per server process, not a cluster quota or per-tenant fairness mechanism. Restart
+is required to change the process-wide budgets. Existing transport frame and buffer limits also
+apply; the model byte budgets do not enlarge them. Embedders using `createRun` or
+`createAgentChatCompletion` inject the same long-lived `sdkModelHost` dependency into every caller.
+
+This selects the primary model; it does not establish full main-chat parity. Active model/PII
+protection still fails closed because root admission callbacks and deferred persistence need an
+explicit remote lifecycle adapter. Local executable/graph tools and configured provider fallbacks
+also fail closed in this mode rather than being silently discarded. Context pruning, summary and
+compaction policy, child/multi-model routing, files, accounting and tracing remain separate parity
+work. Intrinsic callback execution is covered; production billing and trace ownership are not yet
+accepted end to end.

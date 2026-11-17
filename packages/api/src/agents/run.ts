@@ -69,6 +69,7 @@ import type { MCPToolAlias } from '~/tools/classification';
 import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
 import type { ProvisionState } from '~/agents/resources';
+import type { SdkModelHost } from './remoteSdk/builder';
 import type { RunFileSession } from './files/session';
 import type { SdkAgentRuntimeLoader } from './sdk';
 import type { RunFadingTiers } from './fading';
@@ -2324,6 +2325,7 @@ export async function createRun({
   toolInputValidationErrors,
   sessionStartSource,
   loadSdkRuntime,
+  sdkModelHost,
   sdkResumeState,
   streaming = true,
   streamUsage = true,
@@ -2480,6 +2482,7 @@ export async function createRun({
   /** Request-scoped tool input failures consumed by the completion handler. */
   toolInputValidationErrors?: Map<string, ToolInputValidationError>;
   loadSdkRuntime?: SdkAgentRuntimeLoader;
+  sdkModelHost?: SdkModelHost;
   sdkResumeState?: import('./remoteSdk/types').RemoteSdkResumeState;
 } & Pick<
   RunConfig,
@@ -3335,6 +3338,7 @@ export async function createRun({
         registration,
         config: runConfig,
         loadModule: loadSdkRuntime,
+        modelHost: sdkModelHost,
         resumeState: sdkResumeState,
         signal,
         identity: {

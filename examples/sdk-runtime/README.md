@@ -162,3 +162,13 @@ when supplied; neither needs a provider credential for a host-owned model.
 
 See [host model transport](../../docs/sdk/agents.md#host-model-transport) for streaming credit,
 encryption, cancellation, callback ownership, and the remaining builder/policy rollout gates.
+
+### Use the saved agent's host model
+
+Enable `endpoints.agents.sdkHostModels: {}` and `remote.hostModel: true` on the operator's
+runtime registration to select the saved agent's primary model and parameters. Both examples
+consume `input.agent.model` and retain `input.hostModel`; model credentials stay in LibreChat.
+The custom graph keeps its plan/review/refine nodes and uses the host-authorized tool schemas.
+This mode requires updated workers with `builderModel: 1`. It currently rejects active model/PII
+protection, local graph tools and provider fallbacks; see [the parity matrix](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
+and [configuration](../../docs/sdk/agents.md#saved-agent-builder-models) before enabling it.

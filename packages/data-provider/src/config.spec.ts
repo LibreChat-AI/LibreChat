@@ -3522,6 +3522,35 @@ describe('complete channel operator configuration', () => {
 });
 
 describe('remote SDK runtime configuration', () => {
+  it('opts into builder models with bounded process-wide admission', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostModels).toBeUndefined();
+    const result = agentsEndpointSchema.parse({
+      sdkHostModels: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostModel: true },
+        },
+      },
+    });
+    expect(result.sdkHostModels).toEqual({
+      maxConcurrentCalls: 32,
+      maxBufferedRequestBytes: 67108864,
+      timeoutMs: 60000,
+      maxRequestBytes: 4194304,
+      maxResponseBytes: 4194304,
+    });
+    expect(result.sdkRuntimes?.runtime).toMatchObject({ remote: { hostModel: true } });
+    for (const field of Object.keys(result.sdkHostModels!)) {
+      expect(agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: 0 } }).success).toBe(false);
+      expect(
+        agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: Number.MAX_SAFE_INTEGER } })
+          .success,
+      ).toBe(false);
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostModels: { unknown: true } }).success).toBe(
+      false,
+    );
+  });
   it('keeps module registrations and supplies remote transport defaults', () => {
     const result = agentsEndpointSchema.parse({
       sdkRuntimes: {

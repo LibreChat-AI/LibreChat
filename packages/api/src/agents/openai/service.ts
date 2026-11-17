@@ -1,4 +1,5 @@
 import type { LocatorTraversalReporter } from '../../protection/diagnostics';
+import type { SdkModelHost } from '../remoteSdk/builder';
 /**
  * OpenAI-compatible chat completions service for agents.
  *
@@ -86,6 +87,7 @@ import { createSafeUser } from '~/utils';
  * Dependencies for the chat completion service
  */
 export interface ChatCompletionDependencies {
+  sdkModelHost?: SdkModelHost;
   readonly onTraversalFailure?: LocatorTraversalReporter;
   /** Get agent by ID */
   getAgent: (params: { id: string }) => Promise<Agent | null>;
@@ -297,6 +299,7 @@ type CreateRunAppConfig = Pick<
 >;
 
 type CreateRunFn = (params: {
+  sdkModelHost?: SdkModelHost;
   agents: unknown[];
   messages: unknown[];
   runId: string;
@@ -898,6 +901,7 @@ export async function createAgentChatCompletion(
        */
       const safeUser: Record<string, unknown> = { ...createSafeUser(reqUser), id: userId };
       const run = await deps.createRun({
+        sdkModelHost: deps.sdkModelHost,
         agents: [initializedAgent],
         messages,
         runId: requestId,

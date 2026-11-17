@@ -95,6 +95,14 @@ const startSchema = z.object({
     id: z.string(),
     name: z.string().optional(),
     instructions: z.string().optional(),
+    model: z
+      .object({
+        provider: z.string().min(1),
+        name: z.string().min(1),
+        streaming: z.boolean(),
+      })
+      .strict()
+      .optional(),
   }),
 });
 
@@ -278,7 +286,13 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
           },
           onCall: async (method, data, _timeoutMs, signal) => {
             if (method === 'capabilities')
-              return { transportVersion: 2, hostTools: 2, providerText: 1, hostModel: 1 };
+              return {
+                transportVersion: 2,
+                hostTools: 2,
+                providerText: 1,
+                hostModel: 1,
+                builderModel: 1,
+              };
             if (method === 'model.chunk') return workerModel.accept(data, signal);
             if (method === 'tool.result') return workerTools.accept(data);
             if (method === 'tool.session') return workerTools.accept(data, 'session');
@@ -361,6 +375,16 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                 })
               : undefined;
             const hostModel = request.model ? workerModel.bind(identity, request.model) : undefined;
+            const profile = request.agent.model;
+            if (
+              profile &&
+              (!hostModel ||
+                request.model?.descriptor.provider !== profile.provider ||
+                request.model.descriptor.model !== profile.name ||
+                request.model.descriptor.streaming !== profile.streaming)
+            ) {
+              throw new Error('SDK runtime builder model mismatch');
+            }
             const execute = async () => {
               await recovered?.begin();
               const run = await options.createRun({
@@ -394,6 +418,16 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                 throw new Error('SDK runtime omitted required provider protection');
               if (hostModel && run.Graph.overrideModel !== hostModel)
                 throw new Error('SDK runtime omitted required host model');
+              if (profile) {
+                const context = run.Graph.agentContexts.get(identity.agentId);
+                if (
+                  context?.provider !== profile.provider ||
+                  context.clientOptions?.model !== profile.name ||
+                  (context.clientOptions?.streaming !== false) !== profile.streaming
+                ) {
+                  throw new Error('SDK runtime omitted required builder model configuration');
+                }
+              }
               if (hostTools) {
                 const names = new Set(
                   run.Graph.agentContexts

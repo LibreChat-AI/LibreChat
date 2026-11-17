@@ -1896,6 +1896,17 @@ export const agentsEndpointSchema = baseEndpointSchema
   .merge(
     z.object({
       /* agents specific */
+      /** Process-wide admission, shared across users, runtimes and resumed turns. */
+      sdkHostModels: z
+        .object({
+          maxConcurrentCalls: z.number().int().min(1).max(10000).default(32),
+          maxBufferedRequestBytes: z.number().int().min(1024).max(1073741824).default(67108864),
+          timeoutMs: z.number().int().min(100).max(86400000).default(60000),
+          maxRequestBytes: z.number().int().min(1024).max(67108864).default(4194304),
+          maxResponseBytes: z.number().int().min(1024).max(67108864).default(4194304),
+        })
+        .strict()
+        .optional(),
       /** Trusted server-side SDK modules. Unconfigured runtimes cannot execute. */
       sdkRuntimes: z
         .record(
@@ -1916,6 +1927,7 @@ export const agentsEndpointSchema = baseEndpointSchema
                       .url()
                       .regex(/^wss?:\/\//),
                     secret: z.string().min(1),
+                    hostModel: z.boolean().optional(),
                     recovery: z
                       .object({
                         routes: z

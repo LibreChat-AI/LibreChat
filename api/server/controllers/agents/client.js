@@ -5055,6 +5055,7 @@ class AgentClient extends BaseClient {
           activityPhase?.handlers(offsetHandlers) ??
           (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
         const createRunPromise = createRun({
+          sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
           scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
           recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
             getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
@@ -5872,6 +5873,7 @@ class AgentClient extends BaseClient {
         activityPhase?.handlers(offsetHandlers) ??
         (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
       run = await createRun({
+        sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
         sdkResumeState: { content: seedContent, steps: runSteps },
         scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
         recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(

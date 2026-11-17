@@ -1,4 +1,5 @@
 import type {
+  AgentInputs,
   createHostProviderTextService,
   createHostModelService,
   HostModelDescriptor,
@@ -22,6 +23,8 @@ export interface RemoteSdkRecoveryOptions {
   maxJournalBytes: number;
 }
 export interface RemoteSdkOptions {
+  /** Opt in to the saved-agent host model, configured by the operator. */
+  hostModel?: boolean;
   recovery?: RemoteSdkRecoveryOptions;
   url: string;
   secret: string;
@@ -56,8 +59,16 @@ export type SdkRun = Awaited<ReturnType<typeof Run.create>>;
 export type SdkRunInput = Parameters<SdkRun['processStream']>[0];
 export type SdkRunOptions = Parameters<SdkRun['processStream']>[1];
 export type SdkEventData = Parameters<EventHandler['handle']>[1];
+/** Public primary-model configuration required by the worker graph. */
+export interface RemoteSdkModelProfile {
+  provider: AgentInputs['provider'];
+  name: string;
+  streaming: boolean;
+}
+
 /** Explicit host-owned capabilities; never reconstructed from worker claims or YAML. */
 export interface RemoteSdkHostServices {
+  modelProfile?: RemoteSdkModelProfile;
   model?: ReturnType<typeof createHostModelService>;
   providerText?: ReturnType<typeof createHostProviderTextService>;
 }
@@ -77,7 +88,7 @@ export interface RemoteSdkStart {
   checkpoint: boolean;
   humanInTheLoop?: RunConfig['humanInTheLoop'];
   streamLimits?: RunConfig['streamLimits'];
-  agent: { id: string; name?: string; instructions?: string };
+  agent: { id: string; name?: string; instructions?: string; model?: RemoteSdkModelProfile };
 }
 export interface RemoteSdkSnapshot {
   state?: {

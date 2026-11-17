@@ -7,6 +7,7 @@ import type { Agent, SdkRuntimeBinding, TAgentsEndpoint } from 'librechat-data-p
 import type { RunConfig } from '@librechat/agents';
 import type { RemoteSdkOptions, RemoteSdkResumeState } from './remoteSdk/types';
 import type { SdkAgentIdentity } from './remoteSdk/identity';
+import type { SdkModelHost } from './remoteSdk/builder';
 import { createRemoteSdkRun } from './remoteSdk/client';
 export type { SdkAgentIdentity } from './remoteSdk/identity';
 
@@ -114,6 +115,7 @@ export async function createSdkAgentRun({
   identity,
   signal,
   resumeState,
+  modelHost,
   loadModule = requireRuntime,
 }: {
   registration: SdkRegistration;
@@ -121,6 +123,7 @@ export async function createSdkAgentRun({
   identity: Omit<SdkAgentIdentity, 'runtimeId' | 'runId'>;
   signal?: AbortSignal;
   resumeState?: RemoteSdkResumeState;
+  modelHost?: SdkModelHost;
   loadModule?: SdkAgentRuntimeLoader;
 }): ReturnType<typeof Run.create> {
   signal?.throwIfAborted();
@@ -133,10 +136,16 @@ export async function createSdkAgentRun({
     runtimeId: registration.binding.id,
   });
   if (registration.remote != null) {
+    if (registration.remote.hostModel && !modelHost) {
+      throw new SdkAgentRuntimeError('sdk_runtime_unavailable');
+    }
     return createRemoteSdkRun({
       config,
       identity: boundIdentity,
       resumeState,
+      hostServices: registration.remote.hostModel
+        ? modelHost?.bind(config, boundIdentity, signal)
+        : undefined,
       remote: { ...registration.remote, secret: extractEnvVariable(registration.remote.secret) },
     });
   }

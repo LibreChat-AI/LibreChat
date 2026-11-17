@@ -104,3 +104,6 @@ export * from './queuedTurns';
 export * from './queuedTurnHttp';
 export * from './files/index';
 export { captureAuthoredSkills, restoreAuthoredSkills } from './authored';
+
+export { createSdkModelHost } from './remoteSdk/builder';
+export type { SdkModelHost } from './remoteSdk/builder';

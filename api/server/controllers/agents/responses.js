@@ -1189,6 +1189,7 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          sdkModelHost: req?.app?.locals?.sdkModelHost,
           ...(await responseRuntime.graphOptions(runAgents)),
           agents: runAgents,
           messages: responseRuntime.graphMessages(formattedMessages),
@@ -1418,6 +1419,7 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          sdkModelHost: req?.app?.locals?.sdkModelHost,
           ...(await responseRuntime.graphOptions(runAgents)),
           agents: runAgents,
           messages: responseRuntime.graphMessages(formattedMessages),
