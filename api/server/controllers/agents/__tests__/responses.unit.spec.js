@@ -299,6 +299,8 @@ jest.mock('@librechat/api', () => ({
   })),
   AgentRunEnvelopeError: MockAgentRunEnvelopeError,
   createAgentRunEnvelope: (...args) => mockCreateAgentRunEnvelope(...args),
+  createRemoteExecutionContext: (...args) =>
+    jest.requireActual('@librechat/api').createRemoteExecutionContext(...args),
   resolveAdmittedCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
   resolvePersistableCodeEnvironmentDecision: (...args) =>
@@ -2727,8 +2729,17 @@ describe('createResponse controller', () => {
           model: 'claude-3',
           tool_resources: { file_search: { file_ids: ['owner-file'] } },
         });
+        /** A foreground response answers an API client, so tool loading must not prompt. */
+        const executionContext = {
+          principal: { userId: 'user-123' },
+          agentId: 'agent-123',
+          source: { type: 'remote_api', protocol: 'responses', background: false },
+        };
         expect(loadAgentTools).toHaveBeenLastCalledWith(
-          expect.objectContaining({ agentResourceType: ResourceType.REMOTE_AGENT }),
+          expect.objectContaining({
+            agentResourceType: ResourceType.REMOTE_AGENT,
+            executionContext,
+          }),
         );
 
         const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
@@ -2749,6 +2760,7 @@ describe('createResponse controller', () => {
             agentResourceType: ResourceType.REMOTE_AGENT,
             requestBody: initializeParams.requestBody,
             signal: effectiveSignal,
+            executionContext,
           }),
         );
         mockExecution.abort();

@@ -193,7 +193,12 @@ const {
 } = require('../ToolService');
 const { createOnSearchResults } = require('~/server/services/Tools/search');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
-const { ContentFilterError, PENDING_STALE_MS, ToolInputError } = require('@librechat/api');
+const {
+  ContentFilterError,
+  PENDING_STALE_MS,
+  ToolInputError,
+  createRemoteExecutionContext,
+} = require('@librechat/api');
 
 /** Role document shape `checkAccess` reads; all three role-gated tools granted. */
 function buildRole(overrides = {}) {
@@ -2117,7 +2122,11 @@ describe('ToolService - Action Capability Gating', () => {
             res: { writableEnded: false },
             agent: deferredAgent,
             definitionsOnly: true,
-            unattended: true,
+            executionContext: createRemoteExecutionContext({
+              principal: { userId: 'user123' },
+              protocol: 'chat.completions',
+              background: false,
+            }),
           }),
         ).rejects.toMatchObject({ code: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE' });
 

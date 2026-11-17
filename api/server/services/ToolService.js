@@ -31,6 +31,7 @@ const {
   getMCPServerNamesFromTools,
   createMCPOAuthDeferral,
   createMCPInitializationOAuthPrompts,
+  isUnattended,
   shouldAwaitOAuthSignIn,
   inspectContentWithTraversal,
   ContentFilterError,
@@ -831,6 +832,7 @@ const isBuiltInTool = (toolName) =>
  * @param {string|null} [params.streamId] - Stream ID for resumable mode
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted tool events
  * @param {AbortSignal} [params.signal] - Effective run cancellation signal
+ * @param {import('@librechat/api').ExecutionContext} [params.executionContext] - Who the run acts for and why, set where the run enters
  * @param {import('@librechat/api').UpstreamTokenProvider} [params.upstreamTokenProvider]
  * @param {import('@librechat/api').UpstreamTokenProviderResolver} [params.upstreamTokenProviderResolver]
  * @returns {Promise<{
@@ -849,7 +851,7 @@ async function loadToolDefinitionsWrapper({
   agentResourceType,
   streamId = null,
   jobCreatedAt,
-  unattended,
+  executionContext,
   tool_resources,
   codeExecutionContext,
   attachedEnvironmentOptOut,
@@ -858,6 +860,7 @@ async function loadToolDefinitionsWrapper({
   upstreamTokenProvider: suppliedUpstreamTokenProvider,
   upstreamTokenProviderResolver,
 }) {
+  const unattended = isUnattended(executionContext);
   if (!agent.tools || agent.tools.length === 0) {
     return { toolDefinitions: [] };
   }
@@ -1629,6 +1632,7 @@ async function loadToolDefinitionsWrapper({
  * @param {string} [params.openAIApiKey] - OpenAI API key
  * @param {string|null} [params.streamId] - Stream ID for resumable mode
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted tool events
+ * @param {import('@librechat/api').ExecutionContext} [params.executionContext] - Who the run acts for and why, set where the run enters
  * @param {boolean} [params.definitionsOnly=true] - When true, returns only serializable
  *   tool definitions without creating full tool instances. Use for event-driven mode
  *   where tools are loaded on-demand during execution.
@@ -1646,7 +1650,7 @@ async function loadAgentTools({
   openAIApiKey,
   streamId = null,
   jobCreatedAt,
-  unattended,
+  executionContext,
   definitionsOnly = true,
   codeExecutionContext: providedCodeExecutionContext,
   attachedEnvironmentOptOut,
@@ -1664,7 +1668,7 @@ async function loadAgentTools({
         agentResourceType,
         streamId,
         jobCreatedAt,
-        unattended,
+        executionContext,
         tool_resources,
         codeExecutionContext: providedCodeExecutionContext,
         attachedEnvironmentOptOut,
@@ -2115,6 +2119,7 @@ async function loadAgentTools({
  * @param {Object} [params.tool_resources] - Tool resources
  * @param {string|null} [params.streamId] - Stream ID for web search callbacks
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted tool events
+ * @param {import('@librechat/api').ExecutionContext} [params.executionContext] - Who the run acts for and why, set where the run enters
  * @param {string} [params.conversationId] - Resolved conversation identity for this request
  * @param {boolean} [params.actionsEnabled] - Whether the actions capability is enabled
  * @param {readonly string[]} [params.accessibleMcpServerNames] - COMPLETE accessible-server audit resolved at initialization
@@ -2140,12 +2145,13 @@ async function loadToolsForExecution({
   tool_resources,
   streamId = null,
   jobCreatedAt,
-  unattended,
+  executionContext,
   conversationId,
   actionsEnabled,
   accessibleMcpServerNames,
   runFileCodeExecutionContext,
 }) {
+  const unattended = isUnattended(executionContext);
   const appConfig = req.config;
   const allLoadedTools = [];
   const runtimeRequestBody = requestBody ?? req.body;

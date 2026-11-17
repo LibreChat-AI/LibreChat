@@ -1,5 +1,9 @@
 import { Permissions, PermissionTypes, AgentCapabilities } from 'librechat-data-provider';
 import type { AppConfig, IRole, ISchedule, AgentGraphAccessContext } from '@librechat/data-schemas';
+import {
+  restoreExecutionContext,
+  createScheduleExecutionContext,
+} from '~/agents/authority/context';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
 import { bindScheduledMCPInvocation, getScheduleMCPExecution } from './execution';
 import { executionFixture, readTool } from './execution.helper';
@@ -119,6 +123,10 @@ async function setup() {
     connect,
     execution: host.execution,
   });
+  /** As the chat controller does, build the context once from the verified trigger. */
+  const prepare = host.prepare;
+  host.prepare = (input) =>
+    prepare({ executionContext: createScheduleExecutionContext(input.req), ...input });
   const context = createMCPRequestContext();
   const req = {
     user: fixture.user,
@@ -212,13 +220,12 @@ it('rebuilds the protected root on resume and refuses revoked consent even after
   await f.host.prepare({
     req,
     context: f.context,
-    restoredContext: {
-      scheduleId: 'schedule',
-      ownerId: 'owner',
+    executionContext: restoreExecutionContext(req, {
+      userId: 'owner',
       tenantId: 'tenant',
-      agentId: 'root',
-      invocationMode: 'delegated',
-    },
+      scheduleId: 'schedule',
+      agent_id: 'root',
+    }),
   });
   expect(getScheduleMCPExecution(f.context)?.stage).toBe('resume');
   await f.host.consent.service.revoke(f.identity, f.snapshot.enrollment!.revision);
@@ -406,13 +413,10 @@ it.each([false, true])(
         ? {
             req: { user: f.user, _isScheduledFire: true, body: { manual: false } },
             context: f.context,
-            restoredContext: {
-              scheduleId: 'schedule',
-              ownerId: 'owner',
-              tenantId: 'tenant',
-              agentId: 'root',
-              invocationMode: 'delegated',
-            },
+            executionContext: restoreExecutionContext(
+              { user: f.user },
+              { userId: 'owner', tenantId: 'tenant', scheduleId: 'schedule', agent_id: 'root' },
+            ),
             restoredJob: { scheduleId: 'schedule', scheduleManual: true },
           }
         : { req: manualReq, context: f.context },

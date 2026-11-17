@@ -35,8 +35,8 @@ import { getScheduledMCPConfigurationRevision } from './authorization/configurat
 import { getScheduledMCPToolDefinitionDigest } from './authorization/policy';
 import { createScheduleMCPConsentService } from './authorization/service';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
+import { restoreExecutionContext } from '~/agents/authority/context';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
-import { restoreScheduledTokenContext } from './context';
 import { createScheduleMCPPreflight } from './mcp';
 import { FlowStateManager } from '~/flow/manager';
 import { MCPConnection } from '~/mcp/connection';
@@ -460,10 +460,10 @@ it('restores the enrolled root after restart, never serializing the resource bea
     scheduleId: identity.scheduleId,
     agent_id: identity.agentId,
   };
-  const restored = restoreScheduledTokenContext({ user }, metadata)!;
+  const restored = restoreExecutionContext({ user }, metadata)!;
   const req = { user, _isScheduledFire: true, body: {} };
   const context = createMCPRequestContext();
-  prepareScheduledMCPBearer({ req, restoredContext: restored, context, host: f.host });
+  prepareScheduledMCPBearer({ req, executionContext: restored, context, host: f.host });
   const invocation = bindScheduledMCPBearerInvocation(context, 'child', 'echo')!;
   await expect(invocation.resolve({ config, user, serverName: 'Files' })).resolves.toMatchObject({
     headers: { Authorization: 'Bearer resource-only' },
@@ -754,7 +754,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
         req: { user, _isScheduledFire: true, body: {} },
         context: resumed,
         host: f.host,
-        restoredContext: restoreScheduledTokenContext(
+        executionContext: restoreExecutionContext(
           { user },
           {
             userId: user.id,
@@ -829,7 +829,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
           req: { user, _isScheduledFire: true, body: {} },
           context: restored,
           host: f.host,
-          restoredContext: restoreScheduledTokenContext(
+          executionContext: restoreExecutionContext(
             { user },
             {
               userId: user.id,

@@ -1150,7 +1150,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     expect(mockInitializeClient.mock.calls[0][0].scheduleJobIdentity.scheduleMCPCompletion).toEqual(
       lineage,
     );
-    expect(mockInitializeClient.mock.calls[0][0].scheduledTokenContext).toBeUndefined();
+    expect(mockInitializeClient.mock.calls[0][0].executionContext).toBeUndefined();
     expect(capturedInit.isScheduledFire).not.toBe(true);
     expect(mockClaimScheduleResume).not.toHaveBeenCalled();
     expect(mockRecordScheduleOutcome).not.toHaveBeenCalled();
@@ -1393,12 +1393,10 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       await settled;
 
       expect(capturedInit.isScheduledFire).toBe(true);
-      expect(mockInitializeClient.mock.calls[0][0].scheduledTokenContext).toEqual({
-        scheduleId: 'schedule-1',
-        ownerId: USER_ID,
-        tenantId: TENANT_ID,
+      expect(mockInitializeClient.mock.calls[0][0].executionContext).toEqual({
+        principal: { userId: USER_ID, tenantId: TENANT_ID },
         agentId: AGENT_ID,
-        invocationMode: 'delegated',
+        source: { type: 'schedule', id: 'schedule-1', manual: false, resumed: true },
       });
 
       expect(mockClaimScheduleResume).toHaveBeenCalledWith('schedule-1', scheduledFor, {

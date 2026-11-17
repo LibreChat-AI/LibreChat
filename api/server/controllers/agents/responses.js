@@ -11,6 +11,7 @@ const {
 const {
   createRun,
   applyContextToAgent,
+  createRemoteExecutionContext,
   buildInitialToolSessions,
   buildRunToolSet,
   AgentRunEnvelopeError,
@@ -190,7 +191,7 @@ function createToolLoader({
   definitionsOnly = true,
   streamId = null,
   jobCreatedAt,
-  unattended,
+  executionContext,
 }) {
   return async function loadTools({
     tools,
@@ -220,7 +221,7 @@ function createToolLoader({
         accessibleMcpServerNames,
         streamId,
         jobCreatedAt,
-        unattended,
+        executionContext,
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
@@ -456,6 +457,12 @@ const executeResponse = async (envelope, { req, res }) => {
     addConvoToolApprovalAllows: db.addConvoToolApprovalAllows,
   });
   const responseId = responseRuntime.responseId;
+  const executionContext = createRemoteExecutionContext({
+    principal,
+    agentId: request.model,
+    protocol: 'responses',
+    background: responseRuntime.background,
+  });
   const terminalRunError = createTerminalRunErrorObserver({
     maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
     logger,
@@ -621,6 +628,7 @@ const executeResponse = async (envelope, { req, res }) => {
         res,
         signal: execution.signal,
         ...responseRuntime.toolContext(execution),
+        executionContext,
       });
       const skillDbMethods = getSkillDbMethods();
 
@@ -1122,6 +1130,7 @@ const executeResponse = async (envelope, { req, res }) => {
               ...responseRuntime.toolContext(execution),
               req,
               res,
+              executionContext,
               agentResourceType: ResourceType.REMOTE_AGENT,
               conversationId,
               requestBody: mcpRequestBody,
@@ -1355,6 +1364,7 @@ const executeResponse = async (envelope, { req, res }) => {
               ...responseRuntime.toolContext(execution),
               req,
               res,
+              executionContext,
               agentResourceType: ResourceType.REMOTE_AGENT,
               conversationId,
               requestBody: mcpRequestBody,

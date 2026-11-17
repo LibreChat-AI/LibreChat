@@ -62,12 +62,14 @@ Admission allocates a proposed schedule ID before preflight and persists that sa
 only if creation succeeds. Preflight is validation, not a provisioning/consent hook:
 hosts must not create durable grants keyed by this proposed ID. Failed admission or a
 concurrent idempotency-key winner can discard it. Edits
-and dispatch use the existing schedule ID. Execution derives the context from the
-verified schedule trigger and authenticated owner, then captures it before tool loading.
+and dispatch use the existing schedule ID. The chat controller builds one `ExecutionContext`
+(`packages/api/src/agents/authority/context.ts`) from the verified schedule trigger and
+authenticated owner and passes it to the initializer; the host context above is projected
+from it before tool loading. A caller that passes none gets no schedule identity.
 `agentId` identifies the root scheduled agent throughout child execution and handoffs.
-After an approval pause, the resume host restores the context from the saved job after
-validating ownership, tenancy, agent identity, and schedule liveness. An explicit initializer
-argument carries this restored context; resume body fields cannot replace it.
+After an approval pause, the resume host rebuilds the context from the saved job after
+validating ownership, tenancy, agent identity, and schedule liveness, and passes it the
+same way; resume body fields cannot replace it.
 The existing resolver closure is passed through tool discovery, execution, and reconnects;
 it never goes into tool arguments or durable job payloads.
 

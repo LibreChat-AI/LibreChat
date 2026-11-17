@@ -5,9 +5,9 @@ import {
 } from 'librechat-data-provider';
 import type { ScheduledMCPIdentity, ScheduledMCPReadOnlyPolicy } from 'librechat-data-provider';
 import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
+import type { ExecutionContext } from '~/agents/authority/context';
 import type { ScheduleMCPCompletionLookup } from './continuation';
 import type { ScheduleMCPEnrollmentDeps } from './enrollment';
-import type { ScheduledTokenContext } from '../context';
 import {
   isScheduledMCPCompletionRequest,
   resolveScheduleMCPCompletion,
@@ -18,6 +18,7 @@ import {
   scheduledMCPIdentity,
   getScheduleMCPExecution,
 } from './execution';
+import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
 import { readScheduleFireContext, isScheduleFireRequest } from '../trigger';
 import { createScheduleMCPEnrollmentResolver } from './enrollment';
 import { getAppConfigOptionsFromUser } from '~/app/service';
@@ -45,7 +46,7 @@ export function createScheduleMCPRuntimeHost(
     req: RuntimeRequest;
     signal?: AbortSignal;
     context?: RequestScopedMCPConnectionStore;
-    restoredContext?: ScheduledTokenContext;
+    executionContext?: ExecutionContext;
     restoredJob?: {
       scheduleId?: string;
       scheduleManual?: boolean;
@@ -128,7 +129,7 @@ export function createScheduleMCPRuntimeHost(
     execution,
     prepare: (input) =>
       prepareSafely(async () => {
-        const { req, context, restoredContext, restoredJob } = input;
+        const { req, context, executionContext, restoredJob } = input;
         const completion = restoredJob?.scheduleMCPCompletion;
         if (completion !== undefined || isScheduledMCPCompletionRequest(req)) {
           if (!context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
@@ -174,9 +175,13 @@ export function createScheduleMCPRuntimeHost(
           return;
         }
         if (!isScheduleFireRequest(req)) return;
-        const fire = readScheduleFireContext(req);
-        const scheduleId =
-          restoredContext?.scheduleId ?? fire?.scheduleId ?? restoredJob?.scheduleId;
+        const schedule = getScheduleSource(executionContext);
+        /** A resumed run whose saved job restored a complete identity. */
+        const restoredContext = schedule?.resumed
+          ? toScheduledTokenContext(executionContext)
+          : undefined;
+        const fresh = schedule?.resumed === false ? schedule : undefined;
+        const scheduleId = restoredContext?.scheduleId ?? fresh?.id ?? restoredJob?.scheduleId;
         if (!scheduleId || !context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
         const row = await deps.methods.getScheduleById(scheduleId, req.user.id);
         if (!row || (row.tenantId ?? null) !== (req.user.tenantId ?? null))
@@ -184,7 +189,7 @@ export function createScheduleMCPRuntimeHost(
         const enrolled = row.mcpConsent !== undefined;
         const rootId =
           restoredContext?.agentId ??
-          (fire ? req.body?.agent_id : undefined) ??
+          (fresh ? executionContext?.agentId : undefined) ??
           (!enrolled ? row.agent_id : undefined);
         if (typeof rootId !== 'string' || rootId !== row.agent_id)
           throw new ScheduledMCPPolicyError('binding_mismatch', '');
@@ -205,7 +210,7 @@ export function createScheduleMCPRuntimeHost(
           legacy: !enrolled,
           manual: restoredContext
             ? restoredJob?.scheduleId === scheduleId && restoredJob.scheduleManual === true
-            : fire?.manual === true,
+            : fresh?.manual === true,
         });
       }, input.signal),
   };
