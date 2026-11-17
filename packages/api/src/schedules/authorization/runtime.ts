@@ -62,6 +62,7 @@ export function createScheduleMCPRuntimeHost(
   const { consent } = createEvaluation(deps.enrollment);
   const execution = createScheduleMCPExecution({
     storage: deps.methods,
+    requiresGrant: consent.service.requiresGrant,
     async loadAuthorization(identity) {
       // Private to this attempt. No resolved principal, config or allow decision survives it.
       const principal = deps.findUser(identity.ownerId).then((user) => {

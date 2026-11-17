@@ -51,6 +51,9 @@ export function createScheduleMCPConsentHost(deps: {
         enabled: limits.enabled && limits.mcpConsent?.enabled === true,
         maxLifetimeHours:
           limits.mcpConsent?.maxLifetimeHours ?? DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+        ...(limits.mcpConsent?.requireAfterMs != null && {
+          requireAfterMs: limits.mcpConsent.requireAfterMs,
+        }),
       };
     },
     canUse: async (identity) => {

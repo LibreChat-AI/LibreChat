@@ -556,6 +556,9 @@ export function createScheduleLimitsResolver(
           enabled: config.mcpConsent.enabled === true,
           maxLifetimeHours:
             config.mcpConsent.maxLifetimeHours ?? DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+          ...(config.mcpConsent.requireAfter != null && {
+            requireAfterMs: Date.parse(config.mcpConsent.requireAfter),
+          }),
         },
       }),
       maxPerUser: config.maxPerUser ?? DEFAULT_SCHEDULE_LIMITS.maxPerUser,

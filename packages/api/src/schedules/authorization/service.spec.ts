@@ -636,3 +636,13 @@ describe('definition pins', () => {
     });
   });
 });
+
+it('requires a grant only from a schedule that has none', async () => {
+  const s = setup();
+  expect(await s.service.requiresGrant(identity)).toBe(false);
+  s.snapshot.required = true;
+  expect(await s.service.requiresGrant(identity)).toBe(true);
+  await s.enroll();
+  // The edit mark outlives the grant. Revoking it is then a refusal of its own, not this one.
+  expect(await s.service.requiresGrant(identity)).toBe(false);
+});
