@@ -138,6 +138,19 @@ const OAuthOptionsBaseSchema = z.object({
    * from user-managed servers.
    */
   send_resource_parameter: z.boolean().optional(),
+  /**
+   * Whether to drop the `prompt=consent` the MCP SDK appends to `/authorize` when the scope
+   * includes `offline_access`.
+   *
+   * Default: `false`. The forced prompt shows a consent screen on every sign-in, and
+   * Microsoft Entra ID tenants that disable user consent answer it with "Need admin approval"
+   * even after admin consent was granted. The authorization server still asks for consent
+   * when it has not been granted. Other `prompt` values from `authorization_url` are kept.
+   *
+   * This field is only accepted from trusted/admin MCP configuration and is rejected
+   * from user-managed servers.
+   */
+  skip_offline_access_consent_prompt: z.boolean().optional(),
   /** OAuth revocation endpoint (optional - can be auto-discovered) */
   revocation_endpoint: z
     .string()
@@ -175,6 +188,7 @@ const UserOAuthOptionsSchema = OAuthOptionsBaseSchema.omit({
   audience: true,
   forward_audience_on_refresh: true,
   send_resource_parameter: true,
+  skip_offline_access_consent_prompt: true,
   client_secretPreview: true,
 })
   .extend({
@@ -185,6 +199,7 @@ const UserOAuthOptionsSchema = OAuthOptionsBaseSchema.omit({
     audience: z.never().optional(),
     forward_audience_on_refresh: z.never().optional(),
     send_resource_parameter: z.never().optional(),
+    skip_offline_access_consent_prompt: z.never().optional(),
   })
   .superRefine(validateOAuthClientCredentials);
 

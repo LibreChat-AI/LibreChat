@@ -107,6 +107,7 @@ function sanitizeUserManagedOAuthConfig(config: ParsedServerConfig): ParsedServe
     audience: _audience,
     forward_audience_on_refresh: _forwardAudienceOnRefresh,
     send_resource_parameter: _sendResourceParameter,
+    skip_offline_access_consent_prompt: _skipOfflineAccessConsentPrompt,
     ...oauth
   } = config.oauth;
   return {
