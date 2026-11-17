@@ -4,6 +4,7 @@ import type {
   ChatEvent,
   ChatFrame,
   ChatSyncFrame,
+  ChatFinalFrame,
   EventSubmission,
   ChatCreatedFrame,
 } from 'librechat-data-provider';
@@ -54,6 +55,33 @@ const stepContext = (submission: EventSubmission, context: ChatEventContext): St
 });
 
 /**
+ * Whether a frame's message is the identity of a row the list holds, not a turn's content: a
+ * compaction names the leaf it summarizes up to, whoever wrote it, and sends no text for it.
+ */
+const isAnchor = (held: TMessage, named: Partial<TMessage>): boolean =>
+  held.isCreatedByUser !== true || !named.text;
+
+/**
+ * A final frame as its turn settles it. A turn that made no user row still names one in its
+ * request: a regeneration its saved turn, a compaction its anchor. Merging that onto the row
+ * would blank what it holds, so such a turn settles its response alone, as main chat's final
+ * handler does. A chat that saw only the final frame recognizes the anchor from the frame.
+ */
+function settledFinal(
+  data: ChatFinalFrame,
+  turn: EventSubmission | undefined,
+  messages: TMessage[],
+): ChatFinalFrame {
+  const request = data.requestMessage;
+  if (request?.messageId == null) {
+    return data;
+  }
+  const held = messages.find((message) => message.messageId === request.messageId);
+  const reused = turn?.isRegenerate === true || (held != null && isAnchor(held, request));
+  return reused ? { ...data, requestMessage: null } : data;
+}
+
+/**
  * The turn a `created` frame names: its user message and the reply the turn starts from.
  *
  * A row the list already holds is never rewritten from the frame. A regeneration reuses a saved
@@ -69,9 +97,7 @@ const stepContext = (submission: EventSubmission, context: ChatEventContext): St
 function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventSubmission {
   const loaded = messages.find((message) => message.messageId === data.message.messageId);
   const anchored =
-    loaded == null
-      ? data.message.isCreatedByUser === false
-      : loaded.isCreatedByUser !== true || !data.message.text;
+    loaded == null ? data.message.isCreatedByUser === false : isAnchor(loaded, data.message);
   const userMessage =
     loaded ??
     ({ ...data.message, isCreatedByUser: data.message.isCreatedByUser !== false } as TMessage);
@@ -263,7 +289,7 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     } else if (event.type === 'final') {
       /** The final frame is authoritative; a held copy of the stream must not land on top of it. */
       drop();
-      mergeFinalFrame(event.data, ctx);
+      mergeFinalFrame(settledFinal(event.data, submission, ctx.messages), ctx);
       reset();
     } else if (event.type === 'abort' || event.type === 'error') {
       /** A turn that stops here keeps every token it streamed. */

@@ -342,6 +342,46 @@ describe('createEventApplier', () => {
     expect(read()[1].parentMessageId).toBe('user-1');
   });
 
+  it('settles a compaction on a user leaf without blanking the leaf', () => {
+    const anchor = { ...user, text: '' };
+    const settled: ChatEvent = {
+      type: 'final',
+      data: {
+        final: true,
+        conversation: { conversationId: 'thread-1' },
+        requestMessage: anchor,
+        responseMessage: {
+          messageId: 'resp-1',
+          conversationId: 'thread-1',
+          parentMessageId: 'user-1',
+          isCreatedByUser: false,
+          text: '',
+          content: [{ type: ContentTypes.TEXT, text: 'Summary, done' }],
+        },
+      },
+    } as ChatEvent;
+    const watched = createEventApplier();
+    const first = createList([user]);
+    watched.applyEvent(
+      { type: 'created', data: { created: true, message: anchor } },
+      first.context,
+    );
+    watched.applyEvent(opened('s0', 0), first.context);
+    watched.applyEvent(token('s0', 'Summary'), first.context);
+    watched.applyEvent(settled, first.context);
+
+    expect(first.read()[0]).toBe(user);
+    expect(textOf(first.read())).toEqual(['Summary, done']);
+
+    /** A chat that saw only the final frame recognizes the anchor from the frame itself. */
+    const late = createEventApplier();
+    const second = createList([user]);
+    late.applyEvent(settled, second.context);
+
+    expect(second.read()[0]).toBe(user);
+    expect(textOf(second.read())).toEqual(['Summary, done']);
+  });
+
   it('keeps the user turn a regeneration snapshot placed on an empty list', () => {
     const { applyEvent } = createEventApplier();
     const { context, read } = createList();
