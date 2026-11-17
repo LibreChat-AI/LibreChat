@@ -1,5 +1,5 @@
 import { ProviderSessionUnavailableError } from '~/auth/openid/providerSession/errors';
-import { mapAdminAuthError } from './adminAuthErrors';
+import { mapAdminAuthError, mapAdminRefreshError } from './adminAuthErrors';
 import { AdminExchangeError } from '~/auth/exchange';
 import { AdminRefreshError } from '~/auth/refresh';
 
@@ -38,5 +38,40 @@ describe('mapAdminAuthError', () => {
     expect(mapAdminAuthError(new Error('boom'))).toBeNull();
     expect(mapAdminAuthError('not an error')).toBeNull();
     expect(mapAdminAuthError(undefined)).toBeNull();
+  });
+});
+
+describe('mapAdminRefreshError', () => {
+  it.each([
+    new TypeError('fetch failed: secret'),
+    new Error('invalid_grant is only an error message'),
+    { error: 'invalid_grant', status: 429 },
+    { error: 'invalid_grant', status: 503 },
+    { error: 'invalid_client', status: 401 },
+    { error: 'server_error', status: 500 },
+  ])('preserves credentials after an unconfirmed rejection: %j', (error) => {
+    expect(mapAdminRefreshError(error)).toEqual({
+      status: 503,
+      body: { error: 'Session renewal unavailable', error_code: 'AUTH_SESSION_CHECK_UNAVAILABLE' },
+    });
+  });
+
+  it.each([
+    { error: 'invalid_grant', status: 400 },
+    { code: 'invalid_grant', status: 401 },
+  ])('ends the session after a confirmed invalid grant: %j', (error) => {
+    expect(mapAdminRefreshError(error)).toEqual({
+      status: 401,
+      body: { error: 'Refresh failed', error_code: 'REFRESH_FAILED' },
+    });
+  });
+
+  it('preserves existing session denials and unavailable checks', () => {
+    for (const error of [
+      new AdminRefreshError('OPENID_SESSION_ENDED', 401, 'Provider session has ended'),
+      new ProviderSessionUnavailableError('private cause'),
+    ]) {
+      expect(mapAdminRefreshError(error)).toEqual(mapAdminAuthError(error));
+    }
   });
 });

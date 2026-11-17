@@ -28,6 +28,7 @@ const {
   prepareAdminOpenIdRefresh,
   runAdminOpenIdRefreshGrant,
   mapAdminAuthError,
+  mapAdminRefreshError,
   AdminRefreshError,
   buildOpenIDRefreshParams,
   isEmailDomainAllowed,
@@ -722,7 +723,7 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
  *   502 CLAIMS_INCOMPLETE      — IdP tokenset has no readable claims or no sub
  *   503 OPENID_NOT_CONFIGURED  — OpenID is not configured on this server
  *   503 GOOGLE_NOT_CONFIGURED  — Google admin OAuth is not configured on this server
- *   503 AUTH_SESSION_CHECK_UNAVAILABLE — provider-session check unavailable (openid provider only)
+ *   503 AUTH_SESSION_CHECK_UNAVAILABLE — session check or IdP renewal unavailable
  *   500 INTERNAL_ERROR         — anything else (logged server-side)
  */
 router.post(
@@ -852,18 +853,12 @@ router.post(
           expires_in: tokenset.expires_in,
         });
       } catch (err) {
-        const mapped = mapAdminAuthError(err);
-        if (mapped) {
-          return res.status(mapped.status).json(mapped.body);
-        }
         logger.warn('[admin/oauth/refresh] IdP refresh grant failed', {
           code: err?.code,
           name: err?.name,
         });
-        return res.status(401).json({
-          error: 'Refresh failed',
-          error_code: 'REFRESH_FAILED',
-        });
+        const mapped = mapAdminRefreshError(err);
+        return res.status(mapped.status).json(mapped.body);
       }
 
       try {
