@@ -542,12 +542,10 @@ describe('duplicateConversation', () => {
     ],
     [
       'children timestamped before parents',
-      [...branch]
-        .reverse()
-        .map((entry, index) => ({
-          ...entry,
-          createdAt: new Date(Date.UTC(2024, 0, 1, 0, 0, index)),
-        })),
+      [...branch].reverse().map((entry, index) => ({
+        ...entry,
+        createdAt: new Date(Date.UTC(2024, 0, 1, 0, 0, index)),
+      })),
     ],
     ['ordinary linear history', branch],
   ])('preserves the complete tree for %s', async (_name, sources) => {
