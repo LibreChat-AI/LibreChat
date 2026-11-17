@@ -4923,7 +4923,7 @@ export const configSchema = z.object({
       allowedDomains: z.array(z.string()).optional(),
       /** Milliseconds a started social login may take to reach its callback; defaults to `DEFAULT_OAUTH_STATE_TTL_MS`. */
       oauthStateTtlMs: z.number().int().min(60_000).max(3_600_000).optional(),
-      /** OpenID discovery retries; an unset field falls back to its `OPENID_DISCOVERY_RETRY_*` env var, then the schema default. */
+      /** OpenID discovery retry settings; unset fields fall back to their `OPENID_DISCOVERY_RETRY_*` env var, then the schema default. */
       openidDiscovery: partialWithoutDefaults(openIdDiscoverySchema).optional(),
     })
     .default({ socialLogins: defaultSocialLogins }),
