@@ -18,6 +18,9 @@ export type TUseGenerations = {
    *  would replay, `false` when no such turn is in the thread. `undefined` when the
    *  thread is unavailable (a search or share row), which withholds nothing. */
   parentIsUserMessage?: boolean;
+  /** The reader takes no turn in this conversation, so no rerun, edit or continue is offered.
+   *  A fork still is: it makes a conversation of the reader's own. */
+  readOnly?: boolean;
   /** The turn carries the server's manual-compaction marker. Compact runs on
    *  whatever leaf the branch ends with, so such a turn can hang off a user
    *  message; replaying that message would answer it again instead of redoing the
@@ -53,6 +56,7 @@ export default function useGenerationsByLatest({
   getHasEditablePart,
   parentIsUserMessage,
   isUserInitiatedCompaction = false,
+  readOnly = false,
 }: TUseGenerations): Generations {
   const isEditableEndpoint = Boolean(
     [
@@ -88,6 +92,7 @@ export default function useGenerationsByLatest({
     !isSubmitting &&
     !searchResult &&
     !hasNoTurnToReplay &&
+    !readOnly &&
     isEditableEndpoint;
 
   const branchingSupported = Boolean(
@@ -103,7 +108,12 @@ export default function useGenerationsByLatest({
   );
 
   const regenerateOffered =
-    !isCreatedByUser && !searchResult && !isEditing && !hasNoTurnToReplay && branchingSupported;
+    !isCreatedByUser &&
+    !searchResult &&
+    !isEditing &&
+    !hasNoTurnToReplay &&
+    !readOnly &&
+    branchingSupported;
   const regenerateEnabled = regenerateOffered && !isSubmitting;
 
   const isActiveStreamingMessage =
@@ -115,6 +125,7 @@ export default function useGenerationsByLatest({
    *  finished or persisted an error part instead, would open an editor with no
    *  field and one inert Rerun. */
   const hideEditButton =
+    readOnly ||
     isActiveStreamingMessage ||
     error ||
     searchResult ||

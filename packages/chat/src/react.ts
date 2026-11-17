@@ -128,6 +128,8 @@ export {
 export { useCoreChat } from './react/core';
 export { useFollowChat } from './react/follow';
 export type { FollowChatOptions, FollowedChat } from './react/follow';
+export { useFollowedContract } from './react/chat/followed';
+export type { FollowedContractOptions } from './react/chat/followed';
 export { useSnapshot } from './react/snapshot';
 export { ReactQueryChatState } from './react/state';
 export type { Subscribe, SnapshotOptions } from './react/snapshot';
