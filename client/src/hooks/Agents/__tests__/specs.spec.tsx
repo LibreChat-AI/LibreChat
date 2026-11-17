@@ -5,6 +5,7 @@ import { act, renderHook, waitFor, cleanup } from '@testing-library/react';
 import { dataService, PermissionBits, QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import type { AgentListResponse, TStartupConfig } from 'librechat-data-provider';
 import { activateCatalog, resetCatalogWarmup } from '~/hooks/useCatalogWarmup';
+import { withAgentAccess } from 'test/agentAccess';
 import useModelSpecs from '../specs';
 
 jest.mock('librechat-data-provider', () => {
@@ -41,11 +42,11 @@ function setup() {
     logger: { log: console.log, warn: console.warn, error: () => {} },
   });
   client.setQueryData([QueryKeys.endpoints], { agents: { order: 0 } });
-  const wrapper = ({ children }: { children: React.ReactNode }) => (
+  const wrapper = withAgentAccess(({ children }: { children: React.ReactNode }) => (
     <RecoilRoot>
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     </RecoilRoot>
-  );
+  ));
   return { client, ...renderHook(() => useModelSpecs(config), { wrapper }) };
 }
 beforeEach(() => {

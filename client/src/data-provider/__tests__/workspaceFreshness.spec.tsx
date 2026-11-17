@@ -20,6 +20,7 @@ import {
   useCodeEnvironmentStatusQuery,
 } from '../CodeEnvironments';
 import { useGetAgentByIdQuery, useListAgentsQuery } from '../Agents/queries';
+import { withAgentAccess } from 'test/agentAccess';
 
 jest.mock('librechat-data-provider', () => {
   const actual =
@@ -44,8 +45,9 @@ function setup() {
     defaultOptions: { queries: { retryDelay: 0, cacheTime: Infinity } },
   });
   client.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.agents]: {} });
-  const wrapper = ({ children }: { children: ReactNode }) =>
-    createElement(QueryClientProvider, { client }, children);
+  const wrapper = withAgentAccess(({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children),
+  );
   return { client, wrapper };
 }
 

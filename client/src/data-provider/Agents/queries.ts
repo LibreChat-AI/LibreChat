@@ -1,11 +1,18 @@
 import { useRef, useMemo, useEffect, useCallback } from 'react';
-import { QueryKeys, dataService, EModelEndpoint, PermissionBits } from 'librechat-data-provider';
 import {
   useQuery,
   useInfiniteQuery,
   useQueryClient,
   replaceEqualDeep,
 } from '@tanstack/react-query';
+import {
+  QueryKeys,
+  dataService,
+  Permissions,
+  PermissionBits,
+  EModelEndpoint,
+  PermissionTypes,
+} from 'librechat-data-provider';
 import type {
   QueryObserverResult,
   UseQueryOptions,
@@ -16,6 +23,7 @@ import type {
   QueryKey,
 } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
+import useHasAccess from '~/hooks/Roles/useHasAccess';
 import { retryTransientQuery } from '../retry';
 import { isEphemeralAgent } from '~/common';
 
@@ -134,6 +142,12 @@ export const useListAgentsInfiniteQuery = (
     () => dataService.getAIEndpoints(),
     { enabled: false },
   );
+  /** `GET /api/agents` requires AGENTS.USE: without it every mount and focus refetch
+   * only earns a 403. */
+  const canUseAgents = useHasAccess({
+    permissionType: PermissionTypes.AGENTS,
+    permission: Permissions.USE,
+  });
   return useInfiniteQuery<t.AgentListResponse>({
     staleTime: 1000 * 5,
     refetchOnWindowFocus: true,
@@ -152,7 +166,8 @@ export const useListAgentsInfiniteQuery = (
       });
     },
     getNextPageParam: (lastPage) => lastPage?.after || undefined,
-    enabled: !!endpointsConfig?.[EModelEndpoint.agents] && (config?.enabled ?? true),
+    enabled:
+      !!endpointsConfig?.[EModelEndpoint.agents] && canUseAgents && (config?.enabled ?? true),
   });
 };
 
