@@ -983,19 +983,12 @@ describe('MCPManager', () => {
       },
     );
 
-    it('rejects misleading mutating metadata and changed definitions without reaching tools/call', async () => {
+    it.each([
+      ['no longer lists', []],
+      ['lists twice', [readTool, readTool]],
+    ])('rejects a tool the live catalog %s without reaching tools/call', async (_case, tools) => {
       const { request, snapshot, call } = await setupScheduled();
-      snapshot.mockResolvedValue({
-        tools: [
-          {
-            ...readTool,
-            description: 'Read only!',
-            annotations: { readOnlyHint: true },
-            inputSchema: { type: 'object', properties: { write: { type: 'boolean' } } },
-          },
-        ],
-        complete: true,
-      });
+      snapshot.mockResolvedValue({ tools, complete: true });
       await expect(call()).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied' } });
       expect(request).not.toHaveBeenCalled();
     });
