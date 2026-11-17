@@ -14,6 +14,7 @@ import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { MessagesHostProvider } from '../../../react/messages/host';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { useIsMessagesViewReadOnly } from '../../../react/messages/view';
 import { useChatContext } from '../../../react/chat/context';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import { useFollowChat } from '../../../react/follow';
@@ -163,10 +164,12 @@ const partsHost = createMessagePartsHost({
 const conversation = { conversationId: 'thread-1', endpoint: 'agents' } as TConversation;
 
 let contract: ChatContract | undefined;
+let viewReadOnly: boolean | undefined;
 
-/** Reads the chat contract the rows see, from inside the list. */
+/** Reads the chat contract and the view mode the rows see, from inside the list. */
 function ContractProbe(): null {
   contract = useChatContext();
+  viewReadOnly = useIsMessagesViewReadOnly();
   return null;
 }
 
@@ -230,6 +233,7 @@ const settle = () =>
 describe('FollowedThread', () => {
   beforeEach(() => {
     contract = undefined;
+    viewReadOnly = undefined;
   });
 
   it("draws the stored conversation with main chat's thread", async () => {
@@ -243,11 +247,20 @@ describe('FollowedThread', () => {
     expect(contract).toMatchObject({
       index: 2,
       messagesKey: 'thread-1',
+      readOnly: true,
       isSubmitting: false,
       latestMessageId: 'task-1:assistant',
       conversation: { conversationId: 'thread-1' },
     });
     expect(contract?.getMessages()).toEqual(stored);
+  });
+
+  it('tells its rows the view is read-only, so host-bound actions in them stay off', async () => {
+    const { transport } = createTransport({ active: false });
+    mount(<Pane transport={transport} loadMessages={async () => [brief]} />);
+    await waitFor(() => expect(rows()).toHaveLength(1));
+
+    expect(viewReadOnly).toBe(true);
   });
 
   it('draws a running generation as it streams, then the stored result', async () => {

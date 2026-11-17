@@ -91,6 +91,7 @@ export function useFollowedContract({
       setIsSubmitting: ignore,
       handleRegenerate: ignore,
       handleContinue: ignore,
+      readOnly: true,
       stopGenerating: stopped,
       handleStopGenerating: ignore,
       abortScroll,
