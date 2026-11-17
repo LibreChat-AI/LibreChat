@@ -115,9 +115,11 @@ it('allows or clears every tool on a server with one box', async () => {
   expect(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' })).toBeEnabled();
 
   await userEvent.click(screen.getByRole('checkbox', { name: 'export' }));
-  expect(server).toHaveAttribute('data-state', 'indeterminate');
+  expect(server).not.toBeChecked();
+  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
 
   await userEvent.click(server);
+  expect(screen.getByRole('checkbox', { name: 'export' })).toBeChecked();
   await userEvent.click(server);
   expect(screen.getByRole('checkbox', { name: 'query' })).not.toBeChecked();
   expect(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' })).toBeDisabled();

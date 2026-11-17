@@ -245,15 +245,14 @@ function ToolChoice({
 }) {
   const localize = useLocalize();
   const groupId = useId();
+  /** Checked only when every tool is: the shared box has no partly-selected appearance. */
   const all = offered.length > 0 && offered.every((tool) => chosen.includes(tool));
-  /** Some but not all tools chosen shows as a partly filled box. */
-  const partly = chosen.length > 0 ? ('indeterminate' as const) : false;
   return (
     <fieldset className="mt-2 space-y-1" disabled={disabled}>
       <div className="flex items-center gap-2">
         <Checkbox
           id={`${groupId}-all`}
-          checked={all || partly}
+          checked={all}
           disabled={disabled}
           aria-label={localize('com_ui_schedule_consent_allow_server', { server: serverName })}
           onCheckedChange={(checked) => onChange(checked === true ? offered : [])}
