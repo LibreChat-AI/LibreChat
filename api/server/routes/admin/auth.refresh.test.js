@@ -328,6 +328,23 @@ describe('admin auth OpenID refresh route', () => {
     expect(applyAdminRefresh).not.toHaveBeenCalled();
   });
 
+  it.each([
+    new TypeError('fetch failed: private detail'),
+    { error: 'server_error', status: 500 },
+    { error: 'invalid_grant', status: 429 },
+  ])('returns a retryable response when the IdP cannot renew: %j', async (error) => {
+    openIdClient.refreshTokenGrant.mockRejectedValue(error);
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-refresh-token' });
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      error: 'Session renewal unavailable',
+      error_code: 'AUTH_SESSION_CHECK_UNAVAILABLE',
+    });
+    expect(applyAdminRefresh).not.toHaveBeenCalled();
+  });
+
   it('keeps admin refresh diagnostics free of token and audience values', async () => {
     process.env.OPENID_SCOPE = 'openid profile email';
     process.env.OPENID_REFRESH_AUDIENCE = 'https://api.example.com';
