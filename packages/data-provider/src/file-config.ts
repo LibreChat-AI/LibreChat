@@ -682,6 +682,10 @@ export const fileConfigSchema = z.object({
     .object({
       percentage: z.number().min(0).max(100).optional(),
       px: z.number().min(0).optional(),
+      /** Store generated PNG, JPEG, WebP and GIF images exactly as the image service returned
+       * them, with no resize or re-encode, so signed provenance metadata (C2PA Content
+       * Credentials) survives. Takes precedence over `percentage` and `px`. */
+      keepOriginal: z.boolean().optional(),
     })
     .optional(),
   clientImageResize: z

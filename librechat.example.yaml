@@ -1561,6 +1561,7 @@ endpoints:
 #   imageGeneration: # Image Gen settings, either percentage or px
 #     percentage: 100
 #     px: 1024
+#     keepOriginal: true # Store generated images unchanged, keeping C2PA Content Credentials; overrides percentage/px
 #   # Client-side image resizing to prevent upload errors
 #   # Users can toggle this in Settings > Chat. Setting `enabled` here overrides
 #   # that choice for everyone and locks the toggle; omit it to leave users in control.
