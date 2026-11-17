@@ -6,7 +6,9 @@ jest.mock('@librechat/api', () => ({
   genAzureEndpoint: jest.fn(),
   logAxiosError: jest.fn(),
   applyAxiosProxyConfig: jest.fn(),
+  applySSRFSafeAgentIfDirect: jest.fn(),
   resolveConfigSecret: jest.fn(),
+  resolveHeaders: jest.fn(({ headers }) => ({ ...headers })),
   capSpeechInput: jest.requireActual('@librechat/api').capSpeechInput,
   pipeSegment: jest.fn(),
   pipeToResponse: jest.fn(),
@@ -34,7 +36,8 @@ jest.mock('./streamAudio', () => ({
 }));
 jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
 
-const { resolveConfigSecret } = require('@librechat/api');
+const axios = require('axios');
+const { resolveConfigSecret, resolveHeaders } = require('@librechat/api');
 const { TTSService, getProvider } = require('./TTSService');
 
 describe('TTSService provider header construction with an undecryptable apiKey', () => {
@@ -80,6 +83,25 @@ describe('TTSService provider header construction with an undecryptable apiKey',
       'voice1',
     );
     expect(headers).not.toHaveProperty('Authorization');
+  });
+});
+
+describe('TTSService schema headers', () => {
+  it('merges resolved schema headers into the provider request', async () => {
+    const service = new TTSService();
+    const user = { id: 'u1', email: 'user@example.com' };
+    const schema = { headers: { 'x-end-user': '{{LIBRECHAT_USER_EMAIL}}' } };
+    service.providerStrategies.test = () => ['https://provider.test/tts', {}, {}];
+    axios.post.mockResolvedValueOnce({ data: {} });
+
+    await service.ttsRequest('test', schema, { input: 'hi', voice: 'alloy', user });
+
+    expect(resolveHeaders).toHaveBeenCalledWith({
+      headers: schema.headers,
+      user,
+      stripUnresolved: true,
+    });
+    expect(axios.post.mock.calls.at(-1)[2].headers).toEqual(schema.headers);
   });
 });
 
@@ -138,7 +160,11 @@ describe('TTSService input cap', () => {
     );
 
     expect(ttsRequest).toHaveBeenCalledTimes(1);
-    expect(ttsRequest.mock.calls[0][2]).toEqual({ input: 'a'.repeat(10), voice: 'alloy' });
+    expect(ttsRequest.mock.calls[0][2]).toEqual({
+      input: 'a'.repeat(10),
+      voice: 'alloy',
+      user: undefined,
+    });
     expect(res.status).not.toHaveBeenCalled();
   });
 

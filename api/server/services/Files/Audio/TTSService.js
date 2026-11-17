@@ -9,6 +9,7 @@ const {
   pipeSegment,
   abortOnClose,
   pipeToResponse,
+  resolveHeaders,
   capSpeechInput,
   createSpeechBudget,
 } = require('@librechat/api');
@@ -263,6 +264,7 @@ class TTSService {
    * @param {string} options.input - The input text.
    * @param {string} options.voice - The voice to use.
    * @param {boolean} [options.stream=true] - Whether to use streaming.
+   * @param {IUser} [options.user] - The requesting user, for resolving config header placeholders.
    * @param {string[]} [allowedAddresses] - Section-level SSRF exemption list of host:port pairs.
    * @param {import('axios').AxiosRequestConfig} [requestOptions] - Timeout and abort options for the request.
    * @returns {Promise<Object>} The axios response object.
@@ -271,7 +273,7 @@ class TTSService {
   async ttsRequest(
     provider,
     ttsSchema,
-    { input, voice, stream = true },
+    { input, voice, stream = true, user },
     allowedAddresses,
     requestOptions,
   ) {
@@ -282,6 +284,10 @@ class TTSService {
 
     const [url, data, headers] = strategy.call(this, ttsSchema, input, voice, stream);
 
+    Object.assign(
+      headers,
+      resolveHeaders({ headers: ttsSchema?.headers, user, stripUnresolved: true }),
+    );
     [data, headers].forEach(this.removeUndefined.bind(this));
 
     const options = { headers, responseType: stream ? 'stream' : 'arraybuffer', ...requestOptions };
@@ -330,7 +336,7 @@ class TTSService {
         const response = await this.ttsRequest(
           provider,
           ttsSchema,
-          { input: text, voice },
+          { input: text, voice, user: req.user },
           allowedAddresses,
           nextBudget(),
         );
@@ -351,6 +357,7 @@ class TTSService {
               voice,
               input: chunk.text,
               stream: true,
+              user: req.user,
             },
             allowedAddresses,
             nextBudget(),
@@ -443,6 +450,7 @@ class TTSService {
                 voice,
                 input: update.text,
                 stream: true,
+                user: req.user,
               },
               allowedAddresses,
               nextBudget(),

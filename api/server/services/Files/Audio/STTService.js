@@ -12,6 +12,7 @@ const {
   configuredRequestBudget,
   applyAxiosProxyConfig,
   resolveConfigSecret,
+  resolveHeaders,
   applySSRFSafeAgentIfDirect,
   contentFilterBlockResponse,
   contentFilterUninspectableResponse,
@@ -293,6 +294,7 @@ class STTService {
    * @param {Buffer} requestData.audioBuffer - The audio data to be transcribed.
    * @param {Object} requestData.audioFile - The audio file object containing originalname, mimetype, and size.
    * @param {string} requestData.language - The language code for the transcription.
+   * @param {IUser} [requestData.user] - The requesting user, for resolving config header placeholders.
    * @param {string[]} [allowedAddresses] - Section-level SSRF exemption list of host:port pairs.
    * @param {import('axios').AxiosRequestConfig} [requestOptions] - Timeout and abort options for the request.
    * @returns {Promise<string>} A promise that resolves to the transcribed text.
@@ -301,7 +303,7 @@ class STTService {
   async sttRequest(
     provider,
     sttSchema,
-    { audioBuffer, audioFile, language },
+    { audioBuffer, audioFile, language, user },
     allowedAddresses,
     requestOptions,
   ) {
@@ -323,6 +325,10 @@ class STTService {
       language,
     );
 
+    Object.assign(
+      headers,
+      resolveHeaders({ headers: sttSchema?.headers, user, stripUnresolved: true }),
+    );
     const options = { headers, ...requestOptions };
 
     applyAxiosProxyConfig(options, url);
@@ -389,7 +395,7 @@ class STTService {
         text = await this.sttRequest(
           provider,
           sttSchema,
-          { audioBuffer, audioFile, language },
+          { audioBuffer, audioFile, language, user: req.user },
           allowedAddresses,
           configuredRequestBudget(req.config, 'speechMs'),
         );
