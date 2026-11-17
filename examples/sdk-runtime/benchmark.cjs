@@ -105,7 +105,9 @@ async function measure(remote) {
     : await createExampleRun({
         config,
         identity,
-        hostModel: model ? new HostChatModel({ identity, ...model }) : undefined,
+        hostModel: model
+          ? new HostChatModel({ identity, ...model }).bindTools(model.descriptor.tools)
+          : undefined,
         compileOptions: {},
         signal: new AbortController().signal,
         agent: { id: identity.agentId },

@@ -100,7 +100,7 @@ export interface RemoteSdkSnapshot {
 }
 export interface RemoteSdkFactoryInput {
   /** Retain this model as Graph.overrideModel when supplied by the authenticated host. */
-  hostModel?: HostChatModel;
+  hostModel?: ReturnType<HostChatModel['bindTools']>;
   hostTools?: HostToolBindings;
   identity: Readonly<SdkAgentIdentity>;
   /** Host-owned event, hook, and checkpoint adapters. Retain these in the returned Run. */

@@ -99,7 +99,11 @@ function createExampleTool() {
 
 function createExampleModel(complex = true) {
   const model = new FakeChatModel({});
-  model.bindTools = () => model;
+  model.bindTools = (tools) => {
+    if (complex && !tools.some((entry) => entry.function?.name === 'inspect_example'))
+      throw new Error('Host model did not receive the example tool schema');
+    return model;
+  };
   model._generate = async (messages) => ({
     generations: [
       {

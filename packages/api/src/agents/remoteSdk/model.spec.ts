@@ -5,7 +5,7 @@ import { ChatGenerationChunk } from '@langchain/core/outputs';
 import { FakeChatModel } from '@langchain/core/utils/testing';
 import { createHostModelService, HostModelAdmission } from '@librechat/agents';
 import { AIMessage, AIMessageChunk, HumanMessage } from '@librechat/agents/langchain/messages';
-import type { HostModelRequest } from '@librechat/agents';
+import type { HostModelDescriptor, HostModelRequest } from '@librechat/agents';
 import type { AddressInfo } from 'node:net';
 import { createHostModelChannel, createWorkerModelChannel } from './model';
 import { createPolicyReceiver, createPolicySender } from './sealed';
@@ -36,13 +36,13 @@ const request: HostModelRequest = {
   toolNames: [],
 };
 const limits = remoteSdkLimits({ maxFrameBytes: 4096, maxBufferedBytes: 8192, maxRunMs: 2000 });
-function binding(model = new FakeChatModel({})) {
+function binding(model = new FakeChatModel({}), tools: HostModelDescriptor['tools'] = []) {
   const admission = new HostModelAdmission({ maxConcurrentCalls: 4, maxRequestBytes: 65536 });
   return {
     admission,
     ...createHostModelService({
       identity,
-      descriptor,
+      descriptor: { ...descriptor, tools },
       model,
       admission,
       limits: { timeoutMs: 2000, maxRequestBytes: 65536, maxResponseBytes: 1048576 },
@@ -50,7 +50,7 @@ function binding(model = new FakeChatModel({})) {
     }),
   };
 }
-async function fixture(model = new FakeChatModel({})) {
+async function fixture(model = new FakeChatModel({}), tools: HostModelDescriptor['tools'] = []) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await once(server, 'listening');
   const accepted = once(server, 'connection');
@@ -61,7 +61,7 @@ async function fixture(model = new FakeChatModel({})) {
   socket.on('message', (data) => wireFrames.push(data.toString()));
   hostSocket.on('message', (data) => wireFrames.push(data.toString()));
   const controller = new AbortController();
-  const host = binding(model);
+  const host = binding(model, tools);
   let produced = 0;
   const hostPeer = createSdkPeer(hostSocket, {
     ...limits,
@@ -361,6 +361,34 @@ it('rejects tampered ciphertext and policy envelopes before provider dispatch', 
     expect(invoke).not.toHaveBeenCalled();
   } finally {
     recipient.dispose();
+    await runtime.close();
+  }
+});
+
+it('binds the host-authorized tool schemas before installing the graph override', async () => {
+  const tools = [
+    {
+      type: 'function' as const,
+      function: {
+        name: 'inspect',
+        description: 'Inspect',
+        parameters: { type: 'object', properties: {} },
+      },
+    },
+  ];
+  class ToolModel extends FakeChatModel {
+    selected: unknown;
+    bindTools(definitions: Parameters<NonNullable<FakeChatModel['bindTools']>>[0]) {
+      this.selected = definitions;
+      return this;
+    }
+  }
+  const native = new ToolModel({});
+  const runtime = await fixture(native, tools);
+  try {
+    await runtime.model.invoke([...request.messages]);
+    expect(native.selected).toEqual(tools);
+  } finally {
     await runtime.close();
   }
 });

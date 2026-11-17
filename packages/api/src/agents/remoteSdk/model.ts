@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { HostChatModel, HostModelServiceError, toStoredMessage } from '@librechat/agents';
 import { AIMessageChunk, isAIMessage, isBaseMessage } from '@librechat/agents/langchain/messages';
 import type { HostModelRequest, HostModelService } from '@librechat/agents';
-import type { RemoteSdkHostServices, RemoteSdkLimits, RemoteSdkStart } from './types';
+import type {
+  RemoteSdkFactoryInput,
+  RemoteSdkHostServices,
+  RemoteSdkLimits,
+  RemoteSdkStart,
+} from './types';
 import type { SdkAgentIdentity } from './identity';
 import type { SdkRpc } from './peer';
 import { createPolicyReceiver, createPolicySender } from './sealed';
@@ -295,12 +300,14 @@ export function createWorkerModelChannel(options: {
     bind: (
       identity: Readonly<SdkAgentIdentity>,
       descriptor: NonNullable<RemoteSdkStart['model']>,
-    ) => {
+    ): NonNullable<RemoteSdkFactoryInput['hostModel']> => {
       if (receiver || options.signal.aborted || descriptor.version !== 1)
         throw new HostModelServiceError('incompatible');
       receiver = createPolicyReceiver(options.limits.maxFrameBytes, 'model');
       seal = createPolicySender(descriptor.publicKey, options.limits.maxFrameBytes, 'model');
-      return new HostChatModel({ identity, descriptor: descriptor.descriptor, service });
+      return new HostChatModel({ identity, descriptor: descriptor.descriptor, service }).bindTools([
+        ...descriptor.descriptor.tools,
+      ]);
     },
     accept: async (data: unknown, signal?: AbortSignal) => {
       try {
