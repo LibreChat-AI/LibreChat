@@ -727,7 +727,7 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
  */
 router.post(
   '/oauth/refresh',
-  middleware.loginLimiter,
+  middleware.adminRefreshLimiter,
   middleware.checkBan,
   preAuthTenantMiddleware,
   async (req, res) => {

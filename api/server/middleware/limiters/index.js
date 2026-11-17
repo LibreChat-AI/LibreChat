@@ -2,6 +2,7 @@ const createTTSLimiters = require('./ttsLimiters');
 const createSTTLimiters = require('./sttLimiters');
 
 const loginLimiter = require('./loginLimiter');
+const adminRefreshLimiter = require('./adminRefreshLimiter');
 const backchannelLogoutLimiter = require('./backchannelLogoutLimiter');
 const passkeyLimiter = require('./passkeyLimiter');
 const importLimiters = require('./importLimiters');
@@ -34,6 +35,7 @@ module.exports = {
   ...promptUsageLimiter,
   ...promptResolveLimiter,
   loginLimiter,
+  adminRefreshLimiter,
   backchannelLogoutLimiter,
   passkeyLimiter,
   passkeyStepUpLimiter,
