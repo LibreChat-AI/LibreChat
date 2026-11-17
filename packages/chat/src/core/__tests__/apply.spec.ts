@@ -265,6 +265,28 @@ describe('createEventApplier', () => {
     expect(textOf(read())).toEqual(['Hi']);
   });
 
+  it('starts a regeneration beside the saved answer instead of carrying on from it', () => {
+    const saved: TMessage = {
+      messageId: 'resp-0',
+      conversationId: 'thread-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [{ type: ContentTypes.TEXT, text: 'Earlier answer' }],
+    };
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, saved]);
+
+    applyEvent(created, context);
+    applyEvent(opened('s0', 0), context);
+    applyEvent(token('s0', 'Hi'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-0', 'resp-1']);
+    expect(textOf(read())).toEqual(['Hi']);
+    expect(read()[1]).toBe(saved);
+    expect(read()[2].parentMessageId).toBe('user-1');
+  });
+
   it('settles on the final frame and starts the next turn clean', () => {
     const { applyEvent } = createEventApplier();
     const { context, read } = createList();
