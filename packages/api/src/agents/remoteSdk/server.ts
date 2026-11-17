@@ -221,21 +221,13 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         deny();
         return;
       }
-      const controller = recovered?.controller ?? new AbortController();
-      if (needsEngine) active.add(controller);
-      let upgraded = false;
-      socket.once('close', () => {
-        if (!upgraded) {
-          controller.abort();
-          active.delete(controller);
-        }
-      });
       sockets.handleUpgrade(req, socket, head, (ws) => {
-        upgraded = true;
         if (recovered && !needsEngine) {
           recovered.attach(ws, claim.recovery!.after);
           return;
         }
+        const controller = recovered?.controller ?? new AbortController();
+        active.add(controller);
         if (recovered) recovered.needsEngine = false;
         const transport = recovered?.socket ?? ws;
         let outcome: 'completed' | 'paused' | 'failed' | 'cancelled' = 'failed';
