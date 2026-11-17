@@ -506,6 +506,9 @@ registration:
 #   refillAmount: 10000
 #   # Deploy reset-capable servers to every replica before selecting 'reset'.
 #   refillMode: 'add' # 'reset' replaces the allowance each period without rollover
+#   # Align every period to this instant plus whole intervals, e.g. weekly resets every Monday
+#   # at 00:00 UTC. Needs a Z or ±HH:MM offset; omit for periods that run from each user's last refill.
+#   # refillAnchor: '2026-01-05T00:00:00Z'
 #   reservationTtlMs: 1800000  # How long an in-flight request's reserved credits count if never released
 #   display: 'credits'  # credits | currency (uses interface.currency) | percent (share of the allotment used)
 
