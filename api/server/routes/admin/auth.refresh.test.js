@@ -131,6 +131,7 @@ jest.mock('~/server/middleware', () => ({
   logHeaders: jest.fn((req, res, next) => next()),
   requireSameOrigin: jest.fn((req, res, next) => next()),
   loginLimiter: jest.fn((req, res, next) => next()),
+  adminRefreshLimiter: jest.fn((req, res, next) => next()),
   checkBan: jest.fn((req, res, next) => next()),
   validateEmailLogin: jest.fn((req, res, next) => next()),
   requireLocalAuth: jest.fn((req, res, next) => next()),
@@ -284,6 +285,29 @@ describe('admin auth OpenID refresh route', () => {
       expect.any(Object),
       expect.objectContaining({ previousRefreshToken: 'incoming-refresh-token' }),
     );
+  });
+
+  it('uses the renewal limiter without consuming login attempts', async () => {
+    const { createAdminRefreshLimiter } = jest.requireActual('@librechat/api');
+    const limiter = createAdminRefreshLimiter({
+      getAppConfig: async () => ({ config: { rateLimits: { adminRefresh: { max: 8 } } } }),
+    });
+    middleware.adminRefreshLimiter.mockImplementation(limiter);
+    try {
+      for (let index = 0; index < 8; index++) {
+        await request(app)
+          .post('/api/admin/oauth/refresh')
+          .send({ refresh_token: 'incoming-refresh-token' })
+          .expect(200);
+      }
+      await request(app)
+        .post('/api/admin/oauth/refresh')
+        .send({ refresh_token: 'incoming-refresh-token', user_id: 'different-user' })
+        .expect(429);
+      expect(middleware.loginLimiter).not.toHaveBeenCalled();
+    } finally {
+      middleware.adminRefreshLimiter.mockImplementation((_req, _res, next) => next());
+    }
   });
 
   it('returns the existing refresh failure response when the IdP rejects the grant', async () => {
