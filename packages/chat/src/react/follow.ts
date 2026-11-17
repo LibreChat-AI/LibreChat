@@ -190,6 +190,9 @@ export function useFollowChat({
           }
           await pause(getReconnectDelay(failures));
         }
+        if (stale) {
+          return;
+        }
         reading = true;
         await read();
       } catch {
@@ -206,16 +209,24 @@ export function useFollowChat({
 
     const open = async (): Promise<void> => {
       try {
-        /** Asked before the read, so a run that had already ended is fully in what is read. */
-        const status = await host.current.transport.getStatus?.(id);
+        /**
+         * Asked before the read, so a run that had already ended is fully in what is read. A status
+         * that cannot be read says nothing about the stored rows, which are read all the same.
+         */
+        const status = await Promise.resolve(host.current.transport.getStatus?.(id)).catch(
+          () => 'unknown' as const,
+        );
         await read();
         if (stale) {
           return;
         }
         loaded = true;
         setLoad({ id, attempt, state: 'ready' });
-        /** A run the caller signalled during the read had nothing to attach to until now. */
-        if (status?.active === true || host.current.live) {
+        /**
+         * A run the caller signalled during the read had nothing to attach to until now. With the
+         * status unknown the attachment asks again, and reports or retries its own failure.
+         */
+        if (status === 'unknown' || status?.active === true || host.current.live) {
           await attach();
         }
       } catch {

@@ -398,6 +398,41 @@ describe('useFollowChat', () => {
     expect(textOf(result.current.messages)).toEqual(['Second run']);
   });
 
+  it('shows the stored messages when the status cannot be read, and still tries to attach', async () => {
+    const { transport, streams } = createTransport(running);
+    (transport.getStatus as jest.Mock).mockRejectedValueOnce(new Error('status unavailable'));
+    const { result } = setup({ transport });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.isLoadError).toBe(false);
+    expect(result.current.messages).toEqual([brief]);
+    await waitFor(() => expect(streams).toHaveLength(1));
+  });
+
+  it('reads nothing more once it is gone, even with a reconnect still waiting', async () => {
+    const { transport, streams } = createTransport(running);
+    const { loadMessages, unmount } = setup({ transport });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    act(() => streams[0].push(snapshot('Partial')));
+    await settle();
+
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        streams[0].push({ type: 'error', status: 0 });
+        await jest.advanceTimersByTimeAsync(1);
+      });
+      unmount();
+      await jest.advanceTimersByTimeAsync(10 * 60_000);
+    } finally {
+      jest.useRealTimers();
+    }
+    await settle();
+
+    expect(loadMessages).toHaveBeenCalledTimes(1);
+    expect(streams).toHaveLength(1);
+  });
+
   it('leaves the conversation it was following when the id changes', async () => {
     const { transport, streams } = createTransport(running);
     const { result, rerender, loadMessages } = setup({ transport });
