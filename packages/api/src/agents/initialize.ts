@@ -1128,6 +1128,11 @@ export async function initializeAgent(
   const configNeedsNormalization = configRawServerNames.some(
     (name) => normalizeServerName(name) !== name,
   );
+  const hasLegacyColonMCPKeyCandidates =
+    (agent.tools ?? []).some((tool) => typeof tool === 'string' && tool.startsWith('mcp:')) ||
+    Object.keys(agent.tool_options ?? {}).some((key) => key.startsWith('mcp:'));
+  const requiresAccessibleMcpServerNames =
+    configNeedsNormalization || hasLegacyColonMCPKeyCandidates;
   /**
    * Rewriting legacy keys requires a COMPLETE collision audit: the normalized
    * form of an operator name may belong to a user-DB server, and healing into
@@ -1141,7 +1146,7 @@ export async function initializeAgent(
    */
   let healNamesPromise: Promise<readonly string[] | null> | undefined;
   const resolveHealNames = (): Promise<readonly string[] | null> => {
-    if (!configNeedsNormalization) {
+    if (!requiresAccessibleMcpServerNames) {
       return Promise.resolve(configRawServerNames);
     }
     if (db.getAccessibleMcpServerNames == null) {
