@@ -4,7 +4,6 @@ import {
   INSIGHTS_SEARCH_MIN_LENGTH,
   INSIGHTS_AGENT_ID_MAX_LENGTH,
   FEEDBACK_REASON_KEYS,
-  SystemRoles,
 } from 'librechat-data-provider';
 import type {
   TInsightsParams,
@@ -78,7 +77,7 @@ function selectionResponse(agents: TInsightsAgent[]): TInsightsAggregateResponse
   return {
     agents: agents.map(({ id, name }) => ({ id, name })),
     selectionRequired: true,
-    allAgentsAllowed: false,
+    autoSelectAllAgents: false,
     summary: {
       totalUsers: 0,
       totalConversations: 0,
@@ -140,7 +139,7 @@ export function createInsightsHandler({
       const {
         enabled,
         showDetails: configuredShowDetails,
-        adminAllowAllAgents,
+        adminAutoSelectAllAgents,
       } = resolveInsightsConfig(req);
       if (!enabled) {
         res.status(404).json({ message: 'Not found' });
@@ -151,7 +150,7 @@ export function createInsightsHandler({
         return;
       }
 
-      const { agents, detailAgentIds } = await getInsightsAccess(req.user);
+      const { agents, detailAgentIds, tenantWide } = await getInsightsAccess(req.user);
       if (agents.length === 0) {
         res.status(403).json({ message: 'Forbidden' });
         return;
@@ -167,18 +166,12 @@ export function createInsightsHandler({
         res.status(403).json({ message: 'Forbidden' });
         return;
       }
-      const requiresSelection =
-        req.user.role === SystemRoles.ADMIN && adminAllowAllAgents === false;
-      if (requiresSelection && requestedAgentIds.length === 0) {
+      /** Admins and global READ_INSIGHTS holders see every agent in the tenant: unless configured,
+       *  nothing loads until they choose agents. Choosing All agents sends `allAgents=true`. */
+      const requiresSelection = tenantWide === true && !adminAutoSelectAllAgents;
+      const allAgentsRequested = stringValue(req.query.allAgents) === 'true';
+      if (requiresSelection && requestedAgentIds.length === 0 && !allAgentsRequested) {
         res.json(selectionResponse(agents));
-        return;
-      }
-      if (
-        requiresSelection &&
-        authorizedAgentIds.size > 1 &&
-        requestedAgentIds.length === authorizedAgentIds.size
-      ) {
-        res.status(403).json({ message: 'Forbidden' });
         return;
       }
       const agentIds = requestedAgentIds.length > 0 ? requestedAgentIds : [...authorizedAgentIds];
@@ -211,7 +204,7 @@ export function createInsightsHandler({
       });
       const response = {
         ...insights,
-        ...(requiresSelection && { allAgentsAllowed: false }),
+        ...(requiresSelection && { autoSelectAllAgents: false }),
       };
       res.json(showDetails ? response : toAggregateInsightsResponse(response));
     } catch (error) {

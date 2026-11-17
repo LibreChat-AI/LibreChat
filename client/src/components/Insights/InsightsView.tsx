@@ -727,7 +727,6 @@ export default function InsightsView() {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [pendingAgentIds, setPendingAgentIds] = useState<string[] | null>(null);
-  const [allAgentsSelectionBlocked, setAllAgentsSelectionBlocked] = useState(false);
   const dateRangeSelectionTimeout = useRef<number>();
   const isSmallScreen = useDrawerViewport();
   const insightsFeatureEnabled = startupConfig?.insightsEnabled === true;
@@ -735,14 +734,15 @@ export default function InsightsView() {
     () => [...new Set(urlSearchParams.getAll('agentIds').filter(Boolean))].sort(),
     [urlSearchParams],
   );
+  /** All agents chosen explicitly while admins start with nothing selected. */
+  const allAgentsChosen = urlSearchParams.get('allAgents') === 'true';
   const insightsParams = useMemo<TInsightsParams>(() => {
-    const params: TInsightsParams = {
-      page,
-      pageSize: 10,
-      search,
-      timeZone,
-      ...(selectedAgentIds.length > 0 ? { agentIds: selectedAgentIds } : {}),
-    };
+    const params: TInsightsParams = { page, pageSize: 10, search, timeZone };
+    if (selectedAgentIds.length > 0) {
+      params.agentIds = selectedAgentIds;
+    } else if (allAgentsChosen) {
+      params.allAgents = true;
+    }
     if (customDateRange) {
       return {
         ...params,
@@ -752,7 +752,7 @@ export default function InsightsView() {
       };
     }
     return { ...params, range };
-  }, [customDateRange, page, range, search, selectedAgentIds, timeZone]);
+  }, [allAgentsChosen, customDateRange, page, range, search, selectedAgentIds, timeZone]);
   const displayDateRange = useMemo(
     () => customDateRange ?? getShortcutDateRange(range),
     [customDateRange, range],
@@ -782,9 +782,9 @@ export default function InsightsView() {
   }, [data]);
   const effectiveAgentIds = useMemo(() => {
     if (selectedAgentIds.length > 0) return selectedAgentIds;
-    if (data?.allAgentsAllowed === false) return [];
+    if (data?.autoSelectAllAgents === false && !allAgentsChosen) return [];
     return agentItems.map((agent) => agent.value);
-  }, [agentItems, selectedAgentIds, data?.allAgentsAllowed]);
+  }, [agentItems, allAgentsChosen, selectedAgentIds, data?.autoSelectAllAgents]);
   const displayedAgentIds = pendingAgentIds ?? effectiveAgentIds;
 
   useDocumentTitle(`${localize('com_insights_title')} | LibreChat`);
@@ -963,15 +963,6 @@ export default function InsightsView() {
     if (!data) {
       return;
     }
-    if (
-      data.allAgentsAllowed === false &&
-      data.agents.length > 1 &&
-      new Set(agentIds).size === data.agents.length
-    ) {
-      setAllAgentsSelectionBlocked(true);
-      return;
-    }
-    setAllAgentsSelectionBlocked(false);
     if (agentIds.length === 0) {
       setPendingAgentIds([]);
       return;
@@ -979,16 +970,18 @@ export default function InsightsView() {
     setPendingAgentIds(null);
     const normalizedIds = [...new Set(agentIds)].sort();
     const allAgentIds = data.agents.map((agent) => agent.id).sort();
-    const nextParams = new URLSearchParams(urlSearchParams);
-    nextParams.delete('agentIds');
-    if (
-      data.allAgentsAllowed === false ||
-      normalizedIds.length !== allAgentIds.length ||
-      normalizedIds.some((agentId, index) => agentId !== allAgentIds[index])
-    ) {
+    const nextParams = clearAgentFilters(urlSearchParams);
+    const everyAgent =
+      allAgentIds.length > 1 &&
+      normalizedIds.length === allAgentIds.length &&
+      normalizedIds.every((agentId, index) => agentId === allAgentIds[index]);
+    if (!everyAgent) {
       for (const agentId of normalizedIds) {
         nextParams.append('agentIds', agentId);
       }
+    } else if (data.autoSelectAllAgents === false) {
+      // An empty selection means "none" here, so All agents is a flag rather than every ID.
+      nextParams.set('allAgents', 'true');
     }
     setUrlSearchParams(nextParams, { replace: true });
     setPage(1);
@@ -1047,7 +1040,7 @@ export default function InsightsView() {
                 if (values.length === 0) {
                   return localize('com_insights_no_agents_selected');
                 }
-                if (values.length === agentItems.length && data.allAgentsAllowed !== false) {
+                if (values.length === agentItems.length && agentItems.length > 1) {
                   return localize('com_insights_all_agents', { count: agentItems.length });
                 }
                 if (values.length === 1) {
@@ -1061,9 +1054,8 @@ export default function InsightsView() {
                     type="button"
                     size="sm"
                     variant="ghost"
-                    disabled={data.allAgentsAllowed === false}
                     aria-label={
-                      displayedAgentIds.length > 0 && data.allAgentsAllowed !== false
+                      displayedAgentIds.length > 0
                         ? localize('com_ui_clear_all')
                         : localize('com_insights_select_all_agents')
                     }
@@ -1092,11 +1084,6 @@ export default function InsightsView() {
                         <span className="text-text-secondary">({displayedAgentIds.length})</span>
                       )}
                   </Button>
-                  {allAgentsSelectionBlocked && (
-                    <p role="alert" className="text-text-secondary px-4 py-2 text-sm">
-                      {localize('com_insights_all_agents_disabled')}
-                    </p>
-                  )}
                 </div>
               }
             />

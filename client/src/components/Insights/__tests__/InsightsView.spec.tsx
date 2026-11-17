@@ -151,12 +151,12 @@ async function openAgentMenu(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('InsightsView agent selection', () => {
-  it('disables All agents and prevents selecting the full set through individual choices', async () => {
+  it('opens with no agents selected and lets admins choose All agents explicitly', async () => {
     mockUseInsightsQuery.mockImplementation((params) => ({
       data: {
         ...insightsData,
-        allAgentsAllowed: false,
-        selectionRequired: !params.agentIds?.length,
+        autoSelectAllAgents: false,
+        selectionRequired: !params.agentIds?.length && !params.allAgents,
       },
       isLoading: false,
       isFetching: false,
@@ -168,20 +168,39 @@ describe('InsightsView agent selection', () => {
     expect(screen.getByText('com_insights_select_agents_to_load')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'com_insights_models' })).not.toBeInTheDocument();
     await user.click(screen.getByText('com_insights_no_agents_selected'));
-    expect(screen.getByRole('button', { name: 'com_insights_select_all_agents' })).toBeDisabled();
-    await user.click(screen.getByRole('option', { name: 'Alpha' }));
-    await waitFor(() => expect(lastQueryParams().agentIds).toEqual(['agent-1']));
+    const allAgents = screen.getByRole('button', { name: 'com_insights_select_all_agents' });
+    expect(allAgents).toBeEnabled();
+    await user.click(allAgents);
+    // With automatic selection off, an empty list means "none", so All agents is a flag.
+    await waitFor(() => expect(lastQueryParams().allAgents).toBe(true));
+    expect(lastQueryParams().agentIds).toBeUndefined();
+    expect(screen.getByRole('combobox', { hidden: true })).toHaveTextContent(
+      'com_insights_all_agents:3',
+    );
     expect(screen.queryByText('com_insights_select_agents_to_load')).not.toBeInTheDocument();
-    await user.click(screen.getByRole('option', { name: 'Beta' }));
-    await waitFor(() => expect(lastQueryParams().agentIds).toEqual(['agent-1', 'agent-2']));
-    await user.click(screen.getByRole('option', { name: 'Gamma' }));
-    expect(screen.getByRole('alert')).toHaveTextContent('com_insights_all_agents_disabled');
-    expect(lastQueryParams().agentIds).toEqual(['agent-1', 'agent-2']);
-    expect(screen.getByRole('option', { name: 'Gamma' })).toHaveAttribute('aria-selected', 'false');
-    await user.click(screen.getByRole('option', { name: 'Alpha' }));
-    await user.click(screen.getByRole('option', { name: 'Gamma' }));
-    await waitFor(() => expect(lastQueryParams().agentIds).toEqual(['agent-2', 'agent-3']));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('lets admins reach every agent one by one when automatic selection is off', async () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: {
+        ...insightsData,
+        autoSelectAllAgents: false,
+        selectionRequired: !params.agentIds?.length && !params.allAgents,
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+    const user = userEvent.setup();
+    renderView();
+    await user.click(screen.getByText('com_insights_no_agents_selected'));
+    for (const name of ['Alpha', 'Beta', 'Gamma']) {
+      await user.click(screen.getByRole('option', { name }));
+    }
+    await waitFor(() => expect(lastQueryParams().allAgents).toBe(true));
+    expect(screen.getByRole('option', { name: 'Gamma' })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('lets an administrator explicitly select their only available agent', async () => {
@@ -189,8 +208,8 @@ describe('InsightsView agent selection', () => {
       data: {
         ...insightsData,
         agents: [insightsData.agents[0]],
-        allAgentsAllowed: false,
-        selectionRequired: !params.agentIds?.length,
+        autoSelectAllAgents: false,
+        selectionRequired: !params.agentIds?.length && !params.allAgents,
       },
       isLoading: false,
       isFetching: false,
@@ -205,7 +224,7 @@ describe('InsightsView agent selection', () => {
     expect(screen.getByRole('combobox', { hidden: true })).toHaveTextContent('Alpha');
   });
 
-  it('recovers an old all-agents URL rejected by the server without showing all agents as selected', async () => {
+  it('recovers agent filters the server rejects without showing them as selected', async () => {
     mockUseInsightsQuery.mockImplementation((params) => {
       if (params.agentIds?.length === insightsData.agents.length) {
         return {
@@ -218,7 +237,7 @@ describe('InsightsView agent selection', () => {
         };
       }
       return {
-        data: { ...insightsData, allAgentsAllowed: false, selectionRequired: true },
+        data: { ...insightsData, autoSelectAllAgents: false, selectionRequired: true },
         isLoading: false,
         isFetching: false,
         error: null,

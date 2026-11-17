@@ -3866,7 +3866,6 @@
   "com_insights_all_agents_label": "All agents",
   "com_insights_agents_selected": "{{count}} agents",
   "com_insights_no_agents_selected": "No agents selected",
-  "com_insights_all_agents_disabled": "The all-agents view is disabled for administrators. Deselect an agent to change this selection.",
   "com_insights_select_agents_to_load": "Select agents to load their statistics.",
   "com_insights_search_agents": "Search agents",
   "com_insights_no_agents_found": "No agents found",

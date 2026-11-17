@@ -3,10 +3,11 @@ import { clearAgentFilters, shouldRecoverAgentFilters } from './agentFilters';
 describe('Insights agent filter recovery', () => {
   it('removes only agent filters from a stale bookmarked URL', () => {
     const params = clearAgentFilters(
-      new URLSearchParams('agentIds=deleted-agent&agentIds=revoked-agent&range=30d'),
+      new URLSearchParams('agentIds=deleted-agent&agentIds=revoked-agent&allAgents=true&range=30d'),
     );
 
     expect(params.getAll('agentIds')).toEqual([]);
+    expect(params.get('allAgents')).toBeNull();
     expect(params.get('range')).toBe('30d');
   });
 

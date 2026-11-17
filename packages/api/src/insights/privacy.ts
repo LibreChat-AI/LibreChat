@@ -18,8 +18,8 @@ export function toAggregateInsightsResponse(
   insights: TInsightsResponse,
 ): TInsightsAggregateResponse {
   return {
-    ...(insights.allAgentsAllowed !== undefined && {
-      allAgentsAllowed: insights.allAgentsAllowed,
+    ...(insights.autoSelectAllAgents !== undefined && {
+      autoSelectAllAgents: insights.autoSelectAllAgents,
     }),
     ...(insights.selectionRequired !== undefined && {
       selectionRequired: insights.selectionRequired,

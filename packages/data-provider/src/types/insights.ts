@@ -13,6 +13,9 @@ export type TInsightsParams = {
   timeZone?: string;
   search?: string;
   agentIds?: string[];
+  /** Every agent the viewer may see, chosen explicitly. A flag rather than an ID list, so it
+   *  stays one short parameter for thousands of agents. */
+  allAgents?: boolean;
   page?: number;
   pageSize?: number;
 };
@@ -111,7 +114,7 @@ export type TInsightsModel = TInsightsResponseOutcomes & {
 
 export type TInsightsAggregateResponse = {
   /** False when the administrator's combined all-agents view is disabled. */
-  allAgentsAllowed?: boolean;
+  autoSelectAllAgents?: boolean;
   selectionRequired?: boolean;
   agents: TInsightsAgent[];
   summary: TInsightsSummary;

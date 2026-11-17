@@ -16,6 +16,9 @@ export type InsightsAccessUser = {
 export type InsightsAccess = {
   agents: TInsightsAgent[];
   detailAgentIds: string[];
+  /** Set for administrators and holders of the global READ_INSIGHTS capability: every agent in
+   *  the tenant. Absent for everyone else. */
+  tenantWide?: true;
 };
 
 export type InsightsAgentAccessDeps = {
@@ -56,7 +59,7 @@ function createAccessResolver(deps: InsightsAgentAccessDeps, includeEditableAgen
       : { tenantId: { $exists: false } };
     if (user.role === SystemRoles.ADMIN) {
       const agents = sortChoices(await deps.getAgents(tenantFilter, '_id id name tenantId'));
-      return { agents, detailAgentIds: agents.map((agent) => agent.id) };
+      return { agents, detailAgentIds: agents.map((agent) => agent.id), tenantWide: true };
     }
 
     const principalsPromise = deps.getUserPrincipals({
@@ -78,7 +81,11 @@ function createAccessResolver(deps: InsightsAgentAccessDeps, includeEditableAgen
 
     if (hasGlobalAccess) {
       const choices = sortChoices(agents);
-      return { agents: choices, detailAgentIds: choices.map((agent) => agent.id) };
+      return {
+        agents: choices,
+        detailAgentIds: choices.map((agent) => agent.id),
+        tenantWide: true,
+      };
     }
     const privatePrincipals = principals.filter(
       (principal) => principal.principalType !== PrincipalType.PUBLIC,

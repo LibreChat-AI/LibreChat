@@ -6,30 +6,30 @@ const request = (insights?: TInsightsConfig): Pick<ServerRequest, 'config'> =>
   ({ config: { interfaceConfig: { insights } } }) as Pick<ServerRequest, 'config'>;
 
 describe('Insights request configuration', () => {
-  it('uses the scoped policy to disable the admin all-agents view', () => {
+  it('uses the scoped policy to load all agents automatically for admins', () => {
     expect(
       createInsightsConfigResolver(() => false)(
-        request({ enabled: true, adminAllowAllAgents: false }),
-      ).adminAllowAllAgents,
-    ).toBe(false);
+        request({ enabled: true, adminAutoSelectAllAgents: true }),
+      ).adminAutoSelectAllAgents,
+    ).toBe(true);
   });
   it('uses YAML to enable aggregate-only Insights without the environment switch', () => {
     expect(
       createInsightsConfigResolver(() => false)(request({ enabled: true, showDetails: false })),
-    ).toEqual({ enabled: true, showDetails: false, adminAllowAllAgents: true });
+    ).toEqual({ enabled: true, showDetails: false, adminAutoSelectAllAgents: false });
   });
 
   it('honours explicit YAML disable even when the environment switch is enabled', () => {
     expect(
       createInsightsConfigResolver(() => true)(request({ enabled: false, showDetails: true })),
-    ).toEqual({ enabled: false, showDetails: true, adminAllowAllAgents: true });
+    ).toEqual({ enabled: false, showDetails: true, adminAutoSelectAllAgents: false });
   });
 
   it('keeps environment-only enablement aggregate-only by default', () => {
     expect(createInsightsConfigResolver(() => true)(request())).toEqual({
       enabled: true,
       showDetails: false,
-      adminAllowAllAgents: true,
+      adminAutoSelectAllAgents: false,
     });
     expect(createInsightsConfigResolver(() => false)(request()).enabled).toBe(false);
   });
@@ -39,12 +39,12 @@ describe('Insights request configuration', () => {
     expect(resolve(request({ enabled: true }))).toEqual({
       enabled: true,
       showDetails: false,
-      adminAllowAllAgents: true,
+      adminAutoSelectAllAgents: false,
     });
     expect(resolve(request({ enabled: true, showDetails: true }))).toEqual({
       enabled: true,
       showDetails: true,
-      adminAllowAllAgents: true,
+      adminAutoSelectAllAgents: false,
     });
   });
 
