@@ -120,6 +120,20 @@ describe('FilePreviewDialog lifecycle', () => {
     );
   });
 
+  it('offers a presentation for download without fetching its bytes as text', () => {
+    render(
+      <FilePreviewDialog
+        {...props}
+        fileName="deck.pptx"
+        fileType="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      />,
+    );
+    expect(mockOwnedPreview).not.toHaveBeenCalled();
+    expect(screen.queryByText('com_ui_loading')).toBeNull();
+    expect(screen.getByText('com_ui_preview_unavailable')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_download deck.pptx' })).toBeInTheDocument();
+  });
+
   it('handles pending, polling failure, retry, and empty success', () => {
     mockPreview = { file_id: 'f1', status: 'pending' };
     const view = render(<FilePreviewDialog {...props} deliveryPath="text" />);

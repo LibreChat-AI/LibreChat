@@ -51,6 +51,15 @@ export function isExtractedTextPreviewLoading(
   return !isError && (isInitialLoading || status === 'pending');
 }
 
+/** Matches `xml`, `xml-dtd` and `+xml` suffixed subtypes. OOXML office types
+ *  (`vnd.openxmlformats-officedocument.*`) contain "xml" too, but are ZIP archives. */
+const XML_SUBTYPE = /(^|\+)xml($|-)/;
+
+function isXmlMime(mime: string): boolean {
+  const subtype = mime.split(';')[0].split('/')[1]?.trim() ?? '';
+  return XML_SUBTYPE.test(subtype);
+}
+
 function getPreviewKindByMime(mime?: string): PreviewKind {
   if (!mime) {
     return false;
@@ -61,7 +70,7 @@ function getPreviewKindByMime(mime?: string): PreviewKind {
   if (
     mime.startsWith('text/') ||
     mime.includes('json') ||
-    mime.includes('xml') ||
+    isXmlMime(mime) ||
     mime.includes('javascript') ||
     mime.includes('typescript') ||
     mime.includes('yaml') ||
