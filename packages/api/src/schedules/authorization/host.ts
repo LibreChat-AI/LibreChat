@@ -6,11 +6,7 @@ import {
 import type { ScheduleMCPConsentStorage } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
-import type {
-  ScheduleMCPEnrollmentResolver,
-  ScheduleMCPConsentDeps,
-  ScheduleMCPConsentService,
-} from './service';
+import type { ScheduleMCPEnrollmentResolver, ScheduleMCPConsentService } from './service';
 import type { ScheduleMCPConsentHandlers } from './handlers';
 import type { CheckAccessParams } from '~/middleware/access';
 import type { SchedulesHandlersDeps } from '../handlers';
@@ -25,7 +21,6 @@ export function createScheduleMCPConsentHost(deps: {
   getRoleByName: CheckAccessParams['getRoleByName'];
   canViewAgent: (agentId: string, user: IUser) => Promise<boolean>;
   resolveEnrollment?: ScheduleMCPEnrollmentResolver;
-  checkToolPolicy?: ScheduleMCPConsentDeps['checkToolPolicy'];
 }): { service: ScheduleMCPConsentService; handlers: ScheduleMCPConsentHandlers } {
   const pendingPrincipals = new Map<string, Promise<IUser | null>>();
   const loadPrincipal = (identity: ScheduledMCPIdentity): Promise<IUser | null> => {
@@ -78,7 +73,6 @@ export function createScheduleMCPConsentHost(deps: {
       return permissions.every(Boolean) && (await deps.canViewAgent(identity.agentId, user));
     },
     resolveEnrollment: deps.resolveEnrollment,
-    checkToolPolicy: deps.checkToolPolicy,
   });
   const handlers = createScheduleMCPConsentHandlers({
     service,

@@ -14,12 +14,12 @@ import {
 } from '../service';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
 import { createScheduleMCPExecution, getScheduleMCPExecution } from './execution';
+import { executionFixture, allowOffered, readTool } from './execution.helper';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createScheduleExecutionContext } from '~/agents/authority/context';
 import { createAgentTriggerExecutionHost } from '~/agents/triggers/host';
 import { createAgentTriggerEnvelope } from '~/agents/triggers/envelope';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
-import { executionFixture, readTool } from './execution.helper';
 import { resolveScheduleMCPCompletion } from './continuation';
 import { retainScheduleMCPCompletion } from './continuation';
 import { createScheduleMCPConsentService } from './service';
@@ -78,7 +78,6 @@ async function setup(legacy = false) {
     resolveEnrollment: async () => [fixture.target],
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     canUse: async () => true,
-    checkToolPolicy: async () => true,
   });
   const enroll = async () => {
     const offer = await consent.view(identity);
@@ -86,13 +85,11 @@ async function setup(legacy = false) {
       offerDigest: offer.offer!.digest,
       expectedRevision: offer.revision,
       lifetimeHours: 1,
+      allow: allowOffered(offer.targets),
     });
   };
   if (!legacy) await enroll();
-  const loadAuthorization = jest.fn(async () => ({
-    authority: consent.authority,
-    policy: fixture.policy,
-  }));
+  const loadAuthorization = jest.fn(async () => ({ authority: consent.authority }));
   const factory = createScheduleMCPExecution({ storage: methods, loadAuthorization });
   const execution = (await factory.resolve(identity, 'invoke'))!;
   const scheduledFor = new Date('2026-10-02T12:00:00Z');

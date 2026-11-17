@@ -240,6 +240,45 @@ describe('createCustomConfigLoader policy links', () => {
   });
 });
 
+describe('createCustomConfigLoader retired schedule tool policy', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(logger, 'warn');
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    jest.spyOn(logger, 'info').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) {
+      delete process.env.CONFIG_PATH;
+    } else {
+      process.env.CONFIG_PATH = originalConfigPath;
+    }
+  });
+
+  it('still loads a config that carries the retired read-only list and says it no longer applies', async () => {
+    process.env.CONFIG_PATH = path.join(__dirname, '__fixtures__', 'schedules', 'retired.yaml');
+    const config = await createLoader()(false);
+
+    expect(config?.interface?.schedules).toMatchObject({
+      use: true,
+      mcpConsent: { enabled: true },
+    });
+    expect(warnings(warn)).toContain('interface.schedules.mcpConsent.readOnlyPolicy');
+    expect(warnings(warn)).toContain('schedule owner now chooses');
+  });
+
+  it('says nothing when the key is absent', async () => {
+    process.env.CONFIG_PATH = fixture('valid');
+    await createLoader()(false);
+
+    expect(warnings(warn)).not.toContain('readOnlyPolicy');
+  });
+});
+
 describe('createCustomConfigLoader remote fetch failures', () => {
   const originalConfigPath = process.env.CONFIG_PATH;
 

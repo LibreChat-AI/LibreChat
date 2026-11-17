@@ -6,7 +6,7 @@ import {
 } from '~/agents/authority/context';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
 import { bindScheduledMCPInvocation, getScheduleMCPExecution } from './execution';
-import { executionFixture, readTool } from './execution.helper';
+import { executionFixture, allowOffered, readTool } from './execution.helper';
 import { createMCPRequestContext } from '~/mcp/request';
 import { createScheduleMCPPreflight } from '../mcp';
 import { ScheduledMCPPolicyError } from './policy';
@@ -32,7 +32,6 @@ async function setup() {
               scopes: [],
             },
           },
-          readOnlyPolicy: fixture.policy,
         },
       },
     },
@@ -105,6 +104,7 @@ async function setup() {
     offerDigest: offer.offer!.digest,
     expectedRevision: null,
     lifetimeHours: 1,
+    allow: allowOffered(offer.targets),
   });
   row.mcpConsent = fixture.snapshot.enrollment!;
   const connect = jest.fn(async () => ({
@@ -274,17 +274,10 @@ it('ignores spoofed body fields on ordinary chat and refuses cross-tenant trigge
   ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
 });
 
-it('keeps live role denial and policy removal fail-closed for enrolled schedules', async () => {
+it('keeps live role denial fail-closed for enrolled schedules', async () => {
   const f = await setup();
-  const role = await f.getRoleByName();
   f.getRoleByName.mockResolvedValue({ permissions: {} } as IRole);
   await expect(f.check()).rejects.toMatchObject({ code: 'mcp_permission_denied' });
-  f.getRoleByName.mockResolvedValue(role);
-  const schedules = f.config.interfaceConfig?.schedules;
-  if (typeof schedules === 'object') delete schedules.mcpConsent?.readOnlyPolicy;
-  await expect(f.check()).rejects.toMatchObject({
-    outcomes: [expect.objectContaining({ reason: 'tool_policy_denied' })],
-  });
 });
 
 it('does not construct the host for ordinary chats', async () => {
@@ -500,6 +493,7 @@ it('attaches a legacy monitor without minting a grant and fences its next tool a
     offerDigest: offer.offer!.digest,
     expectedRevision: null,
     lifetimeHours: 1,
+    allow: allowOffered(offer.targets),
   });
   await expect(call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
 });

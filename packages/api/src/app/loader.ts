@@ -139,6 +139,25 @@ function reportPolicyLinkCheck(configPath: string, dropped: string[]): void {
   );
 }
 
+/**
+ * `interface.schedules.mcpConsent.readOnlyPolicy` used to decide which MCP tools a scheduled
+ * chat could call. The schedule's owner chooses now, and the schema drops the key without a
+ * word, so an operator who still relies on it is told.
+ */
+function reportRetiredScheduleToolPolicy(configPath: string, config: unknown): void {
+  const schedules = (config as { interface?: { schedules?: unknown } } | null)?.interface
+    ?.schedules;
+  const consent = (schedules as { mcpConsent?: unknown } | null | undefined)?.mcpConsent;
+  if (consent == null || typeof consent !== 'object' || !('readOnlyPolicy' in consent)) {
+    return;
+  }
+  logger.warn(
+    `Ignoring interface.schedules.mcpConsent.readOnlyPolicy in ${configPath}: it no longer limits ` +
+      'which MCP tools a scheduled chat may call. Each schedule owner now chooses the allowed ' +
+      'tools when granting consent. Remove the key.',
+  );
+}
+
 function reportThemeCheck(configPath: string, errors: string[], warnings: string[]): void {
   if (errors.length > 0) {
     logger.warn(
@@ -294,6 +313,7 @@ export function createCustomConfigLoader({
       const linkCheck = checkConfigPolicyLinks(loadedConfig);
       loadedConfig = linkCheck.config;
       reportPolicyLinkCheck(configPath, linkCheck.dropped);
+      reportRetiredScheduleToolPolicy(configPath, loadedConfig);
 
       setMaxSubagents(getConfiguredMaxSubagents(loadedConfig));
       /* `filters` PII patterns are sized by RE2, which the shared schema cannot carry. Every

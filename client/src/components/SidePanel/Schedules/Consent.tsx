@@ -1,6 +1,14 @@
 import { useState, useId } from 'react';
-import { Button, Input, Label, Spinner, OGDialog, OGDialogTemplate } from '@librechat/client';
-import type { ScheduleMCPConsentView } from 'librechat-data-provider';
+import {
+  Button,
+  Input,
+  Label,
+  Spinner,
+  Checkbox,
+  OGDialog,
+  OGDialogTemplate,
+} from '@librechat/client';
+import type { ScheduleMCPConsentView, ScheduledMCPTarget } from 'librechat-data-provider';
 import type { MutableRefObject } from 'react';
 import {
   useScheduleMCPConsent,
@@ -23,6 +31,22 @@ const messageKeys = {
   success: 'com_ui_schedule_consent_confirmed',
 } as const;
 
+/** Every tool on offer for a server, whichever agents selected it. */
+function offeredTools(target: ScheduledMCPTarget): string[] {
+  return [...new Set(target.permittedTools.flatMap((selection) => selection.tools))].sort();
+}
+
+/** The owner's starting point: what the stored grant already allows and is still on offer. */
+function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
+  return Object.fromEntries(
+    data.targets.map((target) => {
+      const offered = offeredTools(target);
+      const allowed = data.allowed[target.resource.serverName] ?? [];
+      return [target.resource.serverName, offered.filter((tool) => allowed.includes(tool))];
+    }),
+  );
+}
+
 export default function Consent({
   canConfirm = true,
   id,
@@ -42,15 +66,30 @@ export default function Consent({
   const { confirm, revoke } = useScheduleMCPConsentMutations(id);
   const [hours, setHours] = useState(1);
   const [message, setMessage] = useState<'success' | 'revoked' | 'error' | null>(null);
+  /** Null until the owner changes a box, so a refetch cannot overwrite a choice in progress. */
+  const [edited, setEdited] = useState<Record<string, string[]> | null>(null);
   const busy = confirm.isLoading || revoke.isLoading || query.isFetching;
   const data: ScheduleMCPConsentView | undefined = query.data;
+  const choosing = canConfirm && data?.offer != null;
+  const choice = edited ?? (data ? initialChoice(data) : {});
+  const chosenCount = Object.values(choice).reduce((count, tools) => count + tools.length, 0);
+  const setTools = (serverName: string, tools: string[]) =>
+    setEdited({ ...choice, [serverName]: tools });
   const commit = () => {
-    if (!data?.offer) return;
+    if (!data?.offer || chosenCount === 0) return;
     setMessage(null);
     confirm.mutate(
-      { offerDigest: data.offer.digest, expectedRevision: data.revision, lifetimeHours: hours },
       {
-        onSuccess: () => setMessage('success'),
+        offerDigest: data.offer.digest,
+        expectedRevision: data.revision,
+        lifetimeHours: hours,
+        allow: choice,
+      },
+      {
+        onSuccess: () => {
+          setEdited(null);
+          setMessage('success');
+        },
         onError: () => setMessage('error'),
       },
     );
@@ -122,11 +161,21 @@ export default function Consent({
                           })}
                         </p>
                       )}
-                      {target.permittedTools.map((selection) => (
-                        <p className="text-text-secondary text-xs" key={selection.agentId}>
-                          {selection.agentId}: {selection.tools.join(', ')}
+                      {choosing ? (
+                        <ToolChoice
+                          serverName={target.resource.serverName}
+                          offered={offeredTools(target)}
+                          chosen={choice[target.resource.serverName] ?? []}
+                          disabled={busy}
+                          onChange={(tools) => setTools(target.resource.serverName, tools)}
+                        />
+                      ) : (
+                        <p className="text-text-secondary text-xs">
+                          {localize('com_ui_schedule_consent_allowed', {
+                            tools: (data.allowed[target.resource.serverName] ?? []).join(', '),
+                          })}
                         </p>
-                      ))}
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -146,6 +195,7 @@ export default function Consent({
                       onClick={commit}
                       disabled={
                         busy ||
+                        chosenCount === 0 ||
                         !Number.isInteger(hours) ||
                         hours < 1 ||
                         hours > data.offer.maxLifetimeHours
@@ -153,6 +203,11 @@ export default function Consent({
                     >
                       {localize('com_ui_schedule_consent_confirm')}
                     </Button>
+                    {chosenCount === 0 && (
+                      <p className="text-text-secondary text-xs">
+                        {localize('com_ui_schedule_consent_none_selected')}
+                      </p>
+                    )}
                   </>
                 )}
                 {data.revision && data.state !== 'revoked' && (
@@ -171,5 +226,68 @@ export default function Consent({
         }
       />
     </OGDialog>
+  );
+}
+
+/** One server's tools: a box for the whole server and one per tool. Unchecked means refused. */
+function ToolChoice({
+  serverName,
+  offered,
+  chosen,
+  disabled,
+  onChange,
+}: {
+  serverName: string;
+  offered: string[];
+  chosen: string[];
+  disabled: boolean;
+  onChange: (tools: string[]) => void;
+}) {
+  const localize = useLocalize();
+  const groupId = useId();
+  const all = offered.length > 0 && offered.every((tool) => chosen.includes(tool));
+  /** Some but not all tools chosen shows as a partly filled box. */
+  const partly = chosen.length > 0 ? ('indeterminate' as const) : false;
+  return (
+    <fieldset className="mt-2 space-y-1" disabled={disabled}>
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id={`${groupId}-all`}
+          checked={all || partly}
+          disabled={disabled}
+          aria-label={localize('com_ui_schedule_consent_allow_server', { server: serverName })}
+          onCheckedChange={(checked) => onChange(checked === true ? offered : [])}
+        />
+        <Label htmlFor={`${groupId}-all`} className="text-xs">
+          {localize('com_ui_schedule_consent_allow_server', { server: serverName })}
+        </Label>
+      </div>
+      <ul className="space-y-1 pl-6">
+        {offered.map((tool) => (
+          <li key={tool} className="flex items-center gap-2">
+            <Checkbox
+              id={`${groupId}-${tool}`}
+              checked={chosen.includes(tool)}
+              disabled={disabled}
+              aria-labelledby={`${groupId}-${tool}-label`}
+              onCheckedChange={(checked) =>
+                onChange(
+                  checked === true
+                    ? offered.filter((name) => name === tool || chosen.includes(name))
+                    : chosen.filter((name) => name !== tool),
+                )
+              }
+            />
+            <Label
+              id={`${groupId}-${tool}-label`}
+              htmlFor={`${groupId}-${tool}`}
+              className="text-xs break-all"
+            >
+              {tool}
+            </Label>
+          </li>
+        ))}
+      </ul>
+    </fieldset>
   );
 }

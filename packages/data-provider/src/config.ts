@@ -36,10 +36,7 @@ import {
   MIN_BALANCE_RESERVATION_TTL_MS,
   DEFAULT_BALANCE_RESERVATION_TTL_MS,
 } from './balance';
-import {
-  scheduledMCPResourceBindingSchema,
-  scheduledMCPReadOnlyPolicySchema,
-} from './types/scheduleConsent';
+import { scheduledMCPResourceBindingSchema } from './types/scheduleConsent';
 import { partialWithoutDefaults } from './zod';
 
 export const tenantIdSchema = z
@@ -3632,8 +3629,6 @@ export const interfaceSchema = z
               enabled: z.boolean().optional(),
               maxLifetimeHours: z.number().int().min(1).max(8760).optional(),
               resources: z.record(z.string(), scheduledMCPResourceBindingSchema).optional(),
-              /** Trusted service declarations, keyed by raw server and upstream tool name. */
-              readOnlyPolicy: z.record(z.string(), scheduledMCPReadOnlyPolicySchema).optional(),
             })
             .optional(),
           /** Bounded exponential receipt retry interval; equal jitter prevents outage waves. */

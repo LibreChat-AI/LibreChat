@@ -32,7 +32,6 @@ import {
 import { createScheduleMCPExecution, bindScheduledMCPInvocation } from './authorization/execution';
 import { MockKeyv, createOAuthMCPServer } from '~/mcp/__tests__/helpers/oauthTestServer';
 import { getScheduledMCPConfigurationRevision } from './authorization/configuration';
-import { getScheduledMCPToolDefinitionDigest } from './authorization/policy';
 import { createScheduleMCPConsentService } from './authorization/service';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { restoreExecutionContext } from '~/agents/authority/context';
@@ -60,7 +59,6 @@ const config: ParsedServerConfig = {
 async function bearerFixture(serverConfig = config) {
   let time = Date.now();
   let allowed = true;
-  let policy = true;
   const target: ScheduledMCPTarget = {
     resource: {
       serverName: 'Files',
@@ -75,7 +73,7 @@ async function bearerFixture(serverConfig = config) {
       { agentId: 'root', tools: ['echo'] },
       { agentId: 'child', tools: ['echo'] },
     ],
-    policyRevision: 'read-only-policy',
+    policyRevision: 'offered-selections',
   };
   target.resource.configurationRevision = getScheduledMCPConfigurationRevision(
     serverConfig,
@@ -112,14 +110,13 @@ async function bearerFixture(serverConfig = config) {
     now: () => time,
     canUse: async () => allowed,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 1 }),
-    checkToolPolicy: async (request) =>
-      policy && request.selection.tools.every((tool) => tool === 'echo'),
   });
   const offer = await consent.view(identity);
   await consent.confirm(identity, {
     expectedRevision: null,
     offerDigest: offer.offer!.digest,
     lifetimeHours: 1,
+    allow: { Files: ['echo'] },
   });
   const resolveBearer = jest.fn(
     async (
@@ -162,8 +159,9 @@ async function bearerFixture(serverConfig = config) {
     deny: () => {
       allowed = false;
     },
-    denyPolicy: () => {
-      policy = false;
+    /** The agents stop selecting the tool the owner allowed. */
+    dropTool: () => {
+      for (const selection of target.permittedTools) selection.tools = ['other'];
     },
     revoke: () => consent.revoke(identity, snapshot.enrollment!.revision),
   };
@@ -254,14 +252,14 @@ it('renews after synthetic expiry without a session, retaining no login refresh 
     { signal: expect.any(AbortSignal) },
   ]);
 });
-it.each(['revoke', 'expiry', 'policy', 'root', 'revision', 'resource'] as const)(
+it.each(['revoke', 'expiry', 'selection', 'root', 'revision', 'resource'] as const)(
   'rejects %s after credential admission',
   async (mutation) => {
     const f = await bearerFixture();
     await f.call();
     if (mutation === 'revoke') await f.revoke();
     if (mutation === 'expiry') f.advance(3600_001);
-    if (mutation === 'policy') f.denyPolicy();
+    if (mutation === 'selection') f.dropTool();
     if (mutation === 'root') f.snapshot.agentId = 'other';
     if (mutation === 'revision') f.snapshot.configRevision++;
     if (mutation === 'resource') f.target.resource.url = 'https://other.test/mcp';
@@ -915,18 +913,9 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
           requestScopedConnections: f.context,
           flowManager,
         };
-        const connected = await manager.getConnection(input);
-        const catalog = await connected.fetchToolsSnapshot();
-        const echo = catalog.tools.find((tool) => tool.name === 'echo')!;
-        let digest = getScheduledMCPToolDefinitionDigest(echo);
         const execution = createScheduleMCPExecution({
           storage: f.storage,
-          loadAuthorization: async () => ({
-            authority: f.consent.authority,
-            policy: {
-              Files: { tools: { echo: { effect: 'read_only', definitionSha256: digest } } },
-            },
-          }),
+          loadAuthorization: async () => ({ authority: f.consent.authority }),
         });
         await execution.attach(f.context, identity, stage, true);
         const call = () =>
@@ -940,7 +929,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
           });
         await call();
         expect(calls).toBe(1);
-        digest = '0'.repeat(64);
+        f.dropTool();
         await expect(call()).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied' } });
         expect(calls).toBe(1);
         expect(server.tokenRequests).toEqual([]);
