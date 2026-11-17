@@ -40,6 +40,8 @@ export interface ApiKeyHandlerDependencies {
     expiresAt?: Date;
     createdAt: Date;
   } | null>;
+  /** Whether key runs are limited to what the owner granted, so the client offers the dialog. */
+  usesGrants?: (req: Request) => Promise<boolean>;
 }
 
 interface AuthenticatedRequest extends Request {
@@ -90,8 +92,11 @@ export function createApiKeyHandlers(deps: ApiKeyHandlerDependencies): {
 
   async function listApiKeys(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const keys = await deps.listAgentApiKeys(req.user?.id || '');
-      res.status(200).json({ keys });
+      const [keys, grants] = await Promise.all([
+        deps.listAgentApiKeys(req.user?.id || ''),
+        deps.usesGrants?.(req) ?? false,
+      ]);
+      res.status(200).json({ keys, ...(grants && { grants: true }) });
     } catch (error) {
       logger.error('[listApiKeys] Error listing API keys:', error);
       res.status(500).json({ error: 'Failed to list API keys' });

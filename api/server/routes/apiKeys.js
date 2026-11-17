@@ -1,5 +1,10 @@
 const express = require('express');
-const { generateCheckAccess, createApiKeyHandlers } = require('@librechat/api');
+const {
+  generateCheckAccess,
+  createApiKeyHandlers,
+  resolveRemoteIntegrations,
+  getAppConfigOptionsFromUser,
+} = require('@librechat/api');
 const { PermissionTypes, Permissions } = require('librechat-data-provider');
 const {
   getAgentApiKeyById,
@@ -8,6 +13,7 @@ const {
   listAgentApiKeys,
   getRoleByName,
 } = require('~/models');
+const { getAppConfig } = require('~/server/services/Config/app');
 const { requireJwtAuth } = require('~/server/middleware');
 
 const router = express.Router();
@@ -17,6 +23,9 @@ const handlers = createApiKeyHandlers({
   listAgentApiKeys,
   deleteAgentApiKey,
   getAgentApiKeyById,
+  usesGrants: async (req) =>
+    resolveRemoteIntegrations(await getAppConfig(getAppConfigOptionsFromUser(req.user))).mode ===
+    'delegated',
 });
 
 const checkRemoteAgentsUse = generateCheckAccess({
