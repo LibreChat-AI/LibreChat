@@ -1,4 +1,5 @@
 import type { WorkBook, CellObject, NumberFormat, utils } from 'xlsx';
+import { trimSheetRange } from './sheet';
 
 // Fixed security ceilings, not throughput tuning: every admitted job must remain bounded.
 export const SPREADSHEET_LIMITS: Readonly<{
@@ -44,7 +45,9 @@ export function workbookToText(
   for (const name of workbook.SheetNames) {
     reserve(Buffer.byteLength(name, 'utf8') + 3);
     const sheet = workbook.Sheets[name];
-    if (!sheet?.['!ref']) continue;
+    if (!sheet) continue;
+    trimSheetRange(sheet, sheetUtils);
+    if (!sheet['!ref']) continue;
     const range = sheetUtils.decode_range(sheet['!ref']);
     const coordinates = [range.s.r, range.s.c, range.e.r, range.e.c];
     if (
