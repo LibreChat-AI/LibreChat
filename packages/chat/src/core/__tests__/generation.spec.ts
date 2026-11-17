@@ -211,6 +211,36 @@ describe('createGenerationTransport', () => {
     expect(attachments[0].options.signal.aborted).toBe(true);
   });
 
+  it('resolves null when the caller aborts an attachment whose wire reports nothing more', async () => {
+    const attachments: Attachment[] = [];
+    /** A wire mid token refresh: its connection is gone, and an abort draws no event from it. */
+    const silent: WireTransport = {
+      send: () => undefined,
+      reconnectToStream(request, options) {
+        attachments.push({ request, options, emit: (event) => options.onEvent(event) });
+        return { closed: false };
+      },
+    };
+    const transport = createGenerationTransport({
+      wire: () => silent,
+      getStatus: async () => running,
+    });
+    const caller = new AbortController();
+    const settled = jest.fn();
+    void transport
+      .reconnectToStream({ chatId: 'thread 1', abortSignal: caller.signal })
+      .then(settled);
+    await flush();
+    expect(attachments).toHaveLength(1);
+    expect(settled).not.toHaveBeenCalled();
+
+    caller.abort();
+    await flush();
+
+    expect(attachments[0].options.signal.aborted).toBe(true);
+    expect(settled).toHaveBeenCalledWith(null);
+  });
+
   it('refuses to send or stop when the app gave it no way to', async () => {
     const { transport } = setup();
 

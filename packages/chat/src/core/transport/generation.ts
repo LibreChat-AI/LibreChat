@@ -62,13 +62,19 @@ function openStream(
   const pending: ChatEvent[] = [];
   let wake: (() => void) | undefined;
   let done = false;
+  let abandon: (() => void) | undefined;
   const finish = (): void => {
     done = true;
     wake?.();
   };
+  /**
+   * Closing answers an attachment that has not opened yet: a wire whose connection is already
+   * gone (one refreshing its token, say) reports nothing more, and the caller would wait forever.
+   */
   const close = (): void => {
     controller.abort();
     finish();
+    abandon?.();
   };
   if (target.signal?.aborted === true) {
     return Promise.resolve(null);
@@ -99,6 +105,7 @@ function openStream(
 
   return new Promise<ChatStream | null>((resolve, reject) => {
     let opened = false;
+    abandon = () => resolve(null);
     const onEvent = (event: ChatEvent): void => {
       if (event.type === 'open') {
         opened = true;
