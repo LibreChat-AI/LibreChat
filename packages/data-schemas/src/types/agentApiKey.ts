@@ -17,6 +17,8 @@ export interface IAgentApiKey extends Document {
   createdAt: Date;
   updatedAt: Date;
   tenantId?: string;
+  /** MCP grants the owner made for this key, by the agent each one covers. */
+  mcpGrants?: Record<string, unknown>;
 }
 
 export interface AgentApiKeyCreateData {

@@ -104,34 +104,77 @@ export const scheduledMCPToolPinSchema = z
   .strict();
 export type ScheduledMCPToolPin = z.infer<typeof scheduledMCPToolPinSchema>;
 
-export const scheduledMCPConsentSchema = scheduledMCPTargetSchema
-  .extend({
-    id: identifier,
-    revision: identifier,
-    identity: scheduledMCPIdentitySchema,
-    grantedAtMs: timestamp,
-    absoluteExpiresAtMs: timestamp,
-    revokedAtMs: timestamp.nullable(),
-    /** Absent until a tool is first used. One entry per tool, never rewritten. */
-    definitions: z.array(scheduledMCPToolPinSchema).max(256).optional(),
-    /** Tools a run saw with a definition other than their pin. Refused until confirmed again. */
-    changedTools: z.array(identifier).max(256).optional(),
-    /** Allowed tools the owner wants to approve call by call. A run pauses before each use. */
-    askTools: z.array(identifier).max(256).optional(),
-  })
-  .strict()
-  .refine((value) => value.absoluteExpiresAtMs > value.grantedAtMs);
-export type ScheduledMCPConsent = z.infer<typeof scheduledMCPConsentSchema>;
-
-export const scheduledMCPEnrollmentSchema = z
+/**
+ * Who a grant made for an API key acts for. The key and the agent are both part of the
+ * subject: a key holds one grant per agent it may run.
+ */
+export const agentKeyMCPIdentitySchema = z
   .object({
-    version: z.literal(1),
-    scheduleRevision: z.number().int().nonnegative(),
-    revision: identifier,
-    consents: z.array(scheduledMCPConsentSchema).min(1).max(32),
+    keyId: identifier,
+    ownerId: identifier,
+    tenantId: identifier.nullable(),
+    agentId: identifier,
+    invocationMode: z.literal('delegated'),
   })
   .strict();
+export type AgentKeyMCPIdentity = z.infer<typeof agentKeyMCPIdentitySchema>;
+
+/** A grant's subject: the schedule, or the API key and agent, a run acts for. */
+export type MCPGrantIdentity = ScheduledMCPIdentity | AgentKeyMCPIdentity;
+
+function consentSchema<Identity extends z.ZodTypeAny>(identity: Identity) {
+  return scheduledMCPTargetSchema
+    .extend({
+      id: identifier,
+      revision: identifier,
+      identity,
+      grantedAtMs: timestamp,
+      absoluteExpiresAtMs: timestamp,
+      revokedAtMs: timestamp.nullable(),
+      /** Absent until a tool is first used. One entry per tool, never rewritten. */
+      definitions: z.array(scheduledMCPToolPinSchema).max(256).optional(),
+      /** Tools a run saw with a definition other than their pin. Refused until confirmed again. */
+      changedTools: z.array(identifier).max(256).optional(),
+      /** Allowed tools the owner wants to approve call by call. A run pauses before each use. */
+      askTools: z.array(identifier).max(256).optional(),
+    })
+    .strict()
+    .refine((value) => value.absoluteExpiresAtMs > value.grantedAtMs);
+}
+
+function enrollmentSchema<Consent extends z.ZodTypeAny>(consent: Consent) {
+  return z
+    .object({
+      version: z.literal(1),
+      /** The subject's configuration generation the grant was made for. Zero where it has none. */
+      scheduleRevision: z.number().int().nonnegative(),
+      revision: identifier,
+      consents: z.array(consent).min(1).max(32),
+    })
+    .strict();
+}
+
+export const scheduledMCPConsentSchema = consentSchema(scheduledMCPIdentitySchema);
+export type ScheduledMCPConsent = z.infer<typeof scheduledMCPConsentSchema>;
+
+export const scheduledMCPEnrollmentSchema = enrollmentSchema(scheduledMCPConsentSchema);
 export type ScheduledMCPEnrollment = z.infer<typeof scheduledMCPEnrollmentSchema>;
+
+export const agentKeyMCPEnrollmentSchema = enrollmentSchema(
+  consentSchema(agentKeyMCPIdentitySchema),
+);
+
+/** One server's part of a grant, for whichever subject holds it. */
+export type MCPGrantConsent<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> = Omit<
+  ScheduledMCPConsent,
+  'identity'
+> & { identity: Identity };
+
+/** A whole grant, for whichever subject holds it. */
+export type MCPGrantEnrollment<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> = Omit<
+  ScheduledMCPEnrollment,
+  'consents'
+> & { consents: MCPGrantConsent<Identity>[] };
 
 export const confirmScheduleMCPConsentSchema = z
   .object({
