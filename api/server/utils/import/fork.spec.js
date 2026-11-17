@@ -478,6 +478,20 @@ describe('forkConversation', () => {
 });
 
 describe('duplicateConversation', () => {
+  const branch = [
+    ['q1', Constants.NO_PARENT],
+    ['a1', 'q1'],
+    ['q2', 'a1'],
+    ['a2', 'q2'],
+    ['q3', 'a2'],
+    ['a3', 'q3'],
+  ].map(([messageId, parentMessageId], index) => ({
+    messageId,
+    parentMessageId,
+    text: messageId,
+    createdAt: new Date(Date.UTC(2024, 0, 1, 0, 0, index)),
+  }));
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockIdCounter = 0;
@@ -486,6 +500,110 @@ describe('duplicateConversation', () => {
     bulkSaveConvos.mockResolvedValue(null);
     bulkSaveMessages.mockResolvedValue(null);
     bulkIncrementTagCounts.mockResolvedValue(null);
+  });
+
+  test.each([
+    [
+      'regenerated early reply',
+      [
+        ...branch,
+        { ...branch[1], messageId: 'a1-new', text: 'a1-new', createdAt: new Date('2024-01-02') },
+      ],
+    ],
+    [
+      'edited first message',
+      [
+        ...branch,
+        { ...branch[0], messageId: 'q1-edit', text: 'q1-edit', createdAt: new Date('2024-01-02') },
+      ],
+    ],
+    [
+      'unequal branch depths',
+      [
+        ...branch,
+        {
+          ...branch[1],
+          messageId: 'alternate',
+          text: 'alternate',
+          createdAt: new Date('2024-01-02'),
+        },
+        {
+          ...branch[2],
+          messageId: 'alternate-child',
+          parentMessageId: 'alternate',
+          text: 'alternate-child',
+          createdAt: new Date('2024-01-03'),
+        },
+      ],
+    ],
+    [
+      'tied timestamps with children first',
+      [...branch].reverse().map((entry) => ({ ...entry, createdAt: new Date('2024-01-01') })),
+    ],
+    [
+      'children timestamped before parents',
+      [...branch].reverse().map((entry, index) => ({
+        ...entry,
+        createdAt: new Date(Date.UTC(2024, 0, 1, 0, 0, index)),
+      })),
+    ],
+    ['ordinary linear history', branch],
+  ])('preserves the complete tree for %s', async (_name, sources) => {
+    const original = structuredClone(sources);
+    const conversation = { ...mockConversation, conversationId: 'source' };
+    getConvo
+      .mockResolvedValueOnce(conversation)
+      .mockImplementation(async () => bulkSaveConvos.mock.calls[0][0][0]);
+    getMessages
+      .mockResolvedValueOnce(sources)
+      .mockImplementation(async () => bulkSaveMessages.mock.calls[0][0]);
+
+    const result = await duplicateConversation({ userId: 'user1', conversationId: 'source' });
+
+    expect(result.messages).toHaveLength(sources.length);
+    expect(bulkSaveMessages).toHaveBeenCalledTimes(1);
+    expect(result.conversation.conversationId).not.toBe(conversation.conversationId);
+    const byText = new Map(result.messages.map((entry) => [entry.text, entry]));
+    expect(new Set(result.messages.map((entry) => entry.messageId)).size).toBe(sources.length);
+    for (const source of sources) {
+      const clone = byText.get(source.text);
+      expect(clone).toBeDefined();
+      expect(clone.messageId).not.toBe(source.messageId);
+      expect(clone.conversationId).toBe(result.conversation.conversationId);
+      expect(clone.user).toBe('user1');
+      const parent = sources.find((entry) => entry.messageId === source.parentMessageId);
+      const clonedParent = parent && byText.get(parent.text);
+      expect(clone.parentMessageId).toBe(clonedParent?.messageId ?? Constants.NO_PARENT);
+      if (clonedParent) {
+        expect(new Date(clone.createdAt).getTime()).toBeGreaterThan(
+          new Date(clonedParent.createdAt).getTime(),
+        );
+      }
+    }
+    expect(sources).toEqual(original);
+    expect(conversation).toEqual({ ...mockConversation, conversationId: 'source' });
+    expect(getMessages.mock.calls[0][0]).toEqual({ user: 'user1', conversationId: 'source' });
+  });
+
+  test('duplicates an empty conversation without reading a newest message', async () => {
+    getMessages.mockResolvedValue([]);
+
+    const result = await duplicateConversation({ userId: 'user1', conversationId: 'source' });
+
+    expect(result.messages).toEqual([]);
+    expect(bulkSaveConvos).toHaveBeenCalledTimes(1);
+    expect(bulkSaveMessages).toHaveBeenCalledWith([], true);
+  });
+
+  test('does not attach an orphan to the previously cloned message', async () => {
+    getMessages.mockResolvedValueOnce([branch[0], { ...branch[1], parentMessageId: 'missing' }]);
+
+    await duplicateConversation({ userId: 'user1', conversationId: 'source' });
+
+    expect(bulkSaveMessages.mock.calls[0][0].map((entry) => entry.parentMessageId)).toEqual([
+      Constants.NO_PARENT,
+      Constants.NO_PARENT,
+    ]);
   });
 
   test('applies ephemeral retention to duplicated conversation and messages', async () => {
