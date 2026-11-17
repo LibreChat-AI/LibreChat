@@ -155,15 +155,6 @@ export const createHost = (
         messages = next;
       }),
     },
-    parts: {
-      applySteer: jest.fn((message) => message),
-      findSteerTarget: jest.fn(() => -1),
-      applyActivityLabel: jest.fn((message) => message),
-      findActivityLabelTarget: jest.fn(() => -1),
-      offsetActivityPhaseBoundary: jest.fn((index, prefix) => index + prefix),
-      applyReasoningLabel: jest.fn((message) => message),
-      findReasoningLabelTarget: jest.fn(() => -1),
-    },
     usage: {
       bindResponse: jest.fn(),
       contextHandler: jest.fn(),

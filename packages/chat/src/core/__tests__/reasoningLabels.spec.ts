@@ -1,6 +1,6 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage, TReasoningLabelEvent } from 'librechat-data-provider';
-import { applyReasoningLabel, findReasoningLabelMessageIndex } from '../reasoningLabels';
+import { applyReasoningLabel, findReasoningLabelMessageIndex } from '../parts/reasoningLabels';
 
 const baseEvent: TReasoningLabelEvent = {
   index: 0,
