@@ -44,16 +44,18 @@ test('settings offer only applicable controls @scenario:settings-cleanup', async
   await page.getByTestId('nav-user').filter({ visible: true }).first().click();
   await page.getByRole('menuitem', { name: 'Settings' }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByRole('tab', { name: 'Chat', exact: true }).click();
   for (const query of ['Display username', 'Save badges state', 'Advanced prompts']) {
     await dialog.getByRole('textbox', { name: 'Search settings' }).fill(query);
     await expect(dialog.getByText('No settings match your search', { exact: false })).toBeVisible();
   }
   await dialog.getByRole('textbox', { name: 'Search settings' }).clear();
+  await dialog.getByRole('tab', { name: 'Chat', exact: true }).click();
   await testInfo.attach('chat-settings-after', {
     body: await page.screenshot(),
     contentType: 'image/png',
   });
+  const back = dialog.getByRole('button', { name: 'Back', exact: true });
+  if (await back.isVisible()) await back.click();
   await dialog.getByRole('tab', { name: 'Speech', exact: true }).click();
   const sensitivity = dialog.getByText('Decibel sensitivity', { exact: true });
   const playback = dialog.getByText('Audio Playback Rate', { exact: true });
@@ -61,11 +63,19 @@ test('settings offer only applicable controls @scenario:settings-cleanup', async
   await expect(sensitivity).toBeHidden();
   await expect(playback).toBeHidden();
   await expect(cache).toBeHidden();
-  await dialog.getByTestId('EngineSTTDropdown').click();
-  await page.getByRole('option', { name: 'External', exact: true }).click();
+  const stt = dialog.getByTestId('EngineSTTDropdown');
+  await stt.click();
+  await page
+    .locator(`[id="${await stt.getAttribute('aria-controls')}"]`)
+    .getByRole('option', { name: 'External', exact: true })
+    .click();
   await expect(sensitivity).toBeVisible();
-  await dialog.getByTestId('EngineTTSDropdown').click();
-  await page.getByRole('option', { name: 'External', exact: true }).click();
+  const tts = dialog.getByTestId('EngineTTSDropdown');
+  await tts.click();
+  await page
+    .locator(`[id="${await tts.getAttribute('aria-controls')}"]`)
+    .getByRole('option', { name: 'External', exact: true })
+    .click();
   await expect(playback).toBeVisible();
   await expect(cache).toBeVisible();
   await dialog.getByRole('switch', { name: 'Text to Speech', exact: true }).click();
