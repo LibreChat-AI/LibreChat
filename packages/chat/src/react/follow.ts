@@ -52,7 +52,10 @@ export type FollowedChat = {
 
 type Entry = { id: string; chat: Chat; attach: () => Promise<void> };
 type Load = { id: string; attempt: number; state: 'loading' | 'ready' | 'error' };
-/** One attachment: how it ended, unset when nothing was running, and whether it delivered anything. */
+/**
+ * One attachment: how it ended, unset when nothing was running, and whether it delivered any of
+ * the generation. The frame that reports a failure is not a delivery.
+ */
 type Attachment = { finished?: ChatFinishResult; received: boolean };
 
 const noMessages: TMessage[] = [];
@@ -98,6 +101,10 @@ export function useFollowChat({
     let stale = false;
     let loaded = false;
     let attaching = false;
+    /** Whether the attachment in progress is past its stream, reading the stored rows. */
+    let reading = false;
+    /** A live signal that arrived during that read, when it could only be for a newer run. */
+    let owed = false;
     let attachment: Attachment | undefined;
     let wake: (() => void) | undefined;
     const applier = createEventApplier({
@@ -120,7 +127,7 @@ export function useFollowChat({
       },
       applyEvent: applier.applyEvent,
       onEvent: (event) => {
-        if (attachment != null) {
+        if (attachment != null && event.type !== 'error') {
           attachment.received = true;
         }
         host.current.onEvent?.(event);
@@ -163,7 +170,11 @@ export function useFollowChat({
      * that delivered something starts the count of failed ones over.
      */
     const attach = async (): Promise<void> => {
-      if (stale || !loaded || attaching) {
+      if (stale || !loaded) {
+        return;
+      }
+      if (attaching) {
+        owed ||= reading;
         return;
       }
       attaching = true;
@@ -179,11 +190,17 @@ export function useFollowChat({
           }
           await pause(getReconnectDelay(failures));
         }
+        reading = true;
         await read();
       } catch {
         /** The chat reports a stream failure itself; a failed re-read leaves what it streamed. */
       } finally {
         attaching = false;
+        reading = false;
+      }
+      if (owed) {
+        owed = false;
+        await attach();
       }
     };
 

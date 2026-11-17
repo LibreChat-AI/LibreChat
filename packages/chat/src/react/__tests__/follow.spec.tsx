@@ -339,6 +339,65 @@ describe('useFollowChat', () => {
     expect(result.current.status).toBe('error');
   });
 
+  it('counts an attachment that only reports a failure as failed, so the schedule still runs out', async () => {
+    const { transport, streams } = createTransport(running);
+    const { result, loadMessages } = setup({ transport });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    act(() => streams[0].push(snapshot('Partial')));
+    await settle();
+
+    jest.useFakeTimers();
+    try {
+      /** Every later attachment opens and then drops before delivering anything. */
+      (transport.reconnectToStream as jest.Mock).mockImplementation(async () => {
+        const stream = createStream();
+        streams.push(stream);
+        stream.push({ type: 'error', status: 0 });
+        return stream;
+      });
+      await act(async () => {
+        streams[0].push({ type: 'error', status: 0 });
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(transport.reconnectToStream).toHaveBeenCalledTimes(1 + MAX_RETRIES);
+    expect(loadMessages).toHaveBeenCalledTimes(1);
+    expect(textOf(result.current.messages)).toEqual(['Partial']);
+  });
+
+  it('follows a run signalled while the stored rows of the one before it were being read', async () => {
+    const { transport, streams } = createTransport(running);
+    const { result, rerender, loadMessages } = setup({ transport, live: true });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    act(() => streams[0].push(snapshot('First run')));
+    await settle();
+
+    let release: (messages: TMessage[]) => void = () => undefined;
+    loadMessages.mockImplementation(
+      () =>
+        new Promise<TMessage[]>((resolve) => {
+          release = resolve;
+        }),
+    );
+    act(() => streams[0].push(final('First run')));
+    await waitFor(() => expect(loadMessages).toHaveBeenCalledTimes(2));
+
+    rerender({ id: 'thread-1', transport, loadMessages, live: false });
+    rerender({ id: 'thread-1', transport, loadMessages, live: true });
+    await settle();
+    expect(streams).toHaveLength(1);
+
+    loadMessages.mockResolvedValue([brief, answer('First run')]);
+    await act(async () => release([brief, answer('First run')]));
+    await waitFor(() => expect(streams).toHaveLength(2));
+    act(() => streams[1].push(snapshot('Second run')));
+    await settle();
+    expect(textOf(result.current.messages)).toEqual(['Second run']);
+  });
+
   it('leaves the conversation it was following when the id changes', async () => {
     const { transport, streams } = createTransport(running);
     const { result, rerender, loadMessages } = setup({ transport });
