@@ -164,6 +164,10 @@ export const apiKeys = () => apiKeysEndpoint;
 
 export const apiKeyById = (id: string) => `${apiKeysEndpoint}/${id}`;
 
+/** The MCP grant an API key holds for one agent. */
+export const apiKeyMCPConsent = (id: string, agentId: string) =>
+  `${apiKeysEndpoint}/${encodeURIComponent(id)}/agents/${encodeURIComponent(agentId)}/mcp-consent`;
+
 export const conversationsRoot = `${BASE_URL}/api/convos`;
 
 export const conversations = (params: q.ConversationListParams) => {

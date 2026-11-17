@@ -102,6 +102,7 @@ export enum QueryKeys {
   runningConversation = 'runningConversation',
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
+  apiKeyMCPConsent = 'apiKeyMCPConsent',
   /* Skills */
   skills = 'skills',
   skill = 'skill',
@@ -172,6 +173,8 @@ export enum MutationKeys {
   updateLangfusePromptSync = 'updateLangfusePromptSync',
   syncLangfusePrompts = 'syncLangfusePrompts',
   createAgentApiKey = 'createAgentApiKey',
+  confirmApiKeyMCPConsent = 'confirmApiKeyMCPConsent',
+  revokeApiKeyMCPConsent = 'revokeApiKeyMCPConsent',
   deleteAgentApiKey = 'deleteAgentApiKey',
   fileUpload = 'fileUpload',
   fileDelete = 'fileDelete',

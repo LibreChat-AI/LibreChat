@@ -389,6 +389,8 @@ export type TAgentApiKeyListItem = {
 
 export type TAgentApiKeyListResponse = {
   keys: TAgentApiKeyListItem[];
+  /** Runs started with a key may use only the MCP tools its owner granted it. */
+  grants?: boolean;
 };
 
 export type TUpdateConversationRequest = {
