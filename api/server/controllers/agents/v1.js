@@ -65,6 +65,7 @@ const {
   actionDelimiter,
   AgentCapabilities,
   EModelEndpoint,
+  normalizeServerName,
   resolveAllowedStatefulCodeEnvironments,
   removeCodeExecutionCaller,
   hasActivePiiFields,
@@ -623,7 +624,9 @@ const filterAuthorizedTools = async ({
   let shadowedServerNames = new Set();
   let registryUnavailable = false;
   const existingToolSet = existingTools?.length ? new Set(existingTools) : null;
-  const hasMCPTools = tools.some((tool) => tool?.includes(Constants.mcp_delimiter));
+  const hasMCPTools = tools.some(
+    (tool) => tool?.includes(Constants.mcp_delimiter) || tool?.startsWith('mcp:'),
+  );
   const canUseMCP = hasMCPTools
     ? await (mcpPermissionContext
         ? mcpPermissionContext.canUseServers(user)
@@ -633,7 +636,9 @@ const filterAuthorizedTools = async ({
 
   for (const tool of tools) {
     const isActionToolName = typeof tool === 'string' && isActionTool(tool);
-    const isMCPTool = tool?.includes(Constants.mcp_delimiter) && !isActionToolName;
+    const isLegacyColonMCPTool = typeof tool === 'string' && tool.startsWith('mcp:');
+    const isMCPTool =
+      (tool?.includes(Constants.mcp_delimiter) || isLegacyColonMCPTool) && !isActionToolName;
 
     if (!isMCPTool) {
       if (availableTools[tool] || systemTools[tool] || isActionToolName) {
@@ -673,11 +678,23 @@ const filterAuthorizedTools = async ({
     }
 
     /** Tool keys embed the normalized server name; the config is keyed by the raw name. */
-    const [, normalizedServerName] = splitMCPToolKey(
-      tool,
-      Array.from(configNamesByNormalized.keys()),
-    );
-    const serverName = configNamesByNormalized.get(normalizedServerName) ?? normalizedServerName;
+    let serverName;
+    let authorizedToolKey = tool;
+    if (isLegacyColonMCPTool) {
+      const rawServerNames = Object.keys(mcpServerConfigs).sort((a, b) => b.length - a.length);
+      serverName = rawServerNames.find((name) => tool.startsWith(`mcp:${name}:`));
+      const legacyToolName = serverName ? tool.slice(`mcp:${serverName}:`.length) : '';
+      if (serverName && legacyToolName.length > 0) {
+        const normalizedServerName = normalizeServerName(serverName);
+        authorizedToolKey = `${legacyToolName}${Constants.mcp_delimiter}${normalizedServerName}`;
+      }
+    } else {
+      const [, parsedServerName] = splitMCPToolKey(
+        tool,
+        Array.from(configNamesByNormalized.keys()),
+      );
+      serverName = configNamesByNormalized.get(parsedServerName) ?? parsedServerName;
+    }
     if (!serverName) {
       logger.warn(
         `[filterAuthorizedTools] Rejected malformed MCP tool key "${tool}" for user ${userId}`,
@@ -709,7 +726,7 @@ const filterAuthorizedTools = async ({
     }
 
     resolvedServerNames?.add(serverName);
-    filteredTools.push(tool);
+    filteredTools.push(authorizedToolKey);
   }
 
   return filteredTools;

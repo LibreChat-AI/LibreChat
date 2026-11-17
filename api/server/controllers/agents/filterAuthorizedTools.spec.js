@@ -492,6 +492,22 @@ describe('MCP Tool Authorization', () => {
       expect(agent.tools).not.toContain(`attack${d}forbiddenServer`);
     });
 
+    test('should canonicalize legacy colon-form MCP tools on create', async () => {
+      mockReq.body = {
+        provider: 'openai',
+        model: 'gpt-4',
+        name: 'Legacy MCP Test Agent',
+        tools: ['mcp:authorizedServer:validTool'],
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      const agent = mockRes.json.mock.calls[0][0];
+      expect(agent.tools).toEqual([`validTool${d}authorizedServer`]);
+      expect(agent.mcpServerNames).toEqual(['authorizedServer']);
+    });
+
     test('should strip all MCP tools on create when user lacks MCP server use permission', async () => {
       mockUserCanUseMCPServers.mockResolvedValue(false);
       mockReq.body = {
