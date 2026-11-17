@@ -3726,7 +3726,7 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
-    it('passes negotiated lane and native sandbox capabilities to the attached bash tool', async () => {
+    it('passes negotiated lane, sandbox and detached command capabilities to the attached bash tool', async () => {
       const capabilities = [
         AgentCapabilities.tools,
         AgentCapabilities.execute_code,
@@ -3748,6 +3748,7 @@ describe('ToolService - Action Capability Gating', () => {
           operations: attachedWorkspaceOperations,
           linkedWorktrees: true,
           nativeSandbox: true,
+          detachedCommands: true,
         },
       }));
 
@@ -3767,7 +3768,11 @@ describe('ToolService - Action Capability Gating', () => {
       });
 
       expect(mockCreateAttachedWorkspaceBashTool).toHaveBeenLastCalledWith(
-        expect.objectContaining({ linkedWorktrees: true, nativeSandbox: true }),
+        expect.objectContaining({
+          linkedWorktrees: true,
+          nativeSandbox: true,
+          detachedCommands: true,
+        }),
       );
     });
 

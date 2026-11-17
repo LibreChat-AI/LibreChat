@@ -1208,7 +1208,10 @@ describe('attached code environment user config schema', () => {
     [{ allowCheckoutSelection: 'yes' }, false],
     [{ linkedWorktrees: 'yes' }, false],
     [{ linkedWorktrees: true, subdirectories: true }, false],
-  ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {
+    [{ detachedCommands: true }, true],
+    [{ detachedCommands: false }, true],
+    [{ detachedCommands: 'yes' }, false],
+  ])('validates the workspace toggles %p', (workspaces, valid) => {
     const result = configSchema.safeParse({
       version: '1.0',
       endpoints: {
