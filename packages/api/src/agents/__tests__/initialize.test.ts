@@ -4228,6 +4228,35 @@ describe('initializeAgent — run-scoped MCP tool definitions', () => {
     );
   });
 
+  it('heals legacy colon-form tools only after resolving accessible MCP servers', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    const serverName = 'nostromo-local';
+    const getAccessibleMcpServerNames = jest.fn(async () => [serverName]);
+    (req as { config: { mcpConfig?: Record<string, unknown> } }).config = {
+      mcpConfig: { [serverName]: {} },
+    };
+    agent.tools = ['mcp:nostromo-local:nostromo_estado'];
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      { ...db, getAccessibleMcpServerNames },
+    );
+
+    expect(getAccessibleMcpServerNames).toHaveBeenCalledTimes(1);
+    expect(result.accessibleMcpServerNames).toEqual([serverName]);
+    expect(loadTools).toHaveBeenCalledWith(
+      expect.objectContaining({ tools: ['nostromo_estado_mcp_nostromo-local'] }),
+    );
+  });
+
   it('threads the normalized MCP request body into tool discovery', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.tools = ['custom_tool'];
