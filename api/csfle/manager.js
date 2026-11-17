@@ -170,8 +170,9 @@ async function runMigrations({ mongoUri, dryRun = false, batchSize = 100 }) {
       `[CSFLE manager] messages: migrated=${stats.migrated} skipped=${stats.skipped} errors=${stats.errors}`,
     );
 
-    const finalStatus =
-      dryRun ? STATUS.PENDING : stats.errors === 0 ? STATUS.APPLIED : STATUS.FAILED;
+    let finalStatus = STATUS.FAILED;
+    if (dryRun) finalStatus = STATUS.PENDING;
+    else if (stats.errors === 0) finalStatus = STATUS.APPLIED;
     await migrationsColl.updateOne(
       { version: MESSAGES_MIGRATION.version },
       { $set: { status: finalStatus, appliedAt: new Date(), stats } },
@@ -223,7 +224,9 @@ async function runStartupMigration(mongoUri) {
       );
       throw err;
     }
-    logger.warn(`[CSFLE manager] Migration failed (warn mode) — continuing startup: ${err.message}`);
+    logger.warn(
+      `[CSFLE manager] Migration failed (warn mode) — continuing startup: ${err.message}`,
+    );
   }
 }
 

@@ -22,8 +22,7 @@ async function buildAutoEncryptionOptions(mongoUri) {
   const { kmsProviders } = buildKmsProviders();
 
   const dbName = new URL(mongoUri).pathname.replace(/^\//, '') || 'LibreChat';
-  const keyVaultNamespace =
-    process.env.MONGO_CSFLE_KEY_VAULT_NAMESPACE || `${dbName}.__keyVault`;
+  const keyVaultNamespace = process.env.MONGO_CSFLE_KEY_VAULT_NAMESPACE || `${dbName}.__keyVault`;
 
   await bootstrapKeyVault(mongoUri, keyVaultNamespace);
 

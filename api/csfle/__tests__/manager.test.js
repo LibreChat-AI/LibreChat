@@ -257,7 +257,6 @@ describe('CSFLE Migration Manager', () => {
     it('marks migration as FAILED when backfill has errors', async () => {
       await db.collection('messages').insertOne({ text: 'hello' });
 
-      const { buildAutoEncryptionOptions } = require('../index');
       // Let autoEncryption succeed but make the individual updateOne fail
       // by setting up a real run where we intercept deep in the chain.
       // Simplest approach: test directly with a mock encColl.
@@ -267,12 +266,10 @@ describe('CSFLE Migration Manager', () => {
         find: rawDb.collection('messages').find.bind(rawDb.collection('messages')),
       };
 
-      const stats = await backfillCollection(
-        rawDb.collection('messages'),
-        encColl,
-        ['text'],
-        { dryRun: false, batchSize: 10 },
-      );
+      const stats = await backfillCollection(rawDb.collection('messages'), encColl, ['text'], {
+        dryRun: false,
+        batchSize: 10,
+      });
 
       expect(stats.errors).toBeGreaterThan(0);
       expect(stats.migrated).toBe(0);
