@@ -325,10 +325,14 @@ describe('persistOpenIDAdminProviderSessionBinding', () => {
     return { getMode: jest.fn().mockResolvedValue(mode) } as unknown as ProviderSessionAuthorizer;
   }
 
+  function makeLogger() {
+    return { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  }
+
   it('does nothing when there is no refresh token to bind', async () => {
     const storeOpenIDSession = jest.fn();
     await persistOpenIDAdminProviderSessionBinding(
-      { authorizer: makeAuthorizer(), storeOpenIDSession },
+      { authorizer: makeAuthorizer(), storeOpenIDSession, logger: makeLogger() },
       { provider: 'openid', userId: 'user-1', tenantId: 'tenant-1', providerSession: null },
     );
     expect(storeOpenIDSession).not.toHaveBeenCalled();
@@ -337,7 +341,7 @@ describe('persistOpenIDAdminProviderSessionBinding', () => {
   it('does nothing for a non-OpenID login even with a refresh token', async () => {
     const storeOpenIDSession = jest.fn();
     await persistOpenIDAdminProviderSessionBinding(
-      { authorizer: makeAuthorizer(), storeOpenIDSession },
+      { authorizer: makeAuthorizer(), storeOpenIDSession, logger: makeLogger() },
       {
         provider: 'google',
         refreshToken: 'refresh-token',
@@ -352,7 +356,7 @@ describe('persistOpenIDAdminProviderSessionBinding', () => {
   it('does nothing in mode off', async () => {
     const storeOpenIDSession = jest.fn();
     await persistOpenIDAdminProviderSessionBinding(
-      { authorizer: makeAuthorizer('off'), storeOpenIDSession },
+      { authorizer: makeAuthorizer('off'), storeOpenIDSession, logger: makeLogger() },
       {
         provider: 'openid',
         refreshToken: 'refresh-token',
@@ -369,7 +373,7 @@ describe('persistOpenIDAdminProviderSessionBinding', () => {
     const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-1' };
 
     await persistOpenIDAdminProviderSessionBinding(
-      { authorizer: makeAuthorizer('record'), storeOpenIDSession },
+      { authorizer: makeAuthorizer('record'), storeOpenIDSession, logger: makeLogger() },
       {
         provider: 'openid',
         refreshToken: 'refresh-token',
@@ -389,5 +393,48 @@ describe('persistOpenIDAdminProviderSessionBinding', () => {
         authMethod: 'openid',
       },
     );
+  });
+
+  it('warns and resolves when mode record and the store rejects', async () => {
+    const storeOpenIDSession = jest.fn().mockRejectedValue(new Error('store unavailable'));
+    const logger = makeLogger();
+    const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-1' };
+
+    await expect(
+      persistOpenIDAdminProviderSessionBinding(
+        { authorizer: makeAuthorizer('record'), storeOpenIDSession, logger },
+        {
+          provider: 'openid',
+          refreshToken: 'refresh-token',
+          userId: 'user-1',
+          tenantId: 'tenant-1',
+          providerSession: ref,
+        },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('propagates the error when mode enforce and the store rejects', async () => {
+    const error = new Error('store unavailable');
+    const storeOpenIDSession = jest.fn().mockRejectedValue(error);
+    const logger = makeLogger();
+    const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-1' };
+
+    await expect(
+      persistOpenIDAdminProviderSessionBinding(
+        { authorizer: makeAuthorizer('enforce'), storeOpenIDSession, logger },
+        {
+          provider: 'openid',
+          refreshToken: 'refresh-token',
+          userId: 'user-1',
+          tenantId: 'tenant-1',
+          providerSession: ref,
+        },
+      ),
+    ).rejects.toThrow(error);
+
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
