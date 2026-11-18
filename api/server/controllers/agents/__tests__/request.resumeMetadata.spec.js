@@ -264,6 +264,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
   buildGenerationStartedResponse: (...args) =>
     jest.requireActual('@librechat/api').buildGenerationStartedResponse(...args),
+  describeCreatedTurn: (...args) =>
+    jest.requireActual('@librechat/api').describeCreatedTurn(...args),
   getPreliminaryResponseMessageId: jest.requireActual(
     '../../../../../packages/api/src/utils/message',
   ).getPreliminaryResponseMessageId,
@@ -4473,7 +4475,12 @@ describe('ResumableAgentController resume metadata', () => {
 
       expect(mockGenerationJobManager.emitChunk).toHaveBeenCalledWith(
         conversationId,
-        expect.objectContaining({ created: true, message: expect.objectContaining(skills) }),
+        expect.objectContaining({
+          created: true,
+          message: expect.objectContaining(skills),
+          /** A plain new turn states only the id its reply is stored under. */
+          turn: { responseMessageId: 'server-response' },
+        }),
         expect.any(Object),
       );
       expect(mockGenerationJobManager.updateMetadata).toHaveBeenCalledWith(
