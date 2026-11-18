@@ -29,6 +29,8 @@ const {
   clearCloudFrontCookies,
   normalizeExpiresIn,
   createOpenIDSessionIdentity,
+  resolveOpenIDAuthTokenOptions,
+  providerSessionField,
   resolveAppConfigForUser,
   resolvePreAuthAppConfig,
   resetPasswordWithToken,
@@ -722,23 +724,6 @@ const setAuthTokens = async (userId, res, _session = null, req = null, options =
   }
 };
 
-const resolveOpenIDAuthTokenOptions = (optionsOrUserId, existingRefreshToken, tenantId) => {
-  if (optionsOrUserId != null && typeof optionsOrUserId === 'object') {
-    if (
-      'userId' in optionsOrUserId ||
-      'existingRefreshToken' in optionsOrUserId ||
-      'tenantId' in optionsOrUserId ||
-      'openidSubject' in optionsOrUserId ||
-      'openidIssuer' in optionsOrUserId
-    ) {
-      return optionsOrUserId;
-    }
-    return {};
-  }
-
-  return { userId: optionsOrUserId, existingRefreshToken, tenantId };
-};
-
 const getOpenIDTokenClaims = (tokenset) => {
   if (typeof tokenset?.claims === 'function') {
     try {
@@ -793,6 +778,8 @@ const applyOpenIDSessionIdentity = (sessionOpenidTokens, identity) => {
  * @param {string} [options.tenantId] - Optional tenant identifier for CloudFront cookie scoping
  * @param {string} [options.openidSubject] - Optional OpenID subject bound to the session tokens
  * @param {string} [options.openidIssuer] - Optional OpenID issuer bound to the session tokens
+ * @param {import('librechat-data-provider').ProviderSessionRef} [options.providerSession] -
+ *   Optional provider session this credential is bound to.
  * @returns {String} - id_token (preferred) or access_token as the app auth token
  */
 const setOpenIDAuthTokens = (
@@ -804,7 +791,7 @@ const setOpenIDAuthTokens = (
   tenantIdArg,
 ) => {
   try {
-    const { userId, existingRefreshToken, tenantId, openidSubject, openidIssuer } =
+    const { userId, existingRefreshToken, tenantId, openidSubject, openidIssuer, providerSession } =
       resolveOpenIDAuthTokenOptions(optionsOrUserId, existingRefreshTokenArg, tenantIdArg);
 
     if (!tokenset) {
@@ -875,6 +862,7 @@ const setOpenIDAuthTokens = (
         lastRefreshedAt: Date.now(),
       };
       applyOpenIDSessionIdentity(sessionOpenidTokens, sessionIdentity);
+      Object.assign(sessionOpenidTokens, providerSessionField(providerSession));
       /**
        * Capture the access-token's own expiry (unix seconds) when the IdP
        * advertises one. Lets downstream consumers — notably the OBO inline-
@@ -914,6 +902,7 @@ const setOpenIDAuthTokens = (
       expires: expirationDate,
       refreshExpiryMs: expiryInMilliseconds,
       refreshToken,
+      providerSession,
     });
 
     setCloudFrontAuthCookies(req, res, req.user, { userId, tenantId });
@@ -925,10 +914,23 @@ const setOpenIDAuthTokens = (
   }
 };
 
-/** Stores OpenID refresh-token state independently of the shorter Express session. */
-const storeOpenIDSession = async (userId, refreshToken, tenantId, previousRefreshToken) => {
+/** Stores OpenID refresh-token state independently of the shorter Express session; `options`
+ * may include `providerSession`. */
+const storeOpenIDSession = async (
+  userId,
+  refreshToken,
+  tenantId,
+  previousRefreshToken,
+  options = {},
+) => {
   return storeOpenIdSession(
-    { userId, refreshToken, tenantId, previousRefreshToken },
+    {
+      userId,
+      refreshToken,
+      tenantId,
+      previousRefreshToken,
+      providerSession: options.providerSession,
+    },
     { upsertSession, deleteSession },
   );
 };

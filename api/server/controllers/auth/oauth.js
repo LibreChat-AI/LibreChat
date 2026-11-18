@@ -113,6 +113,7 @@ function createOAuthHandler(redirectUri = domains.client) {
           openidSubject: req.user.openidId,
           openidIssuer: req.user.openidIssuer,
           discardSessionTokens: true,
+          providerSession: providerSessionRef,
           req,
           res,
         });

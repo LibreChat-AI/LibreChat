@@ -1,4 +1,9 @@
-import { isOpenIDSessionMissingError, reloadOpenIDSessionIfPersisted } from './errors';
+import {
+  createOpenIDSessionEndedError,
+  isOpenIDSessionEndedError,
+  isOpenIDSessionMissingError,
+  reloadOpenIDSessionIfPersisted,
+} from './errors';
 
 describe('isOpenIDSessionMissingError', () => {
   it('recognizes the express-session missing record error', () => {
@@ -45,4 +50,22 @@ describe('reloadOpenIDSessionIfPersisted', () => {
   it('reports a request without a reloadable session', async () => {
     await expect(reloadOpenIDSessionIfPersisted(undefined)).resolves.toBe(false);
   });
+});
+
+describe('createOpenIDSessionEndedError / isOpenIDSessionEndedError', () => {
+  it('builds a coded, 401 error carrying the OPENID_SESSION_ENDED code', () => {
+    const error = createOpenIDSessionEndedError();
+    expect(error).toBeInstanceOf(Error);
+    expect(error.code).toBe('OPENID_SESSION_ENDED');
+    expect(error.status).toBe(401);
+  });
+
+  it('recognizes an OPENID_SESSION_ENDED error', () => {
+    expect(isOpenIDSessionEndedError(createOpenIDSessionEndedError())).toBe(true);
+  });
+
+  it.each([new Error('unrelated'), null, undefined, { code: 'OTHER' }])(
+    'does not misclassify other failures as a session-ended denial: %s',
+    (error) => expect(isOpenIDSessionEndedError(error)).toBe(false),
+  );
 });
