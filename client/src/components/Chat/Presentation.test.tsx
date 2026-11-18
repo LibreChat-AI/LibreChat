@@ -1,6 +1,6 @@
 import React from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
@@ -8,6 +8,7 @@ import {
   activeSubagentPanel,
   isSubmittingFamily,
   sideChatBesideAtom,
+  sideChatRequestAtom,
   sideChatAvailableAtom,
 } from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
@@ -37,6 +38,7 @@ const mockChildPanelLabel = 'Child activity panel loaded';
 const mockOpenChildLabel = 'Open Child Activity';
 const mockSideChatLabel = 'Side chat loaded';
 const mockOpenSideChatLabel = 'Open Side Chat';
+const mockAskSideChatLabel = 'Ask for a side chat';
 const mockSelectAgentConversationLabel = 'Select Agent Conversation';
 const mockStartAgentRunLabel = 'Start Agent Run';
 /** What the deployment has answered with; nothing until a test says otherwise. */
@@ -540,5 +542,66 @@ describe('Presentation Artifact loading', () => {
     fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
     expect(await screen.findByText(mockSideChatLabel)).toBeInTheDocument();
     expect(screen.queryByText(mockArtifactPanelLabel)).not.toBeInTheDocument();
+  });
+
+  describe('a side chat still being fetched', () => {
+    /** Stands in for a menu that asked to open one and is waiting on its record. */
+    const PendingSideChat = () => {
+      const [request, setRequest] = useAtom(sideChatRequestAtom);
+      return (
+        <>
+          <button type="button" onClick={() => setRequest({})}>
+            {mockAskSideChatLabel}
+          </button>
+          <span data-testid="side-chat-request">{request == null ? 'none' : 'waiting'}</span>
+        </>
+      );
+    };
+    const mount = () =>
+      renderPresentation(
+        <ChatSurfaceHarness>
+          <RecoilRoot>
+            <Presentation>
+              <PendingSideChat />
+              <OpenSubagentPanel />
+              <OpenArtifactPanel />
+            </Presentation>
+          </RecoilRoot>
+        </ChatSurfaceHarness>,
+      );
+    const request = () => screen.getByTestId('side-chat-request').textContent;
+
+    it('is withdrawn when a child’s activity is opened instead', async () => {
+      mount();
+      fireEvent.click(screen.getByRole('button', { name: mockAskSideChatLabel }));
+      expect(request()).toBe('waiting');
+
+      fireEvent.click(screen.getByRole('button', { name: mockOpenChildLabel }));
+
+      expect(await screen.findByText(mockChildPanelLabel)).toBeInTheDocument();
+      expect(request()).toBe('none');
+    });
+
+    it('is withdrawn when an artifact is opened instead', async () => {
+      mount();
+      fireEvent.click(screen.getByRole('button', { name: mockAskSideChatLabel }));
+
+      fireEvent.click(screen.getByRole('button', { name: mockOpenArtifactLabel }));
+
+      expect(await screen.findByText(mockArtifactPanelLabel)).toBeInTheDocument();
+      expect(request()).toBe('none');
+    });
+
+    it('stays asked for over an artifact that was already showing', async () => {
+      mount();
+      fireEvent.click(screen.getByRole('button', { name: mockOpenArtifactLabel }));
+      expect(await screen.findByText(mockArtifactPanelLabel)).toBeInTheDocument();
+
+      /** Asked after the artifact: the side chat is the newest ask, and waits for its record. */
+      fireEvent.click(screen.getByRole('button', { name: mockAskSideChatLabel }));
+
+      expect(request()).toBe('waiting');
+      expect(screen.getByText(mockArtifactPanelLabel)).toBeInTheDocument();
+    });
   });
 });

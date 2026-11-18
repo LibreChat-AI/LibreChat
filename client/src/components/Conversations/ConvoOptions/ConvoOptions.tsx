@@ -33,6 +33,7 @@ function ConvoOptions({
   isArchived = false,
   isUnseen = false,
   retainView,
+  toggleNav,
   renameHandler,
   canRename = true,
   isPopoverActive,
@@ -49,6 +50,12 @@ function ConvoOptions({
   isArchived?: boolean;
   isUnseen?: boolean;
   retainView: () => void;
+  /**
+   * Leaves the sidebar the way selecting a conversation does: on a small screen it closes the
+   * drawer and runs `afterSlide` once it is out of the way, on a wide one it runs it at once.
+   * An action that shows something in the chat's place goes through it.
+   */
+  toggleNav?: (afterSlide?: () => void) => void;
   renameHandler: (e: MouseEvent) => void;
   canRename?: boolean;
   isPopoverActive: boolean;
@@ -98,6 +105,7 @@ function ConvoOptions({
       isPinned={isPinned}
       isArchived={isArchived}
       retainView={retainView}
+      toggleNav={toggleNav}
       setIsPopoverActive={setIsPopoverActive}
       handlersRef={handlersRef}
       onLoadingChange={setLoading}

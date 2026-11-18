@@ -6,6 +6,7 @@ import {
   sideChatAtom,
   SIDE_CHAT_PANE,
   sideChatBesideAtom,
+  sideChatRequestAtom,
   useIsSubmitting,
   activeSubagentPanel,
   SideChatHostProvider,
@@ -97,12 +98,17 @@ export default function Presentation({
 
   useEffect(() => () => setSideChat(null), [setSideChat]);
 
-  /** One panel at a time: a child's activity opened after the side chat takes its place. */
+  /**
+   * One panel at a time: a child's activity opened after the side chat takes its place, and
+   * the place of one still being fetched, which would otherwise arrive on top of it.
+   */
+  const withdrawSideChatRequest = useSetAtom(sideChatRequestAtom);
   useEffect(() => {
     if (selectedSubagent != null) {
+      withdrawSideChatRequest(null);
       setSideChat(null);
     }
-  }, [selectedSubagent, setSideChat]);
+  }, [selectedSubagent, setSideChat, withdrawSideChatRequest]);
 
   const { data: startupConfig, isSuccess: hasStartupConfig } = useGetStartupConfig();
 
@@ -167,14 +173,23 @@ export default function Presentation({
    * slot. Undocked, the artifacts pane is in its own window and the side panel
    * is free, so a child-activity panel opened there must survive. */
   useEffect(() => {
-    if (isUndocked || artifactsElement == null) {
-      return;
-    }
-    if (selectedSubagent != null) {
+    if (!isUndocked && artifactsElement != null && selectedSubagent != null) {
       resetSelectedSubagent();
     }
-    closeSideChat();
-  }, [artifactsElement, closeSideChat, isUndocked, resetSelectedSubagent, selectedSubagent]);
+  }, [artifactsElement, isUndocked, resetSelectedSubagent, selectedSubagent]);
+
+  /**
+   * An artifact that takes the slot, or another one chosen in it, is the panel asked for last:
+   * the side chat gives way, and so does one still being fetched. Keyed on the artifact shown,
+   * not on the panel's every render, so an artifact that is merely updating withdraws nothing.
+   */
+  const artifactShown = !isUndocked && artifactsElement != null;
+  useEffect(() => {
+    if (artifactShown) {
+      withdrawSideChatRequest(null);
+      closeSideChat();
+    }
+  }, [artifactShown, currentArtifactId, closeSideChat, withdrawSideChatRequest]);
 
   const subagentElement = useMemo(() => {
     if (

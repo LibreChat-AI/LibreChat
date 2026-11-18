@@ -304,6 +304,7 @@ function Conversation({
        archived list, and the previous page's rows stay on screen while the next loads. */
     isArchived: conversation.isArchived === true,
     retainView,
+    toggleNav,
     renameHandler: handleRename,
     canRename,
     isActiveConvo,

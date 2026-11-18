@@ -42,6 +42,7 @@ function ConvoMenuController({
   isPinned,
   isArchived,
   retainView,
+  toggleNav,
   setIsPopoverActive,
   handlersRef,
   onLoadingChange,
@@ -50,6 +51,8 @@ function ConvoMenuController({
   isPinned: boolean;
   isArchived: boolean;
   retainView: () => void;
+  /** Leaves the sidebar the way selecting a conversation does; see `ConvoOptions`. */
+  toggleNav?: (afterSlide?: () => void) => void;
   setIsPopoverActive: (open: boolean) => void;
   handlersRef: MutableRefObject<ConvoMenuHandlers | null>;
   onLoadingChange: (loading: ConvoMenuLoading) => void;
@@ -213,6 +216,9 @@ function ConvoMenuController({
    */
   const store = useStore();
   const setSideChat = useSetAtom(sideChatAtom);
+  /** Called when the record lands, which can be after this row was drawn again. */
+  const leaveSidebar = useRef(toggleNav);
+  leaveSidebar.current = toggleNav;
   const openBeside = useCallback(() => {
     const convoId = conversationId ?? '';
     if (!convoId) {
@@ -245,7 +251,17 @@ function ConvoMenuController({
             refuse(localize('com_ui_side_chat_unsupported'));
             return;
           }
-          setSideChat({ conversation });
+          /**
+           * On a small screen the sidebar is a drawer over the chat, so it gets out of the way
+           * first, the way it does when a conversation is selected; on a wide one this opens
+           * at once.
+           */
+          const open = () => setSideChat({ conversation });
+          if (leaveSidebar.current == null) {
+            open();
+            return;
+          }
+          leaveSidebar.current(open);
         },
         () => {
           if (store.get(sideChatRequestAtom) !== request) {

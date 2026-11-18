@@ -9,7 +9,8 @@ import ConvoOptions from '../ConvoOptions';
 
 /**
  * The row's real menu, opened: the production popup and items, the app's own hooks and
- * strings. Only the request for the conversation's record is replaced, at the data service.
+ * strings. Only requests to the server are replaced, at the data service: the conversation's
+ * record, which each test answers, and the two reads the app's own hooks make on mount.
  */
 const mockGetConversation = jest.fn();
 jest.mock('librechat-data-provider', () => {
@@ -19,6 +20,8 @@ jest.mock('librechat-data-provider', () => {
     dataService: {
       ...actual.dataService,
       getConversationById: (...args: unknown[]) => mockGetConversation(...args),
+      getAIEndpoints: async () => ({}),
+      getStartupConfig: async () => ({}),
     },
   };
 });
@@ -36,11 +39,13 @@ function setup({
   conversationId = 'conversation-2',
   isActiveConvo = false,
   isArchived = false,
+  toggleNav,
 }: {
   available?: boolean;
   conversationId?: string;
   isActiveConvo?: boolean;
   isArchived?: boolean;
+  toggleNav?: (afterSlide?: () => void) => void;
 } = {}) {
   const store = createStore();
   /** The reader is in `conversation-1`, with room beside it. */
@@ -57,6 +62,7 @@ function setup({
             title="An earlier chat"
             isArchived={isArchived}
             retainView={jest.fn()}
+            toggleNav={toggleNav}
             renameHandler={jest.fn()}
             isPopoverActive={true}
             setIsPopoverActive={setIsPopoverActive}
@@ -129,6 +135,24 @@ describe('ConvoOptions open beside', () => {
       ),
     );
     expect(store.get(sideChatAtom)).toBeNull();
+  });
+
+  it('leaves the sidebar the way selecting a conversation does, then opens', async () => {
+    mockGetConversation.mockResolvedValue(record);
+    /** The row's own way out of the sidebar: on a small screen it closes the drawer first. */
+    let afterSlide: (() => void) | undefined;
+    const toggleNav = jest.fn((after?: () => void) => {
+      afterSlide = after;
+    });
+    const { store } = setup({ toggleNav });
+
+    fireEvent.click(await openBeside());
+    await waitFor(() => expect(toggleNav).toHaveBeenCalledTimes(1));
+
+    /** Not behind the drawer: nothing opens until it is out of the way. */
+    expect(store.get(sideChatAtom)).toBeNull();
+    act(() => afterSlide?.());
+    expect(store.get(sideChatAtom)).toEqual({ conversation: record });
   });
 
   describe('when the answer arrives late', () => {

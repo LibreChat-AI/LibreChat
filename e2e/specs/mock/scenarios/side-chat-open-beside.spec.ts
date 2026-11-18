@@ -82,3 +82,38 @@ test('an earlier conversation opens beside the one on screen and takes a turn th
   await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible();
   await expect(page.getByRole('menuitem', { name: 'Open beside chat' })).toHaveCount(0);
 });
+
+test.describe('on a small screen', () => {
+  test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+  test('the sidebar drawer gets out of the way and the conversation opens over the chat @scenario:side-chat-opens-beside-on-a-small-screen', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const earlier = uniqueLabel('earlier-small');
+    const current = uniqueLabel('current-small');
+
+    const earlierUrl = await startChat(page, earlier);
+    await startChat(page, current);
+
+    await openChatHistory(page);
+    const row = conversationRow(page, earlierUrl);
+    await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+    await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
+
+    /** There is no room beside the chat here: the conversation opens as a sheet over it. */
+    const sideChat = page.getByRole('dialog', { name: 'Side chat' });
+    await expect(sideChat).toBeVisible({ timeout: 30_000 });
+    await expect(sideChat).toContainText(replyText(earlier));
+    /**
+     * Not behind the drawer: its rows are out of the way, and the composer takes a tap and what
+     * is typed after it. The tap waits out the drawer's slide, during which the chat behind it
+     * takes no input, as a reader's would.
+     */
+    await expect(row).not.toBeInViewport();
+    const composer = sideChat.getByRole('textbox', { name: 'Message input' });
+    await composer.click();
+    await page.keyboard.type('Still reachable');
+    await expect(composer).toHaveValue('Still reachable');
+  });
+});
