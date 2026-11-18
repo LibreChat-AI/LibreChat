@@ -52,7 +52,7 @@ const {
   rejectChangedResumeProjectContext,
   PROJECT_CONTEXT_CHANGED_REASON,
   PROJECT_CONTEXT_CHANGED_RESPONSE,
-  restoreScheduledTokenContext,
+  restoreExecutionContext,
   recoverTurnMessageReference,
   applyForcedRetention,
   applyForcedTemporaryRequest,
@@ -1953,7 +1953,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           parentMessageId: job.metadata.userMessage?.messageId ?? Constants.NO_PARENT,
         });
       const result = await initializeClient({
-        scheduledTokenContext: restoreScheduledTokenContext(req, job.metadata),
+        executionContext: restoreExecutionContext(req, job.metadata),
         scheduleJobIdentity: job.metadata,
         req,
         res,

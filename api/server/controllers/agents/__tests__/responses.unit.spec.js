@@ -299,6 +299,9 @@ jest.mock('@librechat/api', () => ({
   })),
   AgentRunEnvelopeError: MockAgentRunEnvelopeError,
   createAgentRunEnvelope: (...args) => mockCreateAgentRunEnvelope(...args),
+  createRemoteExecutionContext: jest.fn((...args) =>
+    jest.requireActual('@librechat/api').createRemoteExecutionContext(...args),
+  ),
   resolveAdmittedCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
   resolvePersistableCodeEnvironmentDecision: (...args) =>
@@ -2690,6 +2693,30 @@ describe('createResponse controller', () => {
       },
     );
 
+    it('passes on what the execution context says about attendance, not an answer of its own', async () => {
+      const { initializeAgent, createRemoteExecutionContext } = require('@librechat/api');
+      const { loadAgentTools } = require('~/server/services/ToolService');
+      createRemoteExecutionContext.mockReturnValueOnce({
+        principal: { userId: 'user-123' },
+        agentId: 'agent-123',
+        source: { type: 'remote_api', protocol: 'responses', background: true },
+        unattended: false,
+      });
+
+      await createResponse(req, res);
+
+      const [initializeParams] = initializeAgent.mock.calls.at(-1);
+      await initializeParams.loadTools({
+        agentId: 'agent-123',
+        tools: ['file_search'],
+        provider: 'anthropic',
+        model: 'claude-3',
+      });
+      expect(loadAgentTools).toHaveBeenLastCalledWith(
+        expect.objectContaining({ unattended: false }),
+      );
+    });
+
     it.each([false, true])(
       'threads the remote-agent permission boundary through initialization and tool loading (stream=%s)',
       async (stream) => {
@@ -2727,8 +2754,12 @@ describe('createResponse controller', () => {
           model: 'claude-3',
           tool_resources: { file_search: { file_ids: ['owner-file'] } },
         });
+        /** A foreground response answers an API client, so tool loading must not prompt. */
         expect(loadAgentTools).toHaveBeenLastCalledWith(
-          expect.objectContaining({ agentResourceType: ResourceType.REMOTE_AGENT }),
+          expect.objectContaining({
+            agentResourceType: ResourceType.REMOTE_AGENT,
+            unattended: true,
+          }),
         );
 
         const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
@@ -2749,6 +2780,7 @@ describe('createResponse controller', () => {
             agentResourceType: ResourceType.REMOTE_AGENT,
             requestBody: initializeParams.requestBody,
             signal: effectiveSignal,
+            unattended: true,
           }),
         );
         mockExecution.abort();

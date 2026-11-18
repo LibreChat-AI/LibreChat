@@ -11,6 +11,7 @@ const {
 const {
   createRun,
   applyContextToAgent,
+  createRemoteExecutionContext,
   buildInitialToolSessions,
   buildRunToolSet,
   AgentRunEnvelopeError,
@@ -456,6 +457,12 @@ const executeResponse = async (envelope, { req, res }) => {
     addConvoToolApprovalAllows: db.addConvoToolApprovalAllows,
   });
   const responseId = responseRuntime.responseId;
+  const executionContext = createRemoteExecutionContext({
+    principal,
+    agentId: request.model,
+    protocol: 'responses',
+    background: responseRuntime.background,
+  });
   const terminalRunError = createTerminalRunErrorObserver({
     maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
     logger,
@@ -621,6 +628,7 @@ const executeResponse = async (envelope, { req, res }) => {
         res,
         signal: execution.signal,
         ...responseRuntime.toolContext(execution),
+        unattended: executionContext.unattended,
       });
       const skillDbMethods = getSkillDbMethods();
 
@@ -1122,6 +1130,7 @@ const executeResponse = async (envelope, { req, res }) => {
               ...responseRuntime.toolContext(execution),
               req,
               res,
+              unattended: executionContext.unattended,
               agentResourceType: ResourceType.REMOTE_AGENT,
               conversationId,
               requestBody: mcpRequestBody,
@@ -1356,6 +1365,7 @@ const executeResponse = async (envelope, { req, res }) => {
               ...responseRuntime.toolContext(execution),
               req,
               res,
+              unattended: executionContext.unattended,
               agentResourceType: ResourceType.REMOTE_AGENT,
               conversationId,
               requestBody: mcpRequestBody,
