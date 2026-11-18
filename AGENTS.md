@@ -28,6 +28,12 @@ one stash stack, so never use a bare `git stash pop`. Prefer a WIP commit; if a 
 apply the specific tagged entry. The `target: main` label and release-bound upstream branches are
 exempt from the main-to-dev retarget workflow; do not use either to backport ordinary work.
 
+Keep each PR focused on one independently reviewable change. When implementation, review, or
+local/automated e2e testing uncovers another bug or edge case, track it and open a separate PR as
+soon as it is identified if it can ship independently. Do not let surfaced gaps accumulate in the
+current PR. Keep required fixes, their callers and tests together; split large changes into
+coherent, reviewable steps rather than bundling unrelated work.
+
 Write the description for a reader who has not followed the branch: what breaks, what triggers it,
 how it behaves after the change, then one or two views of the mechanism — a focused diff, a call
 tree, a shallow file tree, or a Mermaid sequence. Keep only what the change carries, and describe
@@ -190,7 +196,13 @@ Jotai conversion scoped to the state a feature owns. For persisted atoms, use th
 
 ## Code style and performance
 
-Use short, single-word file names when possible; group related modules in a single-word directory.
+**Prefer concise, single-word names for variables, objects, parameters and functions whenever the
+meaning stays clear.** Let scope and types supply context: use `provider` rather than
+`sessionProvider` in session-specific code when no distinction is lost. Drop redundant qualifiers
+instead of stacking nouns; do not substitute cryptic abbreviations or sacrifice clarity to save
+tokens. Use short, single-word file names when possible; group related modules in a single-word
+directory.
+
 Prefer flat early returns, pure functions, and explicit types. Avoid `any`, broad `unknown`/casts,
 duplicated types, and dynamic imports. Extract genuinely repeated logic instead of copying it;
 write comments only for non-obvious behavior or public API contracts.
@@ -204,6 +216,11 @@ Avoid extra passes over shared message arrays and unnecessary allocations. For s
 request paths, reuse already-loaded user/config data, avoid serial database reads, and start
 independent reads in parallel. Do not weaken authorization or tenant checks or write a response
 before those checks succeed.
+
+Evaluate performance impact before adding work to a hot path. In the PR, identify added database or
+network calls, serial waits, allocations and client work. Measure affected latency or resource use
+before and after meaningful changes, including recovery and concurrent requests where relevant;
+state what was not measured rather than calling the impact negligible without evidence.
 
 ## Frontend rules
 
