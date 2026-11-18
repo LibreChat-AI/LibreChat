@@ -71,7 +71,10 @@ export async function startGeneration(
     }
     requestAttempts += 1;
     try {
-      const data = await host.start({ server: url, payload }, { signal });
+      const data = await host.start(
+        { server: url, payload, productTrackingContext: currentSubmission.productTrackingContext },
+        { signal },
+      );
       if (signal?.aborted) {
         return null;
       }
@@ -251,7 +254,13 @@ export async function startGeneration(
   if (signal?.aborted) {
     return null;
   }
-  host.events.showStartFailure(currentSubmission, errorData);
+  host.events.showStartFailure(
+    currentSubmission,
+    errorData,
+    responseStatus != null && responseStatus >= 400 && responseStatus < 500
+      ? 'rejected'
+      : 'unconfirmed',
+  );
   host.pane.setShowStopButton(false);
   host.pane.setIsSubmitting(false);
   host.pane.setSubmission(null);

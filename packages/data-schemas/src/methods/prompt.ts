@@ -1106,7 +1106,9 @@ export function createPromptMethods(
   /**
    * Make a prompt the production prompt for its group.
    */
-  async function makePromptProduction(promptId: string): Promise<{ message: string }> {
+  async function makePromptProduction(
+    promptId: string,
+  ): Promise<{ message: string; changed: boolean }> {
     const Prompt = mongoose.models.Prompt as Model<IPrompt>;
     const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
 
@@ -1116,11 +1118,12 @@ export function createPromptMethods(
       throw new Error('Prompt not found');
     }
 
-    await PromptGroup.findByIdAndUpdate(prompt.groupId, { productionId: prompt._id }, { new: true })
-      .lean()
-      .exec();
+    const result = await PromptGroup.updateOne(
+      { _id: prompt.groupId, productionId: { $ne: prompt._id } },
+      { $set: { productionId: prompt._id } },
+    ).exec();
 
-    return { message: 'Prompt production made successfully' };
+    return { message: 'Prompt production made successfully', changed: result.modifiedCount === 1 };
   }
 
   /**

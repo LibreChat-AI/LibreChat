@@ -1,5 +1,6 @@
 import type { LocatorTraversalReporter } from '../../protection/diagnostics';
 import type { SdkModelHost } from '../remoteSdk/builder';
+import type { ProductTrackingRequest } from '../product';
 /**
  * OpenAI-compatible chat completions service for agents.
  *
@@ -302,6 +303,7 @@ type CreateRunAppConfig = Pick<
 type CreateRunFn = (params: {
   sdkModelHost?: SdkModelHost;
   modelCallbacks?: ReturnType<typeof createApiModelCallbacks>;
+  productTrackingRequest?: ProductTrackingRequest;
   agents: unknown[];
   messages: unknown[];
   runId: string;
@@ -643,7 +645,7 @@ export function buildNonStreamingResponse(
  * @param deps - Dependencies for the service
  */
 export async function createAgentChatCompletion(
-  req: Request,
+  req: Request & ProductTrackingRequest,
   res: ServerResponse,
   deps: ChatCompletionDependencies,
 ): Promise<void> {
@@ -909,6 +911,7 @@ export async function createAgentChatCompletion(
           onTraversalFailure: deps.onTraversalFailure,
           resolvedFiles: modelBoundFiles,
         }),
+        productTrackingRequest: req,
         agents: [initializedAgent],
         messages,
         runId: requestId,

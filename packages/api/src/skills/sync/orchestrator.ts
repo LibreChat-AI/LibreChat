@@ -1,5 +1,6 @@
 import { skillSyncConfigSchema } from 'librechat-data-provider';
 import type { SkillSyncConfig } from 'librechat-data-provider';
+import type { SkillSyncProductTracker } from './tracking';
 import type { GitHubSkillSyncRunner } from './github';
 
 const REQUEST_SYNC_MIN_INTERVAL_MS = 5 * 60 * 1000;
@@ -22,6 +23,8 @@ export type SkillSyncRequestLike = {
   config?: SkillSyncAppConfigLike;
   user?: SkillSyncRequestUser;
   skillSyncAllowServerCredentials?: boolean;
+  /** Optional host system-actor sink; never inferred from the user's tracker. */
+  skillSyncProductTracker?: SkillSyncProductTracker;
 };
 
 type ResolvedSkillSyncConfig = NonNullable<SkillSyncConfig>;
@@ -41,6 +44,7 @@ export type SkillSyncTriggerRunnerFactoryInput = {
   getConfig: () => MaybePromise<SkillSyncConfig | undefined>;
   loadAppConfig: () => MaybePromise<SkillSyncAppConfigLike | undefined>;
   allowServerCredentials?: boolean;
+  trackProductFact?: SkillSyncProductTracker;
 };
 
 export type SkillSyncTriggerOrchestratorDeps = {
@@ -263,6 +267,7 @@ export function createSkillSyncTriggerOrchestrator(
       getConfig: async () => config,
       loadAppConfig: async () => request.config,
       allowServerCredentials,
+      trackProductFact: request.skillSyncProductTracker,
     });
   }
 
@@ -281,6 +286,7 @@ export function createSkillSyncTriggerOrchestrator(
       getConfig: async () => config,
       loadAppConfig: async () => request.config,
       allowServerCredentials: Boolean(request.skillSyncAllowServerCredentials),
+      trackProductFact: request.skillSyncProductTracker,
     });
     const status = await requestRunner.getStatus();
     if (!shouldRunRequestSync(status, { minIntervalMs, staleRunningMs })) {

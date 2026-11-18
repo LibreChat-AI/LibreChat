@@ -252,6 +252,7 @@ function createDeps(
   const statuses: ISkillSyncStatus[] = [];
   const deps: GitHubSkillSyncDeps & { statuses: ISkillSyncStatus[] } = {
     statuses,
+    trackProductFact: jest.fn(),
     getConfig: () => ({
       github: {
         enabled: true,
@@ -371,6 +372,20 @@ describe('createGitHubSkillSyncRunner', () => {
       ([input]: [RequestInfo | URL]) => input.toString(),
     );
 
+    expect(deps.trackProductFact).toHaveBeenCalledTimes(2);
+    expect(deps.trackProductFact).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ name: 'librechat.skills.synced', change: 'added' }),
+      { actor: 'system', tenantId: undefined },
+    );
+    expect(deps.trackProductFact).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: 'librechat.skills.sync.finished',
+        status: 'succeeded',
+        changedSkillCount: 1,
+      }),
+      { actor: 'system', tenantId: undefined },
+    );
     expect(result.status).toBe('completed');
     expect(fetchedUrls.some((url) => url.includes('/git/trees/tree-sha?recursive=1'))).toBe(false);
     expect(fetchedUrls.some((url) => url.includes('/git/trees/skills-tree-sha?recursive=1'))).toBe(
@@ -3498,6 +3513,15 @@ describe('createGitHubSkillSyncRunner', () => {
     expect(deps.grantPermission).not.toHaveBeenCalled();
     expect(deps.upsertSkillFile).not.toHaveBeenCalled();
     expect(deps.deleteSkill).toHaveBeenCalledWith(expect.any(String));
+    expect(deps.trackProductFact).toHaveBeenCalledTimes(1);
+    expect(deps.trackProductFact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'librechat.skills.sync.finished',
+        status: 'failed',
+        changedSkillCount: 0,
+      }),
+      { actor: 'system', tenantId: undefined },
+    );
   });
 
   it('stops syncing after losing the Mongo lock lease', async () => {
@@ -3634,6 +3658,15 @@ describe('files whose paths cannot be mirrored', () => {
     const result = await createGitHubSkillSyncRunner(deps).runOnce();
 
     expect(result.status).toBe('completed');
+    expect(deps.trackProductFact).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: 'librechat.skills.sync.finished',
+        status: 'partial',
+        skippedFileCount: 1,
+        changedSkillCount: 1,
+      }),
+      { actor: 'system', tenantId: undefined },
+    );
     expect(deps.createSkill).toHaveBeenCalledTimes(1);
     expect(deps.upsertSkillFile).toHaveBeenCalledWith(
       expect.objectContaining({ relativePath: 'scripts/run.sh' }),
@@ -3947,6 +3980,16 @@ describe('steady-state sync of an unchanged source', () => {
     const deps = createDbDeps(repo);
     const result = await createGitHubSkillSyncRunner(deps).runOnce();
 
+    expect(deps.trackProductFact).toHaveBeenCalledTimes(1);
+    expect(deps.trackProductFact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'librechat.skills.sync.finished',
+        unchanged: true,
+        unchangedSkillCount: 1,
+        changedSkillCount: 0,
+      }),
+      { actor: 'system', tenantId: undefined },
+    );
     expect(result.sources[0]).toEqual(
       expect.objectContaining({
         status: 'succeeded',
@@ -4005,11 +4048,25 @@ describe('steady-state sync of an unchanged source', () => {
     });
 
     const deps = createDbDeps(repo);
+    const trackProductFact = jest.fn();
+    deps.trackProductFact = trackProductFact;
     await createGitHubSkillSyncRunner(deps).runOnce();
 
     expect(repo.fetchedPaths()).toEqual(['skills/research/SKILL.md']);
     expect(deps.updateSkill).toHaveBeenCalledTimes(1);
     const mirror = await getMirror();
+    expect(deps.trackProductFact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'librechat.skills.synced',
+        change: 'updated',
+        skillId: mirror._id.toString(),
+      }),
+      { actor: 'system', tenantId: undefined },
+    );
+    for (const [fact] of trackProductFact.mock.calls) {
+      expect(fact).not.toHaveProperty('version');
+      expect(fact).not.toHaveProperty('sourceId');
+    }
     expect(mirror.description).toBe('Research more things');
     expect(mirror.sourceMetadata?.skillBlobSha).toBe('skills/research/SKILL.md@2');
   });

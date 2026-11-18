@@ -11,7 +11,7 @@ import { Cloud } from 'lucide-react';
 import { getDefaultStore } from 'jotai';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { TPromptGroup } from 'librechat-data-provider';
+import type { ProductPromptReference, TPromptGroup } from 'librechat-data-provider';
 import type { PromptOption } from '~/common';
 import { navigationGenerationAtom } from '~/store/navigation';
 
@@ -39,6 +39,12 @@ jest.mock('~/store', () => ({
   default: {
     showPromptsPopoverFamily: () => 'show-prompts-popover',
   },
+}));
+
+const mockTrack = jest.fn();
+jest.mock('~/Providers/TrackingContext', () => ({
+  useProductTracking: () => mockTrack,
+  useProductTrackingContext: () => () => undefined,
 }));
 
 const mockRecordUsage = jest.fn();
@@ -82,9 +88,16 @@ jest.mock('@librechat/client', () => {
 
 /** Native groups resolve from local text with no request; a test overrides this
  *  per-call to drive the Langfuse resolve paths. */
-const mockResolve = jest.fn((group: TPromptGroup) =>
-  Promise.resolve(group.productionPrompt?.prompt ?? ''),
-);
+const resolveNative = (
+  group: TPromptGroup,
+  onResolved?: (reference: ProductPromptReference | undefined) => void,
+) => {
+  onResolved?.(
+    group.productionId && group._id ? { source: 'native', groupId: group._id } : undefined,
+  );
+  return Promise.resolve(group.productionPrompt?.prompt ?? '');
+};
+const mockResolve = jest.fn(resolveNative);
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -116,8 +129,8 @@ const promptGroups: PromptOption[] = [
 ];
 
 const promptsMap = {
-  '1': { _id: '1', productionPrompt: { prompt: 'Alpha body' } },
-  '2': { _id: '2', productionPrompt: { prompt: 'Beta body' } },
+  '1': { _id: '1', productionId: 'revision-1', productionPrompt: { prompt: 'Alpha body' } },
+  '2': { _id: '2', productionId: 'revision-2', productionPrompt: { prompt: 'Beta body' } },
 };
 
 const activeItemId = () =>
@@ -134,9 +147,7 @@ beforeEach(() => {
   /* `clearAllMocks` keeps a queued `mockResolvedValueOnce`/`mockRejectedValueOnce` from a
      prior test; reset fully so each test starts from the plain pass-through resolver. */
   mockResolve.mockReset();
-  mockResolve.mockImplementation((group: TPromptGroup) =>
-    Promise.resolve(group.productionPrompt?.prompt ?? ''),
-  );
+  mockResolve.mockImplementation(resolveNative);
   document.body.innerHTML = '';
   mockShowPromptsPopover.current = true;
   mockConversation.current = { conversationId: 'convo-1' };
@@ -321,7 +332,10 @@ describe('PromptsCommand Langfuse resolve', () => {
   });
 
   it('shows the resolving toast, submits the resolved text, and records usage once', async () => {
-    mockResolve.mockResolvedValueOnce('Resolved Gamma text');
+    mockResolve.mockImplementationOnce((_group, onResolved) => {
+      onResolved?.({ source: 'langfuse', groupId: '3' });
+      return Promise.resolve('Resolved Gamma text');
+    });
     const submitPrompt = jest.fn();
     const textAreaRef = makeTextarea('/');
     renderPromptsCommand(textAreaRef, submitPrompt);
@@ -336,11 +350,27 @@ describe('PromptsCommand Langfuse resolve', () => {
     await waitFor(() => expect(submitPrompt).toHaveBeenCalledWith('Resolved Gamma text'));
     expect(mockRecordUsage).toHaveBeenCalledTimes(1);
     expect(mockRecordUsage).toHaveBeenCalledWith('3');
+    const resolvedIndex = mockTrack.mock.calls.findIndex(
+      ([fact]) => fact.name === 'librechat.prompts.resolved',
+    );
+    expect(mockTrack.mock.invocationCallOrder[resolvedIndex]).toBeLessThan(
+      submitPrompt.mock.invocationCallOrder[0],
+    );
+    expect(mockTrack).toHaveBeenCalledWith({
+      name: 'librechat.prompts.resolved',
+      feature: 'prompts',
+      entryPoint: 'picker',
+      prompt: { source: 'langfuse', groupId: '3' },
+      variables: false,
+    });
     expect(textAreaRef.current).toBe(document.activeElement);
   });
 
   it('submits and records nothing, and refocuses the textarea, when a Langfuse resolve returns only whitespace', async () => {
-    mockResolve.mockResolvedValueOnce('   ');
+    mockResolve.mockImplementationOnce((_group, onResolved) => {
+      onResolved?.({ source: 'langfuse', groupId: '3' });
+      return Promise.resolve('   ');
+    });
     const submitPrompt = jest.fn();
     const textAreaRef = makeTextarea('/');
     renderPromptsCommand(textAreaRef, submitPrompt);
@@ -350,6 +380,9 @@ describe('PromptsCommand Langfuse resolve', () => {
     await waitFor(() => expect(mockResolve).toHaveBeenCalledTimes(1));
     expect(submitPrompt).not.toHaveBeenCalled();
     expect(mockRecordUsage).not.toHaveBeenCalled();
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'librechat.prompts.resolved' }),
+    );
     expect(textAreaRef.current).toBe(document.activeElement);
   });
 
@@ -369,6 +402,9 @@ describe('PromptsCommand Langfuse resolve', () => {
     );
     expect(submitPrompt).not.toHaveBeenCalled();
     expect(mockRecordUsage).not.toHaveBeenCalled();
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'librechat.prompts.resolved' }),
+    );
   });
 
   it('focuses the textarea when a Tab-selected Langfuse resolve fails', async () => {
@@ -413,6 +449,9 @@ describe('PromptsCommand Langfuse resolve', () => {
 
     expect(submitPrompt).not.toHaveBeenCalled();
     expect(mockRecordUsage).not.toHaveBeenCalled();
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'librechat.prompts.resolved' }),
+    );
     expect(mockShowToast).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'error' }));
   });
 
@@ -648,6 +687,13 @@ describe('PromptsCommand Langfuse resolve', () => {
     await waitFor(() => expect(submitPrompt).toHaveBeenCalledWith('Alpha body'));
     expect(mockShowToast).not.toHaveBeenCalled();
     expect(mockRecordUsage).toHaveBeenCalledWith('1');
+    expect(mockTrack).toHaveBeenCalledWith({
+      name: 'librechat.prompts.resolved',
+      feature: 'prompts',
+      entryPoint: 'picker',
+      prompt: { source: 'native', groupId: '1' },
+      variables: false,
+    });
   });
 
   it('closes the variable dialog when a navigation starts while it is open', async () => {
@@ -658,6 +704,9 @@ describe('PromptsCommand Langfuse resolve', () => {
 
     fireEvent.click(screen.getByText('Gamma'));
     expect(await screen.findByTestId('variable-dialog')).toBeInTheDocument();
+    expect(mockTrack).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'librechat.prompts.resolved' }),
+    );
 
     /** A dialog opened from a resolved Langfuse read must not survive a chat
      *  change and submit a variable fill into another chat. */

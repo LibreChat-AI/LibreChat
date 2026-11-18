@@ -1,8 +1,13 @@
 import React from 'react';
 import '@testing-library/jest-dom/extend-expect';
-import { render, screen } from '@testing-library/react';
 import { PermissionBits, SystemRoles } from 'librechat-data-provider';
-import type { TPromptGroup, TResolvedPromptResponse } from 'librechat-data-provider';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import type {
+  TPrompt,
+  TCreatePromptResponse,
+  TPromptGroup,
+  TResolvedPromptResponse,
+} from 'librechat-data-provider';
 import PromptForm from '../PromptForm';
 
 const mockGroup: TPromptGroup = {
@@ -46,12 +51,18 @@ let mockPromptContent: {
   refetch: mockRefetchPromptContent,
 };
 
+const mockPromote = jest.fn();
+let mockAlwaysMakeProd = false;
+let mockPrompts: TPrompt[] = [];
+let mockAddSuccess: ((response: TCreatePromptResponse) => void) | undefined;
+
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ promptId: 'group-1' }),
 }));
 
 jest.mock('recoil', () => ({
-  useRecoilValue: () => undefined,
+  useRecoilValue: (atom: string) =>
+    atom === 'alwaysMakeProd-atom' ? mockAlwaysMakeProd : 'advanced',
 }));
 
 jest.mock('~/store', () => ({
@@ -69,11 +80,14 @@ jest.mock('~/Providers', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetPrompts: () => ({ data: [], isLoading: false }),
+  useGetPrompts: () => ({ data: mockPrompts, isLoading: false }),
   useGetPromptGroup: () => ({ data: mockGroup, isLoading: false }),
-  useAddPromptToGroup: () => ({ mutate: jest.fn(), isLoading: false }),
+  useAddPromptToGroup: (options?: { onSuccess?: (response: TCreatePromptResponse) => void }) => {
+    mockAddSuccess = options?.onSuccess;
+    return { mutate: jest.fn(), isLoading: false };
+  },
   useUpdatePromptGroup: () => ({ mutate: jest.fn(), isLoading: false, isError: false }),
-  useMakePromptProduction: () => ({ mutate: jest.fn(), isLoading: false }),
+  useMakePromptProduction: () => ({ mutate: mockPromote, isLoading: false }),
   useRecordPromptUsage: () => ({ mutate: jest.fn() }),
 }));
 
@@ -348,4 +362,65 @@ describe('PromptForm external (Langfuse) resolved content', () => {
       screen.queryByRole('link', { name: 'com_ui_prompt_open_in_langfuse' }),
     ).not.toBeInTheDocument();
   });
+});
+
+describe('native prompt deployment intent', () => {
+  beforeEach(() => {
+    mockGroup.source = 'native';
+    mockGroup.productionId = 'old-revision';
+    mockPermissionsLoading = false;
+    mockPermissionBits = mockAllBits;
+    mockAlwaysMakeProd = false;
+    mockPromote.mockClear();
+    mockPrompts = [
+      {
+        _id: 'revision-1',
+        groupId: 'group-1',
+        author: 'owner',
+        createdAt: '2026-01-01',
+        updatedAt: '2026-01-01',
+        prompt: 'Private prompt',
+        type: 'text',
+      },
+    ];
+  });
+  afterEach(() => {
+    mockPrompts = [];
+    mockAlwaysMakeProd = false;
+  });
+
+  it('marks a deploy button request as explicit', () => {
+    render(<PromptForm promptId="group-1" />);
+    fireEvent.click(screen.getAllByRole('button', { name: 'com_ui_make_production' })[0]);
+    expect(mockPromote).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'revision-1', deployment: 'explicit' }),
+    );
+  });
+
+  it.each([true, false])(
+    'auto-promotes a saved revision only with the preference enabled (%s)',
+    (enabled) => {
+      mockAlwaysMakeProd = enabled;
+      render(<PromptForm promptId="group-1" />);
+      const prompt = {
+        _id: 'new-revision',
+        groupId: 'group-1',
+        author: 'owner',
+        createdAt: '2026-01-01',
+        updatedAt: '2026-01-01',
+        type: 'text' as const,
+        prompt: 'Saved private prompt',
+      };
+      act(() => {
+        mockAddSuccess?.({ prompt, group: mockGroup });
+      });
+      if (enabled) {
+        expect(mockPromote).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'new-revision', deployment: 'automatic' }),
+        );
+      } else {
+        expect(mockPromote).not.toHaveBeenCalled();
+      }
+    },
+  );
 });

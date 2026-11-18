@@ -19,6 +19,7 @@ import type { CategoryOption } from './CategoryFilter';
 import type { AgentItem } from './items/types';
 import type { AgentForm } from '~/common';
 import { useLocalize, useHasAccess, useAuthContext, useToolFavorites } from '~/hooks';
+import { useFeatureObservation } from '~/hooks/useProductObservation';
 import { CreateSkillDialog } from '~/components/Skills/dialogs';
 import { useSkillsInfiniteQuery } from '~/data-provider';
 import MarketplaceCatalog from './MarketplaceCatalog';
@@ -45,6 +46,7 @@ const VIEWS: Array<{ value: SkillView; labelKey: TranslationKeys }> = [
 ];
 
 export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDialogProps) {
+  useFeatureObservation('skills', 'picker', open);
   const localize = useLocalize();
   const { user } = useAuthContext();
   const { control, getValues, setValue } = useFormContext<AgentForm>();

@@ -1,4 +1,4 @@
-import { PrincipalType, ResourceType } from 'librechat-data-provider';
+import { PrincipalType, ResourceType, getProductTrackingConfig } from 'librechat-data-provider';
 import type { PermissionChange } from './types';
 import type { ServerRequest } from '~/types';
 import { runAuditedPermissionUpdate } from './audit';
@@ -359,4 +359,64 @@ describe('runAuditedPermissionUpdate', () => {
       expect(logger.error).toHaveBeenCalled();
     },
   );
+});
+
+describe('permission product facts', () => {
+  const run = async (
+    changes: PermissionChange[],
+    options: { fail?: boolean; enabled?: boolean; resourceType?: ResourceType } = {},
+  ) => {
+    const productTracker = jest.fn();
+    const promise = runAuditedPermissionUpdate({
+      req: Object.assign({}, req, {
+        productTracker,
+        productTracking: { ...getProductTrackingConfig(), enabled: options.enabled ?? true },
+      }),
+      resourceType: options.resourceType ?? ResourceType.SKILL,
+      resourceId: 'ABCDEF0123456789ABCDEF01',
+      failClosed: true,
+      deps: { recordAuditEntry: jest.fn(), logger: { error: jest.fn() } },
+      update: async (beforeWrite, afterWrite) => {
+        await beforeWrite({ aclChanges: changes, insightsChanges: [] });
+        expect(productTracker).not.toHaveBeenCalled();
+        if (options.fail) throw new Error('write failed');
+        await afterWrite();
+        await afterWrite();
+      },
+    });
+    if (options.fail) await expect(promise).rejects.toThrow('write failed');
+    else await promise;
+    return productTracker;
+  };
+
+  test.each([ResourceType.SKILL, ResourceType.PROMPTGROUP])(
+    'reports one durable sharing change for %s without recipients',
+    async (resourceType) => {
+      const track = await run(
+        [grantChange('private-recipient'), revokeChange(PrincipalType.PUBLIC, null)],
+        { resourceType },
+      );
+      expect(track).toHaveBeenCalledTimes(1);
+      expect(track.mock.calls[0][0]).toEqual(
+        resourceType === ResourceType.SKILL
+          ? {
+              name: 'librechat.skills.sharing.changed',
+              feature: 'skills',
+              skillId: 'abcdef0123456789abcdef01',
+            }
+          : {
+              name: 'librechat.prompts.sharing.changed',
+              feature: 'prompts',
+              groupId: 'abcdef0123456789abcdef01',
+            },
+      );
+    },
+  );
+
+  test('does not report unchanged permissions, failed writes or disabled tracking', async () => {
+    const unchanged = { ...grantChange('u1'), previous: { permBits: 3, roleId: 'r1' } };
+    expect(await run([unchanged])).not.toHaveBeenCalled();
+    expect(await run([grantChange('u1')], { fail: true })).not.toHaveBeenCalled();
+    expect(await run([grantChange('u1')], { enabled: false })).not.toHaveBeenCalled();
+  });
 });

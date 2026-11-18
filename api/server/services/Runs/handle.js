@@ -1,3 +1,4 @@
+const { trackAssistantRun } = require('@librechat/api');
 const { sleep } = require('@librechat/agents');
 const { logger } = require('@librechat/data-schemas');
 const { RunStatus, CacheKeys } = require('librechat-data-provider');
@@ -63,6 +64,7 @@ async function waitForRun({
   run_id,
   thread_id,
   runManager,
+  productTracking,
   pollIntervalMs = 2000,
   timeout = 60000 * 3,
 }) {
@@ -111,6 +113,7 @@ async function waitForRun({
     }
 
     run = updatedRun;
+    trackAssistantRun(productTracking, run);
     attempt = 0;
     const runStatus = `${runInfo} | status: ${run.status}`;
 

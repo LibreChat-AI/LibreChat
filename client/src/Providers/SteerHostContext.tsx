@@ -1,16 +1,16 @@
 import { useCallback, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { QueryKeys } from 'librechat-data-provider';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
+import { QueryKeys, safelyTrack, productTrackingContextSchema } from 'librechat-data-provider';
 import type {
   SteerHost,
   SteerSettings,
   SteerNotification,
   SteerRequestCallbacks,
 } from '@librechat/chat/react';
+import type { ChatBrowserFact, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { ChatTransportError, StreamStatusResponse } from '@librechat/chat';
-import type { TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import {
   fetchStreamStatus,
   useAgentQueuedTurns,
@@ -21,6 +21,7 @@ import {
   useCancelAgentQueuedTurnMutation,
   useEnqueueAgentQueuedTurnMutation,
 } from '~/data-provider';
+import { useProductTracking, useProductTrackingContext } from './TrackingContext';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import { streamStatusQueryKey } from '~/data-provider/SSE/queries';
@@ -37,14 +38,85 @@ const settleWith = <Result,>(callbacks?: SteerRequestCallbacks<Result>) => ({
   onError: (error: unknown) => callbacks?.onError?.(error as ChatTransportError),
 });
 
+function useSteerProductTracking() {
+  const track = useProductTracking();
+  const getContext = useProductTrackingContext();
+  return useCallback(
+    (fact: ChatBrowserFact) => {
+      const context = fact.name === 'librechat.chat.submission.failed' ? undefined : getContext();
+      track(
+        fact,
+        'submissionId' in fact ? { ...context, submissionId: fact.submissionId } : context,
+      );
+    },
+    [track, getContext],
+  );
+}
+
 function useSteerMessage(): ReturnType<SteerHost['useSteerMessage']> {
   const { mutate } = useSteerMessageMutation();
-  return useCallback((request, callbacks) => mutate(request, settleWith(callbacks)), [mutate]);
+  const track = useSteerProductTracking();
+  return useCallback(
+    (request, callbacks) => {
+      if (request.clientSteerId)
+        safelyTrack(track, {
+          name: 'librechat.chat.message.steered',
+          feature: 'chat',
+          conversationId: request.conversationId,
+          clientSteerId: request.clientSteerId,
+          generationCreatedAt: request.generationCreatedAt,
+        });
+      mutate(request, settleWith(callbacks));
+    },
+    [mutate, track],
+  );
+}
+
+function useSteerMessageAsync(): ReturnType<SteerHost['useSteerMessageAsync']> {
+  const { mutateAsync } = useSteerMessageMutation();
+  const track = useSteerProductTracking();
+  return useCallback(
+    (request) => {
+      if (request.clientSteerId)
+        safelyTrack(track, {
+          name: 'librechat.chat.message.steered',
+          feature: 'chat',
+          conversationId: request.conversationId,
+          clientSteerId: request.clientSteerId,
+          generationCreatedAt: request.generationCreatedAt,
+        });
+      return mutateAsync(request);
+    },
+    [mutateAsync, track],
+  );
 }
 
 function useEnqueueQueuedTurn(): ReturnType<SteerHost['useEnqueueQueuedTurn']> {
   const { mutate } = useEnqueueAgentQueuedTurnMutation();
-  return useCallback((input, callbacks) => mutate(input, settleWith(callbacks)), [mutate]);
+  const track = useSteerProductTracking();
+  return useCallback(
+    (input, callbacks) =>
+      mutate(input, {
+        ...settleWith(callbacks),
+        onError: (error) => {
+          const transportError = error as ChatTransportError;
+          const context = productTrackingContextSchema.safeParse({
+            submissionId: input.clientRequestId,
+          });
+          if (context.success && context.data.submissionId) {
+            safelyTrack(track, {
+              name: 'librechat.chat.submission.failed',
+              feature: 'chat',
+              submissionId: input.clientRequestId,
+              conversationId: input.conversationId,
+              reason: transportError.response?.status != null ? 'rejected' : 'unconfirmed',
+            });
+          }
+          callbacks?.onError?.(transportError);
+        },
+      }),
+    [mutate, track],
+  );
 }
 
 /** Observes the receipts and stream status the app's queries cache for a conversation, without
@@ -104,7 +176,8 @@ function useSettings(): SteerSettings {
 export const appSteerHost: SteerHost = {
   cancelUploads,
   useSteerMessage,
-  useSteerMessageAsync: () => useSteerMessageMutation().mutateAsync,
+  useSteerMessageAsync,
+  useProductTracking: useSteerProductTracking,
   useCancelSteer: () => useCancelSteerMutation().mutateAsync,
   useArmSteer: () => useArmSteerMutation().mutateAsync,
   useMarkFilesUsage: () => useMarkFilesUsageMutation().mutate,

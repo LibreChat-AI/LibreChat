@@ -1,6 +1,11 @@
 const path = require('path');
 const { v4 } = require('uuid');
-const { countTokens, announceReply, isAnnounceableReply } = require('@librechat/api');
+const {
+  countTokens,
+  announceReply,
+  isAnnounceableReply,
+  getConversationWriteContext,
+} = require('@librechat/api');
 const { escapeRegExp } = require('@librechat/data-schemas');
 const {
   Constants,
@@ -100,6 +105,7 @@ async function saveUserMessage(req, params) {
   }
 
   const ctx = {
+    ...getConversationWriteContext(req),
     userId: req?.user?.id,
     isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
     expiredAt: req?.resolvedConversation?.expiredAt,
@@ -148,6 +154,7 @@ async function saveAssistantMessage(req, params) {
   // const tokenCount = // TODO: need to count each content part
 
   const ctx = {
+    ...getConversationWriteContext(req),
     userId: req?.user?.id,
     isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
     expiredAt: req?.resolvedConversation?.expiredAt,
@@ -269,6 +276,7 @@ async function syncMessages({
   const modifyPromises = [];
   const recordPromises = [];
   const ctx = {
+    ...getConversationWriteContext(openai.req),
     userId: openai.req?.user?.id,
     isTemporary: openai.req?.resolvedConversation?.isTemporary ?? openai.req?.body?.isTemporary,
     expiredAt: openai.req?.resolvedConversation?.expiredAt,

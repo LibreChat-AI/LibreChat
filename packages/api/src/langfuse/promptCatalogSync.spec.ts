@@ -37,6 +37,49 @@ function createDeps(overrides: Partial<PromptCatalogSyncDeps> = {}): PromptCatal
 const source: PromptCatalogSyncSource = { destination: 'us', projectId: 'project-1' };
 
 describe('syncLangfusePromptCatalog', () => {
+  it('reports only saved pointer identities through the injected system tracker', async () => {
+    const trackProductFact = jest.fn();
+    const deps = createDeps({
+      listPrompts: jest.fn().mockResolvedValue(listResult([textItem('private name')], 1)),
+      promptService: {
+        importSourceGroup: jest.fn(async ({ onImported }) => {
+          await onImported?.('group-1');
+          return 'created';
+        }),
+      },
+      trackProductFact,
+    });
+    await syncLangfusePromptCatalog({ ...source, tenantId: 'tenant-1' }, deps);
+    expect(trackProductFact).toHaveBeenCalledWith(
+      {
+        name: 'librechat.prompts.imported',
+        feature: 'prompts',
+        source: 'langfuse',
+        groupId: 'group-1',
+      },
+      { actor: 'system', tenantId: 'tenant-1' },
+    );
+  });
+
+  it('does not fail an import when its system tracker throws', async () => {
+    const deps = createDeps({
+      listPrompts: jest.fn().mockResolvedValue(listResult([textItem('private name')], 1)),
+      promptService: {
+        importSourceGroup: jest.fn(async ({ onImported }) => {
+          await onImported?.('group-1');
+          return 'created';
+        }),
+      },
+      trackProductFact: () => {
+        throw new Error('unavailable');
+      },
+    });
+    await expect(syncLangfusePromptCatalog(source, deps)).resolves.toMatchObject({
+      ok: true,
+      value: { created: 1 },
+    });
+  });
+
   it('returns already_running and never lists when the lock is held', async () => {
     const deps = createDeps({
       lock: { ...createDeps().lock, acquire: jest.fn().mockResolvedValue(null) },

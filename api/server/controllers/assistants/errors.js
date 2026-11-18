@@ -1,6 +1,6 @@
 // errorHandler.js
 const { logger } = require('@librechat/data-schemas');
-const { getTransactionsConfig } = require('@librechat/api');
+const { getTransactionsConfig, trackAssistantRun } = require('@librechat/api');
 const { CacheKeys, ViolationTypes, ContentTypes } = require('librechat-data-provider');
 const { recordUsage, checkMessageGaps } = require('~/server/services/Threads');
 const { sendResponse } = require('~/server/middleware/error');
@@ -34,7 +34,13 @@ const { getConvo } = require('~/models');
  * @param {ErrorHandlerDependencies} dependencies - The dependencies for the error handler
  * @returns {(error: Error) => Promise<void>} The error handler function
  */
-const createErrorHandler = ({ req, res, getContext, originPath = '/assistants/chat/' }) => {
+const createErrorHandler = ({
+  req,
+  res,
+  getContext,
+  productTracking,
+  originPath = '/assistants/chat/',
+}) => {
   const cache = getLogStores(CacheKeys.ABORT_KEYS);
 
   /**
@@ -110,6 +116,7 @@ const createErrorHandler = ({ req, res, getContext, originPath = '/assistants/ch
       }
       await cache.delete(cacheKey);
       const cancelledRun = await openai.beta.threads.runs.cancel(run_id, { thread_id });
+      trackAssistantRun(productTracking, cancelledRun);
       logger.debug(`[${originPath}] Cancelled run:`, cancelledRun);
     } catch (error) {
       logger.error(`[${originPath}] Error cancelling run`, error);
@@ -120,6 +127,7 @@ const createErrorHandler = ({ req, res, getContext, originPath = '/assistants/ch
     let run;
     try {
       run = await openai.beta.threads.runs.retrieve(run_id, { thread_id });
+      trackAssistantRun(productTracking, run);
       await recordUsage({
         ...run.usage,
         model: run.model,

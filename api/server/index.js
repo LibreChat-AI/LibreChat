@@ -18,6 +18,7 @@ const {
   issueCsp,
   apiNotFound,
   createMetrics,
+  createProductTrackingMiddleware,
   applyCspNonce,
   createCspPolicy,
   shellCacheHeaders,
@@ -387,6 +388,7 @@ const startServer = async () => {
   );
 
   /* Middleware */
+  app.use(createProductTrackingMiddleware(appConfig.config?.telemetry));
   app.use(requestContextMiddleware);
   app.use('/api/agents/chat', agentStartupIngressMiddleware);
   app.use(metricsMiddleware);

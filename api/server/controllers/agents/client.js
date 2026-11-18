@@ -111,6 +111,7 @@ const {
   buildSteerMedia,
   collectSteerStampTargets,
   stampSteerPartMedia,
+  withProductModelCallbacks,
   createActivityLabelWiring,
   createActivityPhaseWiring,
   createReasoningLabelHostWiring,
@@ -1432,7 +1433,19 @@ class AgentClient extends BaseClient {
         }),
         chainOptions: {
           signal,
-          callbacks: [{ handleLLMEnd, ...capturePrompt }],
+          callbacks: withProductModelCallbacks(
+            [{ handleLLMEnd, ...capturePrompt }],
+            this.options.req,
+            {
+              runId: this.responseMessageId,
+              conversationId: this.conversationId,
+              agentId: executingAgentId,
+              model: clientOptions.model,
+              provider,
+              usage_type: 'activity-label',
+            },
+            signal,
+          ),
           configurable: {
             thread_id: this.conversationId,
             user_id: this.user ?? this.options.req?.user?.id,
@@ -1512,7 +1525,19 @@ class AgentClient extends BaseClient {
         traceSeed: `${this.responseMessageId}-activity-phase-${phaseIndex}`,
         chainOptions: {
           signal,
-          callbacks: [{ handleLLMEnd, ...capturePrompt }],
+          callbacks: withProductModelCallbacks(
+            [{ handleLLMEnd, ...capturePrompt }],
+            this.options.req,
+            {
+              runId: this.responseMessageId,
+              conversationId: this.conversationId,
+              agentId: this.agent?.id,
+              model: clientOptions.model,
+              provider,
+              usage_type: 'activity-phase',
+            },
+            signal,
+          ),
           configurable: {
             thread_id: this.conversationId,
             user_id: this.user ?? this.options.req?.user?.id,
@@ -1554,6 +1579,7 @@ class AgentClient extends BaseClient {
     signal,
   }) {
     return generateReasoningLabelRevision({
+      productTrackingRequest: this.options.req,
       payload: {
         visibleReasoning,
         reasoningStepId,
@@ -1797,10 +1823,22 @@ class AgentClient extends BaseClient {
       resolveLLM: () => this.resolveActivityLabelLLM(),
       /** Per-generation usage accounting for the direct fallback path;
        *  the SDK bridge records its own via chainOptions callbacks. */
-      getInvokeCallbacks: () => {
+      getInvokeCallbacks: ({ provider, clientOptions }) => {
         const { handleLLMEnd, collected } = createMetadataAggregator();
         return {
-          callbacks: [{ handleLLMEnd }],
+          callbacks: withProductModelCallbacks(
+            [{ handleLLMEnd }],
+            this.options.req,
+            {
+              runId: this.responseMessageId,
+              conversationId: this.conversationId,
+              agentId: this.agent?.id,
+              model: clientOptions.model,
+              provider,
+              usage_type: 'activity-label',
+            },
+            labelScope.abort.signal,
+          ),
           collect: async (estimate) => {
             const { provider, clientOptions, endpointTokenConfig, sameEndpoint } =
               await this.resolveActivityLabelLLM();
@@ -5056,6 +5094,7 @@ class AgentClient extends BaseClient {
           (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
         const createRunPromise = createRun({
           sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
+          productTrackingRequest: this.options.req,
           scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
           recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
             getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
@@ -5874,6 +5913,7 @@ class AgentClient extends BaseClient {
         (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
       run = await createRun({
         sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
+        productTrackingRequest: this.options.req,
         sdkResumeState: { content: seedContent, steps: runSteps },
         scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
         recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
@@ -6319,11 +6359,19 @@ class AgentClient extends BaseClient {
         chainOptions: {
           runName: 'TitleRun',
           signal: abortController.signal,
-          callbacks: [
+          callbacks: withProductModelCallbacks(
+            [{ handleLLMEnd }],
+            req,
             {
-              handleLLMEnd,
+              runId: this.responseMessageId,
+              conversationId: this.conversationId,
+              agentId: agent.id,
+              model: clientOptions.model,
+              provider,
+              usage_type: 'title',
             },
-          ],
+            abortController.signal,
+          ),
           configurable: {
             thread_id: this.conversationId,
             user_id: this.user ?? this.options.req.user?.id,

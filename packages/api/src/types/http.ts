@@ -1,4 +1,8 @@
 import type {
+  ProductTrackingContext,
+  ProductTracker,
+  TProductTrackingConfig,
+  ServerProductFact,
   CodeApprovalMode,
   CodeEnvironmentMode,
   CodeWorkspaceSelection,
@@ -39,6 +43,12 @@ export type RequestBody = {
 };
 
 export type ServerRequest = Request<unknown, unknown, RequestBody> & {
+  /** Untrusted browser correlation; never use this context for authorization. */
+  productTrackingContext?: ProductTrackingContext;
+  /** Supplied by the host. The callback belongs to this request, never a global user. */
+  productTracker?: ProductTracker<ServerProductFact>;
+  /** Deployment policy captured at server startup, independent of user config. */
+  productTracking?: Readonly<TProductTrackingConfig>;
   user?: IUser;
   config?: AppConfig;
   /** Server-captured generation start time used to anchor dynamic prompt variables. */
