@@ -375,14 +375,28 @@ describe('sending a turn', () => {
     expect(legacy.attachments).toHaveLength(0);
   });
 
-  it('settles a turn whose generation was over before its stream could be opened', async () => {
-    const { transport, attachments } = sender(jest.fn(async () => started));
+  it('reports a generation whose stream will not open as one that dropped, by name', async () => {
+    /** Over already, replaced by a newer one, or a wire that closed: none says how it ended. */
+    for (const failure of [404, 409, 'closed'] as const) {
+      const wire = createWire(failure === 'closed');
+      const { transport, attachments } = sender(
+        jest.fn(async () => ({ ...started, generationProtocolVersion: 2 })),
+        wire,
+      );
 
-    const sending = transport.sendMessages(request());
-    await flush();
-    attachments[0].emit({ type: 'error', status: 404 });
+      const sending = transport.sendMessages(request());
+      await flush();
+      if (failure !== 'closed') {
+        attachments[0].emit({ type: 'error', status: failure });
+      }
+      const result = await sending;
 
-    await expect(sending).resolves.toEqual({ status: 'settled', conversationId: 'thread 1' });
+      expect(result).toMatchObject({
+        status: 'stream',
+        stream: { streamId: 'thread 1', generationCreatedAt: 3000, generationProtocolVersion: 2 },
+      });
+      expect(result.status === 'stream' ? await drain(result.stream) : undefined).toEqual([]);
+    }
   });
 
   it('posts again after a dropped connection, and gives up on an answer that is not one', async () => {
@@ -484,6 +498,71 @@ describe('a Chat following a generation through the transport', () => {
 
     expect(attachments).toHaveLength(0);
     expect(chat.status).toBe('ready');
+    chat.dispose();
+  });
+  const drive = (status: ChatStreamStatus) => {
+    const wire = createWire();
+    const state = createState();
+    const finished: Array<{ isDisconnect: boolean; isSettled: boolean; isError: boolean }> = [];
+    const abort = jest.fn(async () => ({ success: true }));
+    const start = jest.fn(async () => ({
+      streamId: 'thread 1',
+      conversationId: 'thread 1',
+      generationCreatedAt: 3000,
+      generationProtocolVersion: 2,
+    }));
+    const chat = new Chat({
+      id: 'thread 1',
+      state,
+      transport: createGenerationTransport({
+        wire: () => wire.wire,
+        getStatus: async () => status,
+        start,
+        abort,
+      }),
+      prepareRequest: () => ({
+        payload: { endpoint: 'agents', conversationId: 'thread 1', text: 'Go' } as never,
+      }),
+      onFinish: ({ isDisconnect, isSettled, isError }) =>
+        finished.push({ isDisconnect, isSettled, isError }),
+    });
+    return { chat, abort, finished, attachments: wire.attachments };
+  };
+
+  it('finds what became of a turn that was over before its stream opened', async () => {
+    const { chat, finished, attachments } = drive({ active: false });
+
+    const sending = chat.sendMessage({ parts: [{ type: 'text', text: 'Go' }] });
+    await flush();
+    attachments[0].emit({ type: 'error', status: 404 });
+    await sending;
+
+    /** The start says nothing of how the turn ended, so it is a dropped stream, not a failure. */
+    expect(finished).toEqual([{ isDisconnect: true, isSettled: false, isError: true }]);
+
+    /** Asking again finds nothing running, which settles the turn for the host to read back. */
+    await chat.resumeStream();
+    expect(finished[1]).toEqual({ isDisconnect: false, isSettled: true, isError: false });
+    expect(chat.status).toBe('ready');
+    expect(attachments).toHaveLength(1);
+    chat.dispose();
+  });
+
+  it('stops the generation a start began when the stop lands before its stream opens', async () => {
+    const { chat, abort, attachments } = drive(running);
+
+    const sending = chat.sendMessage({ parts: [{ type: 'text', text: 'Go' }] });
+    await flush();
+    expect(attachments).toHaveLength(1);
+    const stopping = chat.stop();
+    await sending;
+    await stopping;
+    await flush();
+
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(abort.mock.calls[0]).toMatchObject([
+      { endpoint: 'agents', streamId: 'thread 1', generationCreatedAt: 3000 },
+    ]);
     chat.dispose();
   });
 });

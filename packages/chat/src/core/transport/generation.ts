@@ -226,9 +226,30 @@ async function requestStart(
 }
 
 /**
+ * A generation the server started whose stream did not open: it was over already, a newer one
+ * took its place, the wire closed, or the caller cancelled. None of those says how the turn
+ * ended, so it is reported as what it is, a stream that dropped before its first frame. It
+ * names its generation, which is what a caller needs to stop it or to ask what became of it.
+ */
+const unopened = (target: {
+  streamId: string;
+  generationCreatedAt?: number;
+  generationProtocolVersion?: number;
+  resume: boolean;
+}): ChatStream => ({
+  streamId: target.streamId,
+  generationCreatedAt: target.generationCreatedAt,
+  generationProtocolVersion: target.generationProtocolVersion,
+  resumed: target.resume,
+  close: () => undefined,
+  async *[Symbol.asyncIterator]() {},
+});
+
+/**
  * Starts a turn: posts it, reads what the server did with it, and opens the stream of the
  * generation it started. The server may instead say the turn had already run (`settled`) or
  * that a newer generation took its place (`replaced`), which the caller is told as they are.
+ * Only the server says either: a stream that will not open is not an answer about the turn.
  */
 async function startTurn(
   start: NonNullable<GenerationTransportInit['start']>,
@@ -282,19 +303,15 @@ async function startTurn(
   if (isUnnegotiatedV2StartControl(data) || streamId == null) {
     throw refused();
   }
-  const stream = await openStream(wire(), {
+  const target = {
     streamId,
     generationCreatedAt,
     generationProtocolVersion: getGenerationProtocolVersion(data),
-    signal: abortSignal,
     /** A start the server folded into a generation already running is replayed from its start. */
     resume: isResumedStartResponse(data),
-  });
-  if (stream == null) {
-    /** The generation was over before its stream could be opened; its result is stored. */
-    return { status: 'settled', conversationId: conversationId ?? request.chatId };
-  }
-  return { status: 'stream', stream };
+  };
+  const stream = await openStream(wire(), { ...target, signal: abortSignal });
+  return { status: 'stream', stream: stream ?? unopened(target) };
 }
 
 /**
