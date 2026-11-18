@@ -30,6 +30,7 @@ const {
   performStartupChecks,
   handleJsonParseError,
   excludeRumBodyParser,
+  excludeBackchannelLogoutBodyParser,
   GenerationJobManager,
   QUERY_DEVTOOLS_HEADER,
   createStreamServices,
@@ -118,6 +119,7 @@ const { checkMigrations } = require('./services/start/migration');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const initializeMCPs = require('./services/initializeMCPs');
 const { configureSubagentTaskRouting } = require('./services/Endpoints/agents/subagentThreadStore');
+const { preloadBackchannelLogoutConfig } = require('./services/ProviderSession');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
 const { getAppConfig, rederiveEndpoints, loadCustomConfig } = require('./services/Config');
@@ -282,6 +284,7 @@ const startServer = async () => {
   );
   app.locals.sdkFileHost = createSdkFileHost(appConfig?.endpoints?.agents?.sdkHostFiles);
   app.locals.sdkModelHost = createSdkModelHost(appConfig?.endpoints?.agents?.sdkHostModels);
+  await preloadBackchannelLogoutConfig();
   await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
   registerBackgroundTaskShutdown({
     interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
@@ -409,8 +412,12 @@ const startServer = async () => {
   app.use('/api/agents/chat', agentStartupIngressMiddleware);
   app.use(metricsMiddleware);
   app.use(noIndex);
-  app.use(excludeRumBodyParser(express.json({ limit: '3mb' })));
-  app.use(excludeRumBodyParser(express.urlencoded({ extended: true, limit: '3mb' })));
+  app.use(excludeBackchannelLogoutBodyParser(excludeRumBodyParser(express.json({ limit: '3mb' }))));
+  app.use(
+    excludeBackchannelLogoutBodyParser(
+      excludeRumBodyParser(express.urlencoded({ extended: true, limit: '3mb' })),
+    ),
+  );
   app.use(handleJsonParseError);
 
   /**

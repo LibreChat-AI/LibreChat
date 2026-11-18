@@ -87,6 +87,26 @@ export function isOpenIdIssuerMatch(
   );
 }
 
+/** The issuer a provider-session reference should key on: the token's own issuer when the
+ *  configured issuer is a `{tenantid}` template it matches, otherwise the configured issuer
+ *  unchanged. Each tenant under a template is a distinct OIDC issuer, so a reference built from
+ *  the template would scope a back-channel logout's `sid` to the wrong issuer. */
+export function resolveProviderSessionIssuer(
+  configuredIssuer: string | undefined,
+  tokenIssuer: string | undefined,
+): string | undefined {
+  const normalizedConfigured = normalizeOpenIdIssuer(configuredIssuer);
+  const normalizedToken = normalizeOpenIdIssuer(tokenIssuer);
+  if (
+    normalizedConfigured &&
+    normalizedToken &&
+    issuerMatchesTemplate(normalizedConfigured, normalizedToken)
+  ) {
+    return normalizedToken;
+  }
+  return normalizedConfigured;
+}
+
 function getIssuerFromSource(source: OpenIdIssuerSource | null | undefined): string | undefined {
   if (source == null) return undefined;
 

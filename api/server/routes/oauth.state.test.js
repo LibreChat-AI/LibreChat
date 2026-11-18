@@ -29,6 +29,7 @@ jest.mock('~/server/middleware', () => ({
   loginLimiter: (req, res, next) => next(),
   markOAuthNavigation: (req, res, next) => next(),
   checkDomainAllowed: (req, res, next) => next(),
+  backchannelLogoutLimiter: (req, res, next) => next(),
 }));
 
 jest.mock('~/server/controllers/auth/oauth', () => ({

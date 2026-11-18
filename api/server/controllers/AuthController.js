@@ -43,6 +43,7 @@ const {
 } = require('~/models');
 const { getGraphApiToken } = require('~/server/services/GraphTokenService');
 const { getRefreshTokenBridge } = require('~/server/services/RefreshTokenBridge');
+const { getProviderSessionAuthorizer } = require('~/server/services/ProviderSession');
 const {
   recoverOpenIDRefreshBridge,
   refreshOpenIDUser,
@@ -212,6 +213,9 @@ const refreshLocalSession = createLocalRefreshHandler({
   getUserById,
   findSession,
   setAuthTokens,
+  /** Rechecked right before `setAuthTokens` rotates the credential, so a back-channel logout
+   *  ends a local-provider session whose refresh token predates it. */
+  authorizeProviderSession: (input) => getProviderSessionAuthorizer().authorize(input),
   deleteAllUserSessions,
   deleteSession,
   generateTwoFactorSetupToken,

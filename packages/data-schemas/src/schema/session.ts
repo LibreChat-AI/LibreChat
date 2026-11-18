@@ -20,6 +20,15 @@ const sessionSchema: Schema<ISession> = new Schema({
     type: String,
     index: true,
   },
+  providerSession: {
+    type: {
+      issuer: { type: String, required: true },
+      clientId: { type: String, required: true },
+      sid: { type: String, required: true },
+    },
+    required: false,
+    _id: false,
+  },
   authMethod: {
     type: String,
   },

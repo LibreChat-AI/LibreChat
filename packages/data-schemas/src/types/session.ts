@@ -1,3 +1,4 @@
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
 
 /** How a session's credential was issued, matching the repo's login strategies
@@ -9,6 +10,8 @@ export interface ISession extends Document {
   expiration: Date;
   user: Types.ObjectId;
   tenantId?: string;
+  /** Provider session this credential is bound to, so renewal and recovery can authorize it. */
+  providerSession?: ProviderSessionRef;
   authMethod?: AuthMethod;
 }
 
@@ -16,12 +19,14 @@ export interface CreateSessionOptions {
   expiration?: Date;
   /** Duration in milliseconds for session expiry. Default: 7 days */
   expiresIn?: number;
+  providerSession?: ProviderSessionRef;
   authMethod?: AuthMethod;
 }
 
 export interface UpsertSessionOptions {
   expiration: Date;
   tenantId?: string;
+  providerSession?: ProviderSessionRef;
   authMethod?: AuthMethod;
 }
 

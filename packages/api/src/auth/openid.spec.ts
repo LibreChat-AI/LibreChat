@@ -12,6 +12,7 @@ import {
   createOpenIDUser,
   isOpenIdIssuerMatch,
   normalizeOpenIdIssuer,
+  resolveProviderSessionIssuer,
 } from './openid';
 import { recordOpenIDUserLookup } from '~/app/metrics';
 
@@ -90,6 +91,40 @@ describe('isOpenIdIssuerMatch', () => {
   it('rejects when either issuer is missing', () => {
     expect(isOpenIdIssuerMatch(undefined, 'https://issuer.example.com')).toBe(false);
     expect(isOpenIdIssuerMatch('https://issuer.example.com', undefined)).toBe(false);
+  });
+});
+
+describe('resolveProviderSessionIssuer', () => {
+  it('resolves a {tenantid} template to the concrete tenant issuer a token carries', () => {
+    expect(
+      resolveProviderSessionIssuer(
+        'https://login.microsoftonline.com/{tenantid}/v2.0',
+        'https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0',
+      ),
+    ).toBe('https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0');
+  });
+
+  it('returns the configured issuer unchanged for a non-template deployment', () => {
+    expect(
+      resolveProviderSessionIssuer('https://issuer.example.com', 'https://issuer.example.com/'),
+    ).toBe('https://issuer.example.com');
+  });
+
+  it('returns the configured template when the token issuer does not match it', () => {
+    const templateIssuer = 'https://login.microsoftonline.com/{tenantid}/v2.0';
+    expect(resolveProviderSessionIssuer(templateIssuer, 'https://attacker.example.com')).toBe(
+      templateIssuer,
+    );
+  });
+
+  it('returns the configured issuer unchanged when no token issuer is given', () => {
+    expect(resolveProviderSessionIssuer('https://issuer.example.com', undefined)).toBe(
+      'https://issuer.example.com',
+    );
+  });
+
+  it('returns undefined when the configured issuer cannot be normalized', () => {
+    expect(resolveProviderSessionIssuer(undefined, 'https://issuer.example.com')).toBeUndefined();
   });
 });
 

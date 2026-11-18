@@ -5,3 +5,5 @@ export * from './bridge';
 export * from './recovery';
 export * from './session';
 export * from './retry';
+export * from './providerSession';
+export * from './logout';
