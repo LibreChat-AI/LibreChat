@@ -1,4 +1,4 @@
-import { act, renderHook } from '@testing-library/react';
+import { renderHook } from '@testing-library/react';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { CodeApprovalModeInputs, CodeWorkspaceInputs } from '@librechat/chat';
@@ -129,13 +129,9 @@ describe('useTurnServices readCodeInputs', () => {
     expect(canSubmit?.(null)).toBe(false);
     expect(canSubmit?.(rendered)).toBe(true);
     expect(canSubmit?.(submitted)).toBe(false);
-    act(() => {
-      queryClient.setQueryData([QueryKeys.agent, 'agent_primary'], { id: 'agent_primary' });
-    });
+    queryClient.setQueryData([QueryKeys.agent, 'agent_primary'], { id: 'agent_primary' });
     expect(canSubmit?.(submitted)).toBe(true);
-    act(() => {
-      queryClient.removeQueries([QueryKeys.endpoints]);
-    });
+    queryClient.removeQueries([QueryKeys.endpoints]);
     expect(canSubmit?.(submitted)).toBe(false);
   });
 
@@ -160,9 +156,7 @@ describe('useTurnServices readCodeInputs', () => {
     };
     rerender();
     expect(canSubmit?.(submitted)).toBe(false);
-    act(() => {
-      queryClient.setQueryData([QueryKeys.agent, 'agent_added'], { id: 'agent_added' });
-    });
+    queryClient.setQueryData([QueryKeys.agent, 'agent_added'], { id: 'agent_added' });
     expect(canSubmit?.(submitted)).toBe(true);
 
     settings = { ...settings, addedConversation: { ...added, agent_id: 'agent_other' } };

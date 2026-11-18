@@ -22,7 +22,6 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import { cancelUploads } from '~/hooks/Files/useFileHandling';
 import useUserKey from '~/hooks/Input/useUserKey';
-import useTargetReadiness from './ask/readiness';
 import { isTargetReady } from './ask/guards';
 
 /** The app's side of a pane's turns: its catalogs, router, composer files, code workspace and
@@ -64,7 +63,6 @@ export default function useTurnServices({
     approval: codeApprovalState.readInputs,
   };
 
-  const targetReadiness = useTargetReadiness(conversation, addedConversation);
   const readiness = useRef({ config, addedConversation });
   readiness.current = { config, addedConversation };
 
@@ -87,7 +85,6 @@ export default function useTurnServices({
     getEphemeralAgent,
     getUserKey: getExpiry,
     getRouteProjectId: getRouteChatProjectId,
-    readiness: config.loaded === false ? 'pending' : targetReadiness,
     canSubmit: (submitted) => {
       const { config, addedConversation } = readiness.current;
       return (

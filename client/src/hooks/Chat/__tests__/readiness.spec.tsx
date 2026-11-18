@@ -1,18 +1,28 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryKeys, EModelEndpoint, dataService } from 'librechat-data-provider';
 import type { Agent, TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import useTargetReadiness, { getTargetReadiness } from '../ask/readiness';
+import { useGetAgentByIdQuery } from '~/data-provider/Agents/queries';
 
-const selected = (id: string): TConversation =>
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return { ...actual, dataService: { ...actual.dataService, getAgentById: jest.fn() } };
+});
+const getAgent = jest.mocked(dataService.getAgentById);
+beforeEach(() => getAgent.mockReset());
+
+const selected = (id = 'agent_1'): TConversation =>
   ({
     conversationId: `conversation-${id}`,
     endpoint: EModelEndpoint.agents,
     agent_id: id,
   }) as TConversation;
+const denied = Object.assign(new Error('denied'), { status: 403 });
+const detail = { id: 'agent_1' } as Agent;
 
-function setup(id = 'agent_1') {
+function setupClient() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
     logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
@@ -25,76 +35,136 @@ function setup(id = 'agent_1') {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  const hook = renderHook(({ conversation }) => useTargetReadiness(conversation, null), {
-    wrapper,
-    initialProps: { conversation: selected(id) },
-  });
-  return { client, ...hook };
+  return { client, wrapper };
 }
 
-it('observes delayed destination details without starting another query', async () => {
-  const { client, result } = setup();
-  let release: (agent: Agent) => void = () => undefined;
-  const request = jest.fn(
+it('shares one delayed request with the existing agent metadata loader', async () => {
+  let release!: (value: Agent) => void;
+  const request = getAgent.mockImplementation(
     () =>
-      new Promise<Agent>((resolve) => {
+      new Promise((resolve) => {
         release = resolve;
       }),
   );
-  let fetched: Promise<Agent>;
-  act(() => {
-    fetched = client.fetchQuery([QueryKeys.agent, 'agent_1'], request);
-  });
+  const { wrapper } = setupClient();
+  const { result } = renderHook(
+    () => {
+      useGetAgentByIdQuery('agent_1');
+      return useTargetReadiness(selected());
+    },
+    { wrapper },
+  );
   expect(result.current).toBe('pending');
-  await act(async () => {
-    release({ id: 'agent_1' } as Agent);
-    await fetched;
-  });
+  expect(request).toHaveBeenCalledTimes(1);
+  await act(async () => release(detail));
   await waitFor(() => expect(result.current).toBe('ready'));
   expect(request).toHaveBeenCalledTimes(1);
 });
 
-it('exposes rejected and missing destinations as blocked, not pending', async () => {
-  const { client, result } = setup();
-  await act(async () => {
+it.each(['success', 'denial'] as const)(
+  'waits for the native mount refetch after a cached error: %s',
+  async (outcome) => {
+    const { client, wrapper } = setupClient();
+    client.setQueryData([QueryKeys.agent, 'agent_1'], detail, { updatedAt: Date.now() - 10000 });
     await client
-      .fetchQuery([QueryKeys.agent, 'agent_1'], () => Promise.reject(new Error('denied')))
+      .fetchQuery([QueryKeys.agent, 'agent_1'], () => Promise.reject(denied))
       .catch(() => undefined);
-  });
-  await waitFor(() => expect(result.current).toBe('blocked'));
-  act(() => {
-    client.setQueryData([QueryKeys.agent, 'agent_1'], null);
-  });
-  expect(result.current).toBe('blocked');
+    let release!: (value: Agent) => void;
+    let reject!: (reason: unknown) => void;
+    const request = getAgent.mockImplementation(
+      () =>
+        new Promise((resolve, fail) => {
+          release = resolve;
+          reject = fail;
+        }),
+    );
+    const seen: string[] = [];
+    const { result } = renderHook(
+      () => {
+        useGetAgentByIdQuery('agent_1');
+        const readiness = useTargetReadiness(selected());
+        seen.push(readiness);
+        return readiness;
+      },
+      { wrapper },
+    );
+    expect(seen).not.toContain('blocked');
+    expect(result.current).toBe('pending');
+    expect(request).toHaveBeenCalledTimes(1);
+    await act(async () => (outcome === 'success' ? release(detail) : reject(denied)));
+    await waitFor(() => expect(result.current).toBe(outcome === 'success' ? 'ready' : 'blocked'));
+    expect(request).toHaveBeenCalledTimes(1);
+  },
+);
+
+it('uses cached endpoint configuration after refetch fails while the agent still loads', async () => {
+  const { client, wrapper } = setupClient();
+  await client
+    .fetchQuery([QueryKeys.endpoints], () => Promise.reject(denied))
+    .catch(() => undefined);
+  let release!: (value: Agent) => void;
+  getAgent.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  const { result } = renderHook(() => useTargetReadiness(selected()), { wrapper });
+  expect(result.current).toBe('pending');
+  await act(async () => release(detail));
+  await waitFor(() => expect(result.current).toBe('ready'));
 });
 
-it('ignores a late previous destination and unrelated query updates', async () => {
-  const { client, result, rerender } = setup();
-  rerender({ conversation: selected('agent_2') });
-  act(() => {
-    client.setQueryData([QueryKeys.agent, 'agent_1'], { id: 'agent_1' });
-  });
+it('adds no request for a fresh cached target or an inactive handoff', () => {
+  const request = getAgent;
+  const { client, wrapper } = setupClient();
+  client.setQueryData([QueryKeys.agent, 'agent_1'], detail);
+  const { result, rerender } = renderHook(
+    ({ enabled, id }) => useTargetReadiness(selected(id), enabled),
+    {
+      wrapper,
+      initialProps: { enabled: true, id: 'agent_1' },
+    },
+  );
+  expect(result.current).toBe('ready');
+  rerender({ enabled: false, id: 'agent_2' });
+  expect(result.current).toBe('ready');
+  expect(request).not.toHaveBeenCalled();
+});
+
+it('fences a previous destination and ignores unrelated cache updates', async () => {
+  const { wrapper, client } = setupClient();
+  getAgent.mockImplementation(() => new Promise(() => undefined));
+  let renders = 0;
+  const { result, rerender } = renderHook(
+    ({ id }) => {
+      renders++;
+      return useTargetReadiness(selected(id));
+    },
+    {
+      wrapper,
+      initialProps: { id: 'agent_1' },
+    },
+  );
+  rerender({ id: 'agent_2' });
+  act(() => client.setQueryData([QueryKeys.agent, 'agent_1'], detail));
   expect(result.current).toBe('pending');
-  act(() => {
-    client.setQueryData([QueryKeys.agent, 'agent_2'], { id: 'agent_2' });
-  });
+  act(() => client.setQueryData([QueryKeys.agent, 'agent_2'], { id: 'agent_2' }));
   await waitFor(() => expect(result.current).toBe('ready'));
+  const settledRenders = renders;
   act(() => {
-    client.setQueryData(['unrelated'], { data: true });
+    for (let i = 0; i < 20; i++) client.setQueryData(['unrelated', i], i);
   });
   expect(result.current).toBe('ready');
+  expect(renders).toBe(settledRenders);
 });
 
 it('blocks unavailable endpoints and invalid saved targets', () => {
-  const { client } = setup();
-  expect(
-    getTargetReadiness(client, { ...selected('agent_1'), endpoint: EModelEndpoint.google }),
-  ).toBe('blocked');
-  expect(getTargetReadiness(client, { ...selected('agent_1'), agent_id: undefined })).toBe(
+  const { client } = setupClient();
+  expect(getTargetReadiness(client, { ...selected(), endpoint: EModelEndpoint.google })).toBe(
     'blocked',
   );
-  act(() => {
-    client.setQueryData([QueryKeys.agent, 'agent_1'], { id: 'different' });
-  });
-  expect(getTargetReadiness(client, selected('agent_1'))).toBe('blocked');
+  expect(getTargetReadiness(client, { ...selected(), agent_id: undefined })).toBe('blocked');
+  client.setQueryData([QueryKeys.agent, 'agent_1'], { id: 'different' });
+  expect(getTargetReadiness(client, selected())).toBe('blocked');
 });

@@ -47,6 +47,15 @@ const shownSideChatAtom = atom<SideChat | null>(null);
  */
 export const sideChatRequestAtom: PrimitiveAtom<object | null> = atom<object | null>(null);
 
+/**
+ * The words the reader has written for a side chat and not sent, by its conversation. Held
+ * outside the panel, which is drawn again when the layout moves it between a column and a
+ * sheet, and in memory only: an unsent draft is not written to storage.
+ */
+export const sideChatDraftFamily: (conversationId: string) => PrimitiveAtom<string> = atomFamily(
+  (_conversationId: string) => atom(''),
+);
+
 /** The side chat on screen, if any. One at a time: it takes the page's side panel. */
 export const sideChatAtom: WritableAtom<SideChat | null, [SetStateAction<SideChat | null>], void> =
   atom(
@@ -58,15 +67,18 @@ export const sideChatAtom: WritableAtom<SideChat | null, [SetStateAction<SideCha
       if (value?.conversation.conversationId !== current?.conversation.conversationId) {
         set(sideChatRequestAtom, null);
       }
+      const id = value?.conversation.conversationId;
+      const text = value?.text;
+      /** Keep the words before a pane or its history loads. A refinement cannot resurrect
+       * an intent the reader has already edited or cleared. Existing drafts take precedence. */
+      if (
+        id &&
+        text &&
+        (id !== current?.conversation.conversationId || text !== current?.text) &&
+        get(sideChatDraftFamily(id)) === ''
+      ) {
+        set(sideChatDraftFamily(id), text);
+      }
       set(shownSideChatAtom, value);
     },
   );
-
-/**
- * The words the reader has written for a side chat and not sent, by its conversation. Held
- * outside the panel, which is drawn again when the layout moves it between a column and a
- * sheet, and in memory only: an unsent draft is not written to storage.
- */
-export const sideChatDraftFamily: (conversationId: string) => PrimitiveAtom<string> = atomFamily(
-  (_conversationId: string) => atom(''),
-);

@@ -11,6 +11,7 @@ import {
 } from '~/data-provider';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import useTurnReadiness from '~/hooks/Chat/ask/readiness';
 import useTurnServices from '~/hooks/Chat/services';
 import useNewConvo from '~/hooks/useNewConvo';
 
@@ -114,6 +115,11 @@ export const appChatHost: ChatHost = {
   usePaneConversation: (index) => useChatSettings().usePaneConversationState(index),
   useNewConversation: (index) => useNewConvo(index).newConversation,
   useTurnServices,
+  useTurnReadiness: (conversation, enabled) => {
+    const { config } = useChatSettings();
+    const readiness = useTurnReadiness(conversation, enabled);
+    return config.loaded === false ? 'pending' : readiness;
+  },
   /** `mutateAsync` is bound once per observer; the mutation result object is fresh every
    *  render and would defeat the contract's memo. */
   useAbortStream: () => useAbortStreamMutation().mutateAsync,

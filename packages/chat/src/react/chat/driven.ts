@@ -26,9 +26,11 @@ export type DrivenContractOptions = {
    * One no other chat renders into, or the two would share that state.
    */
   index: number;
+  handoff?: boolean;
 };
 
 const ignore = (): void => undefined;
+const useReady = (): TurnReadiness => 'ready';
 
 /** Where the tail sits in its thread, which a streamed delta does not change. */
 const pickTailPlace = (tail: TMessage | null): Pick<TMessage, 'depth' | 'parentMessageId'> | null =>
@@ -47,6 +49,7 @@ export function useDrivenContract({
   id,
   followed,
   index,
+  handoff = false,
 }: DrivenContractOptions): ChatContract & { readiness: TurnReadiness } {
   const host = useChatHost();
   const { chat, status, isLoading, isFollowing, canSend, send, stop } = followed;
@@ -156,7 +159,8 @@ export function useDrivenContract({
   const [optionSettings, setOptionSettings] = useAtom(optionSettingsFamily(index));
   const feedbackEnabled = host.useFeedbackEnabled();
 
-  const readiness = appServices.readiness ?? 'ready';
+  const useReadiness = host.useTurnReadiness ?? useReady;
+  const readiness = useReadiness(conversation, handoff);
   return useMemo<ChatContract & { readiness: TurnReadiness }>(
     () => ({
       index,

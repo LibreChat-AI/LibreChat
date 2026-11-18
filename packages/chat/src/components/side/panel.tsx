@@ -87,11 +87,11 @@ function SideChatComposer({
       return;
     }
     handed.current = conversationId;
-    if (readiness === 'blocked' || ask({ text: handedText }) === false) {
-      setValue(handedText);
+    if (value === handedText && readiness === 'ready' && ask({ text: handedText }) !== false) {
+      setValue('');
     }
     onHandedTextTaken();
-  }, [ask, conversationId, handedText, onHandedTextTaken, readiness, ready, setValue]);
+  }, [ask, conversationId, handedText, onHandedTextTaken, readiness, ready, setValue, value]);
 
   /** Editing is a new intent: a delayed handoff must not send or restore older words. */
   const change = useCallback(
@@ -269,7 +269,12 @@ export default function SideChatPanel({
     );
   } else {
     body = (
-      <DrivenThread id={conversationId} index={SIDE_CHAT_PANE} followed={followed}>
+      <DrivenThread
+        id={conversationId}
+        index={SIDE_CHAT_PANE}
+        followed={followed}
+        handoff={!!chat.text}
+      >
         {(contract) => (
           <SideChatComposer
             contract={contract}

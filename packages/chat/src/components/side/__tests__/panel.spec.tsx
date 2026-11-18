@@ -10,8 +10,9 @@ import type { ChatStream, ChatTransport, ChatSendRequest } from '../../../core';
 import type { ChatHost, TurnServices } from '../../../react/chat/host';
 import type { SideChatHost } from '../../../react/side/host';
 import type { SideChat } from '../../../react/side/state';
+import { createTurnServices as createBaseTurnServices } from '../../../react/chat/__fixtures__/services';
 import { MessagesHostProvider, useMessagesHost } from '../../../react/messages/host';
-import { createTurnServices } from '../../../react/chat/__fixtures__/services';
+import { sideChatAtom, sideChatDraftFamily } from '../../../react/side/state';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
@@ -21,6 +22,12 @@ import { ChatHostProvider } from '../../../react/chat/host';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import { useFollowChat } from '../../../react/follow';
 import SideChatPanel from '../panel';
+
+type TestServices = TurnServices & { readiness?: 'pending' | 'ready' | 'blocked' };
+const createTurnServices = (overrides: Partial<TestServices> = {}): TestServices => ({
+  ...createBaseTurnServices(),
+  ...overrides,
+});
 
 beforeAll(initEnglish);
 
@@ -117,14 +124,16 @@ const partsHost = createMessagePartsHost({
 
 function setup({
   chat = { conversation },
+  draft,
   stored = [user, reply('response-1', 'It shipped.')],
   loadMessages = jest.fn(async () => stored),
   services = createTurnServices(),
 }: {
   chat?: SideChat;
+  draft?: string;
   stored?: TMessage[];
   loadMessages?: jest.Mock<Promise<TMessage[]>>;
-  services?: TurnServices;
+  services?: TestServices;
 } = {}) {
   const streams: TestStream[] = [];
   const sendMessages = jest.fn(
@@ -158,6 +167,7 @@ function setup({
     },
     useNewConversation: () => () => undefined,
     useTurnServices: () => services,
+    useTurnReadiness: () => services.readiness ?? 'ready',
     useAbortStream: () => () => Promise.reject(new Error('unused')),
     useMessageCache: () => {
       throw new Error('A side chat reads its own messages');
@@ -170,6 +180,8 @@ function setup({
   const handOffComposerText = jest.fn();
   const queryClient = new QueryClient();
   const store = createStore();
+  if (draft != null) store.set(sideChatDraftFamily(conversationId), draft);
+  store.set(sideChatAtom, chat);
   const tree = (current: SideChat) => (
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
@@ -207,7 +219,11 @@ function setup({
   const view = render(tree(chat));
   return {
     ...view,
-    rerenderWith: (next: SideChat) => view.rerender(tree(next)),
+    store,
+    rerenderWith: (next: SideChat) => {
+      act(() => store.set(sideChatAtom, next));
+      view.rerender(tree(next));
+    },
     /** Draws the panel again from nothing, as the layout does when it moves it. */
     remount: () => {
       view.unmount();
@@ -443,6 +459,64 @@ describe('SideChatPanel', () => {
       }
     },
   );
+
+  it('preserves an existing draft instead of automatically sending different handed words', async () => {
+    const view = setup({
+      chat: { conversation, text: 'New handoff.' },
+      draft: 'My existing draft.',
+    });
+    await waitFor(() => expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1));
+    expect(field()).toHaveValue('My existing draft.');
+    expect(view.sendMessages).not.toHaveBeenCalled();
+  });
+
+  it('keeps a deliberately cleared draft empty after readiness arrives', async () => {
+    const services = createTurnServices({ readiness: 'pending' });
+    const chat = { conversation, text: 'Original handoff.' };
+    const view = setup({ chat, services });
+    await waitFor(() => expect(field()).toHaveValue(chat.text));
+    fireEvent.change(field(), { target: { value: '' } });
+    services.readiness = 'ready';
+    view.rerenderWith(chat);
+    await settle();
+    expect(field()).toHaveValue('');
+    expect(view.sendMessages).not.toHaveBeenCalled();
+  });
+
+  it('keeps pending words when promoted before history has loaded', async () => {
+    const chat = { conversation, text: 'Keep these words.' };
+    const view = setup({ chat, loadMessages: jest.fn(() => new Promise(() => undefined)) });
+    expect(view.store.get(sideChatDraftFamily(conversationId))).toBe(chat.text);
+    fireEvent.click(screen.getByRole('button', { name: 'Open as the main chat' }));
+    expect(view.handOffComposerText).toHaveBeenCalledWith(conversationId, chat.text);
+    expect(view.onClose).toHaveBeenCalledTimes(1);
+    expect(view.sendMessages).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pending draft on switch and ordinary reopen without automatic submission', async () => {
+    const services = createTurnServices({ readiness: 'pending' });
+    const view = setup({ chat: { conversation, text: 'Keep these words.' }, services });
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    view.rerenderWith({ conversation: { ...conversation, conversationId: 'other' } });
+    services.readiness = 'ready';
+    view.rerenderWith({ conversation });
+    await waitFor(() => expect(field()).toHaveValue('Keep these words.'));
+    expect(view.sendMessages).not.toHaveBeenCalled();
+  });
+
+  it('does not duplicate a deliberate manual send while automatic readiness is pending', async () => {
+    const services = createTurnServices({ readiness: 'pending' });
+    const chat = { conversation, text: 'Send now.' };
+    const view = setup({ chat, services });
+    await waitFor(() => expect(screen.getByTestId('composer-send-button')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('composer-send-button'));
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+    services.readiness = 'ready';
+    view.rerenderWith(chat);
+    await settle();
+    expect(view.sendMessages).toHaveBeenCalledTimes(1);
+    expect(field()).toHaveValue('');
+  });
 
   it('does not submit a pending handoff after the panel closes', async () => {
     const services = createTurnServices({ readiness: 'pending' });

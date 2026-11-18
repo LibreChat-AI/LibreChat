@@ -97,8 +97,6 @@ export type TurnServices = {
    * as the app holds them. The package derives the decision; see `resolveTurnCode`.
    */
   readCodeInputs: () => TurnCodeInputs;
-  /** Reactive admission state for automatic handoffs; blocked targets retain a draft. */
-  readiness?: TurnReadiness;
   /** Refuses a send until the host's configuration and selected targets are ready. */
   canSubmit?: (conversation: TConversation | null) => boolean;
   /** Moves the pane to the route a new chat starts from. */
@@ -164,6 +162,9 @@ export interface ChatHost {
   useNewConversation(index: number): ChatContract['newConversation'];
   /** What the pane's turns need from the app; see {@link TurnServices}. */
   useTurnServices(params: ChatTurnsParams): TurnServices;
+  /** Reactive admission for a driven pane's automatic handoff. Optional hosts default ready;
+   * the hook is always called in driven panes, with queries enabled only for a handoff. */
+  useTurnReadiness?: (conversation: TConversation | null, enabled: boolean) => TurnReadiness;
   /** Stops a resumable generation. */
   useAbortStream(): (params: AbortStreamParams) => Promise<AbortStreamResponse>;
   useMessageCache(): ChatMessageCache;
