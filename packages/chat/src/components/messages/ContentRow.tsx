@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useLocalize } from '@librechat/client';
+import { isEphemeralAgentId } from 'librechat-data-provider';
 import type {
   AgentDisplay,
   TMessage,
@@ -86,7 +87,12 @@ function isSelectedAuthor({
   if (agent != null) {
     return agent.id === conversation.agent_id;
   }
-  if (assistant != null || conversation.agent_id != null) {
+  /** A spec or endpoint turn runs as an ephemeral agent, whose id the server saves on the
+   *  conversation; only a saved agent is another author. */
+  if (
+    assistant != null ||
+    (conversation.agent_id != null && !isEphemeralAgentId(conversation.agent_id))
+  ) {
     return false;
   }
   return (

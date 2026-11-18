@@ -95,8 +95,8 @@ function renderRow(
 
 describe('ContentRow', () => {
   describe('the author the model selector already shows', () => {
-    const agent = { id: 'agent-1', name: 'Research Agent' } as Agent;
-    const convo = { ...conversation, agent_id: 'agent-1' } as TConversation;
+    const agent = { id: 'agent_1', name: 'Research Agent' } as Agent;
+    const convo = { ...conversation, agent_id: 'agent_1' } as TConversation;
     const nameIsHidden = () => screen.getByText('Research Agent').closest('.sr-only') != null;
 
     it('keeps only the assistive technology text when the deployment opts in', () => {
@@ -118,7 +118,7 @@ describe('ContentRow', () => {
         'another agent wrote the turn',
         {
           agent,
-          conversation: { ...convo, agent_id: 'agent-2' } as TConversation,
+          conversation: { ...convo, agent_id: 'agent_2' } as TConversation,
           hideSelectedAuthor: true,
         },
       ],
@@ -162,6 +162,18 @@ describe('ContentRow', () => {
       expect(nameIsHidden()).toBe(true);
       expect(screen.queryByTestId('icon')).not.toBeInTheDocument();
       expect(parts.mock.calls[0][0].authorHeader).toBeUndefined();
+    });
+
+    it('keeps only the assistive technology text when the server saved the ephemeral agent id', () => {
+      renderRow({
+        message: specReply,
+        conversation: {
+          ...spec,
+          agent_id: 'Claude__claude-sonnet-5___Research_Agent',
+        } as TConversation,
+        hideSelectedAuthor: true,
+      });
+      expect(nameIsHidden()).toBe(true);
     });
 
     it('hides the author while the response has no model yet', () => {
