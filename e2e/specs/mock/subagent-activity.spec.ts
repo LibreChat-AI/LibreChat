@@ -352,6 +352,14 @@ test.describe('detached subagent activity', () => {
     ];
     const parentName = uniqueAgentName('E2E Side Chat Parent');
     const createdAgentIds: string[] = [];
+    let releaseAgent: () => void = () => undefined;
+    const agentReady = new Promise<void>((resolve) => {
+      releaseAgent = resolve;
+    });
+    let observedAgent: () => void = () => undefined;
+    const agentRequested = new Promise<void>((resolve) => {
+      observedAgent = resolve;
+    });
     /** Every generation the page starts, by the conversation it is posted for. */
     const starts: Array<string | null> = [];
     page.on('request', (request) => {
@@ -379,6 +387,13 @@ test.describe('detached subagent activity', () => {
         agent_ids: children.map((child) => child.id),
       });
       createdAgentIds.push(parent.id);
+
+      /** The destination's history can load before its selected agent details. */
+      await page.route(`**/api/agents/${children[0].id}`, async (route) => {
+        observedAgent();
+        await agentReady;
+        await route.continue();
+      });
 
       await selectAgent(page, parentName);
       const response = await sendMessageAndWaitForCompletion(
@@ -416,6 +431,9 @@ test.describe('detached subagent activity', () => {
       /** The child's history came with it, the reader's words are its next turn, and the
        *  reply streams into the same list. */
       await expect(sideChat).toContainText(`E2E detached child 1 complete ${label}`);
+      await agentRequested;
+      expect(starts.slice(startsBefore)).toEqual([]);
+      releaseAgent();
       await expect(sideChat).toContainText('What did you find?');
       await expect(sideChat).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
       expect(starts.slice(startsBefore)).toEqual([sideConversationId]);
@@ -441,6 +459,7 @@ test.describe('detached subagent activity', () => {
       await expect(main).toContainText('What did you find?');
       await expect(main).toContainText('And then?');
     } finally {
+      releaseAgent();
       for (const agentId of createdAgentIds.reverse()) {
         await cleanupAgent(page, agentId);
       }

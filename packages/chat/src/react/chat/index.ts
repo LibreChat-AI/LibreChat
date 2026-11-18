@@ -11,6 +11,7 @@ export type {
   ChatHost,
   TurnLogger,
   TurnServices,
+  TurnReadiness,
   ChatTurnsParams,
   ChatMessageCache,
   ChatMessagesQuery,

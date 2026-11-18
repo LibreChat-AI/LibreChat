@@ -5,6 +5,7 @@ import { cn, Button, Composer, useLocalize, useFocusTrap } from '@librechat/clie
 import type { ComposerStopProps, ComposerKeyVerdict } from '@librechat/client';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import type { ChatContract } from '../../react/chat/contract';
+import type { TurnReadiness } from '../../react/chat/host';
 import type { SideChat } from '../../react/side/state';
 import type { SubmittedTurn } from '../../core';
 import { SIDE_CHAT_PANE, sideChatDraftFamily } from '../../react/side/state';
@@ -16,6 +17,7 @@ import DrivenThread from '../pane/Driven';
 
 type SideChatComposerProps = {
   contract: ChatContract;
+  readiness: TurnReadiness;
   /** The reader's unsent words, which the panel holds so they outlive the composer. */
   value: string;
   onChange: (value: string) => void;
@@ -41,6 +43,7 @@ type SideChatComposerProps = {
  */
 function SideChatComposer({
   contract,
+  readiness,
   value,
   onChange: setValue,
   conversationId,
@@ -74,15 +77,33 @@ function SideChatComposer({
    */
   const handed = useRef<string>();
   useEffect(() => {
-    if (!ready || handedText == null || handedText === '' || handed.current === conversationId) {
+    if (
+      !ready ||
+      readiness === 'pending' ||
+      handedText == null ||
+      handedText === '' ||
+      handed.current === conversationId
+    ) {
       return;
     }
     handed.current = conversationId;
-    if (ask({ text: handedText }) === false) {
+    if (readiness === 'blocked' || ask({ text: handedText }) === false) {
       setValue(handedText);
     }
     onHandedTextTaken();
-  }, [ask, conversationId, handedText, onHandedTextTaken, ready, setValue]);
+  }, [ask, conversationId, handedText, onHandedTextTaken, readiness, ready, setValue]);
+
+  /** Editing is a new intent: a delayed handoff must not send or restore older words. */
+  const change = useCallback(
+    (text: string) => {
+      if (handedText && handed.current !== conversationId) {
+        handed.current = conversationId;
+        onHandedTextTaken();
+      }
+      setValue(text);
+    },
+    [conversationId, handedText, onHandedTextTaken, setValue],
+  );
 
   const submit = useCallback(() => {
     const text = value.trim();
@@ -122,7 +143,7 @@ function SideChatComposer({
       <Composer
         ref={field}
         value={value}
-        onChange={setValue}
+        onChange={change}
         onSubmit={submit}
         canSubmit={ready && !isSubmitting && value.trim() !== ''}
         submitLabel={localize('com_nav_send_message')}
@@ -252,6 +273,7 @@ export default function SideChatPanel({
         {(contract) => (
           <SideChatComposer
             contract={contract}
+            readiness={contract.readiness}
             value={draft}
             onChange={setDraft}
             conversationId={conversationId}

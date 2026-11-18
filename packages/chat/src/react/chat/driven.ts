@@ -2,7 +2,7 @@ import { useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import { useAtom, useSetAtom } from 'jotai';
 import type { TMessage, TSubmission } from 'librechat-data-provider';
 import type { MouseEvent, SetStateAction } from 'react';
-import type { ChatTurnsParams, TurnServices } from './host';
+import type { ChatTurnsParams, TurnServices, TurnReadiness } from './host';
 import type { ChatContract } from './contract';
 import type { FollowedChat } from '../follow';
 import { useBranchTailId, useBranchTailGetter, useBranchTailSelect } from '../latest';
@@ -43,7 +43,11 @@ const pickTailPlace = (tail: TMessage | null): Pick<TMessage, 'depth' | 'parentM
  * So a turn is refused, built and shown as main chat's is (the composer's files, skills, quotes
  * and reasoning, an edit, a rerun, a continuation), and differs only in what carries it.
  */
-export function useDrivenContract({ id, followed, index }: DrivenContractOptions): ChatContract {
+export function useDrivenContract({
+  id,
+  followed,
+  index,
+}: DrivenContractOptions): ChatContract & { readiness: TurnReadiness } {
   const host = useChatHost();
   const { chat, status, isLoading, isFollowing, canSend, send, stop } = followed;
   const [files, setFiles] = useAtom(filesFamily(index));
@@ -152,9 +156,11 @@ export function useDrivenContract({ id, followed, index }: DrivenContractOptions
   const [optionSettings, setOptionSettings] = useAtom(optionSettingsFamily(index));
   const feedbackEnabled = host.useFeedbackEnabled();
 
-  return useMemo<ChatContract>(
+  const readiness = appServices.readiness ?? 'ready';
+  return useMemo<ChatContract & { readiness: TurnReadiness }>(
     () => ({
       index,
+      readiness,
       conversation,
       setConversation,
       newConversation,
@@ -191,6 +197,7 @@ export function useDrivenContract({ id, followed, index }: DrivenContractOptions
     [
       id,
       index,
+      readiness,
       conversation,
       setConversation,
       newConversation,

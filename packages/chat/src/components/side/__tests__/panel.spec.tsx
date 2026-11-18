@@ -7,9 +7,9 @@ import { act, render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { Constants, ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import type { TMessage, ChatEvent, TConversation } from 'librechat-data-provider';
 import type { ChatStream, ChatTransport, ChatSendRequest } from '../../../core';
+import type { ChatHost, TurnServices } from '../../../react/chat/host';
 import type { SideChatHost } from '../../../react/side/host';
 import type { SideChat } from '../../../react/side/state';
-import type { ChatHost } from '../../../react/chat/host';
 import { MessagesHostProvider, useMessagesHost } from '../../../react/messages/host';
 import { createTurnServices } from '../../../react/chat/__fixtures__/services';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
@@ -119,10 +119,12 @@ function setup({
   chat = { conversation },
   stored = [user, reply('response-1', 'It shipped.')],
   loadMessages = jest.fn(async () => stored),
+  services = createTurnServices(),
 }: {
   chat?: SideChat;
   stored?: TMessage[];
   loadMessages?: jest.Mock<Promise<TMessage[]>>;
+  services?: TurnServices;
 } = {}) {
   const streams: TestStream[] = [];
   const sendMessages = jest.fn(
@@ -155,7 +157,7 @@ function setup({
       return { conversation: held, setConversation };
     },
     useNewConversation: () => () => undefined,
-    useTurnServices: () => createTurnServices(),
+    useTurnServices: () => services,
     useAbortStream: () => () => Promise.reject(new Error('unused')),
     useMessageCache: () => {
       throw new Error('A side chat reads its own messages');
@@ -341,6 +343,116 @@ describe('SideChatPanel', () => {
     expect(sendMessages).toHaveBeenCalledTimes(1);
     expect(onHandedTextTaken).toHaveBeenCalledTimes(1);
     expect(field()).toHaveValue('');
+  });
+
+  it('waits for destination readiness before consuming handed text', async () => {
+    let ready = false;
+    const services = createTurnServices({ readiness: 'pending', canSubmit: () => ready });
+    const chat = { conversation, text: 'Carry on from here.' };
+    const view = setup({ chat, services });
+
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    expect(view.sendMessages).not.toHaveBeenCalled();
+    expect(view.onHandedTextTaken).not.toHaveBeenCalled();
+
+    ready = true;
+    services.readiness = 'ready';
+    view.rerenderWith(chat);
+    await waitFor(() => expect(view.streams).toHaveLength(1));
+    expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
+    expect(field()).toHaveValue('');
+  });
+
+  it.each(['blocked', 'ready'] as const)(
+    'keeps a %s admission rejection as a draft without retrying it',
+    async (readiness) => {
+      let allowed = false;
+      const services = createTurnServices({ readiness, canSubmit: () => allowed });
+      const chat = { conversation, text: 'Carry on from here.' };
+      const view = setup({ chat, services });
+      await waitFor(() => expect(field()).toHaveValue(chat.text));
+      expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
+      allowed = true;
+      services.readiness = 'ready';
+      view.rerenderWith(chat);
+      expect(view.sendMessages).not.toHaveBeenCalled();
+      expect(field()).toHaveValue(chat.text);
+    },
+  );
+
+  it('preserves a failed destination handoff as an editable draft', async () => {
+    const services = createTurnServices({ readiness: 'pending', canSubmit: () => false });
+    const chat = { conversation, text: 'Carry on from here.' };
+    const view = setup({ chat, services });
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    services.readiness = 'blocked';
+    view.rerenderWith(chat);
+    await waitFor(() => expect(field()).toHaveValue(chat.text));
+    expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
+    expect(view.sendMessages).not.toHaveBeenCalled();
+  });
+
+  it('sends only the current destination handoff after switching while pending', async () => {
+    const services = createTurnServices({ readiness: 'pending' });
+    const view = setup({ chat: { conversation, text: 'Old destination.' }, services });
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    const next = {
+      conversation: { ...conversation, conversationId: 'next-destination' },
+      text: 'New destination.',
+    };
+    view.rerenderWith(next);
+    await waitFor(() =>
+      expect(screen.getByRole('region', { name: 'Side chat' })).toHaveAttribute(
+        'data-side-chat',
+        'next-destination',
+      ),
+    );
+    services.readiness = 'ready';
+    view.rerenderWith(next);
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+    expect(view.sendMessages.mock.calls[0][0].payload).toMatchObject({
+      text: 'New destination.',
+      conversationId: 'next-destination',
+    });
+  });
+
+  it.each(['ready', 'blocked'] as const)(
+    'keeps an edited draft when a pending destination becomes %s',
+    async (readiness) => {
+      const services = createTurnServices({
+        readiness: 'pending',
+        canSubmit: () => readiness === 'ready',
+      });
+      const chat = { conversation, text: 'Original handoff.' };
+      const view = setup({ chat, services });
+      await waitFor(() => expect(rows()).toHaveLength(2));
+      fireEvent.change(field(), { target: { value: 'My revised question.' } });
+      expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
+      services.readiness = readiness;
+      view.rerenderWith(chat);
+      await settle();
+      expect(field()).toHaveValue('My revised question.');
+      expect(view.sendMessages).not.toHaveBeenCalled();
+      expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
+      if (readiness === 'ready') {
+        fireEvent.click(screen.getByTestId('composer-send-button'));
+        await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+        expect(view.sendMessages.mock.calls[0][0].payload).toMatchObject({
+          text: 'My revised question.',
+        });
+      }
+    },
+  );
+
+  it('does not submit a pending handoff after the panel closes', async () => {
+    const services = createTurnServices({ readiness: 'pending' });
+    const view = setup({ chat: { conversation, text: 'Carry on from here.' }, services });
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    view.unmount();
+    services.readiness = 'ready';
+    await settle();
+    expect(view.sendMessages).not.toHaveBeenCalled();
+    expect(view.onHandedTextTaken).not.toHaveBeenCalled();
   });
 
   it('says when the conversation could not be loaded, and tries again', async () => {

@@ -72,6 +72,8 @@ export type TurnLogger = {
  * What a pane's turns need from the app: its catalogs, routing, composer files, code workspace
  * and logging. Getters are read when a turn is sent, so they see the app's current state.
  */
+export type TurnReadiness = 'pending' | 'ready' | 'blocked';
+
 export type TurnServices = {
   logger: TurnLogger;
   isTemporary: boolean;
@@ -95,6 +97,8 @@ export type TurnServices = {
    * as the app holds them. The package derives the decision; see `resolveTurnCode`.
    */
   readCodeInputs: () => TurnCodeInputs;
+  /** Reactive admission state for automatic handoffs; blocked targets retain a draft. */
+  readiness?: TurnReadiness;
   /** Refuses a send until the host's configuration and selected targets are ready. */
   canSubmit?: (conversation: TConversation | null) => boolean;
   /** Moves the pane to the route a new chat starts from. */
