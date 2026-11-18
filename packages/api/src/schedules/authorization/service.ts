@@ -378,6 +378,8 @@ export function createScheduleMCPConsentService(
       expectedRevision: input.expectedRevision,
       expectedConfigRevision: snapshot.configRevision,
       enrollment,
+      // A pin or mark a run adds after this read is neither carried nor shown to the owner.
+      basis: snapshot.enrollment,
     });
     if (!committed) throw new ScheduleMCPConsentError('consent_changed');
     return view(identity, options);
@@ -455,26 +457,40 @@ export function createScheduleMCPConsentService(
         !source.changedTools?.includes(tool) &&
         source.definitions?.find((pin) => pin.tool === tool)?.digest === digest;
       const grant = { identity: request.identity, revision: enrollment!.revision };
-      for (const [tool, digest] of live) {
-        if (consent.changedTools?.includes(tool)) return denial('binding_mismatch');
-        const pin = consent.definitions?.find((entry) => entry.tool === tool);
-        if (!pin || pin.digest === digest) continue;
-        await deps.storage.flagScheduleMCPToolChange({ ...grant, consentId: consent.id, tool });
+      /** Marks every tool `source` pins to a definition other than the one this request saw. */
+      const markDisagreements = async (source: ScheduledMCPConsent): Promise<boolean> => {
+        const tools = live
+          .filter(([tool, digest]) =>
+            source.definitions?.some((pin) => pin.tool === tool && pin.digest !== digest),
+          )
+          .map(([tool]) => tool);
+        await Promise.all(
+          tools.map((tool) =>
+            deps.storage.flagScheduleMCPToolChange({ ...grant, consentId: consent.id, tool }),
+          ),
+        );
+        return tools.length > 0;
+      };
+      if (live.some(([tool]) => consent.changedTools?.includes(tool)))
         return denial('binding_mismatch');
-      }
+      if (await markDisagreements(consent)) return denial('binding_mismatch');
       if (options.signal?.aborted) return { state: 'cancelled' };
+      // The grant was read a moment ago. Admission checks the marks and pins again in the same
+      // write, so a mark or a first pin stored since then refuses this use as well.
       const admitted = await deps.storage.admitScheduleMCPConsent({
         identity: request.identity,
         expectedConfigRevision: snapshot!.configRevision,
         revision: enrollment!.revision,
         consentId: consent.id,
         requireEnabled: request.stage !== 'activation' && request.manual !== true,
+        ...(live.length > 0 && { definitions: Object.fromEntries(live) }),
       });
       if (!admitted) {
         const latest = await authority.lookupConsent(request.identity, request.resource, options);
         if (latest.state !== 'found') return denial('consent_missing');
         if (latest.consent.revokedAtMs != null) return denial('consent_revoked');
         if (now() >= latest.consent.absoluteExpiresAtMs) return denial('consent_expired');
+        if (latest.consent.id === consent.id) await markDisagreements(latest.consent);
         return denial('binding_mismatch');
       }
       // First use: remember what the tool looked like. Another replica may have got there first.
@@ -495,19 +511,10 @@ export function createScheduleMCPConsentService(
         const latest = await authority.lookupConsent(request.identity, request.resource, options);
         const current =
           latest.state === 'found' && latest.consent.id === consent.id ? latest.consent : undefined;
-        const conflicting = unpinned.filter(
-          ([tool, digest]) => !current || !pinned(current, tool, digest),
-        );
-        if (conflicting.length > 0) {
+        if (!current || unpinned.some(([tool, digest]) => !pinned(current, tool, digest))) {
           // Two first uses saw two definitions. The one that lost leaves the same mark a later
           // mismatch would, so the tool is refused and the owner is told, whichever won.
-          await Promise.all(
-            conflicting
-              .filter(([tool]) => current?.definitions?.some((pin) => pin.tool === tool))
-              .map(([tool]) =>
-                deps.storage.flagScheduleMCPToolChange({ ...grant, consentId: consent.id, tool }),
-              ),
-          );
+          if (current) await markDisagreements(current);
           return denial('binding_mismatch');
         }
       }

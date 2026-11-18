@@ -1,8 +1,8 @@
 import type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity, ScheduledMCPTarget } from 'librechat-data-provider';
+import { pinStorage, untouchedSince, admitsDefinitions } from './execution.helper';
 import { createScheduleMCPConsentHandlers } from './handlers';
 import { createScheduleMCPConsentService } from './service';
-import { pinStorage } from './execution.helper';
 
 const identity: ScheduledMCPIdentity = {
   scheduleId: 's',
@@ -46,7 +46,8 @@ function setup() {
     confirmScheduleMCPConsent: jest.fn(async (input) => {
       if (
         snapshot.configRevision !== input.expectedConfigRevision ||
-        (snapshot.enrollment?.revision ?? null) !== input.expectedRevision
+        (snapshot.enrollment?.revision ?? null) !== input.expectedRevision ||
+        !untouchedSince(snapshot.enrollment, input.basis)
       )
         return false;
       snapshot.enrollment = structuredClone(input.enrollment);
@@ -63,12 +64,13 @@ function setup() {
       return true;
     }),
     admitScheduleMCPConsent: jest.fn(
-      async ({ revision }) =>
+      async ({ revision, consentId, definitions }) =>
         snapshot.enabled &&
         snapshot.enrollment?.revision === revision &&
         snapshot.enrollment.consents.every(
           (c) => c.revokedAtMs == null && c.absoluteExpiresAtMs > time,
-        ),
+        ) &&
+        admitsDefinitions(snapshot.enrollment, consentId, definitions),
     ),
     ...jestPins(pinStorage(() => snapshot.enrollment)),
   };
@@ -553,6 +555,75 @@ describe('definition pins', () => {
     await s.service.authority.authorize(use(first), {});
     // Pinning is not a change the owner has to look at again.
     expect((await s.service.view(identity)).offer!.digest).toBe(before.offer!.digest);
+  });
+
+  /** Runs `between` after the next use has read the grant and before it is admitted. */
+  const beforeAdmission = (s: ReturnType<typeof setup>, between: () => Promise<unknown>) => {
+    const admit = jest.mocked(s.storage.admitScheduleMCPConsent);
+    const real = admit.getMockImplementation()!;
+    admit.mockImplementationOnce(async (input) => {
+      await between();
+      return real(input);
+    });
+  };
+
+  it('refuses a use whose tool was marked after it read the grant', async () => {
+    const s = setup();
+    await s.enroll();
+    await s.service.authority.authorize(use(first), {});
+    // Another use sees a different definition and marks the tool before this one is admitted.
+    beforeAdmission(s, () => s.service.authority.authorize(use(second), {}));
+    expect(await s.service.authority.authorize(use(first), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'binding_mismatch' },
+    });
+    expect(consent(s).changedTools).toEqual(['query']);
+  });
+
+  it('refuses and marks a first use that another first use beat with a different definition', async () => {
+    const s = setup();
+    await s.enroll();
+    beforeAdmission(s, () => s.service.authority.authorize(use(second), {}));
+    expect(await s.service.authority.authorize(use(first), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'binding_mismatch' },
+    });
+    expect(consent(s)).toMatchObject({
+      definitions: [{ tool: 'query', digest: second }],
+      changedTools: ['query'],
+    });
+    expect(s.storage.pinScheduleMCPToolDefinition).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a confirmation drop a pin or a mark stored while it was being made', async () => {
+    const s = setup();
+    s.changeTarget({ ...target, permittedTools: [{ agentId: 'root', tools: ['list', 'query'] }] });
+    await s.enroll({ warehouse: ['list', 'query'] });
+    await s.service.authority.authorize(use(first), {});
+    const confirm = jest.mocked(s.storage.confirmScheduleMCPConsent);
+    const real = confirm.getMockImplementation()!;
+    const during = (run: () => Promise<unknown>) =>
+      confirm.mockImplementationOnce(async (input) => {
+        await run();
+        return real(input);
+      });
+    // `list` is used for the first time after the confirmation read the grant.
+    during(() => s.service.authority.authorize(use(first, 'list'), {}));
+    await expect(s.enroll({ warehouse: ['list', 'query'] })).rejects.toMatchObject({
+      code: 'consent_changed',
+    });
+    expect(consent(s).definitions).toEqual([
+      { tool: 'query', digest: first },
+      { tool: 'list', digest: first },
+    ]);
+    // `query` is marked after the confirmation checked what the owner was shown.
+    during(() => s.service.authority.authorize(use(second), {}));
+    await expect(s.enroll({ warehouse: ['list', 'query'] })).rejects.toMatchObject({
+      code: 'consent_changed',
+    });
+    expect(consent(s).changedTools).toEqual(['query']);
+    await expect(s.enroll({ warehouse: ['list'] })).resolves.toMatchObject({ state: 'active' });
+    expect(consent(s).definitions).toEqual([{ tool: 'list', digest: first }]);
   });
 
   it('does not authorize a first use whose pin could not be stored', async () => {

@@ -160,19 +160,25 @@ it('never overwrites revocation racing an activation edit or carries consent acr
   ).not.toBeNull();
 });
 
-const confirm = (expectedRevision: string | null = null, grant = enrollment()) =>
+const confirm = (
+  expectedRevision: string | null = null,
+  grant = enrollment(),
+  basis?: ScheduledMCPEnrollment | null,
+) =>
   storage.confirmScheduleMCPConsent({
     identity,
     expectedConfigRevision: 0,
     expectedRevision,
     enrollment: grant,
+    basis,
   });
-const admit = (revision = 'grant-1') =>
+const admit = (revision = 'grant-1', definitions?: Record<string, string>) =>
   storage.admitScheduleMCPConsent({
     identity,
     revision,
     expectedConfigRevision: 0,
     consentId: 'consent-1',
+    definitions,
   });
 
 it('leaves legacy schedules unenrolled and does not change enabled/default scheduling state', async () => {
@@ -372,6 +378,50 @@ describe('definition pins', () => {
       consents: [{ absoluteExpiresAtMs: grant.consents[0].absoluteExpiresAtMs }],
     });
     expect(await admit()).toBe(true);
+  });
+
+  it('admits a tool only while it is unmarked and pinned to the definition in use', async () => {
+    await confirm();
+    expect(await admit('grant-1', { query: first })).toBe(true);
+    await pin(first);
+    expect(await admit('grant-1', { query: first })).toBe(true);
+    expect(await admit('grant-1', { query: second })).toBe(false);
+    // A tool with no pin yet, and a use that reads no definition, are not held back by it.
+    expect(await admit('grant-1', { list: second })).toBe(true);
+    expect(await admit('grant-1', { query: second, list: second })).toBe(false);
+    await flag();
+    expect(await admit('grant-1', { query: first })).toBe(false);
+    expect(await admit('grant-1', { list: second })).toBe(true);
+    expect(await admit()).toBe(true);
+  });
+
+  it('refuses a confirmation built from a grant that has since gained a pin or a mark', async () => {
+    await confirm();
+    const unpinned = await stored();
+    await pin();
+    expect(await confirm('grant-1', enrollment('grant-2'), unpinned)).toBe(false);
+    const unmarked = await stored();
+    await flag();
+    expect(await confirm('grant-1', enrollment('grant-2'), unmarked)).toBe(false);
+    expect((await stored())?.revision).toBe('grant-1');
+    expect(await confirm('grant-1', enrollment('grant-2'), await stored())).toBe(true);
+    expect((await stored())?.revision).toBe('grant-2');
+  });
+
+  it('revokes without dropping a pin stored between its read and its write', async () => {
+    await confirm();
+    const model = mongoose.models.Schedule;
+    const write = model.updateOne.bind(model);
+    const update = jest
+      .spyOn(model, 'updateOne')
+      .mockImplementationOnce(((...args: Parameters<typeof write>) =>
+        pin().then(() => write(...args))) as typeof model.updateOne);
+    expect(await storage.revokeScheduleMCPConsent(identity, 'grant-1')).toBe(true);
+    update.mockRestore();
+    expect((await stored())?.consents[0]).toMatchObject({
+      revokedAtMs: expect.any(Number),
+      definitions: [{ tool: 'query', digest: first }],
+    });
   });
 
   it('uses only classic update operators', async () => {
