@@ -449,6 +449,25 @@ describe('the tools a run loads under a grant', () => {
     expect(fixture.execution.narrow('stranger', keys)).toEqual(['web_search', 'execute_code']);
   });
 
+  it('loads no key that stands for a whole server unless the grant lists a tool on it', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+    const keys = [
+      'query_mcp_warehouse',
+      'sys__all__sys_mcp_warehouse',
+      'sys__server__sys_mcp_warehouse',
+      'sys__all__sys_mcp_archive',
+      'sys__server__sys_mcp_archive',
+      'web_search',
+    ];
+    // "Every tool" names none of them, so it would define what the owner left out.
+    expect(fixture.execution.narrow('root', keys)).toEqual([
+      'query_mcp_warehouse',
+      'sys__server__sys_mcp_warehouse',
+      'web_search',
+    ]);
+    expect(fixture.execution.narrow('stranger', keys)).toEqual(['web_search']);
+  });
+
   it('leaves the tools of a schedule nobody authorized as they are', async () => {
     const fixture = await executionFixture();
     fixture.snapshot.enrollment = null;
