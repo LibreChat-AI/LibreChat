@@ -4,12 +4,24 @@ import type { TMessage, ChatEvent } from 'librechat-data-provider';
 import type {
   ChatStatus,
   ChatTransport,
+  SubmittedTurn,
   ChatConnection,
   ChatFinishResult,
   EventApplierInit,
   EventApplierEffect,
 } from '../core';
-import { Chat, MAX_RETRIES, getReconnectDelay, createEventApplier } from '../core';
+import {
+  Chat,
+  MAX_RETRIES,
+  getReconnectDelay,
+  rerunTurnMessages,
+  createEventApplier,
+  failedTurnMessages,
+  withdrawnTurnMessages,
+  hasPendingAssistantParent,
+  prepareSubmittedTurn,
+  describeSubmittedTurn,
+} from '../core';
 import { ReactQueryChatState } from './state';
 import { useSnapshot } from './snapshot';
 
@@ -34,6 +46,11 @@ export type FollowChatOptions = {
   live?: boolean;
   /** False follows nothing: no read, no stream, and an idle result. */
   enabled?: boolean;
+  /**
+   * The endpoint the conversation runs on, which a stop of a generation this chat did not start
+   * is addressed to. A chat that only follows needs none.
+   */
+  endpoint?: string | null;
   /** Live status a step reports beside the message list. */
   onEffect?: (effect: EventApplierEffect) => void;
   /**
@@ -45,6 +62,11 @@ export type FollowChatOptions = {
   /** Every stream event after it was applied. */
   onEvent?: (event: ChatEvent) => void;
   onFinish?: (result: ChatFinishResult) => void;
+  /**
+   * A turn sent from here was stopped before the server kept anything of it. Its rows are gone
+   * from the list; its words were the reader's and can be offered back to them.
+   */
+  onWithdrawn?: (turn: SubmittedTurn) => void;
 };
 
 /** One page of stored messages, oldest first. */
@@ -113,6 +135,25 @@ export type FollowedChat = {
   isEarlierError: boolean;
   /** Reads the page before the oldest row held, and puts it ahead of the list. */
   loadEarlier: () => void;
+  /**
+   * Whether the conversation can take a turn at this instant: its stored messages are in, and no
+   * generation is being started, followed, looked for or read back. Read when a turn is about to
+   * be built, since the answer a render holds can be a commit old.
+   */
+  canSend: () => boolean;
+  /**
+   * Sends a turn main chat's `ask` built, over the transport's send: the chat shows its rows,
+   * posts its body and applies the generation it starts. False when the chat did not take it,
+   * in which case nothing was shown or posted. A turn whose stream drops is attached to again,
+   * as a followed one is.
+   */
+  send: (turn: SubmittedTurn) => boolean;
+  /**
+   * Stops the generation running under the conversation, whoever started it. A turn sent from
+   * here that the server has not answered yet has no generation to name, so it is stopped by its
+   * conversation, and is not attached to again.
+   */
+  stop: () => Promise<void>;
 };
 
 type Entry = {
@@ -121,15 +162,26 @@ type Entry = {
   attach: () => Promise<void>;
   settle: () => Promise<void>;
   loadEarlier: () => Promise<void>;
+  canSend: FollowedChat['canSend'];
+  send: FollowedChat['send'];
+  stop: FollowedChat['stop'];
 };
 /** What is known of the rows before the ones held, for the conversation `id`. */
 type History = { id: string; hasEarlier: boolean; isLoading: boolean; isError: boolean };
 type Load = { id: string; attempt: number; state: 'loading' | 'ready' | 'error' };
 /**
  * One attachment: how it ended, unset when nothing was running, and whether it delivered any of
- * the generation. The frame that reports a failure is not a delivery.
+ * the generation. The frame that reports a failure is not a delivery. For a turn sent from here,
+ * `foreign` says the server answered it with a generation that is not that turn: one already
+ * running, or a newer one that replaced it; `withdrawn` says it was stopped before the server
+ * saved anything of it.
  */
-type Attachment = { finished?: ChatFinishResult; received: boolean };
+type Attachment = {
+  finished?: ChatFinishResult;
+  received: boolean;
+  foreign?: boolean;
+  withdrawn?: boolean;
+};
 
 /**
  * How many more times a run the caller knows of is looked for after it was not found. Short: a
@@ -143,6 +195,8 @@ const toPage = (read: TMessage[] | FollowedPage): Required<FollowedPage> =>
   Array.isArray(read)
     ? { messages: read, earlier: null }
     : { messages: read.messages, earlier: read.earlier ?? null };
+const refuse = (): boolean => false;
+const idle = (): Promise<void> => Promise.resolve();
 const unsubscribed = (): (() => void) => () => undefined;
 
 /** One write per frame for streamed tokens, as main chat's step handler coalesces them. */
@@ -156,14 +210,15 @@ const perFrame = (flush: () => void): (() => void) => {
 };
 
 /**
- * Follows one conversation the reader does not drive: shows its stored messages, attaches to the
- * generation running under it and applies that stream the way main chat does, then reads the
- * stored messages again once the generation ends. A stream that drops is not an end: what it
+ * Follows one conversation: shows its stored messages, attaches to the generation running under
+ * it and applies that stream the way main chat does, then reads the stored messages again once
+ * the generation ends. A stream that drops is not an end: what it
  * showed stays, and the attachment is made again on main chat's reconnect schedule. The
  * conversation is a core `Chat` over the message cache, so anything that reads
  * `[QueryKeys.messages, id]` sees what it writes.
  *
- * A subagent's child thread is the first of these; a side chat is the same thing with a send.
+ * A subagent's child thread is one the reader only follows. One the reader drives is the same
+ * thing with `send`, over a transport that can start a generation.
  */
 export function useFollowChat({
   id,
@@ -171,14 +226,36 @@ export function useFollowChat({
   loadMessages,
   live = false,
   enabled = true,
+  endpoint,
   onEffect,
   beside,
   onEvent,
   onFinish,
+  onWithdrawn,
 }: FollowChatOptions): FollowedChat {
   const queryClient = useQueryClient();
-  const host = useRef({ transport, loadMessages, live, onEffect, beside, onEvent, onFinish });
-  host.current = { transport, loadMessages, live, onEffect, beside, onEvent, onFinish };
+  const host = useRef({
+    transport,
+    loadMessages,
+    live,
+    endpoint,
+    onEffect,
+    beside,
+    onEvent,
+    onFinish,
+    onWithdrawn,
+  });
+  host.current = {
+    transport,
+    loadMessages,
+    live,
+    endpoint,
+    onEffect,
+    beside,
+    onEvent,
+    onFinish,
+    onWithdrawn,
+  };
   const [attempt, setAttempt] = useState(0);
   const [entry, setEntry] = useState<Entry>();
   const [load, setLoad] = useState<Load>({ id, attempt, state: 'loading' });
@@ -206,6 +283,14 @@ export function useFollowChat({
     let owed = false;
     let attachment: Attachment | undefined;
     let wake: (() => void) | undefined;
+    /** The turn being handed to the chat, which asks for it back inside the same call. */
+    let handed: SubmittedTurn | undefined;
+    /** Whether a turn sent from here is in flight, which is not an attachment to follow or read over. */
+    let driving = false;
+    /** Reads of the stored rows in flight, each of which replaces the list when it lands. */
+    let reads = 0;
+    /** The reader's stop in flight, which the turn it ends waits for instead of reattaching. */
+    let stopping: Promise<void> | undefined;
     const applier = createEventApplier({
       schedule: perFrame,
       onEffect: (effect) => host.current.onEffect?.(effect),
@@ -216,19 +301,37 @@ export function useFollowChat({
       state: new ReactQueryChatState({ queryClient, key: id }),
       /** Read on every call, so a transport rebuilt for a refreshed token is the one used. */
       transport: {
-        sendMessages: (request) => host.current.transport.sendMessages(request),
+        sendMessages: async (request) => {
+          const turn = attachment;
+          const sent = await host.current.transport.sendMessages(request);
+          if (turn != null) {
+            turn.foreign =
+              sent.status === 'replaced' ||
+              (sent.status === 'stream' && sent.stream.resumed === true);
+          }
+          return sent;
+        },
         reconnectToStream: (request) => host.current.transport.reconnectToStream(request),
         abort: (request) => host.current.transport.abort(request),
         getStatus: (conversationId) =>
           host.current.transport.getStatus?.(conversationId) ?? Promise.resolve({ active: false }),
       },
       prepareRequest: () => {
-        throw new Error('A followed conversation takes no turns');
+        const turn = handed;
+        handed = undefined;
+        if (turn == null) {
+          throw new Error('A followed conversation takes the turns `send` hands it, and no others');
+        }
+        return prepareSubmittedTurn(turn);
       },
       applyEvent: applier.applyEvent,
+      resumeSelection: () => ({ endpoint: host.current.endpoint }),
       onEvent: (event) => {
         if (attachment != null && event.type !== 'error') {
           attachment.received = true;
+        }
+        if (attachment != null && event.type === 'final' && event.data.earlyAbort === true) {
+          attachment.withdrawn = true;
         }
         host.current.onEvent?.(event);
       },
@@ -274,21 +377,26 @@ export function useFollowChat({
      * does the first page this follower reads, since only then is the start of the list known.
      */
     const read = async (): Promise<void> => {
-      const page = toPage(await host.current.loadMessages());
-      if (stale) {
-        return;
+      reads += 1;
+      try {
+        const page = toPage(await host.current.loadMessages());
+        if (stale) {
+          return;
+        }
+        const held = chat.messages;
+        const first = page.messages[0]?.messageId;
+        const joinsAt = first == null ? -1 : held.findIndex((row) => row.messageId === first);
+        if (placed && joinsAt > 0) {
+          await chat.setMessages([...held.slice(0, joinsAt), ...page.messages]);
+          return;
+        }
+        await chat.setMessages(page.messages);
+        placed = true;
+        earlier = page.earlier;
+        setHistory({ id, hasEarlier: earlier != null, isLoading: false, isError: false });
+      } finally {
+        reads -= 1;
       }
-      const held = chat.messages;
-      const first = page.messages[0]?.messageId;
-      const joinsAt = first == null ? -1 : held.findIndex((row) => row.messageId === first);
-      if (placed && joinsAt > 0) {
-        await chat.setMessages([...held.slice(0, joinsAt), ...page.messages]);
-        return;
-      }
-      await chat.setMessages(page.messages);
-      placed = true;
-      earlier = page.earlier;
-      setHistory({ id, hasEarlier: earlier != null, isLoading: false, isError: false });
     };
 
     /** Reads the page before the oldest row held and puts it ahead of the list. */
@@ -328,6 +436,11 @@ export function useFollowChat({
      */
     const attach = async (): Promise<void> => {
       if (stale || !loaded) {
+        return;
+      }
+      if (driving) {
+        /** The turn in flight is this chat's own; whatever runs after it is asked for then. */
+        owed = true;
         return;
       }
       if (attaching) {
@@ -386,7 +499,7 @@ export function useFollowChat({
 
     /** The caller saw the run end. A stream still open reads the stored rows itself when it ends. */
     const settle = async (): Promise<void> => {
-      if (stale || !loaded || attaching) {
+      if (stale || !loaded || attaching || driving) {
         return;
       }
       try {
@@ -425,7 +538,145 @@ export function useFollowChat({
       }
     };
 
-    setEntry({ id, chat, attach, settle, loadEarlier });
+    const canSend = (): boolean =>
+      !stale &&
+      loaded &&
+      !attaching &&
+      !driving &&
+      reads === 0 &&
+      (chat.status === 'ready' || chat.status === 'error');
+
+    /**
+     * How a turn sent from here ended decides what follows it.
+     *
+     * - Its stream dropped: the generation runs on, so it is attached to again like any other,
+     *   unless the reader's own stop is what dropped it.
+     * - The server settled it without a stream, answered it with a generation that is not this
+     *   turn (one already running, or a newer one that replaced it), or the reader stopped it
+     *   before the server answered: the list is not this turn's to complete, so the stored rows
+     *   are read.
+     * - Otherwise it ended on its own stream and the list is its result, completed the way main
+     *   chat completes it: a turn stopped before the server kept anything of it leaves the rows
+     *   from before it, a failure becomes the turn's reply, and a rerun gets back the branches
+     *   it set aside.
+     */
+    const conclude = async (turn: SubmittedTurn, current: Attachment): Promise<void> => {
+      const { finished } = current;
+      const stopped = stopping;
+      const dropped = finished?.isDisconnect === true && stopped == null;
+      /** Whether the list is this turn's to complete: it ran, as itself, to an end of its own. */
+      let own =
+        current.foreign !== true && finished?.isDisconnect !== true && finished?.isSettled !== true;
+      try {
+        if (stopped != null) {
+          await stopped.catch(() => undefined);
+        }
+        if (!stale && own) {
+          let completed: TMessage[] | undefined;
+          if (current.withdrawn === true) {
+            completed = withdrawnTurnMessages(turn, chat.messages);
+          } else if (finished?.isError === true) {
+            completed = failedTurnMessages(turn, chat.messages, chat.error);
+          } else {
+            completed = rerunTurnMessages(turn, finished?.message);
+          }
+          if (completed != null) {
+            await chat.setMessages(completed);
+          }
+          if (current.withdrawn === true) {
+            host.current.onWithdrawn?.(turn);
+          }
+          /**
+           * However the turn ended, it may not leave its empty reply behind as one still on its
+           * way: nothing more will fill it, and the next turn would be refused as answering a
+           * reply that has not arrived. What the server kept is then the result.
+           */
+          const replyId = turn.submission.initialResponse?.messageId;
+          const reply = chat.messages.find((message) => message.messageId === replyId);
+          own = reply == null || !hasPendingAssistantParent(reply);
+        }
+      } finally {
+        /** Only now can another turn be built: on the list this one left, not the one before it. */
+        driving = false;
+      }
+      if (stale) {
+        return;
+      }
+      if (dropped || owed) {
+        owed = false;
+        await attach();
+        return;
+      }
+      if (!own) {
+        await settle();
+      }
+    };
+
+    /**
+     * A stop the chat could not address is a turn the server has not answered: it may be running
+     * with nothing naming it yet. The server finds it by its conversation, and if it only
+     * appears afterwards, by the generation the status route then names.
+     */
+    const stop = (): Promise<void> => {
+      const asked = (async (): Promise<void> => {
+        const result = await chat.stop();
+        const endpoint = host.current.endpoint;
+        if (result.status !== 'unaddressable' || endpoint == null || endpoint === '') {
+          return;
+        }
+        await host.current.transport.abort({ chatId: id, endpoint });
+        const status = await host.current.transport.getStatus?.(id);
+        if (status?.active === true) {
+          await host.current.transport.abort({
+            chatId: id,
+            endpoint,
+            streamId: status.streamId,
+            generationCreatedAt: status.createdAt,
+          });
+        }
+      })();
+      stopping = asked;
+      const done = (): void => {
+        if (stopping === asked) {
+          stopping = undefined;
+        }
+      };
+      asked.then(done, done);
+      return asked;
+    };
+
+    const send = (turn: SubmittedTurn): boolean => {
+      if (!canSend()) {
+        return false;
+      }
+      const request = describeSubmittedTurn(turn);
+      const current: Attachment = { received: false };
+      handed = turn;
+      let sending: Promise<void>;
+      if (request.trigger === 'submit-message' && request.input != null) {
+        sending = chat.sendMessage(request.input);
+      } else if (request.trigger === 'continue-message' && request.messageId != null) {
+        sending = chat.continue({ messageId: request.messageId });
+      } else {
+        sending = chat.regenerate({ messageId: request.messageId });
+      }
+      /** The chat asks for the turn before the call returns, unless it refused the request. */
+      const taken = handed == null;
+      handed = undefined;
+      if (!taken) {
+        sending.catch(() => undefined);
+        return false;
+      }
+      driving = true;
+      attachment = current;
+      void sending.then(
+        () => conclude(turn, current),
+        () => conclude(turn, current),
+      );
+      return true;
+    };
+
+    setEntry({ id, chat, attach, settle, loadEarlier, canSend, send, stop });
     setHistory({ id, hasEarlier: false, isLoading: false, isError: false });
     setLoad({ id, attempt, state: 'loading' });
     setFollowing(false);
@@ -466,6 +717,9 @@ export function useFollowChat({
   const pageBack = current?.loadEarlier;
   const loadEarlier = useCallback(() => void pageBack?.(), [pageBack]);
   const older = current != null && history.id === id ? history : undefined;
+  const canSend = current?.canSend ?? refuse;
+  const send = current?.send ?? refuse;
+  const stop = current?.stop ?? idle;
   const tracked = load.id === id && load.attempt === attempt ? load.state : 'loading';
   const state = enabled ? tracked : 'ready';
 
@@ -484,5 +738,8 @@ export function useFollowChat({
     isLoadingEarlier: older?.isLoading ?? false,
     isEarlierError: older?.isError ?? false,
     loadEarlier: current == null ? nothing : loadEarlier,
+    canSend,
+    send,
+    stop,
   };
 }

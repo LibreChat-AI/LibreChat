@@ -130,6 +130,8 @@ export { useFollowChat } from './react/follow';
 export type { FollowChatOptions, FollowedChat } from './react/follow';
 export { useFollowedContract } from './react/chat/followed';
 export type { FollowedContractOptions } from './react/chat/followed';
+export { useDrivenContract } from './react/chat/driven';
+export type { DrivenContractOptions } from './react/chat/driven';
 export { useSnapshot } from './react/snapshot';
 export { ReactQueryChatState } from './react/state';
 export type { Subscribe, SnapshotOptions } from './react/snapshot';

@@ -626,6 +626,19 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     } else if (event.type === 'final') {
       /** The final frame is authoritative; a held copy of the stream must not land on top of it. */
       drop();
+      /**
+       * A turn that streamed nothing still holds the empty reply it was drawn with, under the
+       * id it had before the server named one. The frame's reply is that reply, so it takes its
+       * place instead of landing beside it.
+       */
+      const drawn = submission?.initialResponse.messageId;
+      const settled = event.data.responseMessage?.messageId;
+      if (drawn != null && settled != null && drawn !== settled) {
+        const kept = ctx.messages.filter((message) => message.messageId !== drawn);
+        if (kept.length !== ctx.messages.length) {
+          ctx.write(kept);
+        }
+      }
       mergeFinalFrame(settledFinal(event.data, submission, ctx.messages), ctx);
       if (submission != null) {
         init.usage?.finalizeUsage(event.data, submission);
