@@ -214,6 +214,10 @@ interface:
   # 'whenDifferent' drops them when the header's model selector already shows that agent; a
   # response from another agent keeps them. The name stays available to screen readers.
   # messageAuthor: always
+  # Show the endpoint, agent or assistant icon on each sidebar chat history row (default: true).
+  # Set to false when every chat uses the same agent and the icon is noise. A running or unread
+  # status still shows on the row.
+  # conversationIcons: true
   # Allow renaming a running chat or one with a placeholder title (default: true).
   # Set to false during a rolling upgrade, until ALL API replicas are upgraded and old
   # title-generation jobs have drained. While false, rename is disabled for running chats
