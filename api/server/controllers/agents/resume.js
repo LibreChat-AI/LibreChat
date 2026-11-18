@@ -54,6 +54,7 @@ const {
   PROJECT_CONTEXT_CHANGED_RESPONSE,
   restoreExecutionContext,
   collectApprovedToolCalls,
+  scheduleAsksEveryUse,
   recoverTurnMessageReference,
   applyForcedRetention,
   applyForcedTemporaryRequest,
@@ -2042,6 +2043,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           appConfig: req.config,
         },
         pluginHookSource: getPluginHookSource(),
+        asksEveryUse: scheduleAsksEveryUse(req),
         request: req,
         addConvoToolApprovalAllows,
       });

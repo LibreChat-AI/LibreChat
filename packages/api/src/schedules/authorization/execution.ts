@@ -63,6 +63,8 @@ export interface ScheduleMCPExecution {
   readonly mayAsk: boolean;
   /** Whether the owner approves each use of this tool, by the name the run calls it. */
   readonly asksAbout: (agentId: string, toolKey: string) => boolean;
+  /** Whether the owner approves each use of any of these names, whichever agent calls it. */
+  readonly asksAboutAny: (toolKeys: readonly string[]) => boolean;
   readonly bind: (agentId: string | undefined, selectionName: string) => ScheduledMCPInvocation;
 }
 
@@ -98,6 +100,21 @@ export function narrowScheduledMCPTools(
 ): string[] {
   const context = findMCPRequestContext(req);
   return (context && executions.get(context)?.narrow(agentId, toolKeys)) ?? toolKeys;
+}
+
+/**
+ * For "Always allow" on an approval card. A tool the schedule's owner approves on each use
+ * is asked about again at its next use whatever the conversation remembers, so it is neither
+ * offered nor stored. Reads the grant when asked: on a resume it is attached after this is
+ * built. False for a request that runs no schedule.
+ */
+export function scheduleAsksEveryUse(
+  req: object | undefined,
+): (toolNames: readonly string[]) => boolean {
+  return (toolNames) => {
+    const context = findMCPRequestContext(req);
+    return (context && executions.get(context)?.asksAboutAny(toolNames)) ?? false;
+  };
 }
 
 export function getScheduleMCPExecution(
@@ -232,6 +249,8 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
           : [...toolKeys],
       mayAsk: asking.size > 0,
       asksAbout: (agentId: string, toolKey: string) => asking.get(agentId)?.has(toolKey) === true,
+      asksAboutAny: (toolKeys: readonly string[]) =>
+        toolKeys.some((key) => [...asking.values()].some((keys) => keys.has(key))),
       bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation {
         return Object.freeze({
           identity: capturedIdentity,

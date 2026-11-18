@@ -28,6 +28,7 @@ const {
   recordCollectedUsage,
   resolveRunUsageContext,
   getScheduleMCPExecution,
+  scheduleAsksEveryUse,
   createScheduledMCPPolicyRecorder,
   recordFallbackTokenUsage,
   getAgentPromptTokenEstimate,
@@ -4463,6 +4464,7 @@ class AgentClient extends BaseClient {
                 appConfig,
               },
               pluginHookSource: getPluginHookSource(),
+              asksEveryUse: scheduleAsksEveryUse(this.options.req),
             },
           )
         : interrupt.payload;

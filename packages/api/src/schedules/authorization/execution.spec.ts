@@ -2,6 +2,7 @@ import { Constants } from '@librechat/agents';
 import { SCHEDULE_APPROVAL_REASON } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import {
+  scheduleAsksEveryUse,
   narrowScheduledMCPTools,
   collectApprovedToolCalls,
   bindScheduledMCPInvocation,
@@ -548,6 +549,23 @@ describe('a tool the owner approves call by call', () => {
     const fixture = await executionFixture('invoke', readTool, undefined, { ask: ['query'] });
     await expect(use(fixture)).rejects.toMatchObject(refused);
     await expect(use(fixture, { toolCallId: 'call-1' })).rejects.toMatchObject(refused);
+  });
+
+  it('tells an approval card that the tool is asked about on every use', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['export'],
+      allow: ['export', 'query'],
+      ask: ['query'],
+    });
+    const req = {};
+    const asks = scheduleAsksEveryUse(req);
+    // Built before the grant is attached, as on a resume, and false for any other request.
+    expect(asks(['query_mcp_warehouse'])).toBe(false);
+    await fixture.factory.attach(getMCPRequestContext(req)!, fixture.identity, 'invoke');
+    expect(asks(['query_mcp_warehouse'])).toBe(true);
+    expect(asks(['other_name', 'query_mcp_warehouse'])).toBe(true);
+    expect(asks(['export_mcp_warehouse'])).toBe(false);
+    expect(scheduleAsksEveryUse(undefined)(['query_mcp_warehouse'])).toBe(false);
   });
 
   it('runs the call the owner approved, and only that call', async () => {
