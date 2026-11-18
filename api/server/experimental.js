@@ -69,6 +69,7 @@ const {
   createStartupReadiness,
   keyvRedisClient,
   ioredisClient,
+  excludeBackchannelLogoutBodyParser,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -647,8 +648,10 @@ if (cluster.isMaster) {
     /** Middleware */
     app.use(requestContextMiddleware);
     app.use(noIndex);
-    app.use(express.json({ limit: '3mb' }));
-    app.use(express.urlencoded({ extended: true, limit: '3mb' }));
+    app.use(excludeBackchannelLogoutBodyParser(express.json({ limit: '3mb' })));
+    app.use(
+      excludeBackchannelLogoutBodyParser(express.urlencoded({ extended: true, limit: '3mb' })),
+    );
 
     app.use(handleJsonParseError);
 
