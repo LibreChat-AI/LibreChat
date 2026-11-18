@@ -1,10 +1,10 @@
 import { Constants } from '@librechat/agents';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { createScheduledMCPRunPolicy, SCHEDULE_TOOL_NOT_ALLOWED } from './run';
 import { executionFixture, readTool } from './execution.helper';
 import { bindScheduledMCPInvocation } from './execution';
 import { createMCPRequestContext } from '~/mcp/request';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
-import { createScheduledMCPRunPolicy } from './run';
 import { ScheduledMCPPolicyError } from './policy';
 
 const catalog = (tools: Tool[] = [readTool]) => ({ tools, complete: true });
@@ -257,7 +257,35 @@ it('installs an independent ceiling for root, child, handoff, and lazy tools wit
       ],
     ]),
   });
-  expect(await call('query_mcp_warehouse', 'handoff')).toEqual({});
+  // An agent that joins the run later is held to the same grant. The fixture's grant lists
+  // root and child: an agent it does not list has the tool turned away, one it lists does not.
+  expect(await call('query_mcp_warehouse', 'handoff')).toEqual({
+    decision: 'deny',
+    reason: SCHEDULE_TOOL_NOT_ALLOWED,
+  });
+  const lazy = createScheduledMCPRunPolicy(f.execution, [{ id: 'root' }]);
+  lazy.registerAgent({
+    id: 'child',
+    toolRegistry: new Map([
+      [
+        'query_mcp_warehouse',
+        { name: 'query_mcp_warehouse', serverName: 'warehouse', toolType: 'mcp' },
+      ],
+    ]),
+  });
+  expect(
+    await lazy.hook(
+      {
+        hook_event_name: 'PreToolUse',
+        runId: 'run',
+        toolName: 'query_mcp_warehouse',
+        executingAgentId: 'child',
+        toolInput: {},
+        toolUseId: 'tool',
+      },
+      new AbortController().signal,
+    ),
+  ).toEqual({});
 });
 
 it('refuses a consent deadline crossed while the final database admission is in flight', async () => {
