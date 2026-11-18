@@ -47,7 +47,7 @@ describe('OpenID authentication publication settlement', () => {
         establish: jest.fn().mockResolvedValue({ ok: true }),
         authorize: jest.fn().mockResolvedValue({ ok: true }),
         preCheck: jest.fn().mockResolvedValue({ ok: true }),
-        getMode: jest.fn().mockResolvedValue('record'),
+        getMode: jest.fn().mockResolvedValue('enforce'),
       },
       getProviderSessionClient: jest.fn(() => null),
     } satisfies OpenIDRefreshRecoveryDeps;
@@ -330,7 +330,7 @@ describe('sendOpenIDAuthResponse: provider-session denial after a successful gra
         establish: jest.fn().mockResolvedValue({ ok: true }),
         authorize: jest.fn().mockResolvedValue({ ok: false }),
         preCheck: jest.fn().mockResolvedValue({ ok: true }),
-        getMode: jest.fn().mockResolvedValue('record'),
+        getMode: jest.fn().mockResolvedValue('enforce'),
       },
       getProviderSessionClient: jest.fn(() => null),
     } satisfies OpenIDRefreshRecoveryDeps;

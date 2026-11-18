@@ -1124,7 +1124,7 @@ export function createOpenIDSessionRefreshService(
     const mode = await providerSessionAuthorizer.getMode();
     /**
      * Mode 'off' carries whatever ref is already bound forward unchanged: no merge against the
-     * grant's fresh claims, no conflict check, no new binding. Only `record` reconciles
+     * grant's fresh claims, no conflict check, no new binding. Only `record`/`enforce` reconcile
      * the bound ref against this renewal.
      */
     let mergedProviderSession: ProviderSessionRef | null = boundProviderSession;
