@@ -1900,6 +1900,7 @@ export const agentsEndpointSchema = baseEndpointSchema
       sdkHostModels: z
         .object({
           maxConcurrentCalls: z.number().int().min(1).max(10000).default(32),
+          maxAdmissionEntries: z.number().int().min(16).max(65536).default(4096),
           maxBufferedRequestBytes: z.number().int().min(1024).max(1073741824).default(67108864),
           timeoutMs: z.number().int().min(100).max(86400000).default(60000),
           maxRequestBytes: z.number().int().min(1024).max(67108864).default(4194304),

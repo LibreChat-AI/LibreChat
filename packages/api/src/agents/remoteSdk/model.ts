@@ -9,13 +9,20 @@ import type {
   RemoteSdkLimits,
   RemoteSdkStart,
 } from './types';
+import type { HostModelLifecycle, WorkerModelLifecycle } from './admission';
 import type { SdkAgentIdentity } from './identity';
 import type { SdkRpc } from './peer';
 import { createPolicyReceiver, createPolicySender } from './sealed';
 import { encodeSdkValue, decodeSdkValue } from './wire';
+import { modelAttemptSchema } from './admission';
 
 const operationSchema = z
-  .object({ id: z.string().uuid(), publicKey: z.string().length(60), request: z.unknown() })
+  .object({
+    id: z.string().uuid(),
+    publicKey: z.string().length(60),
+    request: z.unknown(),
+    context: modelAttemptSchema.optional(),
+  })
   .strict();
 const chunkSchema = z
   .object({ id: z.string().uuid(), index: z.number().int().nonnegative(), message: z.unknown() })
@@ -61,6 +68,7 @@ function sealValue(seal: ReturnType<typeof createPolicySender>, value: unknown, 
 /** One byte window shared by every model stream on this execution's connection. */
 export function createHostModelChannel(options: {
   model: NonNullable<RemoteSdkHostServices['model']>;
+  lifecycle?: HostModelLifecycle;
   peer: { call: SdkRpc };
   limits: RemoteSdkLimits;
   signal: AbortSignal;
@@ -91,7 +99,10 @@ export function createHostModelChannel(options: {
       // The SDK binding validates identity, reference, messages and allowed tools before admission.
       const request = parsed.data.request as HostModelRequest;
       if (method === 'model.invoke') {
-        const message = await options.model.service.invoke(request, boundSignal);
+        const invoke = () => options.model.service.invoke(request, boundSignal);
+        const message = await (options.lifecycle
+          ? options.lifecycle.invoke(parsed.data.context, invoke)
+          : invoke());
         return {
           version: 1,
           ok: true,
@@ -100,7 +111,11 @@ export function createHostModelChannel(options: {
       }
       if (method !== 'model.stream') throw new HostModelServiceError('incompatible');
       let index = 0;
-      for await (const chunk of options.model.service.stream(request, boundSignal)) {
+      const stream = () => options.model.service.stream(request, boundSignal);
+      const source = options.lifecycle
+        ? options.lifecycle.stream(parsed.data.context, stream)
+        : stream();
+      for await (const chunk of source) {
         boundSignal.throwIfAborted();
         if (deliveryError) throw deliveryError;
         const payload = sealValue(
@@ -195,11 +210,17 @@ export function createWorkerModelChannel(options: {
   const streams = new Map<string, ModelStream>();
   let receiver: ReturnType<typeof createPolicyReceiver> | undefined;
   let seal: ReturnType<typeof createPolicySender> | undefined;
+  let lifecycle: WorkerModelLifecycle | undefined;
   const encodeRequest = (id: string, request: HostModelRequest) => {
     if (!receiver || !seal) throw new HostModelServiceError('incompatible');
     return sealValue(
       seal,
-      { id, publicKey: receiver.publicKey, request },
+      {
+        id,
+        publicKey: receiver.publicKey,
+        request,
+        ...(lifecycle && { context: lifecycle.current() }),
+      },
       options.limits.maxFrameBytes,
     );
   };
@@ -300,12 +321,15 @@ export function createWorkerModelChannel(options: {
     bind: (
       identity: Readonly<SdkAgentIdentity>,
       descriptor: NonNullable<RemoteSdkStart['model']>,
+      admission?: WorkerModelLifecycle,
     ): NonNullable<RemoteSdkFactoryInput['hostModel']> => {
       if (receiver || options.signal.aborted || descriptor.version !== 1)
         throw new HostModelServiceError('incompatible');
+      lifecycle = admission;
       receiver = createPolicyReceiver(options.limits.maxFrameBytes, 'model');
       seal = createPolicySender(descriptor.publicKey, options.limits.maxFrameBytes, 'model');
-      return new HostChatModel({ identity, descriptor: descriptor.descriptor, service }).bindTools([
+      const config = { identity, descriptor: descriptor.descriptor, service };
+      return (lifecycle ? lifecycle.model(config) : new HostChatModel(config)).bindTools([
         ...descriptor.descriptor.tools,
       ]);
     },

@@ -13,6 +13,7 @@ import type {
   IState,
   HookEvent,
 } from '@librechat/agents';
+import type { HostModelLifecycle } from './admission';
 import type { SdkAgentIdentity } from './identity';
 
 export interface RemoteSdkRecoveryOptions {
@@ -68,6 +69,7 @@ export interface RemoteSdkModelProfile {
 
 /** Explicit host-owned capabilities; never reconstructed from worker claims or YAML. */
 export interface RemoteSdkHostServices {
+  modelLifecycle?: HostModelLifecycle;
   modelProfile?: RemoteSdkModelProfile;
   model?: ReturnType<typeof createHostModelService>;
   providerText?: ReturnType<typeof createHostProviderTextService>;
@@ -75,6 +77,7 @@ export interface RemoteSdkHostServices {
 
 export interface RemoteSdkStart {
   transportVersion: 2;
+  modelAdmission?: { version: 1; maxEntries: number };
   model?: { version: 1; publicKey: string; descriptor: HostModelDescriptor };
   providerText?: { version: 1; publicKey: string; limits: HostProviderTextDescriptor };
   hostTools?: HostToolDescriptor[];
