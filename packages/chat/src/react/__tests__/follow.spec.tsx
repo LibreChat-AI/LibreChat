@@ -746,6 +746,28 @@ describe('useFollowChat', () => {
       expect(result.current.hasEarlier).toBe(true);
     });
 
+    it('offers the earlier rows again to a follower that starts on rows another one left', async () => {
+      const { transport } = createTransport(idle);
+      const loadMessages = paged();
+      const { result } = setup({ transport, loadMessages });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(result.current.messages).toHaveLength(8));
+
+      /** A new follower of the same conversation: the cache still holds those eight rows. */
+      act(() => result.current.retry());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      /** It knows where its own page begins, not where the rows it inherited did. */
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(6, 9))));
+      expect(result.current.hasEarlier).toBe(true);
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(2, 9))));
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(0, 9))));
+      expect(result.current.hasEarlier).toBe(false);
+    });
+
     it('says when an earlier page could not be read, and reads it when asked again', async () => {
       const { transport } = createTransport(idle);
       const loadMessages = paged();

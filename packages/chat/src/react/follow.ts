@@ -258,13 +258,20 @@ export function useFollowChat({
 
     /** The cursor of the page before the oldest row held; nothing when that row is the first. */
     let earlier: string | null = null;
+    /**
+     * Whether `earlier` describes the rows held. Not until this follower has placed a page of
+     * its own: the list it starts with is whatever an earlier follower of the conversation left
+     * in the cache, and where those rows begin was that follower's to know.
+     */
+    let placed = false;
     let readingEarlier = false;
 
     /**
      * Reads the newest page. Rows the reader already paged back to are older than it and are
      * not read again, so they stay ahead of it: the page starts at a row the list holds, and
      * everything before that row is kept. A page that starts at no row the list holds does not
-     * join onto it, so it replaces the list, and what came before it is read from there.
+     * join onto it, so it replaces the list, and what came before it is read from there. So
+     * does the first page this follower reads, since only then is the start of the list known.
      */
     const read = async (): Promise<void> => {
       const page = toPage(await host.current.loadMessages());
@@ -274,11 +281,12 @@ export function useFollowChat({
       const held = chat.messages;
       const first = page.messages[0]?.messageId;
       const joinsAt = first == null ? -1 : held.findIndex((row) => row.messageId === first);
-      if (joinsAt > 0) {
+      if (placed && joinsAt > 0) {
         await chat.setMessages([...held.slice(0, joinsAt), ...page.messages]);
         return;
       }
       await chat.setMessages(page.messages);
+      placed = true;
       earlier = page.earlier;
       setHistory({ id, hasEarlier: earlier != null, isLoading: false, isError: false });
     };
