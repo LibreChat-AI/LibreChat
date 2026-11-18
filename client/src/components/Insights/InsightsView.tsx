@@ -21,11 +21,12 @@ import type { TranslationKeys } from '~/hooks';
 import { clearAgentFilters, shouldRecoverAgentFilters } from './agentFilters';
 import { useGetStartupConfig, useInsightsQuery } from '~/data-provider';
 import { useAuthContext, useDocumentTitle, useLocalize } from '~/hooks';
+import { getVersionDays, tagAnchor, visibleTags } from './versions';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
+import useElementSize from '~/hooks/Generic/useElementSize';
 import { LocalizedDateRangePicker } from '~/components/ui';
 import { getRollingDateRange } from './dateRange';
-import { getVersionDays } from './versions';
 import { cn } from '~/utils';
 
 type ShortcutRange = Exclude<InsightsRange, 'custom'>;
@@ -157,11 +158,7 @@ function LoadingState({ message }: { message: string }) {
 }
 
 /** Keeps a version tag inside the card when its line sits near either edge. */
-function tagAlignment(position: number) {
-  if (position < 8) return '';
-  if (position > 92) return '-translate-x-full';
-  return '-translate-x-1/2';
-}
+const tagAlignment = { start: '', center: '-translate-x-1/2', end: '-translate-x-full' };
 
 function Sparkline({
   values,
@@ -178,6 +175,7 @@ function Sparkline({
 }) {
   const patternId = useId().replace(/:/g, '');
   const [activeIndex, setActiveIndex] = useState<number>();
+  const { ref: chartRef, width: chartWidth } = useElementSize<HTMLDivElement>();
   const points = useMemo(() => {
     if (values.length < 2) {
       return [];
@@ -217,9 +215,15 @@ function Sparkline({
       : [];
   });
 
+  const shownTags = visibleTags(
+    savedVersions.map(({ x, tag }) => ({ position: (x / 300) * 100, text: tag ?? '' })),
+    chartWidth,
+  );
+
   return (
     <div
       dir="ltr"
+      ref={chartRef}
       className={cn(
         'text-status-info relative h-14 w-full outline-hidden',
         savedVersions.length > 0 ? 'mt-7' : 'mt-2',
@@ -276,15 +280,15 @@ function Sparkline({
           />
         ))}
       </svg>
-      {savedVersions.map(({ x, tag }) => {
+      {savedVersions.map(({ x, tag }, index) => {
         const position = (x / 300) * 100;
-        return tag ? (
+        return tag && shownTags.has(index) ? (
           <span
             key={x}
             aria-hidden="true"
             className={cn(
               'text-text-secondary pointer-events-none absolute bottom-full mb-1 text-xs whitespace-nowrap',
-              tagAlignment(position),
+              tagAlignment[tagAnchor(position)],
             )}
             style={{ left: `${position}%` }}
           >

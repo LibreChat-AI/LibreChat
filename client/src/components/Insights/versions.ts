@@ -63,3 +63,40 @@ export function getVersionDays(
     };
   });
 }
+
+/** Where a tag sits against its line: centred, or kept inside the chart near either edge. */
+export function tagAnchor(position: number): 'start' | 'center' | 'end' {
+  if (position < 8) return 'start';
+  if (position > 92) return 'end';
+  return 'center';
+}
+
+/** Approximate width of a short tag such as "v22" in the chart's extra-small text. */
+const tagCharPx = 7;
+const tagGapPx = 6;
+
+/** Tags that fit without overlapping, by index. Walking from the newest, a tag is kept when it
+ *  ends before the last kept one starts, so the most recent versions stay readable. Without a
+ *  measured width (first render, tests) every tag is kept. */
+export function visibleTags(tags: Array<{ position: number; text: string }>, widthPx: number) {
+  const visible = new Set<number>();
+  if (widthPx <= 0) {
+    tags.forEach((_, index) => visible.add(index));
+    return visible;
+  }
+  let nextStart = Number.POSITIVE_INFINITY;
+  for (let index = tags.length - 1; index >= 0; index--) {
+    const { position, text } = tags[index];
+    const width = text.length * tagCharPx;
+    const at = (position / 100) * widthPx;
+    const anchor = tagAnchor(position);
+    let start = at - width / 2;
+    if (anchor === 'start') start = at;
+    if (anchor === 'end') start = at - width;
+    if (start + width + tagGapPx <= nextStart) {
+      visible.add(index);
+      nextStart = start;
+    }
+  }
+  return visible;
+}
