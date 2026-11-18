@@ -213,6 +213,7 @@ export {
   useOptionalMessagesOperations,
   useOptionalMessagesConversation,
 } from './react/messages/view';
+export { PartsPreviewContext, useIsPartsPreview } from './react/parts/preview';
 export type {
   MessagesEditing,
   MessagesOperations,

@@ -164,16 +164,29 @@ test.describe('detached subagent activity', () => {
       await expect(cards).toHaveCount(2, { timeout: 30_000 });
       await expect(cards.first()).toHaveAttribute('data-subagent-thread', /.+/);
       const firstThreadId = (await cards.first().getAttribute('data-subagent-thread')) ?? '';
-      const threadReadPromise = page.waitForResponse((candidate) => {
-        const read = THREAD_MESSAGES_PATH.exec(new URL(candidate.url()).pathname);
-        return read != null && decodeURIComponent(read[1]) === firstThreadId;
-      });
+      const attachesOf = (threadId: string) =>
+        streamAttaches.filter((attached) => attached === threadId).length;
+
+      /** With no panel open, each running child's card shows the row its thread is on: the
+       *  thread's own content, drawn by the thread's renderer, one row at a time. The page
+       *  follows each child once for that. */
+      const rows = page.locator('[data-subagent-preview]');
+      await expect(rows).toHaveCount(2, { timeout: 30_000 });
+      await expect(rows.first()).toContainText(/child-1-phase-\d+/);
+      await expect(rows.nth(1)).toContainText(/child-2-phase-\d+/);
+      await expect(cards.first()).toContainText('Running');
+      await expect.poll(() => messageReads).toContain(firstThreadId);
+      /** A collapsed group shows no cards and follows nothing, so the count so far depends on
+       *  how long the group stood open before the parent's turn ended. What is fixed is that the
+       *  child is being followed now, and that opening it adds no stream of its own. */
+      const followedByCard = attachesOf(firstThreadId);
+      expect(followedByCard).toBeGreaterThanOrEqual(1);
       await cards.first().click();
 
       /** The child's thread opens as a conversation: its messages, read through the parent, and
-       *  its own generation stream while it runs. The bounded activity feed is not read at all. */
+       *  the generation stream the card was already reading. The bounded activity feed is not
+       *  read at all. */
       const panel = childActivityPanel(page);
-      expect((await threadReadPromise).ok()).toBeTruthy();
       await expect(panel).toBeVisible();
       await expect(panel).toContainText('child-1-phase-10');
       await expect(panel.getByText('Running', { exact: true })).toHaveCount(0);
@@ -182,12 +195,13 @@ test.describe('detached subagent activity', () => {
         timeout: 30_000,
       });
       await expect(panel.getByText('Completed', { exact: true })).toHaveCount(0);
-      const attachesOf = (threadId: string) =>
-        streamAttaches.filter((attached) => attached === threadId).length;
-      /** At most one attachment, and none added once the run is over: a finished child is read
-       *  from its stored messages, and a running one is followed by a single stream. */
+      /** One attachment for the card and the panel together, and none added once the run is
+       *  over: a finished child is read from its stored messages. Its card drops its row. */
       const attaches = attachesOf(firstThreadId);
-      expect(attaches).toBeLessThanOrEqual(1);
+      expect(attaches).toBe(followedByCard);
+      await expect(
+        cards.first().locator('xpath=..').locator('[data-subagent-preview]'),
+      ).toHaveCount(0);
       await page.waitForTimeout(ACTIVITY_RECONNECT_GUARD_MS);
       expect(attachesOf(firstThreadId)).toBe(attaches);
       expect(messageReads).toContain(firstThreadId);
@@ -228,9 +242,12 @@ test.describe('detached subagent activity', () => {
   });
 });
 
+/** A subagent card's row is a picture of the child's thread, not part of this one: its folds
+ *  take no pointer and are not this history's to expand. */
+const NOT_A_PREVIEW = ':not([data-subagent-preview] *)';
 const HISTORY_FOLDS =
-  '[data-fold-root] > div > button[aria-expanded="false"]:visible, ' +
-  '[data-testid="activity-phase-card"] > div > div > button[aria-expanded="false"]:visible';
+  `[data-fold-root] > div > button[aria-expanded="false"]${NOT_A_PREVIEW}:visible, ` +
+  `[data-testid="activity-phase-card"] > div > div > button[aria-expanded="false"]${NOT_A_PREVIEW}:visible`;
 
 /** How long a click waits for a fold that was counted a moment ago. */
 const FOLD_CLICK_TIMEOUT_MS = 1_000;

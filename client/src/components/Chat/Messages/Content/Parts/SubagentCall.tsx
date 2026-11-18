@@ -9,7 +9,6 @@ import { useMessageContext } from '~/Providers/MessageContext';
 import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { useMCPServerNames } from '~/hooks/MCP';
 import { useLocalize } from '~/hooks';
 
 const agentMessage = { endpoint: EModelEndpoint.agents, isCreatedByUser: false } as TMessage;
@@ -28,7 +27,6 @@ export default function SubagentCall(props: SubagentCallProps) {
   const message = useMessageContext();
   const share = useShareContext();
   const agentsMap = useAgentsMapContext();
-  const mcpServerNames = useMCPServerNames();
   const translate = useLocalize();
   const localize = useCallback<SubagentCallContext['localize']>(
     (key, values) => translate(key as TranslationKeys, values),
@@ -40,7 +38,6 @@ export default function SubagentCall(props: SubagentCallProps) {
       {...share}
       message={message}
       agentsMap={agentsMap}
-      mcpServerNames={mcpServerNames}
       localize={localize}
       renderAgentIcon={renderAgentIcon}
       renderAttachments={renderAttachments}

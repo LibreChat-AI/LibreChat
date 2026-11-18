@@ -53,6 +53,7 @@ import {
   useSubagentPanelState,
   useSubagentPanelActions,
 } from '../../react/subagents/surface';
+import { useFollowedThread, useThreadFollows } from '../../react/subagents/follows';
 import { SubagentActivity, SubagentActivityScrollSurface } from './transcript';
 import { eventSubagentSelection } from '../../react/subagents/eventSelection';
 import { isMacPlatform, resolveComposerKeyDown } from '../../core/shortcuts';
@@ -317,10 +318,18 @@ export default function SubagentThreadPanel({
     selection.event == null &&
     threadId !== '';
   const followLive = followable && taskView?.status === 'running';
-  const followed = host.useThreadChat?.(selection.parentConversationId, threadId, {
+  /** One follower per thread on the page: where the page shares them, the card previewing this
+   *  child and this panel read the same stream; elsewhere the panel follows the thread itself. */
+  const sharedFollows = useThreadFollows();
+  const ownFollowed = host.useThreadChat?.(selection.parentConversationId, threadId, {
     live: followLive,
-    enabled: followable,
+    enabled: followable && sharedFollows == null,
   });
+  const sharedFollowed = useFollowedThread(threadId, {
+    live: followLive,
+    enabled: followable && sharedFollows != null,
+  });
+  const followed = sharedFollows == null ? ownFollowed : sharedFollowed;
   /** Rows that are not being streamed into: the stored ones, as first read or as read again at
    *  a run's end. */
   const followedSettled = followed != null && !followed.isLoading && !followed.isFollowing;
