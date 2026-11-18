@@ -40,7 +40,11 @@ function catalog() {
 
 describe('agent tool catalogs at the file-inspection boundary', () => {
   it('does not turn audit-only schema exhaustion into a file-inspection block', () => {
-    const audit = { action: 'audit' as const, starterPatterns: ['email'] };
+    const audit = {
+      action: 'audit' as const,
+      starterPatterns: [],
+      customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
+    };
     expect(() =>
       assertModelBoundContent({
         filters: {
@@ -55,7 +59,7 @@ describe('agent tool catalogs at the file-inspection boundary', () => {
               { name: 'large', parameters: Array.from({ length: 4_200 }, () => ({})) },
             ],
             requestAttachments: [file],
-          },
+          } as never,
         ],
       }),
     ).not.toThrow();
@@ -141,7 +145,7 @@ describe('agent tool catalogs at the file-inspection boundary', () => {
             },
           },
         },
-        agents: [{ toolDefinitions, requestAttachments: [file] }],
+        agents: [{ toolDefinitions, requestAttachments: [file] } as never],
       }),
     ).toThrow('Submitted content contains a private value');
   });
@@ -153,7 +157,7 @@ describe('agent tool catalogs at the file-inspection boundary', () => {
     expect(() =>
       assertModelBoundContent({
         filters,
-        agents: [{ toolDefinitions, requestAttachments: [file] }],
+        agents: [{ toolDefinitions, requestAttachments: [file] } as never],
       }),
     ).toThrow('Submitted content could not be completely inspected before processing.');
   });
@@ -183,11 +187,11 @@ describe('agent tool catalogs at the file-inspection boundary', () => {
   });
 
   it.each([true, false])('bounds sparse catalogs before inspection (hydrated: %s)', (hydrated) => {
-    const toolDefinitions = new Array(1_000_000);
+    const toolDefinitions = new Array<{ name: string }>(1_000_000);
     expect(() =>
       assertModelBoundContent({
         filters,
-        agents: [{ toolDefinitions, requestAttachments: hydrated ? [file] : [] }],
+        agents: [{ toolDefinitions, requestAttachments: hydrated ? [file] : [] } as never],
       }),
     ).toThrow('Submitted content could not be completely inspected before processing.');
   });

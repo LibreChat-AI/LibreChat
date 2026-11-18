@@ -5581,6 +5581,7 @@ describe('initializeAgent — authorized run file snapshots', () => {
     }));
     const { agent, req, loadTools, db } = createMocks({ loadedToolDefinitions });
     req.config = {
+      config: {},
       fileStrategy: FileSources.local,
       imageOutputType: EImageOutputType.PNG,
       fileConfig: {
@@ -5600,7 +5601,7 @@ describe('initializeAgent — authorized run file snapshots', () => {
           },
         },
       },
-    } as ServerRequest['config'];
+    };
     const file = Object.freeze(
       inputFile({
         type: 'text/plain',
@@ -5622,7 +5623,7 @@ describe('initializeAgent — authorized run file snapshots', () => {
     expect(result.toolDefinitions).toHaveLength(67);
     expect(result.requestAttachments).toHaveLength(1);
     expect(() =>
-      assertModelBoundContent({ filters: req.config?.filters, agents: [result] }),
+      assertModelBoundContent({ filters: req.config?.filters, agents: [result as never] }),
     ).not.toThrow();
     expect(db.getFiles).not.toHaveBeenCalled();
     expect(db.getConvoFiles).not.toHaveBeenCalled();
@@ -5636,7 +5637,7 @@ describe('initializeAgent — authorized run file snapshots', () => {
       parameters: { type: 'object' },
     });
     expect(() =>
-      assertModelBoundContent({ filters: req.config?.filters, agents: [result] }),
+      assertModelBoundContent({ filters: req.config?.filters, agents: [result as never] }),
     ).toThrow('Submitted file content could not be inspected before processing.');
   });
 
