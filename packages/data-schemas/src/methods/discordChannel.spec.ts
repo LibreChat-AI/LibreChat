@@ -229,7 +229,7 @@ it('prevents provider and installation reassignment through generic updates', ()
 it('fences credential rotation without changing consent identity', () =>
   scope(async () => {
     await create();
-    expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+    expect(await identities.saveChannelIdentity(link(), null, applicationRevision)).toBe(true);
     const rotated = await installations.configureApplication({
       actorId: owner,
       applicationId,
@@ -262,7 +262,7 @@ it('fences credential rotation without changing consent identity', () =>
 it('disconnect disables admission and reconnect cannot revive old bindings', () =>
   scope(async () => {
     await create();
-    expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+    expect(await identities.saveChannelIdentity(link(), null, applicationRevision)).toBe(true);
     const disconnected = await installations.disconnectGuild({
       actorId: owner,
       installationId: channel.installationId,
@@ -291,7 +291,7 @@ it('disconnect disables admission and reconnect cannot revive old bindings', () 
 it('blocks an erased owner and retires Discord links through existing cleanup', () =>
   scope(async () => {
     await create();
-    expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+    expect(await identities.saveChannelIdentity(link(), null, applicationRevision)).toBe(true);
     await db.models.User.updateOne(
       { _id: owner },
       { $set: { agentTriggerDeletionStartedAt: new Date() } },
@@ -310,7 +310,7 @@ it('blocks an erased owner and retires Discord links through existing cleanup', 
 it('rejects delivery destinations outside the immutable channel binding', () =>
   scope(async () => {
     await create();
-    expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+    expect(await identities.saveChannelIdentity(link(), null, applicationRevision)).toBe(true);
     await expect(
       runs.admit(
         {
