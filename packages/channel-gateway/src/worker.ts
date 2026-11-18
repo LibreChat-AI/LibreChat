@@ -7,49 +7,19 @@ import type {
   ChannelRunFence,
 } from 'librechat-data-provider';
 import type { ChannelBundle, Lease, Logger, ResponseGrant } from './types';
+import type { WorkerProvider } from './provider';
 import type { GatewayConfig } from './config';
-import { durableSlackMessage, makeSlackPlan, supportedRenderer } from './render';
-import { SlackClient, SlackWriteError } from './slack';
+import { createSlackWorkerProvider, slackWriteFailure, slackRecoveryEvent } from './slack/worker';
+import { failedWrite, terminalSnapshot, pendingReview } from './provider';
 import { ServiceError } from './transport';
 import { ChannelClient } from './client';
+import { SlackClient } from './slack';
 
-const progressRenderer = 'slack-progress-v1';
+export { terminalSnapshot, pendingReview } from './provider';
+export { progressText } from './slack/worker';
+
 const terminalStates = new Set(['delivered', 'failed', 'cancelled']);
 class YieldRun extends Error {}
-
-export function terminalSnapshot(run: ChannelRunView): boolean {
-  return !!run.snapshot && ['completed', 'failed', 'cancelled'].includes(run.snapshot.status);
-}
-
-export function pendingReview(run: ChannelRunView): boolean {
-  const pending = run.snapshot?.pendingAction;
-  return (
-    !run.snapshot?.recovery &&
-    run.snapshot?.status === 'requires_action' &&
-    !!pending?.actionId &&
-    pending.expiresAt > Date.now() &&
-    ['tool_approval', 'ask_user_question', 'oauth'].includes(pending.kind)
-  );
-}
-
-export function progressText(run: ChannelRunView): string {
-  if (terminalSnapshot(run)) {
-    if (run.snapshot?.status === 'completed') return ':white_check_mark: Completed.';
-    if (run.snapshot?.status === 'cancelled') return 'Cancelled.';
-    return ':warning: Failed.';
-  }
-  if (run.snapshot?.recovery === 'execution_state_unavailable')
-    return (
-      (run.cancellationRequested ? 'Cancellation requested. ' : '') +
-      ':warning: This request’s execution status is unavailable, possibly after a restart. Sign-in may be saved, but continuation and completion are not confirmed. Check the result; do not repeat actions that may already have run. If this stays unavailable, ask an administrator to reconcile the request before retrying. Stop requests cancellation, not proof that work has stopped.'
-    );
-  if (run.cancellationRequested) return 'Cancellation requested.';
-  if (run.snapshot?.status === 'requires_action')
-    return pendingReview(run)
-      ? '⏸ Your input is needed. Open the private review to continue.'
-      : '⏸ Waiting for input. The review action is unavailable or expired.';
-  return ':hourglass_flowing_sand: Working…';
-}
 
 export function deliveryReceipt(run: ChannelRunView, operationId: string): ChannelDeliveryReceipt {
   const receipt = run.receipts.find((item) => item.operationId === operationId);
@@ -60,47 +30,9 @@ export function deliveryReceipt(run: ChannelRunView, operationId: string): Chann
 export function writeOutcome(
   error: unknown,
   attempts: number,
+  classify: WorkerProvider['classifyError'] = slackWriteFailure,
 ): Omit<ChannelDeliveryReceipt, 'operationId'> {
-  if (error instanceof SlackWriteError && error.outcome === 'permanent')
-    return { attempts, outcome: 'permanent_failure', errorCode: 'transport_rejected' };
-  if (error instanceof SlackWriteError && error.outcome === 'retryable')
-    return {
-      attempts,
-      outcome: 'retryable',
-      errorCode: 'transport_retryable',
-      retryAt: Date.now() + Math.max(1000, error.retryAfterMs),
-    };
-  return { attempts, outcome: 'unknown', errorCode: 'transport_uncertain' };
-}
-
-function address(run: ChannelRunView): { channel: string; thread_ts: string } {
-  const channel = run.admission.externalChannelId;
-  const prefix = channel + ':';
-  const thread = run.admission.externalThreadKey.slice(prefix.length);
-  if (
-    !channel ||
-    !run.admission.externalThreadKey.startsWith(prefix) ||
-    !thread ||
-    /[:\s]/.test(thread)
-  )
-    throw new Error('Invalid durable thread address');
-  return { channel, thread_ts: thread };
-}
-
-function progressAddress(run: ChannelRunView): { channel: string; ts: string } {
-  const channel = run.admission.externalChannelId;
-  const prefix = channel + ':';
-  const key = run.progress?.externalMessageKey ?? '';
-  const ts = key.slice(prefix.length);
-  if (!key.startsWith(prefix) || !ts || /[:\s]/.test(ts))
-    throw new Error('Invalid progress address');
-  return { channel, ts };
-}
-
-function assertView(run: ChannelRunView, fence: ChannelRunFence, channelId: string): void {
-  if (run.runId !== fence.runId || run.channelId !== channelId || !run.revision)
-    throw new Error('Durable identity changed');
-  address(run);
+  return failedWrite(classify(error), attempts);
 }
 
 function canYield(run: ChannelRunView): void {
@@ -114,7 +46,10 @@ function canYield(run: ChannelRunView): void {
 }
 
 /** Bounded diagnostics distinguish recovery causes without retaining remote error text. */
-export function recoveryEvent(error: unknown): string {
+export function recoveryEvent(
+  error: unknown,
+  classify: WorkerProvider['recoveryEvent'] = slackRecoveryEvent,
+): string {
   if (error instanceof ServiceError) {
     if (error.code === 'transactions_unavailable') return 'channel_storage_transactions_required';
     if (error.status === 401) return 'channel_service_authentication_failed';
@@ -124,24 +59,25 @@ export function recoveryEvent(error: unknown): string {
     if (error.status === 429) return 'channel_service_rate_limited';
     if ([500, 502, 503, 504].includes(error.status)) return 'channel_service_unavailable';
   }
-  if (error instanceof SlackWriteError) {
-    if (error.outcome === 'permanent') return 'slack_write_rejected';
-    if (error.outcome === 'retryable') return 'slack_write_deferred';
-    return 'slack_write_outcome_unconfirmed';
-  }
+  const platformEvent = classify(error);
+  if (platformEvent) return platformEvent;
   if (error instanceof DOMException && error.name === 'TimeoutError')
     return 'channel_operation_timed_out';
   return 'channel_run_held_for_recovery';
 }
 
 export class ChannelWorker {
+  private readonly provider: WorkerProvider;
   private readonly owner = randomBytes(16).toString('hex');
   constructor(
     private readonly config: GatewayConfig,
     private readonly client: ChannelClient,
-    private readonly slack: SlackClient,
+    provider: WorkerProvider | SlackClient,
     private readonly log: Logger,
-  ) {}
+  ) {
+    this.provider =
+      provider instanceof SlackClient ? createSlackWorkerProvider(provider, log) : provider;
+  }
 
   async run(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
@@ -149,7 +85,7 @@ export class ChannelWorker {
         await this.tick(signal);
       } catch (error) {
         if (signal.aborted) break;
-        this.log.warn(recoveryEvent(error));
+        this.log.warn(recoveryEvent(error, (failure) => this.provider.recoveryEvent(failure)));
       }
       try {
         await delay(1000, undefined, { signal });
@@ -180,7 +116,7 @@ export class ChannelWorker {
 
   async process(lease: Lease, parent: AbortSignal): Promise<void> {
     const { fence } = lease;
-    assertView(lease.run, fence, this.config.CHANNEL_ID);
+    this.assertView(lease.run, fence);
     if (!fence.owner || fence.epoch <= 0 || lease.leaseExpiresAt <= Date.now())
       throw new Error('Invalid durable lease');
     const controller = new AbortController();
@@ -240,14 +176,8 @@ export class ChannelWorker {
     check: () => void,
   ): Promise<void> {
     const bundle = await this.client.channel(signal);
-    if (
-      initial.revision !== bundle.channel.revision ||
-      initial.admission.actor.provider !== undefined ||
-      initial.admission.actor.teamId !== bundle.channel.slack.teamId ||
-      initial.admission.actor.appId !== bundle.channel.slack.appId
-    )
-      throw new Error('Run binding changed');
-    const token = bundle.credentials.botToken;
+    if (initial.revision !== bundle.channel.revision) throw new Error('Run binding changed');
+    this.provider.assertBinding(initial, bundle);
     let sessionStatus = '';
     let sessionUpdated = 0;
     let sessionRetry = 0;
@@ -255,27 +185,15 @@ export class ChannelWorker {
     const syncProgress = async (current: ChannelRunView) => {
       check();
       let native = false;
-      if (bundle.gateway.nativeSessions) {
+      if (bundle.gateway.nativeSessions && this.provider.setSessionStatus) {
         let status: 'active' | 'suspended' | 'processing' = 'processing';
         if (terminalSnapshot(current) || current.plan) status = 'active';
         else if (current.snapshot?.status === 'requires_action') status = 'suspended';
         if (!sessionRetry && sessionStatus === status && Date.now() - sessionUpdated < 60000)
           native = true;
         else if (terminalSnapshot(current) || Date.now() >= sessionRetry) {
-          const target = address(current);
           try {
-            await this.slack.setSessionStatus(
-              token,
-              {
-                channel: target.channel,
-                threadTs: target.thread_ts,
-                status,
-                title: bundle.agent.name
-                  ? `${bundle.agent.name} conversation`.slice(0, 200)
-                  : undefined,
-              },
-              signal,
-            );
+            await this.provider.setSessionStatus(current, bundle, status, signal);
             sessionStatus = status;
             sessionUpdated = Date.now();
             sessionRetry = 0;
@@ -296,14 +214,14 @@ export class ChannelWorker {
         lastProgressWrite = Date.now();
       return updated;
     };
-    await this.lifecycle(initial, bundle, 'started', signal);
+    await this.provider.lifecycle?.(initial, bundle, 'started', signal);
     let run = await syncProgress(initial);
     let grant: ResponseGrant | undefined;
     let unstartedCancellation = false;
     if (!run.plan) {
       const prepared = await this.client.prepare(fence, signal);
       if (prepared.settled) {
-        assertView(prepared.settled, fence, this.config.CHANNEL_ID);
+        this.assertView(prepared.settled, fence);
         if (
           prepared.settled.state !== 'delivering' ||
           !prepared.settled.cancellationRequested ||
@@ -344,7 +262,7 @@ export class ChannelWorker {
       if (grant)
         await this.client.response(grant, run.cancellationRequested ? 'cancel' : 'read', signal);
       if (!unstartedCancellation) run = await this.client.mutate(fence, 'advance', {}, signal);
-      assertView(run, fence, this.config.CHANNEL_ID);
+      this.assertView(run, fence);
       if (grant && run.snapshot?.responseId && run.snapshot.responseId !== grant.responseId)
         throw new Error('Response projection changed');
       if (run.plan) break;
@@ -352,7 +270,7 @@ export class ChannelWorker {
       if (
         terminalSnapshot(run) &&
         run.progress?.outcome === 'confirmed' &&
-        run.progress.text !== progressText(run)
+        run.progress.text !== this.provider.progressText(run)
       )
         run = await syncProgress(run);
       if (run.state === 'delivering' && run.snapshot) {
@@ -366,11 +284,7 @@ export class ChannelWorker {
           fence,
           'plan',
           {
-            plan: makeSlackPlan(
-              run,
-              bundle.gateway.nativeSessions,
-              bundle.delivery.maxDeliveryParts,
-            ),
+            plan: this.provider.makePlan(run, bundle),
           },
           signal,
         );
@@ -382,7 +296,7 @@ export class ChannelWorker {
     }
     if (
       !run.plan ||
-      !supportedRenderer(run.plan.rendererVersion) ||
+      !this.provider.supportsRenderer(run.plan.rendererVersion) ||
       !run.plan.parts.length ||
       run.plan.parts.length > 100
     )
@@ -420,7 +334,7 @@ export class ChannelWorker {
         )
           continue;
         this.retryable(receipt);
-        const message = durableSlackMessage(part, renderer);
+        const deliver = this.provider.preparePart(part, renderer, bundle);
         try {
           run = await this.client.mutate(
             fence,
@@ -443,18 +357,17 @@ export class ChannelWorker {
         if (receipt.outcome !== 'inflight') throw new Error('Delivery begin not persisted');
         check();
         try {
-          const result = await this.slack.deliverPart(
-            token,
-            { ...address(run), ...message },
-            signal,
-          );
+          const result = await deliver(run, signal);
           receipt = {
             ...receipt,
             outcome: 'confirmed',
-            externalMessageKey: `${result.channel}:${result.ts}`,
+            externalMessageKey: result.externalMessageKey,
           };
         } catch (error) {
-          receipt = { operationId: part.operationId, ...writeOutcome(error, receipt.attempts) };
+          receipt = {
+            operationId: part.operationId,
+            ...failedWrite(this.provider.classifyError(error), receipt.attempts),
+          };
         }
         check();
         run = await this.settle(run, fence, receipt, signal);
@@ -472,9 +385,9 @@ export class ChannelWorker {
           )
         )
           throw new Error('Progress address overlaps answer');
-        await this.slack.deleteMessage(
-          token,
-          progressAddress(run),
+        await this.provider.deleteProgress(
+          run,
+          bundle,
           AbortSignal.any([signal, AbortSignal.timeout(2000)]),
         );
       } catch {
@@ -484,7 +397,12 @@ export class ChannelWorker {
     check();
     run = await this.client.mutate(fence, 'commit', {}, signal);
     if (!terminalStates.has(run.state)) throw new Error('Commit not confirmed');
-    await this.lifecycle(run, bundle, run.state === 'delivered' ? 'completed' : 'failed', signal);
+    await this.provider.lifecycle?.(
+      run,
+      bundle,
+      run.state === 'delivered' ? 'completed' : 'failed',
+      signal,
+    );
   }
 
   private retryable(receipt: ChannelDeliveryReceipt): void {
@@ -530,11 +448,11 @@ export class ChannelWorker {
     if (terminalSnapshot(run) && !progress?.externalMessageKey) return run;
     if (
       progress &&
-      (progress.rendererVersion !== progressRenderer ||
+      (progress.rendererVersion !== this.provider.progressRenderer ||
         ['unknown', 'inflight', 'permanent_failure'].includes(progress.outcome))
     )
       return run;
-    const text = progressText(run);
+    const text = this.provider.progressText(run);
     if (!progress || progress.outcome === 'confirmed') {
       if (progress?.text === text) return run;
       const revision = (progress?.revision ?? 0) + 1;
@@ -542,14 +460,17 @@ export class ChannelWorker {
       run = await this.client.mutate(
         fence,
         'progress/plan',
-        { revision, rendererVersion: progressRenderer, text },
+        { revision, rendererVersion: this.provider.progressRenderer, text },
         signal,
       );
       progress = run.progress;
       if (!progress || progress.revision !== revision || progress.text !== text)
         throw new Error('Progress plan not persisted');
     }
-    if (!['planned', 'retryable'].includes(progress.outcome) || progress.text.length > 4000)
+    if (
+      !['planned', 'retryable'].includes(progress.outcome) ||
+      progress.text.length > this.provider.maxProgressLength
+    )
       throw new Error('Unsupported progress state');
     if ((progress.retryAt ?? 0) > Date.now()) return run;
     if (Date.now() < lastWrite + 1000)
@@ -562,58 +483,26 @@ export class ChannelWorker {
       !progress ||
       progress.revision !== revision ||
       progress.outcome !== 'inflight' ||
-      progress.rendererVersion !== progressRenderer ||
+      progress.rendererVersion !== this.provider.progressRenderer ||
       !progress.text ||
-      progress.text.length > 4000
+      progress.text.length > this.provider.maxProgressLength
     )
       throw new Error('Progress begin not persisted');
-    const target = address(run);
-    const blocks: Parameters<SlackClient['postMessage']>[1]['blocks'] = [
-      { type: 'section', text: { type: 'mrkdwn', text: progress.text }, expand: true },
-    ];
-    if (!terminalSnapshot(run) && !run.cancellationRequested) {
-      const value = JSON.stringify({ runId: run.runId, revision: run.revision });
-      const elements = [
-        {
-          type: 'button' as const,
-          text: { type: 'plain_text' as const, text: 'Stop' },
-          action_id: 'channel_run_cancel',
-          value,
-        },
-      ];
-      if (pendingReview(run))
-        elements.push({
-          type: 'button',
-          text: { type: 'plain_text', text: 'Review request' },
-          action_id: 'channel_run_review',
-          value,
-        });
-      blocks.push({ type: 'actions', elements });
-    }
+    this.provider.validateAddress(run);
     let receipt: Omit<ChannelDeliveryReceipt, 'operationId'>;
     check();
     try {
-      if (progress.attempts > 5) throw new SlackWriteError('permanent');
-      let posted: { channel: string; ts: string };
-      if (progress.externalMessageKey) {
-        posted = await this.slack.updateMessageOnce(
-          bundle.credentials.botToken,
-          { ...progressAddress(run), text: progress.text, blocks },
-          signal,
-        );
-      } else
-        posted = await this.slack.postMessage(
-          bundle.credentials.botToken,
-          { ...target, text: progress.text, blocks },
-          signal,
-        );
-      receipt = {
-        attempts: progress.attempts,
-        outcome: 'confirmed',
-        externalMessageKey: `${posted.channel}:${posted.ts}`,
-      };
+      if (progress.attempts > 5) receipt = failedWrite({ outcome: 'permanent' }, progress.attempts);
+      else {
+        const posted = await this.provider.writeProgress(run, bundle, signal);
+        receipt = {
+          attempts: progress.attempts,
+          outcome: 'confirmed',
+          externalMessageKey: posted.externalMessageKey,
+        };
+      }
     } catch (error) {
-      receipt = writeOutcome(error, progress.attempts);
+      receipt = failedWrite(this.provider.classifyError(error), progress.attempts);
     }
     check();
     run = await this.client.mutate(fence, 'progress/settle', { revision, receipt }, signal);
@@ -672,22 +561,8 @@ export class ChannelWorker {
       return settle('permanent_failure', 'artifact_unavailable');
     }
     check();
-    let allocation: { fileId: string; uploadUrl: string };
-    try {
-      allocation = await this.slack.allocateArtifact(
-        bundle.credentials.botToken,
-        artifact.filename,
-        artifact.bytes,
-        signal,
-      );
-    } catch (error) {
-      const outcome = writeOutcome(error, receipt.attempts);
-      receipt.retryAt = outcome.retryAt;
-      return settle(outcome.outcome, outcome.errorCode);
-    }
-    const checkpoint = async (stage: 'allocated' | 'uploaded') => {
+    const checkpoint = async (upload: NonNullable<ChannelDeliveryReceipt['upload']>) => {
       check();
-      const upload = { fileId: allocation.fileId, stage };
       run = await this.client.mutate(
         fence,
         'delivery/checkpoint',
@@ -699,69 +574,34 @@ export class ChannelWorker {
         stored.outcome !== 'inflight' ||
         stored.attempts !== receipt.attempts ||
         stored.upload?.fileId !== upload.fileId ||
-        stored.upload.stage !== stage
+        stored.upload.stage !== upload.stage
       )
         throw new Error('Upload checkpoint not persisted');
       receipt = stored;
     };
-    await checkpoint('allocated');
-    check();
-    try {
-      await this.slack.uploadArtifact(allocation.uploadUrl, bytes, signal);
-    } catch {
-      return settle('unknown', 'artifact_upload_uncertain');
+    const result = await this.provider.deliverArtifact({
+      run,
+      part,
+      artifact,
+      bytes,
+      bundle,
+      attempts: receipt.attempts,
+      signal,
+      checkpoint,
+      check,
+    });
+    if (result.outcome === 'confirmed') {
+      receipt.externalFileId = result.externalFileId;
+      if (result.externalMessageKey) receipt.externalMessageKey = result.externalMessageKey;
+      return settle('confirmed');
     }
-    await checkpoint('uploaded');
-    check();
-    const target = address(run);
-    try {
-      await this.slack.completeArtifact(
-        bundle.credentials.botToken,
-        {
-          channel: target.channel,
-          threadTs: target.thread_ts,
-          fileId: allocation.fileId,
-          filename: artifact.filename,
-        },
-        signal,
-      );
-    } catch {
-      return settle('unknown', 'artifact_completion_uncertain');
-    }
-    receipt.externalFileId = allocation.fileId;
-    return settle('confirmed');
+    if ('retryAt' in result) receipt.retryAt = result.retryAt;
+    return settle(result.outcome, result.errorCode);
   }
 
-  private async lifecycle(
-    run: ChannelRunView,
-    bundle: ChannelBundle,
-    phase: 'started' | 'completed' | 'failed',
-    signal: AbortSignal,
-  ): Promise<void> {
-    if (!bundle.gateway.lifecycleReactions) return;
-    const prefix = run.admission.externalChannelId + ':';
-    const ts = run.admission.externalMessageKey.slice(prefix.length);
-    if (!run.admission.externalMessageKey.startsWith(prefix) || !ts || /[:\s]/.test(ts)) return;
-    const limited = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
-    const reaction = (operation: 'add' | 'remove', name: string) =>
-      this.slack.reaction(
-        bundle.credentials.botToken,
-        operation,
-        run.admission.externalChannelId,
-        ts,
-        name,
-        limited,
-      );
-    try {
-      if (phase === 'started') {
-        await reaction('add', 'eyes');
-        await reaction('add', 'hourglass_flowing_sand');
-      } else {
-        await reaction('remove', 'hourglass_flowing_sand');
-        await reaction('add', phase === 'completed' ? 'white_check_mark' : 'warning');
-      }
-    } catch {
-      this.log.warn('optional_lifecycle_unavailable');
-    }
+  private assertView(run: ChannelRunView, fence: ChannelRunFence): void {
+    if (run.runId !== fence.runId || run.channelId !== this.config.CHANNEL_ID || !run.revision)
+      throw new Error('Durable identity changed');
+    this.provider.validateAddress(run);
   }
 }
