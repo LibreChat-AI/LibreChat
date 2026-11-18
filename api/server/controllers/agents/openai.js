@@ -130,7 +130,7 @@ const filterFilesByRemoteAgentAccess = (params) =>
  * @param {boolean} [runtime.definitionsOnly=true] - When true, returns only serializable
  *   tool definitions without creating full tool instances (for event-driven mode)
  */
-function createToolLoader({ req, res, signal, executionContext, definitionsOnly = true }) {
+function createToolLoader({ req, res, signal, unattended, definitionsOnly = true }) {
   return async function loadTools({
     tools,
     model,
@@ -158,7 +158,7 @@ function createToolLoader({ req, res, signal, executionContext, definitionsOnly 
         definitionsOnly,
         accessibleMcpServerNames,
         streamId: null, // No resumable stream for OpenAI compat
-        executionContext,
+        unattended,
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
@@ -542,7 +542,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         req,
         res,
         signal: execution.signal,
-        executionContext,
+        unattended: executionContext.unattended,
       });
 
       // Initialize the agent first to check for disableStreaming
@@ -905,7 +905,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           const result = await loadToolsForExecution({
             req,
             res,
-            executionContext,
+            unattended: executionContext.unattended,
             agentResourceType: ResourceType.REMOTE_AGENT,
             conversationId,
             requestBody: mcpRequestBody,

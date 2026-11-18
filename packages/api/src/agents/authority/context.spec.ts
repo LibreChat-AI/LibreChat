@@ -1,5 +1,4 @@
 import {
-  isUnattended,
   getScheduleSource,
   restoreExecutionContext,
   toScheduledTokenContext,
@@ -45,6 +44,7 @@ describe('createScheduleExecutionContext', () => {
       principal: { userId: 'owner', tenantId: 'tenant' },
       agentId: 'root-agent',
       source: { type: 'schedule', id: 'schedule', manual, resumed: false },
+      unattended: false,
     });
     expect(Object.isFrozen(context)).toBe(true);
     expect(Object.isFrozen(context?.principal)).toBe(true);
@@ -73,6 +73,7 @@ describe('restoreExecutionContext', () => {
       principal: { userId: 'owner', tenantId: 'tenant' },
       agentId: 'root-agent',
       source: { type: 'schedule', id: 'schedule', manual: true, resumed: true },
+      unattended: false,
     });
     expect(Object.isFrozen(context)).toBe(true);
   });
@@ -116,26 +117,32 @@ describe('createRemoteExecutionContext', () => {
       principal: { userId: 'owner', tenantId: 'tenant', role: 'USER' },
       agentId: 'agent_remote',
       source: { type: 'remote_api', protocol: 'responses', background: true },
+      unattended: false,
     });
     expect(Object.isFrozen(context.source)).toBe(true);
   });
 });
 
-describe('isUnattended', () => {
+describe('whether anybody can follow a sign-in prompt', () => {
   const remote = (background: boolean) =>
     createRemoteExecutionContext({
       principal: { userId: 'owner' },
       protocol: 'chat.completions',
       background,
     });
+  const job = { userId: 'owner', tenantId: 'tenant', scheduleId: 'sched-1', agent_id: 'agent_x' };
 
   it.each([
     ['a foreground remote run', remote(false), true],
     ['a background remote run', remote(true), false],
     ['a scheduled run', createScheduleExecutionContext(scheduleFire()), false],
-    ['a run with no context', undefined, false],
-  ])('is %s unattended: %s', (_label, context, expected) => {
-    expect(isUnattended(context)).toBe(expected);
+    [
+      'a resumed scheduled run',
+      restoreExecutionContext({ user: { id: 'owner', tenantId: 'tenant' } }, job),
+      false,
+    ],
+  ])('is decided where the run enters: %s', (_label, context, expected) => {
+    expect(context?.unattended).toBe(expected);
   });
 });
 

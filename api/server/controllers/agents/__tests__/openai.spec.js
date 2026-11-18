@@ -232,8 +232,9 @@ jest.mock('@librechat/api', () => ({
   buildInitialToolSessions: jest.fn().mockReturnValue(mockInitialSessions),
   AgentRunEnvelopeError: MockAgentRunEnvelopeError,
   createAgentRunEnvelope: (...args) => mockCreateAgentRunEnvelope(...args),
-  createRemoteExecutionContext: (...args) =>
+  createRemoteExecutionContext: jest.fn((...args) =>
     jest.requireActual('@librechat/api').createRemoteExecutionContext(...args),
+  ),
   resolveAdmittedCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
   createMCPRuntimeRequestBody: ({
@@ -1739,6 +1740,30 @@ describe('OpenAIChatCompletionController', () => {
   });
 
   describe('remote-agent file authorization', () => {
+    it('passes on what the execution context says about attendance, not an answer of its own', async () => {
+      const { initializeAgent, createRemoteExecutionContext } = require('@librechat/api');
+      const { loadAgentTools } = require('~/server/services/ToolService');
+      createRemoteExecutionContext.mockReturnValueOnce({
+        principal: { userId: 'user-123' },
+        agentId: 'agent-123',
+        source: { type: 'remote_api', protocol: 'chat.completions', background: true },
+        unattended: false,
+      });
+
+      await OpenAIChatCompletionController(req, res);
+
+      const [initializeParams] = initializeAgent.mock.calls.at(-1);
+      await initializeParams.loadTools({
+        agentId: 'agent-123',
+        tools: ['file_search'],
+        provider: 'openAI',
+        model: 'gpt-4',
+      });
+      expect(loadAgentTools).toHaveBeenLastCalledWith(
+        expect.objectContaining({ unattended: false }),
+      );
+    });
+
     it('threads the remote-agent permission boundary through initialization and tool loading', async () => {
       const { initializeAgent, createToolExecuteHandler } = require('@librechat/api');
       const { loadAgentTools, loadToolsForExecution } = require('~/server/services/ToolService');
@@ -1771,13 +1796,8 @@ describe('OpenAIChatCompletionController', () => {
         tool_resources: { file_search: { file_ids: ['owner-file'] } },
       });
       /** Nobody reads a chat-completions response in a browser, so tool loading must not prompt. */
-      const executionContext = {
-        principal: { userId: 'user-123' },
-        agentId: 'agent-123',
-        source: { type: 'remote_api', protocol: 'chat.completions', background: false },
-      };
       expect(loadAgentTools).toHaveBeenLastCalledWith(
-        expect.objectContaining({ agentResourceType: ResourceType.REMOTE_AGENT, executionContext }),
+        expect.objectContaining({ agentResourceType: ResourceType.REMOTE_AGENT, unattended: true }),
       );
 
       const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
@@ -1798,7 +1818,7 @@ describe('OpenAIChatCompletionController', () => {
           agentResourceType: ResourceType.REMOTE_AGENT,
           requestBody: initializeParams.requestBody,
           signal: effectiveSignal,
-          executionContext,
+          unattended: true,
         }),
       );
       mockExecution.abort();

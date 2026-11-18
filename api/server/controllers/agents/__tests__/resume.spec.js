@@ -1397,6 +1397,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         principal: { userId: USER_ID, tenantId: TENANT_ID },
         agentId: AGENT_ID,
         source: { type: 'schedule', id: 'schedule-1', manual: false, resumed: true },
+        unattended: false,
       });
 
       expect(mockClaimScheduleResume).toHaveBeenCalledWith('schedule-1', scheduledFor, {

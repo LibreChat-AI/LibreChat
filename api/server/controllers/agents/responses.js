@@ -191,7 +191,7 @@ function createToolLoader({
   definitionsOnly = true,
   streamId = null,
   jobCreatedAt,
-  executionContext,
+  unattended,
 }) {
   return async function loadTools({
     tools,
@@ -221,7 +221,7 @@ function createToolLoader({
         accessibleMcpServerNames,
         streamId,
         jobCreatedAt,
-        executionContext,
+        unattended,
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
@@ -628,7 +628,7 @@ const executeResponse = async (envelope, { req, res }) => {
         res,
         signal: execution.signal,
         ...responseRuntime.toolContext(execution),
-        executionContext,
+        unattended: executionContext.unattended,
       });
       const skillDbMethods = getSkillDbMethods();
 
@@ -1130,7 +1130,7 @@ const executeResponse = async (envelope, { req, res }) => {
               ...responseRuntime.toolContext(execution),
               req,
               res,
-              executionContext,
+              unattended: executionContext.unattended,
               agentResourceType: ResourceType.REMOTE_AGENT,
               conversationId,
               requestBody: mcpRequestBody,
@@ -1365,7 +1365,7 @@ const executeResponse = async (envelope, { req, res }) => {
               ...responseRuntime.toolContext(execution),
               req,
               res,
-              executionContext,
+              unattended: executionContext.unattended,
               agentResourceType: ResourceType.REMOTE_AGENT,
               conversationId,
               requestBody: mcpRequestBody,

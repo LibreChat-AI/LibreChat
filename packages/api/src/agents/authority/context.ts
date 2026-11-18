@@ -37,6 +37,12 @@ export interface ExecutionContext {
   /** The root agent the run was admitted for. Subagents and handoffs keep it. */
   readonly agentId?: string;
   readonly source: ExecutionSource;
+  /**
+   * Nobody can follow a sign-in prompt for this run: a remote API run with no generation
+   * stream answers an API client, not a person. Decided here, so nothing that loads tools
+   * for the run works it out again.
+   */
+  readonly unattended: boolean;
 }
 
 interface AuthenticatedRequest {
@@ -66,6 +72,7 @@ export function createScheduleExecutionContext(
       manual: fire.manual,
       resumed: false,
     }),
+    unattended: false,
   });
 }
 
@@ -108,6 +115,7 @@ export function restoreExecutionContext(
       manual: metadata.scheduleManual === true,
       resumed: true,
     }),
+    unattended: false,
   });
 }
 
@@ -131,6 +139,7 @@ export function createRemoteExecutionContext({
     }),
     ...(agentId ? { agentId } : {}),
     source: Object.freeze({ type: 'remote_api', protocol, background }),
+    unattended: !background,
   });
 }
 
@@ -139,14 +148,6 @@ export function getScheduleSource(
   context?: ExecutionContext,
 ): Extract<ExecutionSource, { type: 'schedule' }> | undefined {
   return context?.source.type === 'schedule' ? context.source : undefined;
-}
-
-/**
- * Nobody can follow a sign-in prompt for this run: a remote API run with no generation
- * stream answers an API client, not a person.
- */
-export function isUnattended(context?: ExecutionContext): boolean {
-  return context?.source.type === 'remote_api' && !context.source.background;
 }
 
 /**

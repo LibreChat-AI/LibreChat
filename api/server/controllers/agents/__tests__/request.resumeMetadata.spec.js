@@ -1302,6 +1302,7 @@ describe('ResumableAgentController resume metadata', () => {
             principal: { userId: 'user-123', tenantId: 'tenant-1' },
             agentId: 'agent-1',
             source: { type: 'schedule', id: 'schedule-1', manual: false, resumed: false },
+            unattended: false,
           }
         : undefined,
     );
