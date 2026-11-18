@@ -175,6 +175,18 @@ export default function Consent({
             {!query.isLoading && !query.isError && data && (
               <>
                 <p role="status">{localize(statusKeys[data.state])}</p>
+                {data.required && (
+                  <p className="text-status-warning text-sm">
+                    {localize('com_ui_schedule_consent_required')}
+                  </p>
+                )}
+                {data.requireAfterMs != null && (
+                  <p className="text-text-secondary text-sm">
+                    {localize('com_ui_schedule_consent_required_after', {
+                      time: new Date(data.requireAfterMs).toLocaleString(),
+                    })}
+                  </p>
+                )}
                 {data.expiresAtMs != null && (
                   <p className="text-text-secondary text-sm">
                     {localize('com_ui_schedule_consent_deadline', {

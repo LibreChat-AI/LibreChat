@@ -1496,3 +1496,88 @@ it('allows repointing a disabled schedule without MCP preflight', async () => {
   expect(preflightMCP).not.toHaveBeenCalled();
   expect(deps.methods.updateScheduleById).toHaveBeenCalled();
 });
+
+describe('updateSchedule on a schedule its owner never authorized', () => {
+  const limits = (mcpConsent?: { enabled: boolean; maxLifetimeHours: number }) => async () => ({
+    enabled: true,
+    maxPerUser: 10,
+    minIntervalMinutes: 60,
+    autoDisableAfterFailures: 5,
+    admissionConcurrency: 20,
+    fireConcurrency: 5,
+    mcpPreflightConcurrency: 3,
+    mcpPreflightTimeoutMs: 300_000,
+    requireProject: false,
+    ...(mcpConsent && { mcpConsent }),
+  });
+  const consentOn = limits({ enabled: true, maxLifetimeHours: 24 });
+  const patch = async (
+    body: Record<string, unknown>,
+    row: Partial<ISchedule> = {},
+    getLimits: SchedulesHandlersDeps['getLimits'] = consentOn,
+  ) => {
+    const deps = makeCreateDeps({ isUserDeleting: jest.fn(async () => false), getLimits });
+    (deps.methods.getScheduleById as jest.Mock).mockResolvedValue({
+      id: 'sched-1',
+      enabled: false,
+      agent_id: 'agent-1',
+      cadence: { frequency: 'daily', hour: 8, minute: 0 },
+      timezone: 'UTC',
+      nextRunAt: new Date('2026-07-31T09:00:00Z'),
+      configRevision: 7,
+      ...row,
+    });
+    const { res, captured } = makeRes();
+    await createSchedulesHandlers(deps).updateSchedule(
+      {
+        params: { id: 'sched-1' },
+        body,
+        user: { id: 'user-1', tenantId: 't1', role: 'USER' },
+      } as unknown as ServerRequest,
+      res,
+    );
+    expect(captured.status ?? 200).toBe(200);
+    return (deps.methods.updateScheduleById as jest.Mock).mock.calls[0][2] as Partial<ISchedule>;
+  };
+
+  it('ends the exemption when the owner edits it', async () => {
+    expect(await patch({ name: 'renamed' })).toMatchObject({ mcpConsentRequired: true });
+    expect(await patch({ name: 'renamed', enabled: false })).toMatchObject({
+      mcpConsentRequired: true,
+    });
+  });
+
+  it('leaves it exempt when the owner only pauses or resumes it', async () => {
+    expect(await patch({ enabled: false }, { enabled: true })).not.toHaveProperty(
+      'mcpConsentRequired',
+    );
+  });
+
+  it('writes nothing where consent is off or absent from the config', async () => {
+    for (const getLimits of [limits(), limits({ enabled: false, maxLifetimeHours: 24 })])
+      expect(await patch({ name: 'renamed' }, {}, getLimits)).not.toHaveProperty(
+        'mcpConsentRequired',
+      );
+  });
+
+  it('writes nothing for a schedule that has a grant or is already marked', async () => {
+    const mcpConsent = {
+      version: 1 as const,
+      revision: 'grant',
+      scheduleRevision: 7,
+      consents: [],
+    };
+    expect(await patch({ name: 'renamed' }, { mcpConsent })).not.toHaveProperty(
+      'mcpConsentRequired',
+    );
+    expect(await patch({ name: 'renamed' }, { mcpConsentRequired: true })).not.toHaveProperty(
+      'mcpConsentRequired',
+    );
+  });
+
+  it('never sends the mark to the client', () => {
+    expect(toWireSchedule(fullScheduleDoc({ mcpConsentRequired: true }))).not.toHaveProperty(
+      'mcpConsentRequired',
+    );
+  });
+});

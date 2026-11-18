@@ -168,5 +168,9 @@ export interface ScheduleMCPConsentView {
   allowed: Record<string, string[]>;
   /** Allowed tools whose definition changed since first use, by server. Refused until confirmed again. */
   changed: Record<string, string[]>;
+  /** With no grant: whether the schedule's MCP tools are refused until the owner confirms. */
+  required: boolean;
+  /** With no grant and not yet required: when the operator's deadline makes it so. */
+  requireAfterMs: number | null;
   offer: { digest: string; maxLifetimeHours: number } | null;
 }

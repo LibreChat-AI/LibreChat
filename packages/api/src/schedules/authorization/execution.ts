@@ -103,6 +103,8 @@ export interface ScheduleMCPExecutionDeps {
   loadAuthorization: (identity: ScheduledMCPIdentity) => Promise<{
     authority: ScheduledMCPAuthority;
   }>;
+  /** Whether a schedule with no grant has lost its exemption. Absent, it never does. */
+  requiresGrant?: (identity: ScheduledMCPIdentity) => Promise<boolean>;
 }
 
 export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
@@ -156,6 +158,17 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
       );
     };
     let fenced = false;
+    /** Asked at the first MCP call, so a run that uses none pays nothing. Kept for the run. */
+    let required: Promise<boolean> | undefined;
+    const requiresGrant = (): Promise<boolean> => {
+      required ??= (deps.requiresGrant?.(capturedIdentity) ?? Promise.resolve(false)).catch(
+        (error: unknown) => {
+          required = undefined;
+          throw error;
+        },
+      );
+      return required;
+    };
     const checkEnrollment = async (): Promise<void> => {
       if (enrolled) return;
       if (fenced) throw new ScheduledMCPPolicyError('binding_mismatch', '');
@@ -214,6 +227,7 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
             if (!enrolled) {
               try {
                 await checkEnrollment();
+                if (await requiresGrant()) deny('consent_missing');
               } catch (error) {
                 signal?.throwIfAborted();
                 deny(

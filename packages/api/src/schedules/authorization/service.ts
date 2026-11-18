@@ -17,6 +17,24 @@ import { failureFixtures } from './failures';
 export interface ScheduleMCPConsentLimits {
   enabled: boolean;
   maxLifetimeHours: number;
+  /** From then on a schedule with no grant can no longer use MCP tools. */
+  requireAfterMs?: number;
+}
+
+/**
+ * A schedule its owner never authorized keeps using MCP tools unrestricted, until the owner
+ * edits it or the operator's deadline passes. Nothing is required where consent is off.
+ */
+function requiresGrant(
+  limits: ScheduleMCPConsentLimits,
+  snapshot: { required?: boolean },
+  nowMs: number,
+): boolean {
+  return (
+    limits.enabled &&
+    (snapshot.required === true ||
+      (limits.requireAfterMs != null && nowMs >= limits.requireAfterMs))
+  );
 }
 export type ScheduleMCPEnrollmentResolver = (
   identity: ScheduledMCPIdentity,
@@ -213,6 +231,8 @@ export interface ScheduleMCPConsentService {
     options?: { signal?: AbortSignal },
   ) => Promise<ScheduleMCPConsentView>;
   revoke: (identity: ScheduledMCPIdentity, revision: string) => Promise<void>;
+  /** Whether this schedule has no grant and its MCP tools are refused until it gets one. */
+  requiresGrant: (identity: ScheduledMCPIdentity) => Promise<boolean>;
   authority: ScheduledMCPAuthority;
 }
 
@@ -265,6 +285,9 @@ export function createScheduleMCPConsentService(
       })) ?? [];
     const allowedByServer = allowedTools(granted);
     const changedByServer = changedTools(enrollment?.consents ?? []);
+    const required = !enrollment && requiresGrant(limits, snapshot, now());
+    const requireAfterMs =
+      !enrollment && limits.enabled && !required ? (limits.requireAfterMs ?? null) : null;
     if (state === 'active' && Object.keys(changedByServer).length > 0) state = 'changed';
     let targets = granted;
     let offer: ScheduleMCPConsentView['offer'] = null;
@@ -276,6 +299,8 @@ export function createScheduleMCPConsentService(
         targets: [],
         allowed: {},
         changed: {},
+        required: false,
+        requireAfterMs: null,
         offer: null,
       };
     }
@@ -292,6 +317,8 @@ export function createScheduleMCPConsentService(
           targets,
           allowed: allowedByServer,
           changed: changedByServer,
+          required,
+          requireAfterMs,
           offer: null,
         };
       }
@@ -303,6 +330,8 @@ export function createScheduleMCPConsentService(
           targets,
           allowed: allowedByServer,
           changed: changedByServer,
+          required,
+          requireAfterMs,
           offer: null,
         };
       targets = canonicalTargets(resolved);
@@ -318,6 +347,8 @@ export function createScheduleMCPConsentService(
       targets,
       allowed: allowedByServer,
       changed: changedByServer,
+      required,
+      requireAfterMs,
       offer,
     };
   }
@@ -389,6 +420,19 @@ export function createScheduleMCPConsentService(
     // Revocation remains available after access, resource configuration or agent changes.
     if (!(await deps.storage.revokeScheduleMCPConsent(identity, revision)))
       throw new ScheduleMCPConsentError('consent_changed');
+  }
+
+  async function requiresGrantFor(identity: ScheduledMCPIdentity): Promise<boolean> {
+    const [snapshot, limits] = await Promise.all([
+      deps.storage.readScheduleMCPConsent(identity),
+      deps.getLimits(identity),
+    ]);
+    return (
+      snapshot != null &&
+      snapshot.compatible !== false &&
+      snapshot.enrollment == null &&
+      requiresGrant(limits, snapshot, now())
+    );
   }
 
   const authority: ScheduledMCPAuthority = {
@@ -529,5 +573,5 @@ export function createScheduleMCPConsentService(
       };
     },
   };
-  return { view, confirm, revoke, authority };
+  return { view, confirm, revoke, requiresGrant: requiresGrantFor, authority };
 }
