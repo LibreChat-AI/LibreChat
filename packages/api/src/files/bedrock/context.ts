@@ -10,6 +10,7 @@ import {
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { StrategyFunctions, ServerRequest } from '~/types';
 import type { MissingAttachmentHandler } from '../encode/utils';
+import type { StoredSteerOwner } from './owners';
 import {
   AttachmentObjectNotFoundError,
   isStorageNotFoundError,
@@ -23,6 +24,7 @@ import { resolveDownloadPath } from '~/storage/path';
 
 export interface BedrockDocumentReference {
   librechatFile: string;
+  librechatSteer?: string;
 }
 
 interface DocumentPolicy {
@@ -54,6 +56,18 @@ function recipientKey(endpoint: string, recipientId?: string): string {
 export class BedrockDocumentContext {
   private readonly files = new Map<string, RegisteredDocument>();
   private readonly admissions = new Map<string, BedrockDocumentContext>();
+  private readonly steerRepairs = new Map<
+    string,
+    {
+      context: BedrockDocumentContext;
+      repair: () => Promise<void>;
+      pending?: Promise<void>;
+      repaired: boolean;
+    }
+  >();
+
+  private readonly repairedSteers = new Set<string>();
+  private readonly storedSteers = new Map<string, ReadonlySet<string>>();
 
   constructor(private readonly req: ServerRequest) {}
 
@@ -71,7 +85,7 @@ export class BedrockDocumentContext {
     if (admissionId != null) {
       const admission = this.admissions.get(admissionId);
       if (!admission) throw new BedrockDocumentError();
-      return admission.register(
+      const reference = admission.register(
         file,
         endpoint,
         maxBytes,
@@ -81,6 +95,9 @@ export class BedrockDocumentContext {
         recipientId,
         registration,
       );
+      return this.steerRepairs.has(admissionId)
+        ? { ...reference, librechatSteer: admissionId }
+        : reference;
     }
     if (!file.file_id) throw new BedrockDocumentError();
     const config = mergeFileConfig(this.req.config?.fileConfig);
@@ -121,16 +138,22 @@ export class BedrockDocumentContext {
     return { librechatFile: file.file_id };
   }
 
-  prepareAdmission(id: string, admission: BedrockDocumentContext): () => void {
+  prepareAdmission(
+    id: string,
+    admission: BedrockDocumentContext,
+    repair?: () => Promise<void>,
+  ): () => void {
     if (this.admissions.has(id)) throw new BedrockDocumentError();
     return () => {
       this.admissions.set(id, admission);
+      if (repair) this.steerRepairs.set(id, { context: admission, repair, repaired: false });
     };
   }
 
   settleAdmission(id: string, commit: boolean): void {
     const admission = this.admissions.get(id);
     if (!admission) return;
+    if (commit && this.steerRepairs.has(id)) return;
     if (commit) {
       for (const [fileId, incoming] of admission.files) {
         const existing = this.files.get(fileId);
@@ -151,6 +174,70 @@ export class BedrockDocumentContext {
       }
     }
     this.admissions.delete(id);
+  }
+
+  rememberOwners(owners: readonly StoredSteerOwner[]): void {
+    for (const owner of owners) {
+      this.storedSteers.set(owner.steerId, new Set(owner.fileIds));
+      if (owner.fileIds.length === 0) this.repairedSteers.add(owner.steerId);
+    }
+  }
+
+  isSteerRepaired(id: string): boolean {
+    return this.repairedSteers.has(id) || this.steerRepairs.get(id)?.repaired === true;
+  }
+
+  ownsSteer(
+    id: string,
+    fileId: string,
+    model?: string,
+    endpoint: string = Providers.BEDROCK,
+    recipientId?: string,
+  ): boolean {
+    const owner = this.steerRepairs.get(id);
+    if (!owner) {
+      if (!this.storedSteers.get(id)?.has(fileId)) throw new BedrockDocumentError();
+      return false;
+    }
+    if (!owner.context.localPolicy(fileId, model, endpoint, recipientId))
+      throw new BedrockDocumentError();
+    return true;
+  }
+
+  async repairSteer(
+    id: string,
+    fileId: string,
+    model?: string,
+    endpoint: string = Providers.BEDROCK,
+    recipientId?: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const owner = this.steerRepairs.get(id);
+    if (!owner) return false;
+    if (!owner.context.localPolicy(fileId, model, endpoint, recipientId))
+      throw new BedrockDocumentError();
+    signal?.throwIfAborted();
+    owner.pending ??= Promise.resolve()
+      .then(owner.repair)
+      .then(
+        () => {
+          owner.repaired = true;
+          this.repairedSteers.add(id);
+          this.admissions.delete(id);
+        },
+        (error: unknown) => {
+          logger.warn('[BedrockDocument] Steer repair failed', getSafeErrorMetadata(error));
+          throw new Error('Steer attachment recovery failed. Please retry.');
+        },
+      );
+    await owner.pending;
+    signal?.throwIfAborted();
+    return true;
+  }
+
+  async waitForSteerRepair(id: string): Promise<boolean> {
+    await this.steerRepairs.get(id)?.pending;
+    return this.isSteerRepaired(id);
   }
 
   private localPolicy(
@@ -345,6 +432,7 @@ export function prepareBedrockSteerDocuments(
   getStrategyFunctions: RegisteredDocument['getStrategyFunctions'],
   steerId?: string,
   endpoints?: ReadonlyMap<string, { endpoint?: string | null }>,
+  repair?: () => Promise<void>,
 ): () => void {
   const documents = files.filter(
     (file) => isBedrockDocumentType(file.type) && (file.filepath || file.storageKey),
@@ -366,7 +454,7 @@ export function prepareBedrockSteerDocuments(
     new Set(),
     staged,
   );
-  return getBedrockDocumentContext(req).prepareAdmission(steerId, staged);
+  return getBedrockDocumentContext(req).prepareAdmission(steerId, staged, repair);
 }
 
 export function settleBedrockSteerDocuments(
@@ -375,4 +463,11 @@ export function settleBedrockSteerDocuments(
   commit: boolean,
 ): void {
   if (req) contexts.get(req)?.settleAdmission(steerId, commit);
+}
+
+export function restoreBedrockSteerOwners(
+  req: ServerRequest,
+  owners?: readonly StoredSteerOwner[],
+): void {
+  if (owners?.length) getBedrockDocumentContext(req).rememberOwners(owners);
 }

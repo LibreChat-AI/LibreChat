@@ -38,6 +38,7 @@ import type {
   ResumeSnapshotAgent,
 } from './inspection';
 import type { LocatorTraversalReporter } from '../../protection/diagnostics';
+import type { StoredSteerOwner } from '~/files/bedrock/owners';
 import type { TextContentFragment } from '~/protection/types';
 import type { CheckAccessParams } from '~/middleware/access';
 import {
@@ -51,6 +52,7 @@ import {
   getContentTraversalFragments,
   isContentTraversalProtected,
 } from '~/protection/adapters/nested';
+import { collectStoredSteerOwners, withoutRepairedSteerMedia } from '~/files/bedrock/owners';
 import { getResumeAgentSnapshot, getResumeContentInspection } from './inspection';
 import { extractStoredMessageContent } from '~/protection/adapters/submissions';
 import { agentHasInlineMemoryTools, getMemoryAgentId } from '../memory';
@@ -227,6 +229,7 @@ export type ResumeRuntimeContentProtectionDependencies = Pick<
 >;
 
 export interface ResumeRuntimeContentProjection {
+  readonly steerOwners?: readonly StoredSteerOwner[];
   readonly resolvedFiles: ResumeContentInspection['hydratedFiles'];
   readonly checkpointFiles: ResumeContentInspection['hydratedFiles'];
 }
@@ -1081,12 +1084,19 @@ export async function assertResumeRuntimeContentAllowed(
   if (unresolvedSourceMessageId != null) {
     throw new Error('A checkpoint source message is no longer available');
   }
+  const storedSteerOwners = collectStoredSteerOwners([...input.storedMessages, ...sourceMessages]);
+  const repairedSteers = new Set(
+    storedSteerOwners.filter((owner) => owner.fileIds.length === 0).map((owner) => owner.steerId),
+  );
   const checkpointFileInputs = [
     ...checkpointMessages.map((message) => ({
       files: message.files,
-      content: message.content,
+      content: withoutRepairedSteerMedia(message.content, repairedSteers),
     })),
-    ...sourceMessages.map((message) => ({ files: message.files, content: message.content })),
+    ...sourceMessages.map((message) => ({
+      files: message.files,
+      content: withoutRepairedSteerMedia(message.content, repairedSteers),
+    })),
   ] as ResumeContentInspectionInput['supplementalMessages'];
   const nonSteerCheckpointFileIds = collectModelBoundHistoricalFileIdState(
     checkpointFileInputs.map((message) => ({
@@ -1149,7 +1159,11 @@ export async function assertResumeRuntimeContentAllowed(
     );
     throw new AttachmentObjectNotFoundError(unresolvedFileId ?? 'unknown');
   }
-  return { resolvedFiles, checkpointFiles: applyCheckpointDelivery(checkpointFiles) };
+  return {
+    resolvedFiles,
+    checkpointFiles: applyCheckpointDelivery(checkpointFiles),
+    ...(storedSteerOwners.length > 0 && { steerOwners: storedSteerOwners }),
+  };
 }
 
 export function getUserFacingResumeError(

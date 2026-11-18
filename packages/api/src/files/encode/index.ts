@@ -6,6 +6,7 @@ export * from './memoryGuard';
 export * from './utils';
 export {
   registerBedrockResumeDocuments,
+  restoreBedrockSteerOwners,
   prepareBedrockSteerDocuments,
   settleBedrockSteerDocuments,
 } from '../bedrock/context';

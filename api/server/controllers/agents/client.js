@@ -110,6 +110,7 @@ const {
   isSteerPreemptSupported,
   isSteerTerminalContinuationSupported,
   buildSteerMedia,
+  repairSteerAttachmentRefs,
   collectSteerStampTargets,
   stampSteerPartMedia,
   createActivityLabelWiring,
@@ -154,6 +155,7 @@ const {
   collectFileIds,
   dedupeDocumentNames,
   registerBedrockResumeDocuments,
+  restoreBedrockSteerOwners,
   prepareBedrockSteerDocuments,
   settleBedrockSteerDocuments,
   processTextWithTokenLimit,
@@ -507,7 +509,7 @@ class AgentClient extends BaseClient {
     });
   }
 
-  admitSteerAttachments(files, steerId) {
+  admitSteerAttachments(files, steerId, repair) {
     const modelBoundFiles = files.filter(isModelBoundAttachmentFile);
     assertModelBoundContent({
       onTraversalFailure: reportLocatorTraversalFailure,
@@ -540,6 +542,7 @@ class AgentClient extends BaseClient {
       getStrategyFunctions,
       steerId,
       this.turnAttachmentEndpointsByAgentId,
+      repair,
     );
     this.turnSteerAttachmentHistory = admitSteerAttachmentHistory({
       state: this.turnSteerAttachmentHistory,
@@ -937,33 +940,30 @@ class AgentClient extends BaseClient {
   }
 
   async stripSteerAttachmentRefs(streamId, item) {
-    this.rollbackSteerAttachmentAdmission(item.steerId);
-    const applied = this.appliedSteerParts.get(item.steerId);
-    if (!applied?.part?.files?.length) {
-      return;
-    }
-    const part = { ...applied.part };
-    delete part.files;
-    this.contentParts[applied.index] = part;
-    this.appliedSteerParts.set(item.steerId, { index: applied.index, part });
-    await GenerationJobManager.emitChunk(
-      streamId,
-      {
-        event: SteerEvents.ON_STEER_APPLIED,
-        data: {
-          steerId: item.steerId,
-          ...(item.clientSteerId && { clientSteerId: item.clientSteerId }),
-          index: applied.index,
-          part,
-          responseMessageId: this.responseMessageId,
-          conversationId: this.conversationId,
-        },
+    return repairSteerAttachmentRefs({
+      applied: this.appliedSteerParts.get(item.steerId),
+      publish: (part) =>
+        GenerationJobManager.emitChunk(
+          streamId,
+          {
+            event: SteerEvents.ON_STEER_APPLIED,
+            data: {
+              steerId: item.steerId,
+              ...(item.clientSteerId && { clientSteerId: item.clientSteerId }),
+              index: this.appliedSteerParts.get(item.steerId).index,
+              part,
+              responseMessageId: this.responseMessageId,
+              conversationId: this.conversationId,
+            },
+          },
+          { durable: true, expectedCreatedAt: this.jobCreatedAt },
+        ),
+      commit: (applied) => {
+        this.contentParts[applied.index] = applied.part;
+        this.appliedSteerParts.set(item.steerId, applied);
       },
-      {
-        durable: true,
-        expectedCreatedAt: this.jobCreatedAt,
-      },
-    );
+      rollback: () => this.rollbackSteerAttachmentAdmission(item.steerId),
+    });
   }
 
   rollbackSteerAttachmentAdmission(steerId) {
@@ -1018,10 +1018,12 @@ class AgentClient extends BaseClient {
           user: this.options.req?.user,
           item,
           getFiles: db.getFiles,
-          assertFilesAllowed: (files) => this.admitSteerAttachments(files, item.steerId),
+          assertFilesAllowed: (files) =>
+            this.admitSteerAttachments(files, item.steerId, () =>
+              this.stripSteerAttachmentRefs(streamId, item),
+            ),
         });
         settleBedrockSteerDocuments(this.options.req, item.steerId, true);
-        this.admittedSteerAttachments.delete(item.steerId);
         return media;
       },
     };
@@ -5645,6 +5647,7 @@ class AgentClient extends BaseClient {
           getFiles: db.getFiles,
         },
       );
+      restoreBedrockSteerOwners(this.options.req, resumeContentProjection.steerOwners);
       this.modelBoundCurrentFiles = [
         ...(Array.isArray(this.modelBoundCurrentFiles) ? this.modelBoundCurrentFiles : []),
         ...resumeContentProjection.resolvedFiles,

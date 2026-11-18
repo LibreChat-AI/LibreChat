@@ -21,8 +21,10 @@ import {
   CONTENT_TRAVERSAL_MAX_DEPTH,
   CONTENT_TRAVERSAL_MAX_NODES,
 } from '~/protection/adapters/nested';
+import { isAttachmentObjectNotFoundError } from '../encode/utils';
 import { runGuardedEncode } from '../encode/memoryGuard';
 import { getBedrockDocumentLimit } from '../validation';
+import { isAbortError } from '~/utils/errors';
 
 /** Counts JSON and base64 without constructing a JSON string or a byte-number array. */
 export function bedrockWireSize(value: unknown, cap: number): number {
@@ -110,6 +112,10 @@ type Target = {
   id?: string;
   bytes?: Uint8Array;
   cap: number;
+  owner?: string;
+  messageIndex: number;
+  consumed: number;
+  omitted?: boolean;
 };
 
 /** Clone only provider content containers; never put resolved bytes into LangChain messages. */
@@ -128,6 +134,8 @@ export async function withBedrockDocuments<T>(
   let knownRaw = 0;
   let knownWire = 0;
   let visited = 0;
+  let messageIndex = 0;
+  const repairedMessages = new Map<number, string>();
   const clone = (parts: ContentBlock[] | undefined, depth = 0): ContentBlock[] | undefined => {
     if (!parts) return parts;
     if (!Array.isArray(parts)) throw new BedrockDocumentError();
@@ -152,6 +160,7 @@ export async function withBedrockDocuments<T>(
       if (!mime || !document.source) throw new BedrockDocumentError();
       const ref: unknown = document.source;
       let id: string | undefined;
+      let owner: string | undefined;
       let bytes: Uint8Array | undefined;
       let cap = getBedrockDocumentLimit(mime, undefined, model);
       if (
@@ -161,13 +170,23 @@ export async function withBedrockDocuments<T>(
         typeof ref.librechatFile === 'string'
       ) {
         id = ref.librechatFile;
+        const claimedOwner =
+          'librechatSteer' in ref && typeof ref.librechatSteer === 'string'
+            ? ref.librechatSteer
+            : undefined;
+        if (claimedOwner && context?.isSteerRepaired(claimedOwner)) {
+          repairedMessages.set(messageIndex, claimedOwner);
+          return part;
+        }
+        if (claimedOwner && context?.ownsSteer(claimedOwner, id, model, endpoint, recipientId))
+          owner = claimedOwner;
         const registered = context?.get(id, model, endpoint, recipientId);
         if (!registered || bedrockDocumentFormats[registered.file.type] !== document.format)
           throw new BedrockDocumentError();
         cap = clampBedrockLimit(cap, registered.maxBytes);
         rawLimit = clampBedrockLimit(rawLimit, registered.totalBytes);
         countLimit = clampBedrockLimit(countLimit, registered.count);
-        if (registered.file.bytes != null) {
+        if (registered.file.bytes != null && !owner) {
           assertBedrockSize(registered.file.bytes, cap);
           knownRaw += registered.file.bytes;
           knownWire += 4 * Math.ceil(registered.file.bytes / 3);
@@ -181,7 +200,7 @@ export async function withBedrockDocuments<T>(
         throw new BedrockDocumentError();
       }
       const source = { bytes: new Uint8Array(0) };
-      targets.push({ source, id, bytes, cap });
+      targets.push({ source, id, bytes, cap, owner, messageIndex, consumed: 0 });
       if (targets.length > countLimit) throw new BedrockDocumentError();
       return { ...part, document: { ...document, source } };
     });
@@ -189,12 +208,22 @@ export async function withBedrockDocuments<T>(
   if ((input.messages?.length ?? 0) > CONTENT_TRAVERSAL_MAX_NODES) throw new BedrockDocumentError();
   const prepared = {
     ...input,
-    messages: input.messages?.map((message): Message => {
+    messages: input.messages?.map((message, index): Message => {
+      messageIndex = index;
       visited = 0;
       return { ...message, content: clone(message.content) ?? [] };
     }),
   };
-  if (targets.length === 0) return send(input);
+  const textOnly = (index: number, owner: string): void => {
+    if (targets.some((target) => target.messageIndex === index && target.owner !== owner))
+      throw new BedrockDocumentError();
+    const message = prepared.messages?.[index];
+    if (!message) throw new BedrockDocumentError();
+    const text = message.content?.filter((part) => typeof part.text === 'string') ?? [];
+    message.content = text.length ? text : [{ text: 'An attached file was not read.' }];
+  };
+  for (const [index, owner] of repairedMessages) textOnly(index, owner);
+  if (targets.length === 0) return send(repairedMessages.size ? prepared : input);
   const wireLimit = bedrockRequestLimit(model);
   let remaining = wireLimit - bedrockWireSize(prepared, wireLimit);
   assertBedrockSize(knownRaw, rawLimit);
@@ -205,21 +234,74 @@ export async function withBedrockDocuments<T>(
     wireLimit * 8,
     async () => {
       const missing = new Set<object>();
+      const dropOwner = (owner: string): void => {
+        const indexes = new Set(
+          targets.filter((target) => target.owner === owner).map((target) => target.messageIndex),
+        );
+        for (const index of indexes) textOnly(index, owner);
+        for (const target of targets) {
+          if (target.owner !== owner) continue;
+          target.omitted = true;
+          rawLimit += target.consumed;
+          remaining += 4 * Math.ceil(target.consumed / 3);
+          target.consumed = 0;
+          target.source.bytes = new Uint8Array(0);
+        }
+      };
       try {
         for (const target of targets) {
           signal?.throwIfAborted();
+          if (target.omitted) continue;
+          if (target.owner && (await context!.waitForSteerRepair(target.owner))) {
+            dropOwner(target.owner);
+            continue;
+          }
           const limit = Math.min(target.cap, rawLimit, Math.floor(remaining / 4) * 3);
-          const bytes = target.id
-            ? await context!.read(target.id, limit, signal, model, endpoint, recipientId)
-            : target.bytes;
+          let bytes: Uint8Array | undefined;
+          try {
+            bytes = target.id
+              ? await context!.read(target.id, limit, signal, model, endpoint, recipientId)
+              : target.bytes;
+          } catch (error) {
+            if (
+              signal?.aborted ||
+              isAbortError(error) ||
+              (error instanceof Error && error.name === 'TimeoutError')
+            )
+              throw error;
+            if (
+              !target.owner ||
+              !target.id ||
+              !(error instanceof BedrockDocumentError || isAttachmentObjectNotFoundError(error))
+            )
+              throw error;
+            if (
+              !(await context!.repairSteer(
+                target.owner,
+                target.id,
+                model,
+                endpoint,
+                recipientId,
+                signal,
+              ))
+            )
+              throw error;
+            dropOwner(target.owner);
+            continue;
+          }
           if (!bytes) {
             missing.add(target.source);
             continue;
           }
           assertBedrockSize(bytes.byteLength, limit);
           target.source.bytes = bytes;
+          target.consumed = bytes.byteLength;
           rawLimit -= bytes.byteLength;
           remaining -= 4 * Math.ceil(bytes.byteLength / 3);
+        }
+        for (const target of targets) {
+          if (!target.omitted && target.owner && (await context!.waitForSteerRepair(target.owner)))
+            dropOwner(target.owner);
         }
         signal?.throwIfAborted();
         if (missing.size) {

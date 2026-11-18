@@ -345,3 +345,27 @@ export async function stampSteerPartMedia({
   );
   return stamped.filter((entry): entry is StampedSteerMedia => entry != null);
 }
+
+/** Publish the correction before claiming local rollback or successful repair. */
+export async function repairSteerAttachmentRefs({
+  applied,
+  publish,
+  commit,
+  rollback,
+}: {
+  applied?: { index: number; part: SteerPart };
+  publish: (part: SteerPart) => Promise<void>;
+  commit: (applied: { index: number; part: SteerPart }) => void;
+  rollback: () => void;
+}): Promise<void> {
+  if (!applied) throw new Error('Steer attachment repair owner is unavailable');
+  if (!applied.part.files?.length) {
+    rollback();
+    return;
+  }
+  const part = { ...applied.part };
+  delete part.files;
+  await publish(part);
+  commit({ index: applied.index, part });
+  rollback();
+}
