@@ -165,7 +165,7 @@ export const confirmScheduleMCPConsentSchema = z
      * Each must also be listed in `allow`.
      */
     ask: z
-      .record(identifier, z.array(identifier).max(256))
+      .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
       .refine((value) => Object.keys(value).length <= 32)
       .optional(),
   })

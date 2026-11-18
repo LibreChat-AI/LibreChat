@@ -181,6 +181,21 @@ it('lets the owner allow every tool a server can be offered with, across its age
   expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS + 1)).toBe(false);
 });
 
+it('lets the owner ask first about as many tools as they can allow', () => {
+  const parse = (count: number) => {
+    const tools = Array.from({ length: count }, (_, index) => `tool-${index}`);
+    return confirmScheduleMCPConsentSchema.safeParse({
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow: { warehouse: tools },
+      ask: { warehouse: tools },
+    }).success;
+  };
+  expect(parse(300)).toBe(true);
+  expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS + 1)).toBe(false);
+});
+
 it('accepts a server the owner left with no tools beside one with a choice', () => {
   expect(
     confirmScheduleMCPConsentSchema.safeParse({
