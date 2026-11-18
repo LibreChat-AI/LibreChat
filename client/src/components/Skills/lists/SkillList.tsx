@@ -10,6 +10,7 @@ import { cn } from '~/utils';
 
 interface SkillListProps {
   skills: TSkillSummary[];
+  isFiltered?: boolean;
   activeSkillId?: string;
   sectionOpen: boolean;
   onSectionOpenChange: (open: boolean) => void;
@@ -18,6 +19,7 @@ interface SkillListProps {
 /** Collapsible skill list. Active/inactive toggling lives in the detail view. */
 export default function SkillList({
   skills,
+  isFiltered = false,
   activeSkillId,
   sectionOpen,
   onSectionOpenChange,
@@ -54,8 +56,8 @@ export default function SkillList({
           {skills.length === 0 ? (
             <EmptyState
               icon={Sparkles}
-              title={localize('com_ui_skills_empty')}
-              description={localize('com_ui_skills_empty_hint')}
+              title={localize(isFiltered ? 'com_ui_no_results_found' : 'com_ui_skills_empty')}
+              description={isFiltered ? undefined : localize('com_ui_skills_empty_hint')}
             />
           ) : (
             skills.map((skill) => (

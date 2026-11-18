@@ -343,12 +343,7 @@ function anyModalOpen(): boolean {
     if (dialog.hasAttribute('hidden')) {
       continue;
     }
-    const style = (dialog as HTMLElement).style;
-    if (style.display === 'none' || style.visibility === 'hidden') {
-      continue;
-    }
-    const computedStyle = typeof window !== 'undefined' ? window.getComputedStyle(dialog) : null;
-    if (computedStyle?.display === 'none' || computedStyle?.visibility === 'hidden') {
+    if (!isVisibleElement(dialog as HTMLElement)) {
       continue;
     }
     return true;
@@ -375,7 +370,12 @@ function isUnavailableElement(el: HTMLElement): boolean {
 }
 
 function clickTarget(el: HTMLElement | null | undefined): boolean {
-  if (!el || isUnavailableElement(el)) {
+  if (
+    !el ||
+    isUnavailableElement(el) ||
+    el.hasAttribute('inert') ||
+    (el.parentElement != null && !isVisibleElement(el.parentElement))
+  ) {
     return false;
   }
   el.click();
@@ -384,7 +384,7 @@ function clickTarget(el: HTMLElement | null | undefined): boolean {
 
 function isVisibleElement(el: HTMLElement): boolean {
   for (let current: HTMLElement | null = el; current != null; current = current.parentElement) {
-    if (current.hidden) {
+    if (current.hidden || current.hasAttribute('inert')) {
       return false;
     }
     const style = current.style;
@@ -530,7 +530,7 @@ export function useShortcutActions(): ShortcutAction[] {
 
   const handleFocusChatInput = useCallback(() => {
     const textarea = document.getElementById(mainTextareaId) as HTMLTextAreaElement | null;
-    if (!textarea) {
+    if (!textarea || isUnavailableElement(textarea) || !isVisibleElement(textarea)) {
       return false;
     }
     textarea.focus();
@@ -662,11 +662,7 @@ export function useShortcutActions(): ShortcutAction[] {
     }
     const last = userTurns[userTurns.length - 1];
     const editBtn = last.querySelector<HTMLButtonElement>('button[id^="edit-"]');
-    if (!editBtn) {
-      return false;
-    }
-    editBtn.click();
-    return true;
+    return clickTarget(editBtn);
   }, []);
 
   const handleScrollToTop = useCallback(() => {
@@ -807,10 +803,7 @@ export function useShortcutActions(): ShortcutAction[] {
     return true;
   }, [conversation?.conversationId, conversation?.title, routeConvoId, setDeleteTarget]);
 
-  const handleSubmitMessage = useCallback(() => {
-    const btn = document.querySelector<HTMLButtonElement>('[data-testid="send-button"]');
-    return clickTarget(btn);
-  }, []);
+  const handleSubmitMessage = useCallback(() => clickElement('[data-testid="send-button"]'), []);
 
   const handleContinueResponse = useCallback(
     () => clickElement('[data-testid="continue-generation-button"]'),

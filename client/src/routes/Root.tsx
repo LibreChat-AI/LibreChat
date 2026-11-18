@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback, startTransition } from 'react';
 import { useRecoilValue } from 'recoil';
-import { Outlet } from 'react-router-dom';
 import { useMediaQuery } from '@librechat/client';
 import {
   useFileMap,
@@ -37,10 +36,12 @@ import { ComposerHostProvider, appComposerHost } from '~/Providers/ComposerHostC
 import { StreamHostProvider, appStreamHost } from '~/Providers/StreamHostContext';
 import KeyboardShortcutsDialog from '~/components/Nav/KeyboardShortcutsDialog';
 import { SteerHostProvider, appSteerHost } from '~/Providers/SteerHostContext';
+import PresentationWorkspace from '~/components/FeaturePresentation/Workspace';
 import { ChatHostProvider, appChatHost } from '~/Providers/ChatHostContext';
 import KeyboardDeleteDialog from '~/components/Nav/KeyboardDeleteDialog';
 import { useUserTermsQuery, useGetStartupConfig } from '~/data-provider';
 import { MobileDrawerScrim } from '~/components/UnifiedSidebar/mobile';
+import PresentationHost from '~/components/FeaturePresentation/Host';
 import AnalyticsConsent from '~/components/System/AnalyticsConsent';
 import useKeyboardShortcuts from '~/hooks/useKeyboardShortcuts';
 import useDrawerDismiss from '~/hooks/Nav/useDrawerDismiss';
@@ -186,65 +187,67 @@ function RootLayout() {
           <AssistantsMapContext.Provider value={assistantsMap}>
             <AgentsMapContext.Provider value={agentsMap}>
               <PromptGroupsProvider>
-                <Banner onHeightChange={setBannerHeight} />
-                <div className="flex" style={{ height: `calc(100dvh - ${bannerHeight}px)` }}>
-                  <div
-                    className="relative z-0 flex h-full w-full overflow-hidden"
-                    /** Drawer width also defines the uncovered dismiss strip. */
-                    style={
-                      {
-                        [MOBILE_DRAWER_WIDTH_VAR]: drawerStrip
-                          ? MOBILE_DRAWER_STRIP_WIDTH
-                          : MOBILE_DRAWER_FULL_WIDTH,
-                      } as React.CSSProperties
-                    }
-                  >
-                    {/* The drawer stops being painted once it is closed and
+                <PresentationHost>
+                  <Banner onHeightChange={setBannerHeight} />
+                  <div className="flex" style={{ height: `calc(100dvh - ${bannerHeight}px)` }}>
+                    <div
+                      className="relative z-0 flex h-full w-full overflow-hidden"
+                      /** Drawer width also defines the uncovered dismiss strip. */
+                      style={
+                        {
+                          [MOBILE_DRAWER_WIDTH_VAR]: drawerStrip
+                            ? MOBILE_DRAWER_STRIP_WIDTH
+                            : MOBILE_DRAWER_FULL_WIDTH,
+                        } as React.CSSProperties
+                      }
+                    >
+                      {/* The drawer stops being painted once it is closed and
                         settled, so it needs the same travel window the scrim and
                         the pane's `inert` read. */}
-                    <UnifiedSidebar
-                      isSliding={isSliding}
-                      switchToHistory={newChatSwitchToHistory}
-                    />
-                    <div
-                      ref={paneRef}
-                      data-testid="app-pane"
-                      /** Focus target of last resort when the drawer closes on a
-                       *  route that renders no opener. Not in the tab order. */
-                      tabIndex={-1}
-                      className="relative isolate flex h-full max-w-full flex-1 flex-col overflow-hidden focus:outline-hidden"
-                      /** Keep the live conversation out of the drawer's compositor animation. */
-                      /** Recoil's flip is deferred past the opening frames and
-                       *  the closing transition outlives it at the other end, so
-                       *  `isSliding` covers the travel `sidebarExpanded` brackets
-                       *  too late and drops too early. */
-                      inert={isSmallScreen && (sidebarExpanded || isSliding) ? '' : undefined}
-                    >
-                      <MCPAppsPolicyProvider
-                        startupConfig={config}
-                        ready={isConfigReady && configError == null}
-                        userId={user?.id}
+                      <UnifiedSidebar
+                        isSliding={isSliding}
+                        switchToHistory={newChatSwitchToHistory}
+                      />
+                      <div
+                        ref={paneRef}
+                        data-testid="app-pane"
+                        /** Focus target of last resort when the drawer closes on a
+                         *  route that renders no opener. Not in the tab order. */
+                        tabIndex={-1}
+                        className="relative isolate flex h-full max-w-full flex-1 flex-col overflow-hidden focus:outline-hidden"
+                        /** Keep the live conversation out of the drawer's compositor animation. */
+                        /** Recoil's flip is deferred past the opening frames and
+                         *  the closing transition outlives it at the other end, so
+                         *  `isSliding` covers the travel `sidebarExpanded` brackets
+                         *  too late and drops too early. */
+                        inert={isSmallScreen && (sidebarExpanded || isSliding) ? '' : undefined}
                       >
-                        <Outlet />
-                      </MCPAppsPolicyProvider>
-                    </div>
-                    {/* Without the strip the scrim exists only for the travel:
+                        <MCPAppsPolicyProvider
+                          startupConfig={config}
+                          ready={isConfigReady && configError == null}
+                          userId={user?.id}
+                        >
+                          <PresentationWorkspace />
+                        </MCPAppsPolicyProvider>
+                      </div>
+                      {/* Without the strip the scrim exists only for the travel:
                       through a close that began while the strip was still on
                       (disabling it unmounts the scrim at once, but the drawer
                       needs the whole transition to widen), and through an open
                       the deferred flip has not committed yet. Once expanded
                       lands, a full-width drawer covers it, so keeping it
                       mounted would only expose a duplicate dismiss control. */}
-                    {isSmallScreen && (drawerStrip || (isSliding && !sidebarExpanded)) && (
-                      <MobileDrawerScrim
-                        expanded={sidebarExpanded}
-                        isSliding={isSliding}
-                        prefersReducedMotion={prefersReducedMotion}
-                        onClick={onScrimClick}
-                      />
-                    )}
+                      {isSmallScreen && (drawerStrip || (isSliding && !sidebarExpanded)) && (
+                        <MobileDrawerScrim
+                          expanded={sidebarExpanded}
+                          isSliding={isSliding}
+                          prefersReducedMotion={prefersReducedMotion}
+                          onClick={onScrimClick}
+                        />
+                      )}
+                    </div>
                   </div>
-                </div>
+                </PresentationHost>
               </PromptGroupsProvider>
               <Settings />
               <KeyboardShortcutsProvider />
@@ -273,6 +276,11 @@ function RootLayout() {
 }
 
 export default function Root() {
+  const { user } = useAuthContext();
+  // Refresh returns the raw account before /user adds its virtual id.
+  const sessionUserId =
+    user?.id ??
+    (user != null && '_id' in user && typeof user._id === 'string' ? user._id : undefined);
   return (
     <>
       <ChatRecord />
@@ -281,7 +289,7 @@ export default function Root() {
           <ChatHostProvider host={appChatHost}>
             <StreamHostProvider host={appStreamHost}>
               <ComposerHostProvider host={appComposerHost}>
-                <RootLayout />
+                <RootLayout key={sessionUserId} />
               </ComposerHostProvider>
             </StreamHostProvider>
           </ChatHostProvider>

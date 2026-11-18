@@ -17,6 +17,7 @@ import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
+import { useComposerRoute } from '~/Providers/ComposerRouteContext';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
@@ -31,6 +32,7 @@ export default function useTurnServices({
   conversation,
 }: Pick<ChatTurnsParams, 'index' | 'conversation'>): TurnServices {
   const navigate = useNavigate();
+  const readRoute = useComposerRoute();
   const queryClient = useQueryClient();
   const discardFiles = useDiscardPastedFiles(index, conversation?.conversationId);
   const setFilesToDelete = useSetFilesToDelete();
@@ -77,7 +79,8 @@ export default function useTurnServices({
     agentsMap,
     getEphemeralAgent,
     getUserKey: getExpiry,
-    getRouteProjectId: getRouteChatProjectId,
+    getRouteProjectId: () =>
+      getRouteChatProjectId(new URL(readRoute(), window.location.origin).search),
     canSubmit: (submitted) => {
       const { config, addedConversation } = readiness.current;
       return (

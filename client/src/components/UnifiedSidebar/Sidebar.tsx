@@ -53,7 +53,7 @@ function Sidebar({
           style={{ transition: expanded ? 'opacity 200ms ease 80ms' : 'opacity 150ms ease' }}
           aria-hidden={!expanded}
         >
-          <SidePanelNav links={links} />
+          <SidePanelNav links={links} visible={expanded} />
         </nav>
       </div>
       <div

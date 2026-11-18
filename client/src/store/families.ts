@@ -76,13 +76,15 @@ const conversationByIndex = atomFamily<TConversation | null, string | number>({
           if (newValue.chatProjectId) {
             newParams.set('projectId', newValue.chatProjectId);
           }
+          const chatContext = new URLSearchParams(window.location.search).get('chat');
+          if (chatContext != null) newParams.set('chat', chatContext);
           const searchParams = createSearchParams(newParams);
           const url = `${window.location.pathname}?${searchParams.toString()}`;
           /** Mirror, not navigation: Back-worthy entries are minted by real
            * `navigate()` calls (useNewConvo), and in-place writers like
            * ProjectLandingChip deliberately replace. Pushing here buried the
            * Back target under one inert entry per draft edit. */
-          window.history.replaceState({}, '', url);
+          window.history.replaceState(window.history.state, '', url);
         }
       });
     },

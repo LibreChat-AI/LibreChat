@@ -2,11 +2,17 @@ import { Suspense } from 'react';
 import { Spinner } from '@librechat/client';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { NavLink } from '~/common';
+import {
+  FeatureSlot,
+  FeatureVisibility,
+  useFeaturePresentation,
+} from '~/components/FeaturePresentation/Context';
+import { getPageForNavId } from '~/components/FeaturePresentation/registry';
 import { useActivePanel, resolveActivePanel } from '~/Providers';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
-/** Panels load on first open; on a slow link the fetch would otherwise leave the panel blank. */
+/** Panels load on first open; a pending chunk still needs a visible loading state. */
 function PanelLoading() {
   const localize = useLocalize();
   return (
@@ -17,8 +23,9 @@ function PanelLoading() {
   );
 }
 
-export default function Nav({ links }: { links: NavLink[] }) {
+export default function Nav({ links, visible = true }: { links: NavLink[]; visible?: boolean }) {
   const { active } = useActivePanel();
+  const presentation = useFeaturePresentation();
   const effectiveActive = resolveActivePanel(active, links);
   return (
     <div
@@ -30,9 +37,19 @@ export default function Nav({ links }: { links: NavLink[] }) {
       )}
     >
       <Suspense fallback={<PanelLoading />}>
-        {links.map((link) =>
-          link.id === effectiveActive && link.Component ? <link.Component key={link.id} /> : null,
-        )}
+        <FeatureVisibility.Provider value={visible}>
+          {links.map((link) => {
+            if (link.id !== effectiveActive || !link.Component) {
+              return null;
+            }
+            const page = getPageForNavId(link.id);
+            return page && presentation?.canOpenPage(page) ? (
+              <FeatureSlot key={link.id} page={page} view="panel" visible={visible} />
+            ) : (
+              <link.Component key={link.id} />
+            );
+          })}
+        </FeatureVisibility.Provider>
       </Suspense>
     </div>
   );

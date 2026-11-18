@@ -123,7 +123,10 @@ describe('conversationByIndex URL mirroring', () => {
   });
 
   const renderChat = () => {
-    const router = createBrowserRouter([{ path: '/c/:conversationId', element: <Driver /> }]);
+    const router = createBrowserRouter([
+      { path: '/c/:conversationId', element: <Driver /> },
+      { path: '/parameters', element: <Driver /> },
+    ]);
     render(
       <RecoilRoot>
         <RouterProvider router={router} />
@@ -159,6 +162,28 @@ describe('conversationByIndex URL mirroring', () => {
     expect(window.history.length).toBe(depthBefore);
     expect(window.location.pathname).toBe(`/c/${Constants.NEW_CONVO}`);
     expect(window.location.search).toContain('endpoint=openAI');
+  });
+
+  it('preserves the native router entry and chat journey while mirroring Parameters edits', async () => {
+    const state = {
+      idx: 2,
+      key: 'parameters-entry',
+      usr: { __librechatChatJourney: 'new-chat-owner', custom: 'preserved' },
+    };
+    window.history.replaceState(
+      state,
+      '',
+      '/parameters?' + new URLSearchParams({ chat: '/c/new?projectId=project-a' }),
+    );
+    renderChat();
+    await seed();
+    fireEvent.click(screen.getByRole('button', { name: 'edit-model' }));
+    await waitFor(() => expect(window.location.search).toContain('model=edited-1'));
+    expect(window.history.state).toEqual(state);
+    expect(new URLSearchParams(window.location.search).get('chat')).toBe(
+      '/c/new?projectId=project-a',
+    );
+    expect(pushes()).toHaveLength(0);
   });
 
   it('keeps the landing project switch in place, as ProjectLandingChip intends', async () => {

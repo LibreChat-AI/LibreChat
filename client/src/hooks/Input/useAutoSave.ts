@@ -35,6 +35,7 @@ import {
   cancelFileSearchUpload,
 } from '~/hooks/Files/search';
 import { isPastedTextFileMarked, markPastedTextFile } from '~/utils/files';
+import { useComposerRoute } from '~/Providers/ComposerRouteContext';
 import { hasInFlightUpload } from '~/hooks/Files/useFileHandling';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { ephemeralAgentByConvoId } from '~/store';
@@ -64,6 +65,7 @@ export const useAutoSave = ({
   files: Map<string, ExtendedFile>;
   setFiles: SetterOrUpdater<Map<string, ExtendedFile>>;
 }) => {
+  const readRoute = useComposerRoute();
   // setting for auto-save
   const { setValue } = useChatFormContext();
   const { saveDrafts } = useChatSettings();
@@ -153,7 +155,7 @@ export const useAutoSave = ({
         }
       }
       filesDraft.fileIds.forEach((fileId) => {
-        if (!canRestoreFileSearchUpload(fileId, ownerId)) {
+        if (!canRestoreFileSearchUpload(fileId, ownerId, undefined, readRoute)) {
           rejectedFileIds.push(fileId);
           delete pendingPastes[fileId];
           return;
@@ -173,6 +175,8 @@ export const useAutoSave = ({
             completeFileSearchUpload(
               fileToRecover.temp_file_id || fileIdToRecover,
               _conversationId ?? Constants.NEW_CONVO,
+              undefined,
+              readRoute,
             )
           ) {
             setEphemeralAgent((previous) => ({ ...previous, file_search: true }));
@@ -250,7 +254,7 @@ export const useAutoSave = ({
       rejectedFileIds.forEach(cancelFileSearchUpload);
       return pastesToRecover;
     },
-    [index, fileList, setFiles, _conversationId, setEphemeralAgent],
+    [index, fileList, setFiles, _conversationId, setEphemeralAgent, readRoute],
   );
 
   const restoreText = useCallback(
@@ -287,7 +291,7 @@ export const useAutoSave = ({
   const activeStorageId =
     currentConversationId === pendingDraftId ? pendingDraftId : conversationId;
   const composerHostRef = useRef({});
-  const composerRoute = window.location.pathname + window.location.search;
+  const composerRoute = readRoute();
   useEffect(() => {
     if (!activeStorageId) return;
     return registerComposerDraft(
@@ -295,8 +299,9 @@ export const useAutoSave = ({
       _conversationId ?? Constants.NEW_CONVO,
       activeStorageId,
       composerHostRef.current,
+      readRoute,
     );
-  }, [index, _conversationId, activeStorageId, composerRoute]);
+  }, [index, _conversationId, activeStorageId, composerRoute, readRoute]);
 
   /** Snapshot before a URL prompt replaces text; user input resumes normal persistence. */
   const preserveText = useCallback(() => {
@@ -679,6 +684,7 @@ export const useAutoSave = ({
           (hasPendingFileSearchUpload(
             fileId,
             currentDraft?.conversationId ?? _conversationId ?? Constants.NEW_CONVO,
+            readRoute,
           ) ||
             hasInFlightUpload(
               fileId,
@@ -731,6 +737,7 @@ export const useAutoSave = ({
     files,
     fileList,
     _conversationId,
+    readRoute,
   ]);
 
   return { consumeDraft, preserveText, settleText };

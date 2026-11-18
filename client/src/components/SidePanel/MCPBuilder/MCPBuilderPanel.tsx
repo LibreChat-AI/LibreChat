@@ -1,9 +1,9 @@
 import { useState, useRef, useMemo, useEffect, useId } from 'react';
-import { Plus } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { useLocation } from 'react-router-dom';
+import { Plus, ShieldAlert } from 'lucide-react';
 import { SystemRoles, PermissionTypes, Permissions } from 'librechat-data-provider';
-import { Button, FilterInput, OGDialogTrigger, TooltipAnchor } from '@librechat/client';
+import { Button, EmptyState, FilterInput, OGDialogTrigger, TooltipAnchor } from '@librechat/client';
 import {
   useLocalize,
   useMCPServerManager,
@@ -13,6 +13,7 @@ import {
 } from '~/hooks';
 import { PanelFooter, PanelContent, PanelHeader } from '~/components/ui';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
+import CollectionError from '~/components/ui/CollectionError';
 import MCPServerCardSkeleton from './MCPServerCardSkeleton';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
 import MCPAdminSettings from './MCPAdminSettings';
@@ -20,7 +21,7 @@ import MCPServerDialog from './MCPServerDialog';
 import MCPServerList from './MCPServerList';
 import store from '~/store';
 
-export default function MCPBuilderPanel() {
+export default function MCPBuilderPanel({ visible }: { visible?: boolean } = {}) {
   const localize = useLocalize();
   const headingId = useId();
   const location = useLocation();
@@ -28,16 +29,29 @@ export default function MCPBuilderPanel() {
    * drawer, or the insights route collapsing it), so only a visible panel
    * releases its catalog ahead of the background warmup schedule */
   const sidebarExpanded = useRecoilValue(store.sidebarExpanded);
-  const panelVisible = sidebarExpanded && !location.pathname.startsWith('/insights');
+  const panelVisible = visible ?? (sidebarExpanded && !location.pathname.startsWith('/insights'));
+  const hasUseAccess = useHasAccess({
+    permissionType: PermissionTypes.MCP_SERVERS,
+    permission: Permissions.USE,
+  });
   useEffect(() => {
-    if (panelVisible) {
+    if (panelVisible && hasUseAccess) {
       activateCatalog('mcpServers');
     }
-  }, [panelVisible]);
+  }, [panelVisible, hasUseAccess]);
   const { user } = useAuthContext();
-  const { availableMCPServers, isLoading, getServerStatusIconProps, getConfigDialogProps } =
-    useMCPServerManager({ observeToolAuthorization: panelVisible });
-  useMCPRefresh({ enabled: panelVisible && !isLoading && availableMCPServers.length > 0 });
+  const {
+    availableMCPServers,
+    isLoading,
+    isError,
+    refetch,
+    getServerStatusIconProps,
+    getConfigDialogProps,
+  } = useMCPServerManager({ observeToolAuthorization: panelVisible && hasUseAccess });
+  useMCPRefresh({
+    enabled:
+      panelVisible && hasUseAccess && !isLoading && !isError && availableMCPServers.length > 0,
+  });
 
   const hasCreateAccess = useHasAccess({
     permissionType: PermissionTypes.MCP_SERVERS,
@@ -60,6 +74,10 @@ export default function MCPBuilderPanel() {
       );
     });
   }, [availableMCPServers, searchQuery]);
+
+  if (!hasUseAccess && !hasCreateAccess) {
+    return <EmptyState icon={ShieldAlert} title={localize('com_ui_feature_no_access')} />;
+  }
 
   return (
     <div
@@ -111,15 +129,19 @@ export default function MCPBuilderPanel() {
 
       {/* Only the list scrolls */}
       <PanelContent
-        isLoading={isLoading}
+        isLoading={hasUseAccess && isLoading}
         skeleton={<MCPServerCardSkeleton />}
         className="px-3 pb-3"
       >
-        <MCPServerList
-          servers={filteredServers}
-          getServerStatusIconProps={getServerStatusIconProps}
-          isFiltered={searchQuery.trim().length > 0}
-        />
+        {hasUseAccess && isError ? (
+          <CollectionError onRetry={() => refetch()} />
+        ) : (
+          <MCPServerList
+            servers={hasUseAccess ? filteredServers : []}
+            getServerStatusIconProps={getServerStatusIconProps}
+            isFiltered={searchQuery.trim().length > 0}
+          />
+        )}
       </PanelContent>
 
       {/* Config Dialog for custom user vars */}

@@ -1,5 +1,7 @@
 import React from 'react';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { resolveNavigation } from 'librechat-data-provider';
+import { renderHook, render, screen, act, waitFor } from '@testing-library/react';
+import { createMemoryRouter, RouterProvider, useParams, useNavigate } from 'react-router-dom';
 import {
   megabyte,
   Constants,
@@ -9,7 +11,20 @@ import {
   getEndpointFileConfig,
 } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
+import {
+  captureComposerDraft,
+  bindComposerLaunch,
+  adoptComposerConversation,
+  renewNewConversationDraftToken,
+} from '~/utils/drafts';
+import {
+  FeaturePresentationProvider,
+  useFeaturePresentation,
+} from '~/components/FeaturePresentation/Context';
+import PresentationWorkspace from '~/components/FeaturePresentation/Workspace';
 import { setFileSearchChoice, clearFileSearchChoices } from '~/utils/choices';
+import ChatRouteOwner from '~/components/FeaturePresentation/Route';
+import { useAutoSave } from '~/hooks/Input/useAutoSave';
 
 type MockUploadMutationOptions = {
   onSuccess?: (
@@ -123,8 +138,10 @@ jest.mock('recoil', () => ({
   ),
 }));
 
+jest.mock('~/Providers', () => ({ useChatFormContext: () => ({ setValue: jest.fn() }) }));
+
 jest.mock('~/Providers/ChatSettingsContext', () => ({
-  useChatSettings: () => ({ isTemporary: mockIsTemporary }),
+  useChatSettings: () => ({ isTemporary: mockIsTemporary, saveDrafts: false }),
 }));
 
 jest.mock('~/store', () => ({
@@ -140,6 +157,7 @@ jest.mock('@tanstack/react-query', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
+  useGetFiles: () => ({ data: [] }),
   useGetFileConfig: jest.fn(() => ({ data: mockFileConfig })),
   useGetEndpointsQuery: jest.fn(() => ({ data: mockEndpointsConfig })),
   useGetAgentByIdQuery: jest.fn(() => ({ data: mockAgentQueryData })),
@@ -219,6 +237,7 @@ jest.mock('~/utils', () => {
   const { partitionUploads, validateFileSizes, validateFileLimit, validateFileDuplicates } =
     jest.requireActual('~/utils/files');
   return {
+    ...jest.requireActual('~/utils/drafts'),
     logger: { log: jest.fn() },
     validateFiles: jest.fn(() => true),
     partitionUploads: jest.fn(partitionUploads),
@@ -276,6 +295,284 @@ describe('useFileHandling', () => {
   });
 
   const loadHook = async () => (await import('../useFileHandling')).default;
+
+  describe('retained composer upload ownership', () => {
+    const setup = async (
+      conversationId: string,
+      basename = '',
+      search = '?projectId=project-a',
+      holdOther = false,
+    ) => {
+      const { useFileHandlingNoChatContext } = await import('../useFileHandling');
+      const useUpdateFiles =
+        jest.requireActual<typeof import('../useUpdateFiles')>('../useUpdateFiles').default;
+      let start!: () => Promise<boolean>;
+      let navigate!: ReturnType<typeof useNavigate>;
+      let releaseNavigation: (() => void) | undefined;
+      let files = new Map<string, ExtendedFile>();
+      const launch = { conversationId };
+      function Composer() {
+        const { conversationId: id = 'new' } = useParams();
+        navigate = useNavigate();
+        const [currentFiles, setFiles] = React.useState(new Map<string, ExtendedFile>());
+        files = currentFiles;
+        const methods = useUpdateFiles(setFiles);
+        mockAddFile.mockImplementation(methods.addFile);
+        mockReplaceFile.mockImplementation(methods.replaceFile);
+        mockUpdateFileById.mockImplementation(methods.updateFileById);
+        mockDeleteFileById.mockImplementation(methods.deleteFileById);
+        useAutoSave({ conversationId: id, files: currentFiles, setFiles });
+        const handling = useFileHandlingNoChatContext(undefined, {
+          files: currentFiles,
+          setFiles,
+          conversation: {
+            conversationId: id,
+            endpoint: EModelEndpoint.agents,
+            agent_id: 'ephemeral',
+            title: 'Upload owner',
+            createdAt: '',
+            updatedAt: '',
+          },
+        });
+        start = () =>
+          handling.handleFiles(
+            [new File(['queued'], 'pending.txt', { type: 'text/plain' })],
+            EToolResources.file_search,
+          );
+        return React.createElement('input', { 'aria-label': 'Retained composer' });
+      }
+      function Controls() {
+        const host = useFeaturePresentation()!;
+        return React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(
+            'button',
+            { onClick: () => host.expand('agentBuilder') },
+            'Expand upload',
+          ),
+          React.createElement(
+            'button',
+            { onClick: () => host.minimize('agentBuilder') },
+            'Minimize upload',
+          ),
+        );
+      }
+      function Layout() {
+        const [account, setAccount] = React.useState('first');
+        const props: React.ComponentProps<typeof FeaturePresentationProvider> & React.Attributes = {
+          key: account,
+          links: [{ id: 'agents', title: 'com_sidepanel_agent_builder', icon: () => null }],
+          features: { agentBuilder: () => null },
+          navigation: resolveNavigation({ pages: { agentBuilder: { enabled: true } } }),
+          onPanelOpen: () => {},
+          children: null,
+        };
+        return React.createElement(
+          FeaturePresentationProvider,
+          props,
+          React.createElement(
+            React.Fragment,
+            null,
+            React.createElement(
+              'button',
+              { onClick: () => setAccount('second') },
+              'Change upload account',
+            ),
+            React.createElement(Controls),
+            React.createElement(PresentationWorkspace),
+          ),
+        );
+      }
+      const chatOwnerProps: React.ComponentProps<typeof ChatRouteOwner> = { children: null };
+      const initial = basename + '/c/' + conversationId + search;
+      window.history.replaceState({}, '', initial);
+      const router = createMemoryRouter(
+        [
+          {
+            element: React.createElement(Layout),
+            children: [
+              {
+                path: '/c/:conversationId',
+                loader: holdOther
+                  ? ({ params }) =>
+                      params.conversationId === 'other'
+                        ? new Promise<void>((resolve) => {
+                            releaseNavigation = resolve;
+                          })
+                        : null
+                  : undefined,
+                element: React.createElement(
+                  ChatRouteOwner,
+                  chatOwnerProps,
+                  React.createElement(Composer),
+                ),
+              },
+              { path: '/agent-builder', element: React.createElement('div', null, 'Feature page') },
+            ],
+          },
+        ],
+        { basename: basename || '/', initialEntries: [initial] },
+      );
+      const unsubscribe = router.subscribe(({ location }) =>
+        window.history.replaceState({}, '', location.pathname + location.search),
+      );
+      const view = render(React.createElement(RouterProvider, { router }));
+      await screen.findByLabelText('Retained composer');
+      bindComposerLaunch(launch, 0);
+      const owner = captureComposerDraft(0, conversationId);
+      const upload = async () => {
+        await act(async () => {
+          await start();
+        });
+        const body = mockMutate.mock.calls.at(-1)![0] as FormData;
+        const finish = mockUploadOptions.onSuccess!;
+        return () =>
+          act(() =>
+            finish(
+              {
+                temp_file_id: body.get('file_id') as string,
+                file_id: 'saved-upload',
+                filepath: '/files/saved.txt',
+                type: 'text/plain',
+                filename: 'pending.txt',
+                source: 'local',
+                embedded: true,
+              },
+              body,
+            ),
+          );
+      };
+      const cleanup = () => {
+        view.unmount();
+        unsubscribe();
+        window.history.replaceState({}, '', '/');
+      };
+      return {
+        router,
+        owner,
+        launch,
+        upload,
+        navigate,
+        releaseNavigation: () => releaseNavigation?.(),
+        files: () => files,
+        cleanup,
+      };
+    };
+
+    it.each([
+      ['saved-chat', ''],
+      ['new', ''],
+      ['saved-chat', '/app'],
+      ['new', '/app'],
+    ])(
+      'finishes a pre-expansion upload in the same in-memory composer (%s, %s)',
+      async (id, basename) => {
+        const state = await setup(id, basename);
+        try {
+          const composer = screen.getByLabelText('Retained composer');
+          const complete = await state.upload();
+          expect(state.files().size).toBe(1);
+          act(() => {
+            screen.getByText('Expand upload').click();
+          });
+          await waitFor(() =>
+            expect(state.router.state.location.pathname).toBe(basename + '/agent-builder'),
+          );
+          expect(state.owner()).toBe(true);
+          complete();
+          expect([...state.files().values()]).toEqual([
+            expect.objectContaining({ file_id: 'saved-upload', progress: 1 }),
+          ]);
+          expect(mockEphemeralAgent.file_search).toBe(true);
+          act(() => {
+            screen.getByText('Minimize upload').click();
+          });
+          await waitFor(() =>
+            expect(state.router.state.location.pathname).toBe(basename + '/c/' + id),
+          );
+          expect(screen.getByLabelText('Retained composer')).toBe(composer);
+          expect([...state.files().values()][0].file_id).toBe('saved-upload');
+        } finally {
+          state.cleanup();
+        }
+      },
+    );
+
+    it.each(['', '/app'])(
+      'hands a first-turn pending upload to the acknowledged hidden route (%s)',
+      async (basename) => {
+        const state = await setup('new', basename);
+        try {
+          const finish = state.navigate;
+          const complete = await state.upload();
+          act(() => screen.getByText('Expand upload').click());
+          act(() => {
+            expect(adoptComposerConversation(state.launch, 'assigned', 0)).toBe(true);
+          });
+          await act(async () => {
+            await finish('/c/assigned?projectId=project-a', { replace: true });
+          });
+          expect(state.router.state.location.pathname).toBe(basename + '/agent-builder');
+          expect(state.owner()).toBe(true);
+          expect(state.owner.conversationId()).toBe('assigned');
+          complete();
+          expect([...state.files().values()][0]).toMatchObject({
+            file_id: 'saved-upload',
+            progress: 1,
+          });
+          expect(mockEphemeralAgent.file_search).toBe(true);
+          act(() => screen.getByText('Minimize upload').click());
+          await waitFor(() =>
+            expect(state.router.state.location.pathname + state.router.state.location.search).toBe(
+              basename + '/c/assigned?projectId=project-a',
+            ),
+          );
+        } finally {
+          state.cleanup();
+        }
+      },
+    );
+
+    it.each(['project', 'conversation', 'account', 'generation'])(
+      'rejects a captured upload after a genuine %s ownership change',
+      async (boundary) => {
+        const state = await setup(
+          boundary === 'conversation' ? 'saved-chat' : 'new',
+          '',
+          '?projectId=project-a',
+          boundary === 'conversation',
+        );
+        try {
+          const complete = await state.upload();
+          act(() => screen.getByText('Expand upload').click());
+          let pending: Promise<void> | undefined;
+          act(() => {
+            if (boundary === 'account') screen.getByText('Change upload account').click();
+            else if (boundary === 'generation') renewNewConversationDraftToken(0);
+            else {
+              pending = state.router.navigate(
+                boundary === 'project' ? '/c/new?projectId=project-b' : '/c/other',
+              );
+              // The top-level navigation has begun but the retained React location is still old.
+              expect(state.owner()).toBe(false);
+            }
+          });
+          expect(state.owner()).toBe(false);
+          complete();
+          expect([...state.files().values()].some((file) => file.progress === 1)).toBe(false);
+          expect(mockEphemeralAgent.file_search).not.toBe(true);
+          if (pending)
+            await act(async () => {
+              state.releaseNavigation();
+              await pending;
+            });
+        } finally {
+          state.cleanup();
+        }
+      },
+    );
+  });
 
   it('requests recovery for the caught HEIC helper import failure without starting an upload', async () => {
     mockHeicModuleError = new TypeError(
