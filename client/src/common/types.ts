@@ -78,6 +78,8 @@ export type NavLink = {
   label?: string;
   icon: LucideIcon | React.FC;
   Component?: React.ComponentType;
+  /** The host's resolved presentation, independent of whether activation changes the URL. */
+  view?: t.NavigationView;
   onClick?: (e?: React.MouseEvent) => void;
   variant?: 'default' | 'ghost';
   disabled?: boolean;
@@ -174,6 +176,7 @@ export type AgentPanelContextType = {
   setActivePanel: React.Dispatch<React.SetStateAction<Panel>>;
   setCurrentAgentId: React.Dispatch<React.SetStateAction<string | undefined>>;
   agent_id?: string;
+  retainAgentSession: () => void;
   /** Runs `start` once the chat it opens is in view: the host closes the mobile drawer first. */
   revealChat: (start: () => void) => void;
   startupConfig?: t.TStartupConfig | null;

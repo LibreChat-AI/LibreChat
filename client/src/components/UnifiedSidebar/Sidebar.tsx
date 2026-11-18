@@ -17,8 +17,14 @@ function Sidebar({
   switchToHistory,
   onResizeStart,
   onResizeKeyboard,
+  hideNavigation = false,
+  panelId,
+  reducedMotion = false,
 }: {
   links: NavLink[];
+  hideNavigation?: boolean;
+  panelId?: string;
+  reducedMotion?: boolean;
   expanded: boolean;
   width: number;
   minWidth: number;
@@ -30,18 +36,24 @@ function Sidebar({
   onResizeStart: (e: React.MouseEvent<HTMLElement>) => void;
   onResizeKeyboard: (direction: 'shrink' | 'grow') => void;
 }) {
+  const opacityTransition = expanded ? 'opacity 200ms ease 80ms' : 'opacity 150ms ease';
+  const transition = reducedMotion ? 'none' : opacityTransition;
   return (
     <>
       <div className="flex h-full w-full overflow-hidden">
-        <ExpandedPanel
-          links={links}
-          expanded={expanded}
-          onCollapse={onCollapse}
-          onExpand={onExpand}
-          onLeaveInsights={onLeaveInsights}
-          switchToHistory={switchToHistory}
-        />
+        {!hideNavigation && (
+          <ExpandedPanel
+            links={links}
+            expanded={expanded}
+            onCollapse={onCollapse}
+            onExpand={onExpand}
+            onLeaveInsights={onLeaveInsights}
+            switchToHistory={switchToHistory}
+          />
+        )}
         <nav
+          id={panelId}
+          inert={!expanded ? '' : undefined}
           className={cn(
             /** The resize separator at the inline end is transparent until hovered, so
              *  the edge is drawn here. The panel and the content beside it now sit
@@ -50,10 +62,12 @@ function Sidebar({
             'border-border-light bg-surface-sidebar min-h-0 flex-1 overflow-hidden border-e',
             expanded ? 'opacity-100' : 'pointer-events-none opacity-0',
           )}
-          style={{ transition: expanded ? 'opacity 200ms ease 80ms' : 'opacity 150ms ease' }}
+          style={{
+            transition,
+          }}
           aria-hidden={!expanded}
         >
-          <SidePanelNav links={links} />
+          <SidePanelNav links={links} visible={expanded} />
         </nav>
       </div>
       <div
@@ -68,7 +82,9 @@ function Sidebar({
           'hover:bg-border-medium active:bg-border-heavy absolute inset-e-0 top-0 z-10 h-full w-1 cursor-col-resize transition-colors',
           expanded ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
-        style={{ transition: expanded ? 'opacity 200ms ease 80ms' : 'opacity 150ms ease' }}
+        style={{
+          transition,
+        }}
         onMouseDown={onResizeStart}
         onKeyDown={(e) => {
           if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') {

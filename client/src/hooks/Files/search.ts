@@ -1,5 +1,6 @@
 import { Constants, LocalStorageKeys } from 'librechat-data-provider';
 import type { TEphemeralAgent } from 'librechat-data-provider';
+import type { ReadComposerRoute } from '~/common/composerRoute';
 import type { CapturedComposerDraft } from '~/utils/drafts';
 import {
   getFileSearchChoice,
@@ -7,6 +8,7 @@ import {
   acceptFileSearchChoice,
 } from '~/utils/choices';
 import { getTimestampedValue, isTimestampExpired, setTimestamp } from '~/utils/timestamps';
+import { readBrowserComposerRoute } from '~/common/composerRoute';
 import { getNewConversationDraftRevision } from '~/utils/drafts';
 import { FILE_SEARCH_UPLOAD_PREFIX } from '~/utils/localStorage';
 
@@ -81,7 +83,10 @@ export function captureFileSearchUpload(
     },
     choiceRevision: getFileSearchChoice(conversationId)?.revision ?? null,
     createdAt: Date.now(),
-    projectId: new URLSearchParams(window.location.search).get('projectId'),
+    projectId: new URL(
+      owner?.readRoute() ?? readBrowserComposerRoute(),
+      window.location.origin,
+    ).searchParams.get('projectId'),
     newChatGeneration:
       conversationId === Constants.NEW_CONVO
         ? (owner?.newChatGeneration ?? { index: 0, revision: getNewConversationDraftRevision(0) })
@@ -155,6 +160,7 @@ export function canRestoreFileSearchUpload(
   fileId: string,
   conversationId: string,
   context?: FileSearchUploadContext,
+  readRoute: ReadComposerRoute = readBrowserComposerRoute,
 ): boolean {
   const intent = context ?? readIntent(fileId);
   const owner = assignments.get(fileId)?.owner ?? (context ? owners.get(context) : undefined);
@@ -174,15 +180,22 @@ export function canRestoreFileSearchUpload(
     generation.index >= 0 &&
     generation.revision === getNewConversationDraftRevision(generation.index) &&
     (intent.projectId === undefined ||
-      intent.projectId === new URLSearchParams(window.location.search).get('projectId'))
+      intent.projectId ===
+        new URL(owner?.readRoute() ?? readRoute(), window.location.origin).searchParams.get(
+          'projectId',
+        ))
   );
 }
 
-export function hasPendingFileSearchUpload(fileId: string, conversationId: string): boolean {
+export function hasPendingFileSearchUpload(
+  fileId: string,
+  conversationId: string,
+  readRoute: ReadComposerRoute = readBrowserComposerRoute,
+): boolean {
   const intent = readIntent(fileId);
   return (
     intent?.conversationId === conversationId &&
-    canRestoreFileSearchUpload(fileId, conversationId, intent)
+    canRestoreFileSearchUpload(fileId, conversationId, intent, readRoute)
   );
 }
 
@@ -191,6 +204,7 @@ export function completeFileSearchUpload(
   fileId: string,
   conversationId: string,
   choiceRevision?: string | null,
+  readRoute: ReadComposerRoute = readBrowserComposerRoute,
 ): boolean {
   const owner = assignments.get(fileId)?.owner;
   let intent = readIntent(fileId);
@@ -219,7 +233,7 @@ export function completeFileSearchUpload(
   if (intent.conversationId !== conversationId) {
     return false;
   }
-  if (!canRestoreFileSearchUpload(fileId, conversationId, intent)) {
+  if (!canRestoreFileSearchUpload(fileId, conversationId, intent, readRoute)) {
     owner?.discardFile(fileId);
     cancelFileSearchUpload(fileId);
     return false;

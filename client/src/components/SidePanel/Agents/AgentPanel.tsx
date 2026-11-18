@@ -485,6 +485,7 @@ export default function AgentPanel() {
     setActivePanel,
     endpointsConfig,
     setCurrentAgentId,
+    retainAgentSession,
     agent_id: current_agent_id,
   } = useAgentPanelContext();
   const defaultStatefulCodeEnvironment =
@@ -582,8 +583,13 @@ export default function AgentPanel() {
     getValues,
     setValue,
     resetField,
-    formState: { dirtyFields },
+    formState: { dirtyFields, isDirty },
   } = methods;
+  useEffect(() => {
+    if (isDirty) {
+      retainAgentSession?.();
+    }
+  }, [isDirty, retainAgentSession]);
   const providerOption = useWatch({ control, name: 'provider' });
   const selectedProvider = String(
     typeof providerOption === 'string' ? providerOption : (providerOption?.value ?? ''),

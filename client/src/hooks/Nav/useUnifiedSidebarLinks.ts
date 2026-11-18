@@ -3,19 +3,21 @@ import { useRecoilValue } from 'recoil';
 import { BarChart3, MessagesSquare } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useUserKeyQuery } from 'librechat-data-provider/react-query';
-import { getConfigDefaults, getEndpointField } from 'librechat-data-provider';
+import { getConfigDefaults, getEndpointField, resolveNavigation } from 'librechat-data-provider';
 import type { TEndpointsConfig } from 'librechat-data-provider';
 import type { NavLink } from '~/common';
 import { useGetEndpointsQuery, useGetStartupConfig, useInsightsAccessQuery } from '~/data-provider';
+import { getPageForNavId, getPageSettings } from '~/components/FeaturePresentation/registry';
 import ConversationsSection from '~/components/UnifiedSidebar/ConversationsSection';
-import useSideNavLinks from '~/hooks/Nav/useSideNavLinks';
+import { useFeaturePresentation } from '~/components/FeaturePresentation/Context';
+import { useSideNavDestinations } from '~/hooks/Nav/useSideNavLinks';
 import { getRoutePanelLinks } from './routePanels';
 import { useAuthContext } from '~/hooks';
 import store from '~/store';
 
-const defaultInterface = getConfigDefaults().interface;
+const defaultInterface = { ...getConfigDefaults().interface, navigation: resolveNavigation() };
 
-export default function useUnifiedSidebarLinks() {
+export function useSidebarDestinationState({ requestMCP = false } = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuthContext();
@@ -55,7 +57,8 @@ export default function useUnifiedSidebarLinks() {
     [keyExpiry.expiresAt, userProvidesKey],
   );
 
-  const allSideNavLinks = useSideNavLinks({
+  const { links: allSideNavLinks, mcpAvailability } = useSideNavDestinations({
+    requestMCP,
     keyProvided,
     endpoint,
     endpointType,
@@ -111,5 +114,41 @@ export default function useUnifiedSidebarLinks() {
     sideNavLinks,
   ]);
 
-  return links;
+  return { links, mcpAvailability };
+}
+
+export function useSidebarDestinations() {
+  return useSidebarDestinationState().links;
+}
+
+export default function useUnifiedSidebarLinks() {
+  const presentation = useFeaturePresentation();
+  const { data: startupConfig } = useGetStartupConfig();
+  return useMemo(
+    (): NavLink[] =>
+      (presentation?.links ?? []).map((link) => {
+        const page = getPageForNavId(link.id);
+        if (presentation?.relatedPage && (link.Component || link.id === 'conversations') && !page) {
+          return { ...link, view: 'panel', onClick: () => presentation.openPanel(link.id) };
+        }
+        if (
+          !page ||
+          !presentation ||
+          (!presentation.relatedPage &&
+            (!presentation.canOpenPage(page) ||
+              getPageSettings(startupConfig?.interface?.navigation, page).defaultView !== 'page'))
+        ) {
+          return link;
+        }
+        const resourceEditor = presentation.relatedPage === page && presentation.page !== page;
+        const view =
+          !resourceEditor &&
+          presentation.canOpenPage(page) &&
+          getPageSettings(startupConfig?.interface?.navigation, page).defaultView === 'page'
+            ? 'page'
+            : 'panel';
+        return { ...link, view, onClick: () => presentation.open(page) };
+      }),
+    [presentation, startupConfig?.interface?.navigation],
+  );
 }

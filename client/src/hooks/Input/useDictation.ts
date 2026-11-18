@@ -1,7 +1,8 @@
-import { useRef, useMemo, useState, useEffect, useCallback } from 'react';
+import { useRef, useMemo, useState, useEffect, useCallback, useContext } from 'react';
 import { useToastContext } from '@librechat/client';
 import { isFocusedChatPane } from '@librechat/chat';
 import type { TAskFunction } from '~/common';
+import { ChatInteractionContext } from '~/Providers/ChatInteractionContext';
 import useGetAudioSettings from './useGetAudioSettings';
 import { useChatFormContext } from '~/Providers';
 import useSpeechToText from './useSpeechToText';
@@ -71,6 +72,9 @@ export default function useDictation({
   index?: number;
 }): Dictation {
   const { setValue, reset, getValues } = methods;
+  const chatVisible = useContext(ChatInteractionContext);
+  const chatVisibleRef = useRef(chatVisible);
+  chatVisibleRef.current = chatVisible;
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const { speechToTextEndpoint } = useGetAudioSettings();
@@ -107,7 +111,7 @@ export default function useDictation({
       if (spentRef.current || !text) {
         return;
       }
-      if (disabledRef.current) {
+      if (disabledRef.current || !chatVisibleRef.current) {
         /** Retain the transcript for manual send; lifting the hold must not replay this take. */
         spentRef.current = true;
         return;
@@ -252,7 +256,7 @@ export default function useDictation({
   const [discarded, setDiscarded] = useState(false);
 
   const start = useCallback(() => {
-    if (disabled || isLoading === true || settling) {
+    if (!chatVisibleRef.current || disabled || isLoading === true || settling) {
       /* Do not re-arm the canceled take before its late callback arrives. */
       return;
     }
@@ -273,7 +277,10 @@ export default function useDictation({
   activeRef.current = active;
   const stopWith = useCallback(
     (mode: StopMode) => {
-      if (!activeRef.current || (mode === 'send' && disabledRef.current)) {
+      if (
+        !activeRef.current ||
+        (mode === 'send' && (disabledRef.current || !chatVisibleRef.current))
+      ) {
         return;
       }
       modeRef.current = mode;
@@ -303,8 +310,19 @@ export default function useDictation({
   const stopAndSend = useCallback(() => stopWith('send'), [stopWith]);
 
   useEffect(() => {
+    if (chatVisible) {
+      return;
+    }
+    /* Hiding spends the send intent, not the transcript, even if it lands after returning. */
+    spentRef.current = true;
+    setPendingSend(false);
+    stopToComposer();
+  }, [chatVisible, active, stopToComposer]);
+
+  useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if (
+        !chatVisibleRef.current ||
         disabled ||
         speechToText !== true ||
         !isFocusedChatPane(index) ||
@@ -333,7 +351,7 @@ export default function useDictation({
     () => ({
       active,
       transcribing: !discarded && (isLoading === true || settling),
-      startDisabled: disabled || isLoading === true || settling,
+      startDisabled: !chatVisible || disabled || isLoading === true || settling,
       elapsed,
       start,
       cancel,
@@ -343,6 +361,7 @@ export default function useDictation({
     [
       active,
       discarded,
+      chatVisible,
       disabled,
       isLoading,
       settling,

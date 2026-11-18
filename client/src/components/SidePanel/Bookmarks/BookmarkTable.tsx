@@ -3,6 +3,7 @@ import { Plus } from 'lucide-react';
 import { Button, FilterInput, OGDialogTrigger, TooltipAnchor } from '@librechat/client';
 import type { ConversationTagsResponse, TConversationTag } from 'librechat-data-provider';
 import { BookmarkContext, useBookmarkContext } from '~/Providers/BookmarkContext';
+import CollectionError from '~/components/ui/CollectionError';
 import { BookmarkEditDialog } from '~/components/Bookmarks';
 import { PanelContent, PanelHeader } from '~/components/ui';
 import BookmarkCardSkeleton from './BookmarkCardSkeleton';
@@ -18,7 +19,15 @@ const removeDuplicates = (bookmarks: TConversationTag[]) => {
   });
 };
 
-const BookmarkTable = ({ isLoading = false }: { isLoading?: boolean }) => {
+const BookmarkTable = ({
+  isLoading = false,
+  isError = false,
+  onRetry,
+}: {
+  isLoading?: boolean;
+  isError?: boolean;
+  onRetry?: () => void;
+}) => {
   const localize = useLocalize();
   const headingId = useId();
   const [rows, setRows] = useState<ConversationTagsResponse>([]);
@@ -89,11 +98,15 @@ const BookmarkTable = ({ isLoading = false }: { isLoading?: boolean }) => {
           skeleton={<BookmarkCardSkeleton />}
           className="px-3 pb-3"
         >
-          <BookmarkList
-            bookmarks={filteredRows}
-            moveRow={moveRow}
-            isFiltered={searchQuery.length > 0}
-          />
+          {isError ? (
+            <CollectionError onRetry={() => onRetry?.()} />
+          ) : (
+            <BookmarkList
+              bookmarks={filteredRows}
+              moveRow={moveRow}
+              isFiltered={searchQuery.length > 0}
+            />
+          )}
         </PanelContent>
       </div>
     </BookmarkContext.Provider>

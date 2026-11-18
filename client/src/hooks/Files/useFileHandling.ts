@@ -47,13 +47,13 @@ import {
   completeFileSearchUpload,
 } from './search';
 import { useGetFileConfig, useUploadFileMutation } from '~/data-provider';
+import { captureComposerDraft, readComposerRoute } from '~/utils/drafts';
 import useAgentUploadTarget from '~/hooks/Agents/useAgentUploadTarget';
 import useLocalize, { TranslationKeys } from '~/hooks/useLocalize';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useDelayedUploadToast } from './useDelayedUploadToast';
 import { useChatContext } from '~/Providers/ChatContext';
 import { importWithRecovery } from '~/lib/assets/lazy';
-import { captureComposerDraft } from '~/utils/drafts';
 import { ephemeralAgentByConvoId } from '~/store';
 import useClientResize from './useClientResize';
 import useUpdateFiles from './useUpdateFiles';
@@ -273,7 +273,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       }
     }
   }
-  const composerRoute = window.location.pathname + window.location.search;
+  const composerRoute = readComposerRoute(index);
   useEffect(() => {
     if (!tracksReservations) return;
     for (const fileId of files.keys()) {

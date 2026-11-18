@@ -7,7 +7,7 @@ const ESM_ONLY_ARIAKIT =
   /^@ariakit\/(react-components|react-utils|react-store|components|store|utils)(\/|$)/;
 
 module.exports = (request, options) => {
-  if (ESM_ONLY_ARIAKIT.test(request)) {
+  if (ESM_ONLY_ARIAKIT.test(request) || request === 'react-vtree') {
     return options.defaultResolver(request, {
       ...options,
       conditions: [...(options.conditions ?? []), 'import'],

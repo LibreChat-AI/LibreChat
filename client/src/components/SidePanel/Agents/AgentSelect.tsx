@@ -46,7 +46,6 @@ function AgentSelect({
   const localize = useLocalize();
   const mineAtom = useMemo(() => atom(false), []);
   const [mine, setMine] = useAtom(mineAtom);
-  const lastSelectedAgent = useRef<string | null>(null);
   const {
     control,
     getValues,
@@ -271,13 +270,10 @@ function AgentSelect({
       }
 
       setCurrentAgentId(selectedId);
-      const agent = agentQuery.data;
-      if (!agent) {
-        console.warn('Agent not found');
-        return;
+      reset(getDefaultAgentFormValues(defaultStatefulCodeEnvironment));
+      if (agentQuery.data?.id === selectedId) {
+        resetAgentForm(agentQuery.data);
       }
-
-      resetAgentForm(agent);
     },
     [
       agents,
@@ -295,27 +291,6 @@ function AgentSelect({
       resetAgentForm(agentQuery.data, true);
     }
   }, [agentQuery.data, agentQuery.isSuccess, resetAgentForm]);
-
-  useEffect(() => {
-    let timerId: NodeJS.Timeout | null = null;
-
-    if (selectedAgentId === lastSelectedAgent.current) {
-      return;
-    }
-
-    if (selectedAgentId != null && selectedAgentId !== '' && agents) {
-      timerId = setTimeout(() => {
-        lastSelectedAgent.current = selectedAgentId;
-        onSelect(selectedAgentId);
-      }, 5);
-    }
-
-    return () => {
-      if (timerId) {
-        clearTimeout(timerId);
-      }
-    };
-  }, [selectedAgentId, agents, onSelect]);
 
   const createAgent = localize('com_ui_create_new_agent');
 

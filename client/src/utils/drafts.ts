@@ -1,4 +1,6 @@
 import { Constants, LocalStorageKeys, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
+import type { ReadComposerRoute } from '~/common/composerRoute';
+import { readBrowserComposerRoute } from '~/common/composerRoute';
 import { isPasteSubmitted } from './files';
 
 export type PendingTextAttachmentDraft = {
@@ -95,7 +97,7 @@ export const renewNewConversationDraftToken = (index = 0): void => {
     composerDraftScopes.set(index, {
       ...scope,
       generation,
-      route: composerRoute(),
+      route: scope.readRoute(),
       sourceId: undefined,
       sourcePropPending: false,
       assignedRoute: undefined,
@@ -355,6 +357,7 @@ type ComposerDraftScope = {
   generation: symbol;
   answerId: string | null;
   route: string;
+  readRoute: ReadComposerRoute;
   assignedRoute?: string;
   sourceId?: string;
   sourcePropPending?: boolean;
@@ -363,10 +366,12 @@ type ComposerDraftScope = {
 const composerDraftMigrations = new Set<(fromId: string, toId: string) => void>();
 const composerDraftScopes = new Map<number, ComposerDraftScope>();
 const composerLaunches = new WeakMap<object, { index: number; scope: ComposerDraftScope }>();
-const composerRoute = () => window.location.pathname + window.location.search;
+/** The registered owner decides placement; an unregistered caller keeps the browser fence. */
+export const readComposerRoute = (index = 0): string =>
+  (composerDraftScopes.get(index)?.readRoute ?? readBrowserComposerRoute)();
 
 const matchesComposerRoute = (scope: ComposerDraftScope): boolean => {
-  const route = composerRoute();
+  const route = scope.readRoute();
   if (!scope.sourcePropPending && scope.assignedRoute === route) {
     scope.route = route;
   }
@@ -378,11 +383,12 @@ export const registerComposerDraft = (
   conversationId: string,
   draftId: string,
   host?: object,
+  readRoute: ReadComposerRoute = readBrowserComposerRoute,
 ): (() => void) => {
   const previous = composerDraftScopes.get(index);
   const generation = getNewConversationDraftToken(index);
   const answerId = isAskAnswerDraftId(draftId) ? draftId : null;
-  const route = composerRoute();
+  const route = readRoute();
   const scope: ComposerDraftScope =
     host &&
     previous != null &&
@@ -402,6 +408,7 @@ export const registerComposerDraft = (
           answerId,
           active: true,
           route,
+          readRoute,
           assignments: new Set<(sourceId: string, targetId: string) => void>(),
         };
   if (previous && scope !== previous && conversationId === Constants.NEW_CONVO) {
@@ -411,6 +418,7 @@ export const registerComposerDraft = (
   const registration = {};
   scope.registration = registration;
   scope.host = host;
+  scope.readRoute = readRoute;
   scope.active = true;
   scope.draftId = draftId;
   if (scope.conversationId === conversationId) {
@@ -511,7 +519,8 @@ export const adoptComposerConversation = (
   if (scope.sourceId === Constants.NEW_CONVO && scope.conversationId === targetId) {
     return matchesComposerRoute(scope);
   }
-  if (scope.conversationId !== Constants.NEW_CONVO || composerRoute() !== scope.route) return false;
+  if (scope.conversationId !== Constants.NEW_CONVO || scope.readRoute() !== scope.route)
+    return false;
   const sourceId = scope.conversationId;
   scope.sourceId = sourceId;
   scope.sourcePropPending = true;
@@ -541,6 +550,7 @@ export const resolveComposerConversationId = (conversationId: string): string =>
 
 export type CapturedComposerDraft = (() => boolean) & {
   registered: boolean;
+  readRoute: ReadComposerRoute;
   newChatGeneration?: Readonly<{ index: number; revision: string }>;
   conversationId: () => string;
   retainsFile: (fileId: string) => boolean;
@@ -554,7 +564,7 @@ export const captureComposerDraft = (
 ): CapturedComposerDraft => {
   const scope = composerDraftScopes.get(index);
   const generation = getNewConversationDraftToken(index);
-  const route = composerRoute();
+  const route = scope?.readRoute() ?? readBrowserComposerRoute();
   return Object.assign(
     () =>
       (!scope ||
@@ -562,9 +572,10 @@ export const captureComposerDraft = (
           (scope.conversationId === conversationId || scope.sourceId === conversationId))) &&
       composerDraftScopes.get(index) === scope &&
       getNewConversationDraftToken(index) === generation &&
-      (scope ? matchesComposerRoute(scope) : composerRoute() === route),
+      (scope ? matchesComposerRoute(scope) : readBrowserComposerRoute() === route),
     {
       registered: scope != null,
+      readRoute: () => scope?.readRoute() ?? readBrowserComposerRoute(),
       newChatGeneration:
         conversationId === Constants.NEW_CONVO
           ? { index, revision: getNewConversationDraftRevision(index) }

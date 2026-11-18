@@ -4,6 +4,7 @@ import type { TConversation } from 'librechat-data-provider';
 import type { ConversationCursorData } from './convos';
 import {
   dateKeys,
+  getRouteChatProjectId,
   mergeConvoSnapshot,
   beginConvoSnapshot,
   endConvoSnapshot,
@@ -1727,5 +1728,16 @@ describe('conversation snapshot read authority', () => {
     expect(fresh.superseded).toBe(false);
     endConvoSnapshot(client, 'convo', fresh);
     client.clear();
+  });
+});
+
+describe('route project scope', () => {
+  it('reads the caller-owned search independently of the physical page', () => {
+    window.history.replaceState({}, '', '/agent-builder?projectId=' + 'b'.repeat(24));
+    expect(getRouteChatProjectId('?projectId=' + 'a'.repeat(24))).toBe('a'.repeat(24));
+    expect(getRouteChatProjectId()).toBe('b'.repeat(24));
+    expect(getRouteChatProjectId('?projectId=invalid')).toBeNull();
+    expect(getRouteChatProjectId('')).toBeNull();
+    window.history.replaceState({}, '', '/');
   });
 });

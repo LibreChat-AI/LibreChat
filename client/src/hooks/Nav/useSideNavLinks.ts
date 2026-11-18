@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { MCPIcon, OpenAIMinimalIcon } from '@librechat/client';
 import {
   Bot,
@@ -19,12 +19,14 @@ import {
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
 import type { TInterfaceConfig, TEndpointsConfig } from 'librechat-data-provider';
+import type { PageAvailability } from '~/components/FeaturePresentation/Context';
 import type { NavLink } from '~/common';
 import {
   useAgentCapabilities,
   useMCPServerManager,
   useGetAgentsConfig,
   useHasAccess,
+  activateCatalog,
 } from '~/hooks';
 import { PromptsAccordion } from '~/components/Prompts';
 import { SkillsAccordion } from '~/components/Skills';
@@ -47,7 +49,7 @@ const SchedulePanel = lazyWithRecovery(
 const Parameters = lazyWithRecovery(() => import('~/components/SidePanel/Parameters/Panel'));
 const MemoryPanel = lazyWithRecovery(() => import('~/components/SidePanel/Memories/MemoryPanel'));
 
-export default function useSideNavLinks({
+export function useSideNavDestinations({
   hidePanel,
   keyProvided,
   endpoint,
@@ -55,6 +57,7 @@ export default function useSideNavLinks({
   interfaceConfig,
   endpointsConfig,
   includeHidePanel = true,
+  requestMCP = false,
 }: {
   hidePanel?: () => void;
   keyProvided: boolean;
@@ -63,6 +66,7 @@ export default function useSideNavLinks({
   interfaceConfig: Partial<TInterfaceConfig>;
   endpointsConfig: TEndpointsConfig;
   includeHidePanel?: boolean;
+  requestMCP?: boolean;
 }) {
   const hasAccessToPrompts = useHasAccess({
     permissionType: PermissionTypes.PROMPTS,
@@ -104,7 +108,24 @@ export default function useSideNavLinks({
     permissionType: PermissionTypes.SCHEDULES,
     permission: Permissions.USE,
   });
-  const { availableMCPServers } = useMCPServerManager();
+  const { availableMCPServers, availableMCPServersMap, isError, refetch } = useMCPServerManager();
+  useEffect(() => {
+    if (requestMCP && hasAccessToUseMCPSettings) {
+      activateCatalog('mcpServers');
+    }
+  }, [requestMCP, hasAccessToUseMCPSettings]);
+  const needsMCPCatalog = hasAccessToUseMCPSettings && !hasAccessToCreateMCP;
+  let mcpAvailability: PageAvailability = { status: 'ready' };
+  if (needsMCPCatalog && availableMCPServersMap == null) {
+    mcpAvailability = isError
+      ? {
+          status: 'error',
+          retry: () => {
+            void refetch();
+          },
+        }
+      : { status: 'loading' };
+  }
 
   const { agentsConfig } = useGetAgentsConfig({ endpointsConfig });
   const { skillsEnabled } = useAgentCapabilities(agentsConfig?.capabilities);
@@ -268,5 +289,9 @@ export default function useSideNavLinks({
     hidePanel,
   ]);
 
-  return Links;
+  return { links: Links, mcpAvailability };
+}
+
+export default function useSideNavLinks(props: Parameters<typeof useSideNavDestinations>[0]) {
+  return useSideNavDestinations(props).links;
 }

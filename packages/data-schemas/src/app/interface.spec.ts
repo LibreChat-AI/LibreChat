@@ -598,3 +598,48 @@ describe('deriveSpecInterface', () => {
     );
   });
 });
+
+describe('navigation runtime forwarding', () => {
+  it('serves the legacy-compatible defaults when navigation is omitted', async () => {
+    const result = await loadDefaultInterface({ config: {}, configDefaults: getConfigDefaults() });
+    expect(result?.navigation?.layout).toBe('current');
+    expect(result?.navigation?.pages?.agentBuilder).toEqual({
+      enabled: false,
+      defaultView: 'panel',
+    });
+  });
+
+  it('merges raw per-page/per-field overrides and forwards false', async () => {
+    const configDefaults = getConfigDefaults();
+    configDefaults.interface.navigation = {
+      layout: 'console',
+      pages: { agentBuilder: { enabled: true } },
+    };
+    const result = await loadDefaultInterface({
+      configDefaults,
+      config: {
+        interface: {
+          navigation: {
+            pages: {
+              agentBuilder: { defaultView: 'page' },
+              skills: { enabled: false },
+            },
+          },
+        },
+      },
+    });
+    expect(result?.navigation?.layout).toBe('console');
+    expect(result?.navigation?.pages?.agentBuilder).toEqual({ enabled: true, defaultView: 'page' });
+    expect(result?.navigation?.pages?.skills?.enabled).toBe(false);
+    expect(result?.navigation?.pages?.prompts?.enabled).toBe(true);
+  });
+
+  it('rejects raw overrides selecting a disabled page', async () => {
+    await expect(
+      loadDefaultInterface({
+        configDefaults: getConfigDefaults(),
+        config: { interface: { navigation: { pages: { agentBuilder: { defaultView: 'page' } } } } },
+      }),
+    ).rejects.toThrow('A disabled page cannot be the default view');
+  });
+});

@@ -1,11 +1,15 @@
 import { useState, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
+import { ShieldAlert } from 'lucide-react';
 import { useParams } from 'react-router-dom';
+import { EmptyState } from '@librechat/client';
+import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import type { TSkillListResponse } from 'librechat-data-provider';
+import { useDebounce, useNavScrolling, useHasAccess, useLocalize } from '~/hooks';
+import CollectionError from '~/components/ui/CollectionError';
 import { PanelContent, ListLoading } from '~/components/ui';
 import SkillListSkeleton from '../lists/SkillListSkeleton';
 import { useSkillsInfiniteQuery } from '~/data-provider';
-import { useDebounce, useNavScrolling } from '~/hooks';
 import SkillListPanel from '../lists/SkillList';
 import FilterSkills from './FilterSkills';
 import { cn } from '~/utils';
@@ -16,6 +20,7 @@ const PAGE_SIZE = 50;
 
 interface SkillsSidePanelProps {
   className?: string;
+  visible?: boolean;
 }
 
 /**
@@ -23,16 +28,21 @@ interface SkillsSidePanelProps {
  * Header: filter input + create menu, matching the other side panels.
  */
 
-export default function SkillsSidePanel({ className }: SkillsSidePanelProps) {
+export default function SkillsSidePanel({ className, visible }: SkillsSidePanelProps) {
+  const localize = useLocalize();
+  const hasAccess = useHasAccess({
+    permissionType: PermissionTypes.SKILLS,
+    permission: Permissions.USE,
+  });
   const { skillId: activeSkillId } = useParams();
   const [searchTerm, setSearchTerm] = useState('');
   const [sectionOpen, setSectionOpen] = useState(true);
   const debouncedSearch = useDebounce(searchTerm, 250);
 
-  const listQuery = useSkillsInfiniteQuery({
-    search: debouncedSearch || undefined,
-    limit: PAGE_SIZE,
-  });
+  const listQuery = useSkillsInfiniteQuery(
+    { search: debouncedSearch || undefined, limit: PAGE_SIZE },
+    { enabled: hasAccess },
+  );
 
   const pages = useMemo(() => listQuery.data?.pages ?? [], [listQuery.data]);
   const skills = useMemo(() => pages.flatMap((page) => page.skills), [pages]);
@@ -42,13 +52,18 @@ export default function SkillsSidePanel({ className }: SkillsSidePanelProps) {
 
   /** A collapsed sidebar keeps this panel mounted, so stop draining pages into it */
   const sidebarExpanded = useRecoilValue(store.sidebarExpanded);
+  const panelVisible = visible ?? sidebarExpanded;
 
   const { containerRef } = useNavScrolling<TSkillListResponse>({
     nextCursor,
     isFetchingNext: listQuery.isFetchingNextPage,
     fetchNextPage: listQuery.fetchNextPage,
-    enabled: sidebarExpanded && sectionOpen,
+    enabled: hasAccess && panelVisible && sectionOpen && !listQuery.isError,
   });
+
+  if (!hasAccess) {
+    return <EmptyState icon={ShieldAlert} title={localize('com_ui_feature_no_access')} />;
+  }
 
   return (
     <div
@@ -66,12 +81,16 @@ export default function SkillsSidePanel({ className }: SkillsSidePanelProps) {
         skeleton={<SkillListSkeleton />}
         className="px-3 pb-3"
       >
-        <SkillListPanel
-          skills={skills}
-          activeSkillId={activeSkillId}
-          sectionOpen={sectionOpen}
-          onSectionOpenChange={setSectionOpen}
-        />
+        {(!listQuery.isError || skills.length > 0) && (
+          <SkillListPanel
+            skills={skills}
+            activeSkillId={activeSkillId}
+            sectionOpen={sectionOpen}
+            onSectionOpenChange={setSectionOpen}
+            isFiltered={debouncedSearch.trim().length > 0}
+          />
+        )}
+        {listQuery.isError && <CollectionError onRetry={() => listQuery.refetch()} />}
         {/* Appending the next page, so the loaded rows stay put */}
         {listQuery.isFetchingNextPage && <ListLoading />}
       </PanelContent>

@@ -2,9 +2,10 @@ import { useEffect } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useLocation } from 'react-router-dom';
 import { Button, Sidebar, Spinner, TooltipAnchor } from '@librechat/client';
-import type { PromptGroupListResponse } from 'librechat-data-provider';
+import type { TPromptGroup, PromptGroupListResponse } from 'librechat-data-provider';
 import { useLocalize, useNavScrolling, activateCatalog } from '~/hooks';
 import PromptGroupSkeleton from '../lists/PromptGroupSkeleton';
+import CollectionError from '~/components/ui/CollectionError';
 import { usePromptGroupsContext } from '~/Providers';
 import { PanelContent } from '~/components/ui';
 import List from '../lists/List';
@@ -18,6 +19,8 @@ export default function GroupSidePanel({
   closePanelRef,
   onClose,
   isChatRoute: isChatRouteProp,
+  visible,
+  onUsePrompt,
 }: {
   children?: React.ReactNode;
   /** Rendered below the list, outside the scroll area, so it stays visible */
@@ -26,6 +29,9 @@ export default function GroupSidePanel({
   closePanelRef?: React.RefObject<HTMLButtonElement>;
   onClose?: () => void;
   isChatRoute?: boolean;
+  visible?: boolean;
+  /** Explicit host action, e.g. return to the originating chat before using a prompt. */
+  onUsePrompt?: (group: TPromptGroup) => void;
 }) {
   const location = useLocation();
   const localize = useLocalize();
@@ -37,27 +43,31 @@ export default function GroupSidePanel({
   const sidebarExpanded = useRecoilValue(store.sidebarExpanded);
   /** Mirrors UnifiedSidebar's panelExpanded: the insights route collapses the
    * panel while the atom stays true, so visibility is atom AND route */
-  const panelVisible = sidebarExpanded && !location.pathname.startsWith('/insights');
+  const panelVisible = visible ?? (sidebarExpanded && !location.pathname.startsWith('/insights'));
+  const hasAccess = context?.hasAccess === true;
 
   /** The panel stays mounted while hidden, so only a visible panel releases
    * its catalog ahead of the background warmup schedule */
   useEffect(() => {
-    if (panelVisible) {
+    if (panelVisible && hasAccess) {
       activateCatalog('prompts');
     }
-  }, [panelVisible]);
+  }, [panelVisible, hasAccess]);
 
   const { containerRef } = useNavScrolling<PromptGroupListResponse>({
     nextCursor: context?.nextCursor,
     isFetchingNext: context?.isFetchingNextPage ?? false,
     fetchNextPage: context?.fetchNextPage,
-    enabled: sidebarExpanded,
+    enabled: panelVisible && hasAccess && !context?.groupsQuery.isError,
   });
 
   if (!context) {
     return null;
   }
-  const { promptGroups, groupsQuery, isFetchingNextPage } = context;
+  if (!hasAccess) {
+    return <div className="text-text-secondary p-4">{localize('com_ui_feature_no_access')}</div>;
+  }
+  const { promptGroups, groupsQuery, isFetchingNextPage, name } = context;
 
   return (
     <div id="prompts-panel" className={cn('flex h-full w-full flex-col', className)}>
@@ -91,7 +101,15 @@ export default function GroupSidePanel({
           skeleton={<PromptGroupSkeleton />}
           className="text-text-primary flex scrollbar-gutter-stable flex-col gap-2 overflow-x-hidden ps-3 pe-1 pb-3"
         >
-          <List groups={promptGroups} isChatRoute={isChatRoute} />
+          {(!groupsQuery.isError || promptGroups.length > 0) && (
+            <List
+              groups={promptGroups}
+              isChatRoute={isChatRoute}
+              isFiltered={!!name?.trim()}
+              onUsePrompt={onUsePrompt}
+            />
+          )}
+          {groupsQuery.isError && <CollectionError onRetry={() => groupsQuery.refetch()} />}
           {/* Appending the next page, so the loaded rows stay put */}
           {isFetchingNextPage && (
             <div className="flex shrink-0 justify-center py-2">
