@@ -3676,6 +3676,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       const {
         resolveTurnDeliveryRouting,
         buildTurnReadingContext,
+        withTurnReading,
         buildMessageFiles,
         createProvisionFilesCallback,
         createFileProvisionRecovery,
@@ -3714,13 +3715,16 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         agent,
         config: { fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } } },
       });
-      agent.deliveryRouting.reading = buildTurnReadingContext({
-        routing: agent.deliveryRouting,
-        provider: 'openAI',
-        fileTokenLimit: 100000,
-        configuredFileSizeLimit: undefined,
-        countTokens: (text) => text.length,
-      });
+      agent.deliveryRouting = withTurnReading(
+        agent.deliveryRouting,
+        buildTurnReadingContext({
+          routing: agent.deliveryRouting,
+          provider: 'openAI',
+          fileTokenLimit: 100000,
+          configuredFileSizeLimit: undefined,
+          countTokens: (text) => text.length,
+        }),
+      );
       agent.deliveryRouting.reading.setSearchEvidence({
         queued: [file.file_id],
         registered: [],

@@ -4,19 +4,18 @@ import { render, screen } from '@testing-library/react';
 import type { ChatScreenMessagesSlots } from '@librechat/chat/components';
 
 const mockLoadScreenMessages = jest.fn();
-const mockSlots: ChatScreenMessagesSlots = { flatThread: true };
 
 jest.mock('@librechat/chat/components', () => ({
   loadScreenMessages: () => mockLoadScreenMessages(),
 }));
-jest.mock('../slots', () => ({ messagesSlots: mockSlots }));
+jest.mock('../hosts', () => ({}));
 
 type ListProps = { messages: unknown; slots?: ChatScreenMessagesSlots };
 
 function PackageList({ messages, slots }: ListProps) {
   return (
     <p>
-      {String(messages)} {slots === mockSlots ? 'app slots' : 'no slots'}
+      {String(messages)} {slots == null ? 'package defaults' : 'app slots'}
     </p>
   );
 }
@@ -34,7 +33,7 @@ describe('message list loader', () => {
     mockLoadScreenMessages.mockReset();
   });
 
-  it('draws the package list with the app slots once both have loaded', async () => {
+  it('draws the package list once its hosts have loaded', async () => {
     mockLoadScreenMessages.mockResolvedValue({ default: PackageList });
     const { renderMessages } = loadModule();
 
@@ -45,7 +44,7 @@ describe('message list loader', () => {
     );
 
     expect(screen.getByRole('status')).toBeInTheDocument();
-    expect(await screen.findByText('null app slots')).toBeInTheDocument();
+    expect(await screen.findByText('null package defaults')).toBeInTheDocument();
   });
 
   it('loads the list once for every caller', async () => {

@@ -125,6 +125,12 @@ import {
   normalizeAgentToolKeys,
 } from '~/mcp/utils';
 import {
+  applyTurnDelivery,
+  toClassicInspectionView,
+  resolveTurnDeliveryRouting,
+  withTurnReading,
+} from './files/delivery';
+import {
   resolveAttachedWorkspaceCommandTimeoutMax,
   resolveAttachedWorkspaceCommandTimeoutDefault,
 } from '~/code/command';
@@ -139,11 +145,6 @@ import {
   buildTurnReadingContext,
   prepareAgentFileContext,
 } from '~/files/reading';
-import {
-  applyTurnDelivery,
-  toClassicInspectionView,
-  resolveTurnDeliveryRouting,
-} from './files/delivery';
 import {
   formatChatProjectInstructions,
   hydrateChatProjectContextResources,
@@ -160,6 +161,7 @@ import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
+import { getGoogleInputTokenLimit } from '~/endpoints/google/llm';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
@@ -1766,7 +1768,7 @@ export async function initializeAgent(
     agent.provider = options.provider;
   }
 
-  const deliveryRouting = resolveTurnDeliveryRouting({
+  const settledRouting = resolveTurnDeliveryRouting({
     agent: {
       provider: agent.provider,
       endpoint: agent.endpoint,
@@ -1778,7 +1780,7 @@ export async function initializeAgent(
     config: appConfig,
   });
   const readingContext = await prepareTurnReading({
-    routing: deliveryRouting,
+    routing: settledRouting,
     provider: agent.provider,
     model: typeof llmConfig.model === 'string' ? llmConfig.model : (agent.model ?? undefined),
     endpoint: agent.endpoint ?? undefined,
@@ -1790,9 +1792,7 @@ export async function initializeAgent(
       bindDerivationPersister(db.saveFileTextDerivation, requestFileOwnerScope),
     signal: params.signal,
   });
-  if (readingContext != null) {
-    deliveryRouting.reading = readingContext;
-  }
+  const deliveryRouting = withTurnReading(settledRouting, readingContext);
 
   /** Resolve the per-agent Code API route before resource/tool priming. A
    * stateful agent must perform freshness checks and recovery uploads against
@@ -2617,6 +2617,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
     });
     toolDefinitions = codeExecResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.execute_code, codeExecResult.toolNames);
@@ -2902,6 +2903,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
       skillStates: params.skillStates,
       defaultActiveOnShare: params.defaultActiveOnShare,
       maxCatalogSkills: getMaxCatalogSkills(runtime),
@@ -2996,7 +2998,14 @@ export async function initializeAgent(
 
   const agentMaxContextNum = Number(agentMaxContextTokens) || DEFAULT_MAX_CONTEXT_TOKENS;
   const maxOutputTokensNum = Number(maxOutputTokens) || 0;
-  const baseContextTokens = Math.max(0, agentMaxContextNum - maxOutputTokensNum);
+  const sharedInputLimit =
+    agent.provider === Providers.GOOGLE || agent.provider === Providers.VERTEXAI
+      ? (getGoogleInputTokenLimit(tokensModel ?? '', maxOutputTokensNum) ?? Infinity)
+      : Infinity;
+  const baseContextTokens = Math.max(
+    0,
+    Math.min(agentMaxContextNum - maxOutputTokensNum, sharedInputLimit),
+  );
 
   const toMongoFiles = (files: Array<TFile | undefined> | undefined): IMongoFile[] =>
     (files ?? []).filter((a): a is TFile => a != null).map((a) => a as unknown as IMongoFile);
@@ -3171,7 +3180,7 @@ export async function initializeAgent(
       provisionWarnings != null && provisionWarnings.length > 0 ? provisionWarnings : undefined,
     maxContextTokens:
       maxContextTokens != null && maxContextTokens > 0
-        ? maxContextTokens
+        ? Math.min(maxContextTokens, sharedInputLimit)
         : Math.max(1024, Math.round(baseContextTokens * (1 - DEFAULT_RESERVE_RATIO))),
     primedCodeFiles,
     primedSearchFileIds: primedSearchFiles?.map((file) => file.file_id),

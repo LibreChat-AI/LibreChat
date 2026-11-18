@@ -37,7 +37,7 @@ const ROW_HOSTS = [
 ];
 const ROW_HOSTS_MODULE = '~/components/Chat/Messages/hosts';
 const ROW_SURFACES = [
-  'components/Chat/Messages/slots.tsx',
+  'components/Chat/Messages/load.tsx',
   'components/Chat/Presentation.tsx',
   'routes/ShareRoute.tsx',
   'routes/Search.tsx',
@@ -66,6 +66,16 @@ describe('app host registration', () => {
     for (const path of ROW_HOSTS) {
       expect(entry).not.toContain(`import '${path}';`);
     }
+  });
+
+  it('keeps the flat thread flag on the messages host', () => {
+    const { FLAT_THREAD } = jest.requireActual<
+      typeof import('~/components/Chat/Messages/Thread/flag')
+    >('~/components/Chat/Messages/Thread/flag');
+    const { appMessagesHost } = jest.requireActual<
+      typeof import('~/Providers/MessagesHostContext')
+    >('~/Providers/MessagesHostContext');
+    expect(appMessagesHost.useFlatThread()).toBe(FLAT_THREAD);
   });
 
   it('registers the row hosts on every surface that draws message rows', () => {

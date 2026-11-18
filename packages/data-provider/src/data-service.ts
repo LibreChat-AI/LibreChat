@@ -1523,6 +1523,24 @@ export function getSubagentThread(
   return request.get(endpoints.subagentThread(parentConversationId, threadId, taskId, cursor));
 }
 
+/** A child thread's messages, in the shape and with the previews of a conversation load. */
+export function getSubagentThreadMessages(
+  parentConversationId: string,
+  threadId: string,
+  options?: { toolPreviews?: boolean },
+): Promise<s.TMessage[]> {
+  const url = endpoints.subagentThreadMessages(parentConversationId, threadId);
+  return request.get(options?.toolPreviews === true ? withToolCallPreviews(url) : url);
+}
+
+/** The full tool call behind a preview in a child thread; `params.conversationId` is the thread. */
+export function getSubagentThreadToolCallPart(
+  parentConversationId: string,
+  params: q.ToolCallPartParams,
+): Promise<q.ToolCallPartResponse> {
+  return request.get(endpoints.subagentThreadToolCallPart(parentConversationId, params));
+}
+
 export function getSubagentTaskContent(
   parentConversationId: string,
   threadId: string,

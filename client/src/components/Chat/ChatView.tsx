@@ -9,7 +9,6 @@ import {
   submissionByIndex,
   ChatSessionProvider,
   useScrollbarGutterSeed,
-  AskAnswerHostProvider,
   ComposerRestoreProvider,
   pendingApprovalActionFamily,
 } from '@librechat/chat/react';
@@ -29,9 +28,11 @@ import { TargetContext } from '~/Providers/TargetContext';
 import useTarget from '~/hooks/Chat/target';
 import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
+import WelcomeBackdrop from './Backdrop';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
 import Lia from '~/components/Lia';
+import AskHost from './AskHost';
 import Landing from './Landing';
 import Header from './Header';
 import store from '~/store';
@@ -150,7 +151,7 @@ function ChatViewPane({
     <TargetContext.Provider value={readiness}>
       <AgentsMapContext.Provider value={selectedAgents}>
         <AssistantsMapContext.Provider value={selectedAssistants}>
-          <AskAnswerHostProvider saveDrafts={saveDrafts}>
+          <AskHost saveDrafts={saveDrafts}>
             <ChatFormProvider {...methods}>
               <ComposerRestoreProvider>
                 <QueuedTurnPortalProvider>
@@ -176,12 +177,17 @@ function ChatViewPane({
                             renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
                             renderMessages={renderMessages}
                             landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
-                            renderColumn={(column) => (
+                            renderColumn={(column, { isLanding }) => (
                               <OwnerTextProvider
                                 messages={messages}
                                 conversationId={conversationId}
                                 isSubmitting={chat.isSubmitting}
                               >
+                                {/* The welcome screen only, behind its column: a theme's
+                                backdrop covers the greeting and the composer together and
+                                goes with them on the first message. It paints nothing unless
+                                the theme asks and the build registers one. */}
+                                {isLanding && <WelcomeBackdrop />}
                                 {column}
                               </OwnerTextProvider>
                             )}
@@ -219,7 +225,7 @@ function ChatViewPane({
                 </QueuedTurnPortalProvider>
               </ComposerRestoreProvider>
             </ChatFormProvider>
-          </AskAnswerHostProvider>
+          </AskHost>
         </AssistantsMapContext.Provider>
       </AgentsMapContext.Provider>
     </TargetContext.Provider>

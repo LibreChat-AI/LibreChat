@@ -3,6 +3,7 @@ import * as Ariakit from '@ariakit/react';
 import { Button } from '@librechat/client';
 import { VisuallyHidden } from '@ariakit/react';
 import { ChevronDown, FileText } from 'lucide-react';
+import { getCleanDomain } from '@librechat/chat/components';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -30,10 +31,7 @@ function getFaviconUrl(domain: string) {
   return `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
 }
 
-export function getCleanDomain(url: string) {
-  const domain = url.replace(/(^\w+:|^)\/\//, '').split('/')[0];
-  return domain.startsWith('www.') ? domain.substring(4) : domain;
-}
+export { getCleanDomain };
 
 export function FaviconImage({ domain, className = '' }: { domain: string; className?: string }) {
   return (

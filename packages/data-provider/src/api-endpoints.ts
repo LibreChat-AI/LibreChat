@@ -102,15 +102,11 @@ export const messageSubagentAttachmentCalls = ({
   `${messagesRoot}/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}/subagent-calls?files=${encodeURIComponent(JSON.stringify(files))}`;
 
 /** One tool-call part of a stored message, in full. */
-export const messageToolCallPart = ({
-  conversationId,
-  messageId,
-  partIndex,
-  toolCallId,
-  stepId,
-  agentId,
-}: q.ToolCallPartParams) => {
-  const path = `${messagesRoot}/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}/parts/${partIndex}`;
+/** The identity a stored tool-call part is read by, as a query string appended to `path`. */
+const withToolCallIdentity = (
+  path: string,
+  { toolCallId, stepId, agentId }: Pick<q.ToolCallPartParams, 'toolCallId' | 'stepId' | 'agentId'>,
+) => {
   const query = [
     ['toolCallId', toolCallId],
     ['stepId', stepId],
@@ -121,6 +117,12 @@ export const messageToolCallPart = ({
     .join('&');
   return query === '' ? path : `${path}?${query}`;
 };
+
+export const messageToolCallPart = (params: q.ToolCallPartParams) =>
+  withToolCallIdentity(
+    `${messagesRoot}/${encodeURIComponent(params.conversationId)}/${encodeURIComponent(params.messageId)}/parts/${params.partIndex}`,
+    params,
+  );
 
 export const messagesBranch = () => `${messagesRoot}/branch`;
 
@@ -183,6 +185,20 @@ export const subagentThread = (
   if (taskId != null) return `${endpoint}?taskId=${encodeURIComponent(taskId)}`;
   return cursor == null ? endpoint : `${endpoint}?cursor=${encodeURIComponent(cursor)}`;
 };
+
+/** A child thread's messages, read through the parent conversation that owns it. */
+export const subagentThreadMessages = (parentConversationId: string, threadId: string) =>
+  `${parentSubagents(parentConversationId)}/${encodeURIComponent(threadId)}/messages`;
+
+/** One full tool-call part of a child thread's message; `conversationId` is the thread. */
+export const subagentThreadToolCallPart = (
+  parentConversationId: string,
+  params: q.ToolCallPartParams,
+) =>
+  withToolCallIdentity(
+    `${subagentThreadMessages(parentConversationId, params.conversationId)}/${encodeURIComponent(params.messageId)}/parts/${params.partIndex}`,
+    params,
+  );
 
 export const subagentTaskContent = (
   parentConversationId: string,

@@ -12,7 +12,11 @@ import {
   allocateTurnAttachmentsWithHistory,
   allocateTurnAttachmentsWithRetainedContext,
 } from './history';
-import { applyTurnDelivery, resolveTurnDeliveryRouting } from '~/agents/files/delivery';
+import {
+  withTurnReading,
+  applyTurnDelivery,
+  resolveTurnDeliveryRouting,
+} from '~/agents/files/delivery';
 import { buildTurnReadingContext } from './turn';
 
 type EndpointFileConfigInput = NonNullable<TFileConfig['endpoints']>[string];
@@ -65,7 +69,7 @@ function setup({
     imageOutputType: 'png',
     fileConfig: { ...fileConfig, endpoints: { [ENDPOINT]: endpointConfig } },
   };
-  const routing = resolveTurnDeliveryRouting({
+  let routing = resolveTurnDeliveryRouting({
     agent: { provider: ENDPOINT, endpoint: ENDPOINT },
     config: appConfig,
   });
@@ -81,7 +85,7 @@ function setup({
   if (context == null) {
     throw new Error('expected a reading context');
   }
-  routing.reading = context;
+  routing = withTurnReading(routing, context);
   return {
     agent: { id: 'agent_1', deliveryRouting: routing, fileConsumers: consumers },
     req: { config: appConfig },

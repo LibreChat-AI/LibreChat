@@ -37,8 +37,12 @@ const answer = {
   text: 'The answer is 4.',
 } as TMessage;
 
-function renderButtons(overrides: Partial<MessagesHost> = {}, isSubmitting = false) {
-  const chat = { index: 0, isSubmitting } as ChatContract;
+function renderButtons(
+  overrides: Partial<MessagesHost> = {},
+  isSubmitting = false,
+  readOnly = false,
+) {
+  const chat = { index: 0, isSubmitting, readOnly } as ChatContract;
   return render(
     <ChatContext.Provider value={chat}>
       <MessagesHostProvider host={createMessagesHost(overrides)}>
@@ -106,5 +110,13 @@ describe('HoverButtons', () => {
     renderButtons({ useGetMessages: () => () => [question, answer] }, true);
 
     expect(screen.queryByTestId('regenerate-generation-button')).toBeNull();
+  });
+
+  it('keeps copy and withholds rerun and edit where the reader takes no turn', () => {
+    renderButtons({ useGetMessages: () => () => [question, answer] }, false, true);
+
+    expect(screen.queryByTestId('regenerate-generation-button')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeInTheDocument();
   });
 });

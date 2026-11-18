@@ -48,6 +48,8 @@ export interface ContentInspectionConfig {
 
 export interface ConfiguredContentInspector {
   readonly hasAuditRules: boolean;
+  /** Selects extraction work using the same compiled rules as inspection. */
+  shouldInspect(fragment: TextContentFragment): boolean;
   createSession(): ConfiguredContentInspectionSession;
   inspect(fragments: Iterable<TextContentFragment>): ProtectionFinding | null;
 }
@@ -303,6 +305,12 @@ function compilePlans(plans: readonly FilterCompilationPlan[]): readonly Compile
   return compiled;
 }
 
+function selectsFragment(rule: CompiledFilter, fragment: TextContentFragment): boolean {
+  return (
+    (rule.fields == null || rule.fields.has(fragment.field)) && rule.applies?.(fragment) !== false
+  );
+}
+
 function createInspector(rules: readonly CompiledFilter[]): ConfiguredContentInspector {
   const hasAuditRules = rules.some((rule) => rule.action === 'audit');
   const rulesBySource = new Map<ContentSource, Array<readonly [number, CompiledFilter]>>();
@@ -328,10 +336,7 @@ function createInspector(rules: readonly CompiledFilter[]): ConfiguredContentIns
     }
     let firstBlockingFinding: ProtectionFinding | null = null;
     for (const [ruleIndex, rule] of sourceRules) {
-      if (rule.fields != null && !rule.fields.has(fragment.field)) {
-        continue;
-      }
-      if (rule.applies?.(fragment) === false) {
+      if (!selectsFragment(rule, fragment)) {
         continue;
       }
       const inspectedText = (inspectedTextByRule[ruleIndex] ??= new Set<string>());
@@ -396,6 +401,12 @@ function createInspector(rules: readonly CompiledFilter[]): ConfiguredContentIns
 
   return {
     hasAuditRules,
+    shouldInspect(fragment) {
+      return (
+        rulesBySource.get(fragment.source)?.some(([, rule]) => selectsFragment(rule, fragment)) ===
+        true
+      );
+    },
     createSession,
     inspect(fragments) {
       return inspect(fragments, new Array(rules.length));

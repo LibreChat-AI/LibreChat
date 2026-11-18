@@ -5748,6 +5748,45 @@ describe('AgentClient - titleConvo', () => {
       client.maxContextTokens = 4096;
     });
 
+    it('bounds admission and fallback estimates without changing stored history counts', async () => {
+      const getReqData = jest.fn();
+      const messages = [
+        {
+          messageId: 'old-user',
+          parentMessageId: Constants.NO_PARENT,
+          text: 'Old prompt',
+          isCreatedByUser: true,
+          tokenCount: 1000000,
+        },
+        {
+          messageId: 'old-answer',
+          parentMessageId: 'old-user',
+          text: 'Old answer',
+          isCreatedByUser: false,
+          tokenCount: 1277600,
+        },
+        {
+          messageId: 'new-user',
+          parentMessageId: 'old-answer',
+          text: 'Continue',
+          isCreatedByUser: true,
+          tokenCount: 30,
+        },
+      ];
+      client.maxContextTokens = 250000;
+
+      const built = await client.buildMessages(messages, 'new-user', {}, { getReqData });
+
+      expect(built.promptTokens).toBe(250000);
+      expect(getReqData).toHaveBeenCalledWith({ promptTokens: 250000 });
+      expect(built.tokenCountMap).toEqual({
+        'old-user': 1000000,
+        'old-answer': 1277600,
+        'new-user': 30,
+      });
+      expect(built.prompt).toHaveLength(3);
+    });
+
     it('loads RAG, memory, attachment, and MCP context without serial waits', async () => {
       const ragContext = deferred();
       const memoryContext = deferred();
@@ -6939,7 +6978,7 @@ describe('AgentClient - titleConvo', () => {
     });
 
     it('rolls back prepared native fallback copies after steer extraction fails with File Search loaded but unreachable', async () => {
-      const { buildTurnReadingContext } = jest.requireActual('@librechat/api');
+      const { buildTurnReadingContext, withTurnReading } = jest.requireActual('@librechat/api');
       mockReq.config.fileConfig = { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } };
       /** Automatic reading needs a loaded file tool; text is the fallback once File Search
        *  cannot reach the file. */
@@ -6956,7 +6995,7 @@ describe('AgentClient - titleConvo', () => {
         countTokens: (text) => text.length,
       });
       context.setSearchEvidence({ queued: [], registered: [], preparation: new Map() });
-      mockAgent.deliveryRouting.reading = context;
+      mockAgent.deliveryRouting = withTurnReading(mockAgent.deliveryRouting, context);
       const file = {
         ...makeUploadedFile('steered-pdf', 'steered.pdf', 'application/pdf'),
         context: 'message_attachment',
@@ -7140,7 +7179,7 @@ describe('AgentClient - titleConvo', () => {
       ];
 
       const readAutomatically = (endpointConfig, deriveText) => {
-        const { resolveTurnDeliveryRouting, buildTurnReadingContext } =
+        const { resolveTurnDeliveryRouting, buildTurnReadingContext, withTurnReading } =
           jest.requireActual('@librechat/api');
         client.options.resendFiles = true;
         mockReq.config.fileConfig = { endpoints: { openAI: endpointConfig } };
@@ -7149,15 +7188,18 @@ describe('AgentClient - titleConvo', () => {
           agent: mockAgent,
           config: mockReq.config,
         });
-        mockAgent.deliveryRouting.reading = buildTurnReadingContext({
-          routing: mockAgent.deliveryRouting,
-          provider: EModelEndpoint.openAI,
-          model: 'gpt-4',
-          fileTokenLimit: 1000,
-          configuredFileSizeLimit: undefined,
-          countTokens: (text) => text.length,
-          deriveText,
-        });
+        mockAgent.deliveryRouting = withTurnReading(
+          mockAgent.deliveryRouting,
+          buildTurnReadingContext({
+            routing: mockAgent.deliveryRouting,
+            provider: EModelEndpoint.openAI,
+            model: 'gpt-4',
+            fileTokenLimit: 1000,
+            configuredFileSizeLimit: undefined,
+            countTokens: (text) => text.length,
+            deriveText,
+          }),
+        );
         client.options.attachments = [currentPdf];
         require('~/models').getFiles.mockResolvedValue([historicalPdf]);
         client.addFileContextToMessage = jest.fn();
@@ -8015,7 +8057,7 @@ describe('AgentClient - titleConvo', () => {
     );
 
     it('derives text a handoff receiver needs before resolving its scoped attachments', async () => {
-      const { resolveTurnDeliveryRouting, buildTurnReadingContext } =
+      const { resolveTurnDeliveryRouting, buildTurnReadingContext, withTurnReading } =
         jest.requireActual('@librechat/api');
       const workbook = {
         ...makeUploadedFile(
@@ -8054,14 +8096,17 @@ describe('AgentClient - titleConvo', () => {
         agent: handoffAgent,
         config: client.options.req.config,
       });
-      handoffAgent.deliveryRouting.reading = buildTurnReadingContext({
-        routing: handoffAgent.deliveryRouting,
-        provider: EModelEndpoint.openAI,
-        fileTokenLimit: 100000,
-        configuredFileSizeLimit: undefined,
-        countTokens: (text) => text.length,
-        deriveText,
-      });
+      handoffAgent.deliveryRouting = withTurnReading(
+        handoffAgent.deliveryRouting,
+        buildTurnReadingContext({
+          routing: handoffAgent.deliveryRouting,
+          provider: EModelEndpoint.openAI,
+          fileTokenLimit: 100000,
+          configuredFileSizeLimit: undefined,
+          countTokens: (text) => text.length,
+          deriveText,
+        }),
+      );
       client.agentConfigs = new Map([['handoff-agent', handoffAgent]]);
       client.options.resendFiles = true;
       client.options.attachments = [];

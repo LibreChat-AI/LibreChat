@@ -1,6 +1,6 @@
 import { useId } from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { cn, disabledWithinFillClasses } from '~/utils';
+import { cn, disabledWithinFillClasses, disabledWithinPartsClasses } from '~/utils';
 import './ChoiceCards.css';
 
 /** `choice-badge` carries the pick animation in `ChoiceCards.css`. */
@@ -64,6 +64,7 @@ export function ChoiceCards({
                 ? 'border-text-primary bg-surface-secondary'
                 : 'hover:bg-surface-hover border-border-medium',
               disabledWithinFillClasses,
+              disabled && disabledWithinPartsClasses,
               'has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50',
             )}
           >

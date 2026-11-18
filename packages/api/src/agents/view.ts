@@ -1,4 +1,8 @@
-import { logger, SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT } from '@librechat/data-schemas';
+import {
+  logger,
+  CLIENT_MESSAGE_SELECT,
+  SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT,
+} from '@librechat/data-schemas';
 import type {
   ParentSubagentIndex,
   ParentSubagentSummary,
@@ -17,6 +21,8 @@ import type {
   SubagentThreadViewMessageRecord,
 } from '@librechat/data-schemas';
 import type { Response } from 'express';
+import type { MessageRequestValidation } from '~/middleware/messageValidation';
+import type { ToolCallPartDeps, ToolCallPartRequest } from '~/messages/parts';
 import type { ServerRequest } from '~/types';
 import {
   projectPersistedMessageActivity,
@@ -24,6 +30,7 @@ import {
   projectSubagentActivity,
   SUBAGENT_ACTIVITY_LIMITS,
 } from './activity';
+import { createToolCallPartHandler } from '~/messages/parts';
 
 const MAX_THREAD_MESSAGES = 50;
 const MAX_MESSAGE_TEXT_BYTES = 32 * 1024;
@@ -839,3 +846,161 @@ export const PARENT_SUBAGENT_INDEX_LIMITS: Readonly<{
   tasksPerChild: MAX_PARENT_TASKS_PER_CHILD,
   responseBytes: MAX_PARENT_INDEX_BYTES,
 });
+
+type ChildThreadAccessDependencies = Pick<
+  ConversationMethods,
+  'getConvoOwnership' | 'getSubagentThreadForParent'
+>;
+
+type ChildThreadAccess = {
+  /** An event binding's thread, whose inputs are the raw payloads of external events. */
+  eventThread: boolean;
+};
+
+/** The same parent, lineage and tenant check the durable thread view runs. Null refuses. */
+async function authorizeChildThread(
+  deps: ChildThreadAccessDependencies,
+  req: ServerRequest,
+): Promise<(ChildThreadAccess & { threadId: string; userId: string }) | null> {
+  const userId = req.user?.id;
+  const tenantId = req.user?.tenantId || undefined;
+  const { parentConversationId, threadId } = req.params as SubagentThreadViewParams;
+  if (
+    !userId ||
+    !validConversationId(parentConversationId) ||
+    !validConversationId(threadId) ||
+    parentConversationId === threadId
+  ) {
+    return null;
+  }
+  const [parent, child] = await Promise.all([
+    deps.getConvoOwnership(userId, parentConversationId, tenantId ?? null),
+    deps.getSubagentThreadForParent({
+      user: userId,
+      parentConversationId,
+      conversationId: threadId,
+      ...(tenantId == null ? {} : { tenantId }),
+    }),
+  ]);
+  const lineage = child?.subagentThread;
+  if (
+    parent == null ||
+    child == null ||
+    lineage == null ||
+    lineage.parentConversationId !== parentConversationId ||
+    !tenantMatches(parent.tenantId, tenantId) ||
+    !tenantMatches(child.tenantId, tenantId)
+  ) {
+    return null;
+  }
+  return { threadId, userId, eventThread: lineage.parentToolCallId.startsWith('event-binding:') };
+}
+
+type ChildThreadMessage = { isCreatedByUser?: boolean; [field: string]: unknown };
+
+/** What an event thread's input row may show: who and when, never the external payload. */
+const EVENT_INPUT_FIELDS = [
+  'messageId',
+  'parentMessageId',
+  'conversationId',
+  'sender',
+  'isCreatedByUser',
+  'endpoint',
+  'createdAt',
+  'updatedAt',
+] as const;
+
+/**
+ * An event thread's input is the raw payload of an external event. The durable thread view
+ * never sends it, and neither does this read: the row keeps its place in the thread with
+ * empty text.
+ */
+function withoutEventInput(message: ChildThreadMessage): ChildThreadMessage {
+  if (message.isCreatedByUser !== true) return message;
+  const visible: Record<string, unknown> = { text: '' };
+  for (const field of EVENT_INPUT_FIELDS) {
+    if (message[field] !== undefined) visible[field] = message[field];
+  }
+  return visible;
+}
+
+export type ChildThreadMessagesDependencies = ChildThreadAccessDependencies & {
+  getMessages: (
+    filter: { conversationId: string; user: string },
+    select: string,
+  ) => Promise<ChildThreadMessage[] | null>;
+  /** The conversation messages route's tool-call previewer for this request. */
+  previewToolCalls: (
+    req: ServerRequest,
+  ) => (messages: ChildThreadMessage[]) => Promise<ChildThreadMessage[]> | ChildThreadMessage[];
+};
+
+/**
+ * `GET /api/convos/:parentConversationId/subagents/:threadId/messages`: a child thread's rows
+ * as the conversation messages route would send them, with the same projection and tool-call
+ * previews, reachable only through the parent the requester owns. The rows are read beside
+ * the access check and sent only once it passes.
+ */
+export function createChildThreadMessagesHandler(deps: ChildThreadMessagesDependencies) {
+  return async (req: ServerRequest, res: Response): Promise<void> => {
+    try {
+      const previewToolCalls = deps.previewToolCalls(req);
+      const userId = req.user?.id;
+      const { threadId } = req.params as SubagentThreadViewParams;
+      const reading =
+        userId && validConversationId(threadId)
+          ? deps
+              .getMessages({ conversationId: threadId, user: userId }, CLIENT_MESSAGE_SELECT)
+              .then(
+                (messages) => ({ ok: true as const, messages }),
+                (error: unknown) => ({ ok: false as const, error }),
+              )
+          : null;
+      const access = await authorizeChildThread(deps, req);
+      if (access == null || reading == null) {
+        notFound(res);
+        return;
+      }
+      const read = await reading;
+      if (!read.ok) throw read.error;
+      const messages = read.messages ?? [];
+      res
+        .status(200)
+        .json(
+          await previewToolCalls(access.eventThread ? messages.map(withoutEventInput) : messages),
+        );
+    } catch (error) {
+      logger.error('[subagentThreads] Failed to read child thread messages', error);
+      res.status(500).json({ error: 'Failed to load child messages' });
+    }
+  };
+}
+
+export type ChildThreadToolCallPartDependencies = ChildThreadAccessDependencies & ToolCallPartDeps;
+
+/**
+ * `GET /api/convos/:parentConversationId/subagents/:threadId/messages/:messageId/parts/:partIndex`:
+ * the full stored tool call behind a preview, read the way the conversation route reads it but
+ * authorized through the parent.
+ */
+export function createChildThreadToolCallPartHandler(deps: ChildThreadToolCallPartDependencies) {
+  const validate = (req: ToolCallPartRequest): MessageRequestValidation => ({
+    shouldFetchMessages: true,
+    promise: authorizeChildThread(deps, req as unknown as ServerRequest).then((access) =>
+      access == null
+        ? { ok: false, status: 404, body: { error: 'Tool call not found' } }
+        : { ok: true },
+    ),
+  });
+  const readPart = createToolCallPartHandler({
+    getMessages: deps.getMessages,
+    validate,
+    sendValidationResponse: (res, result) => res.status(result.status).json(result.body),
+  });
+  return (req: ServerRequest, res: Response): Promise<void> => {
+    /** The shared reader addresses a message by its conversation, which here is the thread. */
+    const params = req.params as SubagentThreadViewParams & { conversationId?: string };
+    params.conversationId = params.threadId;
+    return readPart(req as unknown as ToolCallPartRequest, res);
+  };
+}

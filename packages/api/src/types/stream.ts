@@ -75,6 +75,10 @@ export interface GenerationJobMetadata {
   agentEventDetachedTerminalEvidence?: AgentEventDetachedTerminalEvidence;
   /** Trusted actor binding copied from the authenticated delivery envelope. */
   agentEventBindingId?: string;
+  /** The background subagent task this generation streams; set only by the task store. */
+  subagentTaskId?: string;
+  /** The conversation that dispatched that task. */
+  subagentParentConversationId?: string;
   /** Optional action evidence contract declared by the authenticated event source. */
   agentEventExpectedAction?: AgentTriggerExpectedAction;
   /** Versioned pointer to the canonical signed suspension stored on the Conversation. */

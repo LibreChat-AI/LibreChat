@@ -8,8 +8,12 @@ import type { SteerMediaClient, SteerReadingAgent } from '../media';
 import type { FileTextDeriver } from '~/files/reading';
 import type { SteerFileFetcher } from '../request';
 import type { ServerRequest } from '~/types';
+import {
+  withTurnReading,
+  applyTurnDelivery,
+  resolveTurnDeliveryRouting,
+} from '../../files/delivery';
 import { buildSteerMedia, collectSteerStampTargets, stampSteerPartMedia } from '../media';
-import { applyTurnDelivery, resolveTurnDeliveryRouting } from '../../files/delivery';
 import { buildTurnReadingContext, prepareTurnFiles } from '~/files/reading';
 import { AttachmentObjectNotFoundError } from '~/files/encode/utils';
 import { extractFileContext } from '~/files/context';
@@ -666,7 +670,7 @@ describe('buildSteerMedia file reading', () => {
   });
 
   it('notes a newly held Run Code file after native validation rejects it', async () => {
-    const deliveryRouting = routingFor({
+    let deliveryRouting = routingFor({
       endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } },
     });
     const reading = buildTurnReadingContext({
@@ -676,7 +680,7 @@ describe('buildSteerMedia file reading', () => {
       configuredFileSizeLimit: undefined,
       countTokens: (text) => text.length,
     });
-    deliveryRouting.reading = reading;
+    deliveryRouting = withTurnReading(deliveryRouting, reading);
     const client = createRoutedClient({
       deliveryRouting,
       fileConsumers: { executeCode: true, fileSearch: true },
@@ -733,7 +737,7 @@ describe('buildSteerMedia file reading', () => {
 
     /** An automatic run without Run Code whose reading derives text through the given stub. */
     function deferredRun(deriveText: FileTextDeriver) {
-      const deliveryRouting = routingFor({
+      let deliveryRouting = routingFor({
         endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } },
       });
       const context = buildTurnReadingContext({
@@ -744,7 +748,7 @@ describe('buildSteerMedia file reading', () => {
         countTokens: (text) => text.length,
         deriveText,
       });
-      deliveryRouting.reading = context;
+      deliveryRouting = withTurnReading(deliveryRouting, context);
       return createRoutedClient({
         deliveryRouting,
         fileConsumers: { executeCode: false, fileSearch: true },

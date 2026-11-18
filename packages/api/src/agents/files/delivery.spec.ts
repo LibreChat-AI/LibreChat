@@ -18,6 +18,7 @@ import {
   prepareScopedTurnCandidates,
   resolveScopedTurnAttachments,
   resolveTurnDeliveryRouting,
+  withTurnReading,
   toClassicInspectionView,
   applyCheckpointDelivery,
 } from './delivery';
@@ -525,7 +526,7 @@ describe('prepareScopedTurnCandidates', () => {
       config?: Pick<AppConfig, 'fileConfig'>;
     } = {},
   ) {
-    const deliveryRouting = resolveTurnDeliveryRouting({
+    let deliveryRouting = resolveTurnDeliveryRouting({
       agent: { provider: endpoint },
       config,
     });
@@ -541,7 +542,7 @@ describe('prepareScopedTurnCandidates', () => {
     if (context == null) {
       throw new Error('expected a reading context');
     }
-    deliveryRouting.reading = context;
+    deliveryRouting = withTurnReading(deliveryRouting, context);
     return { agentId, agent: { deliveryRouting, fileConsumers: consumers }, context };
   }
 

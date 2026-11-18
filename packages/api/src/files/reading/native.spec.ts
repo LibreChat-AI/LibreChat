@@ -12,8 +12,12 @@ import {
   recordNativeRejections,
   buildTurnReadingContext,
 } from './turn';
+import {
+  withTurnReading,
+  applyTurnDelivery,
+  resolveTurnDeliveryRouting,
+} from '~/agents/files/delivery';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from '~/agents/attachments';
-import { resolveTurnDeliveryRouting, applyTurnDelivery } from '~/agents/files/delivery';
 import { admitNativeFallbackAttachments, prepareMessageAttachments } from './native';
 import { encodeAndFormatDocuments } from '~/files/encode/document';
 import { ContentFilterError } from '~/middleware/contentFilter';
@@ -174,7 +178,7 @@ function setup({
   const extractors = { parseDocument: jest.fn(parseDocument), parseTextNative };
   const deriveText = jest.fn(createFileTextDeriver({ req, openStoredFile, filters, extractors }));
   const persistDerivation = jest.fn(async () => true);
-  const routing = resolveTurnDeliveryRouting({
+  let routing = resolveTurnDeliveryRouting({
     agent: { provider: Providers.ANTHROPIC },
     config: req.config,
   });
@@ -188,7 +192,7 @@ function setup({
     persistDerivation,
   });
   if (context == null) throw new Error('Expected automatic reading context');
-  routing.reading = context;
+  routing = withTurnReading(routing, context);
   context.setSearchEvidence({
     queued: queuedForSearch ? [...historical, ...current].map(({ file }) => file.file_id) : [],
     registered: [],

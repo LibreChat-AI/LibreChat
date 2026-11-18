@@ -30,6 +30,7 @@ export * from './parsers';
 export * from './generate';
 export * from './models';
 export * from './families';
+export * from './gemini';
 /* mcp */
 export * from './mcp';
 export * from './mcp/appMime';

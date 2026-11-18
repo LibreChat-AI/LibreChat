@@ -1,9 +1,10 @@
 import { useCallback, useMemo } from 'react';
+import { useStore } from 'jotai';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
 import { getMessageBranchSiblingParentIds, selectActiveBranchTail } from '../core';
-import { siblingKey, useSiblingIndexes } from './thread';
+import { siblingIdxFamily, siblingKey, useSiblingIndexes } from './thread';
 
 const EMPTY_PARENT_IDS: (string | null)[] = [];
 
@@ -72,6 +73,31 @@ export function useBranchTail(
   messagesQueryId: string | null | undefined,
 ): TMessage | null {
   return useBranchTailSelect(rootSiblingKey, messagesQueryId, pickTail);
+}
+
+/**
+ * Reads {@link useBranchTail} when called, with no subscription. The tail is rewritten by every
+ * streamed delta, so a reader that only needs it when it acts (a send, a regenerate, a retry)
+ * subscribes to nothing and keeps one identity for the whole run.
+ */
+export function useBranchTailGetter(
+  rootSiblingKey: string | null,
+  messagesQueryId: string | null | undefined,
+): () => TMessage | null {
+  const queryClient = useQueryClient();
+  const jotaiStore = useStore();
+  return useCallback((): TMessage | null => {
+    if (!messagesQueryId) {
+      return null;
+    }
+    const messages =
+      queryClient.getQueryData<TMessage[]>([QueryKeys.messages, messagesQueryId]) ?? [];
+    return selectActiveBranchTail(
+      messages,
+      messages[0]?.conversationId ?? rootSiblingKey,
+      (parentId) => jotaiStore.get(siblingIdxFamily(siblingKey(parentId))),
+    );
+  }, [queryClient, jotaiStore, rootSiblingKey, messagesQueryId]);
 }
 
 /** The id of {@link useBranchTail}, subscribed on its own. */

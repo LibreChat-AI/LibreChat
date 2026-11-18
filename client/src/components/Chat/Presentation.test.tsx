@@ -74,6 +74,9 @@ jest.mock('@librechat/chat/components', () => {
   };
 });
 
+/** The mocked panel draws no message rows, so it needs no app message hosts. */
+jest.mock('~/components/Chat/Messages/hosts', () => ({}));
+
 jest.mock('~/components/Chat/Input/Files/DragDropWrapper', () => ({
   __esModule: true,
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,

@@ -23,7 +23,7 @@ import {
   getNativeValidationPolicy,
   createDerivationPersister,
 } from './turn';
-import { resolveTurnDeliveryRouting } from '~/agents/files/delivery';
+import { resolveTurnDeliveryRouting, withTurnReading } from '~/agents/files/delivery';
 import { UninspectableFileError } from '~/protection/files';
 
 type EndpointFileConfigInput = NonNullable<TFileConfig['endpoints']>[string];
@@ -127,11 +127,11 @@ describe('buildTurnReadingContext', () => {
   });
 
   it('is found again through the routing it is attached to, and through a copy of it', () => {
-    const routing = routingFor('openAI');
+    let routing = routingFor('openAI');
     const context = contextFor({ routing });
     expect(getTurnReadingContext(routing)).toBe(undefined);
 
-    routing.reading = context;
+    routing = withTurnReading(routing, context);
     expect(getTurnReadingContext(routing)).toBe(context);
     expect(getTurnReadingContext({ ...routing })).toBe(context);
     expect(getTurnReadingContext({ reading: { judge: () => ({}), canDerive: false } })).toBe(
@@ -148,9 +148,9 @@ describe('getTurnTextOptions', () => {
   });
 
   it('reuses judged counts and marks truncation under the automatic policy', () => {
-    const routing = routingFor('openAI');
+    let routing = routingFor('openAI');
     const context = contextFor({ routing, fileTokenLimit: 10, countTokens: () => 4 });
-    routing.reading = context;
+    routing = withTurnReading(routing, context);
     const file = attachment({ file_id: 'notes', text: 'x'.repeat(40), llmDeliveryPath: 'text' });
     expect(context.judge(file).text).toBe('fits');
 
@@ -161,8 +161,8 @@ describe('getTurnTextOptions', () => {
   });
 
   it('reuses counts without marking truncation in a derive-only classic context', () => {
-    const routing = routingFor('openAI', {});
-    routing.reading = contextFor({ routing, deriveText: jest.fn() });
+    let routing = routingFor('openAI', {});
+    routing = withTurnReading(routing, contextFor({ routing, deriveText: jest.fn() }));
 
     expect(getTurnTextOptions(routing)).toMatchObject({ markTruncation: false });
   });
@@ -178,8 +178,8 @@ describe('native validation', () => {
   const unmarkedPdf = attachment({ file_id: 'unmarked-pdf', metadata: {} });
 
   const automaticAgent = (overrides: Partial<NativeDeliveryAgent> = {}): NativeDeliveryAgent => {
-    const routing = routingFor('openAI');
-    routing.reading = contextFor({ routing });
+    let routing = routingFor('openAI');
+    routing = withTurnReading(routing, contextFor({ routing }));
     return {
       id: 'agent-1',
       deliveryRouting: routing,
@@ -202,11 +202,11 @@ describe('native validation', () => {
     });
 
     it('keeps a type the operator routed to a fixed path failing as classic', () => {
-      const routing = routingFor('openAI', {
+      let routing = routingFor('openAI', {
         llmDeliveryPolicy: 'automatic',
         defaultLLMDeliveryPath: { overrides: { [PDF]: 'provider' } },
       });
-      routing.reading = contextFor({ routing });
+      routing = withTurnReading(routing, contextFor({ routing }));
 
       expect(
         getNativeValidationPolicy(automaticAgent({ deliveryRouting: routing }))(rejectedPdf),
@@ -214,11 +214,14 @@ describe('native validation', () => {
     });
 
     it('fails every file outside an automatic reading, without known consumers or without a file tool', () => {
-      const derivingClassic = routingFor('openAI', {});
-      derivingClassic.reading = contextFor({
-        routing: derivingClassic,
-        deriveText: async () => ({ status: 'skipped', reason: 'no_extractor' }),
-      });
+      const classic = routingFor('openAI', {});
+      const derivingClassic = withTurnReading(
+        classic,
+        contextFor({
+          routing: classic,
+          deriveText: async () => ({ status: 'skipped', reason: 'no_extractor' }),
+        }),
+      );
       const agents = [
         automaticAgent({ deliveryRouting: derivingClassic }),
         automaticAgent({ deliveryRouting: routingFor('openAI') }),
@@ -424,9 +427,9 @@ describe('text verdicts', () => {
 
   it('never counts a stored text the reading walk gives to Run Code', () => {
     const countTokens = jest.fn(countByLength);
-    const routing = routingFor('openAI');
+    let routing = routingFor('openAI');
     const context = contextFor({ routing, fileTokenLimit: 100_000, countTokens });
-    routing.reading = context;
+    routing = withTurnReading(routing, context);
     const csv = attachment({
       file_id: 'large-csv',
       type: 'text/csv',
@@ -1006,9 +1009,9 @@ describe('deriveRequestedText', () => {
 
 describe('needsDerivedText', () => {
   it('decides only marked records for a derive-only classic context', () => {
-    const routing = routingFor('openAI', {});
+    let routing = routingFor('openAI', {});
     const context = contextFor({ routing, deriveText: jest.fn() });
-    routing.reading = context;
+    routing = withTurnReading(routing, context);
     const consumers = { executeCode: false, fileSearch: false };
     const marked = attachment({
       file_id: 'marked',

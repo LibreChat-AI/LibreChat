@@ -11,8 +11,8 @@ import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeFileAgent } from '~/files/code/queued';
 import type { ReadingAgent } from './inventory';
 import { buildTurnReadingContext, getTurnReadingContext, recordNativeRejections } from './turn';
+import { resolveTurnDeliveryRouting, withTurnReading } from '~/agents/files/delivery';
 import { prepareAgentFileContext, renderLeftOutFiles } from './inventory';
-import { resolveTurnDeliveryRouting } from '~/agents/files/delivery';
 import { ContentFilterError } from '~/middleware/contentFilter';
 
 type EndpointFileConfigInput = NonNullable<TFileConfig['endpoints']>[string];
@@ -74,7 +74,7 @@ function agentWith({
   dynamicToolContextMap,
   codeExecutionContext,
 }: AgentSetup = {}): TestAgent {
-  const routing = resolveTurnDeliveryRouting({
+  let routing = resolveTurnDeliveryRouting({
     agent: { provider, endpoint: provider },
     config: { fileConfig: { endpoints: { [provider]: endpointConfig } } },
   });
@@ -88,7 +88,7 @@ function agentWith({
     ...reading,
   });
   if (context != null) {
-    routing.reading = context;
+    routing = withTurnReading(routing, context);
   }
   const provisioned = codeEnvFiles != null || vectorDBFiles.length > 0;
   return {

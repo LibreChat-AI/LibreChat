@@ -39,7 +39,7 @@ const {
   appendCodeFileContextLine,
   createCodeReuploadFailures,
   openCodeFileSource,
-  getUploadedCodeEnvFilename,
+  createCodeFileUploadRef,
   checkCodeFileActive: checkIfActive,
   CODE_OUTPUT_PREFLIGHT_MAX_BYTES,
   CODE_OUTPUT_PREFLIGHT_MAX_COUNT,
@@ -896,16 +896,13 @@ const primeFiles = async (options) => {
              * upload preserves the resource identity, only the storage
              * pointer changes.
              */
-            const newRef = {
-              kind: sourceRef.kind,
-              id: sourceRef.id,
-              storage_session_id: uploaded.storage_session_id,
-              file_id: uploaded.file_id,
-              sandboxFilename: getUploadedCodeEnvFilename(uploaded, sandboxName),
+            const newRef = createCodeFileUploadRef({
+              sourceRef,
+              uploaded,
+              sandboxFilename: sandboxName,
               executionProfile,
-              ...(executionRouteKey !== executionProfile ? { executionRouteKey } : {}),
-              ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
-            };
+              executionRouteKey,
+            });
 
             const updatedRefs = mergeCodeEnvRef(file.metadata, newRef);
 

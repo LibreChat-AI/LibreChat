@@ -22,7 +22,7 @@ export type ChatPaneProps = {
   /** The welcome screen, shown when the column is `landing`. */
   landing?: ReactNode;
   /** Wraps whichever column is showing, so a provider it needs stays mounted across views. */
-  renderColumn?: (column: ReactNode) => ReactNode;
+  renderColumn?: (column: ReactNode, view: { isLanding: boolean }) => ReactNode;
   /** Shown above the composer on the welcome screen, such as conversation starters. */
   starters?: ReactNode;
   /** The composer. */
@@ -114,17 +114,23 @@ export default function ChatPane(props: ChatPaneProps): ReactElement {
           !isLanding && badge != null && 'pt-9',
         )}
       >
-        {renderColumn ? renderColumn(column) : column}
-        {/* Named + opaque so a view transition (the ask_user_question popover and chat-card
-            morph) paints the whole composer band over the travelling card instead of letting
-            it show through below the composer. The background matches the page, so normal
-            rendering is unchanged. The named surface is a stacking context; keep it above
-            positioned tool glyphs so they cannot paint through the approval preview. */}
+        {renderColumn ? renderColumn(column, { isLanding }) : column}
+        {/* The named, opaque band belongs to a conversation: the name is what the
+            ask_user_question popover and chat-card morph into, and the background keeps the
+            travelling card from showing through below the composer. The named surface is a
+            stacking context; keep it above positioned tool glyphs so they cannot paint through
+            the approval preview. The welcome screen has neither interaction, and leaving the
+            name on a transparent band there let the first reply's Markdown lose its paragraphs
+            through the transition. So it takes neither, and whatever sits behind the column,
+            a welcome backdrop or the plain page surface, shows through. */}
         <div
           ref={bandRef}
+          data-composer-band=""
           className={cn(
-            'bg-surface-canvas relative z-10 w-full [view-transition-name:chat-form]',
-            !isLanding && 'scrollbar-gutter-spacer',
+            'relative z-10 w-full',
+            isLanding
+              ? 'bg-transparent'
+              : 'bg-surface-canvas scrollbar-gutter-spacer [view-transition-name:chat-form]',
             isLanding && 'max-w-3xl transition-all duration-200 xl:max-w-4xl',
           )}
         >

@@ -65,6 +65,7 @@ export * from './subagentThreads';
 export * from './subagentActivity';
 export * from './aggregation';
 export * from './subagentContent';
+export * from './subagentGeneration';
 export * from './subagentIdentity';
 export * from './subagentCompletionWakeup';
 export * from './subagentTaskRouting';

@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import type { Filter, Binary, Db, MongoClient } from 'mongodb';
 import type {
   CheckpointRepository,
+  CheckpointReadOptions,
   CheckpointIdentity,
   CheckpointReference,
   CheckpointSelection,
@@ -184,8 +185,13 @@ class MongoCheckpointRepository implements CheckpointRepository {
       );
     }
   }
-  async get(key: CheckpointIdentity): Promise<SerializedCheckpoint | null> {
-    const checkpoints = this.db.collection<CheckpointRow>(this.checkpoints);
+  async get(
+    key: CheckpointIdentity,
+    options?: CheckpointReadOptions,
+  ): Promise<SerializedCheckpoint | null> {
+    const checkpoints = this.db.collection<CheckpointRow>(this.checkpoints, {
+      ...(options?.consistency === 'authoritative' ? { readPreference: 'primary' } : {}),
+    });
     let row = await checkpoints.find(physical(key)).sort({ checkpoint_id: -1 }).limit(1).next();
     if (
       row == null &&
@@ -225,10 +231,13 @@ class MongoCheckpointRepository implements CheckpointRepository {
   }
   async readWrites(
     key: CheckpointIdentity & { checkpointId: string },
+    options?: CheckpointReadOptions,
   ): Promise<SerializedCheckpointWrite[]> {
     const legacy = key.owner != null && key.checkpointId === key.legacyCheckpointId;
     const rows = await this.db
-      .collection<WriteRow>(this.writes)
+      .collection<WriteRow>(this.writes, {
+        ...(options?.consistency === 'authoritative' ? { readPreference: 'primary' } : {}),
+      })
       .find({
         checkpoint_id: key.checkpointId,
         $or: [

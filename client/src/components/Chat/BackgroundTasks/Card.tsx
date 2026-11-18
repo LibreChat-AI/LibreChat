@@ -2,7 +2,7 @@ import { memo, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getToolDisplayLabel } from '@librechat/chat';
 import { ArrowUpRight, ChevronDown, Square } from 'lucide-react';
-import { IconButton, Spinner, TooltipAnchor } from '@librechat/client';
+import { Shimmer, Spinner, IconButton, TooltipAnchor } from '@librechat/client';
 import type { TaskRow, TaskRowDelivery, TaskRowStatus } from './rows';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import { getRunStepDurationLabels, cn } from '~/utils';
@@ -89,7 +89,7 @@ function TaskCard({
               className="text-text-primary focus-visible:ring-focus-control flex max-w-full items-start gap-1 rounded text-start text-sm focus-visible:ring-2 focus-visible:outline-none"
             >
               <span className="line-clamp-2 break-words">
-                <span className={cn(active && 'shimmer')}>{title}</span>
+                <Shimmer active={active}>{title}</Shimmer>
               </span>
               <ChevronDown
                 aria-hidden="true"
@@ -101,7 +101,7 @@ function TaskCard({
             </button>
           ) : (
             <p className="text-text-primary line-clamp-2 text-sm break-words">
-              <span className={cn(active && 'shimmer')}>{title}</span>
+              <Shimmer active={active}>{title}</Shimmer>
             </p>
           )}
           <p className="text-text-secondary mt-0.5 flex items-center gap-2 text-xs">

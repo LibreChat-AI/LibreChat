@@ -112,6 +112,12 @@ export type ChatSubmissionContract = {
   handleRegenerate: (e: MouseEvent<HTMLButtonElement>) => void;
   /** Button handler that continues the latest response from where it stopped. */
   handleContinue: (e: MouseEvent<HTMLButtonElement>) => void;
+  /**
+   * The reader takes no turn in this conversation, as in one they follow rather than drive: its
+   * rows offer no rerun, edit or continue, and a recovery prompt is explained rather than offered.
+   * Absent for a chat the reader drives.
+   */
+  readOnly?: boolean;
 };
 
 /** Stopping an in-flight turn. AI SDK: `stop`. */

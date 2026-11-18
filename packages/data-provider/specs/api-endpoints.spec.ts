@@ -11,6 +11,9 @@ import {
   acknowledgeTwoFactorSetup,
   finalizeTwoFactorSetup,
   cancelTwoFactorSetup,
+  messageToolCallPart,
+  subagentThreadMessages,
+  subagentThreadToolCallPart,
 } from '../src/api-endpoints';
 
 describe('buildLoginRedirectUrl', () => {
@@ -130,5 +133,40 @@ describe('required two-factor setup endpoints', () => {
     expect(acknowledgeTwoFactorSetup()).toBe('/api/auth/2fa/setup/acknowledge');
     expect(finalizeTwoFactorSetup()).toBe('/api/auth/2fa/setup/finalize');
     expect(cancelTwoFactorSetup()).toBe('/api/auth/2fa/setup/cancel');
+  });
+});
+
+describe('child thread read endpoints', () => {
+  it('reads a child thread through its parent, encoding both ids', () => {
+    expect(subagentThreadMessages('parent/1', 'thread 2')).toBe(
+      '/api/convos/parent%2F1/subagents/thread%202/messages',
+    );
+  });
+
+  it('addresses a tool-call part under the thread, with the same identity query as a chat', () => {
+    const params = {
+      conversationId: 'thread 2',
+      messageId: 'task:assistant',
+      partIndex: 3,
+      toolCallId: 'call/1',
+      stepId: 'step 1',
+    };
+
+    expect(subagentThreadToolCallPart('parent/1', params)).toBe(
+      '/api/convos/parent%2F1/subagents/thread%202/messages/task%3Aassistant/parts/3?toolCallId=call%2F1&stepId=step%201',
+    );
+    expect(messageToolCallPart(params)).toBe(
+      '/api/messages/thread%202/task%3Aassistant/parts/3?toolCallId=call%2F1&stepId=step%201',
+    );
+  });
+
+  it('omits the query when the part has no identity', () => {
+    expect(
+      subagentThreadToolCallPart('parent', {
+        conversationId: 'thread',
+        messageId: 'm',
+        partIndex: 0,
+      }),
+    ).toBe('/api/convos/parent/subagents/thread/messages/m/parts/0');
   });
 });

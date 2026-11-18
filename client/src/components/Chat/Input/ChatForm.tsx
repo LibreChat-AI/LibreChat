@@ -65,6 +65,7 @@ import {
   PendingToolApprovalButton,
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
+import { onGreetingSettled, canClaimWelcomeFocus, isTouchFirst } from '../welcome';
 import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
@@ -233,6 +234,21 @@ const ChatForm = memo(function ChatForm({
     }
     textAreaRef.current?.focus();
   }, []);
+
+  /** The welcome screen hands the composer its focus once the greeting has finished
+   * landing, so the caret arrives as the screen settles rather than before it. The cue
+   * is a timer, so it is honoured only while nothing else holds focus or has a popup
+   * open (`canClaimWelcomeFocus`), and never on a touchscreen, where focus would raise
+   * the keyboard over the welcome screen. Only the welcome screen announces it. */
+  useEffect(
+    () =>
+      onGreetingSettled(() => {
+        if (!isTouchFirst() && canClaimWelcomeFocus()) {
+          textAreaRef.current?.focus();
+        }
+      }),
+    [],
+  );
 
   /** Actions that consume the composer from inside a popup (the during-run
    * hovercard) sit in exempted popup content, so they restore focus themselves. */

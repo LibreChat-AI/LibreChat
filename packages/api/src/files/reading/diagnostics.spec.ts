@@ -2,7 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import { FileContext, FileSources } from 'librechat-data-provider';
 import type { TFileConfig, TurnFileConsumers } from 'librechat-data-provider';
 import type { FileTextDeriver, TurnReadingFile } from './turn';
-import { resolveTurnDeliveryRouting } from '~/agents/files/delivery';
+import { resolveTurnDeliveryRouting, withTurnReading } from '~/agents/files/delivery';
 import { logTurnReading, logAllocation } from './diagnostics';
 import { buildTurnReadingContext } from './turn';
 
@@ -26,7 +26,7 @@ const attachment = (
 const deriveText: FileTextDeriver = async () => ({ status: 'skipped', reason: 'policy' });
 
 function agentFor(endpointConfig: EndpointFileConfigInput, withContext = true) {
-  const deliveryRouting = resolveTurnDeliveryRouting({
+  let deliveryRouting = resolveTurnDeliveryRouting({
     agent: { provider: 'openAI', endpoint: 'openAI' },
     config: { fileConfig: { endpoints: { openAI: endpointConfig } } },
   });
@@ -41,7 +41,7 @@ function agentFor(endpointConfig: EndpointFileConfigInput, withContext = true) {
       })
     : undefined;
   if (context != null) {
-    deliveryRouting.reading = context;
+    deliveryRouting = withTurnReading(deliveryRouting, context);
   }
   return {
     agent: {

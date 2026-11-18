@@ -42,6 +42,39 @@ test('keeps one logical request across admission polls, with refreshed credentia
   expect(authHeaders).toHaveBeenCalledTimes(4);
 });
 
+test('submits a detached command unchanged and validates its result against it', async () => {
+  const command = {
+    protocolVersion: 1 as const,
+    operation: 'execute_command' as const,
+    workspaceId: 'root',
+    command: 'npm test',
+    timeoutMs: 60_000,
+    detached: true as const,
+  };
+  const commandResult = {
+    protocolVersion: 1,
+    operation: 'execute_command',
+    workspaceId: 'root',
+    exitCode: 0,
+    stdout: 'ready',
+    stderr: '',
+    timedOut: false,
+    truncated: false,
+  };
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(json({ requestId, state: 'queued' }, 202))
+    .mockResolvedValueOnce(json({ requestId, state: 'completed', result: commandResult }));
+  expect(await executeWorkspaceTool({ ...input, request: command, fetchImpl })).toEqual(
+    commandResult,
+  );
+  const [url, init] = fetchImpl.mock.calls[1];
+  expect(url).toBe('https://code.example/v1/workspace-tools/requests');
+  expect(init.method).toBe('POST');
+  expect(init.body).toBe(JSON.stringify(command));
+});
+
 test('recovers a lost submission response by lookup without rejoining admission', async () => {
   const fetchImpl = jest
     .fn()

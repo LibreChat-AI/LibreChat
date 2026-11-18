@@ -1,5 +1,9 @@
 import { logger } from '@librechat/data-schemas';
-import { extractEnvVariable, isEphemeralAgentId } from 'librechat-data-provider';
+import {
+  extractEnvVariable,
+  isEphemeralAgentId,
+  stripAgentIdSuffix,
+} from 'librechat-data-provider';
 import type { Agent, MCPOptions } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { RequestBody } from '~/types';
@@ -342,7 +346,7 @@ export function processAgentPlaceholders(value: string, agent: Partial<Agent>): 
     }
 
     const fieldValue = agent[field];
-    const replacementValue = fieldValue == null ? '' : String(fieldValue);
+    const replacementValue = fieldValue == null ? '' : stripAgentIdSuffix(fieldValue);
     value = value.replace(new RegExp(placeholder, 'g'), replacementValue);
   }
 

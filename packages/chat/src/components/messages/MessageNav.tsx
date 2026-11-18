@@ -187,6 +187,12 @@ function getMessageEntries(root: ParentNode, messagesById: Map<string, TMessage>
 const JUMP_EPS = 4;
 const SCROLL_DURATION = 400;
 const BOTTOM_SNAP_RETRIES = 2;
+/**
+ * How long the thread's width must hold still before the rail measures it again. A width that
+ * changes over many frames (the sidebar sliding, a panel being dragged) moves every row, and
+ * measuring them all on each of those frames is work the next frame throws away.
+ */
+const WIDTH_SETTLE_MS = 120;
 const DRAG_THRESHOLD = 4;
 
 function easeOutCubic(t: number): number {
@@ -354,6 +360,57 @@ const MessageIndicator = memo(function MessageIndicator({
       />
     </button>
   );
+});
+
+/**
+ * The ribs of the scrolling column, one per message. Memoized apart from the rail: the rail
+ * renders for every write to the conversation's messages, which while a reply streams is every
+ * delta, and building a label for each rib of a long thread on each of those was most of what
+ * the rail cost. The ribs change only when the entries or the reader's position among them do.
+ */
+const MessageRibs = memo(function MessageRibs({
+  entries,
+  visibleIds,
+  currentId,
+  hoveredId,
+  rovingId,
+  pendingId,
+  onSelect,
+}: {
+  entries: MessageEntry[];
+  visibleIds: Set<string>;
+  currentId: string | null;
+  hoveredId: string | null;
+  /** The one rib in the tab order. */
+  rovingId: string;
+  /** The reply still generating, which has no preview of its own yet. */
+  pendingId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const localize = useLocalize();
+  return entries.map((entry) => {
+    let labelKey: TranslationKeys = entry.isUser
+      ? 'com_ui_message_nav_go_to_user'
+      : 'com_ui_message_nav_go_to_assistant';
+    if (entry.isSystem) {
+      labelKey = 'com_ui_message_nav_go_to_system';
+    }
+    const label = localize(labelKey, {
+      0: previewTextFor(entry, localize, entry.id === pendingId).slice(0, 30),
+    });
+    return (
+      <MessageIndicator
+        key={entry.id}
+        entry={entry}
+        isInView={visibleIds.has(entry.id)}
+        isCurrent={currentId === entry.id}
+        isFocused={hoveredId === entry.id}
+        tabIndex={entry.id === rovingId ? 0 : -1}
+        onSelect={onSelect}
+        label={label}
+      />
+    );
+  });
 });
 
 /** Built on call: this module must not read `@librechat/client` while it loads. */
@@ -1210,6 +1267,9 @@ function MessageNav({
     scrollMarginRef.current = scrollMargin;
 
     let needsRecompute = false;
+    let observedWidth: number | null = null;
+    let widthSettling = false;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
     let frameId: number | null = null;
     let bottomFrameId: number | null = null;
     let bottomSnapToken = 0;
@@ -1248,6 +1308,10 @@ function MessageNav({
 
     const tick = () => {
       frameId = null;
+      /** Offsets taken mid-slide describe a layout that is already gone. */
+      if (widthSettling) {
+        return;
+      }
       if (needsRecompute) {
         recomputeOffsets();
         needsRecompute = false;
@@ -1351,9 +1415,25 @@ function MessageNav({
     };
 
     const content = container.firstElementChild as HTMLElement | null;
-    const resizeObserver = new ResizeObserver(() => {
+    const resizeObserver = new ResizeObserver((records) => {
       needsRecompute = true;
-      scheduleTick();
+      const width = records[records.length - 1]?.contentRect.width;
+      /** Height alone changes as a reply streams in, and the rail follows that frame by frame. */
+      if (width == null || observedWidth == null || width === observedWidth) {
+        observedWidth = width ?? observedWidth;
+        scheduleTick();
+        return;
+      }
+      observedWidth = width;
+      widthSettling = true;
+      if (settleTimer != null) {
+        clearTimeout(settleTimer);
+      }
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
+        widthSettling = false;
+        scheduleTick();
+      }, WIDTH_SETTLE_MS);
     });
     if (content) {
       resizeObserver.observe(content);
@@ -1366,6 +1446,9 @@ function MessageNav({
       container.removeEventListener('scroll', scheduleTick);
       if (frameId != null) {
         cancelAnimationFrame(frameId);
+      }
+      if (settleTimer != null) {
+        clearTimeout(settleTimer);
       }
       cancelColumnBottomScroll();
       resizeObserver.disconnect();
@@ -1668,29 +1751,15 @@ function MessageNav({
         data-message-nav-column=""
         className="hide-scrollbar relative flex min-h-0 w-14 cursor-pointer touch-none flex-col items-stretch gap-1.5 overflow-y-auto select-none [&::-webkit-scrollbar]:hidden"
       >
-        {messageEntries.map((entry) => {
-          let labelKey: TranslationKeys = entry.isUser
-            ? 'com_ui_message_nav_go_to_user'
-            : 'com_ui_message_nav_go_to_assistant';
-          if (entry.isSystem) {
-            labelKey = 'com_ui_message_nav_go_to_system';
-          }
-          const label = localize(labelKey, {
-            0: previewTextFor(entry, localize, entry.id === pendingId).slice(0, 30),
-          });
-          return (
-            <MessageIndicator
-              key={entry.id}
-              entry={entry}
-              isInView={visibleIds.has(entry.id)}
-              isCurrent={currentId === entry.id}
-              isFocused={hoveredId === entry.id}
-              tabIndex={entry.id === rovingId ? 0 : -1}
-              onSelect={handleSelect}
-              label={label}
-            />
-          );
-        })}
+        <MessageRibs
+          entries={messageEntries}
+          visibleIds={visibleIds}
+          currentId={currentId}
+          hoveredId={hoveredId}
+          rovingId={rovingId}
+          pendingId={pendingId}
+          onSelect={handleSelect}
+        />
       </div>
 
       {endEntry && (

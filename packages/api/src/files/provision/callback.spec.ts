@@ -11,10 +11,10 @@ import type { CodeFileAgent } from '../code/queued';
 import type { ServerRequest } from '~/types';
 import { collectInventoryEntries, prepareAgentFileContext } from '../reading/inventory';
 import { FileSearchPreparationError, createProvisionFilesCallback } from './callback';
+import { resolveTurnDeliveryRouting, withTurnReading } from '~/agents/files/delivery';
 import { createFileProvisionRecovery, withFileProvisioning } from '../operations';
 import { buildTurnReadingContext, getTurnReadingContext } from '../reading/turn';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
-import { resolveTurnDeliveryRouting } from '~/agents/files/delivery';
 import { prepareQueuedCodeFileContext } from '../code/queued';
 import { createSubagentCodeRouting } from '~/code/targets';
 
@@ -67,7 +67,7 @@ function searchAgent(
   id = 'agent-a',
   scopedFileIds: string[] = [],
 ): CodeFileAgent & ReadingAgent {
-  const routing = resolveTurnDeliveryRouting({
+  let routing = resolveTurnDeliveryRouting({
     agent: { provider: 'openAI', endpoint: 'openAI' },
     config: { fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } } },
   });
@@ -85,7 +85,7 @@ function searchAgent(
     registered: [],
     preparation,
   });
-  routing.reading = context;
+  routing = withTurnReading(routing, context);
   return {
     id,
     deliveryRouting: routing,

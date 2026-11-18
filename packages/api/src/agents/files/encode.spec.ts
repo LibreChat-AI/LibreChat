@@ -5,7 +5,7 @@ import type { FileTextDeriver } from '~/files/reading';
 import type { ServerRequest } from '~/types';
 import { AgentAttachmentLimitError, AgentAttachmentPolicyError } from '../attachments';
 import { buildTurnReadingContext, getTurnReadingContext } from '~/files/reading';
-import { resolveTurnDeliveryRouting } from './delivery';
+import { resolveTurnDeliveryRouting, withTurnReading } from './delivery';
 import { createRunFileMessageEncoder } from './encode';
 
 jest.mock('~/utils/tokenizer', () => ({ countTokens: (text: string) => text.length }));
@@ -621,7 +621,7 @@ describe('createRunFileMessageEncoder', () => {
       if (child == null || context == null) {
         throw new Error('expected an automatic reading context');
       }
-      child.deliveryRouting.reading = context;
+      child.deliveryRouting = withTurnReading(child.deliveryRouting, context);
       harness.encodeDocuments.mockResolvedValueOnce({
         documents: [],
         rejected: [{ file_id: brief.file_id, reason: 'capacity' }],
@@ -676,7 +676,7 @@ describe('createRunFileMessageEncoder', () => {
           deriveText,
         }),
       );
-      child.deliveryRouting.reading = context;
+      child.deliveryRouting = withTurnReading(child.deliveryRouting, context);
       return { ...harness, context, child };
     };
 
@@ -823,7 +823,7 @@ describe('createRunFileMessageEncoder', () => {
       if (child == null || context == null) {
         throw new Error('expected an automatic reading context');
       }
-      child.deliveryRouting.reading = context;
+      child.deliveryRouting = withTurnReading(child.deliveryRouting, context);
 
       expect(() => harness.validate([workbook], 'child')).not.toThrow();
       expect(deriveText).not.toHaveBeenCalled();
@@ -878,7 +878,7 @@ describe('createRunFileMessageEncoder', () => {
       if (child == null || context == null) {
         throw new Error('expected an automatic reading context');
       }
-      child.deliveryRouting.reading = context;
+      child.deliveryRouting = withTurnReading(child.deliveryRouting, context);
 
       const [message] = await harness.encode([csv], 'child');
 

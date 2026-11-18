@@ -22,6 +22,14 @@ import {
   MAX_PII_PATTERN_LENGTH,
 } from './filters';
 import {
+  REFILL_INTERVAL_UNITS,
+  BALANCE_DISPLAY_MODES,
+  BALANCE_REFILL_MODES,
+  MIN_BALANCE_RESERVATION_TTL_MS,
+  DEFAULT_BALANCE_RESERVATION_TTL_MS,
+  parseRefillAnchor,
+} from './balance';
+import {
   EModelEndpoint,
   eModelEndpointSchema,
   isAgentsEndpoint,
@@ -29,13 +37,6 @@ import {
   eReasoningParameterFormatSchema,
   eReasoningResponseKeySchema,
 } from './schemas';
-import {
-  REFILL_INTERVAL_UNITS,
-  BALANCE_DISPLAY_MODES,
-  BALANCE_REFILL_MODES,
-  MIN_BALANCE_RESERVATION_TTL_MS,
-  DEFAULT_BALANCE_RESERVATION_TTL_MS,
-} from './balance';
 import {
   scheduledMCPResourceBindingSchema,
   scheduledMCPReadOnlyPolicySchema,
@@ -142,6 +143,7 @@ export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
  * is part of the API host, stay librechat.yaml's. The admin catalog's model-list lifetime is one
  * value for the whole deployment, which `GET /api/admin/config/meta` reports. */
 export const BASE_ONLY_CONFIG_PATHS = [
+  'endpoints.agents.sdkRuntimes',
   'endpoints.agents.pullRequests.provider',
   'endpoints.agents.pullRequests.host',
   'endpoints.agents.pullRequests.oauth',
@@ -180,6 +182,7 @@ export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
  */
 export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnlyConfigReason>> = {
   persistence: 'operator',
+  configCache: 'operator',
   'telemetry.stackTraceLimit': 'operator',
   'telemetry.rum': 'operator',
   clientLimits: 'operator',
@@ -1773,6 +1776,10 @@ export const codeEnvironmentUserConfigSchema = z
          * worker advertises linked-worktree lanes. Omission allows it; `false` keeps every
          * request scoped to its checkout. */
         linkedWorktrees: z.boolean().optional(),
+        /** Send a background Bash command as detached when the worker advertises detached
+         * commands, so it stops holding its worktree while it runs. Omission allows it;
+         * `false` keeps every command holding its worktree until it ends. */
+        detachedCommands: z.boolean().optional(),
         /** Permit explicit per-conversation checkout choices after every API replica supports
          * them. Omission preserves automatic worker isolation and hides the selector. */
         allowCheckoutSelection: z.boolean().optional().default(false),
@@ -1859,6 +1866,12 @@ export type HostFileEditLimits = z.infer<typeof hostFileEditLimitsSchema>;
 
 /** Server-side resource and recovery policy for ephemeral child activity. */
 export const subagentActivityConfigSchema = z.object({
+  /** Run each background child as a resumable generation job keyed by its thread id, so its
+   *  thread streams and resumes the way a chat does. Off leaves only the activity feed. */
+  generationJobs: z.boolean().default(true),
+  /** Largest content, in serialized bytes, stored on a child's result row beside its text.
+   *  Larger content is left off so the row always fits; 0 stores none. */
+  generationContentBytes: z.number().int().min(0).max(8_388_608).default(4_194_304),
   contentRecoveryEnabled: z.boolean().default(false),
   /** Batch public content writes independently of the lossy live activity projection. */
   contentPageBytes: z.number().int().min(1024).max(4_194_304).default(262_144),
@@ -1887,12 +1900,63 @@ export const agentsEndpointSchema = baseEndpointSchema
       sdkRuntimes: z
         .record(
           z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
-          z
-            .object({
-              module: z.string().min(1),
-              roles: z.array(z.string().min(1)).min(1).default(['ADMIN']),
-            })
-            .strict(),
+          z.union([
+            z
+              .object({
+                module: z.string().min(1),
+                roles: z.array(z.string().min(1)).min(1).default(['ADMIN']),
+              })
+              .strict(),
+            z
+              .object({
+                remote: z
+                  .object({
+                    url: z
+                      .string()
+                      .url()
+                      .regex(/^wss?:\/\//),
+                    secret: z.string().min(1),
+                    recovery: z
+                      .object({
+                        routes: z
+                          .record(
+                            z.string().min(1).max(128),
+                            z
+                              .string()
+                              .url()
+                              .regex(/^wss?:\/\//),
+                          )
+                          .optional(),
+                        maxDisconnectMs: z.number().int().min(100).max(120000).default(15000),
+                        retryDelayMs: z.number().int().min(10).max(10000).default(250),
+                        maxJournalBytes: z
+                          .number()
+                          .int()
+                          .min(1024)
+                          .max(268435456)
+                          .default(67108864),
+                      })
+                      .strict()
+                      .optional(),
+                    connectTimeoutMs: z.number().int().min(100).max(120_000).default(10_000),
+                    rpcTimeoutMs: z.number().int().min(100).max(600_000).default(60_000),
+                    maxFrameBytes: z.number().int().min(1024).max(16_777_216).default(1_048_576),
+                    maxBufferedBytes: z.number().int().min(1024).max(67_108_864).default(4_194_304),
+                    maxRunMs: z.number().int().min(1000).max(86_400_000).default(600_000),
+                  })
+                  .strict()
+                  .refine(
+                    (remote) =>
+                      !remote.recovery || remote.recovery.maxDisconnectMs < remote.rpcTimeoutMs,
+                    {
+                      message: 'SDK recovery window must be shorter than the RPC timeout',
+                      path: ['recovery', 'maxDisconnectMs'],
+                    },
+                  ),
+                roles: z.array(z.string().min(1)).min(1).default(['ADMIN']),
+              })
+              .strict(),
+          ]),
         )
         .optional(),
       hostFileEdits: hostFileEditLimitsSchema.optional(),
@@ -2760,6 +2824,23 @@ export const modelListEndpointSchema = baseEndpointSchema.merge(
     models: z.array(z.string()).optional(),
   }),
 );
+
+export const googleEndpointSchema = modelListEndpointSchema.extend({
+  /** USD per million tokens, including an explicit cached-input rate for the billing tier. */
+  tokenConfig: z
+    .record(
+      z.string(),
+      z.object({
+        prompt: z.number().nonnegative(),
+        completion: z.number().nonnegative(),
+        cacheRead: z.number().nonnegative(),
+      }),
+    )
+    .optional(),
+});
+
+export type TGoogleEndpoint = z.infer<typeof googleEndpointSchema>;
+export type TGoogleTokenConfig = NonNullable<TGoogleEndpoint['tokenConfig']>;
 
 export const anthropicEndpointSchema = baseEndpointSchema.merge(
   z.object({
@@ -4259,6 +4340,14 @@ export const balanceSchema = z
     refillAmount: z.number().optional().default(10000),
     /** Add credits on exhaustion, or replace the allowance on the next read/request once due. */
     refillMode: z.enum(BALANCE_REFILL_MODES).optional().default('add'),
+    /** Aligns every period to this instant plus whole intervals (e.g. a Monday at 00:00Z for
+     *  weekly resets); omitted, each user's period runs from their own last refill. */
+    refillAnchor: z
+      .string()
+      .refine((anchor) => parseRefillAnchor(anchor) != null, {
+        message: 'Use an ISO 8601 timestamp with a Z or ±HH:MM offset',
+      })
+      .optional(),
     reservationTtlMs: z
       .number()
       .int()
@@ -4277,6 +4366,16 @@ export const balanceSchema = z
         code: z.ZodIssueCode.custom,
         path: ['refillIntervalValue'],
         message: 'Reset intervals must be positive integers',
+      });
+    }
+    if (
+      balance.refillAnchor != null &&
+      !(Number.isInteger(balance.refillIntervalValue) && balance.refillIntervalValue > 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['refillIntervalValue'],
+        message: 'Anchored intervals must be positive integers',
       });
     }
   });
@@ -4706,6 +4805,10 @@ export const persistenceConfigSchema = z
     }
   });
 
+/** Local APP_CONFIG retention only; eviction changes cache hits, never resolved configuration. */
+export const DEFAULT_CONFIG_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_CONFIG_CACHE_MAX_ENTRIES = 1000;
+
 export const configSchema = z.object({
   persistence: persistenceConfigSchema,
   version: z.string(),
@@ -4719,6 +4822,23 @@ export const configSchema = z.object({
     })
     .optional(),
   cache: z.boolean().default(true),
+  configCache: z
+    .object({
+      maxBytes: z
+        .number()
+        .int()
+        .min(1)
+        .max(Number.MAX_SAFE_INTEGER)
+        .default(DEFAULT_CONFIG_CACHE_MAX_BYTES),
+      maxEntries: z
+        .number()
+        .int()
+        .min(1)
+        .max(Number.MAX_SAFE_INTEGER)
+        .default(DEFAULT_CONFIG_CACHE_MAX_ENTRIES),
+    })
+    .strict()
+    .optional(),
   projects: chatProjectsConfigSchema,
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
@@ -5007,7 +5127,7 @@ export const configSchema = z.object({
        */
       all: baseEndpointSchema.omit({ baseURL: true }).optional(),
       [EModelEndpoint.openAI]: modelListEndpointSchema.optional(),
-      [EModelEndpoint.google]: modelListEndpointSchema.optional(),
+      [EModelEndpoint.google]: googleEndpointSchema.optional(),
       [EModelEndpoint.anthropic]: anthropicEndpointSchema.optional(),
       [EModelEndpoint.azureOpenAI]: azureEndpointSchema.optional(),
       [EModelEndpoint.azureAssistants]: assistantEndpointSchema.optional(),
@@ -5266,6 +5386,7 @@ export const defaultModels = {
   ],
   [EModelEndpoint.google]: [
     // Gemini 4 Models
+    'gemini-4-hydrogen',
     'gemini-4-argon',
     // Gemini 3.8 Models
     'gemini-3.8-flash',
@@ -5885,7 +6006,7 @@ export enum Constants {
    */
   VERSION = '__LIBRECHAT_VERSION__',
   /** Key for the Custom Config's version (librechat.yaml). */
-  CONFIG_VERSION = '1.3.18',
+  CONFIG_VERSION = '1.3.19',
   /** Standard value for the first message's `parentMessageId` value, to indicate no parent exists. */
   NO_PARENT = '00000000-0000-0000-0000-000000000000',
   /** Standard value to use whatever the submission prelim. `responseMessageId` is */

@@ -142,6 +142,20 @@ stable code. `packages/data-schemas/src/methods/prompt.ts` currently returns `{ 
 failure; do not extend that pattern. Test absence versus failure, the boundary's non-success response,
 and that sensitive diagnostics cannot reach a user-visible surface.
 
+## RUM privacy
+
+When adding, renaming, or changing an endpoint that accepts or returns passwords, tokens, API keys,
+or other credentials, review [the RUM privacy rules](client/src/lib/rum/privacy.ts) in the same change.
+Check every route and alias, including deployment base paths. Update `CREDENTIAL_ROUTES` when the
+endpoint needs request and response bodies removed from telemetry. Check `CREDENTIAL_HEADER` when
+introducing a credential header. Keep body capture for ordinary chat and API requests.
+
+Add regression cases to [the privacy tests](client/src/lib/rum/privacy.spec.ts). Verify that both
+request and response secrets are absent and that ordinary payloads remain. For changes to the
+telemetry SDK, capture settings, or export path, also check [the exporter](client/src/lib/rum/exporter.ts)
+and its [tests](client/src/lib/rum/exporter.spec.ts). Run [the RUM browser tests](e2e/rum/privacy.spec.ts)
+to verify the actual SDK output through both proxy and direct export.
+
 ## Frontend theming and styling
 
 For frontend work, compose existing `@librechat/client` primitives and variants before adding

@@ -12,6 +12,7 @@ const {
   assertModelBoundContent,
   resolveTurnDeliveryRouting,
   buildTurnReadingContext,
+  withTurnReading,
   buildMessageFiles,
   buildSteerMedia,
   Tokenizer,
@@ -3675,18 +3676,21 @@ describe('BaseClient', () => {
           provider: EModelEndpoint.openAI,
           fileConsumers: { executeCode: false, fileSearch: false },
         };
-        const routing = resolveTurnDeliveryRouting({
+        let routing = resolveTurnDeliveryRouting({
           agent: TestClient.options.agent,
           config: TestClient.options.req.config,
         });
-        routing.reading = buildTurnReadingContext({
+        routing = withTurnReading(
           routing,
-          provider: EModelEndpoint.openAI,
-          fileTokenLimit: 100000,
-          configuredFileSizeLimit: undefined,
-          countTokens: (text) => text.length,
-          deriveText,
-        });
+          buildTurnReadingContext({
+            routing,
+            provider: EModelEndpoint.openAI,
+            fileTokenLimit: 100000,
+            configuredFileSizeLimit: undefined,
+            countTokens: (text) => text.length,
+            deriveText,
+          }),
+        );
         TestClient.options.agent.deliveryRouting = routing;
         TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
         const prepareTurnAttachments = jest.spyOn(TestClient, 'prepareTurnAttachments');
@@ -4868,14 +4872,17 @@ describe('BaseClient attachment text under a reading context', () => {
       provider: EModelEndpoint.openAI,
       fileConsumers: { executeCode: false, fileSearch: false },
     };
-    const routing = resolveTurnDeliveryRouting({ agent: client.options.agent, config });
-    routing.reading = buildTurnReadingContext({
+    let routing = resolveTurnDeliveryRouting({ agent: client.options.agent, config });
+    routing = withTurnReading(
       routing,
-      provider: EModelEndpoint.openAI,
-      fileTokenLimit: 20,
-      configuredFileSizeLimit: undefined,
-      countTokens: (text) => text.length,
-    });
+      buildTurnReadingContext({
+        routing,
+        provider: EModelEndpoint.openAI,
+        fileTokenLimit: 20,
+        configuredFileSizeLimit: undefined,
+        countTokens: (text) => text.length,
+      }),
+    );
     client.options.agent.deliveryRouting = routing;
     const message = {};
 
@@ -4926,14 +4933,17 @@ describe('BaseClient native documents under a reading context', () => {
       fileConsumers: { executeCode: false, fileSearch: true },
       currentRequestAttachments: [brokenPdf],
     };
-    const routing = resolveTurnDeliveryRouting({ agent: client.options.agent, config });
-    routing.reading = buildTurnReadingContext({
+    let routing = resolveTurnDeliveryRouting({ agent: client.options.agent, config });
+    routing = withTurnReading(
       routing,
-      provider: EModelEndpoint.anthropic,
-      fileTokenLimit: 100000,
-      configuredFileSizeLimit: undefined,
-      countTokens: (text) => text.length,
-    });
+      buildTurnReadingContext({
+        routing,
+        provider: EModelEndpoint.anthropic,
+        fileTokenLimit: 100000,
+        configuredFileSizeLimit: undefined,
+        countTokens: (text) => text.length,
+      }),
+    );
     client.options.agent.deliveryRouting = routing;
     return { client, routing };
   };

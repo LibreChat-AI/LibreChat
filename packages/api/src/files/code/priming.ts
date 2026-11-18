@@ -26,11 +26,39 @@ import {
   createCodeApiUploadRegistry,
   withCodeApiUploadSlot,
 } from '~/utils/code';
+import { getCodeEnvUploadFilename, getUploadedCodeEnvFilename } from './form';
 import { isStorageNotFoundError } from '~/files/encode/utils';
 import { codeExecutionHeaders } from '~/agents/execution';
 import { buildCodeEnvDownloadQuery } from './identity';
-import { getCodeEnvUploadFilename } from './form';
 import { isAbortError } from '~/utils/errors';
+
+/** Only a completed upload creates a freshness receipt; live output provenance does not. */
+export function createCodeFileUploadRef({
+  sourceRef,
+  uploaded,
+  sandboxFilename,
+  executionProfile,
+  executionRouteKey = executionProfile,
+}: {
+  sourceRef: CodeEnvRef | SnapshotCodeOwner;
+  uploaded: Pick<CodeEnvRef, 'storage_session_id' | 'file_id'> & { filename?: string };
+  sandboxFilename: string;
+  executionProfile: 'default' | 'stateful';
+  executionRouteKey?: string;
+}): CodeEnvRef {
+  return {
+    ...(sourceRef.kind === 'skill'
+      ? { kind: sourceRef.kind, version: sourceRef.version }
+      : { kind: sourceRef.kind }),
+    id: sourceRef.id,
+    storage_session_id: uploaded.storage_session_id,
+    file_id: uploaded.file_id,
+    sandboxFilename: getUploadedCodeEnvFilename(uploaded, sandboxFilename),
+    executionProfile,
+    ...(executionRouteKey !== executionProfile ? { executionRouteKey } : {}),
+    provisionedAt: Date.now(),
+  };
+}
 
 export interface CodeFileInfo {
   lastModified?: string;

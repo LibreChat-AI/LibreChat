@@ -63,7 +63,7 @@ for (const mode of ['light', 'dark']) {
     expect(writes).toBe(1);
     await expect(page.getByRole('button', { name: /Stop/, exact: false })).toBeDisabled();
   });
-  test(`owner tool review preserves the exact batch through uncertain acknowledgement (${mode})`, async ({
+  test(`owner tool review preserves the exact batch through uncertain acknowledgement (${mode}) @scenario:response-review-resubmits-its-exact-tool-batch-after-uncertain-acknowledgement`, async ({
     page,
   }) => {
     const acknowledgement = Promise.withResolvers<void>();

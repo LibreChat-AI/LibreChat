@@ -2,7 +2,11 @@ import { FileContext, FileSources, decideFileReading } from 'librechat-data-prov
 import type { TurnFileConsumers, TFileConfig, TurnDeliveryRouting } from 'librechat-data-provider';
 import type { FileTextDeriver, TurnReadingContext, TurnReadingFile, DerivedText } from './turn';
 import type { DirectContentAllocation } from './settle';
-import { applyTurnDelivery, resolveTurnDeliveryRouting } from '~/agents/files/delivery';
+import {
+  withTurnReading,
+  applyTurnDelivery,
+  resolveTurnDeliveryRouting,
+} from '~/agents/files/delivery';
 import { measureAttachment, measureModelBoundAttachment } from '~/agents/attachments';
 import { settleTurnFiles, prepareTurnFiles } from './settle';
 import { buildTurnReadingContext } from './turn';
@@ -53,7 +57,7 @@ function setup({
   endpointConfig?: EndpointFileConfigInput;
   deriveText?: FileTextDeriver;
 } = {}): { routing: TurnDeliveryRouting; context: TurnReadingContext } {
-  const routing = resolveTurnDeliveryRouting({
+  let routing = resolveTurnDeliveryRouting({
     agent: { provider: 'openAI', endpoint: 'openAI' },
     config: { fileConfig: { endpoints: { openAI: endpointConfig } } },
   });
@@ -69,7 +73,7 @@ function setup({
   if (context == null) {
     throw new Error('expected a reading context');
   }
-  routing.reading = context;
+  routing = withTurnReading(routing, context);
   return { routing, context };
 }
 

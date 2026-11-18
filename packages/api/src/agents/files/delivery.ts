@@ -24,6 +24,7 @@ import {
   getTurnReadingContext,
 } from '~/files/reading/turn';
 import { collectModelBoundHistoricalFileIdState } from '~/middleware/modelBoundContent';
+import { registerRuntimeDeliveryRouting } from '~/protection/metadata';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
 import { getAgentEntry } from '~/agents/attachments';
 
@@ -58,14 +59,22 @@ export function resolveTurnDeliveryRouting({
 }): TurnDeliveryRouting {
   const endpoint = agent.endpoint ?? agent.provider;
   const fileConfig = mergeFileConfig(config?.fileConfig);
-  return {
+  return registerRuntimeDeliveryRouting({
     fileConfig,
     endpointConfig: getEndpointFileConfig({ fileConfig, endpoint }),
     endpoint,
     endpointProvider: getCustomEndpointProvider(config?.endpoints?.custom, endpoint),
     useResponsesApi: resolveUseResponsesApi(agent.model_parameters?.useResponsesApi),
     sttConfigured: isSpeechProviderConfigured(config?.speech?.stt),
-  };
+  });
+}
+
+/** The turn routing carrying its reading evidence; a settled routing is frozen, so this returns a new one. */
+export function withTurnReading(
+  routing: TurnDeliveryRouting,
+  reading: TurnDeliveryRouting['reading'],
+): TurnDeliveryRouting {
+  return reading == null ? routing : registerRuntimeDeliveryRouting({ ...routing, reading });
 }
 
 /** The routing an agent's turn delivers by and the tools judged as its readers. */

@@ -25,8 +25,8 @@ function recordOnDemandChunks(page: Page): string[] {
   return seen;
 }
 
-/** The message list and the app's row hosts and slots, which the welcome screen never draws. */
-const MESSAGE_LIST_CHUNK = /\/assets\/(messages|slots|hosts)\.[^/"]+\.js/g;
+/** The message list and the app's row hosts, which the welcome screen never draws. */
+const MESSAGE_LIST_CHUNK = /\/assets\/(messages|hosts)\.[^/"]+\.js/g;
 
 /** The mock fleet runs without the trace viewer, so the served config and availability turn it on. */
 async function enableTraceViewer(page: Page): Promise<void> {
@@ -95,7 +95,7 @@ test.describe('surfaces that load on demand', () => {
 
       const seen = new Set<string>();
       page.on('request', (request) => {
-        const match = new URL(request.url()).pathname.match(/\/assets\/(messages|slots)\./);
+        const match = new URL(request.url()).pathname.match(/\/assets\/(messages|hosts)\./);
         if (match) {
           seen.add(match[1]);
         }
@@ -104,7 +104,7 @@ test.describe('surfaces that load on demand', () => {
 
       await expect(messagesView(page).getByText(replyText('lazy-list-link'))).toBeVisible();
       await expect(messagesView(page).getByText(replyPrompt('lazy-list-link'))).toBeVisible();
-      expect([...seen].sort()).toEqual(['messages', 'slots']);
+      expect([...seen].sort()).toEqual(['hosts', 'messages']);
     });
 
     test('the first message of a fresh chat appears in the list @scenario:first-message-draws-message-list', async ({

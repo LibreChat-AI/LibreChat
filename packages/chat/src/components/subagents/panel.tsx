@@ -13,6 +13,7 @@ import {
   useToastContext,
 } from '@librechat/client';
 import type {
+  TMessage,
   ParentSubagentTaskSummary,
   SubagentControlAction,
   SubagentControlReceipt,
@@ -64,6 +65,7 @@ import { useSubagentsHost } from '../../react/subagents/host';
 import { subagentProgressKey } from '../../core/stream/state';
 import { useMessagePartsHost } from '../../react/host';
 import SubagentConversation from './conversation';
+import FollowedChildThread from './followed';
 
 const EVENT_TASK_PAGE_SIZE = 3;
 const TERMINAL_CONTROL_REASONS = new Set([
@@ -72,6 +74,17 @@ const TERMINAL_CONTROL_REASONS = new Set([
   'task_cancelled',
   'task_failed',
 ]);
+
+/**
+ * Whether a stored reply came without the parts it was built from. A child's result row keeps
+ * its content only when it was streamed and fits the row's budget; otherwise its tool calls and
+ * intermediate output live in the durable projection alone, which a conversation cannot draw.
+ */
+const repliesLackParts = (messages: readonly TMessage[]): boolean =>
+  messages.some(
+    (message) =>
+      !message.isCreatedByUser && !(Array.isArray(message.content) && message.content.length > 0),
+  );
 
 const isTerminalControlReason = (reason?: string): boolean =>
   reason != null && TERMINAL_CONTROL_REASONS.has(reason);
@@ -294,9 +307,48 @@ export default function SubagentThreadPanel({
       taskView?.status === 'interrupted' ||
       taskView?.status === 'cancelled');
   const priorTerminalRef = useRef(false);
+  /** A background child's thread is a conversation of its own, so it is followed like one: its
+   *  stored messages and the generation running under it, drawn by main chat's list. Event
+   *  threads and foreground children keep the durable view. */
+  const followable =
+    host.useThreadChat != null &&
+    selection.host === 'conversation' &&
+    selection.durable != null &&
+    selection.event == null &&
+    threadId !== '';
+  const followLive = followable && taskView?.status === 'running';
+  const followed = host.useThreadChat?.(selection.parentConversationId, threadId, {
+    live: followLive,
+    enabled: followable,
+  });
+  /** Rows that are not being streamed into: the stored ones, as first read or as read again at
+   *  a run's end. */
+  const followedSettled = followed != null && !followed.isLoading && !followed.isFollowing;
+  const followedMessages = followed?.messages;
+  const historyUnstored = useMemo(
+    () => followedSettled && followedMessages != null && repliesLackParts(followedMessages),
+    [followedSettled, followedMessages],
+  );
+  /** The durable view is the reader when the thread cannot be shown as a conversation: its
+   *  messages could not be read (a server without the route), a running task has no stream left
+   *  to follow (a server that gives children no generation job, or a stream lost for good), or
+   *  its stored replies do not hold their own history. An attachment not yet tried is none of
+   *  these. */
+  const unfollowable =
+    followed != null &&
+    (followed.isLoadError || (followLive && followed.isUnattached) || historyUnstored);
+  /** Kept once chosen for a thread, so the body does not swap back when the run the durable view
+   *  was drawing ends. */
+  const [durableThreadId, setDurableThreadId] = useState<string>();
+  useEffect(() => {
+    if (followable && unfollowable) {
+      setDurableThreadId(threadId);
+    }
+  }, [followable, threadId, unfollowable]);
+  const follows = followable && followed != null && durableThreadId !== threadId && !unfollowable;
   const contentStream = panelStore.useActivityStream(
     selection,
-    !durableTerminal || eventTaskRunning,
+    !follows && (!durableTerminal || eventTaskRunning),
   );
 
   useEffect(() => {
@@ -1695,7 +1747,22 @@ export default function SubagentThreadPanel({
         scopeKey: `${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`,
         children: (
           <TaskContentScopeContext.Provider value={receiptScope}>
-            {activityPanel}
+            {follows && followed != null ? (
+              <FollowedChildThread
+                threadId={threadId}
+                followed={followed}
+                agentId={taskView?.agentId ?? foregroundAgentId}
+                controls={activity.controls}
+                controlsTruncated={activity.controlsTruncated}
+                onCancelControl={
+                  controlAvailable && !controlPending
+                    ? (controlId) => submitControl('cancel_message', controlId)
+                    : undefined
+                }
+              />
+            ) : (
+              activityPanel
+            )}
           </TaskContentScopeContext.Provider>
         ),
       })}
