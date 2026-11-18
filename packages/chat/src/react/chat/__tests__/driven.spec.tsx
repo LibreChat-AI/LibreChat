@@ -15,6 +15,7 @@ import {
 import type { TMessage, ChatEvent, TConversation } from 'librechat-data-provider';
 import type { ChatStream, ChatTransport, ChatSendRequest, ChatStreamStatus } from '../../../core';
 import type { ChatHost, TurnServices } from '../host';
+import type { FollowChatOptions } from '../../follow';
 import type { ExtendedFile } from '../../../core';
 import { createTurnServices } from '../__fixtures__/services';
 import { showStopButtonByIndex } from '../../generation';
@@ -178,7 +179,13 @@ function setup({
   stored = [user, reply('response-1', 'Hi')],
   services = createTurnServices(),
   canSend,
-}: { stored?: TMessage[]; services?: TurnServices; canSend?: () => boolean } = {}) {
+  beside,
+}: {
+  stored?: TMessage[];
+  services?: TurnServices;
+  canSend?: () => boolean;
+  beside?: FollowChatOptions['beside'];
+} = {}) {
   const queryClient = new QueryClient();
   const store = createStore();
   const harness = createTransport();
@@ -214,6 +221,7 @@ function setup({
         live,
         endpoint: conversation.endpoint,
         onWithdrawn,
+        beside,
       });
       const contract = useDrivenContract({
         id: conversationId,
@@ -327,6 +335,45 @@ describe('useDrivenContract', () => {
       'response-2',
     ]);
     expect(loadMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('says the list is settled when a turn ends on its own final frame, and not for one taken back', async () => {
+    const onSettled = jest.fn();
+    const { result, streams, loadMessages, ready } = setup({ beside: { onSettled } });
+    await ready();
+    /** The stored rows it opened with. */
+    expect(onSettled).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      result.current.contract.ask({ text: 'Next question' });
+    });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    const sent = (result.current.contract.getMessages() ?? [])[2];
+    const ending = final(sent, reply('response-2', 'Answer', sent.messageId));
+    act(() => {
+      streams[0].push(created(sent, 'response-2'));
+      streams[0].push(ending);
+    });
+    await waitFor(() => expect(result.current.contract.isSubmitting).toBe(false));
+
+    /** Told with the frame, holding the list that frame left, and without another read. */
+    expect(onSettled).toHaveBeenCalledTimes(2);
+    expect(onSettled).toHaveBeenLastCalledWith((ending as { data: unknown }).data);
+    expect(loadMessages).toHaveBeenCalledTimes(1);
+
+    /** A turn stopped before the server kept anything of it leaves no reply to stamp. */
+    act(() => {
+      result.current.contract.ask({ text: 'Never mind' });
+    });
+    await waitFor(() => expect(streams).toHaveLength(2));
+    act(() =>
+      streams[1].push({
+        type: 'final',
+        data: { final: true, earlyAbort: true, conversation: { conversationId } },
+      } as ChatEvent),
+    );
+    await waitFor(() => expect(result.current.contract.isSubmitting).toBe(false));
+    expect(onSettled).toHaveBeenCalledTimes(2);
   });
 
   it('regenerates and continues a reply as main chat does', async () => {

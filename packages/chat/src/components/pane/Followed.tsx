@@ -50,20 +50,21 @@ const useNoAddedConversation: MessagesHost['useGetAddedConvo'] = () => noAddedCo
 
 /**
  * The page's messages host with the members that act on main chat pointed at this one: a row
- * reads this chat's list, the reader has no queued turn here, reading it marks no conversation
- * of theirs seen, and a rerun here does not take the model main chat is being compared with.
+ * reads this chat's list, the reader has no queued turn here, and a rerun here does not take
+ * the model main chat is being compared with. Reading it marks a conversation seen only when it
+ * is one of the reader's own (`own`); a thread that is not has no read state of theirs to mark.
  */
-function useFollowedMessagesHost(): MessagesHost {
+function useFollowedMessagesHost(own: boolean): MessagesHost {
   const host = useMessagesHost();
   return useMemo(
     () => ({
       ...host,
       useGetMessages: useFollowedMessages,
       useHasPendingTurn: useNoPendingTurn,
-      useSeenSource: useNoSeenSource,
       useGetAddedConvo: useNoAddedConversation,
+      ...(!own && { useSeenSource: useNoSeenSource }),
     }),
-    [host],
+    [host, own],
   );
 }
 
@@ -78,12 +79,15 @@ export function ContractThread({
   followed,
   slots,
   userAuthor,
+  own = false,
 }: {
   contract: ChatContract;
   /** The conversation as read so far: its rows, and whether older ones are still to be read. */
   followed: FollowedChat;
   slots?: ChatScreenMessagesSlots;
   userAuthor?: TMessageAuthor;
+  /** Whether this is a conversation of the reader's own, whose replies they catch up with here. */
+  own?: boolean;
 }): ReactElement {
   const { messages, hasEarlier, isLoadingEarlier, isEarlierError, loadEarlier } = followed;
   const messagesTree = useMemo(() => buildTree({ messages }), [messages]);
@@ -103,7 +107,7 @@ export function ContractThread({
     }),
     [slots, hasEarlier, isLoadingEarlier, isEarlierError, loadEarlier],
   );
-  const messagesHost = useFollowedMessagesHost();
+  const messagesHost = useFollowedMessagesHost(own);
   return (
     <ChatContext.Provider value={contract}>
       <MessagesHostProvider host={messagesHost}>

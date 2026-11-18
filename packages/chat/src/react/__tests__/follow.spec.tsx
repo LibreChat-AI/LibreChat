@@ -208,6 +208,42 @@ describe('useFollowChat', () => {
     expect(textOf(result.current.messages)).toEqual(['Hello, stored']);
   });
 
+  it('says when the list is settled: after a read, and with the frame a generation ended on', async () => {
+    const { transport, streams, setStatus } = createTransport(running);
+    const onSettled = jest.fn();
+    /** What the list held each time, to show it is told after the rows are in, not before. */
+    const held: Array<string[]> = [];
+    const { result, loadMessages } = setup({
+      transport,
+      beside: {
+        onSettled: (frame) => {
+          held.push(result.current.chat?.messages.map((message) => message.messageId) ?? []);
+          onSettled(frame);
+        },
+      },
+    });
+    await waitFor(() => expect(streams).toHaveLength(1));
+
+    /** The stored rows it opened with: no generation has ended yet, so no frame. */
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenLastCalledWith(undefined);
+    expect(held[0]).toEqual(['task-1:user']);
+
+    act(() => streams[0].push(snapshot('Hel')));
+    await settle();
+    loadMessages.mockResolvedValue([brief, answer('Hello, stored')]);
+    setStatus(idle);
+    const ending = final('Hello');
+    act(() => streams[0].push(ending));
+    await waitFor(() => expect(loadMessages).toHaveBeenCalledTimes(2));
+    await settle();
+
+    /** Once the stored rows are read back, with the frame the generation ended on. */
+    expect(onSettled).toHaveBeenCalledTimes(2);
+    expect(onSettled).toHaveBeenLastCalledWith((ending as { data: unknown }).data);
+    expect(held[1]).toEqual(['task-1:user', 'task-1:assistant']);
+  });
+
   it('reads again when the generation ended between the status answer and the attach', async () => {
     const { transport } = createTransport(running);
     (transport.reconnectToStream as jest.Mock).mockResolvedValue(null);
