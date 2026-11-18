@@ -152,6 +152,9 @@ export function validateResponseRequest(body: unknown): RequestValidationResult 
   if (request.stream !== undefined && typeof request.stream !== 'boolean') {
     return { valid: false, error: 'stream must be a boolean' };
   }
+  if (request.store !== undefined && typeof request.store !== 'boolean') {
+    return { valid: false, error: 'store must be a boolean' };
+  }
   if (request.background !== undefined && typeof request.background !== 'boolean') {
     return { valid: false, error: 'background must be a boolean' };
   }

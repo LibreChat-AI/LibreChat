@@ -701,6 +701,28 @@ describe('createResponse controller', () => {
     };
   });
 
+  it.each(['false', 'true', null, 0, 1, {}, []].map((store) => [store]))(
+    'rejects malformed storage intent before creating an execution envelope: %p',
+    async (store) => {
+      const api = require('@librechat/api');
+      api.validateResponseRequest.mockImplementationOnce(
+        jest.requireActual('@librechat/api').validateResponseRequest,
+      );
+      api.isValidationFailure.mockImplementationOnce(
+        jest.requireActual('@librechat/api').isValidationFailure,
+      );
+      req.body.store = store;
+      await createResponse(req, res);
+      expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+        res,
+        400,
+        'store must be a boolean',
+      );
+      expect(mockCreateAgentRunEnvelope).not.toHaveBeenCalled();
+      expect(api.initializeAgent).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     [false, false],
     [true, false],
