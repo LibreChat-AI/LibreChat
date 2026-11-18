@@ -1,5 +1,10 @@
 const { PermissionTypes, Permissions } = require('librechat-data-provider');
 const {
+  isEnabled,
+  onlyForModelNames,
+  onlyForRemoteModel,
+  createRemoteModelBalanceGate,
+  rejectCallerSystemPromptForEnforcedSpec,
   generateCheckAccess,
   preAuthTenantMiddleware,
   createRequireApiKeyAuth,
@@ -9,6 +14,12 @@ const {
   createCheckRemoteAgentAccess,
 } = require('@librechat/api');
 const { getEffectivePermissions } = require('~/server/services/PermissionService');
+const {
+  checkBan,
+  messageIpApiLimiter,
+  messageUserApiLimiter,
+  strictConfigMiddleware,
+} = require('~/server/middleware');
 const { getAppConfig } = require('~/server/services/Config');
 const db = require('~/models');
 
@@ -53,10 +64,36 @@ const agentAccessDependencies = {
 };
 
 const checkAgentPermission = createCheckRemoteAgentAccess(agentAccessDependencies);
+/** Chat completions also accept a model the key's owner can use (remoteApi.models). */
+const checkAgentOrModelPermission = createCheckRemoteAgentAccess({
+  ...agentAccessDependencies,
+  resolveRemoteModel: (req, model) =>
+    require('~/server/services/Agents/remoteModels').resolve(req, model),
+});
 const checkAgentTriggerPermission = createCheckAgentTriggerAccess(agentAccessDependencies);
 
+/** Before resolution, for any `model` that is not a saved agent id: the chat's ban
+ *  check, the message limits (answered as API errors), and the owner's config
+ *  resolved strictly, so a failed override lookup cannot widen model access. */
+const preResolveModelGuards = [
+  checkBan,
+  ...(isEnabled(process.env.LIMIT_MESSAGE_IP) ? [messageIpApiLimiter] : []),
+  ...(isEnabled(process.env.LIMIT_MESSAGE_USER) ? [messageUserApiLimiter] : []),
+  strictConfigMiddleware,
+].map(onlyForModelNames);
+
+/** After `model` resolved to a model: the owner must have credits (with balances on),
+ *  and an enforced spec takes no caller system instructions. */
+const remoteModelGuards = [
+  createRemoteModelBalanceGate({ findBalanceByUser: (userId) => db.findBalanceByUser(userId) }),
+  rejectCallerSystemPromptForEnforcedSpec,
+].map(onlyForRemoteModel);
+
 module.exports = {
+  preResolveModelGuards,
+  remoteModelGuards,
   checkAgentPermission,
+  checkAgentOrModelPermission,
   checkAgentTriggerPermission,
   preAuthTenantMiddleware,
   requireRemoteAgentAuth,

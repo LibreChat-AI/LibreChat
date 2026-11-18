@@ -1164,6 +1164,17 @@ const remoteApiIntegrationsSchema = z.object({
 const remoteApiSchema = z.object({
   auth: remoteApiAuthSchema.optional(),
   integrations: remoteApiIntegrationsSchema.optional(),
+  /**
+   * Lets a remote API caller name a model the key's owner can use in the chat
+   * UI, not only an agent: a model spec by name, or `endpoint/model` when model
+   * selection is open. On by default (keys already require the REMOTE_AGENTS
+   * permission); set `enabled: false` to keep keys agent-only.
+   */
+  models: z
+    .object({
+      enabled: z.boolean().default(true),
+    })
+    .optional(),
   background: z
     .object({
       enabled: z.boolean().default(false),
@@ -4048,6 +4059,8 @@ export function supportsConversationTitleOwnership(config?: {
 export type TStartupConfig = {
   conversationTitleOwnershipVersion?: typeof CONVERSATION_TITLE_OWNERSHIP_VERSION;
   appTitle: string;
+  /** Personal API keys also reach the user's model specs and models, not only agents. */
+  remoteApiModelsEnabled?: boolean;
   socialLogins?: string[];
   langfuseFanoutEnabled?: boolean;
   langfuseConnectionAccess?: boolean;

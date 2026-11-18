@@ -76,6 +76,50 @@ const messageIpLimiter = rateLimit(ipLimiterOptions);
 const messageUserLimiter = rateLimit(userLimiterOptions);
 
 /**
+ * The message limits for the OpenAI-compatible API (`/api/agents/v1`): the same
+ * windows and maximums with their own counters, answered as an OpenAI rate-limit
+ * error. Not `denyRequest`, which saves a chat message from request-body fields
+ * an API caller controls and answers in the chat's SSE shape.
+ *
+ * @param {boolean} [ip=true] - Whether to create an IP limiter or a user limiter.
+ */
+const createApiHandler = (ip = true) => {
+  return async (req, res) => {
+    const windowMs = ip ? ipWindowMs : userWindowMs;
+    const type = ViolationTypes.MESSAGE_LIMIT;
+    const errorMessage = {
+      type,
+      max: ip ? ipMax : userMax,
+      limiter: ip ? 'ip' : 'user',
+      windowInMinutes: windowMs / 60000,
+      ...getRateLimitReset(req.rateLimit, windowMs),
+    };
+    await logViolation(req, res, type, errorMessage, score);
+    res.set('Retry-After', String(errorMessage.retryAfterSeconds));
+    return res.status(429).json({
+      error: {
+        code: 'rate_limit_exceeded',
+        message: 'Too many messages. Try again later.',
+        type: 'rate_limit_error',
+        param: null,
+      },
+    });
+  };
+};
+
+const messageIpApiLimiter = rateLimit({
+  ...ipLimiterOptions,
+  handler: createApiHandler(),
+  store: limiterCache('message_ip_api_limiter'),
+});
+
+const messageUserApiLimiter = rateLimit({
+  ...userLimiterOptions,
+  handler: createApiHandler(false),
+  store: limiterCache('message_user_api_limiter'),
+});
+
+/**
  * Event admission has its own API-principal bucket. The durable worker later
  * consumes the normal message-user bucket when it executes the delivery, so
  * sharing that limiter here would charge every event twice.
@@ -116,4 +160,6 @@ module.exports = {
   agentEventUserLimiter,
   messageIpLimiter,
   messageUserLimiter,
+  messageIpApiLimiter,
+  messageUserApiLimiter,
 };

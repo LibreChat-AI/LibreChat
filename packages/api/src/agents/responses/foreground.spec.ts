@@ -12,6 +12,7 @@ import {
   saveForegroundResponseInputs,
   requireResponseStorageWrite,
   loadForegroundResponseHistory,
+  createResponsePersistence,
 } from './foreground';
 import {
   createResponseContext,
@@ -568,3 +569,87 @@ it('keeps foreground storage inside the account-erasure cleanup barrier', () =>
       await manager.destroy();
     }
   }));
+
+describe('createResponsePersistence conversation target', () => {
+  function persistence(conversationTarget?: {
+    endpoint: string;
+    endpointType?: string;
+    model?: string;
+    spec?: string;
+  }) {
+    const saveConvo = jest.fn(async () => ({ conversationId: 'convo-1' }));
+    const saveMessage = jest.fn(async () => ({ messageId: 'in-1', conversationId: 'convo-1' }));
+    const store = createResponsePersistence(
+      {
+        request: { user: { id: 'user-1' }, body: {} } as never,
+        conversationId: 'convo-1',
+        agentId: 'gpt-concise',
+        agent: { id: 'ephemeral-id', name: 'GPT (concise)', model: 'gpt-4o' },
+        conversationTarget,
+        messages: [
+          {
+            role: 'user',
+            content: 'hello',
+            messageId: 'in-1',
+            parentMessageId: 'parent-1',
+          },
+        ] as never,
+        parentMessageId: 'parent-1',
+      },
+      {
+        saveConvo,
+        saveMessage,
+        announceReply: jest.fn(),
+        resolveTitle: () => null,
+        traceFields: async () => ({ langfuseSampled: false }),
+      } as never,
+    );
+    return { store, saveConvo, saveMessage };
+  }
+
+  it('records a model run like the chat records its own model conversations', async () => {
+    const { store, saveConvo } = persistence({
+      endpoint: 'mock',
+      endpointType: 'custom',
+      model: 'mock-echo',
+      spec: 'gpt-concise',
+    });
+    await store.saveConversation();
+    const fields = (saveConvo.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(fields).toMatchObject({
+      conversationId: 'convo-1',
+      endpoint: 'mock',
+      endpointType: 'custom',
+      spec: 'gpt-concise',
+      model: 'mock-echo',
+    });
+    expect(fields).not.toHaveProperty('agent_id');
+    expect((saveConvo.mock.calls[0] as unknown[])[2]).toMatchObject({
+      unsetFields: { agent_id: 1 },
+    });
+  });
+
+  it('labels stored input from a model run with its endpoint and model', async () => {
+    const { store, saveMessage } = persistence({
+      endpoint: 'mock',
+      model: 'mock-echo',
+      spec: 'echo',
+    });
+    await store.saveInput();
+    expect((saveMessage.mock.calls[0] as unknown[])[1]).toMatchObject({
+      endpoint: 'mock',
+      model: 'mock-echo',
+    });
+  });
+
+  it('keeps recording agent runs under the agents endpoint and agent id', async () => {
+    const { store, saveConvo } = persistence();
+    await store.saveConversation();
+    const fields = (saveConvo.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(fields).toMatchObject({ endpoint: 'agents', agent_id: 'gpt-concise', model: 'gpt-4o' });
+    expect(fields).not.toHaveProperty('spec');
+    expect((saveConvo.mock.calls[0] as unknown[])[2]).toMatchObject({
+      unsetFields: { spec: 1, endpointType: 1 },
+    });
+  });
+});

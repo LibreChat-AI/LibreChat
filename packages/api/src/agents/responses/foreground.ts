@@ -185,6 +185,8 @@ export async function saveForegroundResponseInputs<WriteContext>(
     conversationId: string;
     messages: (InternalMessage & { messageId: string; parentMessageId: string })[];
     agentId: string;
+    /** For a model run, the endpoint and model to record instead of `agents`/`agentId`. */
+    label?: { endpoint: string; model?: string };
   },
   deps: {
     saveMessage: (
@@ -224,8 +226,8 @@ export async function saveForegroundResponseInputs<WriteContext>(
               ? [{ type: ContentTypes.TEXT, text: message.content }]
               : message.content,
           sender: inputSenders[message.role],
-          endpoint: EModelEndpoint.agents,
-          model: input.agentId,
+          endpoint: input.label?.endpoint ?? EModelEndpoint.agents,
+          model: input.label ? (input.label.model ?? input.agentId) : input.agentId,
         },
         { context: 'Responses API - save response input' },
       ),
@@ -452,11 +454,18 @@ export interface ResponsePersistenceDependencies {
     fields: ReturnType<typeof resolvePersistableCodeEnvironmentDecision> & {
       conversationId: string;
       endpoint: string;
-      agent_id: string;
+      /** Absent for a model run (see `ResponseConversationTarget`). */
+      agent_id?: string;
+      endpointType?: string;
+      spec?: string;
       title?: string;
       model?: string;
     },
-    options: { context: string; initialAgentId: string | null },
+    options: {
+      context: string;
+      initialAgentId: string | null;
+      unsetFields?: Record<string, number>;
+    },
   ) => Promise<unknown>;
   announceReply: (announcement: ReplyAnnouncement) => Promise<unknown>;
   resolveTitle: (request: CompletionRequest, candidate: string) => string | null;
@@ -464,6 +473,14 @@ export interface ResponsePersistenceDependencies {
 }
 
 /** The shared turn's storage and transport inputs; terminal ownership is selected separately. */
+/** How to record a conversation whose run used a model rather than a saved agent. */
+export interface ResponseConversationTarget {
+  endpoint: string;
+  endpointType?: string;
+  model?: string;
+  spec?: string;
+}
+
 export interface ResponseStageInput {
   terminal: Pick<ForegroundResponseTerminal<StoredReply>, 'stage'>;
   request: CompletionRequest;
@@ -471,6 +488,9 @@ export interface ResponseStageInput {
   conversationId: string;
   agentId: string;
   agent: { id?: string; name?: string; model?: string };
+  /** Set for a model spec or `endpoint/model` run: the conversation is saved like the
+   *  chat's own model conversations (endpoint, model, spec), not under an agent id. */
+  conversationTarget?: ResponseConversationTarget;
   codeEnvironmentDecision?: ConversationCodeEnvironmentDecision;
   messages: (InternalMessage & { messageId: string; parentMessageId: string })[];
   parentMessageId: string;
@@ -508,6 +528,7 @@ export function createResponsePersistence(
     conversationId,
     agentId,
     agent,
+    conversationTarget,
     codeEnvironmentDecision,
     messages,
     parentMessageId,
@@ -518,10 +539,18 @@ export function createResponsePersistence(
   const context = getConversationWriteContext(request);
   const conversationFields = () => {
     const title = deps.resolveTitle(request, agent.name || 'Open Responses Conversation');
+    const target = conversationTarget
+      ? {
+          endpoint: conversationTarget.endpoint,
+          ...(conversationTarget.endpointType != null && {
+            endpointType: conversationTarget.endpointType,
+          }),
+          ...(conversationTarget.spec != null && { spec: conversationTarget.spec }),
+        }
+      : { endpoint: EModelEndpoint.agents, agent_id: agentId };
     return {
       conversationId,
-      endpoint: EModelEndpoint.agents,
-      agent_id: agentId,
+      ...target,
       ...resolvePersistableCodeEnvironmentDecision({
         conversationId,
         decision: codeEnvironmentDecision,
@@ -535,7 +564,7 @@ export function createResponsePersistence(
             : undefined,
       }),
       ...(title != null && { title }),
-      model: agent.model,
+      model: conversationTarget?.model ?? agent.model,
     };
   };
   return {
@@ -602,13 +631,23 @@ export function createResponsePersistence(
         deps.saveConvo(context, conversationFields(), {
           context: 'Responses API - save conversation',
           initialAgentId: agent.id === agentId ? agentId : null,
+          /** A conversation can switch between an agent and a model; drop the other kind's fields. */
+          unsetFields: conversationTarget ? { agent_id: 1 } : { spec: 1, endpointType: 1 },
         }),
         { conversationId },
       );
     },
     async saveInput(): Promise<void> {
       await saveForegroundResponseInputs(
-        { context, conversationId, messages, agentId },
+        {
+          context,
+          conversationId,
+          messages,
+          agentId,
+          ...(conversationTarget && {
+            label: { endpoint: conversationTarget.endpoint, model: conversationTarget.model },
+          }),
+        },
         { saveMessage: deps.saveMessage },
       );
     },
@@ -626,8 +665,8 @@ export function createResponsePersistence(
             isCreatedByUser: false,
             ...traceFields,
             sender: 'Agent',
-            endpoint: EModelEndpoint.agents,
-            model: agentId,
+            endpoint: conversationTarget?.endpoint ?? EModelEndpoint.agents,
+            model: conversationTarget ? (conversationTarget.model ?? agentId) : agentId,
             finish_reason: result.status === 'completed' ? 'stop' : result.status,
             tokenCount: visibleOutputTokens ?? result.usage?.output_tokens,
           },

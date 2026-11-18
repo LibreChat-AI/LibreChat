@@ -214,6 +214,9 @@ jest.mock('~/server/services/ApiKeys/grants', () => ({
 jest.mock('@librechat/api', () => ({
   createApiModelCallbacks: (...args) =>
     jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
+  isRemoteModelContinuationAllowed:
+    jest.requireActual('@librechat/api').isRemoteModelContinuationAllowed,
+  toRemoteModelConversation: jest.requireActual('@librechat/api').toRemoteModelConversation,
   captureResponseAccountingUsage: (...args) =>
     jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
   resolveResponseContinuation: (...args) =>
@@ -631,6 +634,13 @@ jest.mock('~/server/services/Files/Code/process', () => ({
 
 const mockUpdateBalance = jest.fn().mockResolvedValue({});
 const mockBulkInsertTransactions = jest.fn().mockResolvedValue(undefined);
+
+const mockBuildRemoteAgent = jest.fn();
+const mockListRemoteModels = jest.fn().mockResolvedValue([]);
+jest.mock('~/server/services/Agents/remoteModels', () => ({
+  buildAgent: (...args) => mockBuildRemoteAgent(...args),
+  list: (...args) => mockListRemoteModels(...args),
+}));
 
 jest.mock('~/models', () => ({
   getAgent: jest.fn().mockResolvedValue({ id: 'agent-123', name: 'Test Agent' }),
@@ -3850,5 +3860,76 @@ describe('createResponse controller', () => {
       await expect(passedResolver()()).resolves.toBe(false);
       expect(resolveToolRoleGrants).toHaveBeenCalledWith(expect.objectContaining({ req }));
     });
+  });
+});
+
+describe('Responses API remote models', () => {
+  const remoteTarget = { kind: 'endpoint_model', id: 'anthropic/claude', endpoint: 'anthropic' };
+  let res;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetMockExecution();
+    res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+      setHeader: jest.fn(),
+      flushHeaders: jest.fn(),
+      end: jest.fn(),
+      write: jest.fn(),
+      once: jest.fn(),
+      off: jest.fn(),
+    };
+  });
+
+  it('runs a resolved model as its ephemeral agent, never a saved-agent lookup', async () => {
+    const api = require('@librechat/api');
+    const db = require('~/models');
+    mockBuildRemoteAgent.mockResolvedValueOnce({
+      id: 'ephemeral_anthropic__claude',
+      provider: 'anthropic',
+      model: 'claude',
+      model_parameters: { model: 'claude' },
+      tools: [],
+    });
+    const request = { model: 'anthropic/claude', input: 'Hello', stream: false };
+    api.validateResponseRequest.mockReturnValueOnce({ request });
+    const req = {
+      body: request,
+      user: { id: 'user-123' },
+      config: { endpoints: { agents: { allowedProviders: ['anthropic'] } } },
+      remoteModel: remoteTarget,
+      once: jest.fn(),
+      off: jest.fn(),
+    };
+
+    await require('../responses').createResponse(req, res);
+
+    expect(mockBuildRemoteAgent).toHaveBeenCalledWith(req, remoteTarget);
+    expect(db.getAgent).not.toHaveBeenCalledWith({ id: 'anthropic/claude' });
+    expect(api.sendResponsesErrorResponse.mock.calls).toEqual([]);
+  });
+
+  it('lists remote models after agents and hides raw errors', async () => {
+    const { findAccessibleResources } = require('~/server/services/PermissionService');
+    findAccessibleResources.mockResolvedValueOnce([]);
+    mockListRemoteModels.mockResolvedValueOnce([{ id: 'gpt-concise', object: 'model' }]);
+    const { listModels } = require('../responses');
+
+    await listModels({ user: { id: 'user-123', role: 'USER' } }, res);
+    expect(res.json).toHaveBeenCalledWith({
+      object: 'list',
+      data: [{ id: 'gpt-concise', object: 'model' }],
+    });
+
+    const api = require('@librechat/api');
+    findAccessibleResources.mockRejectedValueOnce(new Error('mongo://user:secret@db detail'));
+    await listModels({ user: { id: 'user-123', role: 'USER' } }, res);
+    expect(api.sendResponsesErrorResponse).toHaveBeenLastCalledWith(
+      res,
+      500,
+      'Failed to list models',
+      'server_error',
+    );
   });
 });

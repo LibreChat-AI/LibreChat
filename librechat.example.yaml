@@ -933,6 +933,16 @@ endpoints:
   #   # (optional) Maximum explicit subagents per agent, for both the flat list and
   #   # graph definitions. Defaults to 10; hard cap 50.
   #   maxSubagents: 20
+  #   # (optional) The OpenAI-compatible API at /api/agents/v1, used with personal API keys
+  #   # (Settings > API Keys; needs `interface.remoteAgents.use`).
+  #   remoteApi:
+  #     # Keys also reach the models their owner can use in the chat UI, not only agents:
+  #     # a model spec by name, or `endpoint/model` (e.g. `openAI/gpt-4o`) when
+  #     # `modelSpecs.enforce` is off and model selection is enabled, on Chat Completions and
+  #     # (non-background) Responses. Listed by GET /models.
+  #     # On by default; set false to keep API keys agent-only.
+  #     models:
+  #       enabled: false
   #   # (optional) Shared files during an active agent run. Each delegating agent must
   #   # also opt in with subagents.shareFiles. Inputs are read-only; outputs stay
   #   # private until explicitly published. Published files remain downloadable.

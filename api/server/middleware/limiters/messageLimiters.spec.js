@@ -14,6 +14,14 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/server/middleware/denyRequest', () => jest.fn());
 jest.mock('~/cache', () => ({ logViolation: jest.fn() }));
 
+/** A limiter's options, found by its store name rather than creation order. */
+function limiterOptions(storeName) {
+  const { limiterCache } = require('@librechat/api');
+  const index = limiterCache.mock.calls.findIndex(([name]) => name === storeName);
+  const store = limiterCache.mock.results[index].value;
+  return mockRateLimit.mock.calls.find(([options]) => options.store === store)[0];
+}
+
 describe('agent event rate limiter', () => {
   let originalEnv;
 
@@ -98,7 +106,7 @@ describe('message rate limiter violation payload', () => {
     require('./messageLimiters');
     const { logViolation } = require('~/cache');
     const denyRequest = require('~/server/middleware/denyRequest');
-    const userOptions = mockRateLimit.mock.calls.at(-1)[0];
+    const userOptions = limiterOptions('message_user_limiter');
     const resetTime = new Date(Date.now() + 7 * 60 * 1000);
     const expected = expect.objectContaining({
       type: 'message_limit',
@@ -121,7 +129,7 @@ describe('message rate limiter violation payload', () => {
     process.env.MESSAGE_IP_WINDOW = '1';
     require('./messageLimiters');
     const denyRequest = require('~/server/middleware/denyRequest');
-    const ipOptions = mockRateLimit.mock.calls.at(-2)[0];
+    const ipOptions = limiterOptions('message_ip_limiter');
 
     await ipOptions.handler({}, {});
 
@@ -134,4 +142,63 @@ describe('message rate limiter violation payload', () => {
       }),
     );
   });
+});
+
+describe('OpenAI-compatible API message limiters', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    mockRateLimit.mockClear();
+  });
+
+  function apiHandler(storeName) {
+    require('./messageLimiters');
+    const { limiterCache } = require('@librechat/api');
+    const index = limiterCache.mock.calls.findIndex(([name]) => name === storeName);
+    expect(index).toBeGreaterThanOrEqual(0);
+    return mockRateLimit.mock.calls.find(
+      ([options]) => options.store === limiterCache.mock.results[index].value,
+    )[0];
+  }
+
+  it.each([
+    ['message_ip_api_limiter', 'ip'],
+    ['message_user_api_limiter', 'user'],
+  ])(
+    'answers %s as a JSON 429, logs the violation, and saves no chat message',
+    async (store, limiter) => {
+      const options = apiHandler(store);
+      const { logViolation } = require('~/cache');
+      const denyRequest = require('~/server/middleware/denyRequest');
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.user = { id: 'user-1' };
+        req.rateLimit = { resetTime: new Date(Date.now() + 30_000) };
+        next();
+      });
+      app.post('/api/agents/v1/chat/completions', options.handler);
+
+      const response = await request(app).post('/api/agents/v1/chat/completions').send({
+        model: 'gpt-concise',
+        messageId: 'owned',
+        conversationId: 'c',
+        parentMessageId: 'p',
+      });
+
+      expect(response.status).toBe(429);
+      expect(response.headers['retry-after']).toBeDefined();
+      expect(response.body.error).toMatchObject({
+        code: 'rate_limit_exceeded',
+        type: 'rate_limit_error',
+      });
+      expect(logViolation).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'message_limit',
+        expect.objectContaining({ limiter }),
+        undefined,
+      );
+      expect(denyRequest).not.toHaveBeenCalled();
+    },
+  );
 });

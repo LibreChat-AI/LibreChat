@@ -53,6 +53,8 @@ export * from './policy';
 export * from './prewarm';
 export * from './ptc';
 export * from './openai';
+/** Exported here, not from `./openai`, so modelSpecs -> agents/openai stays acyclic. */
+export * from './openai/models';
 export * from './transactions';
 export * from './traversal';
 export * from './usage';

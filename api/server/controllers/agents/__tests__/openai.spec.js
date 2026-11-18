@@ -185,6 +185,8 @@ jest.mock('@librechat/api', () => ({
   getModelEndUsage: (...args) => jest.requireActual('@librechat/api').getModelEndUsage(...args),
   createApiModelCallbacks: (...args) =>
     jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
+  isRemoteModelContinuationAllowed:
+    jest.requireActual('@librechat/api').isRemoteModelContinuationAllowed,
   createFileProvisionRecovery: () =>
     jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
@@ -475,6 +477,15 @@ jest.mock('~/server/services/Files/Code/process', () => ({
 
 const mockUpdateBalance = jest.fn().mockResolvedValue({});
 const mockBulkInsertTransactions = jest.fn().mockResolvedValue(undefined);
+
+const mockBuildRemoteAgent = jest.fn();
+const mockListRemoteModels = jest.fn().mockResolvedValue([]);
+const mockDescribeRemoteModel = jest.fn().mockResolvedValue(null);
+jest.mock('~/server/services/Agents/remoteModels', () => ({
+  buildAgent: (...args) => mockBuildRemoteAgent(...args),
+  list: (...args) => mockListRemoteModels(...args),
+  describe: (...args) => mockDescribeRemoteModel(...args),
+}));
 
 jest.mock('~/models', () => ({
   getAgent: jest.fn().mockResolvedValue({ id: 'agent-123', name: 'Test Agent' }),
@@ -2615,5 +2626,97 @@ describe('OpenAIChatCompletionController', () => {
       await expect(passedResolver()()).resolves.toBe(false);
       expect(resolveToolRoleGrants).toHaveBeenCalledWith(expect.objectContaining({ req }));
     });
+  });
+});
+
+describe('remote models (model specs and endpoint/model)', () => {
+  const db = require('~/models');
+  const controller = require('../openai');
+  const remoteTarget = { kind: 'model_spec', id: 'gpt-concise', endpoint: 'openAI' };
+  const ephemeralAgent = {
+    id: 'ephemeral_openAI__gpt-4o',
+    provider: 'openAI',
+    model: 'gpt-4o',
+    model_parameters: { model: 'gpt-4o' },
+    tools: [],
+  };
+  let res;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetMockExecution();
+    res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+      setHeader: jest.fn(),
+      flushHeaders: jest.fn(),
+      end: jest.fn(),
+      write: jest.fn(),
+      once: jest.fn(),
+      off: jest.fn(),
+    };
+  });
+
+  it('runs a resolved model as its ephemeral agent, never a saved-agent lookup', async () => {
+    mockBuildRemoteAgent.mockResolvedValueOnce(ephemeralAgent);
+    const req = {
+      body: { model: 'gpt-concise', messages: [{ role: 'user', content: 'Hi' }], stream: false },
+      user: { id: 'user-123' },
+      config: { endpoints: { agents: { allowedProviders: ['openAI'] } } },
+      remoteModel: remoteTarget,
+      once: jest.fn(),
+      off: jest.fn(),
+    };
+
+    await controller.OpenAIChatCompletionController(req, res);
+
+    expect(mockBuildRemoteAgent).toHaveBeenCalledWith(req, remoteTarget);
+    expect(db.getAgent).not.toHaveBeenCalledWith({ id: 'gpt-concise' });
+  });
+
+  it('answers model_not_found when the model cannot be built', async () => {
+    mockBuildRemoteAgent.mockResolvedValueOnce(null);
+    const req = {
+      body: { model: 'gpt-concise', messages: [{ role: 'user', content: 'Hi' }], stream: false },
+      user: { id: 'user-123' },
+      config: { endpoints: { agents: { allowedProviders: ['openAI'] } } },
+      remoteModel: remoteTarget,
+      once: jest.fn(),
+      off: jest.fn(),
+    };
+
+    await controller.OpenAIChatCompletionController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  it('lists remote models after agents', async () => {
+    const { findAccessibleResources } = require('~/server/services/PermissionService');
+    findAccessibleResources.mockResolvedValueOnce([]);
+    mockListRemoteModels.mockResolvedValueOnce([{ id: 'gpt-concise', object: 'model' }]);
+
+    await controller.ListModelsController({ user: { id: 'user-123', role: 'USER' } }, res);
+
+    expect(res.json).toHaveBeenCalledWith({
+      object: 'list',
+      data: [{ id: 'gpt-concise', object: 'model' }],
+    });
+  });
+
+  it('describes a remote model when no agent has the id, and hides raw errors', async () => {
+    db.getAgent.mockResolvedValueOnce(null);
+    mockDescribeRemoteModel.mockResolvedValueOnce({ id: 'gpt-concise', object: 'model' });
+    await controller.GetModelController(
+      { params: { model: 'gpt-concise' }, user: { id: 'user-123', role: 'USER' } },
+      res,
+    );
+    expect(res.json).toHaveBeenCalledWith({ id: 'gpt-concise', object: 'model' });
+
+    db.getAgent.mockRejectedValueOnce(new Error('mongo://user:secret@db internal detail'));
+    await controller.GetModelController(
+      { params: { model: 'x' }, user: { id: 'user-123', role: 'USER' } },
+      res,
+    );
+    expect(JSON.stringify(res.json.mock.calls.at(-1))).not.toContain('secret');
   });
 });

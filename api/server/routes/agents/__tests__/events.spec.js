@@ -68,6 +68,9 @@ jest.mock('../middleware', () => ({
   },
   checkRemoteAgentsFeature: (_req, _res, next) => next(),
   checkAgentPermission: (_req, _res, next) => next(),
+  checkAgentOrModelPermission: (_req, _res, next) => next(),
+  remoteModelGuards: [],
+  preResolveModelGuards: [],
   checkAgentTriggerPermission: (_req, _res, next) => next(),
 }));
 

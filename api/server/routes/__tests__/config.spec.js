@@ -1456,6 +1456,32 @@ describe('passkey enrollment cap', () => {
   });
 });
 
+describe('remote API model access flag', () => {
+  it('reports keys reaching models by default, only after authentication', async () => {
+    const { AppService } = require('@librechat/data-schemas');
+    mockGetAppConfig.mockResolvedValue(await AppService({ config: {} }));
+
+    const authenticated = await request(createApp(mockUser)).get('/api/config');
+    expect(authenticated.status).toBe(200);
+    expect(authenticated.body.remoteApiModelsEnabled).toBe(true);
+
+    const anonymous = await request(createApp()).get('/api/config');
+    expect(anonymous.body).not.toHaveProperty('remoteApiModelsEnabled');
+  });
+
+  it('reports agent-only keys when the admin opts out', async () => {
+    const { AppService } = require('@librechat/data-schemas');
+    mockGetAppConfig.mockResolvedValue(
+      await AppService({
+        config: { endpoints: { agents: { remoteApi: { models: { enabled: false } } } } },
+      }),
+    );
+
+    const response = await request(createApp(mockUser)).get('/api/config');
+    expect(response.body.remoteApiModelsEnabled).toBe(false);
+  });
+});
+
 describe('chat list endpoint filter limit', () => {
   it('publishes the base config limits only after authentication', async () => {
     const { AppService } = require('@librechat/data-schemas');

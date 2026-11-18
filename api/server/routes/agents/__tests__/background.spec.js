@@ -56,10 +56,12 @@ jest.mock('../middleware', () => ({
     mockOrder.push('feature');
     next();
   },
-  checkAgentPermission: (_req, _res, next) => {
+  checkAgentOrModelPermission: (_req, _res, next) => {
     mockOrder.push('agent');
     next();
   },
+  remoteModelGuards: [],
+  preResolveModelGuards: [],
 }));
 
 const app = express();
