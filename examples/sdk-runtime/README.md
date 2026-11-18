@@ -70,9 +70,9 @@ Its test attachment also records send-to-approval and approval-to-visible-output
 
 This example validates the initial transport. It does **not** establish all main-chat features.
 Read the [parity matrix and rollout gates](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
-before enabling a product workflow. In particular, host model/PII protection blocks remote
-execution, and model/tool builder settings, files/artifacts, steering, nested usage/billing, and
-host tracing policies are not automatically inherited by the worker.
+before enabling a product workflow. Protected execution requires the opt-in host model and policy
+adapters. File transport is programmatic; native file/artifact activation, steering, nested
+usage/billing, and host tracing policies are not automatically inherited by the worker.
 
 ## Recovering a dropped host-worker connection
 

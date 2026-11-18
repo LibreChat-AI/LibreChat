@@ -117,10 +117,6 @@ async function worker() {
 async function main() {
   const directory = await mkdtemp(join(tmpdir(), 'librechat-sdk-files-'));
   const secret = randomUUID() + randomUUID();
-  const child = fork(__filename, ['--worker'], {
-    env: { ...process.env, SDK_FILE_EXAMPLE_SECRET: secret },
-    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-  });
   const records = new Map();
   const publications = new Map();
   const bytes = Buffer.from('bounded host file transport\n'.repeat(4096));
@@ -132,7 +128,12 @@ async function main() {
     bytes: bytes.length,
   };
   const sourcePath = join(directory, 'input');
-  await writeFile(sourcePath, bytes);
+  try {
+    await writeFile(sourcePath, bytes);
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
   records.set(source.reference, { file: source, path: sourcePath });
   function resolve(reference, revision) {
     const record = records.get(reference);
@@ -211,6 +212,10 @@ async function main() {
       return receipt;
     },
   };
+  const child = fork(__filename, ['--worker'], {
+    env: { ...process.env, SDK_FILE_EXAMPLE_SECRET: secret },
+    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+  });
   try {
     const [{ port }] = await Promise.race([
       once(child, 'message'),
