@@ -14,6 +14,7 @@ import {
 } from './ref';
 import { isProviderSessionUnavailableError } from './errors';
 import { redirectToAuthFailure } from '~/oauth/callback';
+import { toOpenIDLogArgument } from '../errors';
 
 export interface OpenIDCallbackProviderSessionDeps {
   authorizer: ProviderSessionAuthorizer;
@@ -143,4 +144,53 @@ export async function establishOAuthProviderSession(
     clientDomain: input.clientDomain,
   });
   return result.ok ? result.ref : undefined;
+}
+
+export interface PersistOpenIDAdminProviderSessionBindingDeps {
+  authorizer: ProviderSessionAuthorizer;
+  /** Persists the admin-exchange credential's provider-session binding for a later admin refresh. */
+  storeOpenIDSession: (
+    userId: unknown,
+    refreshToken: string,
+    tenantId: unknown,
+    previousRefreshToken: undefined,
+    options: { providerSession: ProviderSessionRef | null },
+  ) => Promise<unknown>;
+  logger: OpenIDLogger;
+}
+
+export interface PersistOpenIDAdminProviderSessionBindingInput {
+  provider?: string;
+  refreshToken?: string;
+  userId: unknown;
+  tenantId: unknown;
+  providerSession: ProviderSessionRef | null;
+}
+
+/** Skipped for a non-OpenID login, a login with no stored refresh token, or mode `'off'`. */
+export async function persistOpenIDAdminProviderSessionBinding(
+  deps: PersistOpenIDAdminProviderSessionBindingDeps,
+  input: PersistOpenIDAdminProviderSessionBindingInput,
+): Promise<void> {
+  if (!input.refreshToken || input.provider !== 'openid') {
+    return;
+  }
+  const mode = await deps.authorizer.getMode();
+  if (mode === 'off') {
+    return;
+  }
+  try {
+    await deps.storeOpenIDSession(input.userId, input.refreshToken, input.tenantId, undefined, {
+      providerSession: input.providerSession,
+    });
+  } catch (error) {
+    if (mode === 'enforce') {
+      throw error;
+    }
+    /** Mode `record` is best-effort: a store failure must not abort the admin OAuth login. */
+    deps.logger.warn(
+      '[OAuth] Failed to persist admin provider-session binding',
+      toOpenIDLogArgument(error),
+    );
+  }
 }

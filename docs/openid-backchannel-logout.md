@@ -42,7 +42,9 @@ number of times with its own backoff; it does not retry indefinitely.
    No mode change clears a record's `revokedAt` field. Switching back to `record` or `enforce`
    enforces the same revocations again. Rollback does not delete authentication data.
    A session's existing association survives `off` too: a refresh taken while the mode is `off`
-   carries it forward unchanged instead of clearing it.
+   carries it forward unchanged instead of clearing it. A session created or rotated by the admin
+   panel while the mode is `off` has no association; after switching back to `record`, that
+   session still authenticates, and after switching back to `enforce`, it must sign in once.
    This carry-forward has a limit: a ProviderSession record expires by a TTL (`expiresAt`).
    Only the `authorize`, `establish`, and `revoke` operations extend that TTL, and none of them
    run while the mode is `off`. So an association or a revocation survives `off` only until its

@@ -11,10 +11,11 @@ const {
   isAdminPanelRedirect,
   generateAdminExchangeCode,
   establishOAuthProviderSession,
+  persistOpenIDAdminProviderSessionBinding,
   resolveAuthMethod,
 } = require('@librechat/api');
 const { syncUserEntraGroupMemberships } = require('~/server/services/PermissionService');
-const { setAuthTokens } = require('~/server/services/AuthService');
+const { setAuthTokens, storeOpenIDSession } = require('~/server/services/AuthService');
 const { sendOpenIDAuthResponse } = require('~/server/services/OpenIDRefreshRecovery');
 const {
   getProviderSessionAuthorizer,
@@ -84,6 +85,17 @@ function createOAuthHandler(redirectUri = domains.client) {
         }
         const expiresAt = Date.now() + sessionExpiry;
 
+        await persistOpenIDAdminProviderSessionBinding(
+          { authorizer: getProviderSessionAuthorizer(), storeOpenIDSession, logger },
+          {
+            provider: req.user.provider,
+            refreshToken,
+            userId: req.user._id,
+            tenantId: req.user.tenantId,
+            providerSession: providerSessionRef,
+          },
+        );
+
         const callbackUrl = new URL(redirectUri);
         const exchangeCode = await generateAdminExchangeCode(
           cache,
@@ -93,6 +105,7 @@ function createOAuthHandler(redirectUri = domains.client) {
           callbackUrl.origin,
           req.pkceChallenge,
           expiresAt,
+          providerSessionRef,
         );
         callbackUrl.searchParams.set('code', exchangeCode);
         logger.info(`[OAuth] Admin panel redirect with exchange code for user: ${req.user._id}`);
