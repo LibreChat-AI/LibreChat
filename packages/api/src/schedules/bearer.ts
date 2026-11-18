@@ -133,6 +133,24 @@ export function createScheduledMCPBearerHost(deps: {
         onFailure?.(error);
         throw error;
       };
+      /** What the owner allowed on this server, among what its agents still select. */
+      const grantedSelections = async (
+        target: ScheduledMCPTarget,
+        signal?: AbortSignal,
+      ): Promise<ScheduledMCPToolSelection[]> => {
+        const lookup = await awaitOboOperation(
+          deps.authority.lookupConsent(captured, target.resource, { signal }),
+          signal,
+        );
+        // With no grant for the server, authorizing the whole selection reports why.
+        if (lookup.state !== 'found') return target.permittedTools;
+        return lookup.consent.permittedTools
+          .map(({ agentId, tools }) => {
+            const current = target.permittedTools.find((item) => item.agentId === agentId);
+            return { agentId, tools: tools.filter((tool) => current?.tools.includes(tool)) };
+          })
+          .filter((item) => item.tools.length > 0);
+      };
       const authorize = async (
         target: ScheduledMCPTarget,
         selection: ScheduledMCPToolSelection,
@@ -222,7 +240,9 @@ export function createScheduledMCPBearerHost(deps: {
             const { [authorization[0][0]]: _authorization, ...headers } = effective.headers ?? {};
             if (/\{\{LIBRECHAT_(?:OPENID_|GRAPH_)/.test(JSON.stringify({ ...effective, headers })))
               deny('unsupported_mode', serverName);
-            const selections = selection ? [selection] : target.permittedTools;
+            // A connection is for the whole server, so it is admitted for what the owner
+            // allowed on it, not for everything the agents select there.
+            const selections = selection ? [selection] : await grantedSelections(target, signal);
             if (!selections.length) deny('tool_policy_denied', serverName);
             const authorizations = await Promise.all(
               selections.map((item) => authorize(target, item, stage, signal, onFailure)),

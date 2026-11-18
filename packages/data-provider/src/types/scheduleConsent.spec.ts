@@ -1,4 +1,5 @@
 import {
+  MAX_SCHEDULED_MCP_SERVER_TOOLS,
   confirmScheduleMCPConsentSchema,
   scheduledMCPResourceSchema,
   scheduledMCPIdentitySchema,
@@ -91,6 +92,20 @@ it.each([
       allow,
     }).success,
   ).toBe(false);
+});
+
+it('lets the owner allow every tool a server can be offered with, across its agents', () => {
+  const parse = (count: number) =>
+    confirmScheduleMCPConsentSchema.safeParse({
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow: { warehouse: Array.from({ length: count }, (_, index) => `tool-${index}`) },
+    }).success;
+  // Two agents with 150 tools each: valid as an offer, so it must be confirmable whole.
+  expect(parse(300)).toBe(true);
+  expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS)).toBe(true);
+  expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS + 1)).toBe(false);
 });
 
 it('accepts a server the owner left with no tools beside one with a choice', () => {

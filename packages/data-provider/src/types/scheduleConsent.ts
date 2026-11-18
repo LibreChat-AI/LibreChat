@@ -78,10 +78,18 @@ export type ScheduledMCPResourceBinding = z.infer<typeof scheduledMCPResourceBin
 export type ScheduledMCPResource = z.infer<typeof scheduledMCPResourceSchema>;
 export type ScheduledMCPCredentialMode = ScheduledMCPResource['credentialMode'];
 
+const MAX_AGENT_TOOLS = 256;
+const MAX_SERVER_AGENTS = 100;
+/**
+ * The most distinct tools one server can hold across the agents that select them. Lists kept
+ * per server, not per agent, are sized by it, so they can always represent a valid offer.
+ */
+export const MAX_SCHEDULED_MCP_SERVER_TOOLS = MAX_AGENT_TOOLS * MAX_SERVER_AGENTS;
+
 export const scheduledMCPToolSelectionSchema = z
   .object({
     agentId: identifier,
-    tools: z.array(identifier).min(1).max(256),
+    tools: z.array(identifier).min(1).max(MAX_AGENT_TOOLS),
   })
   .strict();
 export type ScheduledMCPToolSelection = z.infer<typeof scheduledMCPToolSelectionSchema>;
@@ -89,7 +97,7 @@ export type ScheduledMCPToolSelection = z.infer<typeof scheduledMCPToolSelection
 export const scheduledMCPTargetSchema = z
   .object({
     resource: scheduledMCPResourceSchema,
-    permittedTools: z.array(scheduledMCPToolSelectionSchema).min(1).max(100),
+    permittedTools: z.array(scheduledMCPToolSelectionSchema).min(1).max(MAX_SERVER_AGENTS),
     policyRevision: identifier,
   })
   .strict();
@@ -128,7 +136,7 @@ export const confirmScheduleMCPConsentSchema = z
      * listed with no tools, is not allowed. Anything not listed here is refused at run time.
      */
     allow: z
-      .record(identifier, z.array(identifier).max(256))
+      .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
       .refine((value) => Object.keys(value).length <= 32)
       .refine((value) => Object.values(value).some((tools) => tools.length > 0)),
   })

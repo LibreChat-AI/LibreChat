@@ -37,6 +37,11 @@ export interface ScheduleMCPExecution {
   readonly enrolled: boolean;
   /** Legacy admits only while enrollment is still absent; it never acquires a later grant. */
   readonly checkEnrollment: () => Promise<void>;
+  /**
+   * Whether the grant, as read when this run was admitted, lists the tool for the agent.
+   * For a readiness check, which looks only at what the owner allowed; a call is checked live.
+   */
+  readonly grants: (agentId: string, serverName: string, selectionName: string) => boolean;
   readonly bind: (agentId: string | undefined, selectionName: string) => ScheduledMCPInvocation;
 }
 
@@ -98,6 +103,12 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
         structuredClone(resource),
       ]),
     );
+    const granted = new Map<string, Map<string, ReadonlySet<string>>>(
+      (snapshot.enrollment?.consents ?? []).map(({ resource, permittedTools }) => [
+        resource.serverName,
+        new Map(permittedTools.map(({ agentId, tools }) => [agentId, new Set(tools)])),
+      ]),
+    );
     let fenced = false;
     const checkEnrollment = async (): Promise<void> => {
       if (enrolled) return;
@@ -123,6 +134,8 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
       ...(manual && { manual: true }),
       enrolled,
       checkEnrollment,
+      grants: (agentId: string, serverName: string, selectionName: string) =>
+        granted.get(serverName)?.get(agentId)?.has(selectionName) === true,
       bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation {
         return Object.freeze({
           identity: capturedIdentity,

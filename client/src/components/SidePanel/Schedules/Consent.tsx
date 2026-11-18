@@ -47,6 +47,28 @@ function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
   );
 }
 
+/**
+ * The owner's ticks, kept to what is on offer now. The offer is read again while the dialog
+ * is open, and a server or tool the agents dropped has no box left to untick.
+ */
+function currentChoice(
+  data: ScheduleMCPConsentView,
+  edited: Record<string, string[]> | null,
+): Record<string, string[]> {
+  const initial = initialChoice(data);
+  if (!edited) return initial;
+  return Object.fromEntries(
+    data.targets.map((target) => {
+      const { serverName } = target.resource;
+      const offered = offeredTools(target);
+      return [
+        serverName,
+        (edited[serverName] ?? initial[serverName]).filter((tool) => offered.includes(tool)),
+      ];
+    }),
+  );
+}
+
 export default function Consent({
   canConfirm = true,
   id,
@@ -71,7 +93,7 @@ export default function Consent({
   const busy = confirm.isLoading || revoke.isLoading || query.isFetching;
   const data: ScheduleMCPConsentView | undefined = query.data;
   const choosing = canConfirm && data?.offer != null;
-  const choice = edited ?? (data ? initialChoice(data) : {});
+  const choice = data ? currentChoice(data, edited) : {};
   const chosenCount = Object.values(choice).reduce((count, tools) => count + tools.length, 0);
   const setTools = (serverName: string, tools: string[]) =>
     setEdited({ ...choice, [serverName]: tools });

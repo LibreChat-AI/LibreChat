@@ -137,6 +137,39 @@ it('starts from what the stored grant allows and is still on offer', async () =>
   expect(screen.getByRole('checkbox', { name: 'export' })).not.toBeChecked();
   expect(screen.queryByRole('checkbox', { name: 'retired' })).not.toBeInTheDocument();
 });
+it('drops ticks for a server or tool that leaves the offer while the dialog is open', async () => {
+  const archive = {
+    ...view.targets[0],
+    resource: { ...view.targets[0].resource, serverName: 'archive' },
+    permittedTools: [{ agentId: 'root', tools: ['purge'] }],
+  };
+  jest
+    .mocked(dataService.getScheduleMCPConsent)
+    .mockResolvedValue({ ...view, targets: [archive, ...view.targets] });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  const client = display();
+  await userEvent.click(await screen.findByRole('checkbox', { name: 'purge' }));
+  await userEvent.click(screen.getByRole('checkbox', { name: 'export' }));
+  await userEvent.click(screen.getByRole('checkbox', { name: 'query' }));
+  // The agents drop the archive server and the export tool; the offer is read again.
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    targets: [{ ...view.targets[0], permittedTools: [{ agentId: 'root', tools: ['query'] }] }],
+    offer: { digest: 'b'.repeat(64), maxLifetimeHours: 24 },
+  });
+  await client.invalidateQueries();
+  await waitFor(() =>
+    expect(screen.queryByRole('checkbox', { name: 'purge' })).not.toBeInTheDocument(),
+  );
+  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({ offerDigest: 'b'.repeat(64), allow: { warehouse: ['query'] } }),
+    ),
+  );
+});
 it('lists the allowed tools without boxes when there is nothing to confirm', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,

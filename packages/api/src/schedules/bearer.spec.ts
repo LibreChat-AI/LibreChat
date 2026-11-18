@@ -241,6 +241,23 @@ it('checks authority on every cache hit while minting once for root, child and p
   await expect(f.call()).rejects.toMatchObject({ failure: { reason: 'rbac_denied' } });
   expect(f.resolveBearer).toHaveBeenCalledTimes(1);
 });
+it('admits a connection for the tools the owner allowed when the agents select more', async () => {
+  const f = await bearerFixture();
+  for (const selection of f.target.permittedTools) selection.tools.push('write');
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  // The tool the owner left out still cannot be used through that connection.
+  await expect(f.call('root', ['write'])).rejects.toMatchObject({
+    failure: { reason: 'tool_policy_denied' },
+  });
+  // And a connection is refused once the agents select none of what was allowed.
+  f.dropTool();
+  await expect(resolveScheduledMCPBearerConfig(f.input)).rejects.toMatchObject({
+    failure: { reason: 'tool_policy_denied' },
+  });
+});
+
 it('renews after synthetic expiry without a session, retaining no login refresh credentials', async () => {
   const f = await bearerFixture();
   await f.call();

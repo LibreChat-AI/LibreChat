@@ -362,6 +362,42 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       authoritativeAliases,
       new Set([...Object.keys(accessibleServers), ...configNames]),
     ));
+    if (execution?.enrolled) {
+      // The owner may have allowed only some of what the agents select. Readiness is about
+      // what the run is allowed to use: a tool or a whole server left out of the grant is
+      // refused when called, and must not keep the schedule from running.
+      const allowed = execution;
+      const isGranted = (server: string, toolKey: string, owner: string): boolean =>
+        allowed.grants(owner, server, splitMCPToolKey(toolKey, authoritativeCandidates)[0]);
+      for (const [server, serverTools] of toolAgentIds) {
+        for (const [toolKey, owners] of serverTools) {
+          for (const owner of owners) if (!isGranted(server, toolKey, owner)) owners.delete(owner);
+          if (owners.size === 0) serverTools.delete(toolKey);
+        }
+        if (serverTools.size === 0) toolAgentIds.delete(server);
+      }
+      for (const [server, required] of selected) {
+        const serverTools = toolAgentIds.get(server);
+        if (!serverTools) {
+          selected.delete(server);
+          serverAgentIds.delete(server);
+          continue;
+        }
+        selected.set(
+          server,
+          required.filter((toolKey) => serverTools.has(toolKey)),
+        );
+        serverAgentIds.set(
+          server,
+          new Set([...serverTools.values()].flatMap((owners) => [...owners])),
+        );
+      }
+      if (selected.size === 0) {
+        throw new ScheduleMCPError(
+          new ScheduledMCPPolicyError('tool_policy_denied', '', agentId).outcomes,
+        );
+      }
+    }
     const selectedRawConfig = Object.fromEntries(
       Object.entries(rawConfig).filter(([serverName]) => selected.has(serverName)),
     );
