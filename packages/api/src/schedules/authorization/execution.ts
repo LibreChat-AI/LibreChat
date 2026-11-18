@@ -68,15 +68,6 @@ export function bindScheduledMCPInvocation(
   return context && executions.get(context)?.bind(agentId, selectionName);
 }
 
-/** A key that names one tool on one MCP server, as an agent's tool list carries it. */
-function isMCPToolSelection(toolKey: string): boolean {
-  return (
-    toolKey.includes(Constants.mcp_delimiter) &&
-    !toolKey.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`) &&
-    !toolKey.startsWith(`${Constants.mcp_all}${Constants.mcp_delimiter}`)
-  );
-}
-
 /**
  * What a run loads for an agent. Under a schedule's grant that is only what the owner
  * allowed: a tool left out is never defined for the model, and a server with nothing allowed
@@ -149,13 +140,19 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
     const grantedServers = [...granted.keys()];
     const serverAliases = buildServerNameAliases(grantedServers);
     const serverSpellings = [...grantedServers, ...serverAliases.keys()];
+    /**
+     * Whether a run under the grant loads this MCP key for the agent. A key for one tool needs
+     * that tool listed. A key for every tool on a server names none of them, and the grant
+     * lists tools by name, so it is never loaded. A key for the server alone is kept only
+     * where the grant lists a tool on that server for the agent.
+     */
     const isGrantedKey = (agentId: string, toolKey: string): boolean => {
       const [selectionName, spelling] = splitMCPToolKey(toolKey, serverSpellings);
       const serverName =
         spelling != null && granted.has(spelling) ? spelling : serverAliases.get(spelling ?? '');
-      return (
-        serverName != null && granted.get(serverName)?.get(agentId)?.has(selectionName) === true
-      );
+      const tools = serverName == null ? undefined : granted.get(serverName)?.get(agentId);
+      if (!tools || selectionName === Constants.mcp_all) return false;
+      return selectionName === Constants.mcp_server ? tools.size > 0 : tools.has(selectionName);
     };
     let fenced = false;
     /** Asked at the first MCP call, so a run that uses none pays nothing. Kept for the run. */
@@ -197,7 +194,9 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
         granted.get(serverName)?.get(agentId)?.has(selectionName) === true,
       narrow: (agentId: string, toolKeys: readonly string[]) =>
         enrolled
-          ? toolKeys.filter((key) => !isMCPToolSelection(key) || isGrantedKey(agentId, key))
+          ? toolKeys.filter(
+              (key) => !key.includes(Constants.mcp_delimiter) || isGrantedKey(agentId, key),
+            )
           : [...toolKeys],
       bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation {
         return Object.freeze({
