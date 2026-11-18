@@ -110,6 +110,14 @@ describe('initializeBedrock', () => {
       expect(result.llmConfig).toHaveProperty('model', 'anthropic.claude-3-sonnet');
     });
 
+    it('should build its client with AWS_DEFAULT_REGION when no Bedrock region is set', async () => {
+      delete process.env.BEDROCK_AWS_DEFAULT_REGION;
+      process.env.AWS_DEFAULT_REGION = 'eu-west-1';
+      const result = (await initializeBedrock(createMockParams())) as BedrockLLMConfigResult;
+
+      expect(result.llmConfig.client).toHaveProperty('region', 'eu-west-1');
+    });
+
     it('should include region from environment', async () => {
       const params = createMockParams();
       const result = await initializeBedrock(params);

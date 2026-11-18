@@ -69,18 +69,21 @@ export class InFlightBytesSemaphore {
 const encodeLimit = createConcurrencyLimiter(ENCODE_CONCURRENCY);
 const inFlightBytes = new InFlightBytesSemaphore(ENCODE_INFLIGHT_BYTES_MAX);
 
-export function runGuardedEncode<T>(
-  estimatedBytes: number,
-  task: () => Promise<T>,
-  signal?: AbortSignal,
-): Promise<T> {
-  const run = async (): Promise<T> => {
-    const release = await inFlightBytes.acquire(estimatedBytes, signal);
+export function runGuardedEncode<T>(estimatedBytes: number, task: () => Promise<T>): Promise<T> {
+  return encodeLimit(async () => {
+    const release = await inFlightBytes.acquire(estimatedBytes);
     try {
       return await task();
     } finally {
       release();
     }
-  };
-  return signal ? run() : encodeLimit(run);
+  });
+}
+
+/**
+ * Reserves bytes in the shared pool without an encode slot, for a hold that spans provider I/O:
+ * the slots bound CPU-heavy encodes, and a request waiting on a provider must not occupy one.
+ */
+export function reserveInFlightBytes(bytes: number, signal?: AbortSignal): Promise<() => void> {
+  return inFlightBytes.acquire(bytes, signal);
 }

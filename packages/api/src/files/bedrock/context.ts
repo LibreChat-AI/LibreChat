@@ -16,7 +16,12 @@ import {
   isStorageNotFoundError,
   getConfiguredFileSizeLimit,
 } from '../encode/utils';
-import { BedrockDocumentError, assertBedrockSize, clampBedrockLimit } from './limits';
+import {
+  BedrockDocumentError,
+  BedrockDocumentOverflowError,
+  assertBedrockSize,
+  clampBedrockLimit,
+} from './limits';
 import { getSafeErrorMetadata, isOwnedAbortError } from '~/utils/errors';
 import { steerContentDigest, validateSteerMedia } from './owners';
 import { configuredRequestBudget } from '~/utils/timeouts';
@@ -408,7 +413,7 @@ export class BedrockDocumentContext {
       });
       for await (const chunk of addAbortSignal(budget.signal, stream)) {
         if (!(chunk instanceof Uint8Array)) throw new BedrockDocumentError();
-        assertBedrockSize(chunk.byteLength, cap - size);
+        if (chunk.byteLength > cap - size) throw new BedrockDocumentOverflowError();
         size += chunk.byteLength;
         chunks.push(
           Buffer.isBuffer(chunk) && chunk.buffer.byteLength <= Math.max(8192, chunk.byteLength * 2)

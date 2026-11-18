@@ -41,7 +41,7 @@ const row = {
   filename: 'fixture.pdf',
   filepath: '/fixture/file',
   type: 'application/pdf',
-  bytes: 1,
+  bytes: pdf.byteLength,
   source: 'local',
 } as IMongoFile;
 
@@ -218,12 +218,14 @@ it.each(['missing', 'oversized', 'malformed', 'permission'])(
     const h = await setup(download);
     expect(download).not.toHaveBeenCalled();
     await expect(h.chat.invoke(h.messages)).resolves.toMatchObject({ content: 'continued' });
-    expect(download).toHaveBeenCalledTimes(1);
+    // An object larger than its recorded size is reread once under the document cap.
+    const reads = kind === 'oversized' ? 2 : 1;
+    expect(download).toHaveBeenCalledTimes(reads);
     expect(h.repairs.get('owned')).toHaveBeenCalledTimes(1);
     expect(h.publishers.get('owned')).toHaveBeenCalledTimes(2);
     expect(h.applied.get('owned')?.part.files).toBeUndefined();
     await h.chat.invoke(h.messages);
-    expect(download).toHaveBeenCalledTimes(1);
+    expect(download).toHaveBeenCalledTimes(reads);
     const call = h.transport.mock.calls[0] as unknown as [{ body: string }];
     const wire = JSON.parse(call[0].body);
     expect(wire.messages[0].content).toEqual([{ text: '> quoted context\n\nwords owned' }]);
@@ -253,7 +255,7 @@ it.each(['missing', 'oversized', 'malformed', 'permission'])(
       region: 'us-east-1',
       streaming: false,
     }).invoke(h.messages);
-    expect(download).toHaveBeenCalledTimes(1);
+    expect(download).toHaveBeenCalledTimes(reads);
     expect(withoutRepairedSteerMedia(h.messages[0].content, owners, { kind: 'steer' })).toEqual([
       { type: 'text', text: '> quoted context\n\nwords owned' },
     ]);

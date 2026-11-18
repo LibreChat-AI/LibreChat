@@ -15,6 +15,9 @@ export class BedrockDocumentError extends Error {
   }
 }
 
+/** The stored object outgrew the bound it was read under; a safe attachment error if it escapes. */
+export class BedrockDocumentOverflowError extends BedrockDocumentError {}
+
 export function bedrockRequestLimit(model?: string): number {
   // AWS API restrictions and Nova modalities specify whole-payload limits, including base64.
   return /(?:^|\.)(?:anthropic\.)?claude-/.test(model ?? '') ? 32_000_000 : 25_000_000;

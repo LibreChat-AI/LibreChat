@@ -128,6 +128,7 @@ export async function initializeBedrock(
     BEDROCK_AWS_BEARER_TOKEN,
     BEDROCK_REVERSE_PROXY,
     BEDROCK_AWS_DEFAULT_REGION,
+    AWS_DEFAULT_REGION,
   } = process.env;
 
   const { key: expiresAt } = requestBody;
@@ -326,10 +327,11 @@ export async function initializeBedrock(
     }
   }
 
+  // ChatBedrockConverse read AWS_DEFAULT_REGION when it built this client itself; the SDK does not.
   const client =
     llmConfig.client ??
     new BedrockRuntimeClient({
-      region: (llmConfig.region as string) ?? BEDROCK_AWS_DEFAULT_REGION,
+      region: (llmConfig.region as string) ?? BEDROCK_AWS_DEFAULT_REGION ?? AWS_DEFAULT_REGION,
       ...(credentials
         ? { credentials: credentials as BedrockRuntimeClientConfig['credentials'] }
         : {}),

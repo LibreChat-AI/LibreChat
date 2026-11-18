@@ -21,13 +21,14 @@ import {
 } from './context';
 import { replayMessageAttachments, AttachmentObjectNotFoundError } from '../encode/utils';
 import { bedrockWireSize, guardBedrockDocuments, withBedrockDocuments } from './client';
+import { InFlightBytesSemaphore, runGuardedEncode } from '../encode/memoryGuard';
 import { BedrockDocumentError, bedrockRequestLimit } from './limits';
 import { resolveTurnDeliveryRouting } from '~/agents/files/delivery';
 import { createRunFileMessageEncoder } from '~/agents/files/encode';
-import { InFlightBytesSemaphore } from '../encode/memoryGuard';
 import { encodeAndFormatDocuments } from '../encode/document';
 
 const model = 'anthropic.claude-sonnet-4-20250514-v1:0';
+const pdf = Buffer.from('%PDF-test document');
 const req = (limit?: number): ServerRequest =>
   ({
     config: { fileConfig: { endpoints: { default: { fileSizeLimit: limit ?? 512 } } } },
@@ -39,7 +40,7 @@ const file = (id = 'file-1', overrides: Partial<IMongoFile> = {}): IMongoFile =>
     filename: 'test.pdf',
     source: 'local',
     type: 'application/pdf',
-    bytes: 10,
+    bytes: pdf.byteLength,
     ...overrides,
   }) as IMongoFile;
 const request = (documents: unknown[], modelId = model): ConverseCommandInput =>
@@ -77,7 +78,6 @@ const sdkBlocks = (documents: Awaited<ReturnType<typeof encode>>['documents']) =
     if (!('document' in part)) throw new Error('fixture');
     return { document: part.document };
   });
-const pdf = Buffer.from('%PDF-test document');
 
 it('retains only authorized file IDs in prompts, message JSON and real checkpoints', async () => {
   const r = req();
@@ -356,7 +356,8 @@ it('holds process admission through send completion, not just the download', asy
     release = resolve;
   });
   const download = jest.fn(async () => Readable.from(pdf));
-  const result = await encode(r, [file()], download);
+  // Two requests this large cannot share the pool, so the second can only wait on the first.
+  const result = await encode(r, [file('large', { bytes: 20 * 1024 * 1024 })], download);
   let sending!: () => void;
   const started = new Promise<void>((resolve) => {
     sending = resolve;
@@ -386,6 +387,78 @@ it('holds process admission through send completion, not just the download', asy
   await expect(queued).rejects.toMatchObject({ name: 'AbortError' });
   release();
   await first;
+});
+
+it('admits small document requests together and leaves the encode slots free', async () => {
+  const r = req();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const result = await encode(r, [file()], async () => Readable.from(pdf));
+  let sending = 0;
+  const send = async (): Promise<void> => {
+    sending++;
+    await gate;
+  };
+  // Signal-less sends, more of them than there are encode slots.
+  const sends = Array.from({ length: 4 }, () =>
+    withBedrockDocuments(
+      request(sdkBlocks(result.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      send,
+    ),
+  );
+  try {
+    for (let turn = 0; turn < 20 && sending < sends.length; turn++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(sending).toBe(sends.length);
+    const encoded = await Promise.race([
+      runGuardedEncode(1024, async () => 'encoded'),
+      new Promise((resolve) => setTimeout(resolve, 1000, 'blocked')),
+    ]);
+    expect(encoded).toBe('encoded');
+  } finally {
+    release();
+    await Promise.all(sends);
+  }
+});
+
+it('rereads under the document cap when a stored object outgrew its recorded size', async () => {
+  const r = req();
+  const download = jest.fn(async () => Readable.from(pdf));
+  const result = await encode(r, [file('understated', { bytes: pdf.byteLength - 8 })], download);
+  const send = jest.fn(async (input: ConverseCommandInput) => {
+    const part = input.messages?.[0].content?.[1];
+    return Buffer.from(part?.document?.source?.bytes ?? []).toString();
+  });
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(result.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      send,
+    ),
+  ).resolves.toBe(pdf.toString());
+  expect(download).toHaveBeenCalledTimes(2);
+  expect(send).toHaveBeenCalledTimes(1);
+});
+
+it('sends a command without documents exactly as the caller built it', async () => {
+  const client = new BedrockRuntimeClient({ region: 'us-east-1' });
+  const sent = jest.fn(async () => ({ output: {} }));
+  client.send = sent as unknown as BedrockRuntimeClient['send'];
+  const guarded = guardBedrockDocuments(client, getBedrockDocumentContext(req()), model);
+  const command = new ConverseCommand({
+    modelId: model,
+    messages: [{ role: 'user', content: [{ text: 'No attachments' }] }],
+  });
+  await guarded.send(command);
+  expect(sent).toHaveBeenCalledWith(command, undefined);
 });
 
 it('removes cancelled semaphore waiters without blocking later work', async () => {
