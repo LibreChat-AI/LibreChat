@@ -13,11 +13,25 @@ import type { SdkAgentIdentity } from './identity';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { createRunFileSnapshotStore } from '~/agents/files/snapshots';
 import { hasActiveFilePolicy } from '~/protection/files';
+import { resolveDownloadPath } from '~/storage/path';
 
 type Limits = NonNullable<NonNullable<TAgentsEndpoint>['sdkHostFiles']>;
 type Binding = NonNullable<RemoteSdkHostServices['files']>;
+type NativeFile = Pick<
+  TFile,
+  | 'file_id'
+  | 'user'
+  | 'source'
+  | 'filepath'
+  | 'bytes'
+  | 'type'
+  | 'filename'
+  | 'updatedAt'
+  | 'storageKey'
+>;
 interface Inputs {
   req: ServerRequest;
+  audit?: (event: { action: 'cleanup_failed' }) => void;
   /** Host-selected, already hydrated attachments; never IDs supplied by the worker. */
   getInputs: () => readonly TFile[];
   loadFiles: (ids: string[]) => Promise<TFile[]>;
@@ -55,12 +69,20 @@ const identityKey = (identity: Readonly<SdkAgentIdentity>): string =>
     identity.conversationId,
   ]);
 /** Revision includes the canonical object locator, but the locator never crosses the bridge. */
-const revision = (file: TFile): string =>
+function stableLocator(file: NativeFile): string {
+  const locator = resolveDownloadPath(file);
+  if (file.source !== FileSources.local && /^https?:\/\//.test(locator)) {
+    const url = new URL(locator);
+    return url.origin + url.pathname;
+  }
+  return locator;
+}
+const revision = (file: NativeFile, locator: string): string =>
   digest([
     file.file_id,
     file.user,
     file.source ?? FileSources.local,
-    file.filepath,
+    locator,
     file.bytes,
     file.type,
     file.filename,
@@ -82,6 +104,7 @@ export function createSdkFileHost(limits: Limits | undefined): SdkFileHost | und
     snapshot: () => ({ operations: operations.snapshot(), snapshots: snapshots.snapshot() }),
     createSession({
       req,
+      audit,
       getInputs,
       loadFiles,
       filterFiles,
@@ -90,12 +113,18 @@ export function createSdkFileHost(limits: Limits | undefined): SdkFileHost | und
       const user = req.user;
       if (!user) throw new HostFileServiceError('forbidden');
       const { id: userId, tenantId, role } = user;
+      const fileRevision = (file: NativeFile): string =>
+        revision(
+          file,
+          getStrategyFunctions(file.source ?? FileSources.local).getStorageKey?.(file) ??
+            stableLocator(file),
+        );
       let binding: Binding | undefined;
       let boundIdentity: string | undefined;
       let closed = false;
       const captures = new Map<string, Promise<RunFileSnapshot>>();
       const openings = new WeakMap<RunArtifactDescriptor, Promise<Readable>>();
-      const selected = new Map<string, { file: TFile; descriptor: HostFileDescriptor }>();
+      const selected = new Map<string, { file: NativeFile; descriptor: HostFileDescriptor }>();
       const lifetime = new AbortController();
       const store = createRunFileSnapshotStore({
         maxBytes: limits.maxSnapshotBytes,
@@ -117,7 +146,7 @@ export function createSdkFileHost(limits: Limits | undefined): SdkFileHost | und
             signal?.throwIfAborted();
             return getStrategyFunctions(item.file.source ?? FileSources.local).getDownloadStream(
               req,
-              item.file.filepath,
+              resolveDownloadPath(item.file),
               { signal },
             );
           });
@@ -150,7 +179,7 @@ export function createSdkFileHost(limits: Limits | undefined): SdkFileHost | und
         },
       });
       async function authorize(
-        item: { file: TFile; descriptor: HostFileDescriptor },
+        item: { file: NativeFile; descriptor: HostFileDescriptor },
         identity: Readonly<SdkAgentIdentity>,
       ): Promise<void> {
         const files = await loadFiles([item.file.file_id]);
@@ -162,9 +191,11 @@ export function createSdkFileHost(limits: Limits | undefined): SdkFileHost | und
         });
         const current = admitted.find((file) => file.file_id === item.file.file_id);
         if (!current) throw new HostFileServiceError('forbidden');
-        if (revision(current) !== item.descriptor.revision)
+        if (fileRevision(current) !== item.descriptor.revision)
           throw new HostFileServiceError('conflict');
         assertModelBoundContent({ filters: req.config?.filters, files: [current] });
+        item.file.filepath = current.filepath;
+        item.file.storageKey = current.storageKey;
       }
       return {
         bind(identity, signal) {
@@ -194,12 +225,36 @@ export function createSdkFileHost(limits: Limits | undefined): SdkFileHost | und
               throw new HostFileServiceError('overflow');
             const descriptor = Object.freeze({
               reference: digest([key, file.file_id]),
-              revision: revision(file),
+              revision: fileRevision(file),
               filename: file.filename,
               mediaType: file.type,
               bytes: file.bytes,
             });
-            selected.set(descriptor.reference, { file: structuredClone(file), descriptor });
+            const {
+              file_id,
+              user,
+              source,
+              filepath,
+              bytes,
+              type,
+              filename,
+              updatedAt,
+              storageKey,
+            } = file;
+            selected.set(descriptor.reference, {
+              file: structuredClone({
+                file_id,
+                user,
+                source,
+                filepath,
+                bytes,
+                type,
+                filename,
+                updatedAt,
+                storageKey,
+              }),
+              descriptor,
+            });
             return descriptor;
           });
           const effectiveSignal = AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]);
@@ -284,7 +339,15 @@ export function createSdkFileHost(limits: Limits | undefined): SdkFileHost | und
           closed = true;
           lifetime.abort();
           await Promise.allSettled(captures.values());
-          await store.close();
+          await store.close().catch(() => {
+            // Cleanup must not prevent usage settlement or turn finalization. The
+            // snapshot store retains quota for private bytes it could not delete.
+            try {
+              audit?.({ action: 'cleanup_failed' });
+            } catch {
+              /* Diagnostics cannot own settlement. */
+            }
+          });
           captures.clear();
           selected.clear();
         },

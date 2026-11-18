@@ -2112,10 +2112,11 @@ const initializeClientWithProvider = async ({
     subagentTasks,
     runFiles: runFileBindings.session,
     sdkFiles: createChatSdkFileSession({
+      audit: (event) => logger.warn('[agents:sdk-files]', event),
       host: req.app?.locals?.sdkFileHost,
       req,
       getInputs: () => primaryConfig.currentRequestAttachments,
-      loadFiles: (ids) => db.getRunFileCandidates(ids, req.user.tenantId),
+      loadFiles: (ids) => db.getRunFileCandidates(ids, req.user.tenantId, { storageOnly: true }),
       filterFiles: filterFilesByAgentAccess,
       getStrategyFunctions,
     }),

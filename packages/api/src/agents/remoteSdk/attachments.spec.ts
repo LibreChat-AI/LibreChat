@@ -4,6 +4,7 @@ import { agentsEndpointSchema, FileSources } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { SdkFileSession } from './attachments';
 import type { ServerRequest } from '~/types';
+import { resolveStoredS3Key } from '~/storage/s3/crud';
 import { createSdkFileHost } from './attachments';
 
 const identity = {
@@ -31,7 +32,11 @@ const limits = agentsEndpointSchema.parse({
 }).sdkHostFiles!;
 const req = { user: { id: 'user', tenantId: 'tenant', role: 'USER' }, config: {} } as ServerRequest;
 const sessions: SdkFileSession[] = [];
-function setup(host = createSdkFileHost(limits)!, sources = [file]) {
+function setup(
+  host = createSdkFileHost(limits)!,
+  sources = [file],
+  audit?: (event: { action: 'cleanup_failed' }) => void,
+) {
   let current = structuredClone(sources);
   let allowed = true;
   const download = jest.fn(async () => Readable.from([Buffer.from('abcdefgh')]));
@@ -41,10 +46,16 @@ function setup(host = createSdkFileHost(limits)!, sources = [file]) {
   const filterFiles = jest.fn(async ({ files }: { files: TFile[] }) => (allowed ? files : []));
   const session = host.createSession({
     req,
+    audit,
     getInputs: () => sources,
     loadFiles,
     filterFiles,
-    getStrategyFunctions: () => ({ getDownloadStream: download }),
+    getStrategyFunctions: (source) => ({
+      getDownloadStream: download,
+      ...([FileSources.s3, FileSources.cloudfront].includes(source as FileSources)
+        ? { getStorageKey: resolveStoredS3Key }
+        : {}),
+    }),
   });
   sessions.push(session);
   const bound = session.bind(identity);
@@ -266,7 +277,12 @@ test('fails closed for protected raw file bytes instead of inspecting only metad
     getInputs: () => [file],
     loadFiles: async () => [file],
     filterFiles: async ({ files }) => files,
-    getStrategyFunctions: () => ({ getDownloadStream: download }),
+    getStrategyFunctions: (source) => ({
+      getDownloadStream: download,
+      ...([FileSources.s3, FileSources.cloudfront].includes(source as FileSources)
+        ? { getStorageKey: resolveStoredS3Key }
+        : {}),
+    }),
   });
   sessions.push(session);
   expect(() => session.bind(identity)).toThrow('forbidden');
@@ -307,4 +323,77 @@ test('keeps admission for an uncooperative opener until its late stream is destr
   }
   expect(late.destroyed).toBe(true);
   expect(f.host.snapshot().snapshots).toEqual({ operations: 0, reservedBytes: 0 });
+});
+
+test('does not clone extracted content into the file binding', () => {
+  const host = createSdkFileHost(limits)!;
+  const clone = jest.spyOn(global, 'structuredClone');
+  const input = { ...file, text: 'already-loaded extracted content' };
+  const session = host.createSession({
+    req,
+    getInputs: () => [input],
+    loadFiles: async () => [input],
+    filterFiles: async ({ files }) => files,
+    getStrategyFunctions: () => ({ getDownloadStream: async () => Readable.from([]) }),
+  });
+  sessions.push(session);
+  session.bind(identity);
+  expect(clone.mock.calls).toEqual([
+    [expect.objectContaining({ file_id: file.file_id, filepath: file.filepath })],
+  ]);
+  expect(clone.mock.calls[0][0]).not.toHaveProperty('text');
+});
+
+test.each([FileSources.s3, FileSources.cloudfront])(
+  'keeps %s references valid across URL renewal and legacy-key backfill',
+  async (source) => {
+    const key = 'uploads/user/input.txt';
+    const original = {
+      ...file,
+      source,
+      filepath: `https://bucket.s3.amazonaws.com/${key}?X-Amz-Signature=old`,
+    };
+    const refreshed = {
+      ...original,
+      storageKey: key,
+      filepath: `https://bucket.s3.amazonaws.com/${key}?X-Amz-Signature=new`,
+    };
+    const f = setup(undefined, [original]);
+    f.update([refreshed]);
+    await expect(f.read()).resolves.toMatchObject({ offset: 0 });
+    expect(f.download).toHaveBeenCalledWith(req, key, expect.anything());
+    const resumed = setup(undefined, [refreshed]);
+    expect(resumed.bound.sources).toEqual(f.bound.sources);
+    await expect(
+      resumed.bound.service.read({
+        version: 1,
+        identity,
+        reference: f.bound.sources[0].reference,
+        revision: f.bound.sources[0].revision,
+        offset: 4,
+        length: 4,
+      }),
+    ).resolves.toMatchObject({ offset: 4 });
+    resumed.update([{ ...refreshed, storageKey: 'uploads/user/replaced.txt' }]);
+    await expect(resumed.read()).rejects.toMatchObject({ code: 'conflict' });
+  },
+);
+
+test('isolates failed cleanup and diagnostic errors while retaining disk quota', async () => {
+  const mkdir = jest.spyOn(fs, 'mkdtemp');
+  const audit = jest.fn(() => {
+    throw new Error('diagnostic failed');
+  });
+  const f = setup(undefined, [file], audit);
+  await f.read();
+  const directory = await mkdir.mock.results[0].value;
+  const remove = jest.spyOn(fs, 'rm').mockRejectedValue(new Error('filesystem unavailable'));
+  try {
+    await expect(f.session.close()).resolves.toBeUndefined();
+    expect(audit).toHaveBeenCalledWith({ action: 'cleanup_failed' });
+    expect(f.host.snapshot().snapshots).toEqual({ operations: 1, reservedBytes: 8 });
+  } finally {
+    remove.mockRestore();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 });
