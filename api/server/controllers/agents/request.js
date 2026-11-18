@@ -60,6 +60,7 @@ const {
   resolveFailedTurnContent,
   announceReply,
   announceErrorTurn,
+  getScheduledRunError,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -3166,9 +3167,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           scheduleCompletionError = 'Scheduled run was interrupted before completion';
         } else if (stepLimitReached) {
           scheduleCompletionError = 'Scheduled run reached its tool call limit before completion';
+        } else {
+          scheduleCompletionError = getScheduledRunError(savedResponseMessage.content);
+        }
+        let scheduleStatus = responseIsUnfinished ? 'interrupted' : 'success';
+        if (scheduleCompletionError != null && !responseIsUnfinished) {
+          scheduleStatus = 'error';
         }
         await settleScheduledRun({
-          status: responseIsUnfinished ? 'interrupted' : 'success',
+          status: scheduleStatus,
           ...(scheduleCompletionError != null && { error: scheduleCompletionError }),
         });
 

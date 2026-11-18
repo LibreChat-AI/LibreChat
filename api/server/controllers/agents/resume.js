@@ -55,6 +55,7 @@ const {
   applyForcedRetention,
   applyForcedTemporaryRequest,
   persistForcedTemporaryMetadata,
+  getScheduledRunError,
   announceReply,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -675,12 +676,20 @@ async function finalizeResumedTurn({
     conversation.title = conversation.title || 'New Chat';
 
     if (meta.scheduleId) {
+      const interrupted = preemptIncomplete || stepLimitReached;
+      const scheduleRunError = interrupted ? null : getScheduledRunError(responseMessage.content);
+      let scheduleStatus = 'success';
+      if (interrupted) {
+        scheduleStatus = 'interrupted';
+      } else if (scheduleRunError != null) {
+        scheduleStatus = 'error';
+      }
       await recordScheduleOutcome({
         scheduleId: meta.scheduleId,
         scheduledFor: meta.scheduledFor,
         streamId,
         jobCreatedAt: job.createdAt,
-        status: preemptIncomplete || stepLimitReached ? 'interrupted' : 'success',
+        status: scheduleStatus,
         conversationId,
         ...(preemptIncomplete && {
           error: 'Scheduled run was interrupted before completion',
@@ -689,6 +698,7 @@ async function finalizeResumedTurn({
           !preemptIncomplete && {
             error: 'Scheduled run reached its tool call limit before completion',
           }),
+        ...(scheduleRunError != null && { error: scheduleRunError }),
       });
     }
 
