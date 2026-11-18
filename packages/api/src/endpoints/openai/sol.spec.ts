@@ -9,6 +9,7 @@ const model = 'gpt-6.2-sol';
 const config = (options: Partial<Parameters<typeof getOpenAILLMConfig>[0]> = {}) =>
   getOpenAILLMConfig({
     apiKey: 'test-key',
+    streaming: false,
     endpoint: EModelEndpoint.openAI,
     modelOptions: { model },
     ...options,
@@ -84,7 +85,7 @@ it.each([
   expect(result.useResponsesApi).not.toBe(true);
   expect(
     result.reasoning?.effort ??
-      result.reasoning_effort ??
+      ('reasoning_effort' in result ? result.reasoning_effort : undefined) ??
       (result.modelKwargs?.reasoning as { effort?: string } | undefined)?.effort ??
       result.modelKwargs?.reasoning_effort,
   ).toBe('none');
@@ -111,7 +112,7 @@ it.each([undefined, false, true])(
         expect(result).not.toHaveProperty(key);
         expect(result.modelKwargs ?? {}).not.toHaveProperty(key);
       }
-      expect(result.include).toEqual(['reasoning.encrypted_content']);
+      expect(result).toHaveProperty('include', ['reasoning.encrypted_content']);
       expect(params.include).toHaveLength(2);
     }
   },
