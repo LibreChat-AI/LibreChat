@@ -34,6 +34,11 @@ calls. Unknown or duplicate result IDs, incomplete parallel batches and replayed
 calls that change the stored name or arguments are rejected before execution.
 Cancelled, failed and incomplete responses cannot supply pending calls.
 
+Stored client handoffs appear in chat history as requests to the client, rather
+than cancelled server tools. Completed call/result pairs retain their terminal
+state, including empty results. The original handoff remains a historical request
+after continuation.
+
 The previous response is immutable. The new turn stores the completed exchange
 in its own input, and later turns replay that pair once. Reusing the same prior
 response can create a separate branch; it does not consume a global pending call
@@ -45,9 +50,9 @@ replay for `store: false` responses and older responses whose pending calls were
 not retained. Existing stored completed server-tool results are unchanged.
 
 Parallel continuation assumes the initial handoff returned the complete batch.
-The separate [delta-only streaming handoff fix (#17920)](https://github.com/LibreChat-AI/LibreChat/pull/17920)
-addresses providers that announce later calls only through argument deltas.
-This continuation change preserves that separation from run-step handling.
+Provider chunk-shape compatibility, including later calls announced only through
+argument deltas, is tracked separately in [#17916](https://github.com/LibreChat-AI/LibreChat/issues/17916).
+Stored continuation does not replace the initial run-step handoff.
 
 The regression scenario is
 `e2e/specs/mock/scenarios/responses-client-tools.spec.ts`. It runs through the

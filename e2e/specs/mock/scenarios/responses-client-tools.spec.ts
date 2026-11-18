@@ -69,6 +69,7 @@ for (const stream of [false, true])
     test(`stored client-tool lifecycle: stream=${stream}, parallel=${parallel} @scenario:responses-stored-client-tools-${stream}-${parallel}`, async ({
       playwright,
       baseURL,
+      page,
     }) => {
       const request = await playwright.request.newContext({ baseURL });
       const client = await remote(request, await loginAdmin(request));
@@ -86,6 +87,17 @@ for (const stream of [false, true])
           stream,
         );
         expect(first.store).toBe(true);
+        if (!stream) {
+          const conversationId = await withMongo(
+            async (db) =>
+              (await db.collection('messages').findOne({ messageId: first.id }))?.conversationId,
+          );
+          await page.goto(`/c/${conversationId}`);
+          await expect(
+            page.getByText('Requested client_lookup from client', { exact: true }).last(),
+          ).toBeVisible();
+          await expect(page.getByText('Cancelled', { exact: true })).toHaveCount(0);
+        }
         expect(first.output.map((item) => item.type)).toEqual(
           parallel ? ['function_call', 'function_call'] : ['function_call'],
         );
@@ -141,6 +153,14 @@ for (const stream of [false, true])
         ).toBe(expected);
         expect(next.store).toBe(true);
         expect(next.tools).toEqual([]);
+        if (!stream) {
+          await page.reload();
+          await expect(page.getByText(expected, { exact: true })).toBeVisible();
+          await expect(
+            page.getByText('Requested client_lookup from client', { exact: true }).last(),
+          ).toBeVisible();
+          await expect(page.getByText('Cancelled', { exact: true })).toHaveCount(0);
+        }
         const later = await completed(
           await post({
             stream,

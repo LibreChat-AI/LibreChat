@@ -2,7 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { ToolAuthWarningContext } from '@librechat/chat/components';
 import { Tools, Constants, dataService } from 'librechat-data-provider';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import {
   LoneGroupContext,
   SoleToolContext,
@@ -27,6 +27,7 @@ jest.mock('~/hooks', () => ({
       com_ui_tool_calling: `Calling ${values?.[0]}`,
       com_ui_sign_in_to_domain: `Sign in to ${values?.[0]}`,
       com_ui_cancelled: 'Cancelled',
+      com_ui_client_tool_requested: `Requested ${values?.[0]} from client`,
       com_ui_requires_auth: 'Requires authentication',
       com_assistants_allow_sites_you_trust: 'Only allow sites you trust',
       com_ui_via_server: `via ${values?.[0]}`,
@@ -199,6 +200,57 @@ describe('ToolCall', () => {
     } else {
       process.env.VITE_MCP_SANDBOX_URL = originalSandboxUrl;
     }
+  });
+
+  describe('client tool handoff', () => {
+    it('announces the handoff without claiming cancellation or execution', async () => {
+      await act(async () => {
+        renderWithRecoil(
+          <ToolCall
+            {...mockProps}
+            clientToolCall
+            initialProgress={0.1}
+            isSubmitting={false}
+            output={undefined}
+          />,
+        );
+      });
+      expect(screen.getByTestId('progress-text')).toHaveTextContent(
+        'Requested testFunction from client',
+      );
+      expect(screen.queryByText('Cancelled')).not.toBeInTheDocument();
+    });
+    it.each(['', 'client result'])(
+      'treats a received result %j as completed rather than a handoff',
+      async (output) => {
+        await act(async () => {
+          renderWithRecoil(
+            <ToolCall
+              {...mockProps}
+              clientToolCall
+              runStepStatus="completed"
+              isSubmitting={false}
+              output={output}
+            />,
+          );
+        });
+        expect(screen.getByTestId('progress-text')).toHaveTextContent('Completed testFunction');
+      },
+    );
+    it('keeps a genuinely cancelled client call cancelled', async () => {
+      await act(async () => {
+        renderWithRecoil(
+          <ToolCall
+            {...mockProps}
+            clientToolCall
+            runStepStatus="cancelled"
+            isSubmitting={false}
+            output={undefined}
+          />,
+        );
+      });
+      expect(screen.getByTestId('progress-text')).toHaveTextContent('Cancelled');
+    });
   });
 
   describe('tool preparation feedback', () => {

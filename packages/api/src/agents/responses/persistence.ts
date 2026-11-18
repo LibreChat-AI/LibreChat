@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { Constants, ContentTypes } from 'librechat-data-provider';
 import type { Agents } from 'librechat-data-provider';
+import type { InternalMessage } from './service';
 import type { Response } from './types';
 
 const rootParent = String(Constants.NO_PARENT);
@@ -27,13 +28,22 @@ export function projectResponseMessage(
       item.type === 'function_call' &&
       (results.has(item.call_id) || clientTools.has(item.name))
     ) {
+      const hasOutput = results.has(item.call_id);
+      let runStepStatus: Agents.RunStepClosedStatus | undefined;
+      if (hasOutput) runStepStatus = 'completed';
+      else if (response.status === 'cancelled' || response.status === 'failed')
+        runStepStatus = response.status;
       content.push({
         type: ContentTypes.TOOL_CALL,
         tool_call: {
           id: item.call_id,
           name: item.name,
           args: item.arguments,
-          ...(results.has(item.call_id) ? { output: results.get(item.call_id)! } : {}),
+          ...(clientTools.has(item.name) && response.status === 'completed'
+            ? { clientToolCall: true as const }
+            : {}),
+          ...(runStepStatus ? { runStepStatus } : {}),
+          ...(hasOutput ? { output: results.get(item.call_id)! } : {}),
         },
       });
     }
@@ -51,6 +61,17 @@ export function projectResponseMessage(
       ? {}
       : { unfinished: response.status === 'in_progress' || response.status === 'queued' }),
   };
+}
+
+/** UI lifecycle metadata belongs to canonical storage, not the provider input formatter. */
+export function projectResponseInputContent(
+  content: Exclude<InternalMessage['content'], string>,
+): Exclude<InternalMessage['content'], string> {
+  return content.map((part) =>
+    part.type === ContentTypes.TOOL_CALL && 'tool_call' in part && part.tool_call.output != null
+      ? { ...part, tool_call: { ...part.tool_call, runStepStatus: 'completed' as const } }
+      : part,
+  );
 }
 
 export type StoredResponseMessage = {

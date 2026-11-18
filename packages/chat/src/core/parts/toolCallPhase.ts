@@ -12,9 +12,11 @@ import type { PartMetadata } from 'librechat-data-provider';
  * fourteenth. One value, read everywhere, is what stops it: two presentations
  * of the same card can no longer disagree about what happened.
  */
-export type ToolCallPhase = 'running' | 'completed' | 'cancelled' | 'failed';
+export type ToolCallPhase = 'running' | 'completed' | 'cancelled' | 'failed' | 'delegated';
 
 export interface ToolCallPhaseInput {
+  /** A completed handoff to the caller, without a caller result yet. */
+  clientToolPending?: boolean;
   /**
    * The run's own terminal verdict from `on_run_step_closed`. Absent on parts
    * saved before the event existed and on endpoints that never emit it, which
@@ -66,6 +68,7 @@ export interface ToolCallPhaseInput {
  */
 export function resolveToolCallPhase({
   runStepStatus,
+  clientToolPending,
   displayProgress,
   reportedProgress,
   isSubmitting,
@@ -81,6 +84,7 @@ export function resolveToolCallPhase({
   if (hasError) {
     return 'failed';
   }
+  if (clientToolPending) return 'delegated';
   if (!isSubmitting && reportedProgress < 1) {
     return 'cancelled';
   }

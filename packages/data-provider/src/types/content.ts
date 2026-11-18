@@ -131,6 +131,8 @@ export type PartMetadata = {
   /** Host-resolved execution identity for a saved subagent invocation. */
   subagentIdentity?: SubagentIdentity;
   progress?: number;
+  /** The Responses run handed this call to its client, rather than a server executor. */
+  clientToolCall?: true;
   asset_pointer?: string;
   status?: string;
   action?: boolean;

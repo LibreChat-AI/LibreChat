@@ -20,6 +20,7 @@ import {
   ResponsePersistenceError,
   selectResponseHistory,
   projectResponseMessage,
+  projectResponseInputContent,
   pendingClientToolIds,
 } from './persistence';
 import { resolvePersistableCodeEnvironmentDecision } from '~/code/decision';
@@ -265,7 +266,7 @@ export async function saveForegroundResponseInputs<WriteContext>(
           content:
             typeof message.content === 'string'
               ? [{ type: ContentTypes.TEXT, text: message.content }]
-              : message.content,
+              : projectResponseInputContent(message.content),
           sender: inputSenders[message.role],
           endpoint: EModelEndpoint.agents,
           model: input.agentId,

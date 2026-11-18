@@ -1503,3 +1503,24 @@ describe('parts', () => {
     });
   });
 });
+
+describe('caller-owned tool handoff metadata', () => {
+  it('round-trips a pending handoff without inventing an output or terminal execution', () => {
+    const content: TMessageContentParts[] = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        tool_call: {
+          type: 'tool_call',
+          id: 'client',
+          name: 'web_search',
+          args: '{}',
+          clientToolCall: true,
+        },
+      },
+    ];
+    const parts = toUIParts(content);
+    expect(parts[0]).toMatchObject({ state: 'input-available' });
+    expect(parts[0]).not.toHaveProperty('output');
+    expect(fromUIParts(parts)).toEqual(content);
+  });
+});

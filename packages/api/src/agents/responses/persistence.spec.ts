@@ -8,10 +8,66 @@ import {
   selectResponseHistory,
   buildResponseInputChain,
   projectResponseMessage,
+  projectResponseInputContent,
   resolveResponseContinuation,
 } from './persistence';
 
 describe('Responses assistant history projection', () => {
+  it('distinguishes a completed client handoff from completed, failed and cancelled execution', () => {
+    const call = {
+      type: 'function_call' as const,
+      id: 'fc_client',
+      call_id: 'call_client',
+      name: 'lookup',
+      arguments: '{}',
+      status: 'completed' as const,
+    };
+    const tools = [{ type: 'function' as const, name: 'lookup' }];
+    const pending = projectResponseMessage({ status: 'completed', tools, output: [call] });
+    expect(pending.content).toEqual([
+      {
+        type: ContentTypes.TOOL_CALL,
+        tool_call: { id: call.call_id, name: call.name, args: '{}', clientToolCall: true },
+      },
+    ]);
+    for (const status of ['failed', 'cancelled'] as const) {
+      const terminal = projectResponseMessage({ status, tools, output: [call] });
+      expect(terminal.content[0]).toMatchObject({ tool_call: { runStepStatus: status } });
+      expect(terminal.content[0]).not.toHaveProperty('tool_call.clientToolCall');
+    }
+    const completed = projectResponseMessage({
+      status: 'completed',
+      tools,
+      output: [
+        call,
+        {
+          type: 'function_call_output',
+          call_id: call.call_id,
+          id: 'fco',
+          output: '',
+          status: 'completed',
+        },
+      ],
+    });
+    expect(completed.content[0]).toMatchObject({
+      tool_call: { output: '', runStepStatus: 'completed', clientToolCall: true },
+    });
+  });
+
+  it('adds lifecycle metadata to stored replay pairs without changing provider input or text', () => {
+    const pair = {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: { id: 'call', name: 'lookup', args: '{}', output: '' },
+    } as const;
+    const content = [pair];
+    expect(projectResponseInputContent(content)).toEqual([
+      { ...pair, tool_call: { ...pair.tool_call, runStepStatus: 'completed' } },
+    ]);
+    expect(pair.tool_call).not.toHaveProperty('runStepStatus');
+    expect(projectResponseInputContent([{ type: 'text', text: 'hello' }])).toEqual([
+      { type: 'text', text: 'hello' },
+    ]);
+  });
   it('marks paused output unfinished and explicitly clears that flag on terminal publication', () => {
     expect(projectResponseMessage({ output: [], status: 'in_progress' }).unfinished).toBe(true);
     expect(projectResponseMessage({ output: [], status: 'completed' }).unfinished).toBe(false);
@@ -63,6 +119,7 @@ describe('Responses assistant history projection', () => {
             name: 'lookup',
             args: '{"key":"a"}',
             output: '{"result":"server-only-result"}',
+            runStepStatus: 'completed',
           },
         },
         { type: ContentTypes.TEXT, text: 'Done.' },

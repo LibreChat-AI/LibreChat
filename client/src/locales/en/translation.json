@@ -1605,6 +1605,7 @@
   "com_ui_callback_url": "Callback URL",
   "com_ui_cancel": "Cancel",
   "com_ui_cancel_dialog": "Cancel dialog",
+  "com_ui_client_tool_requested": "Requested {{0}} from client",
   "com_ui_cancelled": "Cancelled",
   "com_ui_capabilities_count_other": "{{count}} capabilities",
   "com_ui_capabilities_count_one": "{{count}} capability",
