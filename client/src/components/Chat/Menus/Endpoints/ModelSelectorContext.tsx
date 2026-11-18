@@ -1,11 +1,6 @@
 import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
 import debounce from 'lodash/debounce';
-import {
-  EModelEndpoint,
-  PermissionBits,
-  isAgentsEndpoint,
-  isAssistantsEndpoint,
-} from 'librechat-data-provider';
+import { PermissionBits, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
 import type { Endpoint, SelectedValues } from '~/common';
 import {
@@ -22,6 +17,7 @@ import useWarnModelLocked from '~/hooks/Input/useWarnModelLocked';
 import useSelectMention from '~/hooks/Input/useSelectMention';
 import useIsModelLocked from '~/hooks/Input/useIsModelLocked';
 import { useCatalogReady } from '~/hooks/useCatalogWarmup';
+import useModelSpecs from '~/hooks/Agents/specs';
 import { filterItems } from './utils';
 
 type ModelSelectorContextType = {
@@ -76,25 +72,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
   const isModelLocked = useIsModelLocked();
   const warnLocked = useWarnModelLocked();
 
-  const modelSpecs = useMemo(() => {
-    /** Labels are normalized at the startup-config query boundary. */
-    const specs = startupConfig?.modelSpecs?.list ?? [];
-    if (!agentsMap) {
-      return specs;
-    }
-
-    /**
-     * Filter modelSpecs to only include agents the user has access to.
-     * Use agentsMap which already contains permission-filtered agents (consistent with other components).
-     */
-    return specs.filter((spec) => {
-      if (spec.preset?.endpoint === EModelEndpoint.agents && spec.preset?.agent_id) {
-        return spec.preset.agent_id in agentsMap;
-      }
-      /** Keep non-agent modelSpecs */
-      return true;
-    });
-  }, [startupConfig, agentsMap]);
+  const modelSpecs = useModelSpecs(startupConfig);
 
   const permissionLevel = useAgentDefaultPermissionLevel();
   /**
