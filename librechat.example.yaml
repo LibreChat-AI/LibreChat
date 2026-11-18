@@ -309,6 +309,10 @@ interface:
   # Allow the artifacts pane to be moved into its own browser window
   # (desktop only; the mobile sheet is unaffected). Default: true.
   artifactUndocking: true
+  # Clear a conversation's saved Max Context Tokens when the user switches it to a
+  # different endpoint, model or agent, so the next turn uses the new model's default
+  # context window. Default: false.
+  # resetMaxContextTokensOnModelSwitch: true
   # Ask each viewer before loading Google Tag Manager (ANALYTICS_GTM_ID).
   # Set false when the deployment settles consent itself, e.g. internal use. Default: true.
   # analyticsConsent: true

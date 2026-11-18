@@ -17,6 +17,8 @@ import {
   getConvoSwitchLogic,
   logger,
 } from '~/utils';
+import { shouldResetMaxContextTokens } from '~/utils/contextTokens';
+import { useGetStartupConfig } from '~/data-provider';
 import { useDefaultConvo } from '~/hooks';
 import store from '~/store';
 
@@ -40,6 +42,9 @@ export default function useSelectMention({
   const getDefaultConversation = useDefaultConvo();
   const modularChat = useRecoilValue(store.modularChat);
   const availableTools = useRecoilValue(store.availableTools);
+  const { data: startupConfig } = useGetStartupConfig();
+  const resetMaxContextTokensOnModelSwitch =
+    startupConfig?.interface?.resetMaxContextTokensOnModelSwitch;
   const [searchParams] = useSearchParams();
   /**
    * Project scope is read from React Router's search params (the same source the
@@ -95,6 +100,15 @@ export default function useSelectMention({
         preset.model = assistantsMap?.[newEndpoint]?.[preset.assistant_id]?.model;
       }
 
+      const resetMaxContextTokens = shouldResetMaxContextTokens({
+        enabled: resetMaxContextTokensOnModelSwitch,
+        conversation,
+        target: preset,
+      });
+      if (resetMaxContextTokens) {
+        template.maxContextTokens = undefined;
+      }
+
       const isModular = isCurrentModular && isNewModular && shouldSwitch;
       if (isExistingConversation && isModular) {
         template.endpointType = newEndpointType as EModelEndpoint | undefined;
@@ -105,6 +119,9 @@ export default function useSelectMention({
           preset: template,
           cleanOutput: true,
         });
+        if (resetMaxContextTokens) {
+          currentConvo.maxContextTokens = undefined;
+        }
 
         /* We don't reset the latest message, only when changing settings mid-converstion */
         logger.info('conversation', 'Switching conversation to new spec (modular)', conversation);
@@ -134,6 +151,7 @@ export default function useSelectMention({
       endpointsConfig,
       assistantsMap,
       routeChatProjectId,
+      resetMaxContextTokensOnModelSwitch,
     ],
   );
 
@@ -182,6 +200,15 @@ export default function useSelectMention({
       }
       clearModelForNonEphemeralAgent(template);
 
+      const resetMaxContextTokens = shouldResetMaxContextTokens({
+        enabled: resetMaxContextTokensOnModelSwitch,
+        conversation,
+        target: { endpoint: newEndpoint, model: template.model, agent_id: template.agent_id },
+      });
+      if (resetMaxContextTokens) {
+        template.maxContextTokens = undefined;
+      }
+
       template.spec = null;
       template.iconURL = null;
       template.modelLabel = null;
@@ -199,6 +226,9 @@ export default function useSelectMention({
           },
           preset: template,
         });
+        if (resetMaxContextTokens) {
+          currentConvo.maxContextTokens = undefined;
+        }
 
         /* We don't reset the latest message, only when changing settings mid-converstion */
         logger.info(
@@ -231,6 +261,7 @@ export default function useSelectMention({
       newConversation,
       endpointsConfig,
       routeChatProjectId,
+      resetMaxContextTokensOnModelSwitch,
     ],
   );
 
@@ -275,6 +306,19 @@ export default function useSelectMention({
           preset: template,
           cleanInput: true,
         });
+        if (resetMaxContextTokensOnModelSwitch === true && newPreset.maxContextTokens == null) {
+          /* A preset may omit its model; compare against the model it resolves to, not the raw preset */
+          const target = getDefaultConversation({ conversation: currentConvo, preset: newPreset });
+          if (
+            shouldResetMaxContextTokens({
+              enabled: resetMaxContextTokensOnModelSwitch,
+              conversation,
+              target,
+            })
+          ) {
+            currentConvo.maxContextTokens = undefined;
+          }
+        }
 
         /* We don't reset the latest message, only when changing settings mid-converstion */
         logger.info('conversation', 'Switching conversation to new preset (modular)', currentConvo);
@@ -303,6 +347,7 @@ export default function useSelectMention({
       endpointsConfig,
       getDefaultConversation,
       routeChatProjectId,
+      resetMaxContextTokensOnModelSwitch,
     ],
   );
 

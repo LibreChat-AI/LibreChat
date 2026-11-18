@@ -236,6 +236,24 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.artifactUndocking).toBe(true);
   });
 
+  it('carries an enabled max context tokens reset to the clients', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { resetMaxContextTokensOnModelSwitch: true } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.resetMaxContextTokensOnModelSwitch).toBe(true);
+  });
+
+  it('leaves the max context tokens reset off when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.resetMaxContextTokensOnModelSwitch).toBe(false);
+  });
+
   it('carries a disabled analytics consent prompt to the clients', async () => {
     const interfaceConfig = await loadDefaultInterface({
       config: { interface: { analyticsConsent: false } },
