@@ -22,6 +22,7 @@ import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from '../keys';
 import { createLoadConfigModels, configuredModelList } from './models';
 import { createEnvReferencePolicy } from '~/app/allowlist';
 import { mergeOverrideLayers } from '~/app/overrides';
+import { tokenConfigCache } from '~/cache';
 
 describe('createLoadConfigModels – user-provided baseURL header guard', () => {
   const fetchModels = jest.fn().mockResolvedValue([]);
@@ -424,6 +425,41 @@ describe('createLoadConfigModels – safe failure logging', () => {
       for (const secret of [apiKey, baseURL, headers.Authorization]) {
         expect(logged).not.toContain(secret);
       }
+    },
+  );
+
+  it.each(['get', 'set'] as const)(
+    'retains fetched models after a shared token-cache %s failure',
+    async (operation) => {
+      const warn = jest.spyOn(logger, 'warn').mockImplementation();
+      const cache = tokenConfigCache();
+      if (operation === 'set')
+        jest.spyOn(cache, 'get').mockResolvedValue({ model: { context: 1024 } });
+      jest.spyOn(cache, operation).mockRejectedValue(failure);
+      const load = createLoadConfigModels({
+        getAppConfig: jest.fn().mockResolvedValue({
+          endpoints: {
+            custom: ['First', 'Second'].map((name) => ({
+              name,
+              apiKey,
+              baseURL,
+              models: { fetch: true },
+            })),
+          },
+        }),
+        getUserKeyValues: jest.fn(),
+        fetchModels: jest.fn().mockResolvedValue(['discovered-model']),
+      });
+
+      await expect(load({ user: { id: 'user-1' } } as ServerRequest)).resolves.toEqual({
+        First: ['discovered-model'],
+        Second: ['discovered-model'],
+      });
+      expect(warn).toHaveBeenCalledWith(
+        '[loadConfigModels] Failed to share token config for "First", "Second":',
+        { type: 'Error', status: 503 },
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(apiKey);
     },
   );
 

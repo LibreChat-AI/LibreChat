@@ -343,20 +343,27 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
        *  name (the query is staleTime:Infinity and won't recover otherwise) */
       const winnerTokenKey = uniqueKeyToTokenKey[currentKey];
       if (settled.status === 'fulfilled' && winnerTokenKey != null && associatedNames.length > 1) {
-        const cache = tokenConfigCache();
-        const config = await cache.get(winnerTokenKey);
-        if (config != null) {
-          for (const name of associatedNames) {
-            const siblingKey = getTokenConfigKey(
-              endpointsMap[name],
-              name,
-              req.user?.id ?? '',
-              tenantId,
-            );
-            if (siblingKey !== winnerTokenKey) {
-              await cache.set(siblingKey, config);
+        try {
+          const cache = tokenConfigCache();
+          const config = await cache.get(winnerTokenKey);
+          if (config != null) {
+            for (const name of associatedNames) {
+              const siblingKey = getTokenConfigKey(
+                endpointsMap[name],
+                name,
+                req.user?.id ?? '',
+                tenantId,
+              );
+              if (siblingKey !== winnerTokenKey) {
+                await cache.set(siblingKey, config);
+              }
             }
           }
+        } catch (error) {
+          logger.warn(
+            `[loadConfigModels] Failed to share token config for "${associatedNames.join('", "')}":`,
+            getSafeErrorMetadata(error),
+          );
         }
       }
     }
