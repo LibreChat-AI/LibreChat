@@ -20,6 +20,7 @@ import { retryTransientQuery } from '~/data-provider/retry';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import { useChatTransport } from './ChatTransportContext';
 import { useChatSettings } from './ChatSettingsContext';
+import { useLiveAnnouncer } from './AnnouncerContext';
 import { fetchStreamStatus } from '~/data-provider';
 
 /**
@@ -104,7 +105,12 @@ function useChat(
     },
     [queryClient, id],
   );
-  const beside = useMemo(() => ({ onAttachment, onSettled }), [onAttachment, onSettled]);
+  /** A turn here is said to a screen reader as main chat's is: started, still going, done. */
+  const { announcePolite: announce } = useLiveAnnouncer();
+  const beside = useMemo(
+    () => ({ onAttachment, onSettled, announce }),
+    [onAttachment, onSettled, announce],
+  );
   return useFollowChat({
     id,
     transport: generation,

@@ -6,6 +6,7 @@ import type {
   ChatTransport,
   SubmittedTurn,
   ChatConnection,
+  AnnounceOptions,
   ChatFinishResult,
   EventApplierInit,
   EventApplierEffect,
@@ -13,6 +14,8 @@ import type {
 import {
   Chat,
   MAX_RETRIES,
+  getAllContentText,
+  MESSAGE_UPDATE_INTERVAL,
   getReconnectDelay,
   rerunTurnMessages,
   createEventApplier,
@@ -87,6 +90,12 @@ export type FollowBeside = AppliedBeside & {
    * of its history proves the reply it holds, so that reading the reply can be acknowledged.
    */
   onSettled?: (final?: ChatFinalFrame) => void;
+  /**
+   * What main chat says to a screen reader over a turn, said for this conversation's: that a
+   * reply has started, that it is still being written, and, at its end, that it is done and
+   * what it says.
+   */
+  announce?: (options: AnnounceOptions) => void;
 };
 
 /** The same handlers, looked up when a frame arrives, so the caller's latest are the ones called. */
@@ -311,9 +320,17 @@ export function useFollowChat({
       ended = undefined;
       host.current.beside?.onSettled?.(final);
     };
+    /** When the reader was last told a reply is being written, so they are not told too often. */
+    let announced = 0;
+    const announce = (options: AnnounceOptions): void => host.current.beside?.announce?.(options);
     const applier = createEventApplier({
       schedule: perFrame,
-      onEffect: (effect) => host.current.onEffect?.(effect),
+      onEffect: (effect) => {
+        if (effect.type === 'announce') {
+          announce({ message: effect.message, isStatus: true });
+        }
+        host.current.onEffect?.(effect);
+      },
       ...forwardBeside(() => host.current.beside),
       /** Not when the server answered the start with a generation that is not this turn. */
       turn: () => (attachment?.foreign === true ? undefined : sent?.submission),
@@ -359,6 +376,14 @@ export function useFollowChat({
           }
         } else if (event.type === 'final') {
           ended = event.data;
+          announce({ message: 'end', isStatus: true });
+          announce({ message: getAllContentText(event.data.responseMessage as TMessage | null) });
+        } else if (event.type === 'created') {
+          announced = Date.now();
+          announce({ message: 'start', isStatus: true });
+        } else if (event.type === 'step' && Date.now() - announced > MESSAGE_UPDATE_INTERVAL) {
+          announced = Date.now();
+          announce({ message: 'composing', isStatus: true });
         }
         host.current.onEvent?.(event);
       },

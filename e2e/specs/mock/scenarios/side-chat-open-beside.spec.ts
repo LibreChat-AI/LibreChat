@@ -173,6 +173,34 @@ test('a reply read in a side chat is acknowledged @scenario:side-chat-reply-is-m
   await expect(row.getByRole('button').first()).not.toHaveAccessibleName(/Unread/);
 });
 
+test('a reply in a side chat is read out when it ends @scenario:side-chat-reply-is-announced', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const earlier = uniqueLabel('earlier-said');
+  const followUp = uniqueLabel('said-beside');
+  const earlierUrl = await startChat(page, earlier);
+  await startChat(page, uniqueLabel('current-said'));
+
+  await openChatHistory(page);
+  const row = conversationRow(page, earlierUrl);
+  await row.hover();
+  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+  await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
+  const sideChat = page.getByRole('region', { name: 'Side chat' });
+  await expect(sideChat).toContainText(replyText(earlier), { timeout: 30_000 });
+
+  const composer = sideChat.getByRole('textbox', { name: 'Message input' });
+  await composer.click();
+  await page.keyboard.type(replyPrompt(followUp));
+  await page.keyboard.press('Enter');
+  await expect(sideChat).toContainText(replyText(followUp), { timeout: 30_000 });
+
+  /** The page's polite live region, which is how a screen reader hears main chat's replies. */
+  const spoken = page.locator('.sr-only > [aria-live="polite"]');
+  await expect(spoken.filter({ hasText: replyText(followUp) })).toHaveCount(1);
+});
+
 test('an unread conversation opened beside the chat is caught up with @scenario:side-chat-catches-up-an-unread-conversation', async ({
   page,
 }) => {
