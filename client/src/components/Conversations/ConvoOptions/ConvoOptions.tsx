@@ -1,7 +1,9 @@
 import { useState, useId, useRef, memo, useMemo, useCallback } from 'react';
+import { useAtomValue } from 'jotai';
 import * as Ariakit from '@ariakit/react';
 import { DropdownPopup, Spinner } from '@librechat/client';
-import { Ellipsis, Archive, ArchiveRestore, Mail, Pen, Pin, Trash } from 'lucide-react';
+import { sideChatAvailableAtom } from '@librechat/chat/react';
+import { Ellipsis, Archive, ArchiveRestore, Mail, PanelRight, Pen, Pin, Trash } from 'lucide-react';
 import type { MouseEvent } from 'react';
 import type { ConvoMenuHandlers, ConvoMenuLoading } from './Controller';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
@@ -87,6 +89,8 @@ function ConvoOptions({
   );
   const handleArchiveClick = useCallback((e?: MouseEvent) => handlersRef.current?.archive(e), []);
   const handlePinClick = useCallback(() => handlersRef.current?.pin(), []);
+  const handleOpenBesideClick = useCallback(() => handlersRef.current?.openBeside(), []);
+  const canOpenBeside = useAtomValue(sideChatAvailableAtom);
   const handleMarkUnreadClick = useCallback(() => handlersRef.current?.markUnread(), []);
   const controller = armed ? (
     <ConvoMenuController
@@ -119,6 +123,13 @@ function ConvoOptions({
            clear the flag the moment it is set. */
         show: !isActiveConvo && !isUnseen,
         icon: <Mail className="icon-sm text-text-primary me-2" aria-hidden="true" />,
+      },
+      {
+        label: localize('com_ui_side_chat_open_beside'),
+        onClick: handleOpenBesideClick,
+        /* Beside the chat on screen, so not that chat itself, and only where there is one. */
+        show: canOpenBeside && !isActiveConvo && !isArchived,
+        icon: <PanelRight className="icon-sm text-text-primary me-2" aria-hidden="true" />,
       },
       {
         label: localize('com_ui_rename'),
@@ -158,6 +169,8 @@ function ConvoOptions({
       handlePinClick,
       handleMarkUnreadClick,
       handleArchiveClick,
+      handleOpenBesideClick,
+      canOpenBeside,
     ],
   );
 

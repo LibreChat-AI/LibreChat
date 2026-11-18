@@ -1,9 +1,14 @@
 import React from 'react';
-import { useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { sideChatAtom, activeSubagentPanel, isSubmittingFamily } from '@librechat/chat/react';
+import {
+  sideChatAtom,
+  activeSubagentPanel,
+  isSubmittingFamily,
+  sideChatAvailableAtom,
+} from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { JotaiStore } from 'test/harness';
 import type { Artifact } from '~/common';
@@ -33,6 +38,10 @@ const mockSideChatLabel = 'Side chat loaded';
 const mockOpenSideChatLabel = 'Open Side Chat';
 const mockSelectAgentConversationLabel = 'Select Agent Conversation';
 const mockStartAgentRunLabel = 'Start Agent Run';
+/** What the deployment has answered with; nothing until a test says otherwise. */
+let mockStartupConfig: { data?: { interface?: { sideChat?: boolean } }; isSuccess?: boolean } = {
+  data: undefined,
+};
 const mockUseParentSubagentsQuery = jest.fn(
   (_conversationId?: string, _config?: unknown, _isSubmitting?: boolean) => ({
     data: undefined,
@@ -117,7 +126,7 @@ jest.mock('~/hooks/Artifacts/useArtifactsRegistryLifetime', () => ({
 
 jest.mock('~/data-provider', () => ({
   useDeleteFilesMutation: () => ({ mutateAsync: jest.fn() }),
-  useGetStartupConfig: () => ({ data: undefined }),
+  useGetStartupConfig: () => mockStartupConfig,
   useParentSubagentsQuery: (conversationId: string, config?: unknown, isSubmitting?: boolean) =>
     mockUseParentSubagentsQuery(conversationId, config, isSubmitting),
 }));
@@ -444,5 +453,44 @@ describe('Presentation Artifact loading', () => {
 
     fireEvent.click(screen.getByRole('button', { name: mockSelectAgentConversationLabel }));
     await waitFor(() => expect(screen.queryByText(mockSideChatLabel)).not.toBeInTheDocument());
+  });
+
+  describe('whether a side chat can be opened', () => {
+    const SideChatAvailability = () => (
+      <span data-testid="side-chat-available">{String(useAtomValue(sideChatAvailableAtom))}</span>
+    );
+    const mount = () =>
+      renderPresentation(
+        <ChatSurfaceHarness>
+          <RecoilRoot>
+            <SideChatAvailability />
+            <Presentation>
+              <span />
+            </Presentation>
+          </RecoilRoot>
+        </ChatSurfaceHarness>,
+      );
+    const available = () => screen.getByTestId('side-chat-available').textContent;
+
+    afterEach(() => {
+      mockStartupConfig = { data: undefined };
+    });
+
+    it('is not, until the deployment has answered', () => {
+      mount();
+      expect(available()).toBe('false');
+    });
+
+    it('is, beside a chat on screen, once the deployment has answered', () => {
+      mockStartupConfig = { data: { interface: {} }, isSuccess: true };
+      mount();
+      expect(available()).toBe('true');
+    });
+
+    it('is not where the deployment turned side chats off', () => {
+      mockStartupConfig = { data: { interface: { sideChat: false } }, isSuccess: true };
+      mount();
+      expect(available()).toBe('false');
+    });
   });
 });

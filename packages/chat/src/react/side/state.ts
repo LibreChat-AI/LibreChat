@@ -16,6 +16,13 @@ export type SideChat = {
   text?: string;
 };
 
+/**
+ * Whether the page can show a side chat right now: a chat is on screen to sit beside, and the
+ * deployment keeps side chats on. What offers to open one reads this, so it never offers a
+ * place that is not there.
+ */
+export const sideChatAvailableAtom: PrimitiveAtom<boolean> = atom<boolean>(false);
+
 /** The side chat on screen, if any. One at a time: it takes the page's side panel. */
 export const sideChatAtom: PrimitiveAtom<SideChat | null> = atom<SideChat | null>(null);
 

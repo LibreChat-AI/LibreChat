@@ -1,8 +1,10 @@
 import { useRef, useCallback, useLayoutEffect } from 'react';
-import { QueryKeys } from 'librechat-data-provider';
+import { useSetAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
+import { sideChatAtom } from '@librechat/chat/react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate } from 'react-router-dom';
+import { QueryKeys, dataService, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { MouseEvent, MutableRefObject } from 'react';
 import type { TMessage } from 'librechat-data-provider';
 import {
@@ -16,6 +18,7 @@ import { useLocalize, useNewConvo } from '~/hooks';
 import { NotificationSeverity } from '~/common';
 
 export type ConvoMenuHandlers = {
+  openBeside: () => void;
   pin: () => void;
   markUnread: () => void;
   archive: (e?: MouseEvent) => void;
@@ -204,7 +207,35 @@ function ConvoMenuController({
     );
   }, [conversationId, markUnreadMutation, setIsPopoverActive, showToast, localize]);
 
-  handlersRef.current = { pin, markUnread, archive, instantDelete };
+  /**
+   * Opens the conversation beside the chat on screen. A side chat builds its turns from the
+   * conversation's full record, which a sidebar row does not hold, so the record is read first.
+   */
+  const setSideChat = useSetAtom(sideChatAtom);
+  const openBeside = useCallback(() => {
+    const convoId = conversationId ?? '';
+    if (!convoId) {
+      return;
+    }
+    setIsPopoverActive(false);
+    const refuse = (message: string) =>
+      showToast({ message, severity: NotificationSeverity.ERROR, showIcon: true });
+    queryClient
+      .fetchQuery([QueryKeys.conversation, convoId], () => dataService.getConversationById(convoId))
+      .then(
+        (conversation) => {
+          /** Assistants conversations run over their own routes, which a side chat does not drive. */
+          if (conversation == null || isAssistantsEndpoint(conversation.endpoint)) {
+            refuse(localize('com_ui_side_chat_unsupported'));
+            return;
+          }
+          setSideChat({ conversation });
+        },
+        () => refuse(localize('com_ui_side_chat_load_error')),
+      );
+  }, [conversationId, queryClient, setIsPopoverActive, setSideChat, showToast, localize]);
+
+  handlersRef.current = { openBeside, pin, markUnread, archive, instantDelete };
 
   const pinLoading = pinConvoMutation.isLoading;
   const archiveLoading = archiveConvoMutation.isLoading;

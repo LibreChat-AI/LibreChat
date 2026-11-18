@@ -5,6 +5,7 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import {
   sideChatAtom,
   SIDE_CHAT_PANE,
+  sideChatAvailableAtom,
   useIsSubmitting,
   activeSubagentPanel,
   SideChatHostProvider,
@@ -114,6 +115,14 @@ export default function Presentation({
    * them when the answer arrived. */
   const canUndock = hasStartupConfig && startupConfig?.interface?.artifactUndocking !== false;
   const artifactsProviderValue = useMemo(() => ({ canUndock }), [canUndock]);
+
+  /** A side chat needs this chat to sit beside, and the deployment's leave to open one. */
+  const canSideChat = hasStartupConfig === true && startupConfig?.interface?.sideChat !== false;
+  const setSideChatAvailable = useSetAtom(sideChatAvailableAtom);
+  useEffect(() => {
+    setSideChatAvailable(canSideChat);
+    return () => setSideChatAvailable(false);
+  }, [canSideChat, setSideChatAvailable]);
 
   const artifactsElement = useMemo(() => {
     if (
