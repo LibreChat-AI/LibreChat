@@ -860,7 +860,14 @@ describe('assertResumeRuntimeContentAllowed', () => {
   });
 });
 
-it.each(['valid', 'foreign-file', 'mixed-current', 'conflicting-id'])(
+it.each([
+  'valid',
+  'foreign-file',
+  'mixed-current',
+  'conflicting-id',
+  'duplicate-owner',
+  'conflicting-source-owner',
+])(
   'validates acknowledged source/file ownership in actual resume projection: %s',
   async (variant) => {
     const original = [
@@ -927,6 +934,16 @@ it.each(['valid', 'foreign-file', 'mixed-current', 'conflicting-id'])(
       ];
     if (variant === 'conflicting-id')
       content = [original[0], { ...original[1], file_id: 'untrusted-current' }];
+    const sources = [source];
+    if (variant === 'duplicate-owner') source.content.push({ ...source.content[0] });
+    if (variant === 'conflicting-source-owner')
+      sources.push({
+        ...source,
+        messageId: 'other-source',
+        content: [
+          { ...source.content[0], bedrockSource: { ...receipt, sourceMessageId: 'other-source' } },
+        ],
+      });
     const deps = createDependencies();
     deps.getAgentCheckpointer.mockResolvedValue({
       getTuple: async () => ({
@@ -935,7 +952,12 @@ it.each(['valid', 'foreign-file', 'mixed-current', 'conflicting-id'])(
             messages: [
               {
                 role: 'human',
-                additional_kwargs: { source: 'steer', sourceMessageId: 'source' },
+                additional_kwargs: {
+                  source: 'steer',
+                  sourceMessageId: 'source',
+                  sourceMessageIds:
+                    variant === 'conflicting-source-owner' ? ['source', 'other-source'] : undefined,
+                },
                 content,
               },
             ],
@@ -944,7 +966,7 @@ it.each(['valid', 'foreign-file', 'mixed-current', 'conflicting-id'])(
       }),
     });
     const promise = assertResumeRuntimeContentAllowed(
-      { ...createInput({}), storedMessages: [source], isTemporary: false },
+      { ...createInput({}), storedMessages: sources, isTemporary: false },
       deps,
     );
     if (variant === 'valid') {

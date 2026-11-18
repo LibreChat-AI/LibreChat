@@ -111,6 +111,8 @@ const {
   isSteerTerminalContinuationSupported,
   buildSteerMedia,
   repairSteerAttachmentRefs,
+  findAppliedSteer,
+  commitAppliedSteer,
   publishSteerSource,
   collectSteerStampTargets,
   stampSteerPartMedia,
@@ -943,7 +945,8 @@ class AgentClient extends BaseClient {
 
   async stripSteerAttachmentRefs(streamId, item, receipt) {
     return repairSteerAttachmentRefs({
-      applied: this.appliedSteerParts.get(item.steerId),
+      applied: findAppliedSteer(this.contentParts, item.steerId, this.responseMessageId),
+      getApplied: () => findAppliedSteer(this.contentParts, item.steerId, this.responseMessageId),
       receipt,
       sourceMessageId: this.responseMessageId,
       publish: (part) =>
@@ -954,7 +957,8 @@ class AgentClient extends BaseClient {
             data: {
               steerId: item.steerId,
               ...(item.clientSteerId && { clientSteerId: item.clientSteerId }),
-              index: this.appliedSteerParts.get(item.steerId).index,
+              index: findAppliedSteer(this.contentParts, item.steerId, this.responseMessageId)
+                .index,
               part,
               responseMessageId: this.responseMessageId,
               conversationId: this.conversationId,
@@ -962,10 +966,13 @@ class AgentClient extends BaseClient {
           },
           { durable: true, expectedCreatedAt: this.jobCreatedAt },
         ),
-      commit: (applied) => {
-        this.contentParts[applied.index] = applied.part;
-        this.appliedSteerParts.set(item.steerId, applied);
-      },
+      commit: (applied) =>
+        commitAppliedSteer(
+          this.contentParts,
+          this.appliedSteerParts,
+          applied,
+          this.responseMessageId,
+        ),
       rollback: () => this.rollbackSteerAttachmentAdmission(item.steerId),
     });
   }
@@ -1023,8 +1030,8 @@ class AgentClient extends BaseClient {
           item,
           getFiles: db.getFiles,
           assertFilesAllowed: (files) =>
-            this.admitSteerAttachments(files, item.steerId, () =>
-              this.stripSteerAttachmentRefs(streamId, item),
+            this.admitSteerAttachments(files, item.steerId, (receipt) =>
+              this.stripSteerAttachmentRefs(streamId, item, receipt),
             ),
         });
         const binding = bindBedrockSteerSource(
@@ -1032,12 +1039,14 @@ class AgentClient extends BaseClient {
           item.steerId,
           media?.content,
           this.responseMessageId,
-          this.appliedSteerParts.get(item.steerId)?.index,
-          this.appliedSteerParts.get(item.steerId)?.part.files,
+          findAppliedSteer(this.contentParts, item.steerId, this.responseMessageId).index,
+          findAppliedSteer(this.contentParts, item.steerId, this.responseMessageId).part.files,
         );
         await publishSteerSource({
           binding,
-          applied: this.appliedSteerParts.get(item.steerId),
+          applied: findAppliedSteer(this.contentParts, item.steerId, this.responseMessageId),
+          getApplied: () =>
+            findAppliedSteer(this.contentParts, item.steerId, this.responseMessageId),
           publish: (part) =>
             GenerationJobManager.emitChunk(
               streamId,
@@ -1045,7 +1054,8 @@ class AgentClient extends BaseClient {
                 event: SteerEvents.ON_STEER_APPLIED,
                 data: {
                   steerId: item.steerId,
-                  index: this.appliedSteerParts.get(item.steerId).index,
+                  index: findAppliedSteer(this.contentParts, item.steerId, this.responseMessageId)
+                    .index,
                   part,
                   responseMessageId: this.responseMessageId,
                   conversationId: this.conversationId,
@@ -1053,10 +1063,14 @@ class AgentClient extends BaseClient {
               },
               { durable: true, expectedCreatedAt: this.jobCreatedAt },
             ),
-          commit: (value) => {
-            this.contentParts[value.index] = value.part;
-            this.appliedSteerParts.set(item.steerId, value);
-          },
+          commit: (value) =>
+            commitAppliedSteer(
+              this.contentParts,
+              this.appliedSteerParts,
+              value,
+              this.responseMessageId,
+            ),
+          onUnbound: () => this.admittedSteerAttachments.delete(item.steerId),
         });
         settleBedrockSteerDocuments(this.options.req, item.steerId, true);
         return media;

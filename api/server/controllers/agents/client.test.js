@@ -1,3 +1,6 @@
+const mockProductionSteerStorage = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').getS3FileStream(...args),
+);
 const mockCreateRun = jest.fn();
 const mockCaptureAgentCheckpointGeneration = jest.fn();
 const mockDeleteAgentCheckpoint = jest.fn();
@@ -276,6 +279,7 @@ jest.mock('@librechat/agents', () => ({
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
+  getS3FileStream: (...args) => mockProductionSteerStorage(...args),
   buildAgentScopedContext: (...args) => mockBuildAgentScopedContext(...args),
   checkAccess: jest.fn(),
   createRun: (...args) => mockCreateRun(...args),
@@ -6078,6 +6082,11 @@ describe('AgentClient - titleConvo', () => {
 
     beforeEach(() => {
       jest.clearAllMocks();
+      mockProductionSteerStorage
+        .mockReset()
+        .mockImplementation((...args) =>
+          jest.requireActual('@librechat/api').getS3FileStream(...args),
+        );
       mockFormatInstructions.mockResolvedValue('');
       require('@librechat/api').countFormattedMessageTokens.mockImplementation(() => 42);
       require('~/models').getFiles.mockReset().mockResolvedValue([]);
@@ -7021,6 +7030,319 @@ describe('AgentClient - titleConvo', () => {
           expect(reads).not.toHaveBeenCalled();
         },
       );
+    });
+
+    it.each([
+      'mixed-success',
+      'mixed-missing',
+      'two-handoff',
+      'skill-reshape',
+      'sequence-reshape',
+      'anthropic-primary',
+    ])('production Bedrock steer receipt lifecycle: %s', async (variant) => {
+      const api = require('@librechat/api');
+      const { Readable } = require('node:stream');
+      const { BedrockRuntimeClient } = require('@aws-sdk/client-bedrock-runtime');
+      const { ChatBedrockConverse } = require('@langchain/aws');
+      const { MemorySaver } = require('@langchain/langgraph-checkpoint');
+      const path = require('node:path');
+      const { convertInjectedMessages } = require(
+        path.join(path.dirname(require.resolve('@librechat/agents')), 'messages/injected.cjs'),
+      );
+      const model = 'anthropic.claude-sonnet-4-20250514-v1:0',
+        childModel = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
+      const png = Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlS8AAAAASUVORK5CYII=',
+          'base64',
+        ),
+        pdf = Buffer.from('%PDF-tiny fixture');
+      const doc = (id) => ({
+        ...makeUploadedFile(id, id + '.pdf', 'application/pdf'),
+        source: 's3',
+        storageKey: 'production/' + id + '.pdf',
+        bytes: pdf.length,
+        llmDeliveryPath: 'provider',
+      });
+      const first = doc('production-doc-one'),
+        second = doc('production-doc-two');
+      const image = {
+        ...makeUploadedFile('production-image', 'image.png', 'image/png'),
+        source: 's3',
+        storageKey: 'production/image.png',
+        bytes: png.length,
+        height: 1,
+        width: 1,
+        llmDeliveryPath: 'provider',
+      };
+      const rows = [first, second, image];
+      const native = variant === 'anthropic-primary';
+      mockProductionSteerStorage.mockReset().mockImplementation(async (_req, key) => {
+        if (key.endsWith('image.png')) return Readable.from(png);
+        if (!native && variant !== 'mixed-success' && key.endsWith(first.file_id + '.pdf'))
+          throw Object.assign(new Error('synthetic missing storage'), { code: 'ENOENT' });
+        return Readable.from(pdf);
+      });
+      require('~/models').getFiles.mockImplementation(async (filter) =>
+        rows.filter((row) => filter.file_id.$in.includes(row.file_id)),
+      );
+      mockAgent.provider = native ? Providers.ANTHROPIC : Providers.BEDROCK;
+      mockAgent.endpoint = native ? 'anthropic' : 'bedrock';
+      mockAgent.model_parameters = { model };
+      mockReq.config.fileConfig = {
+        endpoints: {
+          bedrock: { fileLimit: 10, fileSizeLimit: 1 },
+          anthropic: { fileLimit: 10, fileSizeLimit: 1 },
+          secondary: { fileLimit: 10, fileSizeLimit: 2 },
+        },
+      };
+      mockAgent.deliveryRouting = api.resolveTurnDeliveryRouting({
+        agent: mockAgent,
+        config: mockReq.config,
+      });
+      client.modelOptions = { model };
+      client.contentParts = [];
+      client.steerOffsetState = { offset: 0 };
+      if (variant === 'sequence-reshape')
+        client.contentParts.push({ type: 'text', text: 'hidden early output' });
+      const secondary = {
+        id: 'loaded-secondary',
+        provider: Providers.BEDROCK,
+        endpoint: 'secondary',
+        model: childModel,
+        model_parameters: { model: childModel },
+      };
+      client.agentConfigs = new Map([[secondary.id, secondary]]);
+      client.turnSharedAttachmentFiles = [];
+      client.turnHistoricalAttachmentIds = new Set();
+      client.turnScopedAttachmentsByAgentId = new Map();
+      client.turnAttachmentEndpointsByAgentId = new Map([
+        [mockAgent.id, { endpoint: mockAgent.endpoint }],
+        [secondary.id, { endpoint: 'secondary' }],
+      ]);
+      api.GenerationJobManager.configure({
+        jobStore: new api.InMemoryJobStore({ ttlAfterComplete: 60000 }),
+        eventTransport: new api.InMemoryEventTransport(),
+        isRedis: false,
+        cleanupOnComplete: false,
+      });
+      api.GenerationJobManager.initialize();
+      const streamId = 'production-stream-' + Date.now();
+      const job = await api.GenerationJobManager.createJob(streamId, mockReq.user.id, streamId, {
+        initialMetadata: { steerQuotesCapable: true },
+      });
+      client.jobCreatedAt = job.createdAt;
+      const items = [
+        {
+          steerId: 'production-one',
+          text: 'words one',
+          quotes: ['quote one'],
+          files: [{ file_id: first.file_id }, { file_id: image.file_id }],
+          userId: mockReq.user.id,
+          createdAt: Date.now(),
+        },
+      ];
+      if (variant === 'two-handoff')
+        items.push({
+          steerId: 'production-two',
+          text: 'words two',
+          quotes: ['quote two'],
+          files: [{ file_id: second.file_id }, { file_id: image.file_id }],
+          userId: mockReq.user.id,
+          createdAt: Date.now() + 1,
+        });
+      const emitted = jest.spyOn(api.GenerationJobManager, 'emitChunk');
+      try {
+        for (const item of items) await api.GenerationJobManager.steering.enqueue(streamId, item);
+        const output = await client
+          .buildSteerWiring(streamId)
+          .hook(
+            { hook_event_name: 'PostToolBatch', runId: 'fixture', entries: [] },
+            new AbortController().signal,
+          );
+        const messages = convertInjectedMessages(output.injectedMessages);
+        const wire = [];
+        const send = async (agent, payload = messages) => {
+          const handler = {
+            handle: async (http) => {
+              wire.push(JSON.parse(http.body));
+              return {
+                response: {
+                  statusCode: 200,
+                  headers: { 'content-type': 'application/json' },
+                  body: Buffer.from(
+                    JSON.stringify({
+                      output: { message: { role: 'assistant', content: [{ text: 'continued' }] } },
+                      stopReason: 'end_turn',
+                      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                      metrics: { latencyMs: 1 },
+                    }),
+                  ),
+                },
+              };
+            },
+          };
+          const sdk = api.guardBedrockDocuments(
+            new BedrockRuntimeClient({
+              region: 'us-east-1',
+              maxAttempts: 1,
+              credentials: { accessKeyId: 'fixture', secretAccessKey: 'fixture' },
+              requestHandler: handler,
+            }),
+            api.getBedrockDocumentContext(mockReq),
+            agent.model_parameters.model,
+            agent.endpoint,
+            agent.id,
+          );
+          try {
+            return await new ChatBedrockConverse({
+              model: agent.model_parameters.model,
+              client: sdk,
+              region: 'us-east-1',
+              streaming: false,
+            }).invoke(payload);
+          } finally {
+            sdk.destroy();
+          }
+        };
+        if (native) {
+          expect(
+            messages[0].content.some(
+              (part) => part.type === 'document' && part.source?.type === 'base64',
+            ),
+          ).toBe(true);
+          expect(
+            messages[0].content.some((part) => part.type === 'image' || part.type === 'image_url'),
+          ).toBe(true);
+          expect(() =>
+            api
+              .getBedrockDocumentContext(mockReq)
+              .get(first.file_id, childModel, 'secondary', secondary.id),
+          ).toThrow();
+          expect(client.admittedSteerAttachments.has('production-one')).toBe(false);
+          const encoder = api.createRunFileMessageEncoder({
+            req: mockReq,
+            getAgent: (id) =>
+              id === secondary.id
+                ? {
+                    ...secondary,
+                    deliveryRouting: api.resolveTurnDeliveryRouting({
+                      agent: secondary,
+                      config: mockReq.config,
+                    }),
+                    fileConsumers: { executeCode: false, fileSearch: false },
+                  }
+                : undefined,
+            encodeDocuments: api.encodeAndFormatDocuments,
+            encodeImages: async () => ({ image_urls: [] }),
+            encodeAudios: async () => ({ audios: [] }),
+            encodeVideos: async () => ({ videos: [] }),
+            extractText: async () => undefined,
+            getStrategyFunctions: require('~/server/services/Files/strategies')
+              .getStrategyFunctions,
+          });
+          const childMessages = await encoder.encode([first], secondary.id);
+          await send(secondary, childMessages);
+          expect(
+            wire[0].messages.some((message) => message.content.some((part) => part.document)),
+          ).toBe(true);
+          return;
+        }
+        expect(
+          mockProductionSteerStorage.mock.calls.filter(([, key]) => key.endsWith('.pdf')),
+        ).toHaveLength(0);
+        const cached = client.appliedSteerParts.get('production-one').index;
+        const before = [...client.contentParts];
+        let card;
+        if (variant === 'skill-reshape') {
+          [card] = api.buildSkillPrimeContentParts(
+            [{ name: 'fixture-skill', body: 'instructions' }],
+            { runId: client.responseMessageId },
+          );
+          client.contentParts.unshift(card);
+        }
+        if (variant === 'sequence-reshape') {
+          mockAgent.hide_sequential_outputs = true;
+          client.contentParts.push({ type: 'text', text: 'final answer' });
+        }
+        client.applyHideSequentialOutputsFilter();
+        client.rebaseActivityPhaseBounds(before);
+        const current = client.contentParts.findIndex((part) => part?.steerId === 'production-one');
+        if (variant.endsWith('reshape')) expect(current).not.toBe(cached);
+        await send(mockAgent);
+        if (variant === 'two-handoff') await send(secondary);
+        if (card) expect(client.contentParts).toContain(card);
+        if (variant === 'sequence-reshape') {
+          expect(client.contentParts.some((part) => part.text === 'final answer')).toBe(true);
+          expect(client.contentParts.some((part) => part.text === 'hidden early output')).toBe(
+            false,
+          );
+        }
+        expect(wire[0].messages[0].content.some((part) => part.document)).toBe(
+          variant === 'mixed-success',
+        );
+        expect(wire[0].messages[0].content.some((part) => part.image)).toBe(
+          variant === 'mixed-success',
+        );
+        expect(
+          wire[0].messages[0].content.some(
+            (part) => part.text?.includes('words one') && part.text.includes('quote one'),
+          ),
+        ).toBe(true);
+        if (variant === 'two-handoff')
+          for (const body of wire) {
+            expect(body.messages[1].content.some((part) => part.document)).toBe(true);
+            expect(body.messages[1].content.some((part) => part.image)).toBe(true);
+          }
+        if (variant !== 'mixed-success') {
+          const repaired = client.contentParts.find((part) => part?.steerId === 'production-one');
+          expect(repaired.bedrockRepaired).toBe(true);
+          expect(repaired.files).toBeUndefined();
+          expect(client.appliedSteerParts.get('production-one').index).toBe(current);
+          const correction = emitted.mock.calls.find(
+            ([, event]) => event.data?.part?.bedrockRepaired === true,
+          );
+          expect(correction[1].data.index).toBe(current);
+        }
+        const serde = new MemorySaver().serde;
+        const [type, bytes] = await serde.dumpsTyped({ messages });
+        const restored = await serde.loadsTyped(type, bytes);
+        const source = {
+          messageId: client.responseMessageId,
+          isCreatedByUser: false,
+          content: client.contentParts,
+        };
+        const projection = await api.assertResumeRuntimeContentAllowed(
+          {
+            appConfig: mockReq.config,
+            conversationId: client.conversationId,
+            targetMessageId: null,
+            user: mockReq.user,
+            storedMessages: [source],
+            seedContent: [],
+            liveFiles: [],
+            isTemporary: false,
+            agents: [],
+            files: [],
+          },
+          {
+            getAgentCheckpointer: async () => ({
+              getTuple: async () => ({
+                checkpoint: { channel_values: { messages: restored.messages } },
+              }),
+            }),
+            getMessages: async () => [source],
+            getFiles: async (filter) =>
+              rows.filter((row) => filter.file_id.$in.includes(row.file_id)),
+          },
+        );
+        if (variant !== 'mixed-success')
+          expect(projection.checkpointFiles.some((row) => row.file_id === first.file_id)).toBe(
+            false,
+          );
+      } finally {
+        emitted.mockRestore();
+        await api.GenerationJobManager.destroy();
+      }
     });
 
     it('counts resubmitted historical files during steering without mutating rejected state', () => {

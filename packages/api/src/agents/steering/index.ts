@@ -31,6 +31,8 @@ export type {
 } from './request';
 export {
   repairSteerAttachmentRefs,
+  findAppliedSteer,
+  commitAppliedSteer,
   publishSteerSource,
   buildSteerMedia,
   collectSteerStampTargets,

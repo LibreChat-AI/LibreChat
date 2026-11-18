@@ -200,6 +200,15 @@ export class BedrockDocumentContext {
     const owner = this.steerRepairs.get(id);
     if (!owner) return undefined;
     if (!Array.isArray(content)) throw new BedrockDocumentError();
+    const hasDeferred = content.some((part) => {
+      const source = part?.document?.source;
+      return source && this.references.get(source)?.owner === id;
+    });
+    if (!hasDeferred) {
+      this.admissions.delete(id);
+      this.steerRepairs.delete(id);
+      return undefined;
+    }
     for (const part of content) {
       const source = part?.document?.source;
       if (!source) continue;

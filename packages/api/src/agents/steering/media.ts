@@ -350,6 +350,7 @@ export async function stampSteerPartMedia({
 /** Publish the correction before claiming local rollback or successful repair. */
 export async function repairSteerAttachmentRefs({
   applied,
+  getApplied,
   publish,
   commit,
   rollback,
@@ -359,10 +360,12 @@ export async function repairSteerAttachmentRefs({
   receipt?: StoredSteerOwner;
   sourceMessageId?: string;
   applied?: { index: number; part: SteerPart };
+  getApplied?: () => { index: number; part: SteerPart };
   publish: (part: SteerPart) => Promise<void>;
   commit: (applied: { index: number; part: SteerPart }) => void;
   rollback: () => void;
 }): Promise<void> {
+  applied = getApplied?.() ?? applied;
   if (!applied) throw new Error('Steer attachment repair owner is unavailable');
   if (!applied.part.files?.length) {
     rollback();
@@ -371,7 +374,6 @@ export async function repairSteerAttachmentRefs({
   if (
     receipt &&
     (receipt.sourceMessageId !== sourceMessageId ||
-      receipt.partIndex !== applied.index ||
       receipt.steerId !== applied.part.steerId ||
       !receipt.fileIds.every((id) => applied.part.files?.some((file) => file.file_id === id)))
   )
@@ -382,30 +384,76 @@ export async function repairSteerAttachmentRefs({
   };
   delete part.files;
   await publish(part);
-  commit({ index: applied.index, part });
+  const current = getApplied?.() ?? applied;
+  const latest = {
+    ...current.part,
+    ...(receipt && { bedrockSource: receipt, bedrockRepaired: true }),
+  };
+  delete latest.files;
+  commit({ index: current.index, part: latest });
   rollback();
 }
 
 export async function publishSteerSource({
   binding,
   applied,
+  getApplied,
   publish,
   commit,
+  onUnbound,
 }: {
   binding?: StoredSteerOwner;
   applied?: { index: number; part: SteerPart };
+  getApplied?: () => { index: number; part: SteerPart };
+  onUnbound?: () => void;
   publish: (part: SteerPart) => Promise<void>;
   commit: (value: { index: number; part: SteerPart }) => void;
 }): Promise<void> {
-  if (!binding) return;
+  if (!binding) {
+    onUnbound?.();
+    return;
+  }
+  applied = getApplied?.() ?? applied;
   if (
     !applied ||
-    applied.index !== binding.partIndex ||
     applied.part.steerId !== binding.steerId ||
     !binding.fileIds.every((id) => applied.part.files?.some((file) => file.file_id === id))
   )
     throw new Error('Invalid steer source ownership');
   const part = { ...applied.part, bedrockSource: binding };
   await publish(part);
-  commit({ index: applied.index, part });
+  const current = getApplied?.() ?? applied;
+  commit({ index: current.index, part: { ...current.part, bedrockSource: binding } });
+}
+
+/** Locate by durable identity every time; display reshaping may change both array and index. */
+export function findAppliedSteer(
+  parts: readonly (SteerPart | null | undefined)[],
+  steerId: string,
+  sourceMessageId: string,
+): { index: number; part: SteerPart } {
+  let found: { index: number; part: SteerPart } | undefined;
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    if (part?.type !== 'steer' || part.steerId !== steerId) continue;
+    if (found) throw new Error('Ambiguous steer attachment source');
+    const binding = part.bedrockSource as StoredSteerOwner | undefined;
+    if (binding && binding.sourceMessageId !== sourceMessageId)
+      throw new Error('Mismatched steer attachment source');
+    found = { index, part };
+  }
+  if (!found) throw new Error('Steer attachment source is unavailable');
+  return found;
+}
+
+export function commitAppliedSteer(
+  parts: (SteerPart | null | undefined)[],
+  cache: Map<string, { index: number; part: SteerPart }>,
+  value: { index: number; part: SteerPart },
+  sourceMessageId: string,
+): void {
+  if (typeof value.part.steerId !== 'string') throw new Error('Missing steer identity');
+  const current = findAppliedSteer(parts, value.part.steerId, sourceMessageId);
+  parts[current.index] = value.part;
+  cache.set(value.part.steerId, { index: current.index, part: value.part });
 }

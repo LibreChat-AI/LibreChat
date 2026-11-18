@@ -4,6 +4,7 @@ import { BedrockDocumentError } from './limits';
 export interface StoredSteerOwner {
   steerId: string;
   sourceMessageId: string;
+  /** Opaque legacy binding coordinate, not the current content-array position. */
   partIndex: number;
   fileIds: string[];
   digest: string;
@@ -96,12 +97,17 @@ export function collectStoredSteerOwners(
   }>,
 ): StoredSteerOwner[] {
   const owners = new Map<string, StoredSteerOwner>();
+  const seen = new Set<string>();
   for (const message of messages) {
     if (message.isCreatedByUser !== false && message.role !== 'assistant') continue;
     if (!Array.isArray(message.content)) continue;
-    for (const [partIndex, value] of message.content.entries()) {
+    for (const value of message.content) {
       const part = record(value),
         receipt = record(part?.bedrockSource);
+      if (part?.type === 'steer' && typeof part.steerId === 'string') {
+        if (seen.has(part.steerId)) throw new BedrockDocumentError();
+        seen.add(part.steerId);
+      }
       if (
         part?.type !== 'steer' ||
         typeof part.steerId !== 'string' ||
@@ -109,7 +115,8 @@ export function collectStoredSteerOwners(
         typeof receipt.sourceMessageId !== 'string' ||
         receipt.sourceMessageId.length === 0 ||
         receipt.sourceMessageId !== (message.messageId ?? message.id) ||
-        receipt.partIndex !== partIndex ||
+        !Number.isSafeInteger(receipt.partIndex) ||
+        Number(receipt.partIndex) < 0 ||
         typeof receipt.digest !== 'string' ||
         !/^[a-f0-9]{64}$/.test(receipt.digest) ||
         !Array.isArray(receipt.fileIds) ||
@@ -127,7 +134,7 @@ export function collectStoredSteerOwners(
       owners.set(part.steerId, {
         steerId: part.steerId,
         sourceMessageId: receipt.sourceMessageId as string,
-        partIndex,
+        partIndex: receipt.partIndex as number,
         fileIds: [...fileIds],
         digest: receipt.digest,
         repaired,
