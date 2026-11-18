@@ -173,13 +173,13 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
       expect(result.error).toContain('2.0MB');
     });
 
-    it('should allow configured limit higher than 4.5MB default', async () => {
+    it('should cap configured limit higher than 4.5MB default', async () => {
       const configuredLimit = mbToBytes(512);
       const pdfBuffer = createMockPdfBuffer(5);
       const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider, configuredLimit);
 
-      expect(result.isValid).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.isValid).toBe(false);
+      expect(result.error).toBeDefined();
     });
 
     it('should reject PDFs with invalid header', async () => {
@@ -314,8 +314,8 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
       expect(result.error).toContain('4.5MB');
     });
 
-    it('should accept PDFs below 32MB for exempt Claude 4+ models', async () => {
-      const pdfBuffer = createMockPdfBuffer(30);
+    it('should accept PDFs whose base64 fits the Claude request cap', async () => {
+      const pdfBuffer = createMockPdfBuffer(20);
       const model = 'anthropic.claude-opus-4-20250514-v1:0';
       const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider, undefined, model);
 
@@ -328,7 +328,7 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
       const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider, undefined, model);
 
       expect(result.isValid).toBe(false);
-      expect(result.error).toContain('32.0MB');
+      expect(result.error).toContain('22.9MB');
     });
 
     it('should respect configuredFileSizeLimit when lower than 32MB for exempt models', async () => {
@@ -347,7 +347,7 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
       expect(result.error).toContain('10.0MB');
     });
 
-    it('should allow configuredFileSizeLimit higher than 32MB for exempt models', async () => {
+    it('should cap configuredFileSizeLimit higher than 32MB for exempt models', async () => {
       const configuredLimit = mbToBytes(50);
       const pdfBuffer = createMockPdfBuffer(35);
       const model = 'amazon.nova-pro-v1:0';
@@ -359,11 +359,11 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
         model,
       );
 
-      expect(result.isValid).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.isValid).toBe(false);
+      expect(result.error).toBeDefined();
     });
 
-    it('should allow configuredFileSizeLimit higher than 4.5MB for non-exempt models', async () => {
+    it('should cap configuredFileSizeLimit higher than 4.5MB for non-exempt models', async () => {
       const configuredLimit = mbToBytes(100);
       const pdfBuffer = createMockPdfBuffer(5);
       const model = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
@@ -375,8 +375,8 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
         model,
       );
 
-      expect(result.isValid).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.isValid).toBe(false);
+      expect(result.error).toBeDefined();
     });
   });
 
@@ -406,7 +406,7 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
       expect(result.error).toContain('4.5MB');
     });
 
-    it('should allow configured limit higher than 4.5MB for non-PDF', async () => {
+    it('should cap configured limit higher than 4.5MB for non-PDF', async () => {
       const fileSize = 5 * 1024 * 1024;
       const configuredLimit = mbToBytes(512);
       const result = await validateBedrockDocument(
@@ -416,8 +416,8 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
         configuredLimit,
       );
 
-      expect(result.isValid).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.isValid).toBe(false);
+      expect(result.error).toBeDefined();
     });
 
     it('should use configured limit when lower than provider limit for non-PDF', async () => {

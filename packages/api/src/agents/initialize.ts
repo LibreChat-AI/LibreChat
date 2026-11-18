@@ -135,11 +135,13 @@ import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
+import { getBedrockDocumentContext } from '~/files/bedrock/context';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getGoogleInputTokenLimit } from '~/endpoints/google/llm';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
+import { guardBedrockDocuments } from '~/files/bedrock/client';
 import { createRequestAgentExecutionContext } from './runtime';
 import { resolveTurnDeliveryRouting } from './files/delivery';
 import { filterFilesByEndpointRuntimeConfig } from '~/files';
@@ -1585,6 +1587,14 @@ export async function initializeAgent(
 
   const options: InitializeResultBase = await getOptions({
     runtime: {
+      guardBedrockClient: params.req
+        ? (client, model) =>
+            guardBedrockDocuments(
+              client,
+              getBedrockDocumentContext(params.req as ServerRequest),
+              model,
+            )
+        : undefined,
       appConfig,
       user,
       requestBody: runtime.requestBody,

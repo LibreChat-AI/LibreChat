@@ -1,4 +1,5 @@
 import type { ClientOptions, OpenAIClientOptions } from '@librechat/agents';
+import type { BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime';
 import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { TConfig } from 'librechat-data-provider';
 import type { ReasoningCapabilityDeps } from './reasoning';
@@ -42,6 +43,7 @@ export interface EndpointDbMethods {
 
 /** Transport-free state consumed while resolving provider credentials and configuration. */
 export interface EndpointRuntimeContext {
+  guardBedrockClient?: (client: BedrockRuntimeClient, model?: string) => BedrockRuntimeClient;
   appConfig?: AppConfig;
   user?: IUser;
   requestBody: RequestBody;

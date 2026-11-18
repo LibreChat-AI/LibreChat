@@ -14,6 +14,7 @@ import { encodeAndFormatDocuments, dedupeDocumentNames } from './document';
 jest.mock('~/files/validation', () => ({
   validatePdf: jest.fn(),
   validateBedrockDocument: jest.fn(),
+  getBedrockDocumentLimit: jest.requireActual('~/files/validation').getBedrockDocumentLimit,
 }));
 
 /** Mock the utils module */
@@ -568,7 +569,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
           name: 'test_pdf',
           format: 'pdf',
           source: {
-            bytes: expect.any(Buffer),
+            librechatFile: file.file_id,
           },
         },
       });
@@ -601,7 +602,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
           name: 'data_csv',
           format: 'csv',
           source: {
-            bytes: expect.any(Buffer),
+            librechatFile: file.file_id,
           },
         },
       });
@@ -635,7 +636,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
           name: 'report_docx',
           format: 'docx',
           source: {
-            bytes: expect.any(Buffer),
+            librechatFile: file.file_id,
           },
         },
       });
@@ -668,7 +669,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
           name: 'notes_txt',
           format: 'txt',
           source: {
-            bytes: expect.any(Buffer),
+            librechatFile: file.file_id,
           },
         },
       });
@@ -698,7 +699,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       expect(mockedValidateBedrockDocument).toHaveBeenCalledWith(
         expect.any(Number),
         'text/csv',
-        expect.any(Buffer),
+        undefined,
         undefined,
         model,
       );
@@ -727,7 +728,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
           { provider: Providers.BEDROCK },
           mockStrategyFunctions,
         ),
-      ).rejects.toThrow('Document validation failed');
+      ).rejects.toThrow('attachment limits');
     });
 
     it('should format OpenAI document with responses API', async () => {
@@ -1214,7 +1215,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 describe('dedupeDocumentNames', () => {
   const bedrock = (name: string): BedrockDocumentBlock => ({
     type: 'document',
-    document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
+    document: { name, format: 'pdf', source: { librechatFile: name } },
   });
   type Message = { content?: string | PayloadContentPart[] | null };
   const names = (parts: PayloadContentPart[] = []): string[] =>

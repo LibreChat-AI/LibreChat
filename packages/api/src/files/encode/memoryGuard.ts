@@ -9,15 +9,31 @@ export class InFlightBytesSemaphore {
 
   constructor(private readonly ceiling: number) {}
 
-  acquire(bytes: number): Promise<() => void> {
+  acquire(bytes: number, signal?: AbortSignal): Promise<() => void> {
+    signal?.throwIfAborted();
     const reserve = Math.max(0, bytes || 0);
 
     if (this.queue.length === 0 && this.canAdmit(reserve)) {
       return Promise.resolve(this.grant(reserve));
     }
 
-    return new Promise<() => void>((resolve) => {
-      this.queue.push({ bytes: reserve, resolve: () => resolve(this.grant(reserve)) });
+    return new Promise<() => void>((resolve, reject) => {
+      const abort = (): void => {
+        const index = this.queue.indexOf(waiter);
+        if (index >= 0) this.queue.splice(index, 1);
+        signal?.removeEventListener('abort', abort);
+        reject(signal?.reason);
+        this.drain();
+      };
+      const waiter = {
+        bytes: reserve,
+        resolve: (): void => {
+          signal?.removeEventListener('abort', abort);
+          resolve(this.grant(reserve));
+        },
+      };
+      this.queue.push(waiter);
+      signal?.addEventListener('abort', abort, { once: true });
     });
   }
 
@@ -53,13 +69,18 @@ export class InFlightBytesSemaphore {
 const encodeLimit = createConcurrencyLimiter(ENCODE_CONCURRENCY);
 const inFlightBytes = new InFlightBytesSemaphore(ENCODE_INFLIGHT_BYTES_MAX);
 
-export function runGuardedEncode<T>(estimatedBytes: number, task: () => Promise<T>): Promise<T> {
-  return encodeLimit(async () => {
-    const release = await inFlightBytes.acquire(estimatedBytes);
+export function runGuardedEncode<T>(
+  estimatedBytes: number,
+  task: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const run = async (): Promise<T> => {
+    const release = await inFlightBytes.acquire(estimatedBytes, signal);
     try {
       return await task();
     } finally {
       release();
     }
-  });
+  };
+  return signal ? run() : encodeLimit(run);
 }

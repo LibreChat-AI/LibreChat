@@ -28,6 +28,7 @@ jest.mock('@aws-sdk/client-bedrock-runtime', () => ({
   BedrockRuntimeClient: jest.fn().mockImplementation((config) => ({
     ...config,
     _isBedrockClient: true,
+    send: jest.fn(),
   })),
 }));
 
@@ -167,8 +168,8 @@ describe('initializeBedrock', () => {
 
       expect(result.llmConfig).toHaveProperty('profile', 'dev-profile');
       expect(result.llmConfig).not.toHaveProperty('credentials');
-      expect(result.llmConfig).not.toHaveProperty('client');
-      expect(mockedFromNodeProviderChain).not.toHaveBeenCalled();
+      expect(result.llmConfig).toHaveProperty('client');
+      expect(mockedFromNodeProviderChain).toHaveBeenCalledWith({ profile: 'dev-profile' });
     });
   });
 
@@ -411,7 +412,7 @@ describe('initializeBedrock', () => {
       const params = createMockParams();
       const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
 
-      expect(result.llmConfig).not.toHaveProperty('client');
+      expect(result.llmConfig).toHaveProperty('client');
       expect(result.llmConfig).toHaveProperty('endpointHost', 'custom-bedrock-endpoint.com');
     });
 
@@ -440,7 +441,7 @@ describe('initializeBedrock', () => {
       const result = await initializeBedrock(params);
 
       expect(result.llmConfig).toHaveProperty('endpointHost', 'reverse-proxy.example.com');
-      expect(result.llmConfig).not.toHaveProperty('client');
+      expect(result.llmConfig).toHaveProperty('client');
     });
   });
 
@@ -549,7 +550,7 @@ describe('initializeBedrock', () => {
         accessKeyId: 'user-access-key',
         secretAccessKey: 'static-secret-key',
       });
-      expect(result.llmConfig).not.toHaveProperty('client');
+      expect(result.llmConfig).toHaveProperty('client');
     });
 
     it('should reject non-string user-provided access key values', async () => {

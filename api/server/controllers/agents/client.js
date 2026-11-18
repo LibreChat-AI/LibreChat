@@ -1,4 +1,5 @@
 const { GraphEvents } = require('@librechat/agents');
+const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 require('events').EventEmitter.defaultMaxListeners = 100;
 const { logger, MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH } = require('@librechat/data-schemas');
@@ -152,6 +153,7 @@ const {
   isSkillPrimeMessage,
   collectFileIds,
   dedupeDocumentNames,
+  registerBedrockResumeDocuments,
   processTextWithTokenLimit,
   logAgentMemorySnapshot,
   createAgentMemoryCallback,
@@ -5678,6 +5680,12 @@ class AgentClient extends BaseClient {
         resumeScopedAttachments,
       );
       const resumeAttachmentTelemetryFiles = [...resumeSharedFiles, ...resumeScopedAttachments];
+      registerBedrockResumeDocuments(
+        this.options.req,
+        resumeAttachmentTelemetryFiles,
+        agents,
+        getStrategyFunctions,
+      );
       this.attachmentMemoryContext = {
         req: this.options.req,
         conversationId: this.conversationId,

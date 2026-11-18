@@ -17,6 +17,8 @@ import type {
   InferenceProfileConfig,
   ProviderInitializeParams,
 } from '~/types';
+import { getBedrockDocumentContext } from '~/files/bedrock/context';
+import { guardBedrockDocuments } from '~/files/bedrock/client';
 import { getHttpsProxyAgent } from '~/utils/proxy';
 import { resolveEndpointRuntime } from '~/types';
 import { checkUserKeyExpiry } from '~/utils';
@@ -109,7 +111,7 @@ export async function initializeBedrock(
   params: ProviderInitializeParams,
 ): Promise<InitializeResultBase> {
   const { endpoint, model_parameters, db } = params;
-  const { appConfig, user, requestBody } = resolveEndpointRuntime(params);
+  const { appConfig, user, requestBody, guardBedrockClient } = resolveEndpointRuntime(params);
   void endpoint;
   const bedrockConfig = appConfig?.endpoints?.[EModelEndpoint.bedrock] as
     | ({
@@ -323,6 +325,26 @@ export async function initializeBedrock(
       llmConfig.endpointHost = BEDROCK_REVERSE_PROXY;
     }
   }
+
+  const client =
+    llmConfig.client ??
+    new BedrockRuntimeClient({
+      region: (llmConfig.region as string) ?? BEDROCK_AWS_DEFAULT_REGION,
+      ...(credentials
+        ? { credentials: credentials as BedrockRuntimeClientConfig['credentials'] }
+        : {}),
+      ...(!credentials && BEDROCK_AWS_PROFILE
+        ? { credentials: fromNodeProviderChain({ profile: BEDROCK_AWS_PROFILE }) }
+        : {}),
+      ...(BEDROCK_REVERSE_PROXY ? { endpoint: `https://${BEDROCK_REVERSE_PROXY}` } : {}),
+    });
+  llmConfig.client = guardBedrockClient
+    ? guardBedrockClient(client, model)
+    : guardBedrockDocuments(
+        client,
+        params.req ? getBedrockDocumentContext(params.req) : undefined,
+        model,
+      );
 
   const streamRate =
     appConfig?.endpoints?.all?.streamRate != null

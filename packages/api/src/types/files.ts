@@ -108,11 +108,12 @@ export interface OpenAIInputFileBlock {
 /** Bedrock Converse API document block (passthrough via @langchain/aws) */
 export interface BedrockDocumentBlock {
   type: 'document';
+  file_id?: string;
   document: {
     name: string;
     format: BedrockDocumentFormat;
     source: {
-      bytes: Buffer;
+      librechatFile: string;
     };
   };
 }

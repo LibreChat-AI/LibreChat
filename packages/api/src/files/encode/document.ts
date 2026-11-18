@@ -22,8 +22,10 @@ import {
   CONTENT_TRAVERSAL_MAX_NODES,
   ContentTraversalLimitError,
 } from '~/protection/adapters/nested';
+import { validatePdf, validateBedrockDocument, getBedrockDocumentLimit } from '~/files/validation';
 import { getFileStream, getConfiguredFileSizeLimit, skipMissingAttachment } from './utils';
-import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import { BedrockDocumentError, BEDROCK_DOCUMENT_COUNT } from '../bedrock/limits';
+import { getBedrockDocumentContext } from '../bedrock/context';
 import { someReachableAgent } from '~/agents/traversal';
 import { runGuardedEncode } from './memoryGuard';
 
@@ -347,6 +349,48 @@ export async function encodeAndFormatDocuments(
 
   const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, { provider, endpoint });
 
+  if (isBedrock) {
+    const context = getBedrockDocumentContext(req);
+    for (const file of processableFiles) {
+      if (!file.filepath && !file.storageKey) continue;
+      if (result.documents.length >= BEDROCK_DOCUMENT_COUNT) throw new BedrockDocumentError();
+      const validation = await validateBedrockDocument(
+        file.bytes ?? 0,
+        file.type,
+        undefined,
+        configuredFileSizeLimit,
+        model,
+      );
+      if (!validation.isValid) throw new BedrockDocumentError();
+      result.documents.push({
+        type: 'document',
+        file_id: file.file_id,
+        document: {
+          name: (file.filename || 'document')
+            .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
+            .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT),
+          format: bedrockDocumentFormats[file.type],
+          source: context.register(
+            file,
+            endpoint ?? provider,
+            getBedrockDocumentLimit(file.type, configuredFileSizeLimit, model),
+            getStrategyFunctions,
+            onMissingFile,
+          ),
+        },
+      });
+      result.files.push({
+        file_id: file.file_id,
+        temp_file_id: file.temp_file_id,
+        filepath: file.filepath,
+        source: file.source,
+        filename: file.filename,
+        type: file.type,
+      });
+    }
+    return result;
+  }
+
   const results = await Promise.allSettled(
     processableFiles.map((file) =>
       runGuardedEncode(file.bytes ?? 0, () =>
@@ -376,37 +420,7 @@ export async function encodeAndFormatDocuments(
 
     const mimeType = file.type ?? '';
 
-    if (isBedrock && isBedrockDocumentType(mimeType)) {
-      const fileBuffer = Buffer.from(content, 'base64');
-      const format = bedrockDocumentFormats[mimeType];
-
-      const validation = await validateBedrockDocument(
-        fileBuffer.length,
-        mimeType,
-        fileBuffer,
-        configuredFileSizeLimit,
-        model,
-      );
-
-      if (!validation.isValid) {
-        throw new Error(`Document validation failed: ${validation.error}`);
-      }
-
-      const sanitizedName = (file.filename || 'document')
-        .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
-        .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
-      result.documents.push({
-        type: 'document',
-        document: {
-          name: sanitizedName,
-          format,
-          source: {
-            bytes: fileBuffer,
-          },
-        },
-      });
-      result.files.push(metadata);
-    } else if (file.type === 'application/pdf' && isDocSupported) {
+    if (file.type === 'application/pdf' && isDocSupported) {
       const pdfBuffer = Buffer.from(content, 'base64');
 
       const validation = await validatePdf(

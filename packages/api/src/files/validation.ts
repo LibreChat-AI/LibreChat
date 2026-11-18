@@ -1,5 +1,6 @@
 import { Providers } from '@librechat/agents';
 import { mbToBytes, isOpenAILikeProvider } from 'librechat-data-provider';
+import { BEDROCK_DOCUMENT_BYTES, bedrockRequestLimit, clampBedrockLimit } from './bedrock/limits';
 
 export interface ValidationResult {
   isValid: boolean;
@@ -181,10 +182,22 @@ const isExemptFromBedrockDocLimit = (model?: string, mimeType?: string): boolean
   return false;
 };
 
+/** Effective raw-byte ceiling; the complete base64 request is checked at the SDK boundary. */
+export function getBedrockDocumentLimit(
+  mimeType: string,
+  configured?: number,
+  model?: string,
+): number {
+  const cap = isExemptFromBedrockDocLimit(model, mimeType)
+    ? Math.floor(bedrockRequestLimit(model) / 4) * 3
+    : BEDROCK_DOCUMENT_BYTES;
+  return clampBedrockLimit(cap, configured);
+}
+
 /**
  * Validates a document against Bedrock size limits. The default limit is 4.5 MB,
  * but Claude 4+ (PDF) and Nova (PDF/DOCX) models are exempt per AWS docs.
- * When exempt, falls back to a 32 MB request-level limit as a reasonable upper bound.
+ * Exempt documents remain bounded by the model's base64 request ceiling.
  * @param fileSize - The file size in bytes
  * @param mimeType - The MIME type of the document
  * @param fileBuffer - The file buffer (used for PDF header validation)
@@ -200,10 +213,9 @@ export async function validateBedrockDocument(
   model?: string,
 ): Promise<ValidationResult> {
   try {
-    const exempt = isExemptFromBedrockDocLimit(model, mimeType);
-    /** Default 4.5 MB; exempt models (Claude 4+ PDF, Nova PDF/DOCX) default to 32 MB when unconfigured */
-    const providerLimit = exempt ? mbToBytes(32) : mbToBytes(4.5);
-    const effectiveLimit = configuredFileSizeLimit ?? providerLimit;
+    const effectiveLimit = getBedrockDocumentLimit(mimeType, configuredFileSizeLimit, model);
+    if (!Number.isSafeInteger(fileSize) || fileSize < 0)
+      return { isValid: false, error: 'Invalid document size' };
 
     if (fileSize > effectiveLimit) {
       const limitMB = (effectiveLimit / (1024 * 1024)).toFixed(1);

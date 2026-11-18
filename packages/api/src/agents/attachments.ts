@@ -10,6 +10,7 @@ import type { IMongoFile } from '@librechat/data-schemas';
 import type { TokenCountFn } from '~/utils/text';
 import type { ServerRequest } from '~/types';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
+import { BedrockDocumentError } from '~/files/bedrock/limits';
 import { AGENT_ATTACHMENT_LIMIT_EXCEEDED } from './errors';
 import { countTokens } from '~/utils/tokenizer';
 import { extractFileContext } from '~/files';
@@ -235,8 +236,12 @@ export class AgentAttachmentPolicyError extends Error {
 
 export function isAgentAttachmentLimitError(
   error: unknown,
-): error is AgentAttachmentLimitError | AgentAttachmentPolicyError {
-  return error instanceof AgentAttachmentLimitError || error instanceof AgentAttachmentPolicyError;
+): error is AgentAttachmentLimitError | AgentAttachmentPolicyError | BedrockDocumentError {
+  return (
+    error instanceof AgentAttachmentLimitError ||
+    error instanceof AgentAttachmentPolicyError ||
+    error instanceof BedrockDocumentError
+  );
 }
 
 export function collectAgentAttachmentStats(
