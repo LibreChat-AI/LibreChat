@@ -1656,6 +1656,12 @@ export const codeEnvironmentAdmissionSchema = z
     pollIntervalMs: z.number().int().min(100).max(5000).optional(),
     /** Optional per-request queue ceiling, bounded by transport and execution reserves. */
     queueWaitMs: z.number().int().min(1).max(CODE_ENVIRONMENT_ADMISSION_MAX_MS).optional(),
+    /**
+     * Admission a durable submission leaves unclaimed so a POST lost in transport can be resent
+     * under the same identity. Omission reserves two transport timeouts plus one poll interval;
+     * `0` disables the resend. Never more than a tenth of the remaining admission window.
+     */
+    resubmissionWindowMs: z.number().int().min(0).max(60_000).optional(),
     initialDelayMs: z.number().int().min(100).max(30_000).optional().default(1_000),
     maxDelayMs: z.number().int().min(100).max(300_000).optional().default(30_000),
     multiplier: z.number().min(1).max(10).optional().default(1),

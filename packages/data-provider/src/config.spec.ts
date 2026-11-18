@@ -3251,9 +3251,18 @@ describe('workspace admission configuration', () => {
     { jitterRatio: 1.1 },
     { maxDelayMs: Infinity },
     { queueWaitMs: 1.5 },
+    { resubmissionWindowMs: -1 },
+    { resubmissionWindowMs: 60_001 },
+    { resubmissionWindowMs: 1.5 },
     { unexpected: true },
   ])('rejects an invalid policy %j', (admission) => {
     expect(codeEnvironmentUserConfigSchema.safeParse({ admission }).success).toBe(false);
+  });
+
+  it.each([0, 20_500, 60_000])('accepts a resubmission window of %i ms', (resubmissionWindowMs) => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ admission: { resubmissionWindowMs } }).admission,
+    ).toMatchObject({ resubmissionWindowMs });
   });
 
   it.each([0, 1, -1, 1.5, 20_000, 610_001, Infinity])(

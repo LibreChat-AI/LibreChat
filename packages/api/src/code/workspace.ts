@@ -1457,6 +1457,9 @@ export async function executeWorkspaceTool({
           policy.queueWaitMs ?? Math.max(maxQueueWaitMs, WORKSPACE_QUEUE_TIMEOUT_MS),
         ),
         pollIntervalMs: policy.pollIntervalMs ?? 500,
+        ...(policy.resubmissionWindowMs === undefined
+          ? {}
+          : { resubmissionWindowMs: policy.resubmissionWindowMs }),
         rateLimitWaitMs: codeApiMaxRetryWaitMs,
         readJson: (response, requestSignal) => readBoundedJson(response, requestSignal, true),
         validateResult: isValidResult,

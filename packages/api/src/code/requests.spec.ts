@@ -481,6 +481,62 @@ test('a submission lost before reaching the server is resent under the default q
 });
 
 test.each([
+  ['the transport-derived default', {}, 20_100],
+  ['a configured window', { resubmissionWindowMs: 5_000 }, 5_000],
+  ['a window above a tenth of the horizon', { resubmissionWindowMs: 60_000 }, 30_000],
+  ['a disabled window', { resubmissionWindowMs: 0 }, 0],
+])('a first submission holds back %s for a same-ID resend', async (_name, policy, held) => {
+  jest.useFakeTimers();
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(status('completed'));
+  try {
+    expect(
+      await executeWorkspaceTool({
+        ...input,
+        maxQueueWaitMs: 300_000,
+        admission: codeEnvironmentAdmissionSchema.parse({
+          durableRequests: true,
+          pollIntervalMs: 100,
+          ...policy,
+        }),
+        fetchImpl,
+      }),
+    ).toEqual(result);
+    const post = fetchImpl.mock.calls.find(([, init]) => init.method === 'POST');
+    expect(Number(post?.[1].headers['X-LibreChat-Workspace-Queue-Wait-Ms'])).toBe(300_000 - held);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test('a disabled resubmission window keeps observing a lost submission without resending it', async () => {
+  jest.useFakeTimers();
+  const fetchImpl = jest.fn().mockImplementation(async (url: string, init: RequestInit) => {
+    if (url.endsWith('/capabilities')) return json({ durableWorkspaceRequests: 1 });
+    if (init.method === 'POST') throw new TypeError('fetch failed');
+    return json({}, 404);
+  });
+  try {
+    const pending = executeWorkspaceTool({
+      ...input,
+      maxQueueWaitMs: 300_000,
+      admission: codeEnvironmentAdmissionSchema.parse({
+        durableRequests: true,
+        resubmissionWindowMs: 0,
+      }),
+      fetchImpl,
+    }).catch((error: unknown) => error);
+    await jest.advanceTimersByTimeAsync(400_000);
+    expect(await pending).toMatchObject({ reason: 'timeout' });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test.each([
   ['WORKER_OFFLINE', 503],
   ['WORKSPACE_QUEUE_TIMEOUT', 503],
   ['WORKER_QUEUE_FULL', 429],
