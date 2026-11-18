@@ -822,6 +822,25 @@ describe('a schedule its owner never authorized', () => {
     });
   });
 
+  it('reads the configuration fail-closed, so an override outage cannot lift the requirement', async () => {
+    const f = await unauthorized();
+    f.setDeadline(0);
+    await expect(f.call()).rejects.toMatchObject(missing);
+    // The override store goes down. Asked without `failClosed`, the config service answers
+    // with the deployment's base, which here does not turn consent on at all.
+    const base = { ...f.config, interfaceConfig: { schedules: { use: true } } } as AppConfig;
+    f.getAppConfig.mockImplementation(async (options) => {
+      if (options?.failClosed) throw new Error('PRIVATE override store');
+      return base;
+    });
+    let failure: unknown;
+    await f.call().catch((error) => {
+      failure = error;
+    });
+    expect(failure).toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+    expect(String(failure)).not.toContain('PRIVATE');
+  });
+
   it('asks once per run, and not at all for a run that calls no MCP tool', async () => {
     const f = await unauthorized();
     f.setDeadline(1001);

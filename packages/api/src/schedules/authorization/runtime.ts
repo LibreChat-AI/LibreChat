@@ -60,9 +60,19 @@ export function createScheduleMCPRuntimeHost(
     return { consent };
   }
   const { consent } = createEvaluation(deps.enrollment);
+  /**
+   * For the question a run asks: does this schedule need a grant it does not have. A config
+   * service that cannot read a tenant, role or user override falls back to the deployment's
+   * base, which may not require consent at all. Asked fail-closed, that outage refuses the
+   * call instead of lifting the requirement.
+   */
+  const required = createEvaluation({
+    ...deps.enrollment,
+    getAppConfig: (options) => deps.enrollment.getAppConfig({ ...options, failClosed: true }),
+  }).consent.service.requiresGrant;
   const execution = createScheduleMCPExecution({
     storage: deps.methods,
-    requiresGrant: consent.service.requiresGrant,
+    requiresGrant: required,
     async loadAuthorization(identity) {
       // Private to this attempt. No resolved principal, config or allow decision survives it.
       const principal = deps.findUser(identity.ownerId).then((user) => {
