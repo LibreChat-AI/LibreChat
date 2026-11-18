@@ -1,6 +1,10 @@
 import { logger } from '@librechat/data-schemas';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { Types } from 'mongoose';
+import type { GetAppConfigOptions } from '~/app/service';
+import { getAppConfigOptionsFromUser } from '~/app/service';
+import { resolveRemoteIntegrations } from './grants';
 
 export interface ApiKeyHandlerDependencies {
   createAgentApiKey: (params: {
@@ -40,8 +44,11 @@ export interface ApiKeyHandlerDependencies {
     expiresAt?: Date;
     createdAt: Date;
   } | null>;
-  /** Whether key runs are limited to what the owner granted, so the client offers the dialog. */
-  usesGrants?: (req: Request) => Promise<boolean>;
+  /**
+   * Read to tell the client whether key runs are limited to what the owner granted, so it
+   * offers the dialog. Left out, the list never says so.
+   */
+  getAppConfig?: (options: GetAppConfigOptions) => Promise<AppConfig | undefined>;
 }
 
 interface AuthenticatedRequest extends Request {
@@ -90,11 +97,18 @@ export function createApiKeyHandlers(deps: ApiKeyHandlerDependencies): {
     }
   }
 
+  /** Whether this owner's key runs are limited to their grants. */
+  async function usesGrants(req: AuthenticatedRequest): Promise<boolean> {
+    if (!deps.getAppConfig) return false;
+    const appConfig = await deps.getAppConfig(getAppConfigOptionsFromUser(req.user));
+    return resolveRemoteIntegrations(appConfig).mode === 'delegated';
+  }
+
   async function listApiKeys(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const [keys, grants] = await Promise.all([
         deps.listAgentApiKeys(req.user?.id || ''),
-        deps.usesGrants?.(req) ?? false,
+        usesGrants(req),
       ]);
       res.status(200).json({ keys, ...(grants && { grants: true }) });
     } catch (error) {

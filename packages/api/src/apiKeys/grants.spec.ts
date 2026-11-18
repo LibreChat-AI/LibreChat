@@ -1,4 +1,10 @@
-import { AgentCapabilities, PermissionTypes, Permissions } from 'librechat-data-provider';
+import { Types } from 'mongoose';
+import {
+  Permissions,
+  PermissionBits,
+  PermissionTypes,
+  AgentCapabilities,
+} from 'librechat-data-provider';
 import type {
   AgentGraphAccessContext,
   MCPConsentStorage,
@@ -12,12 +18,16 @@ import type { Response } from 'express';
 import type { ApiKeyAuthRequest } from './middleware';
 import type { ServerRequest } from '~/types';
 import {
+  pinStorage,
+  untouchedSince,
+  admitsDefinitions,
+} from '~/schedules/authorization/execution.helper';
+import {
   getScheduleMCPExecution,
   bindScheduledMCPInvocation,
 } from '~/schedules/authorization/execution';
 import { createRemoteExecutionContext } from '~/agents/authority/context';
 import { createAgentKeyMCPGrantHost, getRemoteRunKeyId } from './grants';
-import { pinStorage } from '~/schedules/authorization/execution.helper';
 import { getMCPRequestContext } from '~/mcp/request';
 
 const queryTool: Tool = {
@@ -67,8 +77,13 @@ function setup(
             enrollment: structuredClone(grants.get(identity.agentId) ?? null),
           }
         : null,
-    confirmScheduleMCPConsent: async ({ identity, expectedRevision, enrollment }) => {
-      if (!found(identity) || (grants.get(identity.agentId)?.revision ?? null) !== expectedRevision)
+    confirmScheduleMCPConsent: async ({ identity, expectedRevision, enrollment, basis }) => {
+      const stored = grants.get(identity.agentId);
+      if (
+        !found(identity) ||
+        (stored?.revision ?? null) !== expectedRevision ||
+        !untouchedSince(stored, basis)
+      )
         return false;
       grants.set(identity.agentId, structuredClone(enrollment));
       return true;
@@ -78,12 +93,13 @@ function setup(
         consent.revokedAtMs = time;
       return true;
     },
-    admitScheduleMCPConsent: async ({ identity, revision }) => {
+    admitScheduleMCPConsent: async ({ identity, revision, consentId, definitions }) => {
       const grant = grants.get(identity.agentId);
       return (
         found(identity) &&
         grant?.revision === revision &&
-        grant.consents.every((c) => c.revokedAtMs == null && c.absoluteExpiresAtMs > time)
+        grant.consents.every((c) => c.revokedAtMs == null && c.absoluteExpiresAtMs > time) &&
+        admitsDefinitions(grant, consentId, definitions)
       );
     },
     pinScheduleMCPToolDefinition: (input) =>
@@ -103,20 +119,30 @@ function setup(
   );
   // Before the host is built: the consent service keeps the clock it was created with.
   jest.spyOn(Date, 'now').mockImplementation(() => time);
+  const findUser = jest.fn(async () => user);
+  const getAppConfig = jest.fn(async () => config);
+  const agentId = new Types.ObjectId();
+  /** What the owner may do with the agent. View is what running it remotely needs. */
+  const getEffectivePermissions = jest.fn(async () => PermissionBits.VIEW as number);
+  /** The stored keys a background run can name: a personal one, and one issued to a channel. */
+  const getKey = jest.fn(async (keyId: string) => {
+    if (keyId === 'key-1') return {};
+    return keyId === 'key-bound' ? { binding: { type: 'channel' } } : null;
+  });
   const host = createAgentKeyMCPGrantHost({
     storage,
-    findUser: async () => user,
+    findUser,
     getRoleByName,
-    canUseAgent: async () => true,
+    getAgent: async () => ({ _id: agentId }),
+    getEffectivePermissions,
+    getKey,
     enrollment: {
-      findUser: async () => user,
-      getAppConfig: async () => config,
+      getAppConfig,
       getModelsConfig: async () => ({ test: ['test'] }),
       getServers: async () => ({ warehouse: serverConfig }),
       getNodes: async (ids: string[]) =>
         ids.map((id) => ({ id, provider: 'test', model: 'test', tools, agent_ids: [] })),
       resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
-      canUseRoot: async () => true,
     },
   });
   const identity = (agentId = 'agent_a', keyId = 'key-1'): AgentKeyMCPIdentity => ({
@@ -135,10 +161,13 @@ function setup(
       allow: { warehouse: allowed },
     });
   };
-  /** A run of `agentId` started as the remote controllers start one. */
-  /** `keyId: null` is a run no personal key started: a token, or a bound key. */
-  const run = async (agentId = 'agent_a', keyId: string | null = 'key-1') => {
-    const req = { user } as ApiKeyAuthRequest;
+  /**
+   * A run of `agentId` started as the remote controllers start one. `keyId: null` is a run no
+   * personal key started: a token, or a bound key. `worker` is a background run, whose
+   * request was rebuilt from its admitted record and so carries no key of its own.
+   */
+  const run = async (agentId = 'agent_a', keyId: string | null = 'key-1', worker = false) => {
+    const req = { user, ...(keyId && !worker && { apiKeyId: keyId }) } as ApiKeyAuthRequest;
     await host.prepare({
       req,
       executionContext: createRemoteExecutionContext({
@@ -171,6 +200,10 @@ function setup(
     identity,
     allow,
     run,
+    findUser,
+    getAppConfig,
+    getEffectivePermissions,
+    getKey,
     setTools: (value: string[]) => {
       tools = value;
     },
@@ -260,6 +293,49 @@ it('does not restrict a run that no personal key started', async () => {
   const req = { user: s.user } as ApiKeyAuthRequest;
   await s.host.prepare({ req });
   expect(bindScheduledMCPInvocation(getMCPRequestContext(req), 'agent_a', 'query')).toBeUndefined();
+});
+
+it('keeps the exemption of a key issued to an integration when its run is a background one', async () => {
+  const s = setup();
+  // The worker's request names the key through its admitted record, not what kind it is.
+  await expect((await s.run('agent_a', 'key-bound', true)).call()).resolves.toBe('unrestricted');
+  expect(s.getKey).toHaveBeenCalledWith('key-bound', 'owner');
+  // A personal key stays under its grant in the background, and a key that is gone is refused.
+  await expect((await s.run('agent_a', 'key-1', true)).call()).rejects.toMatchObject(
+    refused('consent_missing'),
+  );
+  await expect(s.run('agent_a', 'key-deleted', true)).rejects.toMatchObject(
+    refused('binding_mismatch'),
+  );
+  // A request that authenticated with the key already knows its kind: nothing is read.
+  s.getKey.mockClear();
+  await s.run();
+  expect(s.getKey).not.toHaveBeenCalled();
+});
+
+it('asks whether the owner may run the agent, and refuses the grant and its use when they may not', async () => {
+  const s = setup();
+  await s.allow('agent_a', ['query']);
+  const { call } = await s.run();
+  await expect(call()).resolves.toBe('authorized');
+  s.getEffectivePermissions.mockResolvedValue(0);
+  await expect(call()).rejects.toMatchObject(refused('rbac_denied'));
+  await expect(s.host.service.view(s.identity())).resolves.toMatchObject({ offer: null });
+  await expect(s.allow('agent_a', ['query'])).rejects.toBeDefined();
+});
+
+it('reads the owner and their configuration once for each call it authorizes', async () => {
+  const s = setup();
+  await s.allow('agent_a', ['query']);
+  const { call } = await s.run();
+  s.findUser.mockClear();
+  s.getAppConfig.mockClear();
+  await expect(call()).resolves.toBe('authorized');
+  expect(s.findUser).toHaveBeenCalledTimes(1);
+  expect(s.getAppConfig).toHaveBeenCalledTimes(1);
+  // Nothing is kept for the next call: a role or setting changed in between is seen.
+  await expect(call()).resolves.toBe('authorized');
+  expect(s.findUser).toHaveBeenCalledTimes(2);
 });
 
 it('limits only MCP tools: an agent with other tools can still be granted, and the run is not a schedule run', async () => {

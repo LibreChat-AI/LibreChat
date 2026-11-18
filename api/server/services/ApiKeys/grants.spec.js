@@ -6,6 +6,7 @@ jest.mock('~/models', () => ({
   findUser: jest.fn(),
   getRoleByName: jest.fn(),
   getAgent: jest.fn(),
+  getAgentApiKeyById: jest.fn(),
   resolveAgentGraphAccess: jest.fn(),
   getAgentGraphNodes: jest.fn(),
 }));
@@ -56,6 +57,25 @@ describe('API key grant wiring', () => {
     expect(getAppConfig).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'owner', role: 'USER', failClosed: true }),
     );
+  });
+
+  it('asks the key store what kind of key a background run names', async () => {
+    const host = require('./grants');
+    const { getAgentApiKeyById } = require('~/models');
+    const delegated = {
+      endpoints: { agents: { remoteApi: { integrations: { mode: 'delegated' } } } },
+    };
+    getAppConfig.mockResolvedValueOnce(delegated);
+    getAgentApiKeyById.mockResolvedValueOnce({ binding: { type: 'channel' } });
+    // Rebuilt by the worker from its admitted record: no key of its own on the request.
+    const req = { user: { id: 'owner', role: 'USER' } };
+    await expect(
+      host.prepare({ req, executionContext: run('66f000000000000000000001') }),
+    ).resolves.toBeUndefined();
+    expect(getAgentApiKeyById).toHaveBeenCalledWith('66f000000000000000000001', 'owner');
+    expect(
+      bindScheduledMCPInvocation(getMCPRequestContext(req), 'agent_a', 'query'),
+    ).toBeUndefined();
   });
 
   it('reads no config for a run that no personal key started', async () => {

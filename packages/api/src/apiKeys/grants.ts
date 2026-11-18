@@ -25,7 +25,10 @@ import {
 import { getBackgroundResponseWorkerRecord } from '~/agents/responses/worker';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { getMCPRequestContext } from '~/mcp/request';
+import { checkRemoteAgentAccess } from './service';
 import { checkAccess } from '~/middleware/access';
+
+type RemoteAgentAccessParams = Parameters<typeof checkRemoteAgentAccess>[0];
 
 export interface RemoteIntegrations {
   /** `owner`: every server the key's owner can use. `delegated`: only what a grant covers. */
@@ -81,68 +84,106 @@ export function createAgentKeyMCPGrantHost(deps: {
   storage: MCPConsentStorage<AgentKeyMCPIdentity>;
   findUser: (id: string) => Promise<IUser | null>;
   getRoleByName: CheckAccessParams['getRoleByName'];
-  /** Whether the owner may run this agent through the remote API. */
-  canUseAgent: (agentId: string, user: IUser) => Promise<boolean>;
-  enrollment: ScheduleMCPEnrollmentDeps;
+  /** Read to decide whether the owner may run an agent through the remote API. */
+  getAgent: RemoteAgentAccessParams['getAgent'];
+  getEffectivePermissions: RemoteAgentAccessParams['getEffectivePermissions'];
+  /** The stored key a run names, to tell a personal key from one issued to an integration. */
+  getKey: (keyId: string, userId: string) => Promise<{ binding?: unknown } | null>;
+  /** The owner and whether they may run the agent are supplied by this host. */
+  enrollment: Omit<ScheduleMCPEnrollmentDeps, 'findUser' | 'canUseRoot'>;
 }): AgentKeyMCPGrantHost {
-  const loadOwner = async (identity: AgentKeyMCPIdentity): Promise<IUser | null> => {
-    const user = await deps.findUser(identity.ownerId);
+  const canUseAgent = async (agentId: string, user: IUser): Promise<boolean> =>
+    (
+      await checkRemoteAgentAccess({
+        userId: user.id,
+        role: user.role,
+        agentId,
+        getAgent: deps.getAgent,
+        getEffectivePermissions: deps.getEffectivePermissions,
+      })
+    ).hasAccess;
+  const integrationsFor = async (
+    user: { id: string; tenantId?: string; role?: string },
+    getAppConfig = deps.enrollment.getAppConfig,
+  ): Promise<RemoteIntegrations> =>
+    resolveRemoteIntegrations(
+      await getAppConfig({ ...getAppConfigOptionsFromUser(user), failClosed: true }),
+    );
+
+  const loadOwner = async (
+    identity: AgentKeyMCPIdentity,
+    findUser = deps.findUser,
+  ): Promise<IUser | null> => {
+    const user = await findUser(identity.ownerId);
     if (!user || (user.tenantId ?? null) !== identity.tenantId) return null;
     user.id = identity.ownerId;
     return user;
   };
-  const integrationsFor = async (user: {
-    id: string;
-    tenantId?: string;
-    role?: string;
-  }): Promise<RemoteIntegrations> =>
-    resolveRemoteIntegrations(
-      await deps.enrollment.getAppConfig({
-        ...getAppConfigOptionsFromUser(user),
-        failClosed: true,
-      }),
-    );
 
-  const service = createScheduleMCPConsentService<AgentKeyMCPIdentity>({
-    storage: deps.storage,
-    getLimits: async (identity) => {
-      const user = await loadOwner(identity);
-      if (!user)
-        return { enabled: false, maxLifetimeHours: DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS };
-      const integrations = await integrationsFor(user);
-      return {
-        enabled: integrations.mode === 'delegated',
-        maxLifetimeHours: integrations.maxLifetimeHours,
-      };
-    },
-    canUse: async (identity) => {
-      const user = await loadOwner(identity);
-      if (!user) return false;
-      const permissions = await Promise.all([
-        checkAccess({
-          user,
-          getRoleByName: deps.getRoleByName,
-          permissionType: PermissionTypes.REMOTE_AGENTS,
-          permissions: [Permissions.USE],
-        }),
-        checkAccess({
-          user,
-          getRoleByName: deps.getRoleByName,
-          permissionType: PermissionTypes.MCP_SERVERS,
-          permissions: [Permissions.USE],
-        }),
-      ]);
-      return permissions.every(Boolean) && (await deps.canUseAgent(identity.agentId, user));
-    },
-    resolveEnrollment: createScheduleMCPEnrollmentResolver<AgentKeyMCPIdentity>(deps.enrollment, {
-      resources: (appConfig) => resolveRemoteIntegrations(appConfig).resources,
-      otherTools: 'ignore',
-    }),
+  /** The consent service over one way of reading the owner and their configuration. */
+  const createService = (source: Pick<ScheduleMCPEnrollmentDeps, 'findUser' | 'getAppConfig'>) => {
+    return createScheduleMCPConsentService<AgentKeyMCPIdentity>({
+      storage: deps.storage,
+      getLimits: async (identity) => {
+        const user = await loadOwner(identity, source.findUser);
+        if (!user)
+          return { enabled: false, maxLifetimeHours: DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS };
+        const integrations = await integrationsFor(user, source.getAppConfig);
+        return {
+          enabled: integrations.mode === 'delegated',
+          maxLifetimeHours: integrations.maxLifetimeHours,
+        };
+      },
+      canUse: async (identity) => {
+        const user = await loadOwner(identity, source.findUser);
+        if (!user) return false;
+        const permissions = await Promise.all([
+          checkAccess({
+            user,
+            getRoleByName: deps.getRoleByName,
+            permissionType: PermissionTypes.REMOTE_AGENTS,
+            permissions: [Permissions.USE],
+          }),
+          checkAccess({
+            user,
+            getRoleByName: deps.getRoleByName,
+            permissionType: PermissionTypes.MCP_SERVERS,
+            permissions: [Permissions.USE],
+          }),
+        ]);
+        return permissions.every(Boolean) && (await canUseAgent(identity.agentId, user));
+      },
+      resolveEnrollment: createScheduleMCPEnrollmentResolver<AgentKeyMCPIdentity>(
+        { ...deps.enrollment, ...source, canUseRoot: canUseAgent },
+        {
+          resources: (appConfig) => resolveRemoteIntegrations(appConfig).resources,
+          otherTools: 'ignore',
+        },
+      ),
+    });
+  };
+  const service = createService({
+    findUser: deps.findUser,
+    getAppConfig: deps.enrollment.getAppConfig,
   });
 
   const execution = createScheduleMCPExecution<AgentKeyMCPIdentity>({
     storage: deps.storage,
-    loadAuthorization: async () => ({ authority: service.authority }),
+    async loadAuthorization(identity) {
+      // Private to this attempt. The owner and their configuration are read once and shared
+      // by the access check, the limits and the offer; nothing resolved here outlives it.
+      const user = await loadOwner(identity);
+      const config = user
+        ? await deps.enrollment.getAppConfig({
+            ...getAppConfigOptionsFromUser(user),
+            failClosed: true,
+          })
+        : undefined;
+      return {
+        authority: createService({ findUser: async () => user, getAppConfig: async () => config })
+          .authority,
+      };
+    },
     // Under `delegated`, a key with no grant for the agent may not use MCP tools at all.
     requiresGrant: async () => true,
   });
@@ -176,6 +217,11 @@ export function createAgentKeyMCPGrantHost(deps: {
       // Resolved again, fail-closed, and not read from the request: a config that fell back to
       // the deployment's base during an override outage must not read as "unrestricted".
       if ((await integrationsFor(user)).mode !== 'delegated') return;
+      // A background worker rebuilds the request from its admitted record, which names the key
+      // but not what kind it is. One issued to an integration holds no grants, here as on the
+      // request that started the run. A key that is gone is refused below with any other.
+      if (req.apiKeyId == null && (await deps.getKey(source.keyId, user.id))?.binding != null)
+        return;
       const context = getMCPRequestContext(req, res);
       // An agent the run cannot name, a request with nowhere to hold the check, or a key the
       // store no longer finds, is not a reason to run unrestricted.
