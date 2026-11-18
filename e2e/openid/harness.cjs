@@ -76,7 +76,13 @@ async function createHarness(options = {}) {
   let mongo;
   let db;
   let closePromise;
-  let current = { reuse: true, mode: 'enforce', sessionExpiry: 300_000, ...options };
+  let current = {
+    reuse: true,
+    mode: 'enforce',
+    sessionExpiry: 300_000,
+    loginMax: 1000,
+    ...options,
+  };
   const deliveries = [];
   const signedBodies = [];
   const appSecrets = {
@@ -326,18 +332,20 @@ async function createHarness(options = {}) {
       '--https-certificate-file=/opt/keycloak/test/cert.pem',
       '--https-certificate-key-file=/opt/keycloak/test/key.pem',
     );
-    await until(
-      async () => {
-        try {
-          await providerRequest(`/realms/${realmName}/.well-known/openid-configuration`);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      'Keycloak discovery did not become ready',
-      120_000,
-    );
+    const waitForKeycloak = () =>
+      until(
+        async () => {
+          try {
+            await providerRequest(`/realms/${realmName}/.well-known/openid-configuration`);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        'Keycloak discovery did not become ready',
+        120_000,
+      );
+    await waitForKeycloak();
     const mongoPort = await freePort();
     docker(
       'run',
@@ -402,7 +410,7 @@ async function createHarness(options = {}) {
         OPENID_GENERATE_NONCE: 'true',
         OPENID_AUTO_REDIRECT: 'false',
         OPENID_BUTTON_LABEL: 'Keycloak',
-        LOGIN_MAX: '1000',
+        LOGIN_MAX: String(current.loginMax),
         OPENAI_API_KEY: 'test',
         OPENAI_MODELS: 'gpt-4o-mini',
         SCHEDULES_SINGLE_PROCESS: 'true',
@@ -473,6 +481,13 @@ async function createHarness(options = {}) {
       startApp,
       stopApp,
       close,
+      async stopKeycloak() {
+        docker('stop', '-t', '10', keycloak);
+      },
+      async startKeycloak() {
+        docker('start', keycloak);
+        await waitForKeycloak();
+      },
       async stopMongo() {
         docker('stop', '-t', '2', mongoContainer);
       },

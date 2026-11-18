@@ -7,6 +7,7 @@ export type HarnessOptions = {
   mode?: 'off' | 'record' | 'enforce';
   sessionExpiry?: number;
   maxSessionAgeMs?: number;
+  loginMax?: number;
 };
 
 export type Harness = {
@@ -20,6 +21,8 @@ export type Harness = {
   startApp(options?: HarnessOptions): Promise<void>;
   stopApp(): Promise<void>;
   close(): Promise<void>;
+  stopKeycloak(): Promise<void>;
+  startKeycloak(): Promise<void>;
   stopMongo(): Promise<void>;
   startMongo(): Promise<void>;
   replay(index: number): Promise<{ status: number; body: unknown }>;
