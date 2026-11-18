@@ -16,8 +16,7 @@ export type InsightsAccessUser = {
 export type InsightsAccess = {
   agents: TInsightsAgent[];
   detailAgentIds: string[];
-  /** Set for administrators and holders of the global READ_INSIGHTS capability: every agent in
-   *  the tenant. Absent for everyone else. */
+  /** Administrators and global READ_INSIGHTS holders, who see every agent in the tenant. */
   tenantWide?: true;
 };
 

@@ -3214,9 +3214,7 @@ export const insightsConfigSchema = z
     enabled: z.boolean().optional(),
     /** Allows identity and conversation sections; defaults to false when resolved. */
     showDetails: z.boolean().optional(),
-    /** Loads every agent when a viewer who sees the whole tenant (an administrator, or a holder of
-     *  the global READ_INSIGHTS capability) opens Insights. Defaults to false: nothing loads until
-     *  they choose agents, and choosing All agents explicitly stays possible. */
+    /** Load all agents when admins or global READ_INSIGHTS holders open Insights (default false). */
     adminAutoSelectAllAgents: z.boolean().optional(),
   })
   .strict();

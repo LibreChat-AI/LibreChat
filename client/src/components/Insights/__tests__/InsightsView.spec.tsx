@@ -171,7 +171,6 @@ describe('InsightsView agent selection', () => {
     const allAgents = screen.getByRole('button', { name: 'com_insights_select_all_agents' });
     expect(allAgents).toBeEnabled();
     await user.click(allAgents);
-    // With automatic selection off, an empty list means "none", so All agents is a flag.
     await waitFor(() => expect(lastQueryParams().allAgents).toBe(true));
     expect(lastQueryParams().agentIds).toBeUndefined();
     expect(screen.getByRole('combobox', { hidden: true })).toHaveTextContent(

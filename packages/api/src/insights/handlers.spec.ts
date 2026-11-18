@@ -49,7 +49,6 @@ const insightsDisabled = jest.fn(() => ({
   adminAutoSelectAllAgents: true,
 }));
 const fullAccess = { agents, detailAgentIds: agents.map((agent) => agent.id) };
-/** Like the resolver: administrators see every agent in the tenant. */
 const resolveAccess = async (user: { role?: string }) => ({
   ...fullAccess,
   ...(user.role === 'ADMIN' && { tenantWide: true as const }),

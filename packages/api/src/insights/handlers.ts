@@ -166,8 +166,6 @@ export function createInsightsHandler({
         res.status(403).json({ message: 'Forbidden' });
         return;
       }
-      /** Admins and global READ_INSIGHTS holders see every agent in the tenant: unless configured,
-       *  nothing loads until they choose agents. Choosing All agents sends `allAgents=true`. */
       const requiresSelection = tenantWide === true && !adminAutoSelectAllAgents;
       const allAgentsRequested = stringValue(req.query.allAgents) === 'true';
       if (requiresSelection && requestedAgentIds.length === 0 && !allAgentsRequested) {

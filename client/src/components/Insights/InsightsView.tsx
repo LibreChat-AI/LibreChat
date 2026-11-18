@@ -736,7 +736,6 @@ export default function InsightsView() {
     () => [...new Set(urlSearchParams.getAll('agentIds').filter(Boolean))].sort(),
     [urlSearchParams],
   );
-  /** All agents chosen explicitly while admins start with nothing selected. */
   const allAgentsChosen = urlSearchParams.get('allAgents') === 'true';
   const insightsParams = useMemo<TInsightsParams>(() => {
     const params: TInsightsParams = { page, pageSize: 10, search, timeZone };
@@ -986,7 +985,6 @@ export default function InsightsView() {
         nextParams.append('agentIds', agentId);
       }
     } else if (data.autoSelectAllAgents === false) {
-      // An empty selection means "none" here, so All agents is a flag rather than every ID.
       nextParams.set('allAgents', 'true');
     }
     setUrlSearchParams(nextParams, { replace: true });
