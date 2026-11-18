@@ -43,7 +43,7 @@ const page = (ui: ReactNode) => (
 );
 
 const artifact = (
-  <Artifact identifier="chart" title="Chart" type="text/html" node={null}>
+  <Artifact id="" lastUpdateTime={0} identifier="chart" title="Chart" type="text/html" node={null}>
     {'<p>hello</p>'}
   </Artifact>
 );
