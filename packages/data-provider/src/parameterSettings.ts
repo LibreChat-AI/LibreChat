@@ -1486,6 +1486,7 @@ export function resolveReasoningSettingForTarget({
   paramDefinitions,
   blockedReasoningKeys,
   modelReasoning,
+  responsesApiRouting,
 }: {
   endpoint: string;
   model?: string | null;
@@ -1494,6 +1495,7 @@ export function resolveReasoningSettingForTarget({
   reasoningFormat?: ReasoningParameterFormat | null;
   paramDefinitions?: Partial<SettingDefinition>[] | null;
   blockedReasoningKeys?: ReadonlySet<string>;
+  responsesApiRouting?: ResponsesApiRouting;
   /** Provider-reported efforts for `model`; see {@link applyModelAwareDefaults}. */
   modelReasoning?: TModelReasoning | null;
 }): SettingDefinition | undefined {
@@ -1539,7 +1541,7 @@ export function resolveReasoningSettingForTarget({
     baseSettings,
     effectiveDefaultParamsEndpoint,
     model,
-    undefined,
+    responsesApiRouting,
     effectiveModelReasoning(modelReasoning, paramDefinitions),
   ).map((setting) => {
     const override = customSettingsByKey.get(setting.key);
@@ -1801,7 +1803,9 @@ function applyModelFamilyDefaults(
   if (tier === 'sol' || tier === 'terra' || tier === 'luna') {
     const sol62 =
       gpt6Release(model)?.toLowerCase() === 'gpt-6.2-sol' &&
-      (endpoint === EModelEndpoint.openAI || endpoint === EModelEndpoint.azureOpenAI);
+      (responsesApiRouting?.[model]?.firstPartyEndpoint ??
+        responsesApiRouting?.[`${gpt6Release(model)}-*`]?.firstPartyEndpoint ??
+        false);
     const supportedSettings = sol62
       ? settings.filter((setting) => !['temperature', 'top_p'].includes(setting.key))
       : settings;

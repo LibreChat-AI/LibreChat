@@ -14,6 +14,7 @@ import {
   normalizeEndpointName,
   mapModelToAzureConfig,
   resolveUseResponsesApi,
+  gpt6Release,
 } from 'librechat-data-provider';
 import type {
   SummarizationConfig as AgentSummarizationConfig,
@@ -91,6 +92,13 @@ import {
   stripBackgroundFromToolDefinitions,
 } from '~/agents/background';
 import {
+  extractDefaultParams,
+  getOpenAILLMConfig,
+  isNativeCyberRequest,
+  resolveReasoningParams,
+  applySol62Constraints,
+} from '~/endpoints/openai/llm';
+import {
   createSubagentWakeupHandleHook,
   agentUsesSubagentCompletionWakeups,
   usesSubagentCompletionWakeups,
@@ -101,12 +109,6 @@ import {
   resolveSubagentMaxTurns,
   resolveRecursionLimit,
 } from '~/agents/config';
-import {
-  extractDefaultParams,
-  getOpenAILLMConfig,
-  isNativeCyberRequest,
-  resolveReasoningParams,
-} from '~/endpoints/openai/llm';
 import {
   isSteeringSupported,
   isSteerPreemptSupported,
@@ -1548,6 +1550,30 @@ function shapeSummarizationConfig(
     model,
     parameters: modelKwargs != null ? { modelKwargs, ...mergedParameters } : mergedParameters,
   });
+
+  const inheritedParameters: Record<string, unknown> | undefined =
+    provider === fallbackProvider ? agent?.model_parameters : undefined;
+  if (
+    gpt6Release(model)?.toLowerCase() === 'gpt-6.2-sol' &&
+    (provider === Providers.OPENAI || provider === Providers.AZURE)
+  ) {
+    const baseURL = transportOverrides.baseURL;
+    const nativeTransport =
+      baseURL == null
+        ? (parameters?.firstPartyEndpoint ?? inheritedParameters?.firstPartyEndpoint) === true
+        : getOpenAILLMConfig({
+            apiKey: '',
+            streaming: false,
+            baseURL,
+            endpoint: targetsAzure ? EModelEndpoint.azureOpenAI : EModelEndpoint.openAI,
+            azure: targetsAzure ? (agent?.azureOptions ?? {}) : undefined,
+            modelOptions: { model },
+          }).llmConfig.firstPartyEndpoint === true;
+    if (nativeTransport) {
+      parameters = { ...parameters, firstPartyEndpoint: true };
+      applySol62Constraints(parameters, inheritedParameters);
+    }
+  }
 
   if (
     model === 'gpt-6-cyber' &&

@@ -1,4 +1,9 @@
-import { paramSettings, agentParamSettings, applyModelAwareDefaults } from './parameterSettings';
+import {
+  paramSettings,
+  agentParamSettings,
+  applyModelAwareDefaults,
+  resolveReasoningSettingForTarget,
+} from './parameterSettings';
 import { defaultModels, initialModelsConfig } from './config';
 import { EModelEndpoint, ReasoningEffort } from './schemas';
 
@@ -19,7 +24,19 @@ it.each([EModelEndpoint.openAI, EModelEndpoint.azureOpenAI])(
     for (const settings of [paramSettings[endpoint]!, agentParamSettings[endpoint]!]) {
       for (const name of [model, `${model}-2026-11-17`]) {
         const original = structuredClone(settings);
-        const result = applyModelAwareDefaults(settings, endpoint, name);
+        const routing = {
+          [name]: { default: true, on: true, off: false, firstPartyEndpoint: true },
+        };
+        const result = applyModelAwareDefaults(settings, endpoint, name, routing);
+        if (endpoint === EModelEndpoint.openAI) {
+          expect(
+            resolveReasoningSettingForTarget({
+              endpoint,
+              model: name,
+              responsesApiRouting: routing,
+            })?.options,
+          ).not.toContain('none');
+        }
         expect(result.find((setting) => setting.key === 'reasoning_effort')?.options).toEqual([
           ReasoningEffort.unset,
           ReasoningEffort.low,
@@ -48,4 +65,27 @@ it('keeps earlier Sol and custom endpoint controls intact', () => {
     expect(result.find((setting) => setting.key === 'reasoning_effort')?.options).toContain('none');
     expect(result.some((setting) => setting.key === 'temperature')).toBe(true);
   }
+});
+
+it('preserves gateway controls even when the parameter schema is OpenAI', () => {
+  const settings = paramSettings[EModelEndpoint.openAI]!;
+  for (const routing of [
+    undefined,
+    { [model]: { default: false, on: true, off: false, firstPartyEndpoint: false } },
+  ]) {
+    const result = applyModelAwareDefaults(settings, EModelEndpoint.openAI, model, routing);
+    expect(result.find((setting) => setting.key === 'reasoning_effort')?.options).toContain('none');
+    expect(result.some((setting) => setting.key === 'temperature')).toBe(true);
+    expect(result.some((setting) => setting.key === 'top_p')).toBe(true);
+  }
+});
+
+it('preserves custom OpenAI-schema reasoning options without a native declaration', () => {
+  expect(
+    resolveReasoningSettingForTarget({
+      endpoint: 'Gateway',
+      model,
+      defaultParamsEndpoint: EModelEndpoint.openAI,
+    })?.options,
+  ).toContain('none');
 });

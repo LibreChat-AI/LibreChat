@@ -224,3 +224,11 @@ it.each([
     }
   },
 );
+
+it('normalizes nested administrator overrides without mutating them', () => {
+  const modelKwargs = { reasoning: { effort: 'none', summary: 'auto' }, temperature: 0.7 };
+  const result = config({ addParams: { modelKwargs } });
+  expect(result.modelKwargs).toHaveProperty('reasoning.effort', 'low');
+  expect(result.modelKwargs).not.toHaveProperty('temperature');
+  expect(modelKwargs).toEqual({ reasoning: { effort: 'none', summary: 'auto' }, temperature: 0.7 });
+});
