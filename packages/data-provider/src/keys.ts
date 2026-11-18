@@ -103,6 +103,7 @@ export enum QueryKeys {
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
   apiKeyMCPConsent = 'apiKeyMCPConsent',
+  apiKeyAgents = 'apiKeyAgents',
   /* Skills */
   skills = 'skills',
   skill = 'skill',

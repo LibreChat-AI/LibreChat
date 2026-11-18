@@ -2,12 +2,14 @@ const express = require('express');
 const { generateCheckAccess, createApiKeyHandlers } = require('@librechat/api');
 const { PermissionTypes, Permissions } = require('librechat-data-provider');
 const {
+  getAgentModelSummaries,
   getAgentApiKeyById,
   createAgentApiKey,
   deleteAgentApiKey,
   listAgentApiKeys,
   getRoleByName,
 } = require('~/models');
+const { findAccessibleResources } = require('~/server/services/PermissionService');
 const { getAppConfig } = require('~/server/services/Config/app');
 const { requireJwtAuth } = require('~/server/middleware');
 
@@ -19,6 +21,8 @@ const handlers = createApiKeyHandlers({
   deleteAgentApiKey,
   getAgentApiKeyById,
   getAppConfig,
+  findAccessibleResources,
+  getAgentModelSummaries,
 });
 
 const checkRemoteAgentsUse = generateCheckAccess({
@@ -30,6 +34,9 @@ const checkRemoteAgentsUse = generateCheckAccess({
 router.post('/', requireJwtAuth, checkRemoteAgentsUse, handlers.createApiKey);
 
 router.get('/', requireJwtAuth, checkRemoteAgentsUse, handlers.listApiKeys);
+
+/** Before `/:id`: the agents a key can be granted for. */
+router.get('/agents', requireJwtAuth, checkRemoteAgentsUse, handlers.listAgents);
 
 router.get('/:id', requireJwtAuth, checkRemoteAgentsUse, handlers.getApiKey);
 

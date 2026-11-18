@@ -10,25 +10,17 @@ jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en-US' } }),
 }));
-const mockListAgents = jest.fn();
-jest.mock('~/data-provider', () => ({
-  useListAgentsQuery: () => mockListAgents(),
-}));
-const listed = {
-  data: [
-    { id: 'agent_a', name: 'Analyst' },
-    { id: 'agent_b', name: 'Builder' },
-  ],
-  isLoading: false,
-  isError: false,
-  refetch: jest.fn(),
-};
+const agents = [
+  { id: 'agent_a', name: 'Analyst' },
+  { id: 'agent_b', name: 'Builder' },
+];
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return {
     ...actual,
     dataService: {
       ...actual.dataService,
+      getApiKeyAgents: jest.fn(),
       getApiKeyMCPConsent: jest.fn(),
       confirmApiKeyMCPConsent: jest.fn(),
       revokeApiKeyMCPConsent: jest.fn(),
@@ -74,14 +66,15 @@ function display() {
       <KeyGrant id="key-1" name="CI Pipeline" onOpenChange={jest.fn()} triggerRef={createRef()} />
     </QueryClientProvider>,
   );
+  return client;
 }
 const pick = async (name: string) => {
-  await userEvent.click(screen.getByRole('combobox', { name: 'com_ui_agent' }));
+  await userEvent.click(await screen.findByRole('combobox', { name: 'com_ui_agent' }));
   await userEvent.click(await screen.findByRole('option', { name: new RegExp(name) }));
 };
 
 beforeEach(() => {
-  mockListAgents.mockReturnValue(listed);
+  jest.mocked(dataService.getApiKeyAgents).mockResolvedValue({ agents });
   jest
     .mocked(dataService.getApiKeyMCPConsent)
     .mockImplementation(async (_id, agentId) =>
@@ -102,8 +95,16 @@ it('asks for nothing until an agent is picked', async () => {
   expect(document.querySelector('svg.spinner')).toBeNull();
 });
 
+it('lists the agents this key could run, not the catalog the owner browses', async () => {
+  display();
+  await userEvent.click(await screen.findByRole('combobox', { name: 'com_ui_agent' }));
+  expect(await screen.findByRole('option', { name: /Analyst/ })).toBeVisible();
+  expect(screen.getByRole('option', { name: /Builder/ })).toBeVisible();
+  expect(dataService.getApiKeyAgents).toHaveBeenCalledTimes(1);
+});
+
 it('says the agents are loading, and offers no picker yet', () => {
-  mockListAgents.mockReturnValue({ ...listed, data: undefined, isLoading: true });
+  jest.mocked(dataService.getApiKeyAgents).mockReturnValue(new Promise(() => {}));
   display();
   expect(document.querySelector('svg.spinner')).not.toBeNull();
   expect(screen.queryByRole('combobox', { name: 'com_ui_agent' })).not.toBeInTheDocument();
@@ -111,29 +112,32 @@ it('says the agents are loading, and offers no picker yet', () => {
 });
 
 it('says the agents could not be loaded and lets the owner try again', async () => {
-  const refetch = jest.fn();
-  mockListAgents.mockReturnValue({ ...listed, data: undefined, isError: true, refetch });
+  jest.mocked(dataService.getApiKeyAgents).mockRejectedValueOnce(new Error('down'));
   display();
-  expect(screen.getByRole('alert')).toHaveTextContent('com_ui_api_key_grant_agents_error');
+  expect(await screen.findByRole('alert')).toHaveTextContent('com_ui_api_key_grant_agents_error');
   // No empty picker and no instruction to choose from it.
   expect(screen.queryByRole('combobox', { name: 'com_ui_agent' })).not.toBeInTheDocument();
   expect(screen.queryByText('com_ui_api_key_grant_choose_agent')).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
-  expect(refetch).toHaveBeenCalledTimes(1);
+  expect(await screen.findByRole('combobox', { name: 'com_ui_agent' })).toBeVisible();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
 
 it('keeps a list it already has usable when a refresh fails', async () => {
-  mockListAgents.mockReturnValue({ ...listed, isError: true });
-  display();
+  const client = display();
+  await screen.findByRole('combobox', { name: 'com_ui_agent' });
+  jest.mocked(dataService.getApiKeyAgents).mockRejectedValue(new Error('down'));
+  await client.invalidateQueries();
+  await waitFor(() => expect(dataService.getApiKeyAgents).toHaveBeenCalledTimes(2));
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   await pick('Analyst');
   expect(await screen.findByRole('checkbox', { name: 'query' })).toBeVisible();
 });
 
-it('says so when the owner has no agent to pick', () => {
-  mockListAgents.mockReturnValue({ ...listed, data: [] });
+it('says so when the owner has no agent to pick', async () => {
+  jest.mocked(dataService.getApiKeyAgents).mockResolvedValue({ agents: [] });
   display();
-  expect(screen.getByText('com_ui_api_key_grant_no_agents')).toBeVisible();
+  expect(await screen.findByText('com_ui_api_key_grant_no_agents')).toBeVisible();
   expect(screen.queryByRole('combobox', { name: 'com_ui_agent' })).not.toBeInTheDocument();
   expect(screen.queryByText('com_ui_api_key_grant_choose_agent')).not.toBeInTheDocument();
 });

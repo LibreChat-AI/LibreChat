@@ -39,6 +39,8 @@ export interface AgentApiKeyCreateResult {
 
 export interface AgentApiKeyListItem {
   binding?: AgentApiKeyBinding;
+  /** In a list: the key was issued to an integration. The binding itself is not listed. */
+  bound?: boolean;
   id: string;
   name: string;
   keyPrefix: string;

@@ -60,7 +60,8 @@ export default function Item({ apiKey, grants = false }: ItemProps) {
           </span>
         </div>
       </div>
-      {grants && (
+      {/* A key issued to an integration holds no grants, so there is nothing to open for it. */}
+      {grants && apiKey.bound !== true && (
         <Button
           ref={grantButtonRef}
           variant="outline"

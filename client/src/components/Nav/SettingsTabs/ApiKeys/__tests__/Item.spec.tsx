@@ -80,6 +80,11 @@ describe('Item', () => {
     expect(queryByTestId('key-grant')).not.toBeInTheDocument();
   });
 
+  it('offers no MCP access button for a key issued to an integration, which holds no grants', () => {
+    const { queryByRole } = renderItem({ ...baseKey, bound: true }, true);
+    expect(queryByRole('button', { name: /MCP access/ })).not.toBeInTheDocument();
+  });
+
   it('opens the MCP access dialog for this key where grants are in use', () => {
     const { getByRole, getByTestId, queryByTestId } = renderItem(baseKey, true);
     const button = getByRole('button', { name: 'MCP access for API key CI Pipeline' });

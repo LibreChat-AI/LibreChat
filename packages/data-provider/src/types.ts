@@ -382,6 +382,8 @@ export type TAgentApiKeyListItem = {
   id: string;
   name: string;
   keyPrefix: string;
+  /** Issued to an integration, not the owner's personal key. It holds no MCP grants. */
+  bound?: boolean;
   lastUsedAt?: string;
   expiresAt?: string;
   createdAt: string;
@@ -391,6 +393,11 @@ export type TAgentApiKeyListResponse = {
   keys: TAgentApiKeyListItem[];
   /** Runs started with a key may use only the MCP tools its owner granted it. */
   grants?: boolean;
+};
+
+/** The agents an API key can be granted for: the ones its owner may run remotely. */
+export type TApiKeyAgentsResponse = {
+  agents: { id: string; name: string | null }[];
 };
 
 export type TUpdateConversationRequest = {

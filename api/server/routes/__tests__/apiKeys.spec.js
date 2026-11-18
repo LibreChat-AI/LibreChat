@@ -9,6 +9,7 @@ const { PermissionTypes, Permissions } = require('librechat-data-provider');
 const mockKeys = [{ id: 'key-1', name: 'CI', keyPrefix: 'sk-abc', createdAt: '1970-01-01' }];
 
 jest.mock('~/models', () => ({
+  getAgentModelSummaries: jest.fn(),
   getAgentApiKeyById: jest.fn(),
   createAgentApiKey: jest.fn(),
   deleteAgentApiKey: jest.fn(),
@@ -16,6 +17,7 @@ jest.mock('~/models', () => ({
   getRoleByName: jest.fn(),
 }));
 jest.mock('~/server/services/Config/app', () => ({ getAppConfig: jest.fn() }));
+jest.mock('~/server/services/PermissionService', () => ({ findAccessibleResources: jest.fn() }));
 jest.mock('~/server/middleware', () => ({
   requireJwtAuth: (req, _res, next) => {
     req.user = { id: 'owner', role: 'USER', tenantId: 'tenant' };
@@ -24,7 +26,8 @@ jest.mock('~/server/middleware', () => ({
 }));
 
 const { getAppConfig } = require('~/server/services/Config/app');
-const { getRoleByName } = require('~/models');
+const { findAccessibleResources } = require('~/server/services/PermissionService');
+const { getRoleByName, getAgentApiKeyById, getAgentModelSummaries } = require('~/models');
 const router = require('../apiKeys');
 
 describe('API key routes', () => {
@@ -53,5 +56,17 @@ describe('API key routes', () => {
     expect(getAppConfig).toHaveBeenLastCalledWith(
       expect.objectContaining({ userId: 'owner', role: 'USER', tenantId: 'tenant' }),
     );
+  });
+
+  it('lists the agents a key can be granted for, and does not take the path for a key id', async () => {
+    findAccessibleResources.mockResolvedValue(['id-a']);
+    getAgentModelSummaries.mockResolvedValueOnce([{ id: 'agent_a', name: 'Analyst' }]);
+    const response = await request(app).get('/api/api-keys/agents');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ agents: [{ id: 'agent_a', name: 'Analyst' }] });
+    expect(findAccessibleResources).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'owner', role: 'USER' }),
+    );
+    expect(getAgentApiKeyById).not.toHaveBeenCalled();
   });
 });

@@ -559,6 +559,10 @@ export function getAgentApiKeys(): Promise<t.TAgentApiKeyListResponse> {
   return request.get(endpoints.apiKeys());
 }
 
+export function getApiKeyAgents(): Promise<t.TApiKeyAgentsResponse> {
+  return request.get(endpoints.apiKeyAgents());
+}
+
 export function createAgentApiKey(
   payload: t.TAgentApiKeyCreateRequest,
 ): Promise<t.TAgentApiKeyCreateResponse> {

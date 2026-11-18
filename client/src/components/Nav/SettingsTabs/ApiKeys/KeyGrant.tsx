@@ -1,11 +1,13 @@
 import { useId, useMemo, useState } from 'react';
-import { PermissionBits } from 'librechat-data-provider';
 import { Label, Button, Spinner, ControlCombobox } from '@librechat/client';
 import type { MutableRefObject } from 'react';
 import type { GrantCopy } from '~/components/MCP/GrantDialog';
-import { useApiKeyMCPConsent, useApiKeyMCPConsentMutations } from '~/data-provider/ApiKeys/consent';
+import {
+  useApiKeyAgents,
+  useApiKeyMCPConsent,
+  useApiKeyMCPConsentMutations,
+} from '~/data-provider/ApiKeys/consent';
 import GrantDialog from '~/components/MCP/GrantDialog';
-import { useListAgentsQuery } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 
 const copy: GrantCopy = {
@@ -33,10 +35,8 @@ export default function KeyGrant({
   const localize = useLocalize();
   const selectId = useId();
   const [agentId, setAgentId] = useState('');
-  const list = useListAgentsQuery(
-    { requiredPermission: PermissionBits.VIEW },
-    { select: (res) => res.data },
-  );
+  /** The agents this key could run, which is not the catalog the owner browses in the app. */
+  const list = useApiKeyAgents();
   const agents = list.data;
   const agentItems = useMemo(
     () => (agents ?? []).map((agent) => ({ label: agent.name || agent.id, value: agent.id })),
