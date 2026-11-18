@@ -43,7 +43,7 @@ jobs:
       - name: Set Up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.3'
 
       - name: Install Translation Dependencies
         run: npm ci --prefix scripts/readme --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
@@ -69,7 +69,7 @@ jobs:
       - name: Set Up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.3'
 
       - name: Install Translation Dependencies
         run: npm ci --prefix scripts/readme --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/

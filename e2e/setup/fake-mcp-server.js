@@ -100,6 +100,34 @@ server.registerTool(
   },
 );
 
+/** Mirrors a Pydantic-style tool with many optional fields: the nullable object is
+ *  declared after the eighth property, so validation feedback must scan the whole schema. */
+server.registerTool(
+  'create_work_item',
+  {
+    description:
+      'Creates a work item; used to verify schema-validation feedback in mock e2e tests.',
+    inputSchema: {
+      project: z.string(),
+      subject: z.string(),
+      type: z.string().optional(),
+      description: z.string().optional(),
+      assignee: z.string().optional(),
+      priority: z.string().optional(),
+      status: z.string().optional(),
+      start_date: z.string().optional(),
+      due_date: z.string().optional(),
+      estimated_hours: z.number().optional(),
+      parent_id: z.number().int().optional(),
+      custom_fields: z.record(z.string(), z.unknown()).nullable().optional(),
+      confirm: z.boolean().optional(),
+    },
+  },
+  async ({ subject }) => ({
+    content: [{ type: 'text', text: `E2E work item created: ${subject}` }],
+  }),
+);
+
 if (process.env.E2E_MCP_LIST_CHANGED === 'true') {
   server.registerTool(
     'transport_probe',

@@ -417,11 +417,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
   const localize = useLocalize();
   const navigate = useNavigate();
   const location = useLocation();
-  const [storedExpanded, setStoredExpanded] = useLocalStorage('projectsSectionExpanded', true);
-  const [hasToggledSection, setHasToggledSection] = useLocalStorage(
-    'projectsSectionToggled',
-    false,
-  );
+  const [isExpanded, setIsExpanded] = useLocalStorage('projectsSectionExpanded', true);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const conversationProjectId = conversation?.chatProjectId ?? null;
@@ -437,14 +433,6 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
 
   const projects = useMemo(() => data?.pages.flatMap((page) => page.projects) ?? [], [data?.pages]);
   const hasMore = (data?.pages[data.pages.length - 1]?.nextCursor ?? null) != null;
-
-  /**
-   * Collapse the section by default for users with no projects who have never
-   * toggled it, to keep the sidebar compact. An explicit toggle, or a collapse
-   * set before this default existed (stored === false), is always respected.
-   */
-  const respectStoredExpanded = hasToggledSection || storedExpanded === false;
-  const isExpanded = respectStoredExpanded ? storedExpanded : isLoading || projects.length > 0;
 
   const openProjects = useCallback(() => {
     navigate('/projects');
@@ -515,10 +503,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
       <div className="flex h-8 w-full items-center pe-1">
         <button
           type="button"
-          onClick={() => {
-            setStoredExpanded(!isExpanded);
-            setHasToggledSection(true);
-          }}
+          onClick={() => setIsExpanded(!isExpanded)}
           className={cn(buttonVariants({ variant: 'section-header' }), 'group min-w-0 flex-1')}
           aria-expanded={isExpanded}
         >

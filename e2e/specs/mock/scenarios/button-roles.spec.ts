@@ -3,7 +3,7 @@ import type { Locator, Page } from '@playwright/test';
 import type { ThemeDefinition } from '../../../../packages/data-provider/src/themes/types';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { NEW_CHAT_PATH } from '../helpers';
-import { probeStyle } from './style.helpers';
+import { normalizeColor, probeStyle } from './style.helpers';
 
 /**
  * The shared Button reads its label weight, its default and small heights and its primary fill
@@ -77,9 +77,9 @@ test.describe('theme button roles', () => {
     expect(await probeStyle(page, 'bg-button-primary', 'background-color')).toBe(
       await probeStyle(page, 'bg-surface-inverted', 'background-color'),
     );
-    expect(await probeStyle(page, 'bg-button-primary-hover', 'background-color')).toBe(
-      await probeStyle(page, 'bg-surface-inverted-hover', 'background-color'),
-    );
+    expect(
+      await normalizeColor(page, 'rgb(var(--button-primary-hover, var(--surface-inverted-hover)))'),
+    ).toBe(await normalizeColor(page, 'rgb(var(--surface-inverted-hover))'));
   });
 
   test('ClickHouse buttons take Click UI weight, height and primary fill @scenario:clickhouse-buttons-follow-click-ui', async ({

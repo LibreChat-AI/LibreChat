@@ -43,13 +43,19 @@ login page, spinner, or empty shell cannot pass.
 2. Open a `.lighthouse/lhr-*.report.html` report. The console also prints API request
    start/end times. A late request start suggests a browser dependency; a long
    request suggests server work or serial database reads.
+   A failed audit keeps each run's measured `.lighthouse/lhr-*-0.trace.json` for
+   inspection in Chrome's Performance panel; a passing one discards them. Raw network
+   logs are removed and cookie values redacted before upload. Failed audits also save `.lighthouse/startup.cpuprofile` from a separate navigation to
+   identify expensive startup functions, including three seconds after the transcript
+   appears so later catalog callbacks are sampled. Profiling runs after the measured audits and
+   does not change their metrics or budgets.
 3. Inspect the relevant path before changing the budget:
 
-| Request / symptom                           | Code to inspect                                                                           | Performance change this protects                                                                                                                                                            |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Config waits for repeated user lookups      | `packages/api/src/app/service.ts`, `api/server/middleware/config/app.js`                  | [#14101](https://github.com/LibreChat-AI/LibreChat/pull/14101)                                                                                                                               |
-| Message authorization and read run serially | `api/server/routes/messages.js`, `packages/api/src/middleware/messageValidation.ts`       | [#14101](https://github.com/LibreChat-AI/LibreChat/pull/14101)                                                                                                                               |
-| Messages wait for the file map              | `client/src/data-provider/Messages/queries.ts`, `client/src/components/Chat/ChatView.tsx` | [#14188](https://github.com/LibreChat-AI/LibreChat/pull/14188)                                                                                                                               |
+| Request / symptom                           | Code to inspect                                                                           | Performance change this protects                                                                                                                                                               |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Config waits for repeated user lookups      | `packages/api/src/app/service.ts`, `api/server/middleware/config/app.js`                  | [#14101](https://github.com/LibreChat-AI/LibreChat/pull/14101)                                                                                                                                 |
+| Message authorization and read run serially | `api/server/routes/messages.js`, `packages/api/src/middleware/messageValidation.ts`       | [#14101](https://github.com/LibreChat-AI/LibreChat/pull/14101)                                                                                                                                 |
+| Messages wait for the file map              | `client/src/data-provider/Messages/queries.ts`, `client/src/components/Chat/ChatView.tsx` | [#14188](https://github.com/LibreChat-AI/LibreChat/pull/14188)                                                                                                                                 |
 | Startup repeats auth user reads             | `api/server/controllers/AuthController.js`, `packages/api/src/auth/userDocCache.ts`       | [#14187](https://github.com/LibreChat-AI/LibreChat/pull/14187), [#14343](https://github.com/LibreChat-AI/LibreChat/pull/14343), [#14747](https://github.com/LibreChat-AI/LibreChat/pull/14747) |
 
 Reuse already-loaded user/config data. Start independent reads together, but keep

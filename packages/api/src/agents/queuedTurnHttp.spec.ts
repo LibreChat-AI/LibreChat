@@ -1,7 +1,11 @@
 import { Types } from 'mongoose';
-import { ReasoningEffort } from 'librechat-data-provider';
 import { AgentQueuedTurnLaneRetiredError } from '@librechat/data-schemas';
-import type { AgentQueuedTurnMethods, AgentQueuedTurnRecord } from '@librechat/data-schemas';
+import { ReasoningEffort, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
+import type {
+  AgentQueuedTurnMethods,
+  AgentQueuedTurnRecord,
+  IMongoFile,
+} from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { AgentQueuedTurnHttpDeps } from './queuedTurnHttp';
 import {
@@ -75,6 +79,141 @@ describe('Agent queued-turn HTTP admission receipts', () => {
       expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ parentMessageId }));
     },
   );
+
+  it('resolves trusted previews and preserves them on list and different-snippet replays', async () => {
+    const text = ` \n${'trusted stored paste '.repeat(30)}`;
+    const files = [
+      {
+        file_id: 'paste-1',
+        type: 'text/plain',
+        llmDeliveryPath: 'text' as const,
+        textPreview: text.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH),
+      },
+    ];
+    const saved = { ...turn('queued'), files };
+    const getFiles = jest.fn(async () => [
+      {
+        ...files[0],
+        text,
+        textPreview: 'stale stored preview',
+        user: USER_ID,
+        tenantId: 'tenant-1',
+      } as unknown as IMongoFile,
+    ]);
+    const updateFilesUsage = jest.fn(async () => [{ file_id: 'paste-1' }]);
+    const getConvo = jest.fn(async () => ({
+      agent_id: 'agent_1',
+      endpoint: 'agents',
+      tenantId: 'tenant-1',
+    }));
+    const methods = {
+      getConvo,
+      getAgentQueuedTurnByClientRequestId: jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockImplementation(async () => saved),
+      enqueueAgentQueuedTurn: jest.fn(async () => ({ turn: saved, replayed: false })),
+      listActiveAgentQueuedTurns: jest.fn(async () => [saved]),
+      listAgentQueuedTurnReceipts: jest.fn(async () => [saved]),
+    };
+    const deps = {
+      methods: methods as unknown as AgentQueuedTurnMethods & { getConvo: typeof getConvo },
+      getFiles,
+      updateFilesUsage,
+      lifecycle: { schedule: jest.fn(), cancel: jest.fn() },
+    } satisfies AgentQueuedTurnHttpDeps;
+    const user = { id: USER_ID, tenantId: 'tenant-1' };
+    const body = {
+      ...requestBody(),
+      files: [{ file_id: 'paste-1', text: 'malicious text', textPreview: 'malicious preview' }],
+    };
+    await expect(handleAgentQueuedTurnEnqueue(user, body, deps)).resolves.toMatchObject({
+      status: 202,
+      body: { receipt: { files } },
+    });
+    expect(getFiles).toHaveBeenCalledWith(
+      {
+        file_id: { $in: ['paste-1'] },
+        user: USER_ID,
+        tenantId: 'tenant-1',
+      },
+      {},
+      {},
+    );
+    expect(updateFilesUsage).toHaveBeenCalledWith([{ file_id: 'paste-1' }], undefined, {
+      user: USER_ID,
+      tenantId: 'tenant-1',
+    });
+    expect(methods.enqueueAgentQueuedTurn).toHaveBeenCalledWith(expect.objectContaining({ files }));
+    for (const textPreview of [undefined, 'different snippet']) {
+      await expect(
+        handleAgentQueuedTurnEnqueue(
+          user,
+          {
+            ...body,
+            files: [{ file_id: 'paste-1', textPreview }],
+          },
+          deps,
+        ),
+      ).resolves.toMatchObject({ status: 202, body: { receipt: { files } } });
+    }
+    await expect(handleAgentQueuedTurnList(user, 'conversation-1', deps)).resolves.toMatchObject({
+      status: 200,
+      body: { queuedTurns: [expect.objectContaining({ files })] },
+    });
+    saved.status = 'admitted';
+    await expect(
+      handleAgentQueuedTurnEnqueue(
+        user,
+        {
+          ...body,
+          files: [{ file_id: 'paste-1', textPreview: 'changed terminal preview' }],
+        },
+        deps,
+      ),
+    ).resolves.toMatchObject({ status: 200, body: { receipt: { status: 'admitted', files } } });
+    await expect(
+      handleAgentQueuedTurnList(user, 'conversation-1', deps, ['client-request-1']),
+    ).resolves.toMatchObject({
+      status: 200,
+      body: { queuedTurns: [expect.objectContaining({ status: 'admitted', files })] },
+    });
+    expect(getFiles).toHaveBeenCalledTimes(1);
+    expect(methods.enqueueAgentQueuedTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resolve file previews before conversation ownership is validated', async () => {
+    const getFiles = jest.fn();
+    const updateFilesUsage = jest.fn();
+    const getConvo = jest.fn(async () => ({
+      agent_id: 'agent_1',
+      endpoint: 'agents',
+      tenantId: 'other-tenant',
+    }));
+    const methods = {
+      getConvo,
+      getAgentQueuedTurnByClientRequestId: jest.fn(async () => null),
+      enqueueAgentQueuedTurn: jest.fn(),
+    };
+    await expect(
+      handleAgentQueuedTurnEnqueue(
+        { id: USER_ID, tenantId: 'tenant-1' },
+        {
+          ...requestBody(),
+          files: [{ file_id: 'paste-1', textPreview: 'untrusted preview' }],
+        },
+        {
+          methods: methods as unknown as AgentQueuedTurnMethods & { getConvo: typeof getConvo },
+          getFiles,
+          updateFilesUsage,
+          lifecycle: { schedule: jest.fn(), cancel: jest.fn() },
+        },
+      ),
+    ).resolves.toMatchObject({ status: 404, body: { code: 'CONVERSATION_NOT_FOUND' } });
+    expect(getFiles).not.toHaveBeenCalled();
+    expect(updateFilesUsage).not.toHaveBeenCalled();
+    expect(methods.enqueueAgentQueuedTurn).not.toHaveBeenCalled();
+  });
 
   it('rejects oversized response parents before ownership lookup or persistence', async () => {
     const getConvo = jest.fn();

@@ -62,10 +62,14 @@ export function useSettingsContext(): SettingsContextValue {
     replyConfigLoaded && replyNotificationsConfig?.desktop !== false;
   const replyNotificationSoundAllowed =
     replyConfigLoaded && replyNotificationsConfig?.sound !== false;
-  const analyticsConfigured = hasAnalyticsGtmId(startupConfig?.analyticsGtmId);
+  /* No toggle when the deployment granted consent for everyone: there is no choice to change. */
+  const analyticsConfigured =
+    hasAnalyticsGtmId(startupConfig?.analyticsGtmId) &&
+    startupConfig?.interface?.analyticsConsent !== false;
   const hasRemoteAgentsBool = hasRemoteAgents === true;
   const hasMultiConvoBool = hasMultiConvo === true;
   const hasPromptsBool = hasPrompts === true;
+  const engineSTT = useRecoilValue<string>(store.engineSTT);
   const engineTTS = useRecoilValue<string>(store.engineTTS);
   const hasUserProvidedEndpoints = useProviderKeys().length > 0;
   const hasStatefulCodeSessions =
@@ -91,6 +95,7 @@ export function useSettingsContext(): SettingsContextValue {
       allowAccountDeletion,
       aboutEnabled,
       mascotAllowed,
+      engineSTT,
       engineTTS,
       langfuseConnectionAccess,
       langfusePromptSyncAccess,
@@ -119,6 +124,7 @@ export function useSettingsContext(): SettingsContextValue {
       allowAccountDeletion,
       aboutEnabled,
       mascotAllowed,
+      engineSTT,
       engineTTS,
       langfuseConnectionAccess,
       langfusePromptSyncAccess,

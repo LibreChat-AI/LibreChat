@@ -1,27 +1,42 @@
-import { useState, ReactNode } from 'react';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useOutletContext } from 'react-router-dom';
 import { loginPage } from 'librechat-data-provider';
 import { Spinner, Button, Alert, Input } from '@librechat/client';
 import { useRequestPasswordResetMutation } from 'librechat-data-provider/react-query';
-import type { TRequestPasswordReset, TRequestPasswordResetResponse } from 'librechat-data-provider';
-import type { FC } from 'react';
+import type { TRequestPasswordReset } from 'librechat-data-provider';
+import type { FC, ReactNode } from 'react';
 import type { TLoginLayoutContext } from '~/common';
 import { useLocalize } from '~/hooks';
 
-const BodyTextWrapper: FC<{ children: ReactNode }> = ({ children }) => {
+const BodyTextWrapper: FC<{ children: ReactNode; unavailable?: boolean }> = ({
+  children,
+  unavailable,
+}) => {
   return (
-    <Alert variant="success" icon={false} elevation="raised" size="roomy" className="mt-6">
+    <Alert
+      variant={unavailable ? 'info' : 'success'}
+      icon={false}
+      elevation="raised"
+      size="roomy"
+      className="mt-6"
+    >
       {children}
     </Alert>
   );
 };
 
-const ResetPasswordBodyText = () => {
+const ResetPasswordBodyText = ({ unavailable = false }: { unavailable?: boolean }) => {
   const localize = useLocalize();
   return (
     <div className="flex flex-col space-y-4">
-      <p>{localize('com_auth_reset_password_if_email_exists')}</p>
+      <p>
+        {localize(
+          unavailable
+            ? 'com_auth_reset_password_unavailable'
+            : 'com_auth_reset_password_if_email_exists',
+        )}
+      </p>
       <a
         className="text-accent-primary hover:text-accent-primary-hover inline-flex text-sm font-medium transition-colors"
         href={loginPage()}
@@ -47,22 +62,9 @@ function RequestPasswordReset() {
 
   const onSubmit = (data: TRequestPasswordReset) => {
     requestPasswordReset.mutate(data, {
-      onSuccess: (data: TRequestPasswordResetResponse) => {
-        if (data.link && !startupConfig?.emailEnabled) {
-          setHeaderText('com_auth_reset_password');
-          setBodyText(
-            <span>
-              {localize('com_auth_click')}{' '}
-              <a className="text-accent-primary hover:underline" href={data.link}>
-                {localize('com_auth_here')}
-              </a>{' '}
-              {localize('com_auth_to_reset_your_password')}
-            </span>,
-          );
-        } else {
-          setHeaderText('com_auth_reset_password_link_sent');
-          setBodyText(<ResetPasswordBodyText />);
-        }
+      onSuccess: () => {
+        setHeaderText('com_auth_reset_password_link_sent');
+        setBodyText(<ResetPasswordBodyText />);
       },
       onError: () => {
         setHeaderText('com_auth_reset_password_link_sent');
@@ -70,6 +72,18 @@ function RequestPasswordReset() {
       },
     });
   };
+
+  if (!startupConfig) {
+    return null;
+  }
+
+  if (!startupConfig.emailEnabled) {
+    return (
+      <BodyTextWrapper unavailable>
+        <ResetPasswordBodyText unavailable />
+      </BodyTextWrapper>
+    );
+  }
 
   if (bodyText) {
     return <BodyTextWrapper>{bodyText}</BodyTextWrapper>;
@@ -111,7 +125,7 @@ function RequestPasswordReset() {
           />
           <label
             htmlFor="email"
-            className="bg-surface-primary text-text-secondary peer-placeholder-shown:text-text-tertiary peer-focus:text-accent-primary peer-placeholder-shown:top-theme-auth-label-rest absolute inset-s-2 -top-2 z-10 px-2 text-sm transition-all peer-placeholder-shown:text-base peer-focus:-top-2 peer-focus:text-sm"
+            className="bg-surface-primary theme-field-fill:bg-transparent theme-field-fill:bg-linear-to-b theme-field-fill:from-transparent theme-field-fill:from-38% theme-field-fill:to-field-fill theme-field-fill:to-38% text-text-secondary peer-placeholder-shown:text-text-tertiary peer-focus:text-accent-primary peer-placeholder-shown:top-theme-auth-label-rest absolute inset-s-2 -top-2 z-10 px-2 text-sm transition-all peer-placeholder-shown:text-base peer-focus:-top-2 peer-focus:text-sm"
           >
             {localize('com_auth_email_address')}
           </label>

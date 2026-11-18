@@ -20,7 +20,11 @@ import {
   persistFinalizedCompactionTurn,
   isSettledJobRecord,
   resolveDisconnectSnapshotMode,
+  resolveReconciledSnapshotEnvelope,
   planAbortedTurnPersistence,
+  planDisconnectSnapshot,
+  createDisconnectSnapshotQueue,
+  announceDisconnectSnapshot,
   resolveAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
   settleExistingRowsBeforeErrorTurn,
@@ -31,6 +35,7 @@ import {
   stripUnusableSummaryParts,
   getLatestEventActorSummary,
 } from './compaction';
+import { MAX_RESPONSE_MESSAGE_ID_LENGTH } from '~/utils/message';
 
 const index = [
   {
@@ -1434,6 +1439,25 @@ describe('isSettledJobRecord', () => {
     ).toBe(false);
   });
 
+  /** A failed terminal write clears the marker while publishing a
+   *  reconciliation frame: no row was persisted, so the streamed snapshot
+   *  stays the turn's only fallback. */
+  it('treats a record whose durable final event is a reconciliation frame as unsettled', () => {
+    const reconciled = {
+      createdAt: 1000,
+      status: 'aborted',
+      finalEvent: JSON.stringify({ final: true, reconcile: true }),
+    };
+    const settled = {
+      createdAt: 1000,
+      status: 'aborted',
+      finalEvent: JSON.stringify({ final: true }),
+    };
+
+    expect(isSettledJobRecord(reconciled)).toBe(false);
+    expect(isSettledJobRecord(settled)).toBe(true);
+  });
+
   it('leaves live and missing records unsettled', () => {
     expect(isSettledJobRecord({ createdAt: 1000, status: 'running' })).toBe(false);
     expect(isSettledJobRecord({ createdAt: 1000, status: 'requires_action' })).toBe(false);
@@ -1451,26 +1475,442 @@ describe('isSettledJobRecord', () => {
 describe('resolveDisconnectSnapshotMode', () => {
   it.each(['complete', 'error', 'aborted'])(
     'withholds the snapshot of a %s compaction job',
-    (status) => {
-      expect(resolveDisconnectSnapshotMode(true, { createdAt: 1000, status }, 1000)).toBe('skip');
+    async (status) => {
+      await expect(
+        resolveDisconnectSnapshotMode(true, { createdAt: 1000, status }, 1000),
+      ).resolves.toBe('skip');
     },
   );
 
-  it('writes the snapshot for a live, missing, or other-epoch record', () => {
-    expect(resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'running' }, 1000)).toBe(
-      'live',
+  it('writes the snapshot for a live, missing, or other-epoch record', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'running' }, 1000),
+    ).resolves.toBe('live');
+    await expect(resolveDisconnectSnapshotMode(true, null, 1000)).resolves.toBe('live');
+    await expect(
+      resolveDisconnectSnapshotMode(true, { createdAt: 2000, status: 'error' }, 1000),
+    ).resolves.toBe('live');
+  });
+
+  /** An ordinary turn's record cannot prove its response row landed, so its
+   *  snapshot stays the fallback whatever the record says. */
+  it('writes the snapshot of a settled ordinary turn', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(false, { createdAt: 1000, status: 'complete' }, 1000),
+    ).resolves.toBe('live');
+  });
+
+  /** Only a compaction is promoted: an ordinary turn whose terminal write
+   *  reconciled keeps its live snapshot as the fallback row. */
+  it('keeps a reconciled ordinary turn on its live snapshot', async () => {
+    const anchorExists = jest.fn(async () => true);
+    await expect(
+      resolveDisconnectSnapshotMode(
+        false,
+        {
+          createdAt: 1000,
+          status: 'complete',
+          finalEvent: JSON.stringify({ final: true, reconcile: true }),
+        },
+        1000,
+        { anchorExists },
+      ),
+    ).resolves.toBe('live');
+    expect(anchorExists).not.toHaveBeenCalled();
+  });
+
+  const reconciled = () => ({
+    createdAt: 1000,
+    status: 'error',
+    finalEvent: JSON.stringify({ final: true, reconcile: true }),
+  });
+
+  /** The terminal write failed and settled for a reconciliation frame: the
+   *  snapshot is promoted to the turn's terminal row, because no other row
+   *  will ever be persisted for it. */
+  it('promotes a reconciled compaction snapshot to the terminal row', async () => {
+    await expect(resolveDisconnectSnapshotMode(true, reconciled(), 1000)).resolves.toBe('terminal');
+  });
+
+  /** A reconciliation frame can follow a saved error turn: a settled
+   *  response row withholds the promotion instead of being overwritten. */
+  it('withholds a reconciled snapshot when the response row is settled', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(true, reconciled(), 1000, {
+        responseRowSettled: async () => true,
+      }),
+    ).resolves.toBe('skip');
+  });
+
+  it('keeps the live snapshot for another epoch reconciliation frame', async () => {
+    const anchorExists = jest.fn(async () => true);
+    await expect(
+      resolveDisconnectSnapshotMode(true, { ...reconciled(), createdAt: 2000 }, 1000, {
+        anchorExists,
+      }),
+    ).resolves.toBe('live');
+    expect(anchorExists).not.toHaveBeenCalled();
+  });
+
+  /** The promotion must not recreate the orphan an absent-anchor abort
+   *  deliberately withheld: without a persisted anchor there is nothing to
+   *  hang the terminal row on. */
+  it('withholds a reconciled snapshot whose anchor was never persisted', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(true, reconciled(), 1000, {
+        anchorExists: async () => false,
+      }),
+    ).resolves.toBe('skip');
+  });
+});
+
+describe('resolveReconciledSnapshotEnvelope', () => {
+  /** The abort route writes a stopped compaction settled, so its
+   *  reconciled fallback must not reopen it as a live row. */
+  it('settles an aborted claim like the abort route writes a stopped compaction', () => {
+    expect(resolveReconciledSnapshotEnvelope('aborted')).toEqual({
+      unfinished: false,
+      error: false,
+    });
+  });
+
+  it('settles a completed claim as a finished row', () => {
+    expect(resolveReconciledSnapshotEnvelope('complete')).toEqual({
+      unfinished: false,
+      error: false,
+    });
+  });
+
+  it('settles everything else with the error envelope', () => {
+    expect(resolveReconciledSnapshotEnvelope('error')).toEqual({
+      unfinished: false,
+      error: true,
+    });
+    expect(resolveReconciledSnapshotEnvelope(undefined)).toEqual({
+      unfinished: false,
+      error: true,
+    });
+  });
+});
+
+describe('planDisconnectSnapshot', () => {
+  const reconciled = {
+    createdAt: 1000,
+    status: 'error',
+    finalEvent: JSON.stringify({ final: true, reconcile: true }),
+  };
+  const plan = (
+    isCompaction: boolean,
+    jobRecord: Parameters<typeof planDisconnectSnapshot>[1]['jobRecord'],
+    content: TMessageContentParts[],
+    rows: Record<string, Array<{ messageId: string; unfinished?: boolean }>>,
+  ) => {
+    const getMessages = jest.fn(
+      async (filter: { messageId: string }) => rows[filter.messageId] ?? [],
     );
-    expect(resolveDisconnectSnapshotMode(true, null, 1000)).toBe('live');
-    expect(resolveDisconnectSnapshotMode(true, { createdAt: 2000, status: 'error' }, 1000)).toBe(
-      'live',
+    return {
+      getMessages,
+      result: planDisconnectSnapshot(isCompaction, {
+        content,
+        jobRecord,
+        jobCreatedAt: 1000,
+        userId: 'user-1',
+        conversationId: 'convo-1',
+        anchorMessageId: 'anchor',
+        responseMessageId: 'response',
+        getMessages,
+      }),
+    };
+  };
+  const text = { type: ContentTypes.TEXT, text: 'Partial' } as TMessageContentParts;
+
+  it('writes a live snapshot in the live shape without reading any row', async () => {
+    const { result, getMessages } = plan(
+      false,
+      { createdAt: 1000, status: 'complete' },
+      [text],
+      {},
+    );
+
+    await expect(result).resolves.toEqual({
+      write: true,
+      content: [text],
+      unfinished: true,
+      error: false,
+    });
+    expect(getMessages).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing for an empty live snapshot', async () => {
+    const { result } = plan(true, { createdAt: 1000, status: 'running' }, [], {});
+
+    await expect(result).resolves.toEqual({ write: false });
+  });
+
+  it('promotes a reconciled compaction under its anchor with the terminal envelope', async () => {
+    const { result } = plan(true, reconciled, [], { anchor: [{ messageId: 'anchor' }] });
+    const planned = await result;
+
+    expect(planned).toMatchObject({ write: true, unfinished: false, error: true });
+    expect(planned.write && planned.content).toEqual([
+      expect.objectContaining({ type: ContentTypes.ERROR, initiatedBy: 'user' }),
+    ]);
+  });
+
+  it('promotes over an earlier live snapshot of the same turn', async () => {
+    const { result } = plan(true, reconciled, [text], {
+      anchor: [{ messageId: 'anchor' }],
+      response: [{ messageId: 'response', unfinished: true }],
+    });
+
+    await expect(result).resolves.toMatchObject({ write: true, unfinished: false });
+  });
+
+  it('withholds the promotion when a settled response row exists', async () => {
+    const { result } = plan(true, reconciled, [text], {
+      anchor: [{ messageId: 'anchor' }],
+      response: [{ messageId: 'response', unfinished: false }],
+    });
+
+    await expect(result).resolves.toEqual({ write: false });
+  });
+
+  it('reports a failed row read and writes nothing', async () => {
+    const readError = new Error('read failed');
+    const onReadError = jest.fn();
+
+    await expect(
+      planDisconnectSnapshot(true, {
+        content: [text],
+        jobRecord: reconciled,
+        jobCreatedAt: 1000,
+        userId: 'user-1',
+        conversationId: 'convo-1',
+        anchorMessageId: 'anchor',
+        responseMessageId: 'response',
+        getMessages: jest.fn(async () => {
+          throw readError;
+        }),
+        onReadError,
+      }),
+    ).resolves.toEqual({ write: false });
+    expect(onReadError).toHaveBeenCalledWith(readError);
+  });
+
+  it('writes a live snapshot once but still promotes after it', async () => {
+    const live = planDisconnectSnapshot(true, {
+      content: [text],
+      jobRecord: { createdAt: 1000, status: 'running' },
+      jobCreatedAt: 1000,
+      userId: 'user-1',
+      conversationId: 'convo-1',
+      anchorMessageId: 'anchor',
+      responseMessageId: 'response',
+      liveSaved: true,
+      getMessages: jest.fn(async () => []),
+    });
+    await expect(live).resolves.toEqual({ write: false });
+
+    const getMessages = jest.fn(async (filter: { messageId: string }) =>
+      filter.messageId === 'anchor'
+        ? [{ messageId: 'anchor' }]
+        : [{ messageId: filter.messageId, unfinished: true }],
+    );
+    const promoted = planDisconnectSnapshot(true, {
+      content: [text],
+      jobRecord: reconciled,
+      jobCreatedAt: 1000,
+      userId: 'user-1',
+      conversationId: 'convo-1',
+      anchorMessageId: 'anchor',
+      responseMessageId: 'response',
+      liveSaved: true,
+      getMessages,
+    });
+    await expect(promoted).resolves.toMatchObject({ write: true, unfinished: false });
+  });
+
+  it('withholds the promotion when the failed-turn path already saved its error row', async () => {
+    const { result, getMessages } = plan(true, reconciled, [text], {
+      anchor: [{ messageId: 'anchor' }],
+      anchor_: [{ messageId: 'anchor_', unfinished: false }],
+    });
+
+    await expect(result).resolves.toEqual({ write: false });
+    expect(getMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'anchor_' }),
+      '_id unfinished',
     );
   });
 
-  /** An ordinary turn's snapshot is the fallback row its terminal write may
-   *  still need, so it is written whatever the record says. */
-  it('writes the snapshot of a settled ordinary turn', () => {
-    expect(
-      resolveDisconnectSnapshotMode(false, { createdAt: 1000, status: 'complete' }, 1000),
-    ).toBe('live');
+  it('still promotes when the derived error row is only an unfinished snapshot', async () => {
+    const { result } = plan(true, reconciled, [text], {
+      anchor: [{ messageId: 'anchor' }],
+      anchor_: [{ messageId: 'anchor_', unfinished: true }],
+    });
+
+    await expect(result).resolves.toMatchObject({ write: true, unfinished: false });
+  });
+
+  it('never treats an anchor ending in one underscore as its own terminal row', async () => {
+    const getMessages = jest.fn(async (filter: { messageId: string }) =>
+      filter.messageId === 'anchor_' ? [{ messageId: 'anchor_', unfinished: false }] : [],
+    );
+
+    await expect(
+      planDisconnectSnapshot(true, {
+        content: [text],
+        jobRecord: reconciled,
+        jobCreatedAt: 1000,
+        userId: 'user-1',
+        conversationId: 'convo-1',
+        anchorMessageId: 'anchor_',
+        responseMessageId: 'response',
+        getMessages,
+      }),
+    ).resolves.toMatchObject({ write: true, unfinished: false });
+    expect(getMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'response' }),
+      '_id unfinished',
+    );
+    expect(getMessages).not.toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'anchor_' }),
+      '_id unfinished',
+    );
+  });
+
+  it('reads only the response row when a full-length anchor leaves no room for the suffix', async () => {
+    const anchorMessageId = 'a'.repeat(MAX_RESPONSE_MESSAGE_ID_LENGTH);
+    const getMessages = jest.fn(async (filter: { messageId: string }) =>
+      filter.messageId === anchorMessageId ? [{ messageId: anchorMessageId }] : [],
+    );
+
+    await expect(
+      planDisconnectSnapshot(true, {
+        content: [text],
+        jobRecord: reconciled,
+        jobCreatedAt: 1000,
+        userId: 'user-1',
+        conversationId: 'convo-1',
+        anchorMessageId,
+        responseMessageId: 'response',
+        getMessages,
+      }),
+    ).resolves.toMatchObject({ write: true, unfinished: false });
+    expect(getMessages.mock.calls.map(([filter]) => filter.messageId).sort()).toEqual(
+      [anchorMessageId, 'response'].sort(),
+    );
+  });
+});
+
+describe('createDisconnectSnapshotQueue', () => {
+  const text = { type: ContentTypes.TEXT, text: 'Partial' } as TMessageContentParts;
+  const stored = { type: ContentTypes.TEXT, text: 'Stored' } as TMessageContentParts;
+
+  it('plans once more from the stored content when a disconnected compaction settles', async () => {
+    const persist = jest.fn(async () => undefined);
+    const queue = createDisconnectSnapshotQueue({
+      isCompaction: true,
+      persist,
+      readContent: async () => [stored],
+    });
+
+    await queue.onDisconnect([]);
+    await queue.settle();
+
+    expect(persist.mock.calls).toEqual([[[]], [[stored]]]);
+  });
+
+  it('does not plan again when nobody disconnected or the turn is not a compaction', async () => {
+    const persist = jest.fn(async () => undefined);
+    const readContent = jest.fn(async () => [stored]);
+
+    await createDisconnectSnapshotQueue({ isCompaction: true, persist, readContent }).settle();
+    const ordinary = createDisconnectSnapshotQueue({ isCompaction: false, persist, readContent });
+    await ordinary.onDisconnect([text]);
+    await ordinary.settle();
+
+    expect(persist.mock.calls).toEqual([[[text]]]);
+    expect(readContent).not.toHaveBeenCalled();
+  });
+
+  it('waits for an outstanding snapshot write before the settle plan starts', async () => {
+    const order: string[] = [];
+    let finishLive: () => void = () => undefined;
+    const persist = jest.fn(async (content: TMessageContentParts[]) => {
+      const label = content[0] === stored ? 'settle' : 'live';
+      order.push(`${label}:start`);
+      if (label === 'live') {
+        await new Promise<void>((resolve) => {
+          finishLive = resolve;
+        });
+      }
+      order.push(`${label}:end`);
+    });
+    const queue = createDisconnectSnapshotQueue({
+      isCompaction: true,
+      persist,
+      readContent: async () => [stored],
+    });
+
+    const live = queue.onDisconnect([text]);
+    const settled = queue.settle();
+    await Promise.resolve();
+    finishLive();
+    await Promise.all([live, settled]);
+
+    expect(order).toEqual(['live:start', 'live:end', 'settle:start', 'settle:end']);
+  });
+
+  it('reports a failed settle plan and still runs after a failed live write', async () => {
+    const liveError = new Error('live failed');
+    const settleError = new Error('read failed');
+    const onSettleError = jest.fn();
+    const queue = createDisconnectSnapshotQueue({
+      isCompaction: true,
+      persist: jest.fn(async () => {
+        throw liveError;
+      }),
+      readContent: async () => {
+        throw settleError;
+      },
+      onSettleError,
+    });
+
+    await expect(queue.onDisconnect([text])).rejects.toBe(liveError);
+    await expect(queue.settle()).resolves.toBeUndefined();
+    expect(onSettleError).toHaveBeenCalledWith(settleError);
+  });
+});
+
+describe('announceDisconnectSnapshot', () => {
+  const announcement = {
+    userId: 'user-1',
+    conversationId: 'convo-1',
+    messageId: 'response',
+    context: 'test',
+  };
+
+  it('stamps a promoted terminal snapshot on its conversation', async () => {
+    const stampConvoLastResponse = jest.fn(async () => null);
+    await announceDisconnectSnapshot(
+      { stampConvoLastResponse },
+      { write: true, content: [], unfinished: false, error: true },
+      announcement,
+    );
+
+    expect(stampConvoLastResponse).toHaveBeenCalledWith('user-1', 'convo-1', 'response');
+  });
+
+  it('leaves a live or unwritten snapshot unannounced', async () => {
+    const stampConvoLastResponse = jest.fn(async () => null);
+    await announceDisconnectSnapshot(
+      { stampConvoLastResponse },
+      { write: true, content: [], unfinished: true, error: false },
+      announcement,
+    );
+    await announceDisconnectSnapshot({ stampConvoLastResponse }, { write: false }, announcement);
+
+    expect(stampConvoLastResponse).not.toHaveBeenCalled();
   });
 });

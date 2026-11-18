@@ -14,7 +14,7 @@ import { getRecoverySteerId } from './start';
 /** A synthesized lifecycle frame: the run ended without an ordinary final payload. */
 export type LifecycleFrame = Pick<
   ChatFinalFrame,
-  'reconcileReason' | 'terminalStatus' | 'generationCreatedAt' | 'conversation'
+  'reconcileReason' | 'terminalStatus' | 'generationCreatedAt' | 'conversation' | 'promotedSteers'
 >;
 
 /**
@@ -165,6 +165,12 @@ export async function reconcileGenerationLifecycle(
   ];
   const reconciledIds = new Set(host.steers.appliedIds(authoritativeValues));
   host.steers.settleApplied(reconciliationConvoId, authoritativeValues);
+  for (const id of host.steers.adoptPromoted(
+    reconciliationConvoId,
+    Array.isArray(event.promotedSteers) ? event.promotedSteers : [],
+  )) {
+    reconciledIds.add(id);
+  }
   const unrecovered = status?.unrecoveredSteers ?? [];
   if (unrecovered.length > 0) {
     const recoverySteerId = getRecoverySteerId(sub.submission);

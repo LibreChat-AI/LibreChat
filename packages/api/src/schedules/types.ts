@@ -63,6 +63,8 @@ export interface ScheduleUserContext {
   id: string;
   tenantId?: string;
   role?: string;
+  /** Absent on an owner row that predates the flag, which counts as not accepted. */
+  termsAccepted?: boolean;
 }
 
 /**
@@ -190,7 +192,7 @@ export interface ScheduleEngineDeps {
   methods: ScheduleMethods;
   /** Resolves interface.schedules limits, per-principal when a user is given. */
   getLimits: (user?: ScheduleUserContext) => Promise<ScheduleLimits>;
-  /** Loads the owning user (id + tenant) or null when deleted/disabled. */
+  /** Loads the owning user (id, tenant, role, terms acceptance) or null when deleted/disabled. */
   getUserContext: (userId: string | Types.ObjectId) => Promise<ScheduleUserContext | null>;
   /** Whether the balance feature gates this user and they are out of credits. */
   isOutOfBalance: (user: ScheduleUserContext) => Promise<boolean>;
@@ -271,6 +273,13 @@ export interface ScheduleEngineDeps {
   /** Whether the run owner's account deletion has begun. Fail-closed (unknown == true). */
   isOwnerDeleting: (userId: string) => Promise<boolean>;
   /**
+   * Whether the owner must still accept the terms of service before anything is processed
+   * for them: the effective-config check the HTTP terms gate applies to the same user.
+   * Throws when that config cannot be resolved, so the fire retries instead of running
+   * unchecked.
+   */
+  isTermsBlocked: (user: ScheduleUserContext) => Promise<boolean>;
+  /**
    * Runs `claim` against the lowest free GLOBAL capacity slot, retrying the next slot
    * when the unique partial index rejects a collision. Enforces fireConcurrency in the
    * database instead of via a read-then-compare count, so concurrent admissions of
@@ -327,6 +336,7 @@ export interface FireResult {
     | 'agent_deleted'
     | 'user_missing'
     | 'user_deleting'
+    | 'terms_not_accepted'
     | 'permission_revoked'
     | 'project_deleted'
     | 'project_required'

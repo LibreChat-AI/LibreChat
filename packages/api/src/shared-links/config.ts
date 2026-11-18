@@ -94,18 +94,23 @@ export function buildSharedLinkStartupPayload(
   if (typeof env.ANALYTICS_GTM_ID === 'string') {
     payload.analyticsGtmId = env.ANALYTICS_GTM_ID;
   }
-  if (typeof env.SANDPACK_BUNDLER_URL === 'string') {
+  if (env.SANDPACK_BUNDLER_URL) {
     payload.bundlerURL = env.SANDPACK_BUNDLER_URL;
   }
-  if (typeof env.SANDPACK_STATIC_BUNDLER_URL === 'string') {
+  if (env.SANDPACK_STATIC_BUNDLER_URL) {
     payload.staticBundlerURL = env.SANDPACK_STATIC_BUNDLER_URL;
   }
   if (typeof env.CUSTOM_FOOTER === 'string') {
     payload.customFooter = env.CUSTOM_FOOTER;
   }
 
-  const { privacyPolicy, termsOfService, codeHighlightThrottleMs, artifactUndocking } =
-    withSafePolicyLinks(appConfig?.interfaceConfig) ?? {};
+  const {
+    privacyPolicy,
+    termsOfService,
+    codeHighlightThrottleMs,
+    artifactUndocking,
+    analyticsConsent,
+  } = withSafePolicyLinks(appConfig?.interfaceConfig) ?? {};
   const parsedTheme = deploymentThemeSchema.safeParse(appConfig?.interfaceConfig?.theme);
   const theme = parsedTheme.success ? parsedTheme.data : undefined;
   /* A shared conversation shows the same artifacts pane, so it needs the same
@@ -115,7 +120,8 @@ export function buildSharedLinkStartupPayload(
     termsOfService ||
     codeHighlightThrottleMs != null ||
     theme ||
-    artifactUndocking === false
+    artifactUndocking === false ||
+    analyticsConsent === false
   ) {
     payload.interface = {
       ...(codeHighlightThrottleMs != null ? { codeHighlightThrottleMs } : {}),
@@ -123,6 +129,7 @@ export function buildSharedLinkStartupPayload(
       ...(termsOfService ? { termsOfService } : {}),
       ...(theme ? { theme } : {}),
       ...(artifactUndocking === false ? { artifactUndocking } : {}),
+      ...(analyticsConsent === false ? { analyticsConsent } : {}),
     };
   }
 

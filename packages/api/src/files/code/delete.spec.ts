@@ -1,3 +1,4 @@
+import { FileContext } from 'librechat-data-provider';
 import type { CodeEnvRef } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import { createFileProvisionRecovery } from '../operations';
@@ -28,9 +29,9 @@ function setup() {
   return { httpClient, clearFileCodeEnvRefs, remove };
 }
 
-it.each([204, 404])('reconciles a confirmed code deletion or absence (%s)', async (status) => {
+it.each([204, 403, 404])('reconciles a confirmed code deletion or absence (%s)', async (status) => {
   const { httpClient, clearFileCodeEnvRefs, remove } = setup();
-  if (status === 404) httpClient.mockRejectedValue({ response: { status } });
+  if (status !== 204) httpClient.mockRejectedValue({ response: { status } });
   const file = { file_id: 'stored-file', metadata: { codeEnvRefs: { default: ref } } };
   await expect(remove(req, file)).resolves.toEqual({ deleted: true });
   expect(clearFileCodeEnvRefs).toHaveBeenCalledWith({
@@ -139,3 +140,54 @@ it('invalidates a confirmed code pointer even when a later vector deletion fails
   expect(primary).not.toHaveBeenCalled();
   expect(clearFileEmbeddings).not.toHaveBeenCalled();
 });
+
+it.each([401, 409, 429, 500, 503])(
+  'preserves retryable or unrelated Code API failures (%s)',
+  async (status) => {
+    const { httpClient, clearFileCodeEnvRefs, remove } = setup();
+    const error = { response: { status } };
+    httpClient.mockRejectedValue(error);
+    await expect(
+      remove(req, { file_id: 'stored-file', metadata: { codeEnvRef: ref } }),
+    ).rejects.toBe(error);
+    expect(clearFileCodeEnvRefs).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  { ...ref, kind: 'skill' as const, id: 'skill-id', version: 1 },
+  { ...ref, kind: 'agent' as const, id: 'agent-id' },
+  { ...ref, id: 'other-owner' },
+])('does not forgive a forbidden session outside the file owner identity', async (otherRef) => {
+  const { httpClient, clearFileCodeEnvRefs, remove } = setup();
+  const error = { response: { status: 403 } };
+  httpClient.mockRejectedValue(error);
+  await expect(
+    remove(req, { file_id: 'stored-file', metadata: { codeEnvRef: otherRef } }),
+  ).rejects.toBe(error);
+  expect(clearFileCodeEnvRefs).not.toHaveBeenCalled();
+});
+
+it.each([true, false])(
+  'reconciles snapshot receipts without deleting mutable paths (CAS %s)',
+  async (matched) => {
+    const { httpClient, clearFileCodeEnvRefs, remove } = setup();
+    clearFileCodeEnvRefs.mockResolvedValue(matched);
+    const file = {
+      file_id: 'snapshot-v1',
+      user: 'owner',
+      tenantId: 'tenant-a',
+      context: FileContext.execute_code_snapshot,
+      metadata: { codeEnvRef: ref, codeEnvRefs: { default: ref } },
+    };
+    if (matched) await expect(remove(req, file)).resolves.toEqual({ deleted: true });
+    else await expect(remove(req, file)).rejects.toThrow('Code storage reconciliation failed');
+    expect(httpClient).not.toHaveBeenCalled();
+    expect(clearFileCodeEnvRefs).toHaveBeenCalledWith({
+      file_id: 'snapshot-v1',
+      userId: 'owner',
+      tenantId: 'tenant-a',
+      refs: [{ routeKey: 'default', ref }],
+    });
+  },
+);

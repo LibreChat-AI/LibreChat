@@ -55,24 +55,23 @@ export function createScheduleMCPEnrollmentResolver(
     const schedules = appConfig?.interfaceConfig?.schedules;
     const bindings = typeof schedules === 'object' ? schedules?.mcpConsent?.resources : undefined;
     if (!bindings || !Object.keys(bindings).length) return [];
-    const servers = await deps.getServers(
-      user,
-      (appConfig?.mcpConfig ?? {}) as Record<string, ParsedServerConfig>,
-    );
+    const [servers, { tools, candidates: candidateTools }] = await Promise.all([
+      deps.getServers(user, (appConfig?.mcpConfig ?? {}) as Record<string, ParsedServerConfig>),
+      resolveScheduledMCPRequirements(
+        identity.agentId,
+        user,
+        {
+          getAgentGraphNodes: deps.getNodes,
+          resolveAgentGraphAccess: () => deps.resolveGraphAccess(user),
+          getModelsConfig: deps.getModelsConfig,
+        },
+        async () => appConfig,
+        signal,
+      ),
+    ]);
     const names = Object.keys(servers);
     const aliases = buildServerNameAliases(names);
     const candidates = [...names, ...aliases.keys()];
-    const { tools, candidates: candidateTools } = await resolveScheduledMCPRequirements(
-      identity.agentId,
-      user,
-      {
-        getAgentGraphNodes: deps.getNodes,
-        resolveAgentGraphAccess: () => deps.resolveGraphAccess(user),
-        getModelsConfig: deps.getModelsConfig,
-      },
-      async () => appConfig,
-      signal,
-    );
     if (candidateTools.some(({ name }) => !isScheduledMCPCandidate(name)))
       throw new ScheduleMCPConsentError('consent_unavailable');
     const selected = new Map<string, Map<string, Set<string>>>();

@@ -4,7 +4,14 @@ import throttle from 'lodash/throttle';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
-import { Button, EmptyState, Spinner, useRemScale, buttonVariants } from '@librechat/client';
+import {
+  Button,
+  Shimmer,
+  Spinner,
+  EmptyState,
+  useRemScale,
+  buttonVariants,
+} from '@librechat/client';
 import {
   Archive,
   ChevronDown,
@@ -44,6 +51,7 @@ import { useActiveJobs, useRunningConversationsQuery } from '~/data-provider';
 import { facetFilterCountAtom, resetFacetsAtom } from './facets';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { groupConversations, cn } from '~/utils';
+import { ListLoading } from '~/components/ui';
 import Convo from './Convo';
 import store from '~/store';
 
@@ -118,19 +126,6 @@ const MeasuredRow: FC<MeasuredRowProps> = memo(
 );
 
 MeasuredRow.displayName = 'MeasuredRow';
-
-const LoadingSpinner = memo(() => {
-  const localize = useLocalize();
-
-  return (
-    <div className="text-text-primary mx-auto mt-2 flex items-center justify-center gap-2">
-      <Spinner className="m-0" />
-      <span className="shimmer">{localize('com_ui_loading')}</span>
-    </div>
-  );
-});
-
-LoadingSpinner.displayName = 'LoadingSpinner';
 
 interface ChatsHeaderProps {
   isExpanded: boolean;
@@ -521,7 +516,7 @@ const Conversations: FC<ConversationsProps> = ({
       if (item.type === 'loading') {
         return (
           <MeasuredRow key={key} {...rowProps}>
-            <LoadingSpinner />
+            <ListLoading />
           </MeasuredRow>
         );
       }
@@ -541,8 +536,12 @@ const Conversations: FC<ConversationsProps> = ({
 
       if (item.type === 'convo') {
         const isGenerating = activeJobIds.has(item.convo.conversationId ?? '');
+        /** Keyed by chat, not by the row index react-virtualized passes: an index key
+         *  keeps a row's local state (an open delete dialog, a rename field) in its slot
+         *  while a different chat moves into it. */
+        const convoKey = item.convo.conversationId ? `convo-${item.convo.conversationId}` : key;
         return (
-          <MeasuredRow key={key} {...rowProps}>
+          <MeasuredRow key={convoKey} {...rowProps} rowKey={convoKey}>
             <Convo
               conversation={item.convo}
               retainView={moveToTop}
@@ -667,7 +666,7 @@ const Conversations: FC<ConversationsProps> = ({
     body = (
       <div className="text-text-primary flex flex-1 items-center justify-center">
         <Spinner className="m-0" />
-        <span className="shimmer ml-2">{localize('com_ui_loading')}</span>
+        <Shimmer className="ml-2">{localize('com_ui_loading')}</Shimmer>
       </div>
     );
   } else if (isListError) {

@@ -1,6 +1,10 @@
 import { logger, BASE_CONFIG_PRINCIPAL_ID } from '@librechat/data-schemas';
 import { AccessRoleIds, PrincipalType, ResourceType } from 'librechat-data-provider';
-import type { FiltersConfig, TDeletePromptResponse } from 'librechat-data-provider';
+import type {
+  FiltersConfig,
+  TDeletePromptResponse,
+  TPromptRevisionChoicesResponse,
+} from 'librechat-data-provider';
 import type {
   PromptRecord,
   PromptDatabase,
@@ -9,6 +13,7 @@ import type {
   PromptOperation,
   PromptGroupRecord,
   ResolvePromptInput,
+  ListRevisionsInput,
   PromptServiceError,
   PromptServiceResult,
   ImportSourceGroupInput,
@@ -56,6 +61,11 @@ export interface PromptServiceListResult {
  */
 export interface PromptService {
   resolvePrompt(input: ResolvePromptInput): Promise<PromptServiceResult<ResolvedPrompt>>;
+  /** Uncached read, for a caller that needs `source` before building a `PromptReference`. */
+  readPromptGroup(groupId: string): Promise<PromptGroupRecord | null>;
+  listRevisions(
+    input: ListRevisionsInput,
+  ): Promise<PromptServiceResult<TPromptRevisionChoicesResponse>>;
   getListPromptGroupsByAccess(input: PromptListInput): Promise<PromptServiceListResult>;
   /** Returns the group's revisions, newest first. */
   getPrompts(
@@ -168,30 +178,48 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       : withPromptStage('read', () => store.getPromptGroup(groupId));
 
   return {
-    async resolvePrompt({
-      groupId,
-      selection,
-      loadedGroup,
-      loadedRevision,
-      filters,
-      allowedSources,
-    }) {
+    async resolvePrompt(input) {
+      const { groupId, loadedGroup, loadedRevision, filters } = input;
       const group = await readGroup(groupId, loadedGroup);
       if (group == null) {
         return {
           ok: false,
-          error: { type: 'unavailable_selection', reason: selectionUnavailableReason(selection) },
+          error: {
+            type: 'unavailable_selection',
+            reason: selectionUnavailableReason(input.selection),
+          },
         };
       }
-      if (allowedSources != null && !allowedSources.includes(group.source)) {
+      if (input.source !== group.source) {
         return { ok: false, error: { type: 'unsupported_source', source: group.source } };
       }
-      const adapter = sources[group.source];
-      const resolved = await adapter.resolvePrompt({ group, selection, loadedRevision });
+      // Switches on input.source, not group.source, so TypeScript narrows input.selection to match.
+      const resolved =
+        input.source === 'native'
+          ? await sources.native.resolvePrompt({
+              group,
+              selection: input.selection,
+              loadedRevision,
+            })
+          : await sources.langfuse.resolvePrompt({
+              group,
+              selection: input.selection,
+              loadedRevision,
+            });
       if (!resolved.ok) {
         return resolved;
       }
       return inspect({ prompt: resolved.value.prompt }, filters) ?? resolved;
+    },
+
+    readPromptGroup: (groupId) => readGroup(groupId),
+
+    async listRevisions({ groupId, loadedGroup }) {
+      const group = await readGroup(groupId, loadedGroup);
+      if (group == null) {
+        return { ok: false, error: { type: 'unavailable_selection', reason: 'revision' } };
+      }
+      return sources[group.source].listRevisions({ group });
     },
 
     async getListPromptGroupsByAccess(input) {

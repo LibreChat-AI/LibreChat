@@ -2,7 +2,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const readline = require('readline');
 const mongoose = require('mongoose');
-const { createPasswordResetUpdate } = require('@librechat/api');
+const { createPasswordResetUpdate, restampRetirementCutoff } = require('@librechat/api');
 const { createModels, createMethods } = require('@librechat/data-schemas');
 const { User, Passkey, Session } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
@@ -66,13 +66,10 @@ const resetPassword = async () => {
      * cached document that keeps pre-reset access tokens verifying for the
      * cache TTL.
      */
-    const updated = await methods.updateUser(
-      user._id.toString(),
-      /** Stamps credentialsChangedAt and drops any staged enrollment, as the web reset does. */
-      createPasswordResetUpdate(hashedPassword),
-      {},
-      { preserveExpiresAt: true },
-    );
+    const userId = user._id.toString();
+    /** Stamps credentialsChangedAt and drops any staged enrollment, as the web reset does. */
+    const update = createPasswordResetUpdate(hashedPassword);
+    const updated = await methods.updateUser(userId, update, {}, { preserveExpiresAt: true });
 
     if (!updated) {
       console.error('User not found during update!');
@@ -84,13 +81,37 @@ const resetPassword = async () => {
      * logged in after an administrator believes the account has been recovered.
      */
     let deletedCount;
-    try {
-      ({ deletedCount } = await Passkey.deleteMany({ user: user._id }));
+    let failure;
+    /**
+     * The password is already changed, so every step runs and the first failure exits non-zero.
+     * The cache settles last: an eviction before the re-stamp could leave a document carrying the
+     * earlier cutoff, which keeps accepting a credential minted during the password write.
+     */
+    for (const step of [
+      async () => {
+        ({ deletedCount } = await Passkey.deleteMany({ user: user._id }));
+      },
       /** A refresh session outlives the stamp: refreshing mints a token issued after it. */
-      await Session.deleteMany({ user: user._id });
-    } finally {
-      /** The password is already changed, so the cache settles even when a revocation fails. */
-      await methods.awaitAuthUserDocEviction(user._id.toString());
+      () => Session.deleteMany({ user: user._id }),
+      () =>
+        restampRetirementCutoff(
+          'credentialsChangedAt',
+          userId,
+          update.credentialsChangedAt,
+          (cutoff, expectedState) =>
+            methods.updateUser(userId, cutoff, expectedState, { preserveExpiresAt: true }),
+        ),
+      () => methods.awaitAuthUserDocEviction(userId),
+    ]) {
+      try {
+        await step();
+      } catch (err) {
+        console.error('Password reset step failed:', err);
+        failure ??= err;
+      }
+    }
+    if (failure) {
+      throw failure;
     }
 
     console.log('Password successfully reset!');

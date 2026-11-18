@@ -1,3 +1,4 @@
+const path = require('path');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
 let express;
@@ -31,6 +32,10 @@ describe.each([false, true])('pre-auth tenant routes (strict=%s)', (strictMode) 
     process.env.DOMAIN_CLIENT = 'http://localhost:3080';
     process.env.DOMAIN_SERVER = 'http://localhost:3080';
     process.env.TENANT_ISOLATION_STRICT = String(strictMode);
+    // Login reaches getAppConfig through the balance middleware; without this, a local (gitignored)
+    // librechat.yaml at the repository root is loaded, and an unresolved `${VAR}` MCP URL in it
+    // turns every authenticated login into a 500.
+    process.env.CONFIG_PATH = path.join(__dirname, 'missing-librechat.yaml');
     jest.resetModules();
     express = require('express');
     request = require('supertest');
@@ -119,6 +124,7 @@ describe.each([false, true])('pre-auth tenant routes (strict=%s)', (strictMode) 
       '/api/auth/2fa/setup/confirm',
       '/api/auth/2fa/setup/acknowledge',
       '/api/auth/2fa/setup/finalize',
+      '/api/auth/2fa/setup/cancel',
       '/api/user/verify',
       '/api/user/verify/resend',
       '/api/admin/login/local',

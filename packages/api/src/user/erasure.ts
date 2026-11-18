@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import type { TCheckpointerConfig, MCPOptions } from 'librechat-data-provider';
 import type { AllMethods, IMongoFile } from '@librechat/data-schemas';
@@ -47,6 +48,7 @@ type ErasureMethods = Pick<
   | 'deleteSchedulesByUser'
   | 'deleteUserChatProjects'
   | 'deleteUserToolFavorites'
+  | 'cancelUserToolFavoriteDeletion'
   | 'deleteRefreshTokenBridges'
   | 'deleteAllAgentQueuedTurnsForUser'
 >;
@@ -99,8 +101,74 @@ export interface UserErasureParams {
   userId: string;
   tenantId?: string;
   checkpointer?: TCheckpointerConfig;
+  /** UUID owned by this deletion attempt, distinct from the Mongo ownership timestamp. */
+  deletionAttemptId?: string;
   /** Operator option to keep the transaction ledger; account self-deletion always erases it. */
   keepTransactions?: boolean;
+}
+
+type UserDeletionCancellationParams = {
+  userId: string;
+  startedAt: Date;
+  deletionAttemptId?: string;
+};
+type UserDeletionCancellationDeps = Pick<
+  AllMethods,
+  | 'isAgentTriggerUserDeletionOwner'
+  | 'cancelAgentTriggerUserDeletion'
+  | 'cancelUserToolFavoriteDeletion'
+>;
+
+export interface UserDeletionAttempt {
+  readonly id: string;
+  adopt(
+    userId: string,
+    startedAt: Date,
+    deps: Pick<AllMethods, 'getAgentTriggerUserDeletionAttemptId'>,
+  ): Promise<void>;
+  commit<T>(operation: () => Promise<T>): Promise<T>;
+  cancel(params: UserDeletionCancellationParams, deps: UserDeletionCancellationDeps): Promise<void>;
+}
+
+/** A started user delete may still commit after an error or a lost acknowledgement. */
+export function createUserDeletionAttempt(): UserDeletionAttempt {
+  let commitStarted = false;
+  let identityKnown = true;
+  let attemptId: string = randomUUID();
+  return {
+    get id() {
+      return attemptId;
+    },
+    async adopt(userId, startedAt, deps) {
+      identityKnown = false;
+      const stored = await deps.getAgentTriggerUserDeletionAttemptId(userId, startedAt);
+      if (stored === null) throw new Error('User deletion attempt identity unavailable');
+      attemptId = stored;
+      identityKnown = true;
+    },
+    async commit<T>(operation: () => Promise<T>): Promise<T> {
+      commitStarted = true;
+      return operation();
+    },
+    async cancel(params, deps) {
+      if (!commitStarted && identityKnown) await cancelUserDataDeletion(params, deps);
+    },
+  };
+}
+
+/** Keep Mongo ownership retryable until this attempt's favorites fence is released. */
+export async function cancelUserDataDeletion(
+  params: UserDeletionCancellationParams,
+  deps: UserDeletionCancellationDeps,
+): Promise<void> {
+  const { userId, startedAt, deletionAttemptId } = params;
+  if (deletionAttemptId !== undefined && deps.cancelUserToolFavoriteDeletion) {
+    if ((await deps.isAgentTriggerUserDeletionOwner(userId, startedAt, deletionAttemptId)) !== true)
+      return;
+    await deps.cancelUserToolFavoriteDeletion(userId, deletionAttemptId);
+  }
+  if (deletionAttemptId === undefined) await deps.cancelAgentTriggerUserDeletion(userId, startedAt);
+  else await deps.cancelAgentTriggerUserDeletion(userId, startedAt, deletionAttemptId);
 }
 
 export type MCPServerCleanupDeps = Pick<
@@ -233,6 +301,19 @@ export async function deleteUserMCPServers(
 }
 
 /**
+ * Waits for independent deletes to settle, then rethrows the first failure in declaration
+ * order, so a failed step aborts the erasure with the same error as when they ran one by one.
+ */
+async function settleInOrder(steps: Array<Promise<unknown> | undefined>): Promise<void> {
+  const results = await Promise.allSettled(steps);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      throw result.reason;
+    }
+  }
+}
+
+/**
  * The user-owned data cascade shared by account self-deletion and the operator CLI.
  *
  * Callers own everything around it: deletion fences, schedule suspension, generation aborts,
@@ -285,21 +366,24 @@ export async function eraseUserData(
     await deps.deleteRefreshTokenBridges({ userId });
   }
   await deps.deletePasskeysByUser(userId);
-  if (!keepTransactions) {
-    await deps.deleteTransactions({ user: userId });
-  }
   await deps.deleteUserKey({ userId, all: true });
-  await deps.deleteBalances({ user: userObjectId });
-  await deps.deletePresets(userId);
-  await deps.deleteAllUserPluginAuths(userId);
+  /** Leaf collections nothing later in the erasure reads, so they are removed together. */
+  await settleInOrder([
+    keepTransactions ? undefined : deps.deleteTransactions({ user: userId }),
+    deps.deleteBalances({ user: userObjectId }),
+    deps.deletePresets(userId),
+    deps.deleteAllUserPluginAuths(userId),
+    deps.deleteToolCalls(userId),
+    deps.deleteConversationTags({ user: userId }),
+    params.deletionAttemptId === undefined
+      ? deps.deleteUserToolFavorites(userId)
+      : deps.deleteUserToolFavorites(userId, params.deletionAttemptId),
+    deps.deleteAllUserMemories(userId),
+  ]);
   await deps.deleteSharedLinks(userId);
-  await deps.deleteToolCalls(userId);
   await deps.deleteUserAgents(userId);
   await deps.deleteAllAgentApiKeys(userObjectId);
   await deps.deleteAssistants({ user: userId });
-  await deps.deleteConversationTags({ user: userId });
-  await deps.deleteUserToolFavorites(userId);
-  await deps.deleteAllUserMemories(userId);
   await deps.deleteUserPrompts(userId);
   await deps.deleteUserSkills(userId);
   await deleteUserMCPServers(userId, deps, tenantId);

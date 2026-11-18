@@ -10,6 +10,7 @@ import {
   getTokenCountForMessage,
   estimateOpenAIImageTokens,
   estimateAnthropicImageTokens,
+  estimateTimedMediaBlockTokens,
   markTokenCounterCacheCompatible,
 } from '@librechat/agents';
 import type { MessageContentComplex, TokenCounter } from '@librechat/agents';
@@ -80,6 +81,7 @@ type ContentBlock = {
   source?: { type?: string; data?: string; media_type?: string; content?: unknown[] };
   source_type?: string;
   mime_type?: string;
+  mimeType?: string;
   data?: string;
   text?: string;
   tool_call?: { id?: string; name?: string; args?: string; output?: string };
@@ -301,6 +303,45 @@ function estimateDocumentBlockTokens(
 }
 
 /**
+ * Google/Vertex native media blocks (`{ type: 'media', mimeType, data | fileUri }`), as built by
+ * the file encoders and YouTube links. Mirrors the agents SDK's media accounting so these blocks
+ * are not skipped by the precomputed context budget.
+ */
+function estimateMediaBlockTokens(
+  block: ContentBlock,
+  isClaude: boolean,
+  countTokens: (text: string) => number,
+): number {
+  const mime = (block.mimeType ?? block.mime_type ?? '').split(';')[0].trim().toLowerCase();
+  const data = typeof block.data === 'string' && block.data.length > 0 ? block.data : undefined;
+
+  if (mime.startsWith('audio/') || mime.startsWith('video/')) {
+    const timed = estimateTimedMediaBlockTokens({ ...block, mimeType: mime });
+    return Math.ceil(timed * IMAGE_TOKEN_SAFETY_MARGIN);
+  }
+  if (data == null) {
+    return mime.startsWith('image/') ? 1024 : URL_DOCUMENT_FALLBACK_TOKENS;
+  }
+  if (mime.startsWith('image/')) {
+    return estimateImageDataTokens(data, isClaude);
+  }
+  if (mime === 'application/pdf') {
+    const comma = data.startsWith('data:') ? data.indexOf(',') : -1;
+    return estimateDocumentBlockTokens(
+      {
+        type: 'file',
+        source_type: 'base64',
+        mime_type: mime,
+        data: comma >= 0 ? data.slice(comma + 1) : data,
+      },
+      isClaude,
+      countTokens,
+    );
+  }
+  return Math.max(URL_DOCUMENT_FALLBACK_TOKENS, data.length);
+}
+
+/**
  * Single-pass token counter for formatted messages (plain objects with role/content/name).
  * Handles text, tool_call, image, and document content types in one iteration,
  * then applies Claude correction when applicable.
@@ -346,6 +387,11 @@ export function countFormattedMessageTokens(
 
         if (type === 'document' || type === 'file') {
           numTokens += estimateDocumentBlockTokens(block, isClaude, countTokens);
+          continue;
+        }
+
+        if (type === 'media') {
+          numTokens += estimateMediaBlockTokens(block, isClaude, countTokens);
           continue;
         }
 

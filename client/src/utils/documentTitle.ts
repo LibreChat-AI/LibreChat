@@ -6,8 +6,7 @@ let documentTitleRevision = 0;
 
 export const getDocumentTitleRevision = (): number => documentTitleRevision;
 
-export const hasRealTitle = (title?: string | null): title is string =>
-  title != null && title !== '' && title !== 'New Chat';
+export { hasRealTitle } from '@librechat/chat';
 
 const getAppTitle = (): string => {
   try {

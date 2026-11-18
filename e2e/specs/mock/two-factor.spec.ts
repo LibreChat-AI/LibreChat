@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { TStartupConfig } from 'librechat-data-provider';
 import { NEW_CHAT_PATH } from './helpers';
+import { expect, test } from './fixtures';
 
 /**
  * Regression test for the framer-motion / Vite incompatibility that crashed the

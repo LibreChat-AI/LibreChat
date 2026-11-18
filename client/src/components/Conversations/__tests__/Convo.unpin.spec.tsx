@@ -1,6 +1,7 @@
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { render, screen, fireEvent, act } from '@testing-library/react';
+import { PULL_REQUEST_BATCH_VERSION as mockBatchVersion } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 
 type PinVariables = { conversationId: string; pinned: boolean };
@@ -35,7 +36,13 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: { sharedLinksEnabled: false } }),
+  useGetStartupConfig: () => ({
+    data: {
+      sharedLinksEnabled: false,
+      pullRequestsEnabled: true,
+      pullRequestsBatchVersion: mockBatchVersion,
+    },
+  }),
   useUpdateConversationMutation: () => ({ mutateAsync: jest.fn() }),
   usePinConversationMutation: () => ({
     mutate: (variables: PinVariables, options?: PinOptions) => {
@@ -74,15 +81,19 @@ jest.mock('../ConversationEndpointIcon', () => ({
   default: () => <div data-testid="convo-icon" />,
 }));
 
-/** The real row's only focusable element is the link button inside it; the row
- *  element itself is a plain div, so a focus target has to be found in here. */
+/** Keep the conversation control distinct from the leading PR action. */
 jest.mock('../ConvoLink', () => ({
   __esModule: true,
   default: ({ title }: { title: string }) => (
-    <button type="button" aria-label={`open ${title}`}>
+    <button type="button" data-conversation-link="" aria-label={`open ${title}`}>
       {title}
     </button>
   ),
+}));
+
+jest.mock('~/components/Chat/PullRequest/RowMark', () => ({
+  __esModule: true,
+  default: () => <button type="button" aria-label="Pull request" />,
 }));
 
 jest.mock('../RenameForm', () => ({
@@ -129,7 +140,7 @@ describe('pinned conversation row unpin', () => {
    *  handoff only applies when the row that is going away actually held it. */
   const activateUnpin = (index: number) => {
     const button = screen.getAllByTestId('convo-unpin-button')[index];
-    button.focus();
+    act(() => button.focus());
     fireEvent.click(button);
   };
 
@@ -251,7 +262,7 @@ describe('pinned conversation row unpin', () => {
     );
 
     const button = screen.getAllByTestId('convo-unpin-button')[0];
-    button.focus();
+    act(() => button.focus());
     fireEvent.click(button);
     act(() => {
       pinCalls[0].options?.onSuccess?.();

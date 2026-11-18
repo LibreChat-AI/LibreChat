@@ -1,80 +1,235 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import type * as t from '~/types';
+import type { LeaseHarness } from '~/contracts/lease';
+import { createResourceLockModel } from '~/models/resourceLock';
+import { describeLeaseConformance } from '~/contracts/lease';
 import { createResourceLockMethods } from './resourceLock';
-import resourceLockSchema from '~/schema/resourceLock';
 
-let mongoServer: MongoMemoryServer;
-let methods: ReturnType<typeof createResourceLockMethods>;
-
-beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
-  await mongoose.connect(mongoServer.getUri());
-  if (!mongoose.models.ResourceLock) {
-    mongoose.model<t.IResourceLock>('ResourceLock', resourceLockSchema);
-  }
+const instances = Array.from({ length: 3 }, () => new mongoose.Mongoose());
+const models = instances.map((instance) => {
+  instance.set('autoIndex', false);
+  instance.set('autoCreate', false);
+  return createResourceLockModel(instance);
 });
+let server: MongoMemoryServer;
 
-afterAll(async () => {
-  await mongoose.disconnect();
-  await mongoServer?.stop();
-});
+const harness: LeaseHarness = {
+  name: 'mongoose',
+  async setup() {
+    server = await MongoMemoryServer.create();
+    await Promise.all(instances.map((instance) => instance.connect(server.getUri())));
+    await models[0].createIndexes();
+    return [
+      createResourceLockMethods(instances[0]),
+      createResourceLockMethods(instances[1]),
+      createResourceLockMethods(instances[2]),
+    ];
+  },
+  async teardown() {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+    await Promise.all(instances.map((instance) => instance.disconnect()));
+    await server?.stop();
+  },
+  async reset() {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+    await models[0].deleteMany({});
+  },
+  setTime(now) {
+    // Freeze Date only. Mongo's network, readiness deadlines, and cleanup timers stay real.
+    jest.useFakeTimers({
+      doNotFake: [
+        'hrtime',
+        'nextTick',
+        'performance',
+        'queueMicrotask',
+        'setImmediate',
+        'clearImmediate',
+        'setTimeout',
+        'clearTimeout',
+        'setInterval',
+        'clearInterval',
+      ],
+    });
+    jest.setSystemTime(now);
+  },
+  async seed(record) {
+    await models[0].create(record);
+  },
+  async read(key) {
+    const record = await models[0].findOne({ key }).lean();
+    return record
+      ? { key: record.key, ownerId: record.ownerId, expiresAt: record.expiresAt }
+      : null;
+  },
+  failNext(operation, error) {
+    const method = {
+      acquire: 'insertOne',
+      renew: 'findOneAndUpdate',
+      release: 'deleteOne',
+    } as const;
+    jest.spyOn(models[0].collection, method[operation]).mockImplementationOnce(() => {
+      throw error;
+    });
+  },
+};
 
-beforeEach(async () => {
-  await mongoose.connection.dropDatabase();
-  methods = createResourceLockMethods(mongoose);
-});
+describeLeaseConformance(harness);
 
-describe('resource locks', () => {
-  it('grants the lease to one owner at a time', async () => {
-    const key = 'acl:agent:1';
-    expect(await methods.acquireResourceLock({ key, ownerId: 'a', ttlMs: 30_000 })).toBe(true);
-    expect(await methods.acquireResourceLock({ key, ownerId: 'b', ttlMs: 30_000 })).toBe(false);
+describe('resource lease Mongo adapter', () => {
+  beforeAll(() => harness.setup());
+  afterAll(() => harness.teardown());
+  beforeEach(() => harness.reset());
+
+  it('enforces unique keys and retains TTL cleanup configuration', async () => {
+    const record = { key: 'unique', ownerId: 'a', expiresAt: new Date('2100-01-01') };
+    await models[0].create(record);
+    await expect(models[1].create({ ...record, ownerId: 'b' })).rejects.toMatchObject({
+      code: 11000,
+    });
+    expect(await models[0].listIndexes()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: { key: 1 }, unique: true }),
+        expect.objectContaining({ key: { expiresAt: 1 }, expireAfterSeconds: 0 }),
+      ]),
+    );
+  });
+
+  it('propagates an expired-takeover driver failure without replacing the owner', async () => {
+    const methods = createResourceLockMethods(instances[0]);
+    const record = { key: 'takeover', ownerId: 'a', expiresAt: new Date('2100-01-01') };
+    await harness.seed(record);
+    harness.setTime(record.expiresAt);
+    const failure = new Error('takeover unavailable');
+    jest.spyOn(models[0].collection, 'findOneAndUpdate').mockRejectedValueOnce(failure);
+    await expect(
+      methods.acquireResourceLock({ key: record.key, ownerId: 'b', ttlMs: 30_000 }),
+    ).rejects.toBe(failure);
+    expect(await harness.read(record.key)).toEqual(record);
+  });
+
+  it('does not claim ownership when an insert commits but its acknowledgement is lost', async () => {
+    const methods = createResourceLockMethods(instances[0]);
+    const insert = models[0].collection.insertOne.bind(models[0].collection);
+    const failure = new mongoose.mongo.MongoNetworkError('lost acknowledgement');
+    jest.spyOn(models[0].collection, 'insertOne').mockImplementationOnce(async (...args) => {
+      await insert(...args);
+      throw failure;
+    });
+    const lock = { key: 'unacknowledged', ownerId: 'a', ttlMs: 30_000 };
+    await expect(methods.acquireResourceLock(lock)).rejects.toBe(failure);
+    expect((await harness.read(lock.key))?.ownerId).toBe('a');
     expect(
-      await methods.acquireResourceLock({ key: 'acl:agent:2', ownerId: 'b', ttlMs: 30_000 }),
-    ).toBe(true);
-  });
-
-  it('lets another owner take over a lease its crashed holder left to expire', async () => {
-    const key = 'acl:agent:1';
-    await methods.acquireResourceLock({ key, ownerId: 'crashed', ttlMs: 1 });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expect(await methods.acquireResourceLock({ key, ownerId: 'b', ttlMs: 30_000 })).toBe(true);
-    expect(await methods.releaseResourceLock({ key, ownerId: 'crashed' })).toBe(false);
-  });
-
-  it('ignores a release from a non-owner and frees the lease for the owner', async () => {
-    const key = 'acl:agent:1';
-    await methods.acquireResourceLock({ key, ownerId: 'a', ttlMs: 30_000 });
-
-    expect(await methods.releaseResourceLock({ key, ownerId: 'b' })).toBe(false);
-    expect(await methods.acquireResourceLock({ key, ownerId: 'b', ttlMs: 30_000 })).toBe(false);
-    expect(await methods.releaseResourceLock({ key, ownerId: 'a' })).toBe(true);
-    expect(await methods.acquireResourceLock({ key, ownerId: 'b', ttlMs: 30_000 })).toBe(true);
-  });
-
-  it('renews only for the live holder', async () => {
-    const key = 'acl:agent:1';
-    await methods.acquireResourceLock({ key, ownerId: 'a', ttlMs: 30_000 });
-    expect(await methods.renewResourceLock({ key, ownerId: 'a', ttlMs: 30_000 })).toBe(true);
-    expect(await methods.renewResourceLock({ key, ownerId: 'b', ttlMs: 30_000 })).toBe(false);
-    await methods.acquireResourceLock({ key: 'acl:agent:2', ownerId: 'c', ttlMs: 1 });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(
-      await methods.renewResourceLock({ key: 'acl:agent:2', ownerId: 'c', ttlMs: 30_000 }),
+      await createResourceLockMethods(instances[1]).acquireResourceLock({ ...lock, ownerId: 'b' }),
     ).toBe(false);
   });
 
-  it('never moves the expiry backwards on an overlapping renewal', async () => {
-    const key = 'acl:agent:3';
-    await methods.acquireResourceLock({ key, ownerId: 'a', ttlMs: 60_000 });
-    const before = (await mongoose.models.ResourceLock.findOne({ key }).lean<{
-      expiresAt: Date;
-    }>())!.expiresAt;
-    await methods.renewResourceLock({ key, ownerId: 'a', ttlMs: 1_000 });
-    const after = (await mongoose.models.ResourceLock.findOne({ key }).lean<{ expiresAt: Date }>())!
-      .expiresAt;
-    expect(after.getTime()).toBeGreaterThanOrEqual(before.getTime());
+  it('retries initialization after failure and shares successful readiness within a factory', async () => {
+    const methods = createResourceLockMethods(instances[0]);
+    const failure = new Error('index permission denied');
+    const build = jest.spyOn(models[0], 'createIndexes').mockRejectedValueOnce(failure);
+    const lock = { key: 'ready', ownerId: 'a', ttlMs: 30_000 };
+    await expect(methods.acquireResourceLock(lock)).rejects.toBe(failure);
+    expect(await harness.read(lock.key)).toBeNull();
+    expect(await methods.acquireResourceLock(lock)).toBe(true);
+    expect(await methods.acquireResourceLock({ ...lock, key: 'other' })).toBe(true);
+    expect(build).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([false, true])(
+    'clears the readiness timer when initialization fails: %s',
+    async (initializationFails) => {
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+      const failure = new Error('lease storage unavailable');
+      const build = jest.spyOn(models[0], 'createIndexes');
+      if (initializationFails) {
+        build.mockRejectedValueOnce(failure);
+      } else {
+        build.mockResolvedValueOnce(undefined);
+        jest.spyOn(models[0].collection, 'insertOne').mockRejectedValueOnce(failure);
+      }
+      const methods = createResourceLockMethods(instances[0]);
+      await expect(
+        methods.acquireResourceLock({ key: 'cleanup', ownerId: 'a', ttlMs: 30_000 }),
+      ).rejects.toBe(failure);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('bounds a peer index build and retries initialization after its deadline', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    const conflict = new mongoose.mongo.MongoServerError({
+      code: 40333,
+      message: 'index build in progress',
+    });
+    const build = jest
+      .spyOn(models[0], 'createIndexes')
+      .mockRejectedValueOnce(conflict)
+      .mockRejectedValueOnce(conflict);
+    const methods = createResourceLockMethods(instances[0]);
+    const lock = { key: 'peer-build', ownerId: 'a', ttlMs: 30_000, readyWaitMs: 25 };
+    try {
+      const attempt = methods.acquireResourceLock(lock);
+      await jest.advanceTimersByTimeAsync(25);
+      expect(await attempt).toBe(false);
+      // The retry helper polls every five seconds; the second conflict is past the lease deadline.
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(build).toHaveBeenCalledTimes(2);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(await harness.read(lock.key)).toBeNull();
+    expect(await methods.acquireResourceLock(lock)).toBe(true);
+    expect(build).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns false at the readiness deadline without writing, then can acquire after readiness', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    jest.spyOn(models[0], 'createIndexes').mockReturnValueOnce(gate);
+    const methods = createResourceLockMethods(instances[0]);
+    const lock = { key: 'deadline', ownerId: 'a', ttlMs: 30_000, readyWaitMs: 25 };
+    const attempt = methods.acquireResourceLock(lock);
+    try {
+      await jest.advanceTimersByTimeAsync(24);
+      let settled = false;
+      void attempt.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(await attempt).toBe(false);
+    } finally {
+      finish();
+      jest.useRealTimers();
+    }
+    expect(await harness.read(lock.key)).toBeNull();
+    expect(await methods.acquireResourceLock(lock)).toBe(true);
+  });
+
+  it('caps the readiness wait at two seconds even when the caller asks for longer', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    jest.spyOn(models[0], 'createIndexes').mockReturnValueOnce(gate);
+    const methods = createResourceLockMethods(instances[0]);
+    const lock = { key: 'bounded', ownerId: 'a', ttlMs: 30_000, readyWaitMs: 60_000 };
+    try {
+      const attempt = methods.acquireResourceLock(lock);
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(await attempt).toBe(false);
+    } finally {
+      finish();
+      jest.useRealTimers();
+    }
+    expect(await harness.read(lock.key)).toBeNull();
   });
 });

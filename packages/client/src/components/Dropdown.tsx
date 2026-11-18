@@ -187,8 +187,19 @@ const Dropdown: React.FC<DropdownProps> = ({
     </div>
   );
 
+  const isOpen = selectProps.useState('open');
+
   return (
-    <div className={cn('relative max-w-full min-w-0', variant === 'field' && 'w-full', className)}>
+    <div
+      className={cn(
+        'relative max-w-full min-w-0',
+        variant === 'field' && 'w-full',
+        className,
+        /* A caller's `z-50` makes every dropdown its own stacking context at one level, where a
+           later sibling's trigger paints over an earlier one's open list. The open one lifts above. */
+        isOpen && 'z-[60]',
+      )}
+    >
       <Select.Select
         store={selectProps}
         disabled={disabled}

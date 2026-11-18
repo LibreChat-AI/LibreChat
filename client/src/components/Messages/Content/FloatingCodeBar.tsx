@@ -1,10 +1,10 @@
 import React from 'react';
 import { InfoIcon } from 'lucide-react';
+import { CopyButton } from '@librechat/chat/components';
 import type { CodeBarProps } from '~/common';
 import useDownloadCode from '~/components/Messages/Content/useDownloadCode';
 import DownloadButton from '~/components/Messages/Content/DownloadButton';
 import useCopyCode from '~/components/Messages/Content/useCopyCode';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import RunCode from '~/components/Messages/Content/RunCode';
 import cn from '~/utils/cn';
 

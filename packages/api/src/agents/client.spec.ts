@@ -11,6 +11,7 @@ import {
   collectToolCallIds,
   countRetainedToolTokens,
   createCachedTokenCounter,
+  countFormattedMessageTokens,
   payloadParser,
   prependQuotes,
   prependFileContext,
@@ -18,6 +19,76 @@ import {
 } from './client';
 import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
 import Tokenizer from '~/utils/tokenizer';
+
+describe('countFormattedMessageTokens media blocks', () => {
+  const text = { type: 'text', text: 'Read the attachment.' };
+  const added = (block: Record<string, unknown>, encoding: EncodingName = 'o200k_base') =>
+    countFormattedMessageTokens({ role: 'user', content: [text, block] }, encoding) -
+    countFormattedMessageTokens({ role: 'user', content: [text] }, encoding);
+
+  it('counts an inline Google PDF by its estimated page count', () => {
+    const small = added({ type: 'media', mimeType: 'application/pdf', data: 'A'.repeat(75_000) });
+    const large = added({
+      type: 'media',
+      mimeType: 'application/pdf',
+      data: 'A'.repeat(10_000_000),
+    });
+    expect(small).toBeGreaterThan(0);
+    expect(large).toBeGreaterThan(190_000);
+    expect(
+      added({ type: 'media', mimeType: 'application/pdf', data: 'A'.repeat(75_000) }, 'claude'),
+    ).toBeGreaterThan(small);
+  });
+
+  it('counts PDF, audio and video references that carry no inline data', () => {
+    for (const mimeType of ['application/pdf', 'audio/mpeg', 'video/mp4']) {
+      expect(added({ type: 'media', mimeType, fileUri: 'gs://bucket/file' })).toBeGreaterThan(0);
+    }
+  });
+
+  it('counts inline audio and video by size', () => {
+    const audio = added({ type: 'media', mimeType: 'audio/wav', data: 'A'.repeat(1_000_000) });
+    const video = added({ type: 'media', mimeType: 'video/mp4', data: 'A'.repeat(10_000_000) });
+    expect(audio).toBeGreaterThan(added({ type: 'media', mimeType: 'audio/wav', data: 'AAAA' }));
+    expect(video).toBeGreaterThan(added({ type: 'media', mimeType: 'video/mp4', data: 'AAAA' }));
+  });
+
+  it('counts inline images and unknown media types', () => {
+    expect(added({ type: 'media', mimeType: 'image/png', data: 'AAAA' })).toBeGreaterThan(0);
+    expect(added({ type: 'media', mimeType: 'text/csv', data: 'AAAA' })).toBeGreaterThan(0);
+  });
+
+  it('rejects an oversized Google PDF before invoking the model', async () => {
+    const content = [
+      text,
+      { type: 'media', mimeType: 'application/pdf', data: 'A'.repeat(10_000_000) },
+    ];
+    const graph = new StandardGraph({
+      runId: 'oversized-native-pdf',
+      agents: [
+        {
+          agentId: 'primary',
+          provider: Providers.GOOGLE,
+          maxContextTokens: 190_000,
+          summarizationEnabled: false,
+        },
+      ],
+      tokenCounter: await createCachedTokenCounter('o200k_base'),
+      indexTokenCountMap: {
+        0: countFormattedMessageTokens({ role: 'user', content }, 'o200k_base'),
+      },
+    });
+    graph.overrideTestModel(['should not be called']);
+    await expect(
+      graph
+        .createAgentNode('primary')
+        .invoke(
+          { messages: [new HumanMessage({ content })] },
+          { configurable: { thread_id: graph.runId }, recursionLimit: 12 },
+        ),
+    ).rejects.toThrow('empty_messages');
+  });
+});
 
 describe('createCachedTokenCounter', () => {
   const encodings: EncodingName[] = ['o200k_base', 'claude'];

@@ -1,0 +1,35 @@
+/** Run from the repository root so shared Jest configuration is copied into the sandbox. */
+export default {
+  $schema: './node_modules/@stryker-mutator/core/schema/stryker-schema.json',
+  plugins: ['@stryker-mutator/jest-runner'],
+  testRunner: 'jest',
+  jest: {
+    projectType: 'custom',
+    configFile: 'packages/data-schemas/jest.favorite.config.mjs',
+    enableFindRelatedTests: true,
+    config: { testMatch: ['<rootDir>/src/methods/favorite.spec.ts'] },
+  },
+  mutate: ['packages/data-schemas/src/methods/favorite.ts'],
+  coverageAnalysis: 'perTest',
+  concurrency: 2,
+  incremental: !process.env.CI,
+  incrementalFile: 'packages/data-schemas/coverage/favorites/incremental.json',
+  reporters: ['clear-text', 'progress', 'json', 'html'],
+  jsonReporter: { fileName: 'packages/data-schemas/coverage/favorites/mutation.json' },
+  htmlReporter: { fileName: 'packages/data-schemas/coverage/favorites/mutation.html' },
+  // Advisory during the pilot. Surviving mutants remain visible in both reports.
+  thresholds: { high: 90, low: 70, break: 0 },
+  ignorePatterns: [
+    '/*',
+    '!/package.json',
+    '!/config/',
+    '/config/*',
+    '!/config/jest.*',
+    '!/packages/',
+    '/packages/*',
+    '!/packages/data-schemas/',
+    '!/packages/data-provider/',
+    '**/coverage/',
+    '**/misc/',
+  ],
+};

@@ -93,7 +93,7 @@ describe('POST /images - Agent Upload Permission Check (Integration)', () => {
       }
     }
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {

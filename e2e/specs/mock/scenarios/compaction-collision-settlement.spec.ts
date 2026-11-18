@@ -1,7 +1,5 @@
-import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
-import { getE2EUser } from '../../../setup/user';
-import { deleteConversations, deleteMessagesByConversation, seedMessages, withMongo } from '../db';
+import { expect, test } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
@@ -10,6 +8,9 @@ import {
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
+import { deleteConversations, deleteMessagesByConversation, seedMessages, withMongo } from '../db';
+import { sendCompactionHistory } from '../compaction.helpers';
+import { getE2EUser } from '../../../setup/user';
 
 const userEmail = getE2EUser().email;
 const LABEL_SERVER = `http://127.0.0.1:${process.env.E2E_LABEL_PORT || '8889'}`;
@@ -41,6 +42,7 @@ test.describe('compaction collision settlement', () => {
   }) => {
     test.setTimeout(120_000);
     await page.goto('/c/new');
+    await sendCompactionHistory(page, 'compaction-collision', 1);
     await sendMessageAndWaitForCompletion(page, 'tell me about collisions');
     const conversationId = new URL(page.url()).pathname.replace('/c/', '');
     expect(conversationId).not.toBe('new');

@@ -1,17 +1,17 @@
 import { useMemo } from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
-import { QueryKeys } from 'librechat-data-provider';
+import { Constants, QueryKeys } from 'librechat-data-provider';
 import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
+import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/chat/react';
+import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueryClient, QueryCacheNotifyEvent } from '@tanstack/react-query';
-import type { ChatHost, ChatMessageCache } from '@librechat/chat/react';
-import type { TMessage } from 'librechat-data-provider';
-import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
-import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import {
+  refetchMessagesOnMount,
+  useAbortStreamMutation,
+  useGetMessagesByConvoId,
+} from '~/data-provider';
+import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
-import useChatFunctions from '~/hooks/Chat/useChatFunctions';
-import { getMappingOptions } from '~/hooks/Chat/outcomes';
-import { useAbortStreamMutation } from '~/data-provider';
+import useTurnServices from '~/hooks/Chat/services';
 import useNewConvo from '~/hooks/useNewConvo';
 
 /** Cache events that add, drop or rewrite a query's data. */
@@ -64,6 +64,19 @@ export function createMessageCache(queryClient: QueryClient): ChatMessageCache {
     refetchStreamStatus: (conversationId) => {
       queryClient.invalidateQueries({ queryKey: ['streamStatus', conversationId] });
     },
+    invalidateMessages: (conversationId) => {
+      queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, conversationId] });
+    },
+    messagesUpdatedAt: (conversationId) =>
+      queryClient.getQueryState([QueryKeys.messages, conversationId])?.dataUpdatedAt,
+    reloadMessages: async (conversationId) => {
+      await queryClient.refetchQueries(
+        { queryKey: [QueryKeys.messages, conversationId], exact: true },
+        { throwOnError: true },
+      );
+    },
+    readQueuedTurns: (conversationId) =>
+      queryClient.getQueryData<TAgentQueuedTurnReceipt[]>(agentQueuedTurnsQueryKey(conversationId)),
   };
 }
 
@@ -72,22 +85,41 @@ function useMessageCache(): ChatMessageCache {
   return useMemo(() => createMessageCache(queryClient), [queryClient]);
 }
 
+/** The conversation's messages query. Refetches stale caches on mount: navigation invalidates
+ *  (not removes) messages, so a warm conversation renders instantly from cache and reconciles in
+ *  the background instead of unmounting into a spinner. A payload or failure `ChatRoute` just
+ *  prefetched counts as this mount's own load. */
+function useMessages(
+  conversationId: string | undefined,
+  { isStreaming, enabled = true }: { isStreaming: boolean; enabled?: boolean },
+): ChatMessagesQuery {
+  const {
+    data = null,
+    isLoading,
+    isFetching,
+  } = useGetMessagesByConvoId(
+    conversationId ?? '',
+    {
+      enabled: enabled && !!conversationId && conversationId !== Constants.SEARCH,
+      refetchOnMount: refetchMessagesOnMount,
+    },
+    { isStreaming },
+  );
+  return { messages: data, isLoading, isFetching };
+}
+
 /** The app's services behind `useChatHelpers`: its pane store, message query cache, turn
- *  builder, thread selection, transport and settings. */
+ *  services, thread selection, transport and settings. */
 export const appChatHost: ChatHost = {
   usePaneConversation: (index) => useChatSettings().usePaneConversationState(index),
   useNewConversation: (index) => useNewConvo(index).newConversation,
-  useTurns: (params) => useChatFunctions(params),
-  useLatestMessage: (index, key) => useLatestMessage(index, key),
-  useLatestMessageId: (index, key) => useLatestMessageId(index, key),
-  useSetSiblingIdx: (parentMessageId) => useSetAtom(siblingIdxFamily(siblingKey(parentMessageId))),
+  useTurnServices,
   /** `mutateAsync` is bound once per observer; the mutation result object is fresh every
    *  render and would defeat the contract's memo. */
   useAbortStream: () => useAbortStreamMutation().mutateAsync,
   useMessageCache,
-  useLiveAttachments: () => useAtomValue(messageAttachmentsMapAtom),
   useFeedbackEnabled: () => useChatSettings().config.feedbackEnabled,
-  getMappingOptions,
+  useMessages,
 };
 
 export { ChatHostProvider, useChatHost } from '@librechat/chat/react';

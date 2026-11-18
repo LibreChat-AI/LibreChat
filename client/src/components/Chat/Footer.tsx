@@ -56,16 +56,17 @@ export function useConfiguredFooter(): boolean {
 /** The deployment's `interface.landingFooter`, as the server said when it served
  *  this document. A shell that carries no answer reads as the default: on. */
 const shellLandingFooter =
-  typeof window === 'undefined' || window.__LIBRECHAT_CONFIG__?.landingFooter !== false;
+  typeof window === 'undefined' ? true : (window.__LIBRECHAT_CONFIG__?.landingFooter ?? true);
 
-/** Whether the welcome screen carries the generic disclaimer and policy links.
+/** Whether the welcome screen carries the generic disclaimer and policy links, and
+ *  where: `composer` directly under the composer, `true` at the bottom of the page.
  *  Off, it keeps only a configured footer, the same as a conversation. Until
  *  `/api/config` answers, the shell's answer holds, so a cold load lays the
- *  welcome screen out once instead of dropping a footer it painted. */
-export function useLandingFooter(): boolean {
+ *  welcome screen out once instead of dropping or moving a footer it painted. */
+export function useLandingFooter(): boolean | 'composer' {
   const { data: config, isSuccess } = useGetStartupConfig();
 
-  return isSuccess ? config?.interface?.landingFooter !== false : shellLandingFooter;
+  return isSuccess ? (config?.interface?.landingFooter ?? true) : shellLandingFooter;
 }
 
 function Footer({ className, startupConfig, configuredOnly = false }: FooterProps) {

@@ -1,5 +1,5 @@
-import { expect, test } from '@playwright/test';
 import { NEW_CHAT_PATH } from '../helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * A token refresh that never answers must not freeze the app: the deadline published in the

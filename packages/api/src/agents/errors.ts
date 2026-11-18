@@ -96,14 +96,46 @@ export function getLangChainErrorCode(error: unknown): string | undefined {
   return parseLangChainErrorCode(message);
 }
 
+export interface LangChainErrorOptions {
+  /**
+   * Whether the provider's own message may ride along as `info`. A gateway in front of the provider
+   * often explains the failure there (a spending limit, where to ask for more), which the localized
+   * copy cannot. Off by default because the text may echo submitted content.
+   */
+  includeProviderMessage?: boolean;
+  maxProviderErrorChars?: number;
+  /** Applies the caller's disclosure policy (for example redaction) to the included message. */
+  formatProviderMessage?: (message: string) => string;
+}
+
+/** A status prefix like `429 ` repeats what the classification already says. */
+const STATUS_PREFIX = /^\d{3}(?:\s+|$)/;
+
 /**
  * Typed payload the client localizes for a classified LangChain failure, or `undefined` when the
  * code has no localized copy and the provider's own message should be shown instead.
  */
-export function resolveLangChainError(error: unknown): string | undefined {
+export function resolveLangChainError(
+  error: unknown,
+  options: LangChainErrorOptions = {},
+): string | undefined {
   const code = getLangChainErrorCode(error);
   const type = code == null ? undefined : LANGCHAIN_ERROR_TYPES[code];
-  return type == null ? undefined : JSON.stringify({ type });
+  if (type == null) {
+    return undefined;
+  }
+  if (options.includeProviderMessage !== true) {
+    return JSON.stringify({ type });
+  }
+  /** Formats a window past the limit before cutting, so redaction sees a whole address or token
+   *  instead of a fragment the cut left behind. */
+  const limit = getProviderErrorLimit(options.maxProviderErrorChars);
+  const message = getProviderErrorMessage(error, limit + PROVIDER_FORMAT_LOOKAHEAD)
+    ?.replace(STATUS_PREFIX, '')
+    .trim();
+  const formatted = message ? (options.formatProviderMessage?.(message) ?? message) : '';
+  const info = formatted.slice(0, limit).trim();
+  return JSON.stringify(info ? { type, info } : { type });
 }
 
 export type ModelStreamFailure = 'closed' | 'stalled';
@@ -184,6 +216,16 @@ export function getUserFacingProviderError(error: unknown, protectionEnabled: bo
 /** Bounded lookahead covers LangChain's appended troubleshooting label and URL. */
 const TROUBLESHOOTING_LOOKAHEAD = 256;
 
+/** Characters past the limit a disclosure formatter sees, longer than any address or token. */
+const PROVIDER_FORMAT_LOOKAHEAD = 256;
+
+/** `maxProviderErrorChars` as configured, or the default when it is not a non-negative integer. */
+function getProviderErrorLimit(maxChars: number | undefined): number {
+  return maxChars != null && Number.isSafeInteger(maxChars) && maxChars >= 0
+    ? maxChars
+    : DEFAULT_MAX_PROVIDER_ERROR_CHARS;
+}
+
 /**
  * The provider's own words for a failure, or `undefined` when it has none to give. A gateway,
  * proxy or OpenAI-compatible endpoint answers a rejection it alone can explain, and that sentence
@@ -201,8 +243,7 @@ export function getProviderErrorMessage(
   if (typeof raw !== 'string') {
     return undefined;
   }
-  const limit =
-    Number.isSafeInteger(maxChars) && maxChars >= 0 ? maxChars : DEFAULT_MAX_PROVIDER_ERROR_CHARS;
+  const limit = getProviderErrorLimit(maxChars);
   const message = stripLangChainTroubleshootingUrl(raw.slice(0, limit + TROUBLESHOOTING_LOOKAHEAD))
     .slice(0, limit)
     .trim();

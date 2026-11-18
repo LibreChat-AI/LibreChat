@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { filesFamily } from '@librechat/chat/react';
-import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
+import { QueryKeys, fileConfig as defaultFileConfig } from 'librechat-data-provider';
 import type { FileSources, TFile } from 'librechat-data-provider';
 import type { MouseEvent } from 'react';
 import type { ExtendedFile } from '~/common';
 import type { FilesDraft } from '~/utils';
 import {
   beginRetainedDeletionPass,
+  claimFileDeletionRetries,
+  settleFileDeletionRetries,
   clearAllDrafts,
   clearFilesDraft,
   clearMessagesCache,
@@ -33,7 +35,7 @@ import {
   subscribeRetainedFileDeletions,
   takeRetainedFileDeletions,
 } from '~/utils';
-import { useGetFiles, useDeleteFilesMutation } from '~/data-provider';
+import { useGetFiles, useGetFileConfig, useDeleteFilesMutation } from '~/data-provider';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useNewConvo from '~/hooks/useNewConvo';
 import store from '~/store';
@@ -124,6 +126,8 @@ export default function useNewChat({
   const files = useAtomValue(filesFamily(index));
   const { saveDrafts } = useChatSettings();
   const { data: fileList } = useGetFiles<TFile[]>();
+  const { data: fileConfig, isSuccess: hasFileConfig } = useGetFileConfig();
+  const retryLimit = fileConfig?.deletionRetryLimit;
   const { mutateAsync } = useDeleteFilesMutation();
   /** The cleanup pass runs on a timer nobody asked for, so it reports nothing: a storage failure
    * that keeps failing would otherwise toast on every retry, and success would arrive minutes
@@ -135,6 +139,30 @@ export default function useNewChat({
     loadPendingDiscardIds(index),
   );
   const [retainedGeneration, setRetainedGeneration] = useState(0);
+  const reconciliationAttempts = useRef(new Map<string, number>());
+  const fileListRef = useRef(fileList);
+  fileListRef.current = fileList;
+
+  useEffect(() => {
+    if (!hasFileConfig) return;
+    const pending = new Set(pendingDiscardIds);
+    for (const id of reconciliationAttempts.current.keys()) {
+      if (!pending.has(id)) reconciliationAttempts.current.delete(id);
+    }
+    let refresh = false;
+    const limit = retryLimit ?? defaultFileConfig.deletionRetryLimit;
+    for (const id of pendingDiscardIds) {
+      if (findFilesRecord(fileListRef.current, id)) continue;
+      const attempts = reconciliationAttempts.current.get(id) ?? 0;
+      if (attempts >= limit) continue;
+      reconciliationAttempts.current.set(id, attempts + 1);
+      refresh = true;
+    }
+    if (!refresh) return;
+    // An aborted response can outlive its client. Resolve its UUID through the owner-scoped list.
+    void queryClient.refetchQueries({ queryKey: [QueryKeys.files] }, { cancelRefetch: false });
+    scheduleRetainedFileDeletionRetry(true);
+  }, [pendingDiscardIds, retainedGeneration, hasFileConfig, retryLimit, queryClient]);
 
   const setPendingDiscardIds = useCallback(
     (updater: string[] | ((current: string[]) => string[])) => {
@@ -175,16 +203,19 @@ export default function useNewChat({
 
   useEffect(() => {
     const retained = takeRetainedFileDeletions();
-    if ((pendingDiscardIds.length === 0 && retained.length === 0) || fileList == null) {
+    if (
+      (pendingDiscardIds.length === 0 && retained.length === 0) ||
+      fileList == null ||
+      !hasFileConfig
+    ) {
       return;
     }
     /** Another mounted instance is already running this pass. Ask for a later one rather than
      * dropping the work: whatever it does not resolve has to be revisited by someone. */
     if (!beginRetainedDeletionPass()) {
-      scheduleRetainedFileDeletionRetry();
+      scheduleRetainedFileDeletionRetry(pendingDiscardIds.length > 0);
       return;
     }
-    let cancelled = false;
     const attempt = async () => {
       removeTabAttachmentPresence(
         [...pendingDiscardIds, ...retained.map((record) => record.file_id)],
@@ -226,10 +257,16 @@ export default function useNewChat({
         const record = findFilesRecord(fileList, fileId);
         return [fileId, record?.file_id, record?.temp_file_id].some((id) => isPasteSubmitted(id));
       };
+      const reattachedByIdentity = (fileId: string): boolean => {
+        const record = findFilesRecord(fileList, fileId);
+        return [fileId, record?.file_id, record?.temp_file_id].some(
+          (id) => id != null && reattached.has(id),
+        );
+      };
       const deletable: DeletableRecord[] = [];
       const stillPending: string[] = [];
       for (const fileId of pendingDiscardIds) {
-        if (reattached.has(fileId) || consumedBySubmission(fileId)) {
+        if (reattachedByIdentity(fileId) || consumedBySubmission(fileId)) {
           continue;
         }
         const record = findFilesRecord(fileList, fileId);
@@ -246,49 +283,34 @@ export default function useNewChat({
        * cannot be rebuilt, so they retry here until one succeeds. A file the composer has
        * since reattached, or that a message has since consumed, is no longer ours to retry. */
       const retainedToRetry = retained.filter(
-        (record) => !reattached.has(record.file_id) && !consumedBySubmission(record.file_id),
+        (record) => !reattachedByIdentity(record.file_id) && !consumedBySubmission(record.file_id),
       );
       for (const record of retained) {
-        if (reattached.has(record.file_id) || consumedBySubmission(record.file_id)) {
+        if (reattachedByIdentity(record.file_id) || consumedBySubmission(record.file_id)) {
           clearRetainedFileDeletion(record.file_id);
         }
       }
-      const batch = [...deletable, ...retainedToRetry];
-      if (batch.length > 0) {
-        try {
-          const result = await mutateAsyncSilently({ files: batch });
-          const failed = new Set(failedFileIdsFrom(result));
-          for (const record of retainedToRetry) {
-            if (!failed.has(record.file_id)) {
-              clearRetainedFileDeletion(record.file_id);
-            }
-          }
-          for (const record of deletable) {
-            if (failed.has(record.file_id)) {
-              stillPending.push(record.file_id);
-            }
-          }
-          /** A reported failure leaves both stores exactly as they were, so this effect has no
-           * dependency left to move it: the next attempt has to be asked for, same as a rejection. */
-          if (failed.size > 0) {
-            scheduleRetainedFileDeletionRetry();
-          }
-        } catch {
-          /** The draft is already gone, so these ids are the only record of what to clean:
-           * keep them for the next files-cache update rather than orphaning the uploads. Nothing
-           * here moves an effect dependency, so the next attempt has to be asked for. */
-          scheduleRetainedFileDeletionRetry();
-          return;
-        }
-      }
-      if (!cancelled && stillPending.length !== pendingDiscardIds.length) {
+      const batch = claimFileDeletionRetries([...deletable, ...retainedToRetry], retryLimit);
+      // Once resolved, the retained queue owns the payload and its retry budget.
+      if (stillPending.length !== pendingDiscardIds.length) {
         setPendingDiscardIds(stillPending);
       }
+      if (batch.length === 0) {
+        return;
+      }
+      try {
+        const result = await mutateAsyncSilently({ files: batch });
+        settleFileDeletionRetries(batch, new Set(failedFileIdsFrom(result)), retryLimit);
+      } catch {
+        settleFileDeletionRetries(
+          batch,
+          new Set(batch.map((record) => record.file_id)),
+          retryLimit,
+        );
+      }
+      scheduleRetainedFileDeletionRetry();
     };
     void attempt().finally(endRetainedDeletionPass);
-    return () => {
-      cancelled = true;
-    };
   }, [
     pendingDiscardIds,
     conversationId,
@@ -297,6 +319,8 @@ export default function useNewChat({
     index,
     mutateAsyncSilently,
     retainedGeneration,
+    hasFileConfig,
+    retryLimit,
     setPendingDiscardIds,
   ]);
 

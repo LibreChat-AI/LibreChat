@@ -58,6 +58,7 @@ export interface SettingsContextValue {
   allowAccountDeletion: boolean;
   aboutEnabled: boolean;
   mascotAllowed: boolean;
+  engineSTT: string;
   engineTTS: string;
   langfuseConnectionAccess: boolean;
   langfusePromptSyncAccess?: boolean;

@@ -14,13 +14,20 @@ import type {
  * authoritative final state:
  * - `fileContext`: text extracted from attachments for the prompt.
  * - `image_urls`: base64 image inputs accumulated during prompt building.
+ * - `documents`, `videos`, `audios`: provider-encoded attachment inputs.
  *
  * Adding a field here is the deliberate decision to exclude it everywhere a
  * terminal event is stored or transmitted. `ProjectedMessageFields` keeps the
  * TypeScript contract aligned so a projected message cannot be read for one of
  * them without a type error.
  */
-export const TRANSIENT_MESSAGE_FIELDS = ['fileContext', 'image_urls'] as const;
+export const TRANSIENT_MESSAGE_FIELDS = [
+  'fileContext',
+  'image_urls',
+  'documents',
+  'videos',
+  'audios',
+] as const;
 
 /**
  * Transient fields on a message's `files` entries. `files` carries the user's
@@ -100,6 +107,7 @@ function projectFileEntry(entry: unknown, excluded: readonly string[]): unknown 
     return entry;
   }
   let projected: Record<string, unknown> | undefined;
+
   for (const field of excluded) {
     if (field in entry) {
       projected ??= { ...entry };
@@ -135,6 +143,10 @@ function projectMessage<T>(message: T): T {
   }
   let projected: Record<string, unknown> | undefined;
 
+  if (isRecord(message.metadata) && 'thoughtSignatures' in message.metadata) {
+    const { thoughtSignatures: _signatures, ...metadata } = message.metadata;
+    projected = { ...message, metadata };
+  }
   for (const field of TRANSIENT_MESSAGE_FIELDS) {
     if (field in message) {
       projected ??= { ...message };

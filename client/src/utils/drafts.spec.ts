@@ -1675,3 +1675,18 @@ describe('logical composer lifetime', () => {
     release();
   });
 });
+
+describe('bounded paste draft previews', () => {
+  it('retains only bounded display text for currently attached files', () => {
+    setFilesDraft('preview-draft', {
+      fileIds: ['paste'],
+      pendingPastes: {},
+      textPreviews: { paste: 'p'.repeat(1000), removed: 'do not keep' },
+    });
+    expect(getFilesDraft('preview-draft').textPreviews).toEqual({ paste: 'p'.repeat(240) });
+    setFilesDraft('preview-draft', { fileIds: ['paste'], pendingPastes: {} });
+    expect(getFilesDraft('preview-draft').textPreviews).toEqual({ paste: 'p'.repeat(240) });
+    setFilesDraft('preview-draft', { fileIds: [], pendingPastes: {} });
+    expect(getFilesDraft('preview-draft').textPreviews).toBeUndefined();
+  });
+});

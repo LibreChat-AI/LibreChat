@@ -21,7 +21,49 @@ const isSettlement = (value: unknown): value is OAuthSettlement =>
   typeof value === 'object' &&
   value !== null &&
   ((value as OAuthSettlement).outcome === 'succeeded' ||
-    (value as OAuthSettlement).outcome === 'failed');
+    (value as OAuthSettlement).outcome === 'failed') &&
+  ((value as OAuthSettlement).flowId === undefined ||
+    typeof (value as OAuthSettlement).flowId === 'string');
+
+let announcement = 0;
+
+/** A transient storage event also reaches same-origin tabs without BroadcastChannel. */
+export function watchOAuthSettlements(
+  onSettled: (settlement: OAuthSettlement) => void,
+): () => void {
+  let lastAnnouncement: string | undefined;
+  const receive = (value: unknown) => {
+    if (!isSettlement(value)) return;
+    if ('announcement' in value && typeof value.announcement === 'string') {
+      const key = JSON.stringify([value.announcement, value.flowId, value.outcome]);
+      if (key === lastAnnouncement) return;
+      lastAnnouncement = key;
+    }
+    onSettled(value);
+  };
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== OAUTH_SETTLED_CHANNEL || !event.newValue) return;
+    try {
+      receive(JSON.parse(event.newValue));
+    } catch {
+      /* Other tabs can write malformed values; they cannot settle a flow. */
+    }
+  };
+  let channel: BroadcastChannel | undefined;
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      channel = new BroadcastChannel(OAUTH_SETTLED_CHANNEL);
+      channel.addEventListener('message', ({ data }: MessageEvent<unknown>) => receive(data));
+    }
+  } catch {
+    /* Browser policy can disable this transport while storage events still work. */
+  }
+  window.addEventListener('storage', onStorage);
+  return () => {
+    channel?.close();
+    window.removeEventListener('storage', onStorage);
+  };
+}
 
 /** One sign-in per app at a time: starting another replaces the watch on the first. */
 const watches = new Map<QueryClient, Watch>();
@@ -40,12 +82,24 @@ export function pullRequestSignInSession(): number {
  * window handle read as closed while the sign-in is still open).
  */
 export function announceOAuthSettled(settlement: OAuthSettlement): void {
-  if (typeof BroadcastChannel === 'undefined') {
-    return;
+  const notice = { ...settlement, announcement: `${Date.now()}:${announcement++}` };
+  let channel: BroadcastChannel | undefined;
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      channel = new BroadcastChannel(OAUTH_SETTLED_CHANNEL);
+      channel.postMessage(notice);
+    }
+  } catch {
+    /* The same-origin storage event is an independent fallback. */
+  } finally {
+    channel?.close();
   }
-  const channel = new BroadcastChannel(OAUTH_SETTLED_CHANNEL);
-  channel.postMessage(settlement);
-  channel.close();
+  try {
+    localStorage.setItem(OAUTH_SETTLED_CHANNEL, JSON.stringify(notice));
+    localStorage.removeItem(OAUTH_SETTLED_CHANNEL);
+  } catch {
+    /* Notifications grant no access; callers retain their existing recovery/timeout paths. */
+  }
 }
 
 /**
@@ -135,10 +189,9 @@ export function watchPullRequestSignIn(
     }, wait);
   };
   const onSignal = () => void check();
-  const onSettled = (event: MessageEvent) => {
-    const settlement: unknown = event.data;
-    if (!isSettlement(settlement) || settlement.outcome === 'succeeded') {
-      if (isSettlement(settlement) && flowId != null && settlement.flowId === flowId) {
+  const onSettled = (settlement: OAuthSettlement) => {
+    if (settlement.outcome === 'succeeded') {
+      if (flowId != null && settlement.flowId === flowId) {
         settled = true;
         resume();
       }
@@ -159,9 +212,7 @@ export function watchPullRequestSignIn(
       void check(true);
     }
   };
-  const channel =
-    typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(OAUTH_SETTLED_CHANNEL);
-  channel?.addEventListener('message', onSettled);
+  const stopSettlements = watchOAuthSettlements(onSettled);
   /** Past the flow's expiry, unsettled: no more polling, but the sign-in page may still announce
    *  a callback the server accepted just before expiry, so the channel stays open for the grace. */
   let lapsed = false;
@@ -199,7 +250,7 @@ export function watchPullRequestSignIn(
     clearTimeout(timer);
     clearTimeout(expiry);
     window.removeEventListener('focus', onSignal);
-    channel?.close();
+    stopSettlements();
     if (watches.get(queryClient) === watch) {
       watches.delete(queryClient);
     }

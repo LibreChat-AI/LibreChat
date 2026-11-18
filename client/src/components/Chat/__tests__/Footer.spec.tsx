@@ -115,7 +115,7 @@ describe('useLandingFooter', () => {
 
   /** The shell's answer is read once at module load, so each case loads Footer
    *  fresh against the document it is given. */
-  const loadHook = (shell?: { landingFooter?: boolean }): typeof useLandingFooter => {
+  const loadHook = (shell?: { landingFooter?: boolean | 'composer' }): typeof useLandingFooter => {
     if (shell) {
       window.__LIBRECHAT_CONFIG__ = shell;
     }
@@ -141,6 +141,18 @@ describe('useLandingFooter', () => {
       isSuccess: true,
     }));
     expect(renderHook(() => useLandingFooter()).result.current).toBe(false);
+  });
+
+  test('passes the composer placement through from the config and the shell', () => {
+    mockUseGetStartupConfig.mockImplementation(() => ({
+      data: { interface: { landingFooter: 'composer' } },
+      isSuccess: true,
+    }));
+    expect(renderHook(() => useLandingFooter()).result.current).toBe('composer');
+
+    mockUseGetStartupConfig.mockImplementation(() => ({ data: undefined, isSuccess: false }));
+    const hook = loadHook({ landingFooter: 'composer' });
+    expect(renderHook(() => hook()).result.current).toBe('composer');
   });
 
   test('holds the shell answer while the config is unresolved', () => {

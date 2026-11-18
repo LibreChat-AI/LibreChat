@@ -93,9 +93,8 @@ function DynamicTextarea({
                 ? (localize(placeholder as TranslationKeys) ?? placeholder)
                 : placeholder
             }
-            className={cn(
-              'border-border-light bg-surface-secondary flex max-h-[13.75rem] min-h-[4.75rem] w-full resize-none rounded-lg border px-3 py-2 text-sm',
-            )}
+            variant="field"
+            className={cn('max-h-[13.75rem] min-h-[4.75rem] resize-none py-2')}
           />
         </HoverCardTrigger>
         {description && (

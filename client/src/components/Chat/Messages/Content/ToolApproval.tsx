@@ -1,5 +1,6 @@
 import { useId, useContext, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
+import { useComposerPresentsApproval, useOptionalChatSurface } from '@librechat/chat/react';
 import {
   X,
   Check,
@@ -9,19 +10,17 @@ import {
   ShieldQuestion,
   TriangleAlert,
 } from 'lucide-react';
-import type { Agents } from 'librechat-data-provider';
-import type { KeyboardEvent } from 'react';
-import type { TranslationKeys } from '~/hooks';
 import {
   isReboundSubmitChord,
   resolveComposerKeyDown,
   bindingFromEvent,
   bindingsMatch,
   bindingHash,
-} from '~/utils/shortcuts';
-import { useComposerPresentsApproval } from '~/components/Chat/approval/state';
-import { useOptionalChatSurface } from '~/components/Chat/Subagents/surface';
-import { boundApprovalLabel } from '~/components/Chat/approval/preview';
+  boundApprovalLabel,
+} from '@librechat/chat';
+import type { Agents } from 'librechat-data-provider';
+import type { KeyboardEvent } from 'react';
+import type { TranslationKeys } from '~/hooks';
 import { useApprovalContext, useResumeSubmit } from './ApprovalContext';
 import { cn, forceResize, insertTextAtCursor, logger } from '~/utils';
 import { NO_HOST_BINDINGS } from '~/hooks/Input/useComposerBindings';
@@ -109,7 +108,11 @@ export default function ToolApproval({
   const localize = useLocalize();
   const invalidJsonId = useId();
   const allowAlwaysHintId = useId();
-  const { actionId, allowed_decisions: allowedDecisions, description } = approval;
+  const { actionId, description } = approval;
+  /** A stored approval can lack the decision list. The hooks below still run on an empty one, and
+   *  the card renders nothing for it rather than crashing the message. */
+  const hasDecisions = Array.isArray(approval.allowed_decisions);
+  const allowedDecisions = hasDecisions ? approval.allowed_decisions : [];
   const rememberScope = approval.remember_scope;
   const rememberUnavailable = approval.remember_unavailable;
   const unavailableLabels: Record<NonNullable<typeof rememberUnavailable>, TranslationKeys> = {
@@ -341,6 +344,10 @@ export default function ToolApproval({
   const descriptionNode = safeDescription != null && safeDescription.length > 0 && (
     <p className="text-text-secondary text-sm">{safeDescription}</p>
   );
+
+  if (!hasDecisions) {
+    return null;
+  }
 
   if (deferToComposer) {
     return (

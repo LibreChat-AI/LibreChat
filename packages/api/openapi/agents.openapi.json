@@ -2390,6 +2390,31 @@
       "AgentCreateRequest": {
         "type": "object",
         "properties": {
+          "sdk_runtime": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                  },
+                  "protocolVersion": {
+                    "type": "number",
+                    "const": 1
+                  }
+                },
+                "required": [
+                  "id",
+                  "protocolVersion"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": [
               "string",
@@ -2881,6 +2906,31 @@
       "AgentUpdateRequest": {
         "type": "object",
         "properties": {
+          "sdk_runtime": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                  },
+                  "protocolVersion": {
+                    "type": "number",
+                    "const": 1
+                  }
+                },
+                "required": [
+                  "id",
+                  "protocolVersion"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -3353,6 +3403,31 @@
       "Agent": {
         "type": "object",
         "properties": {
+          "sdk_runtime": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                  },
+                  "protocolVersion": {
+                    "type": "number",
+                    "const": 1
+                  }
+                },
+                "required": [
+                  "id",
+                  "protocolVersion"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": [
               "string",

@@ -161,4 +161,15 @@ describe('MediaSourceAppender', () => {
     expect(appender.mediaSourceUrl).toBe(appender.mediaSourceUrl);
     expect(objectUrlCount).toBe(1);
   });
+
+  it('ignores queued chunks when disposed before source attachment', async () => {
+    const appender = new MediaSourceAppender('audio/mpeg');
+    const source = createdSources[createdSources.length - 1];
+    appender.addData(chunk(1));
+    appender.dispose();
+    source.attach();
+    appender.addData(chunk(2));
+    await flush();
+    expect(source.sourceBuffers).toHaveLength(0);
+  });
 });

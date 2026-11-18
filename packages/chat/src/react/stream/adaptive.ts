@@ -1,12 +1,12 @@
 import { isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TSubmission } from 'librechat-data-provider';
 import type { StreamChat } from './host';
+import { useLegacyStream } from './legacy';
 import useResumableSSE from './resumable';
-import { useStreamHost } from './host';
 
 /**
  * Adaptive SSE hook that switches between standard and resumable modes.
- * Uses resumable streams by default, falls back to the host's standard SSE for assistants
+ * Uses resumable streams by default, falls back to the standard SSE stream for assistants
  * endpoints.
  *
  * Note: Both hooks are always called to comply with React's Rules of Hooks.
@@ -24,12 +24,7 @@ export default function useAdaptiveSSE(
   const isAssistants = isAssistantsEndpoint(actualEndpoint);
   const resumableEnabled = !isAssistants;
 
-  useStreamHost().useLegacyStream(
-    resumableEnabled ? null : submission,
-    chat,
-    isAddedRequest,
-    runIndex,
-  );
+  useLegacyStream(resumableEnabled ? null : submission, chat, isAddedRequest, runIndex);
 
   const { streamId } = useResumableSSE(
     resumableEnabled ? submission : null,

@@ -2,7 +2,7 @@
 # https://www.librechat.ai/docs/configuration/librechat_yaml
 
 # Configuration version (required)
-version: 1.3.18
+version: 1.3.19
 
 # Cache settings: Set to true to enable caching
 cache: true
@@ -10,7 +10,10 @@ cache: true
 # Browser telemetry and session recording are independent opt-ins. Collector URL,
 # authentication and service settings remain in .env. YAML flags override .env;
 # omitting them preserves the corresponding environment settings.
+# stackTraceLimit (1 to 1000) sets how many frames each error stack records; unset keeps
+# Node's default of 10, or --stack-trace-limit from NODE_OPTIONS.
 # telemetry:
+#   stackTraceLimit: 50
 #   rum:
 #     enabled: true
 #     sessionReplay:
@@ -203,9 +206,14 @@ interface:
   # 'entity' shows its name; 'greeting' shows the time-of-day greeting (or customWelcome) with the
   # user's name, for deployments where the header selector already names the agent.
   # landingHeading: entity
-  # Show the generic disclaimer and policy links beneath the welcome screen's composer (default: true).
-  # When false, a CUSTOM_FOOTER still renders there, as it does in conversations.
+  # Show the generic disclaimer and policy links on the welcome screen (default: true).
+  # true places them at the bottom of the page, 'composer' directly under the composer, and false
+  # hides them. When false, a CUSTOM_FOOTER still renders there, as it does in conversations.
   # landingFooter: true
+  # Which responses show the author's avatar and name above their content (default: always).
+  # 'whenDifferent' drops them when the header's model selector already shows that agent; a
+  # response from another agent keeps them. The name stays available to screen readers.
+  # messageAuthor: always
   # Allow renaming a running chat or one with a placeholder title (default: true).
   # Set to false during a rolling upgrade, until ALL API replicas are upgraded and old
   # title-generation jobs have drained. While false, rename is disabled for running chats
@@ -301,6 +309,9 @@ interface:
   # Allow the artifacts pane to be moved into its own browser window
   # (desktop only; the mobile sheet is unaffected). Default: true.
   artifactUndocking: true
+  # Ask each viewer before loading Google Tag Manager (ANALYTICS_GTM_ID).
+  # Set false when the deployment settles consent itself, e.g. internal use. Default: true.
+  # analyticsConsent: true
   agents:
     use: true
     create: true
@@ -502,6 +513,9 @@ registration:
 #   refillAmount: 10000
 #   # Deploy reset-capable servers to every replica before selecting 'reset'.
 #   refillMode: 'add' # 'reset' replaces the allowance each period without rollover
+#   # Align every period to this instant plus whole intervals, e.g. weekly resets every Monday
+#   # at 00:00 UTC. Needs a Z or ±HH:MM offset; omit for periods that run from each user's last refill.
+#   # refillAnchor: '2026-01-05T00:00:00Z'
 #   reservationTtlMs: 1800000  # How long an in-flight request's reserved credits count if never released
 #   display: 'credits'  # credits | currency (uses interface.currency) | percent (share of the allotment used)
 
@@ -572,7 +586,10 @@ registration:
 #   ocrMs: 300000 # each OCR provider call
 #   actionsMs: 300000 # each action (OpenAPI tool) HTTP call
 #   moderationMs: 10000 # the OpenAI moderation check before a chat turn
-#   imageFetchMs: 30000 # fetching a stored image to encode it for a provider
+#   imageFetchMs: 30000 # reading a stored image, by URL or from blob storage, to encode it for a provider
+#   toolsMs: 60000 # each call a built-in tool makes to its API (weather, Wolfram, web search)
+#   speechMs: 300000 # each text-to-speech or speech-to-text provider request
+#   imageGenerationMs: 300000 # each Stable Diffusion image generation request
 
 # Newest violations kept per user in the general violation log.
 # violationLog:
@@ -581,6 +598,14 @@ registration:
 # Largest pageSize accepted when reading a conversation's messages.
 # messages:
 #   maxPageSize: 1000 # default: 1000
+
+# Upper bounds on independent lookups a request runs at once (1 to 32). Each omitted key keeps the default shown.
+# concurrency:
+#   connectedAgentLoads: 4 # connected agents initialized together per level of a handoff graph
+#   mcpCatalogLookups: 4 # MCP tool catalog reads when assembling an agent's tools
+#   skillNameLookups: 8 # model spec skill name resolutions
+#   skillFileInspections: 4 # bundled skill file inspections before a skill is primed
+#   resumeAgentLoads: 4 # agent reads while building the resume snapshot of a paused run
 
 # rateLimits:
 #   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.
@@ -754,6 +779,9 @@ actions:
 #     # a `{{LIBRECHAT_BODY_*}}` placeholder here no longer hides the server's tool list.
 #     requestHeaders:
 #       X-Conversation-Id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
+#       # Persisted agent that owns the executing tool, including a subagent's own tools.
+#       # Empty for plain chat or an ephemeral agent. Available on operator-defined servers.
+#       X-Agent-Id: "{{LIBRECHAT_AGENT_ID}}"
 #   puppeteer:
 #     type: stdio
 #     command: npx
@@ -1142,15 +1170,20 @@ endpoints:
   # (optional) Custom request headers for the built-in OpenAI / Google endpoints.
   # Forwarded on every request to the provider (or an AI gateway / reverse proxy
   # in front of it) while keeping provider-native request shaping intact. Values
-  # support env vars (${VAR}), user fields ({{LIBRECHAT_USER_*}}), and request-body
-  # fields ({{LIBRECHAT_BODY_CONVERSATIONID}}). Set the same `headers:` block under
-  # `endpoints.all` to apply globally across endpoints (endpoint values win on key
-  # collisions). NOTE: send metadata headers like these only behind a gateway that
-  # consumes them — native provider APIs ignore unknown headers.
+  # support env vars (${VAR}), user fields ({{LIBRECHAT_USER_*}}), request-body
+  # fields ({{LIBRECHAT_BODY_CONVERSATIONID}}), and the active agent id
+  # ({{LIBRECHAT_AGENT_ID}}). Set the same `headers:` block under `endpoints.all`
+  # to apply globally across endpoints (endpoint values win on key collisions).
+  # NOTE: send metadata headers like these only behind a gateway that consumes
+  # them — native provider APIs ignore unknown headers.
   # openAI:
   #   headers:
   #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
   # google:
+  #   # (optional) Override USD rates per million tokens for your billing tier.
+  #   # Set all three rates to 0 for the Gemini Developer API free tier.
+  #   tokenConfig:
+  #     gemini-2.5-flash: { prompt: 0, completion: 0, cacheRead: 0 }
   #   headers:
   #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
 
@@ -1374,10 +1407,10 @@ endpoints:
       headers:
         x-librechat-body-parentmessageid: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}'
       models:
-        default: ['meta-llama/llama-3-70b-instruct']
+        default: ['meta-llama/llama-3.3-70b-instruct']
         fetch: true
       titleConvo: true
-      titleModel: 'meta-llama/llama-3-70b-instruct'
+      titleModel: 'meta-llama/llama-3.3-70b-instruct'
       # Recommended: Drop the stop parameter from the request as Openrouter models use a variety of stop tokens.
       dropParams: ['stop']
       modelDisplayLabel: 'OpenRouter'

@@ -8,6 +8,8 @@ import {
   sendMessageAndWaitForCompletion,
 } from '../helpers';
 import { withMongo } from '../db';
+import { closeMobileDrawer } from '../agents.helpers';
+import { openPanel } from './panels';
 
 const ARGON = 'gemini-4-argon';
 const PRE_ARGON = 'gemini-2.5-pro';
@@ -26,6 +28,7 @@ async function selectGeminiModel(page: Page, model: string) {
 type LlmConfigReport = {
   model: string | null;
   sampling: string[];
+  reasoningEffort: string | null;
   maxContextTokens: number | null;
 };
 
@@ -37,6 +40,17 @@ async function reportLlmConfig(page: Page): Promise<LlmConfigReport> {
   await expect(reply).toBeVisible({ timeout: 15000 });
   const text = (await reply.textContent()) ?? '';
   return JSON.parse(text.slice(text.indexOf('{'))) as LlmConfigReport;
+}
+
+/** Moves the Parameters panel's Thinking Level slider to its last step, High, as a keyboard user does. */
+async function chooseHighThinkingLevel(page: Page) {
+  await openPanel(page, 'parameters', 'Parameters');
+  const reasoning = page.getByRole('region', { name: 'Reasoning' });
+  const slider = reasoning.getByRole('slider', { name: 'Thinking Level' });
+  await slider.focus();
+  await slider.press('End');
+  await expect(reasoning.getByRole('textbox', { name: 'Thinking Level' })).toHaveValue('High');
+  await closeMobileDrawer(page);
 }
 
 function conversationIdOf(page: Page): string {
@@ -61,6 +75,28 @@ test('Gemini 4 Argon on a Gemini gateway sends no ignored sampling params @scena
   expect(argon.model).toBe('gemini-4-argon');
   expect(argon.sampling).toEqual([]);
   expect(argon.maxContextTokens ?? 0).toBeGreaterThan(0);
+});
+
+test('A thinking level chosen for Gemini 4 Argon reaches the gateway as reasoning_effort @scenario:argon-gateway-receives-the-chosen-thinking-level', async ({
+  page,
+}) => {
+  await selectGeminiModel(page, ARGON);
+  await chooseHighThinkingLevel(page);
+  const argon = await reportLlmConfig(page);
+
+  expect(argon.model).toBe('gemini-4-argon');
+  expect(argon.reasoningEffort).toBe('high');
+});
+
+test('A Gemini 4 Argon turn left on Auto thinking sends no reasoning_effort @scenario:argon-gateway-sends-no-effort-on-auto-thinking', async ({
+  page,
+}) => {
+  await selectGeminiModel(page, ARGON);
+  const argon = await reportLlmConfig(page);
+
+  /** Argon fills in its own default level for the request; the gateway should still pick its default. */
+  expect(argon.model).toBe('gemini-4-argon');
+  expect(argon.reasoningEffort).toBeNull();
 });
 
 test('A Gemini 4 Argon turn is billed at Argon rates @scenario:an-argon-turn-is-billed-at-argon-rates', async ({

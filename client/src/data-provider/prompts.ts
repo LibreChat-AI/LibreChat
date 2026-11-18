@@ -389,6 +389,25 @@ export const useResolvePromptGroup = (
   );
 };
 
+/** No cache or retry: a Langfuse group's revisions can change between requests. */
+export const useGetPromptGroupRevisions = (
+  id: string,
+  config?: { enabled?: boolean },
+): QueryObserverResult<t.TPromptRevisionChoicesResponse> => {
+  return useQuery<t.TPromptRevisionChoicesResponse>(
+    [QueryKeys.promptGroupRevisions, id],
+    () => dataService.getPromptGroupRevisions(id),
+    {
+      enabled: config?.enabled,
+      retry: false,
+      staleTime: 0,
+      cacheTime: 0,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    },
+  );
+};
+
 /** Imperative counterpart to `useResolvePromptGroup`, for callers (for example a
  *  slash-command submit) that need a single resolved read rather than a hook
  *  bound to render. */

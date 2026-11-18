@@ -184,3 +184,42 @@ it.each([
     expect.objectContaining({ message: 'com_nav_export_screenshot_private_text' }),
   );
 });
+
+describe('when an export helper chunk cannot load', () => {
+  let recover: jest.Mock;
+
+  beforeEach(() => {
+    recover = jest.fn(() => false);
+    window.__lcRecoverStaleAssets = recover;
+    jest.resetModules();
+    jest.doMock('downloadjs', () => {
+      throw new TypeError('Failed to fetch dynamically imported module: /assets/export-old.js');
+    });
+    jest.doMock('export-from-json', () => {
+      throw new TypeError('Failed to fetch dynamically imported module: /assets/export-old.js');
+    });
+  });
+
+  afterEach(() => {
+    delete window.__lcRecoverStaleAssets;
+    jest.doMock('downloadjs', () => download);
+    jest.doMock('export-from-json', () => exportFromJSON);
+  });
+
+  it.each(['json', 'csv', 'markdown', 'text'])(
+    'tells the user a %s export is unavailable and asks for stale-asset recovery',
+    async (type) => {
+      mockGetMessages.mockResolvedValueOnce([canonical]);
+      const { result } = setup(type);
+      await act(async () => {
+        await result.current.exportConversation();
+      });
+      expect(mockShowToast).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'com_nav_export_unavailable' }),
+      );
+      expect(recover).toHaveBeenCalledTimes(1);
+      expect(download).not.toHaveBeenCalled();
+      expect(exportFromJSON).not.toHaveBeenCalled();
+    },
+  );
+});

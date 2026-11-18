@@ -130,6 +130,51 @@ describe('useAutoSave — conversation switching', () => {
     }
   });
 
+  it('keeps a live paste when a same-conversation rerun enters and leaves the pending phase', () => {
+    const textAreaRef = makeTextAreaRef();
+    const paste: ExtendedFile = {
+      file_id: 'unsent-rerun-paste',
+      progress: 0.2,
+      size: 100,
+      type: 'text/plain',
+      pastedText: 'unrelated exact clipboard text',
+    };
+    const hook = renderHook(
+      ({ isSubmitting }) => {
+        const [files, setFiles] = React.useState(new Map<string, ExtendedFile>());
+        useAutoSave({
+          conversationId: 'rerun-conversation',
+          isSubmitting,
+          textAreaRef,
+          files,
+          setFiles,
+        });
+        return { files, setFiles };
+      },
+      { initialProps: { isSubmitting: false } },
+    );
+    act(() => hook.result.current.setFiles(new Map([[paste.file_id, paste]])));
+    setFilesDraft('rerun-conversation', {
+      fileIds: [paste.file_id],
+      pendingPastes: { [paste.file_id]: { text: paste.pastedText!, selectionStart: 0 } },
+    });
+    textAreaRef.current!.value = 'Keep this draft';
+    mockSetValue.mockClear();
+    act(() => hook.rerender({ isSubmitting: true }));
+    expect(hook.result.current.files.get(paste.file_id)).toBe(paste);
+    expect(getFilesDraft(getPendingDraftId()).pendingPastes[paste.file_id]?.text).toBe(
+      paste.pastedText,
+    );
+    expect(mockSetValue).not.toHaveBeenCalledWith('text', '');
+    act(() => hook.rerender({ isSubmitting: false }));
+    expect(hook.result.current.files.get(paste.file_id)).toBe(paste);
+    expect(textAreaRef.current!.value).toBe('Keep this draft');
+    expect(getFilesDraft('rerun-conversation').pendingPastes[paste.file_id]?.text).toBe(
+      paste.pastedText,
+    );
+    hook.unmount();
+  });
+
   it('clears the textarea when switching to a conversation with no draft', () => {
     const { rerender } = renderHook(
       ({ conversationId }: { conversationId: string }) =>
@@ -1009,6 +1054,43 @@ describe('useAutoSave — file cache updates', () => {
    * would drop an attachment the user just added (and, with no text typed, leave
    * them with nothing submittable).
    */
+  it.each([true, false])(
+    'restores a completed unsent paste before persisting an empty mount (delayed list: %s)',
+    (delayed) => {
+      const record = { ...persistedRecord, type: 'text/plain', filename: 'pasted-text.txt' };
+      setFilesDraft('new', {
+        fileIds: ['client-temp-id'],
+        pastedTextIds: ['client-temp-id'],
+        textPreviews: { 'client-temp-id': 'exact saved snippet' },
+        pendingPastes: {},
+      });
+      const hook = renderHook(
+        ({ loaded }) => {
+          (useGetFiles as jest.Mock).mockReturnValue({ data: loaded ? [record] : undefined });
+          const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+          useAutoSave({
+            conversationId: 'new',
+            isSubmitting: false,
+            textAreaRef: makeTextAreaRef(),
+            files,
+            setFiles,
+          });
+          return files;
+        },
+        { initialProps: { loaded: !delayed } },
+      );
+      expect(getFilesDraft('new').fileIds).toContain('client-temp-id');
+      if (delayed) act(() => hook.rerender({ loaded: true }));
+      expect(hook.result.current.get('client-temp-id')).toMatchObject({
+        file_id: record.file_id,
+        progress: 1,
+        textPreview: 'exact saved snippet',
+      });
+      expect(getFilesDraft('new').fileIds).toContain('client-temp-id');
+      hook.unmount();
+    },
+  );
+
   it('leaves live attachments alone when the file cache changes with no saved draft', () => {
     const setFiles = jest.fn();
     const files = new Map([['client-temp-id', liveAttachment]]);
@@ -1036,6 +1118,40 @@ describe('useAutoSave — file cache updates', () => {
     });
 
     expect(applySetFiles(setFiles, files).size).toBe(1);
+  });
+
+  /**
+   * After a reload the live file map is empty until the server's file list arrives, and the
+   * restore that rebuilds it needs that list. Saving the draft from the empty map in between
+   * erased every attachment the draft held before it could be restored.
+   */
+  it('keeps the saved files draft until the file list has loaded, then restores it', () => {
+    setFilesDraft('convo-1', { fileIds: ['server-file-id'], pendingPastes: {} });
+
+    const { result, rerender } = renderHook(
+      ({ fileList }: { fileList: unknown[] | undefined }) => {
+        const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+        (useGetFiles as jest.Mock).mockReturnValue({ data: fileList });
+        useAutoSave({
+          conversationId: 'convo-1',
+          textAreaRef: makeTextAreaRef(),
+          files,
+          setFiles,
+        });
+        return files;
+      },
+      { initialProps: { fileList: undefined as unknown[] | undefined } },
+    );
+
+    expect(getFilesDraft('convo-1').fileIds).toEqual(['server-file-id']);
+    expect(result.current.size).toBe(0);
+
+    act(() => {
+      rerender({ fileList: [persistedRecord] });
+    });
+
+    expect(result.current.has('server-file-id')).toBe(true);
+    expect(getFilesDraft('convo-1').fileIds).toEqual(['server-file-id']);
   });
 
   /**

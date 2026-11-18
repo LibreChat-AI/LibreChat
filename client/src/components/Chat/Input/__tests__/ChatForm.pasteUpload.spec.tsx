@@ -2,22 +2,42 @@ import React, { useMemo, useState } from 'react';
 import { getDefaultStore, useAtom } from 'jotai';
 import { filesFamily, isSubmittingFamily } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
+import axios from 'axios';
 import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
 import userEvent from '@testing-library/user-event';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { BrowserRouter as Router } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryKeys, FileSources, EModelEndpoint } from 'librechat-data-provider';
-import type { TFile, TFileUpload, TConversation } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import type { TMessage, TFile, TFileUpload, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
+import { createMessageCache } from '~/Providers/ChatHostContext';
 import { ChatContext, ChatFormProvider } from '~/Providers';
+import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import DragDropWrapper from '../Files/DragDropWrapper';
 import { SteerHostTestProvider } from 'test/steerHost';
+import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
+
+const startupConfig = { interface: { contextUsage: true }, modelSpecs: { list: [] } };
+const originalAdapter = axios.defaults.adapter;
+
+beforeEach(() => {
+  axios.defaults.adapter = async (config) => {
+    if (config.url === '/api/config') {
+      return { data: startupConfig, status: 200, statusText: 'OK', headers: {}, config };
+    }
+    throw new Error('Composer fixture blocks external API requests');
+  };
+});
+
+afterEach(() => {
+  axios.defaults.adapter = originalAdapter;
+});
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();
@@ -67,6 +87,8 @@ class StubImage {
 }
 
 function Harness() {
+  const queryClient = useQueryClient();
+  const messageCache = useMemo(() => createMessageCache(queryClient), [queryClient]);
   const [files, setFiles] = useAtom(filesFamily(0));
   const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
@@ -86,9 +108,20 @@ function Harness() {
         setFilesLoading,
         newConversation: () => undefined,
         handleStopGenerating: () => undefined,
-        stopGenerating: () => undefined,
-        getMessages: () => [],
-        setMessages: () => undefined,
+        stopGenerating: () => Promise.resolve(),
+        getMessages: (targetConversationId?: string | null) =>
+          messageCache.read(targetConversationId ?? conversation.conversationId ?? ''),
+        messagesKey: conversation.conversationId ?? '',
+        latestMessageId: undefined,
+        latestMessageDepth: undefined,
+        subscribeMessages: (onChange: () => void) =>
+          messageCache.subscribe(conversation.conversationId ?? '', onChange),
+        getMessagesRevision: () => messageCache.revision(conversation.conversationId ?? ''),
+        useLiveAttachments: () => ({}),
+        getMappingOptions: () => ({}),
+        feedbackEnabled: false,
+        setMessages: (messages: TMessage[]) =>
+          messageCache.write(conversation.conversationId ?? '', messages),
         ask: mockAsk,
         regenerate: () => undefined,
         setSiblingIdx: () => undefined,
@@ -100,21 +133,25 @@ function Harness() {
         setOptionSettings: () => undefined,
         handleRegenerate: () => undefined,
         handleContinue: () => undefined,
-      }) as unknown as React.ContextType<typeof ChatContext>,
-    [files, setFiles, isSubmitting],
+      }) satisfies React.ContextType<typeof ChatContext>,
+    [files, setFiles, isSubmitting, messageCache],
   );
 
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
-        <DragDropWrapper>
-          <ChatForm
-            index={0}
-            isLandingPage={false}
-            footerBelow={false}
-            centerFormOnLanding={false}
-          />
-        </DragDropWrapper>
+        <TargetContext.Provider
+          value={{ ready: true, pending: false, failed: false, retry: () => {} }}
+        >
+          <DragDropWrapper>
+            <ChatForm
+              index={0}
+              isLandingPage={false}
+              footerBelow={false}
+              centerFormOnLanding={false}
+            />
+          </DragDropWrapper>
+        </TargetContext.Provider>
       </ChatContext.Provider>
     </ChatFormProvider>
   );
@@ -122,12 +159,14 @@ function Harness() {
 
 function renderComposer({ legacyUploadUX = false }: { legacyUploadUX?: boolean } = {}) {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } },
   });
   queryClient.setQueryData(
     [QueryKeys.fileConfig],
     legacyUploadUX ? { legacyFileUploadUX: true } : {},
   );
+  queryClient.setQueryData(startupConfigKey(true), startupConfig);
+  queryClient.setQueryData(startupConfigKey(false), startupConfig);
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 
@@ -169,7 +208,7 @@ afterEach(() => {
 /**
  * The upload-destination dialog is opened by the paste itself, so Radix has no
  * trigger to return focus to when it closes and used to leave focus on
- * `document.body` — which reads to the user as "the send button is enabled but
+ * `document.body`, which reads to the user as "the send button is enabled but
  * Enter does nothing", since Enter-to-send is a textarea key handler.
  *
  * The dialog only exists on a `legacyFileUploadUX` endpoint. Unified upload routes

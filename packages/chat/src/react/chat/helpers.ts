@@ -4,11 +4,20 @@ import type { TMessage } from 'librechat-data-provider';
 import type { MouseEvent } from 'react';
 import type { ChatContract } from './contract';
 import { isSubmittingFamily, submissionByIndex, useIsSubmitting } from '../submission';
+import { useBranchTailGetter, useBranchTailId, useBranchTailSelect } from '../latest';
 import { presetFamily, filesFamily, optionSettingsFamily } from '../pane';
+import { siblingIdxFamily, siblingKey } from '../thread';
+import { useLiveAttachments } from '../stream/atoms';
 import { abortScrollFamily } from '../generation';
+import { getMappingOptions } from '../../core';
 import { getMessageCacheIds } from './cache';
 import { useStopGenerating } from './stop';
 import { useChatHost } from './host';
+import { useTurns } from './turns';
+
+/** Where the tail sits in its thread: all the contract needs of it between turns. */
+const pickTailPlace = (tail: TMessage | null): Pick<TMessage, 'depth' | 'parentMessageId'> | null =>
+  tail && { depth: tail.depth, parentMessageId: tail.parentMessageId };
 
 /**
  * Builds a pane's chat contract from the app the host supplies: its pane store, message cache,
@@ -31,14 +40,18 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
 
   const isSubmitting = useIsSubmitting(index);
   const setIsSubmitting = useSetAtom(isSubmittingFamily(index));
-  const latestMessage = host.useLatestMessage(index, queryParam);
+  const tailRootKey = conversationId ?? null;
+  const tailQueryId = conversationId ? queryParam : null;
+  /** A streamed delta rewrites the tail but not where it sits, so the projection keeps its
+   *  identity through structural sharing and this hook, with everything it builds, sits out the
+   *  stream. The message itself is read when a turn needs it. */
+  const tailPlace = useBranchTailSelect(tailRootKey, tailQueryId, pickTailPlace);
+  const getLatestMessage = useBranchTailGetter(tailRootKey, tailQueryId);
 
-  const latestMessageId = host.useLatestMessageId(index, queryParam) ?? undefined;
-  const latestMessageDepth = latestMessage?.depth;
-  const latestMessageRef = useRef(latestMessage);
-  latestMessageRef.current = latestMessage;
+  const latestMessageId = useBranchTailId(tailRootKey, tailQueryId) ?? undefined;
+  const latestMessageDepth = tailPlace?.depth;
 
-  const setSiblingIdx = host.useSetSiblingIdx(latestMessage?.parentMessageId ?? null);
+  const setSiblingIdx = useSetAtom(siblingIdxFamily(siblingKey(tailPlace?.parentMessageId)));
   /** The setter is rebound whenever the tail's parent changes (every turn); the
    *  ref keeps `handleContinue` referentially stable so rows do not re-render. */
   const setSiblingIdxRef = useRef(setSiblingIdx);
@@ -67,7 +80,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
 
   const setSubmission = useSetAtom(submissionByIndex(index));
 
-  const { ask: _ask, regenerate: _regenerate } = host.useTurns({
+  const turnsParams = {
     index,
     files,
     setFiles,
@@ -75,10 +88,14 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
     setMessages,
     isSubmitting,
     conversation,
-    latestMessage,
+    getLatestMessage,
     setSubmission,
     setConversation,
-  });
+  };
+  const { ask: _ask, regenerate: _regenerate } = useTurns(
+    turnsParams,
+    host.useTurnServices(turnsParams),
+  );
 
   const askRef = useRef(_ask);
   askRef.current = _ask;
@@ -92,7 +109,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   );
 
   const continueGeneration = useCallback(() => {
-    const currentLatest = latestMessageRef.current;
+    const currentLatest = getLatestMessage();
     if (!currentLatest) {
       console.error('Failed to regenerate the message: latestMessage not found.');
       return;
@@ -121,7 +138,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
         'Failed to regenerate the message: parentMessage not found, or not created by user.',
       );
     }
-  }, [getMessages, ask]);
+  }, [getLatestMessage, getMessages, ask]);
 
   const stopGenerating = useStopGenerating(index, conversation);
 
@@ -136,14 +153,14 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   const handleRegenerate = useCallback(
     (e: MouseEvent<HTMLButtonElement>) => {
       e.preventDefault();
-      const parentMessageId = latestMessageRef.current?.parentMessageId ?? '';
+      const parentMessageId = getLatestMessage()?.parentMessageId ?? '';
       if (!parentMessageId) {
         console.error('Failed to regenerate the message: parentMessageId not found.');
         return;
       }
       regenerate({ parentMessageId });
     },
-    [regenerate],
+    [getLatestMessage, regenerate],
   );
 
   const handleContinue = useCallback(
@@ -162,7 +179,6 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   /** Read once per chat rather than per message row: message rows never unmount, so a
    *  per-row settings read would accumulate for the length of the conversation. */
   const feedbackEnabled = host.useFeedbackEnabled();
-  const { getMappingOptions, useLiveAttachments } = host;
 
   return useMemo(
     (): ChatContract => ({
@@ -232,8 +248,6 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       filesLoading,
       setFilesLoading,
       feedbackEnabled,
-      getMappingOptions,
-      useLiveAttachments,
     ],
   );
 }

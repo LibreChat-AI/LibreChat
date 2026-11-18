@@ -18,36 +18,12 @@ const mockCreateOpenIDCallbackAuthenticator = jest.fn((options) => {
   mockOpenIDCallbackAuthenticatorOptions = options;
   return mockOpenIDCallbackMiddleware;
 });
-const mockBuildOAuthFailureLog = jest.fn(({ provider, req, err, info, defaultMessage }) => ({
-  provider,
-  code: err?.code ?? info?.code ?? info?.error ?? req.query?.error,
-  name: err?.name ?? info?.name,
-  message:
-    err?.message ??
-    info?.message ??
-    info?.error_description ??
-    req.query?.error_description ??
-    defaultMessage,
-  cause_code: err?.cause?.code ?? info?.cause?.code,
-  cause_name: err?.cause?.name ?? info?.cause?.name,
-  has_code: req.query?.code != null,
-  has_state: req.query?.state != null,
-  query_error: req.query?.error,
-  query_error_description: req.query?.error_description,
-  path: req.path,
-  forwarded_for: req.headers?.['x-forwarded-for'],
-  user_agent: req.headers?.['user-agent'],
-}));
-const mockGetOAuthFailureMessage = jest.fn(
-  (req) =>
-    req.session?.messages?.pop() ??
-    req.query?.error_description ??
-    req.query?.error ??
-    'OAuth authentication failed',
-);
-const mockRedirectToAuthFailure = jest.fn((res, { clientDomain, authFailedError }) =>
-  res.redirect(`${clientDomain}/login?redirect=false&error=${authFailedError}`),
-);
+const mockOAuthErrorHandler = jest.fn((_req, res) => res.status(204).end());
+let mockOAuthErrorHandlerOptions;
+const mockCreateOAuthErrorHandler = jest.fn((options) => {
+  mockOAuthErrorHandlerOptions = options;
+  return mockOAuthErrorHandler;
+});
 const mockPassportAuthenticate = jest.fn(() => (_req, _res, next) => next());
 
 jest.mock('passport', () => ({
@@ -72,11 +48,9 @@ jest.mock('librechat-data-provider', () => ({
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
-  buildOAuthFailureLog: (...args) => mockBuildOAuthFailureLog(...args),
+  createOAuthErrorHandler: (...args) => mockCreateOAuthErrorHandler(...args),
   createOpenIDCallbackAuthenticator: (...args) => mockCreateOpenIDCallbackAuthenticator(...args),
   createSetBalanceConfig: jest.fn(() => (_req, _res, next) => next()),
-  getOAuthFailureMessage: (...args) => mockGetOAuthFailureMessage(...args),
-  redirectToAuthFailure: (...args) => mockRedirectToAuthFailure(...args),
 }));
 
 const mockMarkOAuthNavigation = jest.fn((req, _res, next) => {
@@ -140,12 +114,11 @@ describe('OAuth route failure logging', () => {
     mockLogger.debug.mockClear();
     mockOAuthHandler.mockClear();
     mockOpenIDCallbackMiddleware.mockClear();
-    mockBuildOAuthFailureLog.mockClear();
-    mockGetOAuthFailureMessage.mockClear();
-    mockRedirectToAuthFailure.mockClear();
+    mockOAuthErrorHandler.mockClear();
     mockPassportAuthenticate.mockClear();
     mockMarkOAuthNavigation.mockClear();
     mockOpenIDCallbackAuthenticatorOptions = undefined;
+    mockOAuthErrorHandlerOptions = undefined;
     mockPassportAuthenticate.mockImplementation(() => (_req, _res, next) => next());
     mockOpenIDCallbackMiddleware.mockImplementation((_req, _res, next) => next());
   });
@@ -180,30 +153,16 @@ describe('OAuth route failure logging', () => {
     expect(mockOAuthHandler).toHaveBeenCalled();
   });
 
-  it('logs structured fallback errors without using Unknown OAuth error', async () => {
+  it('wires the package error handler into the /oauth/error route', async () => {
     const app = createApp();
 
-    const response = await request(app)
-      .get('/oauth/error?error=access_denied&error_description=Denied%20by%20provider')
-      .set('x-forwarded-for', '203.0.113.10')
-      .expect(302);
+    await request(app).get('/oauth/error?error=access_denied').expect(204);
 
-    expect(response.headers.location).toBe(
-      'http://client.test/login?redirect=false&error=auth_failed',
-    );
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      '[OAuth] Authentication failed',
-      expect.objectContaining({
-        provider: 'unknown',
-        code: 'access_denied',
-        message: 'Denied by provider',
-        query_error: 'access_denied',
-        query_error_description: 'Denied by provider',
-        has_code: false,
-        has_state: false,
-        forwarded_for: '203.0.113.10',
-      }),
-    );
-    expect(JSON.stringify(mockLogger.warn.mock.calls[0])).not.toContain('Unknown OAuth error');
+    expect(mockOAuthErrorHandlerOptions).toEqual({
+      logger: mockLogger,
+      clientDomain: 'http://client.test',
+      authFailedError: 'auth_failed',
+    });
+    expect(mockOAuthErrorHandler).toHaveBeenCalledTimes(1);
   });
 });

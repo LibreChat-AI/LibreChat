@@ -1,4 +1,4 @@
-import { useId, useMemo } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { Label, Radio } from '@librechat/client';
 import { Controller, useWatch, useFormContext } from 'react-hook-form';
 import type { AgentForm } from '~/common';
@@ -66,6 +66,7 @@ export default function Instructions({
   const restricted = isRestrictedInstructionsPrompt(instructionsPrompt);
   const isPromptMode = instructionsSource === 'prompt';
   const isReady = promptStatus === 'ready';
+  const [actionsContainer, setActionsContainer] = useState<HTMLDivElement | null>(null);
 
   return (
     <div className="mb-3 flex flex-col gap-2">
@@ -73,7 +74,10 @@ export default function Instructions({
         <Label variant="section" data-testid="instructions-heading">
           {localize('com_ui_instructions')}
         </Label>
-        <SourceToggle disabled={!isReady} />
+        <div className="flex shrink-0 items-center gap-2">
+          <div ref={setActionsContainer} hidden={!isReady || isPromptMode} />
+          <SourceToggle disabled={!isReady} />
+        </div>
       </div>
 
       {/* The expanded agent query (the only source of `instructionsPrompt`) has not
@@ -105,6 +109,7 @@ export default function Instructions({
             >
               <VariableEditor
                 id="instructions"
+                actionsContainer={actionsContainer}
                 label={localize('com_ui_instructions')}
                 value={field.value ?? ''}
                 onChange={field.onChange}

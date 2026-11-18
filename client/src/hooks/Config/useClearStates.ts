@@ -13,10 +13,10 @@ import {
   showStopButtonByIndex,
   submissionStartFamily,
   useClearSubmissions,
+  showSkillsPopoverFamily,
 } from '@librechat/chat/react';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { showFilesDialogAtom, filesDialogTriggerAtom } from '~/store/filesDialog';
-import { showSkillsPopoverFamily } from '~/components/Chat/Input/skillsState';
 import { clearLocalStorage } from '~/utils/localStorage';
 import { activeRunFamily } from '~/hooks/SSE/atoms';
 import store from '~/store';

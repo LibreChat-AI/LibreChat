@@ -18,6 +18,7 @@ import type {
   TReasoningLabelAttemptEvent,
 } from './runs';
 import type { TMessage, TPayload, TConversation } from '../types';
+import type { TPromotedSteer } from './queuedTurns';
 import type { StreamContentData } from './content';
 import type { TAttachment } from '../schemas';
 import type { Agents } from './agents';
@@ -75,6 +76,8 @@ export type ChatFinalFrame = {
   earlyAbort?: boolean;
   /** Steers that never reached an injection boundary, handed back as queued turns. */
   pendingSteers?: TPendingSteer[];
+  /** Unapplied steers the server already made durable queued turns; never re-queue these locally. */
+  promotedSteers?: TPromotedSteer[];
   error?: { message: string };
 };
 
@@ -235,7 +238,12 @@ export type ChatEvent =
    */
   | { type: 'error'; data?: ChatErrorData | null; status?: number }
   /** AI SDK: `abort`. The caller closed a stream that was still open. */
-  | { type: 'abort' };
+  | { type: 'abort' }
+  /**
+   * No AI SDK equivalent: a feed that replays before going live (a subagent's activity) says
+   * the replay is delivered and what follows is live.
+   */
+  | { type: 'ready' };
 
 export type ChatEventType = ChatEvent['type'];
 

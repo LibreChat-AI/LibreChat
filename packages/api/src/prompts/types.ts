@@ -3,6 +3,9 @@ import type {
   PrincipalType,
   TCreatePromptRecord,
   TDeletePromptResponse,
+  NativePromptSelection,
+  LangfusePromptSelection,
+  TPromptRevisionChoicesResponse,
   TMakePromptProductionResponse,
 } from 'librechat-data-provider';
 import type { PromptGroupSource } from '@librechat/data-schemas';
@@ -58,11 +61,10 @@ export interface PromptGroupRecord {
   readonly sourceDestination?: string;
 }
 
-export type PromptSelection =
-  | { readonly type: 'production' }
-  | { readonly type: 'exact'; readonly promptId: string }
-  /** Langfuse only; the native adapter returns `unsupported_selection` for it. */
-  | { readonly type: 'version'; readonly version: number };
+/** A source-tagged selection; a mismatched `source` is rejected as `unsupported_source`. */
+export type PromptReference =
+  | { readonly source: 'native'; readonly selection: NativePromptSelection }
+  | { readonly source: 'langfuse'; readonly selection: LangfusePromptSelection };
 
 export interface NativeResolvedPrompt {
   readonly source: 'native';
@@ -167,10 +169,7 @@ export type PromptServiceError =
    *  including `savePrompt`, `updatePromptGroup`, `deletePromptGroup`,
    *  `makePromptProduction` and `deletePrompt`. */
   | { readonly type: 'read_only'; readonly source: PromptGroupSource }
-  /** The selection is not valid for `source` (for example `version` on a native group,
-   *  or `exact` on a Langfuse group). */
-  | { readonly type: 'unsupported_selection'; readonly source: PromptGroupSource }
-  /** Returned by the `allowedSources` check in `resolvePrompt`, before any adapter runs. */
+  /** The reference's `source` does not match the loaded group's `source`. */
   | { readonly type: 'unsupported_source'; readonly source: PromptGroupSource }
   | {
       readonly type: 'source_unavailable';
@@ -193,28 +192,27 @@ export type MakePromptProductionResult =
   | { readonly ok: true; readonly value: TMakePromptProductionResponse; readonly groupId?: string }
   | { readonly ok: false; readonly error: PromptServiceError };
 
-export interface ResolvePromptInput {
+export type ResolvePromptInput = PromptReference & {
   readonly groupId: string;
-  readonly selection: PromptSelection;
   readonly loadedGroup?: PromptGroupRecord | null;
   readonly loadedRevision?: PromptRecord | null;
   readonly filters?: FiltersConfig;
-  /** Restricts dispatch to these sources; any other source returns `unsupported_source`
-   *  before an adapter or network call runs. Agent-link resolution passes `['native']`. */
-  readonly allowedSources?: readonly PromptGroupSource[];
+};
+
+export interface ListRevisionsInput {
+  readonly groupId: string;
+  readonly loadedGroup?: PromptGroupRecord | null;
 }
 
-/**
- * Resolves a group's content for a selection. One adapter per `PromptGroupSource`; the
- * service picks it from `group.source` and dispatches the already-resolved `group`, so
- * an adapter never has to look its own group up.
- */
-export interface PromptSourceAdapter {
+export interface PromptSourceAdapter<TSelection> {
   resolvePrompt(input: {
     readonly group: PromptGroupRecord;
-    readonly selection: PromptSelection;
+    readonly selection: TSelection;
     readonly loadedRevision?: PromptRecord | null;
   }): Promise<PromptServiceResult<ResolvedPrompt>>;
+  listRevisions(input: {
+    readonly group: PromptGroupRecord;
+  }): Promise<PromptServiceResult<TPromptRevisionChoicesResponse>>;
 }
 
 /**
@@ -305,7 +303,10 @@ export interface PromptServiceAdapters {
   /** All local group and native-revision storage. */
   readonly store: PromptStore;
   /** The content source per `PromptGroupSource`, resolving a selection only. */
-  readonly sources: Record<PromptGroupSource, PromptSourceAdapter>;
+  readonly sources: {
+    readonly native: PromptSourceAdapter<NativePromptSelection>;
+    readonly langfuse: PromptSourceAdapter<LangfusePromptSelection>;
+  };
   readonly grantCreatorOwnership: (input: {
     readonly userId: string;
     readonly groupId: string;

@@ -8,6 +8,35 @@ const OVERLAY_CLASS =
   'absolute inset-0 flex items-center gap-2 rounded-lg border border-border-light bg-surface-secondary px-4 py-3 text-sm text-text-secondary';
 
 /**
+ * The loading overlay of an interactive view. It is also the Suspense fallback while a view's code
+ * downloads, so a view reads the same before and after its module arrives. It is a span so it stays
+ * valid wherever a view can render, including inside a markdown paragraph. The frame's own overlay
+ * is the one live region of a view: a fallback passes `live={false}`, because the frame that
+ * replaces it announces the same loading, and a legacy resource that arrives with the transcript
+ * would otherwise announce it once per resource.
+ */
+export function MCPAppLoading({
+  centered = false,
+  spinner = false,
+  live = true,
+}: {
+  centered?: boolean;
+  spinner?: boolean;
+  live?: boolean;
+}) {
+  const localize = useLocalize();
+  return (
+    <span
+      className={centered ? `${OVERLAY_CLASS} justify-center` : OVERLAY_CLASS}
+      role={live ? 'status' : undefined}
+    >
+      {spinner && <Spinner className="size-4" aria-hidden="true" />}
+      {localize('com_ui_loading_interactive_view')}
+    </span>
+  );
+}
+
+/**
  * The bridge iframe for one MCP App view plus its loading and failure overlays. The surface owns the
  * positioned container (and its definite height); this owns everything that must stay identical
  * across surfaces, including the sandbox tokens and the reveal rule.
@@ -32,12 +61,7 @@ export function MCPAppFrame({
 
   return (
     <>
-      {frame.status === 'loading' && (
-        <div className={overlayClass} role="status">
-          {spinner && <Spinner className="size-4" aria-hidden="true" />}
-          {localize('com_ui_loading_interactive_view')}
-        </div>
-      )}
+      {frame.status === 'loading' && <MCPAppLoading centered={centered} spinner={spinner} />}
       {(frame.status === 'timedOut' || frame.status === 'failed') && (
         <div className={overlayClass} role="alert">
           <span>

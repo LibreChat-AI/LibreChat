@@ -485,6 +485,18 @@ describe('meta rules equal the rules the server applies', () => {
     });
   });
 
+  it('lists the settings LibreChat reads from librechat.yaml itself or only at startup', () => {
+    expect(meta.rules.deploymentOnlyPaths).toMatchObject({
+      'telemetry.rum': 'operator',
+      clientLimits: 'operator',
+      conversationList: 'operator',
+      passwordHashing: 'startup',
+      'interface.colorModeFromUrl': 'startup',
+      'fileConfig.skills.deletionCleanupConcurrency': 'operator',
+      'endpoints.agents.managementApi': 'operator',
+    });
+  });
+
   it('reports per-field title resolution exactly when titles resolve endpoints.all per field', () => {
     const { titleModel } = resolveTitleConfig({
       appConfig: {

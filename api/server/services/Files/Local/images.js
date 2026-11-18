@@ -1,7 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
-const { stripCacheBust, convertImageBuffer } = require('@librechat/api');
+const {
+  stripCacheBust,
+  toLocalUrlPath,
+  resolveLocalFile,
+  convertImageBuffer,
+} = require('@librechat/api');
 const { resizeImageBuffer } = require('../images/resize');
 const { updateUser, updateFile } = require('~/models');
 
@@ -50,7 +55,7 @@ async function uploadLocalImage({ req, file, file_id, endpoint, resolution = 'hi
   await fs.promises.mkdir(userPath, { recursive: true });
   await fs.promises.writeFile(path.join(userPath, fileName), outputBuffer);
   await fs.promises.unlink(inputFilePath);
-  const filepath = path.posix.join('/', 'images', req.user.id, fileName);
+  const filepath = toLocalUrlPath('images', req.user.id, fileName);
   return { filepath, bytes: outputBuffer.length, width, height };
 }
 
@@ -86,7 +91,7 @@ async function prepareImagesLocal(req, file) {
   if (!fs.existsSync(userPath)) {
     fs.mkdirSync(userPath, { recursive: true });
   }
-  const filepath = path.join(publicPath, stripCacheBust(file.filepath));
+  const filepath = await resolveLocalFile(publicPath, stripCacheBust(file.filepath));
 
   const promises = [];
   promises.push(updateFile({ file_id: file.file_id }));

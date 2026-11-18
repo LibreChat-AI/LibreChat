@@ -23,6 +23,10 @@ interface ControlComboboxProps {
   selectedValue: string;
   displayValue?: string;
   items: OptionWithIcon[];
+  /** Custom option content; the string label still supplies searchable text. */
+  renderOption?: (item: OptionWithIcon) => React.ReactNode;
+  /** Fixed virtualized row height, before UI scaling. */
+  optionHeight?: number;
   setValue: (value: string) => void;
   onBlur?: React.FocusEventHandler<HTMLButtonElement>;
   ariaLabel: string;
@@ -76,6 +80,8 @@ function ControlCombobox({
   selectedValue,
   displayValue,
   items,
+  renderOption,
+  optionHeight = ROW_HEIGHT,
   setValue,
   onBlur,
   ariaLabel,
@@ -321,7 +327,7 @@ function ControlCombobox({
             <SelectRenderer
               store={select}
               items={matches}
-              itemSize={ROW_HEIGHT * remScale}
+              itemSize={optionHeight * remScale}
               overscan={5}
             >
               {({ value, icon, label, rightAdornment, ...item }) => (
@@ -330,8 +336,8 @@ function ControlCombobox({
                   {...item}
                   className={cn(
                     'flex w-full cursor-pointer items-center px-3 text-sm',
-                    'text-text-primary hover:bg-surface-tertiary',
-                    'data-[active-item]:bg-surface-tertiary',
+                    'text-text-primary hover:bg-surface-hover',
+                    'data-[active-item]:bg-surface-hover',
                   )}
                   render={<Ariakit.SelectItem value={value} />}
                 >
@@ -339,9 +345,13 @@ function ControlCombobox({
                     <div className={optionIconClassName}>{icon}</div>
                   )}
                   <span
-                    className={cn('min-w-0 truncate text-start', rightAdornment == null && 'grow')}
+                    className={cn(
+                      'min-w-0 text-start',
+                      !renderOption && 'truncate',
+                      rightAdornment == null && 'grow',
+                    )}
                   >
-                    {label}
+                    {renderOption ? renderOption({ value: value ?? null, icon, label }) : label}
                   </span>
                   {rightAdornment != null && (
                     <>

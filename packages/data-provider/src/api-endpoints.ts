@@ -21,6 +21,18 @@ if (BASE_URL && BASE_URL.endsWith('/')) {
 }
 
 export const apiBaseUrl = () => BASE_URL;
+export const responseReview = (responseId: string): string =>
+  `${BASE_URL}/api/agents/responses/${encodeURIComponent(responseId)}/review`;
+export const responseCancel = (responseId: string): string =>
+  `${BASE_URL}/api/agents/responses/${encodeURIComponent(responseId)}/cancel`;
+
+export const slackWorkspaces = (workspaceId?: string): string =>
+  `${apiBaseUrl()}/api/channels/workspaces${workspaceId ? `/${encodeURIComponent(workspaceId)}` : ''}`;
+
+export const agentChannels = (agentId: string, channelId?: string): string =>
+  `${BASE_URL}/api/agents/${encodeURIComponent(agentId)}/channels${
+    channelId ? `/${encodeURIComponent(channelId)}` : ''
+  }`;
 
 // Testing this buildQuery function
 const buildQuery = (params: Record<string, unknown>): string => {
@@ -90,15 +102,11 @@ export const messageSubagentAttachmentCalls = ({
   `${messagesRoot}/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}/subagent-calls?files=${encodeURIComponent(JSON.stringify(files))}`;
 
 /** One tool-call part of a stored message, in full. */
-export const messageToolCallPart = ({
-  conversationId,
-  messageId,
-  partIndex,
-  toolCallId,
-  stepId,
-  agentId,
-}: q.ToolCallPartParams) => {
-  const path = `${messagesRoot}/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}/parts/${partIndex}`;
+/** The identity a stored tool-call part is read by, as a query string appended to `path`. */
+const withToolCallIdentity = (
+  path: string,
+  { toolCallId, stepId, agentId }: Pick<q.ToolCallPartParams, 'toolCallId' | 'stepId' | 'agentId'>,
+) => {
   const query = [
     ['toolCallId', toolCallId],
     ['stepId', stepId],
@@ -109,6 +117,12 @@ export const messageToolCallPart = ({
     .join('&');
   return query === '' ? path : `${path}?${query}`;
 };
+
+export const messageToolCallPart = (params: q.ToolCallPartParams) =>
+  withToolCallIdentity(
+    `${messagesRoot}/${encodeURIComponent(params.conversationId)}/${encodeURIComponent(params.messageId)}/parts/${params.partIndex}`,
+    params,
+  );
 
 export const messagesBranch = () => `${messagesRoot}/branch`;
 
@@ -171,6 +185,20 @@ export const subagentThread = (
   if (taskId != null) return `${endpoint}?taskId=${encodeURIComponent(taskId)}`;
   return cursor == null ? endpoint : `${endpoint}?cursor=${encodeURIComponent(cursor)}`;
 };
+
+/** A child thread's messages, read through the parent conversation that owns it. */
+export const subagentThreadMessages = (parentConversationId: string, threadId: string) =>
+  `${parentSubagents(parentConversationId)}/${encodeURIComponent(threadId)}/messages`;
+
+/** One full tool-call part of a child thread's message; `conversationId` is the thread. */
+export const subagentThreadToolCallPart = (
+  parentConversationId: string,
+  params: q.ToolCallPartParams,
+) =>
+  withToolCallIdentity(
+    `${subagentThreadMessages(parentConversationId, params.conversationId)}/${encodeURIComponent(params.messageId)}/parts/${params.partIndex}`,
+    params,
+  );
 
 export const subagentTaskContent = (
   parentConversationId: string,
@@ -266,12 +294,14 @@ export const deletePreset = () => `${BASE_URL}/api/presets/delete`;
 
 export const aiEndpoints = () => `${BASE_URL}/api/endpoints`;
 
-export const tokenConfig = () => `${BASE_URL}/api/endpoints/token-config`;
+export const tokenConfig = (endpoint?: string) =>
+  `${BASE_URL}/api/endpoints/token-config${endpoint == null ? '' : `?endpoint=${encodeURIComponent(endpoint)}`}`;
 
 export const reasoningCapabilities = (endpoint: string) =>
   `${BASE_URL}/api/endpoints/reasoning-capabilities?endpoint=${encodeURIComponent(endpoint)}`;
 
-export const models = () => `${BASE_URL}/api/models`;
+export const models = (endpoint?: string) =>
+  `${BASE_URL}/api/models${endpoint == null ? '' : `?endpoint=${encodeURIComponent(endpoint)}`}`;
 
 export const login = () => `${BASE_URL}/api/auth/login`;
 
@@ -466,6 +496,8 @@ export const getPromptGroup = (_id: string) => `${prompts()}/groups/${_id}`;
 export const resolvePromptGroup = (_id: string, version?: number) =>
   `${getPromptGroup(_id)}/resolve${buildQuery({ version })}`;
 
+export const getPromptGroupRevisions = (_id: string) => `${getPromptGroup(_id)}/revisions`;
+
 export const getPromptGroupsWithFilters = (filter: object) => {
   let url = `${prompts()}/groups`;
   // Filter out undefined/null values
@@ -656,6 +688,7 @@ export const enableTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup`;
 export const confirmTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/confirm`;
 export const acknowledgeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/acknowledge`;
 export const finalizeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/finalize`;
+export const cancelTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/cancel`;
 export const verifyTwoFactor = () => `${BASE_URL}/api/auth/2fa/verify`;
 export const confirmTwoFactor = () => `${BASE_URL}/api/auth/2fa/confirm`;
 export const disableTwoFactor = () => `${BASE_URL}/api/auth/2fa/disable`;

@@ -1,10 +1,12 @@
 import {
   agentQueuedTurnCapabilitySchema,
+  agentQueuedTurnFileRefSchema,
   agentQueuedTurnReceiptSchema,
   cancelAgentQueuedTurnSchema,
   enqueueAgentQueuedTurnSchema,
   listAgentQueuedTurnsSchema,
 } from './queuedTurns';
+import { MAX_FILE_TEXT_PREVIEW_LENGTH } from './files';
 import { ReasoningEffort } from '../schemas';
 
 const request = {
@@ -12,7 +14,14 @@ const request = {
   parentMessageId: 'message-1',
   clientRequestId: 'request-1',
   text: 'Continue with this context',
-  files: [{ file_id: 'file-1', filename: 'context.txt', llmDeliveryPath: 'text' }],
+  files: [
+    {
+      file_id: 'file-1',
+      filename: 'context.txt',
+      llmDeliveryPath: 'text',
+      textPreview: '  pasted context\n',
+    },
+  ],
   quotes: ['quoted context'],
   manualSkills: ['research'],
   reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
@@ -34,6 +43,27 @@ describe('agent queued turn schemas', () => {
 
   it('accepts the complete enqueue contract', () => {
     expect(enqueueAgentQueuedTurnSchema.parse(request)).toEqual(request);
+  });
+
+  it('bounds file previews without trimming their whitespace or accepting model text', () => {
+    for (const textPreview of [
+      '',
+      '  pasted context\n\t',
+      'x'.repeat(MAX_FILE_TEXT_PREVIEW_LENGTH),
+    ]) {
+      expect(
+        agentQueuedTurnFileRefSchema.parse({ file_id: 'file-1', textPreview, text: 'full text' }),
+      ).toEqual({ file_id: 'file-1', textPreview });
+    }
+    expect(
+      agentQueuedTurnFileRefSchema.safeParse({
+        file_id: 'file-1',
+        textPreview: 'x'.repeat(MAX_FILE_TEXT_PREVIEW_LENGTH + 1),
+      }).success,
+    ).toBe(false);
+    expect(
+      agentQueuedTurnFileRefSchema.safeParse({ file_id: 'file-1', textPreview: 42 }).success,
+    ).toBe(false);
   });
 
   it('accepts allowed modes without requiring them on legacy turns', () => {

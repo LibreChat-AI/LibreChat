@@ -11,12 +11,14 @@ describe('Label', () => {
     expect(label).toHaveClass(
       'block',
       'w-full',
-      'break-all',
+      'wrap-anywhere',
       'text-(length:--theme-label-size)',
       'leading-(--theme-label-leading)',
       'font-theme-label',
     );
     expect(label).toHaveClass('text-text-primary', 'peer-disabled:opacity-70');
+    /** Prose wraps between words; only a run too long for the line breaks inside itself. */
+    expect(label).not.toHaveClass('break-all');
   });
 
   it('renders the secondary ink at the default label metrics', () => {

@@ -1,13 +1,13 @@
 import jwt from 'jsonwebtoken';
-import { logger } from '@librechat/data-schemas';
 import { createHash, randomBytes } from 'node:crypto';
+import { DEFAULT_REFRESH_TOKEN_EXPIRY, logger } from '@librechat/data-schemas';
 import { SESSION_HINT_COOKIE, isTwoFactorPolicyProvider } from 'librechat-data-provider';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
 import type { NextFunction, Request, Response } from 'express';
 import type { UserDocumentId } from '~/auth/verification';
-import { isEnabled } from '~/utils';
+import { isEnabled, math } from '~/utils';
 
-const TWO_FACTOR_SETUP_TOKEN_EXPIRY = '10m';
+const TWO_FACTOR_SETUP_TOKEN_EXPIRY_SECONDS = 10 * 60;
 const TWO_FACTOR_SETUP_ACKNOWLEDGEMENT_TOKEN_EXPIRY = '5m';
 const TWO_FACTOR_SETUP_FINALIZATION_TOKEN_EXPIRY = '5m';
 const TWO_FACTOR_LOGIN_CHALLENGE_TOKEN_EXPIRY = '5m';
@@ -24,6 +24,9 @@ export const TWO_FACTOR_TOKEN_PURPOSE = {
   REQUIRED_ACKNOWLEDGEMENT: 'required_2fa_acknowledgement',
   REQUIRED_FINALIZATION: 'required_2fa_finalization',
 } as const;
+
+/** The expiry options a setup token's verification may relax; nothing else about it is negotiable. */
+type SetupTokenVerifyOptions = Pick<jwt.VerifyOptions, 'ignoreExpiration' | 'maxAge'>;
 
 interface TwoFactorSetupBody {
   tempToken?: string;
@@ -106,6 +109,8 @@ export type TwoFactorEnrollmentRequest = Request & {
   twoFactorEnrollmentNonce?: string;
   twoFactorSetupIssuedAt?: number;
   twoFactorSetupIssuedAtMs?: number;
+  /** Set when the setup token was honored past its own expiry, which only a sign-out may do. */
+  twoFactorSetupExpired?: boolean;
 };
 
 export type TwoFactorSetupUser = Pick<
@@ -244,12 +249,66 @@ export function isTokenRetired(
   );
 }
 
+export const RETIREMENT_RESTAMP_FAILED = 'RETIREMENT_RESTAMP_FAILED';
+
+/** The two cutoffs `isTokenRetired` compares against. */
+export type RetirementCutoffField = 'twoFactorEnrolledAt' | 'credentialsChangedAt';
+
+/**
+ * Re-dates a retirement cutoff to an instant read after the write that set it has committed.
+ *
+ * The first stamp comes off the application clock before MongoDB applies the write, so a
+ * credential minted while that write is in flight is dated after the cutoff it should fall to,
+ * and its own post-mint recheck can still read the document from before the commit. Every such
+ * credential was minted before the commit returned, so a stamp read afterwards retires it. The
+ * caller guards the write on the first stamp, so a later change to the same cutoff is never moved
+ * back. The change this follows has already committed, so a failure is thrown as
+ * `RETIREMENT_RESTAMP_FAILED` for the owning boundary to finish its revocations and report the
+ * retirement as incomplete rather than confirm it.
+ */
+export async function restampRetirementCutoff<F extends RetirementCutoffField>(
+  field: F,
+  userId: string,
+  stampedAt: Date,
+  write: (update: Record<F, Date>, expectedState: Record<F, Date>) => Promise<unknown>,
+): Promise<void> {
+  try {
+    await write(
+      { [field]: new Date() } as Record<F, Date>,
+      { [field]: stampedAt } as Record<F, Date>,
+    );
+  } catch (cause) {
+    logger.error(`[restampRetirementCutoff] Failed to re-date ${field} for user ${userId}`, cause);
+    throw Object.assign(new Error(`Failed to re-date ${field} after its committing write`), {
+      code: RETIREMENT_RESTAMP_FAILED,
+      cause,
+    });
+  }
+}
+
 export interface MintedSessionWithdrawal {
   deleteAllUserSessions: (query: { userId: string }) => Promise<unknown>;
   clearCloudFrontCookies: (
     res: Response,
     scope: { userId: string; tenantId?: string; storageRegion?: string },
   ) => void;
+}
+
+/** Clears every credential a browser holds for a session: refresh, provider and hint cookies, and the CDN cookies. */
+export function clearSessionCookies(
+  res: Response,
+  user: Pick<TwoFactorAccount, 'tenantId' | 'orgId' | 'storageRegion'>,
+  userId: string,
+  deps: Pick<MintedSessionWithdrawal, 'clearCloudFrontCookies'>,
+): void {
+  res.clearCookie('refreshToken');
+  res.clearCookie('token_provider');
+  res.clearCookie(SESSION_HINT_COOKIE);
+  deps.clearCloudFrontCookies(res, {
+    userId,
+    tenantId: user.tenantId ?? user.orgId,
+    storageRegion: user.storageRegion,
+  });
 }
 
 /**
@@ -262,14 +321,7 @@ export async function withdrawMintedSession(
   userId: string,
   deps: MintedSessionWithdrawal,
 ): Promise<void> {
-  res.clearCookie('refreshToken');
-  res.clearCookie('token_provider');
-  res.clearCookie(SESSION_HINT_COOKIE);
-  deps.clearCloudFrontCookies(res, {
-    userId,
-    tenantId: user.tenantId ?? user.orgId,
-    storageRegion: user.storageRegion,
-  });
+  clearSessionCookies(res, user, userId, deps);
   await deps.deleteAllUserSessions({ userId });
 }
 
@@ -375,7 +427,7 @@ export function generateTwoFactorSetupToken(userId: string, jwtSecret: string): 
     userId,
     jwtSecret,
     TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_SETUP,
-    TWO_FACTOR_SETUP_TOKEN_EXPIRY,
+    TWO_FACTOR_SETUP_TOKEN_EXPIRY_SECONDS,
   );
 }
 
@@ -392,13 +444,14 @@ function verifyDatedTwoFactorToken(
   token: string | undefined,
   jwtSecret: string | undefined,
   purpose: string,
+  verifyOptions?: SetupTokenVerifyOptions,
 ): TwoFactorTokenCredential | undefined {
   if (!token || !jwtSecret) {
     return undefined;
   }
 
   try {
-    const payload = jwt.verify(token, jwtSecret);
+    const payload = jwt.verify(token, jwtSecret, verifyOptions);
     if (
       typeof payload !== 'object' ||
       payload.purpose !== purpose ||
@@ -500,8 +553,14 @@ export function verifyTwoFactorSetupFinalizationToken(
 export function verifyTwoFactorSetupToken(
   tempToken: string | undefined,
   jwtSecret: string | undefined,
+  verifyOptions?: SetupTokenVerifyOptions,
 ): TwoFactorTokenCredential | undefined {
-  return verifyDatedTwoFactorToken(tempToken, jwtSecret, TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_SETUP);
+  return verifyDatedTwoFactorToken(
+    tempToken,
+    jwtSecret,
+    TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_SETUP,
+    verifyOptions,
+  );
 }
 
 export interface BlockRetiredSetupTokenDependencies {
@@ -556,27 +615,58 @@ export function createBlockRetiredSetupToken(deps: BlockRetiredSetupTokenDepende
   };
 }
 
-export function requireTwoFactorSetupToken(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Response | void {
-  if (!isEnabled(process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION)) {
-    return res.status(403).json({ message: 'Two-factor authentication setup is not required' });
-  }
+type SetupTokenMiddleware = (req: Request, res: Response, next: NextFunction) => Response | void;
 
-  const tempToken = (req.body as TwoFactorSetupBody | undefined)?.tempToken;
-  const credential = verifyTwoFactorSetupToken(tempToken, process.env.JWT_SECRET);
-  if (!credential) {
-    return res.status(401).json({ message: 'Invalid or expired two-factor setup token' });
-  }
+function createRequireTwoFactorSetupToken(
+  getVerifyOptions?: () => SetupTokenVerifyOptions,
+): SetupTokenMiddleware {
+  return (req, res, next) => {
+    if (!isEnabled(process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION)) {
+      return res.status(403).json({ message: 'Two-factor authentication setup is not required' });
+    }
 
-  const setupRequest = req as TwoFactorEnrollmentRequest;
-  setupRequest.user = { id: credential.userId };
-  setupRequest.twoFactorSetupIssuedAt = credential.issuedAt;
-  setupRequest.twoFactorSetupIssuedAtMs = credential.issuedAtMs;
-  next();
+    const tempToken = (req.body as TwoFactorSetupBody | undefined)?.tempToken;
+    const credential = verifyTwoFactorSetupToken(
+      tempToken,
+      process.env.JWT_SECRET,
+      getVerifyOptions?.(),
+    );
+    if (!credential) {
+      return res.status(401).json({ message: 'Invalid or expired two-factor setup token' });
+    }
+
+    const setupRequest = req as TwoFactorEnrollmentRequest;
+    setupRequest.user = { id: credential.userId };
+    setupRequest.twoFactorSetupIssuedAt = credential.issuedAt;
+    setupRequest.twoFactorSetupIssuedAtMs = credential.issuedAtMs;
+    /** The signature was just verified, so the claim is read back rather than trusted blind. */
+    const expiresAt = (jwt.decode(tempToken as string) as jwt.JwtPayload | null)?.exp;
+    setupRequest.twoFactorSetupExpired =
+      typeof expiresAt === 'number' && expiresAt * 1000 <= Date.now();
+    next();
+  };
 }
+
+export const requireTwoFactorSetupToken: SetupTokenMiddleware = createRequireTwoFactorSetupToken();
+
+/**
+ * Authorizes leaving enrollment. The token's short expiry bounds how long it can start or finish
+ * an enrollment, and signing out does neither: it only ends the session the browser presents and
+ * clears what was staged. A user who sat on the setup screen past those minutes must still be able
+ * to leave, or the session their sign-in left alive sends them straight back into setup. So an
+ * expired token is honored here, but only for as long as the sessions it could end can live, and a
+ * token that account events have retired is still refused by `blockRetiredSetupToken`. The request
+ * is marked `twoFactorSetupExpired`, and an expired token may end only the session the request
+ * itself presents: it never reaches into the account's staged enrollment.
+ */
+export const requireTwoFactorSetupSignOutToken: SetupTokenMiddleware =
+  createRequireTwoFactorSetupToken(() => ({
+    ignoreExpiration: true,
+    maxAge: Math.max(
+      Math.floor(math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY) / 1000),
+      TWO_FACTOR_SETUP_TOKEN_EXPIRY_SECONDS,
+    ),
+  }));
 
 export function requireTwoFactorSetupFinalizationToken(
   req: Request,

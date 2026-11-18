@@ -125,6 +125,7 @@ import {
 } from '../projects/context';
 import { assertChatProjectInstructions, ChatProjectResourcesChangedError } from '../projects/turn';
 import { extractAgentContent, extractSkillContent } from '../protection/adapters/submissions';
+import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
@@ -135,6 +136,7 @@ import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import { getGoogleInputTokenLimit } from '~/endpoints/google/llm';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
@@ -147,6 +149,8 @@ import { resolveAgentCodeExecution } from '~/code/agent';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { applyBackgroundToolCalls } from './background';
 import { admitCurrentFileBudget } from './files/budget';
+import { allowsFileResource } from '~/files/consumers';
+import { applyDeferredToolLoading } from './deferral';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
 import { getAgentInferencePolicy } from './input';
@@ -929,11 +933,7 @@ export type InitializedAgent = Agent & {
   provisionWarnings?: string[];
   /** State for deferred file provisioning — actual uploads happen at tool invocation time */
   provisionState?: ProvisionState;
-  /**
-   * Facts about a resolved `instructionsPrompt` link (source, groupId,
-   * resolved promptId), surfaced for AI-2158. Never persisted — omitted for
-   * an agent with no link, an unresolved link, or a missing resolver.
-   */
+  /** Facts about a resolved `instructionsPrompt` link, shaped per source. Never persisted. */
   instructionsPromptFacts?: LinkedInstructionsFacts;
 };
 
@@ -992,6 +992,8 @@ export interface InitializeAgentParams {
     /** Serializable tool definitions for event-driven mode */
     toolDefinitions?: LCTool[];
     hasDeferredTools?: boolean;
+    /** Whether the `deferred_tools` capability is enabled for this agent's run. */
+    deferredToolsEnabled?: boolean;
     mcpToolAliases?: MCPToolAlias[];
     actionsEnabled?: boolean;
     /** Action tool names backed by OAuth — excluded from background dispatch. */
@@ -1042,14 +1044,7 @@ export interface InitializeAgentParams {
    * from `db.getRoleByName`.
    */
   resolveWebSearchGrant?: () => Promise<boolean>;
-  /**
-   * Resolves an agent's `instructionsPrompt` link (a linked native prompt
-   * group) into instruction text. Called only when `agent.instructionsPrompt`
-   * carries a resolvable `native` link. Absent, a linked agent falls back to
-   * empty instructions with a warning — there is no default DB-backed
-   * resolution path, unlike `resolveWebSearchGrant`, so every caller that
-   * wants linked instructions honored must supply one.
-   */
+  /** With none supplied, a linked agent falls back to empty instructions. */
   resolveLinkedInstructions?: ResolveLinkedInstructions;
   /**
    * Whether resolving `agent.instructionsPrompt` should record a usage
@@ -1931,12 +1926,44 @@ export async function initializeAgent(
     currentFiles = requestUsageFiles.concat(toolUsageFiles);
   }
   if (currentFiles?.length) {
-    /* Before any check reads the route: endpoint filtering, model-bound limits and content
-     * inspection below all have to judge each file by the route this turn delivers it by. */
     currentFiles = applyTurnDelivery(currentFiles, {
       routing: deliveryRouting,
       consumers: fileConsumers,
     });
+  }
+  const excludedCodeFileIds = new Set<string>();
+  let codeSnapshotMounts: Map<string, string> | undefined;
+  if (wantsCodeFiles) {
+    const membership = new Map<EToolResources, ReadonlySet<string>>([
+      [EToolResources.execute_code, new Set(agent.tool_resources?.execute_code?.file_ids)],
+      [EToolResources.file_search, new Set(agent.tool_resources?.file_search?.file_ids)],
+    ]);
+    const candidates = [...(currentFiles ?? []), ...deferredProvisionFiles].filter((file) =>
+      allowsFileResource(file, EToolResources.execute_code, membership),
+    );
+    const privateIds = new Set(
+      Object.values(agent.tool_resources ?? {}).flatMap((resource) => resource?.file_ids ?? []),
+    );
+    const selected = new Set(
+      selectCodeFileGenerations(
+        candidates,
+        privateIds,
+        codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
+      ).files.flatMap((file) => (file ? [file.file_id] : [])),
+    );
+    for (const file of candidates)
+      if (!selected.has(file.file_id)) excludedCodeFileIds.add(file.file_id);
+    codeSnapshotMounts = planCodeSnapshotMounts(
+      candidates.filter((file) => selected.has(file.file_id)),
+      privateIds,
+      codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
+    );
+    const needed = (file: IMongoFile | TFile): boolean =>
+      !excludedCodeFileIds.has(file.file_id) ||
+      isModelBoundAttachmentFile(file) ||
+      (wantsSearchFiles && allowsFileResource(file, EToolResources.file_search, membership));
+    currentFiles = currentFiles?.filter(needed);
+    deferredProvisionFiles = deferredProvisionFiles.filter(needed);
   }
 
   let endpointFileType: EModelEndpoint | undefined;
@@ -2105,6 +2132,8 @@ export async function initializeAgent(
     adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
     hasEntityEmbeddings: db.hasEntityEmbeddings,
     provisionCandidates: deferredProvisionFiles as unknown as TFile[],
+    excludedCodeFileIds,
+    codeSnapshotMounts,
     codeRouteKey: codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
     codeBaseUrl: codeExecutionContext.baseUrl,
     codeExecutionProfile: codeExecutionContext.executionProfile,
@@ -2256,14 +2285,15 @@ export async function initializeAgent(
   }
 
   const {
-    toolRegistry,
+    toolRegistry: loadedToolRegistry,
     toolContextMap,
     dynamicToolContextMap,
     userMCPAuthMap,
     toolDefinitions: loadedToolDefinitions,
     mcpAvailableTools,
     requestScopedConnections,
-    hasDeferredTools,
+    hasDeferredTools: loadedHasDeferredTools,
+    deferredToolsEnabled,
     mcpToolAliases,
     actionsEnabled,
     oauthActionToolNames,
@@ -2324,6 +2354,8 @@ export async function initializeAgent(
   }
 
   let toolDefinitions = loadedToolDefinitions;
+  let toolRegistry = loadedToolRegistry;
+  let hasDeferredTools = loadedHasDeferredTools;
 
   /**
    * Tolerant filter: anything `loadTools` couldn't resolve (capability
@@ -2403,6 +2435,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
     });
     toolDefinitions = codeExecResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.execute_code, codeExecResult.toolNames);
@@ -2688,6 +2721,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
       skillStates: params.skillStates,
       defaultActiveOnShare: params.defaultActiveOnShare,
       maxCatalogSkills: getMaxCatalogSkills(runtime),
@@ -2739,6 +2773,32 @@ export async function initializeAgent(
     semanticIntentBlockedToolNames = intentSanitized.semanticIntentBlockedToolNames;
   }
 
+  /**
+   * Deferral runs on the final definition set so system tools registered above
+   * (code, memory, file authoring, the skill catalog) can be deferred like MCP
+   * tools, and a definition the intent pass replaced is deferred in its final
+   * form. A loader that returned early for an agent with no configured tools
+   * reports no capability, so the endpoint's capability list decides then.
+   */
+  const deferralEnabled =
+    deferredToolsEnabled ??
+    (appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? []).includes(
+      AgentCapabilities.deferred_tools,
+    );
+  if (deferralEnabled) {
+    const deferral = applyDeferredToolLoading({
+      toolDefinitions,
+      toolRegistry,
+      toolOptions: agent.tool_options,
+      capabilityToolNames,
+      provider: agent.provider,
+      hasDeferredTools,
+    });
+    toolDefinitions = deferral.toolDefinitions;
+    toolRegistry = deferral.toolRegistry;
+    hasDeferredTools = deferral.hasDeferredTools;
+  }
+
   const hasFinalAgentTools =
     (structuredTools?.length ?? 0) > 0 || (toolDefinitions?.length ?? 0) > 0;
   if (isGoogleToolCombinationProvider(agent.provider) && hasProviderTools && hasFinalAgentTools) {
@@ -2756,7 +2816,14 @@ export async function initializeAgent(
 
   const agentMaxContextNum = Number(agentMaxContextTokens) || DEFAULT_MAX_CONTEXT_TOKENS;
   const maxOutputTokensNum = Number(maxOutputTokens) || 0;
-  const baseContextTokens = Math.max(0, agentMaxContextNum - maxOutputTokensNum);
+  const sharedInputLimit =
+    agent.provider === Providers.GOOGLE || agent.provider === Providers.VERTEXAI
+      ? (getGoogleInputTokenLimit(tokensModel ?? '', maxOutputTokensNum) ?? Infinity)
+      : Infinity;
+  const baseContextTokens = Math.max(
+    0,
+    Math.min(agentMaxContextNum - maxOutputTokensNum, sharedInputLimit),
+  );
 
   const toMongoFiles = (files: Array<TFile | undefined> | undefined): IMongoFile[] =>
     (files ?? []).filter((a): a is TFile => a != null).map((a) => a as unknown as IMongoFile);
@@ -2896,7 +2963,7 @@ export async function initializeAgent(
       provisionWarnings != null && provisionWarnings.length > 0 ? provisionWarnings : undefined,
     maxContextTokens:
       maxContextTokens != null && maxContextTokens > 0
-        ? maxContextTokens
+        ? Math.min(maxContextTokens, sharedInputLimit)
         : Math.max(1024, Math.round(baseContextTokens * (1 - DEFAULT_RESERVE_RATIO))),
     primedCodeFiles,
     codeContextEntries,

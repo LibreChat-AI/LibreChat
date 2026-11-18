@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { Feather } from 'lucide-react';
 import { Skeleton } from '@librechat/client';
-import { isEphemeralAgentId, parseEphemeralAgentId } from 'librechat-data-provider';
 import type t from 'librechat-data-provider';
+
+export { resolveAgentTarget } from '@librechat/chat';
 
 /**
  * Extracts the avatar URL from an agent's avatar property
@@ -121,22 +122,3 @@ export const renderAgentAvatar = (
 };
 
 // All hardcoded category constants removed - now using database-driven categories
-
-/**
- * The provider and model an agents-endpoint conversation runs on: the saved
- * agent's, or the target encoded in an ephemeral agent id. A saved agent that
- * has not loaded yet resolves to nothing, so callers fail closed.
- */
-export const resolveAgentTarget = (
-  agentId: string | null | undefined,
-  agent: Pick<t.Agent, 'provider' | 'model'> | null | undefined,
-): { provider: string; model: string } | undefined => {
-  if (agent != null) {
-    return { provider: agent.provider ?? '', model: agent.model ?? '' };
-  }
-  if (agentId == null || !isEphemeralAgentId(agentId)) {
-    return undefined;
-  }
-  const parsed = parseEphemeralAgentId(agentId);
-  return parsed == null ? undefined : { provider: parsed.endpoint, model: parsed.model };
-};

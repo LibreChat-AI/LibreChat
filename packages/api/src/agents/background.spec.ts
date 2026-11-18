@@ -36,8 +36,8 @@ import {
   SUBAGENT_COMPLETION_DELIVERY,
   SUBAGENT_POLL_WAKEUP_GUIDANCE,
 } from './subagentDelivery';
-import { parseBackgroundTaskOutput } from '../../../../client/src/components/Chat/Messages/Content/Parts/background';
-import { parseBackgroundHandle } from '../../../../client/src/components/Chat/Messages/Content/Parts/handle';
+import { parseBackgroundTaskOutput } from '../../../chat/src/core/parts/background';
+import { parseBackgroundHandle } from '../../../chat/src/core/parts/handle';
 import { SubagentTaskOwnerUnavailableError } from './subagentTaskRouting';
 import { TOOL_SELECTION_WILDCARD } from './selection';
 import { toolOptionsSchema } from './validation';

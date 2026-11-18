@@ -348,10 +348,6 @@ export function formatToolContent(
     metadata.toolName &&
     metadata.serverBinding
   );
-  const hasUiResource = result?.content?.some((item) => isUiResource(item));
-  if (!isRecognizedProvider && !hasSyntheticApp && !hasUiResource) {
-    return [parseAsString(result), undefined];
-  }
 
   const content = result?.content ?? [];
   if (!content.length && !hasSyntheticApp) {
@@ -392,7 +388,7 @@ export function formatToolContent(
     },
 
     image: (item) => {
-      if (!isRecognizedProvider || !isImageContent(item)) {
+      if (!isImageContent(item)) {
         return;
       }
       collectImage(item);
@@ -448,19 +444,19 @@ export function formatToolContent(
         }
 
         // A non-HTML ui:// image remains an ordinary image result as well as core UI transport.
-        if (isRecognizedProvider && isCoreUiResource) {
+        if (isCoreUiResource) {
           const body = readResourceBody(item.resource);
           if (body.image) {
             collectImage(body.image);
           }
         }
-      } else if (isRecognizedProvider && !isRenderableResource) {
+      } else if (!isRenderableResource) {
         const body = readResourceBody(item.resource);
-        if (body.text) {
+        if (isRecognizedProvider && body.text) {
           resourceText.push(`Resource Text: ${body.text}`);
         } else if (body.image) {
           collectImage(body.image);
-        } else if (body.binaryBytes != null) {
+        } else if (isRecognizedProvider && body.binaryBytes != null) {
           resourceText.push(describeBinaryResource(body.binaryBytes));
         }
       }
@@ -585,7 +581,10 @@ UI Resource Markers Available:
 
   let artifacts: t.Artifacts = undefined;
   if (imageUrls.length > 0) {
-    artifacts = { content: imageUrls };
+    // Attachment callbacks require content, but unknown providers must not receive vision input.
+    artifacts = isRecognizedProvider
+      ? { content: imageUrls }
+      : { content: [], imageAttachments: imageUrls };
   }
 
   if (uiResources.length > 0) {

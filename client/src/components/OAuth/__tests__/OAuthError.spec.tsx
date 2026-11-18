@@ -1,6 +1,6 @@
 import React from 'react';
-import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { render, screen } from '@testing-library/react';
 import OAuthError from '../OAuthError';
 
 const mockAnnounce = jest.fn();
@@ -32,5 +32,11 @@ describe('OAuthError', () => {
   it('announces a failure without a flow when the redirect names none', () => {
     renderAt('/oauth/error?error=invalid_state');
     expect(mockAnnounce).toHaveBeenCalledWith({ outcome: 'failed', flowId: undefined });
+  });
+
+  it('maps a known error code to its message', () => {
+    renderAt('/oauth/error?error=invalid_state');
+    expect(screen.getByRole('heading', { name: 'com_ui_oauth_error_title' })).toBeInTheDocument();
+    expect(screen.getByText('com_ui_oauth_error_invalid_state')).toBeInTheDocument();
   });
 });

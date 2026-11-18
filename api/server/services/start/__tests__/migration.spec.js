@@ -1,73 +1,58 @@
-const mockWarnOnMissingSearchTokens = jest.fn();
-const mockMigrateLegacyAgentOfficialStatus = jest.fn();
+const mockCheckStartupMigrations = jest.fn();
+const mockMigrateLegacyAgentOfficialStatus = jest.fn().mockResolvedValue(0);
 const mockCheckAgentPermissionsMigration = jest.fn();
 const mockCheckPromptPermissionsMigration = jest.fn();
+const mockWarnOnMissingSearchTokens = jest.fn();
+const mockRunAsSystem = jest.fn((fn) => fn());
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), info: jest.fn() },
-  runAsSystem: (fn) => fn(),
+  runAsSystem: (fn) => mockRunAsSystem(fn),
   warnOnMissingSearchTokens: (...args) => mockWarnOnMissingSearchTokens(...args),
   migrateLegacyAgentOfficialStatus: (...args) => mockMigrateLegacyAgentOfficialStatus(...args),
 }));
 jest.mock('@librechat/api', () => ({
-  logAgentMigrationWarning: jest.fn(),
-  logPromptMigrationWarning: jest.fn(),
+  checkStartupMigrations: (...args) => mockCheckStartupMigrations(...args),
   checkAgentPermissionsMigration: (...args) => mockCheckAgentPermissionsMigration(...args),
   checkPromptPermissionsMigration: (...args) => mockCheckPromptPermissionsMigration(...args),
 }));
 jest.mock('~/models', () => ({ findRoleByIdentifier: jest.fn() }));
 
-const { logger } = require('@librechat/data-schemas');
 const mongoose = require('mongoose');
+const { logger } = require('@librechat/data-schemas');
+const { findRoleByIdentifier } = require('~/models');
 const { checkMigrations } = require('../migration');
 
-describe('checkMigrations', () => {
-  it('starts the search token probe while the permission checks are still running', async () => {
-    let finishAgentCheck;
-    mockCheckAgentPermissionsMigration.mockReturnValue(
-      new Promise((resolve) => {
-        finishAgentCheck = resolve;
-      }),
-    );
-    mockCheckPromptPermissionsMigration.mockResolvedValue({});
-    mockWarnOnMissingSearchTokens.mockResolvedValue(undefined);
+it('runs startup checks as the system against the app models', async () => {
+  mockCheckStartupMigrations.mockImplementationOnce(async (checks) => {
+    await checks.probeSearchTokens();
+    await checks.checkAgentPermissions();
+    await checks.checkPromptPermissions();
+  });
 
-    const done = checkMigrations();
-    expect(mockWarnOnMissingSearchTokens).toHaveBeenCalledTimes(1);
+  await expect(checkMigrations()).resolves.toBeUndefined();
 
-    finishAgentCheck({});
-    await done;
-    expect(mockCheckPromptPermissionsMigration).toHaveBeenCalledTimes(1);
+  expect(mockRunAsSystem).toHaveBeenCalledTimes(1);
+  expect(mockCheckStartupMigrations).toHaveBeenCalledTimes(1);
+  expect(mockWarnOnMissingSearchTokens).toHaveBeenCalledWith(mongoose.connection);
+  expect(mockCheckAgentPermissionsMigration).toHaveBeenCalledWith({
+    mongoose,
+    methods: { findRoleByIdentifier },
+    AgentModel: mongoose.models.Agent,
+  });
+  expect(mockCheckPromptPermissionsMigration).toHaveBeenCalledWith({
+    mongoose,
+    methods: { findRoleByIdentifier },
+    PromptGroupModel: mongoose.models.PromptGroup,
   });
 });
 
 it('migrates legacy official status and logs the number of updated agents', async () => {
   mockMigrateLegacyAgentOfficialStatus.mockResolvedValueOnce(2);
-  mockWarnOnMissingSearchTokens.mockResolvedValueOnce(undefined);
-  mockCheckAgentPermissionsMigration.mockResolvedValueOnce({});
-  mockCheckPromptPermissionsMigration.mockResolvedValueOnce({});
-
-  await checkMigrations();
-
-  expect(mockMigrateLegacyAgentOfficialStatus).toHaveBeenCalledWith(mongoose.connection);
-  expect(logger.info).toHaveBeenCalledWith('[AgentOfficialStatusMigration] Updated 2 agents');
-});
-
-it('labels permission check failures and still awaits the search probe', async () => {
-  const agentError = new Error('Agent check failed');
-  const promptError = new Error('Prompt check failed');
-  mockCheckAgentPermissionsMigration.mockRejectedValueOnce(agentError);
-  mockCheckPromptPermissionsMigration.mockRejectedValueOnce(promptError);
-  mockWarnOnMissingSearchTokens.mockResolvedValueOnce(undefined);
+  mockCheckStartupMigrations.mockResolvedValueOnce(undefined);
 
   await expect(checkMigrations()).resolves.toBeUndefined();
 
-  expect(logger.error).toHaveBeenCalledWith(
-    '[checkMigrations] Failed to check agent permissions migration:',
-    agentError,
-  );
-  expect(logger.error).toHaveBeenCalledWith(
-    '[checkMigrations] Failed to check prompt permissions migration:',
-    promptError,
-  );
+  expect(mockMigrateLegacyAgentOfficialStatus).toHaveBeenCalledWith(mongoose.connection);
+  expect(logger.info).toHaveBeenCalledWith('[AgentOfficialStatusMigration] Updated 2 agents');
 });

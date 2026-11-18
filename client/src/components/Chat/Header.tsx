@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState, useEffect } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
 import { useIsSubmitting } from '@librechat/chat/react';
@@ -41,6 +41,10 @@ function Header({
   const navVisible = useRecoilValue(store.sidebarExpanded);
   const isSubmitting = useIsSubmitting(0);
   const isSmallScreen = useDrawerViewport();
+  const [hasShownMobileMenu, setHasShownMobileMenu] = useState(false);
+  useEffect(() => {
+    if (isSmallScreen) setHasShownMobileMenu(true);
+  }, [isSmallScreen]);
 
   /** The mobile row only offers a new chat when there is one to leave. Read
    *  from the route rather than the context conversation, which still holds the
@@ -115,12 +119,12 @@ function Header({
           <PresetsMenu />
         )}
         {hasAccessToBookmarks === true && (
-          <div className={cn('items-center', isSmallScreen ? 'hidden' : 'flex')}>
+          <div className={cn('items-center empty:hidden', isSmallScreen ? 'hidden' : 'flex')}>
             <BookmarkMenu />
           </div>
         )}
         {hasAccessToMultiConvo === true && (
-          <div className={cn('items-center', isSmallScreen ? 'hidden' : 'flex')}>
+          <div className={cn('items-center empty:hidden', isSmallScreen ? 'hidden' : 'flex')}>
             <AddMultiConvo />
           </div>
         )}
@@ -141,13 +145,17 @@ function Header({
             isSubmitting={isSubmitting}
           />
         )}
-        <HeaderMenu
-          startupConfig={startupConfig}
-          trace={trace}
-          readOnly={readOnly}
-          pullRequestConversationId={showPullRequest ? routeConversationId : undefined}
-          className={isSmallScreen ? undefined : 'hidden'}
-        />
+        {/* Avoid mounting a second action tree on desktop startup. Once visited, retain it
+            so resizing does not discard dialogs opened from the mobile menu. */}
+        {(isSmallScreen || hasShownMobileMenu) && (
+          <HeaderMenu
+            startupConfig={startupConfig}
+            trace={trace}
+            readOnly={readOnly}
+            pullRequestConversationId={showPullRequest ? routeConversationId : undefined}
+            className={isSmallScreen ? undefined : 'hidden'}
+          />
+        )}
         <div className={cn('items-center gap-2', isSmallScreen ? 'hidden' : 'flex')}>
           {trace.show && <TraceButton onClick={trace.open} />}
           <ExportAndShareMenu

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useState } from 'react';
 import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
@@ -20,6 +20,7 @@ import type { ChatFormValues } from '~/common';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import { getNewConversationDraftId, getDraft, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
+import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { SteerHostTestProvider } from 'test/steerHost';
 import { startupConfigKey } from '~/data-provider';
@@ -31,6 +32,13 @@ const initialConversation = {
   endpoint: EModelEndpoint.openAI,
   model: 'gpt-4o',
   title: 'New Chat',
+} as TConversation;
+
+const agentConversation = {
+  ...initialConversation,
+  endpoint: EModelEndpoint.agents,
+  agent_id: 'agent_test',
+  model: undefined,
 } as TConversation;
 
 const ask = jest.fn();
@@ -50,14 +58,23 @@ const transport: Transport = {
 function Harness({
   conversation,
   routePending = false,
+  targetReady = true,
   onAsk = ask,
+  refusesWhileSubmitting = false,
   speechSettingsInitialized = false,
+  onCommit,
 }: {
   conversation: TConversation;
   routePending?: boolean;
+  targetReady?: boolean;
   onAsk?: typeof ask;
+  /** Mirrors the real `ask`, which reads `isSubmitting` from the render it was created in. */
+  refusesWhileSubmitting?: boolean;
   speechSettingsInitialized?: boolean;
+  /** Runs in the commit phase, ahead of the passive effects of the same commit. */
+  onCommit?: () => void;
 }) {
+  useLayoutEffect(() => onCommit?.());
   const [files, setFiles] = useAtom(filesFamily(0));
   const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
@@ -86,7 +103,7 @@ function Harness({
       getMappingOptions: () => ({}),
       feedbackEnabled: false,
       setMessages: () => undefined,
-      ask: onAsk,
+      ask: refusesWhileSubmitting && isSubmitting ? () => false : onAsk,
       regenerate: () => undefined,
       setSiblingIdx: () => undefined,
       abortScroll: false,
@@ -98,21 +115,25 @@ function Harness({
       handleRegenerate: () => undefined,
       handleContinue: () => undefined,
     }),
-    [conversation, files, setFiles, isSubmitting, onAsk],
+    [conversation, files, setFiles, isSubmitting, onAsk, refusesWhileSubmitting],
   );
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
-        <ChatForm
-          index={0}
-          routePending={routePending}
-          isLandingPage
-          enterToSend
-          autoSendText={-1}
-          speechSettingsInitialized={speechSettingsInitialized}
-          footerBelow={false}
-          centerFormOnLanding={false}
-        />
+        <TargetContext.Provider
+          value={{ ready: targetReady, pending: !targetReady, failed: false, retry: () => {} }}
+        >
+          <ChatForm
+            index={0}
+            routePending={routePending}
+            isLandingPage
+            enterToSend
+            autoSendText={-1}
+            speechSettingsInitialized={speechSettingsInitialized}
+            footerBelow={false}
+            centerFormOnLanding={false}
+          />
+        </TargetContext.Provider>
       </ChatContext.Provider>
     </ChatFormProvider>
   );
@@ -124,6 +145,7 @@ function mountComposer(
     pathname = `/c/${conversation.conversationId}`,
     query = 'agent_id=agent_test&q=hi&submit=true',
     routePending = false,
+    targetReady = true,
     speechSettingsInitialized = false,
     liveRun = false,
   } = {},
@@ -209,13 +231,19 @@ function mountComposer(
     <Harness
       conversation={conversation}
       routePending={routePending}
+      targetReady={targetReady}
       speechSettingsInitialized={speechSettingsInitialized}
     />,
     {
       wrapper,
     },
   );
-  return { ...view, navigate: (to: string) => navigate(to), getLocation: () => location };
+  return {
+    ...view,
+    navigate: (to: string) => navigate(to),
+    getLocation: () => location,
+    setSubmitting: (value: boolean) => jotaiStore.set(isSubmittingFamily(0), value),
+  };
 }
 
 afterEach(() => {
@@ -231,6 +259,55 @@ describe('ChatForm URL submission', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('retargets an unavailable saved agent before waiting for replacement send readiness', async () => {
+    newConversation.mockClear();
+    const source = {
+      ...initialConversation,
+      conversationId: 'saved-chat',
+      endpoint: EModelEndpoint.agents,
+      agent_id: 'agent_deleted',
+      model: undefined,
+    };
+    const view = mountComposer(source, {
+      targetReady: false,
+      query: 'endpoint=openAI&model=gpt-4o&q=recover+this+chat&submit=true',
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(newConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preset: expect.objectContaining({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' }),
+      }),
+    );
+    expect(screen.getByTestId('text-input')).toHaveValue('recover this chat');
+    expect(ask).not.toHaveBeenCalled();
+    const destination = { ...initialConversation, conversationId: 'saved-chat' };
+    await act(async () =>
+      view.rerender(<Harness conversation={destination} targetReady={false} />),
+    );
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).not.toHaveBeenCalled();
+    expect(screen.getByTestId('text-input')).toHaveValue('recover this chat');
+    await act(async () => view.rerender(<Harness conversation={destination} targetReady />));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'recover this chat' }),
+      expect.anything(),
+    );
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('enables Send when an existing conversation restores a saved draft', async () => {
+    const conversation = { ...initialConversation, conversationId: 'existing-chat' };
+    setDraft({ id: conversation.conversationId, value: 'restored draft' });
+
+    mountComposer(conversation, { query: '' });
+    await act(async () => jest.advanceTimersByTime(100));
+
+    expect(screen.getByTestId('text-input')).toHaveValue('restored draft');
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
   });
 
   it('processes a queued prompt URL after ordinary conversation navigation without remounting', async () => {
@@ -255,6 +332,152 @@ describe('ChatForm URL submission', () => {
     );
     expect(view.getLocation().search).toBe('');
     expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('sends a queued prompt in a new chat only once the source run has released the composer', async () => {
+    const source = { ...initialConversation, conversationId: 'source-chat' };
+    const view = mountComposer(source, { query: '', liveRun: true });
+    await act(async () => jest.advanceTimersByTime(100));
+    const destinationAsk = jest.fn();
+    const destination = (
+      <Harness conversation={initialConversation} onAsk={destinationAsk} refusesWhileSubmitting />
+    );
+    await act(async () => {
+      view.navigate('/c/new?prompt=queued+words&submit=true');
+      view.rerender(destination);
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(destinationAsk).not.toHaveBeenCalled();
+    expect(view.getLocation().search).toBe('?prompt=queued+words&submit=true');
+    expect(screen.getByTestId('text-input')).toHaveValue('queued words');
+
+    await act(async () => view.setSubmitting(false));
+    expect(destinationAsk).toHaveBeenCalledTimes(1);
+    expect(destinationAsk).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'queued words' }),
+      expect.anything(),
+    );
+    expect(view.getLocation().search).toBe('');
+  });
+
+  it.each([500, 3500])(
+    'keeps applied URL settings pending until composer release after %i ms',
+    async (releaseDelay) => {
+      const view = mountComposer(initialConversation, { liveRun: true });
+      await act(async () => jest.advanceTimersByTime(100));
+      view.rerender(<Harness conversation={agentConversation} refusesWhileSubmitting />);
+      await act(async () => jest.advanceTimersByTime(releaseDelay));
+      expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+      expect(screen.getByTestId('text-input')).toHaveValue('hi');
+      expect(view.getLocation().search).toContain('submit=true');
+      expect(ask).not.toHaveBeenCalled();
+
+      await act(async () => view.setSubmitting(false));
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+      expect(view.getLocation().search).toBe('');
+      await act(async () => jest.advanceTimersByTime(4000));
+      expect(ask).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('still expires unapplied URL settings while the composer is busy', async () => {
+    const view = mountComposer(initialConversation, { liveRun: true });
+    await act(async () => jest.advanceTimersByTime(100));
+    await act(async () => jest.advanceTimersByTime(3000));
+    expect(screen.getByText(/Chat settings could not be applied/)).toBeInTheDocument();
+    expect(screen.getByTestId('text-input')).toHaveValue('hi');
+    expect(view.getLocation().search).toBe('');
+    await act(async () => view.setSubmitting(false));
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('restarts the settings wait when applied URL settings are replaced before composer release', async () => {
+    const view = mountComposer(initialConversation, { liveRun: true });
+    await act(async () => jest.advanceTimersByTime(100));
+    view.rerender(<Harness conversation={agentConversation} refusesWhileSubmitting />);
+    await act(async () => jest.advanceTimersByTime(1000));
+    view.rerender(<Harness conversation={initialConversation} refusesWhileSubmitting />);
+    await act(async () => jest.advanceTimersByTime(2999));
+    expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+    expect(view.getLocation().search).toContain('submit=true');
+    await act(async () => jest.advanceTimersByTime(1));
+    expect(screen.getByText(/Chat settings could not be applied/)).toBeInTheDocument();
+    expect(screen.getByTestId('text-input')).toHaveValue('hi');
+    expect(view.getLocation().search).toBe('');
+    await act(async () => view.setSubmitting(false));
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'sends once when the settings wait elapses before the effects of the commit that applied them (busy composer: %p)',
+    async (liveRun) => {
+      const view = mountComposer(initialConversation, { liveRun });
+      await act(async () => jest.advanceTimersByTime(100));
+      await act(async () => jest.advanceTimersByTime(2900));
+      expect(ask).not.toHaveBeenCalled();
+      let elapsed = false;
+      const elapseSettingsWait = () => {
+        if (elapsed) {
+          return;
+        }
+        elapsed = true;
+        jest.advanceTimersByTime(100);
+      };
+      await act(async () => {
+        view.rerender(
+          <Harness
+            conversation={agentConversation}
+            onCommit={elapseSettingsWait}
+            refusesWhileSubmitting
+          />,
+        );
+      });
+      expect(elapsed).toBe(true);
+      expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
+      if (liveRun) {
+        expect(ask).not.toHaveBeenCalled();
+        expect(view.getLocation().search).toContain('submit=true');
+        await act(async () => view.setSubmitting(false));
+      }
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+      expect(view.getLocation().search).toBe('');
+      await act(async () => jest.advanceTimersByTime(4000));
+      expect(ask).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('submits to an existing conversation during its own run without waiting for the composer', async () => {
+    const view = mountComposer(
+      { ...agentConversation, conversationId: 'existing-live-chat' },
+      { liveRun: true },
+    );
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith(expect.objectContaining({ text: 'hi' }), expect.anything());
+    expect(view.getLocation().search).toBe('');
+    await act(async () => view.setSubmitting(false));
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels an applied URL submission if its route changes before composer release', async () => {
+    const view = mountComposer(initialConversation, { liveRun: true });
+    await act(async () => jest.advanceTimersByTime(100));
+    view.rerender(<Harness conversation={agentConversation} refusesWhileSubmitting />);
+    await act(async () => jest.advanceTimersByTime(3500));
+    await act(async () => {
+      view.navigate('/c/other-chat');
+      view.rerender(
+        <Harness conversation={{ ...initialConversation, conversationId: 'other-chat' }} />,
+      );
+    });
+    await act(async () => view.setSubmitting(false));
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).not.toHaveBeenCalled();
+    expect(view.getLocation().pathname).toBe('/c/other-chat');
+    expect(screen.queryByText(/Chat settings could not be applied/)).not.toBeInTheDocument();
   });
 
   it('processes a new agent URL once after a previous URL request has completed', async () => {

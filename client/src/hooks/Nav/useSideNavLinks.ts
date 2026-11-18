@@ -26,15 +26,26 @@ import {
   useGetAgentsConfig,
   useHasAccess,
 } from '~/hooks';
-import MCPBuilderPanel from '~/components/SidePanel/MCPBuilder/MCPBuilderPanel';
-import AgentPanelSwitch from '~/components/SidePanel/Agents/AgentPanelSwitch';
-import BookmarkPanel from '~/components/SidePanel/Bookmarks/BookmarkPanel';
-import PanelSwitch from '~/components/SidePanel/Builder/PanelSwitch';
-import { SchedulePanel } from '~/components/SidePanel/Schedules';
-import Parameters from '~/components/SidePanel/Parameters/Panel';
-import { MemoryPanel } from '~/components/SidePanel/Memories';
 import { PromptsAccordion } from '~/components/Prompts';
 import { SkillsAccordion } from '~/components/Skills';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
+
+/** No panel renders until its tab is opened, so none of them belongs in the boot bundle. */
+const MCPBuilderPanel = lazyWithRecovery(
+  () => import('~/components/SidePanel/MCPBuilder/MCPBuilderPanel'),
+);
+const AgentPanelSwitch = lazyWithRecovery(
+  () => import('~/components/SidePanel/Agents/AgentPanelSwitch'),
+);
+const BookmarkPanel = lazyWithRecovery(
+  () => import('~/components/SidePanel/Bookmarks/BookmarkPanel'),
+);
+const PanelSwitch = lazyWithRecovery(() => import('~/components/SidePanel/Builder/PanelSwitch'));
+const SchedulePanel = lazyWithRecovery(
+  () => import('~/components/SidePanel/Schedules/SchedulePanel'),
+);
+const Parameters = lazyWithRecovery(() => import('~/components/SidePanel/Parameters/Panel'));
+const MemoryPanel = lazyWithRecovery(() => import('~/components/SidePanel/Memories/MemoryPanel'));
 
 export default function useSideNavLinks({
   hidePanel,

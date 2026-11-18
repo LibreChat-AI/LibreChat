@@ -1,14 +1,8 @@
 import { createPayload, EModelEndpoint } from 'librechat-data-provider';
-import { mergeErrorMessages, mergeResponseMessage } from '@librechat/chat';
+import { buildTurn, mergeErrorMessages, mergeResponseMessage } from '@librechat/chat';
 import type { Request, Response } from 'express';
 import type { TOptions } from '~/common';
 import { validateChatMessageIds } from '../../../../../packages/api/src/middleware/messageIds';
-import { buildTurn } from '../ask/turn';
-
-jest.mock('~/utils', () => ({
-  getRouteChatProjectId: () => null,
-  logger: { log: jest.fn(), dir: jest.fn() },
-}));
 
 describe('turn message-ID protocol', () => {
   it.each<[string, string, TOptions]>([
@@ -45,7 +39,6 @@ describe('turn message-ID protocol', () => {
         ...(options.isEdited && { editedMessageId: id }),
         targetResponseMessageId: id,
       },
-      index: 0,
       conversationId: user.conversationId,
       conversation: {
         conversationId: user.conversationId,
@@ -57,6 +50,7 @@ describe('turn message-ID protocol', () => {
       latestMessage: response,
       cachedMessages: [user, response],
       canClearFiles: false,
+      routeProjectId: null,
       isTemporary: false,
       ephemeralAgent: null,
       getSender: () => 'Assistant',

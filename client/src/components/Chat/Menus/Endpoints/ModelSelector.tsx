@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { TooltipAnchor } from '@librechat/client';
-import { EModelEndpoint, getConfigDefaults } from 'librechat-data-provider';
+import { EModelEndpoint } from 'librechat-data-provider';
 import type { ModelSelectorProps } from '~/common';
 import {
   renderModelSpecs,
@@ -13,11 +13,18 @@ import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcut
 import { ModelSelectorChatProvider } from './ModelSelectorChatContext';
 import OfficialAgentIcon from '~/components/Agents/OfficialAgentIcon';
 import { getSelectedIcon, getDisplayValue } from './utils';
+import { activateCatalog } from '~/hooks/useCatalogWarmup';
 import { CustomMenu as Menu } from './CustomMenu';
+import { isModelSelectorShown } from './shown';
 import DialogManager from './DialogManager';
 import { useLocalize } from '~/hooks';
 
-const defaultInterface = getConfigDefaults().interface;
+function activateSelectorCatalogs(open: boolean) {
+  if (!open) return;
+  activateCatalog('models');
+  activateCatalog('agents');
+  activateCatalog('assistants');
+}
 
 function ModelSelectorContent() {
   const localize = useLocalize();
@@ -79,7 +86,7 @@ function ModelSelectorContent() {
         <button
           data-testid="model-selector-button"
           aria-keyshortcuts={modelSelectorAriaKey}
-          className="border-border-chrome bg-presentation text-text-primary hover:bg-surface-active-alt rounded-theme-control my-1 flex h-9 max-w-full items-center gap-2 border px-3 py-2 text-sm"
+          className="border-border-light bg-presentation text-text-primary hover:bg-surface-active-alt rounded-theme-control flex h-9 max-w-full items-center gap-2 border px-3 py-2 text-sm"
           aria-label={localize('com_ui_select_model')}
         >
           {selectedIcon && React.isValidElement(selectedIcon) && (
@@ -96,37 +103,34 @@ function ModelSelectorContent() {
 
   return (
     <div className="relative flex max-w-[60vw] min-w-0 flex-col items-center gap-2 sm:max-w-xs">
-      <div className="flex w-full min-w-0 items-center gap-1">
-        <div className="min-w-0 flex-1">
-          <Menu
-            values={selectedValues}
-            onValuesChange={(values: Record<string, any>) => {
-              setSelectedValues({
-                endpoint: values.endpoint || '',
-                model: values.model || '',
-                modelSpec: values.modelSpec || '',
-              });
-            }}
-            onSearch={(value) => setSearchValue(value)}
-            combobox={<input id="model-search" placeholder=" " />}
-            comboboxLabel={localize('com_endpoint_search_models')}
-            trigger={trigger}
-          >
-            {searchResults ? (
-              renderSearchResults(searchResults, localize, searchValue)
-            ) : (
-              <>
-                {renderModelSpecs(
-                  modelSpecs?.filter((spec) => !spec.group) || [],
-                  selectedValues.modelSpec || '',
-                )}
-                {renderEndpoints(mappedEndpoints ?? [])}
-                {renderCustomGroups(modelSpecs || [], mappedEndpoints ?? [])}
-              </>
+      <Menu
+        onOpenChange={activateSelectorCatalogs}
+        values={selectedValues}
+        onValuesChange={(values: Record<string, any>) => {
+          setSelectedValues({
+            endpoint: values.endpoint || '',
+            model: values.model || '',
+            modelSpec: values.modelSpec || '',
+          });
+        }}
+        onSearch={(value) => setSearchValue(value)}
+        combobox={<input id="model-search" placeholder=" " />}
+        comboboxLabel={localize('com_endpoint_search_models')}
+        trigger={trigger}
+      >
+        {searchResults ? (
+          renderSearchResults(searchResults, localize, searchValue)
+        ) : (
+          <>
+            {renderModelSpecs(
+              modelSpecs?.filter((spec) => !spec.group) || [],
+              selectedValues.modelSpec || '',
             )}
-          </Menu>
-        </div>
-      </div>
+            {renderEndpoints(mappedEndpoints ?? [])}
+            {renderCustomGroups(modelSpecs || [], mappedEndpoints ?? [])}
+          </>
+        )}
+      </Menu>
       <DialogManager
         keyDialogOpen={keyDialogOpen}
         onOpenChange={onOpenChange}
@@ -138,11 +142,7 @@ function ModelSelectorContent() {
 }
 
 export default function ModelSelector({ startupConfig }: ModelSelectorProps) {
-  const interfaceConfig = startupConfig?.interface ?? defaultInterface;
-  const modelSpecs = startupConfig?.modelSpecs?.list ?? [];
-
-  // Hide the selector when modelSelect is false and there are no model specs to show
-  if (interfaceConfig.modelSelect === false && modelSpecs.length === 0) {
+  if (!isModelSelectorShown(startupConfig)) {
     return null;
   }
 

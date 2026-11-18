@@ -68,7 +68,7 @@ const escapeBelongsToPopup = (ownerDocument: Document): boolean => {
     return true;
   }
   const popovers = ownerDocument.querySelectorAll(
-    '[role="menu"], [role="listbox"], [role="combobox"]',
+    '[role="menu"], [role="listbox"], [role="combobox"][aria-expanded="true"]',
   );
   for (const popover of popovers) {
     if (popover.contains(activeElement)) {
@@ -82,6 +82,25 @@ const escapeBelongsToPopup = (ownerDocument: Document): boolean => {
     }
   }
   return false;
+};
+
+const dialogEscapeHandlers = new WeakMap<HTMLElement, (event: KeyboardEvent) => void>();
+
+/** Visual order can differ from registration order while portals mount or animate out. */
+const frontmostDialog = (ownerDocument: Document): HTMLElement | null => {
+  const stackOrder = (element: HTMLElement): number => {
+    const zIndex = Number(ownerDocument.defaultView?.getComputedStyle(element).zIndex);
+    return Number.isNaN(zIndex) ? 0 : zIndex;
+  };
+  return Array.from(
+    ownerDocument.querySelectorAll<HTMLElement>(
+      '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]',
+    ),
+  ).reduce<HTMLElement | null>(
+    (highest, candidate) =>
+      highest == null || stackOrder(candidate) >= stackOrder(highest) ? candidate : highest,
+    null,
+  );
 };
 
 interface OGDialogProps extends DialogPrimitive.DialogProps {
@@ -239,9 +258,13 @@ const DialogContent: React.ForwardRefExoticComponent<
     const depth = React.useContext(DialogDepthContext);
     const contentZIndex = 140 + (depth - 1) * 60;
     const contentRef = React.useRef<HTMLDivElement | null>(null);
+    const closeOnEscapeRef = React.useRef<(event: KeyboardEvent) => void>(() => undefined);
     const composedRef = React.useCallback(
       (node: HTMLDivElement | null) => {
+        if (contentRef.current != null) dialogEscapeHandlers.delete(contentRef.current);
         contentRef.current = node;
+        if (node != null)
+          dialogEscapeHandlers.set(node, (event) => closeOnEscapeRef.current(event));
         if (typeof ref !== 'function') {
           if (ref) {
             (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
@@ -257,6 +280,7 @@ const DialogContent: React.ForwardRefExoticComponent<
           return undefined;
         }
         return () => {
+          if (node != null) dialogEscapeHandlers.delete(node);
           contentRef.current = null;
           (cleanup as () => void)();
         };
@@ -271,14 +295,19 @@ const DialogContent: React.ForwardRefExoticComponent<
      * it, and the reader has to press it twice.
      *
      * A toast is transient status, not something the reader is working in, so
-     * the dialog takes Escape back while one is up. Scoped to exactly that
-     * case: with no toast on screen Radix's own arbitration is untouched, and
-     * only the frontmost dialog acts, so an inner dialog still closes alone.
+     * the dialog takes Escape back while one is up. This listener handles
+     * only the toast case; native dialog callbacks also verify visual ownership.
      * Closing goes through a hidden `Dialog.Close`, which drives Radix's own
      * close path and therefore works for controlled and uncontrolled dialogs
      * alike.
      */
     const escapeFallbackRef = React.useRef<HTMLButtonElement>(null);
+    closeOnEscapeRef.current = (event) => {
+      propsOnEscapeKeyDown?.(event);
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      escapeFallbackRef.current?.click();
+    };
     React.useEffect(() => {
       const handleKeyDown = (event: KeyboardEvent) => {
         const content = contentRef.current;
@@ -303,41 +332,8 @@ const DialogContent: React.ForwardRefExoticComponent<
         if (toast == null) {
           return;
         }
-        /** Read the RESOLVED z-index: dialogs outside this primitive carry
-         *  theirs in a class (`ImagePreview` is `z-[250]`), and an inline-only
-         *  reading scores those zero and mistakes the dialog underneath for the
-         *  frontmost one. Ties fall to the later element, which is the one
-         *  painted on top. */
-        const stackOrder = (element: HTMLElement): number => {
-          const zIndex = Number(ownerDocument.defaultView?.getComputedStyle(element).zIndex);
-          return Number.isNaN(zIndex) ? 0 : zIndex;
-        };
-        const frontmost = Array.from(
-          ownerDocument.querySelectorAll<HTMLElement>(
-            '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]',
-          ),
-        ).reduce<HTMLElement | null>(
-          (highest, candidate) =>
-            highest == null || stackOrder(candidate) >= stackOrder(highest) ? candidate : highest,
-          null,
-        );
-        if (frontmost !== content) {
-          return;
-        }
-        /** Only now, with this dialog established as the one the Escape belongs
-         *  to. Every mounted dialog runs this listener, and calling a consumer's
-         *  handler from the ones underneath would fire their side effects for
-         *  someone else's keystroke — and a `preventDefault()` there would stop
-         *  the frontmost dialog from closing at all.
-         *
-         *  The consumer's own `onEscapeKeyDown` never ran: Radix calls it only
-         *  for the highest layer, which the toast is. Give it the say it would
-         *  have had, so a dialog that refuses to close on Escape still does. */
-        propsOnEscapeKeyDown?.(event);
-        if (event.defaultPrevented) {
-          return;
-        }
-        escapeFallbackRef.current?.click();
+        if (frontmostDialog(ownerDocument) !== content) return;
+        closeOnEscapeRef.current(event);
       };
       document.addEventListener('keydown', handleKeyDown);
       return () => document.removeEventListener('keydown', handleKeyDown);
@@ -348,11 +344,21 @@ const DialogContent: React.ForwardRefExoticComponent<
     that our tooltips be dismissable with Escape key) */
     const handleEscapeKeyDown = React.useCallback(
       (event: KeyboardEvent) => {
-        if (escapeBelongsToPopup(document)) {
+        if (event.defaultPrevented) return;
+        const content = contentRef.current;
+        const ownerDocument = content?.ownerDocument ?? document;
+        if (escapeBelongsToPopup(ownerDocument)) {
           event.preventDefault();
           return;
         }
 
+        const frontmost = frontmostDialog(ownerDocument);
+        const closeFrontmost = frontmost && dialogEscapeHandlers.get(frontmost);
+        if (frontmost != null && frontmost !== content) {
+          closeFrontmost?.(event);
+          event.preventDefault();
+          return;
+        }
         propsOnEscapeKeyDown?.(event);
       },
       [propsOnEscapeKeyDown],

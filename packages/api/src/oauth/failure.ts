@@ -154,6 +154,11 @@ function popSessionFailureMessage(req: OAuthFailureRequest): unknown {
   return messages.pop();
 }
 
+/** Whether the request names a failure in its `error` query parameter. */
+export function hasOAuthErrorQuery(req: OAuthFailureRequest): boolean {
+  return hasQueryValue(req, 'error');
+}
+
 export function getOAuthFailureMessage(
   req: OAuthFailureRequest,
   defaultMessage = 'OAuth authentication failed',

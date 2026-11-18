@@ -1,5 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { Provider, createStore } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
@@ -7,12 +8,11 @@ import { ChatContext } from '~/Providers/ChatContext';
 import AskUserQuestion from '../AskUserQuestion';
 
 /**
- * Collapsing a live pause used to strand the user: the popover carried the only
- * dismiss, and a batch kept the composer disabled for as long as the pause was
- * active — so after the chevron there was nothing to type in, nothing to send
- * with, no stop button, and no × anywhere. Reloading the page was the only way
- * out. These cover both halves of the handover across the REAL recoil atoms the
- * popover and the chat card share.
+ * A live pause starts in the chat card, in thread order, so it fits a phone screen and never
+ * covers the composer. The card's chevron moves it into the composer popover and the popover's
+ * chevron moves it back. These cover both halves of the handover across the REAL atoms the
+ * popover and the chat card share; a collapse that kept a batch's composer disabled once
+ * stranded the user with nothing to type in and no way out short of a reload.
  */
 
 const mockBatch: Agents.AskUserQuestionBatchItem[] = [
@@ -38,7 +38,7 @@ let mockLiveAsk: {
 };
 
 jest.mock('~/data-provider', () => ({
-  useGetMessagesByConvoId: () => ({ data: mockLiveAsk }),
+  useCachedMessages: () => ({ data: mockLiveAsk }),
 }));
 jest.mock('~/components/Chat/Messages/Content/ApprovalContext', () => ({
   useApprovalContext: () => ({ getAskAnswerDraft: () => '', setAskAnswerDraft: jest.fn() }),
@@ -63,19 +63,26 @@ function ComposerProbe() {
 
 const renderPause = () =>
   render(
-    <RecoilRoot>
-      <ChatContext.Provider value={{ conversation: { conversationId: 'conversation-1' } } as never}>
-        <ComposerProbe />
-        <AskUserQuestion
-          actionId="act-1"
-          question={mockLiveAsk.question}
-          questions={mockLiveAsk.questions}
-        />
-      </ChatContext.Provider>
-    </RecoilRoot>,
+    <Provider store={createStore()}>
+      <RecoilRoot>
+        <ChatContext.Provider
+          value={{ conversation: { conversationId: 'conversation-1' } } as never}
+        >
+          <ComposerProbe />
+          <AskUserQuestion
+            actionId="act-1"
+            question={mockLiveAsk.question}
+            questions={mockLiveAsk.questions}
+          />
+        </ChatContext.Provider>
+      </RecoilRoot>
+    </Provider>,
   );
 
-describe('collapsing a live ask_user_question', () => {
+const moveToComposer = () => fireEvent.click(screen.getByLabelText('Answer from the message box'));
+const flag = (id: string) => screen.getByTestId(id).textContent;
+
+describe('a live ask_user_question between the chat and the composer', () => {
   describe('batched questions', () => {
     beforeEach(() => {
       mockLiveAsk = {
@@ -86,38 +93,40 @@ describe('collapsing a live ask_user_question', () => {
       };
     });
 
-    it('locks the composer only while the popover is up', () => {
+    it('starts in the chat card and leaves the composer free', () => {
       renderPause();
-      expect(screen.getByTestId('composer-locked').textContent).toBe('true');
+
+      expect(flag('popover-visible')).toBe('false');
+      expect(flag('active')).toBe('false');
+      expect(flag('composer-locked')).toBe('false');
+      expect(flag('composer-answers')).toBe('false');
+      expect(
+        screen.getByText('North star or full funnel?').closest('[aria-hidden="true"]'),
+      ).toBeNull();
+    });
+
+    it('locks the composer only while the batch is in the popover', () => {
+      renderPause();
+      moveToComposer();
+
+      expect(flag('active')).toBe('true');
+      expect(flag('popover-visible')).toBe('true');
+      expect(flag('composer-locked')).toBe('true');
       /** The popover owns the question; the card only holds its place in the
        *  thread, hidden, so moving the batch back reflows nothing. */
       expect(
         screen.getByText('North star or full funnel?').closest('[aria-hidden="true"]'),
       ).not.toBeNull();
+      expect(screen.queryByLabelText('Answer from the message box')).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByTestId('collapse-from-popover'));
 
-      expect(screen.getByTestId('popover-visible').textContent).toBe('false');
-      /** The pause is still live, but the card owns it outside answer mode. */
-      expect(screen.getByTestId('active').textContent).toBe('false');
+      expect(flag('popover-visible')).toBe('false');
+      expect(flag('active')).toBe('false');
+      expect(flag('composer-locked')).toBe('false');
       expect(
         screen.getByText('North star or full funnel?').closest('[aria-hidden="true"]'),
       ).toBeNull();
-      /** The composer is a normal composer again. */
-      expect(screen.getByTestId('composer-locked').textContent).toBe('false');
-      expect(screen.getByTestId('composer-answers').textContent).toBe('false');
-    });
-
-    it('moves the collapsed card back to the popover', () => {
-      renderPause();
-      fireEvent.click(screen.getByTestId('collapse-from-popover'));
-
-      fireEvent.click(screen.getByLabelText('Answer from the message box'));
-
-      expect(screen.getByTestId('active').textContent).toBe('true');
-      expect(screen.getByTestId('popover-visible').textContent).toBe('true');
-      expect(screen.getByTestId('composer-locked').textContent).toBe('true');
-      expect(screen.queryByLabelText('Answer from the message box')).not.toBeInTheDocument();
     });
   });
 
@@ -126,22 +135,23 @@ describe('collapsing a live ask_user_question', () => {
       mockLiveAsk = { actionId: 'act-1', question: mockSingle, messageId: 'message-1' };
     });
 
-    it('releases the composer until the card moves back to the popover', () => {
+    it('answers from the card until it is moved to the composer', () => {
       renderPause();
-      expect(screen.getByTestId('composer-answers').textContent).toBe('true');
-      expect(screen.getByTestId('composer-locked').textContent).toBe('false');
+
+      expect(flag('composer-answers')).toBe('false');
+      expect(flag('composer-locked')).toBe('false');
+      expect(screen.getByText('Which environment?')).toBeInTheDocument();
+
+      moveToComposer();
+
+      expect(flag('active')).toBe('true');
+      expect(flag('composer-answers')).toBe('true');
+      expect(flag('popover-visible')).toBe('true');
 
       fireEvent.click(screen.getByTestId('collapse-from-popover'));
 
-      /** The card now owns the answer, so the normal composer is available. */
-      expect(screen.getByTestId('composer-answers').textContent).toBe('false');
-      expect(screen.getByText('Which environment?')).toBeInTheDocument();
-
-      fireEvent.click(screen.getByLabelText('Answer from the message box'));
-
-      expect(screen.getByTestId('active').textContent).toBe('true');
-      expect(screen.getByTestId('composer-answers').textContent).toBe('true');
-      expect(screen.getByTestId('popover-visible').textContent).toBe('true');
+      expect(flag('composer-answers')).toBe('false');
+      expect(flag('popover-visible')).toBe('false');
     });
   });
 });

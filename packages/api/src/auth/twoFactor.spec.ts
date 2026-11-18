@@ -27,6 +27,7 @@ import {
   isEnrollmentSupersededByRecovery,
   hasPasswordResetSince,
   requireTwoFactorSetupToken,
+  requireTwoFactorSetupSignOutToken,
   createBlockRetiredSetupToken,
   requireTwoFactorSetupFinalizationToken,
   requireTwoFactorSetupAcknowledgementToken,
@@ -804,6 +805,136 @@ describe('requireTwoFactorSetupToken', () => {
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(401);
     }
+  });
+});
+
+describe('requireTwoFactorSetupSignOutToken', () => {
+  const originalPolicy = process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+  const originalSecret = process.env.JWT_SECRET;
+  const originalRefreshExpiry = process.env.REFRESH_TOKEN_EXPIRY;
+  const week = 7 * 24 * 60 * 60;
+
+  beforeEach(() => {
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+    process.env.JWT_SECRET = jwtSecret;
+    delete process.env.REFRESH_TOKEN_EXPIRY;
+  });
+
+  afterAll(() => {
+    const restore = (key: string, value: string | undefined) => {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    };
+    restore('ENFORCE_TWO_FACTOR_AUTHENTICATION', originalPolicy);
+    restore('JWT_SECRET', originalSecret);
+    restore('REFRESH_TOKEN_EXPIRY', originalRefreshExpiry);
+  });
+
+  /** A setup token as it was minted `ageSeconds` ago, so its own ten minutes may already be spent. */
+  const mintAged = (ageSeconds: number) => {
+    const issuedAt = Math.floor(Date.now() / 1000) - ageSeconds;
+    return jwt.sign(
+      {
+        userId: 'user-2',
+        purpose: TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_SETUP,
+        issuedAtMs: issuedAt * 1000,
+        iat: issuedAt,
+      },
+      jwtSecret,
+      { expiresIn: 10 * 60 },
+    );
+  };
+
+  const run = (tempToken: string, middleware = requireTwoFactorSetupSignOutToken) => {
+    const req = { body: { tempToken } } as Request;
+    const res = createResponse();
+    const next = jest.fn() as jest.MockedFunction<NextFunction>;
+    middleware(req, res, next);
+    return { req, res, next };
+  };
+
+  it('honors a token that expired while the user was on the setup screen', () => {
+    const tempToken = mintAged(30 * 60);
+
+    /** The same token can no longer start or finish an enrollment. */
+    expect(run(tempToken, requireTwoFactorSetupToken).res.status).toHaveBeenCalledWith(401);
+
+    const { req, res, next } = run(tempToken);
+
+    expect(req.user).toEqual({ id: 'user-2' });
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('marks a token honored past its expiry, so the controller can limit what it does', () => {
+    const expired = run(mintAged(30 * 60)).req as TwoFactorEnrollmentRequest;
+    const live = run(mintAged(60)).req as TwoFactorEnrollmentRequest;
+    const strict = run(mintAged(60), requireTwoFactorSetupToken).req as TwoFactorEnrollmentRequest;
+
+    expect(expired.twoFactorSetupExpired).toBe(true);
+    expect(live.twoFactorSetupExpired).toBe(false);
+    expect(strict.twoFactorSetupExpired).toBe(false);
+  });
+
+  it('keeps dating an expired token, so account events still retire it', () => {
+    const { req } = run(mintAged(30 * 60));
+    const { twoFactorSetupIssuedAt, twoFactorSetupIssuedAtMs } = req as TwoFactorEnrollmentRequest;
+
+    expect(typeof twoFactorSetupIssuedAt).toBe('number');
+    expect(typeof twoFactorSetupIssuedAtMs).toBe('number');
+    expect(
+      isTokenRetired(
+        { issuedAt: twoFactorSetupIssuedAt, issuedAtMs: twoFactorSetupIssuedAtMs },
+        { credentialsChangedAt: new Date() },
+      ),
+    ).toBe(true);
+  });
+
+  it('stops honoring a token once the sessions it could end have expired', () => {
+    expect(run(mintAged(week - 60)).next).toHaveBeenCalledTimes(1);
+
+    const { res, next } = run(mintAged(week + 60));
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('follows the configured refresh lifetime, but never grants less than the token had', () => {
+    process.env.REFRESH_TOKEN_EXPIRY = '1000 * 60 * 60';
+    expect(run(mintAged(50 * 60)).next).toHaveBeenCalledTimes(1);
+    expect(run(mintAged(70 * 60)).res.status).toHaveBeenCalledWith(401);
+
+    /** A refresh lifetime shorter than the token's own ten minutes must not cut a live token short. */
+    process.env.REFRESH_TOKEN_EXPIRY = '1000 * 60 * 2';
+    expect(run(mintAged(9 * 60)).next).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refuses forged tokens, other purposes, and a disabled policy', () => {
+    const tokens = [
+      jwt.sign(
+        { userId: 'user-2', purpose: TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_SETUP },
+        'another-secret',
+      ),
+      jwt.sign({ userId: 'user-2', purpose: TWO_FACTOR_TOKEN_PURPOSE.LOGIN_CHALLENGE }, jwtSecret),
+      generateTwoFactorSetupAcknowledgementToken('user-2', nonce, jwtSecret),
+      generateTwoFactorSetupFinalizationToken('user-2', nonce, jwtSecret),
+    ];
+
+    for (const tempToken of tokens) {
+      const { res, next } = run(tempToken);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
+    }
+
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'false';
+    const disabled = run(mintAged(0));
+
+    expect(disabled.next).not.toHaveBeenCalled();
+    expect(disabled.res.status).toHaveBeenCalledWith(403);
   });
 });
 

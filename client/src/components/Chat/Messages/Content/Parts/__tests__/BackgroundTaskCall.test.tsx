@@ -1,16 +1,18 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ChatSurfaceProvider } from '@librechat/chat/react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import type { ChatSurface } from '~/components/Chat/Subagents/surface';
-import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
+import type { ChatSurface } from '@librechat/chat/react';
 import { MessageContext } from '~/Providers/MessageContext';
 import BackgroundTaskCall from '../BackgroundTaskCall';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useProgress: (progress: number) => progress,
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
 }));
 
 jest.mock('~/hooks/MCP', () => ({
@@ -18,10 +20,14 @@ jest.mock('~/hooks/MCP', () => ({
   useMCPServerNames: () => [],
 }));
 
-jest.mock('~/utils', () => ({
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
+jest.mock('@librechat/chat', () => ({
+  ...jest.requireActual('@librechat/chat'),
   getToolDisplayLabel: (name: string) =>
     (({ bash_tool: 'Code', web_search: 'Web Search' }) as Record<string, string>)[name] ?? name,
+}));
+
+jest.mock('~/utils', () => ({
+  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   getRunStepDurationLabels: jest.requireActual('~/utils/runStepDuration').getRunStepDurationLabels,
 }));
 

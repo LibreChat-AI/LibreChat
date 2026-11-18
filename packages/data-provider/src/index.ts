@@ -29,6 +29,7 @@ export * from './parsers';
 export * from './generate';
 export * from './models';
 export * from './families';
+export * from './gemini';
 /* mcp */
 export * from './mcp';
 export * from './mcp/appMime';
@@ -39,6 +40,7 @@ export * from './roles';
 /* types (exports schemas from `./types` as they contain needed in other defs) */
 export * from './types';
 export * from './types/agents';
+export * from './types/responseAccounting';
 export * from './types/assistants';
 export * from './types/content';
 export * from './types/tools';
@@ -111,5 +113,11 @@ export * from './code/workspace';
 export * from './types/scheduleConsent';
 
 export * from './approval';
+export * from './types/channels';
+export * from './types/responseReview';
+export * from './types/channelIdentity';
+export * from './channelLink';
+export * from './types/channelFeedback';
+export * from './types/channelRuns';
 
 export * from './codeSetup';

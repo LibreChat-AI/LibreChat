@@ -389,6 +389,25 @@ function Conversation({
       style={{ cursor: renaming ? 'default' : 'pointer' }}
       data-testid="convo-item"
     >
+      <span
+        className={cn(
+          'flex shrink-0 items-center',
+          (projectBadgeProjectId || (showPullRequest && pullRequestDescribed)) && 'ps-2',
+        )}
+      >
+        {projectBadgeProjectId && (
+          <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
+        )}
+        {showPullRequest && (
+          <PullRequestRowMark
+            conversationId={conversationId ?? ''}
+            labelId={pullRequestLabelId}
+            onDescribed={setPullRequestDescribed}
+            rowRef={containerRef}
+            selected={isActiveConvo || isPopoverActive}
+          />
+        )}
+      </span>
       {renaming ? (
         <RenameForm
           titleInput={titleInput}
@@ -450,9 +469,6 @@ function Conversation({
       {isSharedBadgeVisible && (
         <Link2 className="icon-sm text-text-secondary me-1 shrink-0" aria-hidden="true" />
       )}
-      {projectBadgeProjectId && (
-        <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
-      )}
       {conversation.pinned === true && (
         <UnpinButton
           testId="convo-unpin-button"
@@ -477,20 +493,6 @@ function Conversation({
         {/* Only render ConvoOptions when user interacts (hover/focus) or for active conversation */}
         {actionContent}
       </div>
-      {/* After the action slot on purpose: that slot grows from zero on hover, and anything before
-          it slides left under the pointer, so the mark would move out from under the cursor that
-          is trying to reach it. The title is the only thing that gives way. */}
-      {showPullRequest && (
-        <span className="flex shrink-0 items-center">
-          <PullRequestRowMark
-            conversationId={conversationId ?? ''}
-            labelId={pullRequestLabelId}
-            onDescribed={setPullRequestDescribed}
-            rowRef={containerRef}
-            selected={isActiveConvo || isPopoverActive}
-          />
-        </span>
-      )}
     </div>
   );
 }

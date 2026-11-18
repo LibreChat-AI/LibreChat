@@ -39,6 +39,12 @@ describe('injectConfiguredFooterBootstrap', () => {
     expect(landingOf(injectConfiguredFooterBootstrap(SHELL, { landingFooter: false }))).toBe(false);
   });
 
+  it('carries the footer placement, so a cold load lays the welcome screen out once', () => {
+    expect(injectConfiguredFooterBootstrap(SHELL, { landingFooter: 'composer' })).toContain(
+      '"landingFooter":"composer"',
+    );
+  });
+
   it('places the answer ahead of the app that reads it', () => {
     const html = injectConfiguredFooterBootstrap(SHELL, { customFooter: 'Operator' });
 

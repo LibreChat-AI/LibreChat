@@ -20,7 +20,7 @@ describe('Skill cleanup across a worker restart', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   });
 
   it('finishes a superseded committed upload without reporting successful cleanup as a lost claim', async () => {

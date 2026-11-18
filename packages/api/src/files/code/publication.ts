@@ -26,6 +26,7 @@ interface CodeOutputClaimInput {
   user: string;
   tenantId?: string | null;
   sourceDispatchedAt?: number;
+  snapshot?: boolean;
 }
 
 interface CodeOutputClaim {
@@ -103,7 +104,7 @@ export function createCodeOutputPersistence({
 }): CodeOutputPersistence {
   if (publication == null) {
     return {
-      context: FileContext.execute_code,
+      context: FileContext.execute_code_snapshot,
       claim,
       commit,
       trackStored: () => undefined,

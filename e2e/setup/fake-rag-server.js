@@ -22,11 +22,12 @@
  * checks persist like real vectors until `DELETE /documents` removes them.
  *
  * `POST /__debug/stall` with `{ stall: true }` records file_search queries but never
- * answers them, standing in for a hung RAG API; reset or `{ stall: false }` clears it.
+ * answers them or `DELETE /documents`, standing in for a hung RAG API; reset or `{ stall: false }` clears it.
  */
 
 const http = require('http');
 const busboy = require('busboy');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = parseInt(process.env.E2E_RAG_API_PORT || '8791', 10);
 /** Mirrors ENTITY_EMBEDDINGS_PROBE_K in packages/api/src/files/rag.ts; file_search asks for 5. */
@@ -140,6 +141,9 @@ async function handleQuery(req, res) {
 
 async function handleDeleteDocuments(req, res) {
   const body = await readJson(req);
+  if (stallQueries) {
+    return;
+  }
   if (Array.isArray(body)) {
     const ids = body.map(String);
     deleted.push(...ids);
@@ -209,6 +213,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
+keepIdleConnections(server);
 server.listen(PORT, HOST, () => {
   console.log(`[e2e] fake RAG API listening on http://${HOST}:${PORT}`);
 });

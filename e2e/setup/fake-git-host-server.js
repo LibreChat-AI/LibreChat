@@ -12,6 +12,7 @@
  */
 const fs = require('fs');
 const https = require('https');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = Number(process.env.E2E_GIT_HOST_PORT) || 8793;
 const HOST = `localhost:${PORT}`;
@@ -119,6 +120,8 @@ const server = https.createServer(
     send(res, answer[0], answer[1]);
   },
 );
+
+keepIdleConnections(server);
 
 /** Every local address, since `localhost` may resolve to either family. */
 server.listen(PORT, () => {

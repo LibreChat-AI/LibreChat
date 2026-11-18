@@ -126,8 +126,8 @@ export function AgentSelectInline({
       items={options}
       displayValue={displayValue}
       SelectIcon={icon}
-      className="h-9 flex-1"
-      containerClassName="px-0"
+      className="h-9 min-w-0 flex-1"
+      containerClassName="min-w-0 flex-1 px-0"
     />
   );
 }

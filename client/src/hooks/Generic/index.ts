@@ -1,5 +1,4 @@
 export * from './useLazyEffect';
 export { default as useShiftKey } from './useShiftKey';
-export { default as useElementSize } from './useElementSize';
 export { default as useOuterScrollWindow } from './useOuterScrollWindow';
-export { default as useReducedMotion } from './useReducedMotion';
+export { useElementSize, useReducedMotion } from '@librechat/chat/react';

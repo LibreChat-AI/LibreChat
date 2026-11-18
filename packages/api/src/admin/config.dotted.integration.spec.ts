@@ -28,23 +28,29 @@ const ARN =
   'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-6';
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const API_KEY = 'sk-gateway-literal-0123456789';
+const LIFECYCLE_TIMEOUT_MS = 180_000;
 
 /**
  * The request path of `api/server/index.js` and `routes/admin/config.js`: app-level sanitizer,
  * authentication, the unsafe-key guard, then the real handlers over the real config methods.
  */
 beforeAll(async () => {
-  jest.resetModules();
-  const dataSchemas = await import('@librechat/data-schemas');
+  const [dataSchemas, handlersModule, sanitizerModule, server] = await Promise.all([
+    import('@librechat/data-schemas'),
+    import('./config'),
+    import('~/middleware/sanitize'),
+    MongoMemoryServer.create(),
+  ]);
+  mongoServer = server;
   ({ decryptV3, mergeConfigOverrides, logger } = dataSchemas);
   jest.spyOn(dataSchemas.logger, 'warn').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'info').mockReturnValue(dataSchemas.logger);
-  const { createAdminConfigHandlers } = await import('./config');
-  const { createRequestSanitizer, rejectUnsafeConfigKeys } = await import('~/middleware/sanitize');
+  const { createAdminConfigHandlers } = handlersModule;
+  const { createRequestSanitizer, rejectUnsafeConfigKeys } = sanitizerModule;
 
-  mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   dataSchemas.createModels(mongoose);
+  await mongoose.models.Config.init();
   const methods = dataSchemas.createMethods(mongoose);
   const handlers = createAdminConfigHandlers({
     listAllConfigs: methods.listAllConfigs,
@@ -84,12 +90,12 @@ beforeAll(async () => {
   });
   app.use(createRequestSanitizer(mongoSanitize));
   app.use('/api/admin/config', router);
-});
+}, LIFECYCLE_TIMEOUT_MS);
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
-});
+  await mongoServer?.stop();
+}, LIFECYCLE_TIMEOUT_MS);
 
 let principalCounter = 0;
 function nextRole(): string {

@@ -446,6 +446,7 @@ export async function getLangfuseTraceDestinationIds(
 
 /** The trace sampling record a response message stores. */
 export type LangfuseTraceMessageFields = {
+  langfuseCentralTraceExportEnabled?: boolean;
   langfuseSampled?: boolean;
   langfuseDestinationIds?: string[];
   langfuseRunId?: string;
@@ -469,6 +470,7 @@ export async function getLangfuseTraceMessageFields(
     isTemporary?: boolean;
   } = {},
 ): Promise<{
+  langfuseCentralTraceExportEnabled?: boolean;
   langfuseSampled: boolean;
   langfuseDestinationIds?: string[];
   langfuseRunId?: string;
@@ -477,6 +479,7 @@ export async function getLangfuseTraceMessageFields(
   const langfuseSampled =
     isLangfuseTraceAllowed(appConfig, isTemporary) && isLangfuseTraceSampled(traceId);
   return {
+    langfuseCentralTraceExportEnabled: centralTraceExportEnabled,
     langfuseSampled,
     langfuseDestinationIds: await getLangfuseTraceDestinationIds(
       appConfig,

@@ -5,6 +5,7 @@ import React from 'react';
 import { Constants } from 'librechat-data-provider';
 import { useAtomValue, useSetAtom, getDefaultStore } from 'jotai';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TSubmission, TConversation } from 'librechat-data-provider';
 import type { DrainAfterAbort, RunEnd } from '../../../core';
 import type { ChatHost, ChatMessageCache } from '../host';
@@ -20,6 +21,7 @@ import {
   drainAfterAbortByIndex,
 } from '../../steer/queue';
 import { submissionByIndex, clearSubmissions } from '../../submission';
+import { createTurnServices } from '../__fixtures__/services';
 import { ChatHostProvider } from '../host';
 import { useAbortCleanup } from '../abort';
 import useChatHelpers from '../helpers';
@@ -33,8 +35,7 @@ jest.mock('../../steering/useSteerConvert', () => ({
 }));
 
 const noop = () => undefined;
-const noLiveAttachments = {};
-const turns = { ask: jest.fn(), regenerate: jest.fn() };
+const turnServices = createTurnServices();
 const cache: ChatMessageCache = {
   read: () => undefined,
   write: noop,
@@ -43,21 +44,21 @@ const cache: ChatMessageCache = {
   refetchMessages: jest.fn(),
   refetchActiveJobs: jest.fn(),
   refetchStreamStatus: jest.fn(),
+  invalidateMessages: jest.fn(),
+  messagesUpdatedAt: () => undefined,
+  reloadMessages: () => Promise.resolve(),
+  readQueuedTurns: () => undefined,
 };
 
 /** A host with no app behind it: one fixed pane conversation and the abort under test. */
 const createHost = (conversation: TConversation | null): ChatHost => ({
   usePaneConversation: () => ({ conversation, setConversation: noop }),
   useNewConversation: () => noop,
-  useTurns: () => turns,
-  useLatestMessage: () => null,
-  useLatestMessageId: () => null,
-  useSetSiblingIdx: () => noop,
+  useTurnServices: () => turnServices,
   useAbortStream: () => mockAbortStream,
   useMessageCache: () => cache,
-  useLiveAttachments: () => noLiveAttachments,
   useFeedbackEnabled: () => false,
-  getMappingOptions: () => ({}),
+  useMessages: () => ({ messages: null, isLoading: false, isFetching: false }),
 });
 
 const INDEX = 0;
@@ -225,11 +226,14 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
       getDefaultStore().set(activeGenerationProtocolVersionByConvoId(conversationId), 2);
     }
     const host = createHost({ conversationId, endpoint: 'agents' } as TConversation);
+    const queryClient = new QueryClient();
     const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <ChatHostProvider host={host}>
-        <RunEndProbe />
-        {children}
-      </ChatHostProvider>
+      <QueryClientProvider client={queryClient}>
+        <ChatHostProvider host={host}>
+          <RunEndProbe />
+          {children}
+        </ChatHostProvider>
+      </QueryClientProvider>
     );
     return {
       ...renderHook(() => useChatHelpers(INDEX), { wrapper }),

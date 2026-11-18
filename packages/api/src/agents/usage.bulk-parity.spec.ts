@@ -258,7 +258,7 @@ describe('recordCollectedUsage — bulk path parity', () => {
     it('prices the 1-hour share of the writes at the 1-hour rate in bulk docs', async () => {
       mockPricing.getMultiplier = jest.fn().mockReturnValue(2);
       mockPricing.getCacheMultiplier = jest.fn(
-        ({ cacheType }) => ({ write: 2.5, write1h: 4, read: 0.2 })[cacheType],
+        ({ cacheType }) => ({ write: 2.5, write1h: 4, write12h: null, read: 0.2 })[cacheType],
       );
       const collectedUsage: UsageMetadata[] = [
         {

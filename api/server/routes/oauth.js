@@ -5,14 +5,12 @@ const { randomState } = require('openid-client');
 const { logger } = require('@librechat/data-schemas');
 const { ErrorTypes } = require('librechat-data-provider');
 const {
-  buildOAuthFailureLog,
   TENANT_CONTEXT_REQUIRED,
+  createOAuthErrorHandler,
   createPreAuthTenantGuard,
   requirePreAuthTenantContext,
   createOpenIDCallbackAuthenticator,
   createSetBalanceConfig,
-  getOAuthFailureMessage,
-  redirectToAuthFailure,
 } = require('@librechat/api');
 const {
   checkDomainAllowed,
@@ -56,21 +54,7 @@ const authenticateOpenIDCallback = createOpenIDCallbackAuthenticator({
   ...authFailureRedirectOptions,
 });
 
-router.get('/error', (req, res) => {
-  /** A single error message is pushed by passport when authentication fails. */
-  const errorMessage = getOAuthFailureMessage(req);
-  logger.warn(
-    '[OAuth] Authentication failed',
-    buildOAuthFailureLog({
-      provider: 'unknown',
-      req,
-      info: { message: errorMessage },
-      defaultMessage: errorMessage,
-    }),
-  );
-
-  redirectToAuthFailure(res, authFailureRedirectOptions);
-});
+router.get('/error', createOAuthErrorHandler({ logger, ...authFailureRedirectOptions }));
 
 /**
  * Google Routes

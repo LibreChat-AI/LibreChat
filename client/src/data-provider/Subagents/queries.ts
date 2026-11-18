@@ -1,14 +1,23 @@
-import { useMemo } from 'react';
+import { useContext, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Constants, MutationKeys, QueryKeys, dataService } from 'librechat-data-provider';
+import {
+  TaskContentScopeContext,
+  ACTIVE_THREAD_REFRESH_MS,
+  subagentThreadHasTaskEvidence,
+} from '@librechat/chat/react';
 import type {
   ParentSubagentIndex,
+  ToolCallPartResponse,
   SubagentControlReceipt,
-  SubagentControlRequest,
   SubagentControlResponse,
   SubagentThreadView,
 } from 'librechat-data-provider';
+import type { SubagentControlVariables, ToolContentQuery } from '@librechat/chat/react';
 import type { UseQueryOptions, QueryObserverResult } from '@tanstack/react-query';
+
+export { ACTIVE_THREAD_REFRESH_MS, subagentThreadHasTaskEvidence };
+export type { SubagentControlVariables };
 
 const responseStatus = (error: unknown): number | undefined => {
   if (error == null || typeof error !== 'object') return undefined;
@@ -16,7 +25,6 @@ const responseStatus = (error: unknown): number | undefined => {
   return candidate.response?.status ?? candidate.status;
 };
 
-export const ACTIVE_THREAD_REFRESH_MS = 2_000;
 const IDLE_PARENT_REFRESH_MS = 10_000;
 const QUIET_PARENT_REFRESH_MS = 60_000;
 const CHILD_READY_POLL_WINDOW_MS = 60_000;
@@ -87,16 +95,6 @@ const isTerminal = (status: SubagentThreadView['status']): boolean =>
   status === 'interrupted' ||
   status === 'cancelled';
 
-export const subagentThreadHasTaskEvidence = (
-  view: SubagentThreadView | undefined,
-  taskId: string,
-): boolean =>
-  view?.turns?.some((turn) => turn.taskId === taskId) === true ||
-  view?.messages.some(
-    (message) =>
-      message.messageId === `${taskId}:user` || message.messageId === `${taskId}:assistant`,
-  ) === true;
-
 export const subagentThreadRefetchInterval = (
   view: SubagentThreadView | undefined,
   readinessDeadline: number,
@@ -162,14 +160,6 @@ export const useSubagentThreadQuery = (
   };
 };
 
-export type SubagentControlVariables = {
-  parentConversationId: string;
-  threadId: string;
-  command: SubagentControlRequest;
-  /** Client-only timestamp retained across retries; never sent to the API. */
-  submittedAt: string;
-};
-
 type SubagentControlMutationOptions = {
   onSuccess?: (data: SubagentControlResponse, variables: SubagentControlVariables) => void;
   onError?: (error: Error, variables: SubagentControlVariables) => void;
@@ -225,6 +215,43 @@ export const useSubagentControlMutation = (options: SubagentControlMutationOptio
         options.onSuccess?.({ receipt }, { parentConversationId, threadId, command, submittedAt });
       },
       onError: (error, variables) => options.onError?.(error, variables),
+    },
+  );
+};
+
+/**
+ * The full tool call behind a preview in a followed child thread, read through the parent
+ * conversation the task scope names: the ordinary message route answers 404 for a child thread.
+ * Cached by the call's identity, as `useToolCallPartQuery` is.
+ */
+export const useSubagentThreadToolCallPartQuery: ToolContentQuery = (
+  params,
+  config,
+  revision = '',
+) => {
+  const scope = useContext(TaskContentScopeContext);
+  const parentConversationId = scope?.parentConversationId ?? '';
+  const { conversationId, messageId, toolCallId, stepId, agentId } = params;
+  return useQuery<ToolCallPartResponse>(
+    [
+      QueryKeys.subagentThreadToolCallPart,
+      parentConversationId,
+      conversationId,
+      messageId,
+      toolCallId ?? '',
+      stepId ?? '',
+      agentId ?? '',
+      revision,
+    ],
+    () => dataService.getSubagentThreadToolCallPart(parentConversationId, params),
+    {
+      staleTime: Infinity,
+      retry: 1,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      refetchOnMount: false,
+      ...config,
+      enabled: scope != null && config?.enabled !== false,
     },
   );
 };
