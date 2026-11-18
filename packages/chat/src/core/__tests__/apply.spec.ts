@@ -1315,4 +1315,79 @@ describe('a Chat that applies events the way main chat does', () => {
     expect(textOf(chat.messages)).toEqual(['Hello']);
     chat.dispose();
   });
+
+  it('sends a turn through the real transport and applies the generation it starts', async () => {
+    const attachments: Array<{ request: ChatStreamRequest; options: ChatTransportOptions }> = [];
+    const wire: WireTransport = {
+      send: () => undefined,
+      reconnectToStream(request, options) {
+        attachments.push({ request, options });
+        return { closed: false };
+      },
+    };
+    const start = jest.fn(async () => ({
+      streamId: 'thread-1',
+      conversationId: 'thread-1',
+      generationCreatedAt: 2000,
+    }));
+    const state = createState([]);
+    const optimistic: TMessage = {
+      messageId: 'user-1_',
+      conversationId: 'thread-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [],
+    };
+    const chat = new Chat({
+      id: 'thread-1',
+      state,
+      transport: createGenerationTransport({
+        wire: () => wire,
+        getStatus: async () => ({ active: false }),
+        start,
+      }),
+      /** What a host prepares: the body to post, and the turn to show while it is in flight. */
+      prepareRequest: () => ({
+        payload: {
+          endpoint: 'agents',
+          conversationId: 'thread-1',
+          text: 'Go',
+          isContinued: false,
+          isTemporary: false,
+        } as never,
+        messages: [user, optimistic],
+        responseMessageId: 'user-1_',
+      }),
+      applyEvent: createEventApplier().applyEvent,
+    });
+    const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    const sending = chat.sendMessage({ parts: [{ type: 'text', text: 'Go' }] });
+    await flush();
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(chat.messages.map((message) => message.messageId)).toEqual(['user-1', 'user-1_']);
+
+    const emit = attachments[0].options.onEvent;
+    emit({ type: 'open' });
+    emit({
+      type: 'created',
+      data: { created: true, message: user, turn: { responseMessageId: 'resp-1' } },
+    } as ChatEvent);
+    emit(opened('s0', 0));
+    emit(token('s0', 'Hello'));
+    await flush();
+
+    expect(chat.status).toBe('streaming');
+    /** The optimistic reply became the server's, in place. */
+    expect(chat.messages.map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+    expect(textOf(chat.messages)).toEqual(['Hello']);
+
+    emit(final('Hello'));
+    await sending;
+
+    expect(chat.status).toBe('ready');
+    expect(chat.messages.map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+    chat.dispose();
+  });
 });

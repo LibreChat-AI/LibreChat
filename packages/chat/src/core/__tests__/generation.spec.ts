@@ -1,6 +1,8 @@
 import type {
+  TPayload,
   ChatEvent,
   TMessage,
+  ChatTransportRequest,
   ChatStreamRequest,
   ChatTransport as WireTransport,
   ChatTransportOptions,
@@ -274,6 +276,160 @@ describe('createGenerationTransport', () => {
   });
 });
 
+describe('sending a turn', () => {
+  const payload = {
+    endpoint: 'agents',
+    conversationId: 'thread 1',
+    text: 'Go',
+    isContinued: false,
+    isTemporary: false,
+    model: null,
+  } as unknown as TPayload;
+  const request = (overrides: object = {}) => ({
+    trigger: 'submit-message' as const,
+    chatId: 'thread 1',
+    payload,
+    ...overrides,
+  });
+  const sender = (start: jest.Mock, wire = createWire()) => ({
+    transport: createGenerationTransport({
+      wire: () => wire.wire,
+      getStatus: async () => running,
+      start,
+    }),
+    attachments: wire.attachments,
+  });
+  const started = { streamId: 'thread 1', conversationId: 'thread 1', generationCreatedAt: 3000 };
+
+  it('posts the turn to its endpoint route and opens the stream of the generation it started', async () => {
+    const start = jest.fn(async (_request: ChatTransportRequest) => started);
+    const { transport, attachments } = sender(start);
+
+    const sending = transport.sendMessages(request());
+    await flush();
+    attachments[0].emit({ type: 'open' });
+    const result = await sending;
+
+    expect(start).toHaveBeenCalledTimes(1);
+    const [posted] = start.mock.calls[0];
+    expect(posted.server).toMatch(/\/agents\/chat\/agents$/);
+    /** Stripped of what it does not set, as main chat's start strips it. */
+    expect(posted.payload).toMatchObject({ endpoint: 'agents', text: 'Go' });
+    expect('model' in posted.payload).toBe(false);
+    /** A turn this client started is read live, not replayed. */
+    const url = new URL(attachments[0].request.url, 'http://localhost');
+    expect(url.searchParams.get('resume')).not.toBe('true');
+    expect(url.searchParams.get('generationCreatedAt')).toBe('3000');
+    expect(result).toMatchObject({
+      status: 'stream',
+      stream: { streamId: 'thread 1', generationCreatedAt: 3000, resumed: false },
+    });
+  });
+
+  it('replays a start the server folded into a generation already running', async () => {
+    const { transport, attachments } = sender(
+      jest.fn(async () => ({ ...started, status: 'resumed' })),
+    );
+
+    const sending = transport.sendMessages(request());
+    await flush();
+    attachments[0].emit({ type: 'open' });
+    const result = await sending;
+
+    expect(new URL(attachments[0].request.url, 'http://localhost').searchParams.get('resume')).toBe(
+      'true',
+    );
+    expect(result).toMatchObject({ status: 'stream', stream: { resumed: true } });
+  });
+
+  it('reports a turn the server had already run, and one a newer generation replaced', async () => {
+    const v2 = { generationProtocolVersion: 2 };
+    const settled = sender(
+      jest.fn(async () => ({ ...v2, status: 'settled', conversationId: 'c' })),
+    );
+    await expect(settled.transport.sendMessages(request())).resolves.toMatchObject({
+      status: 'settled',
+      conversationId: 'c',
+    });
+    expect(settled.attachments).toHaveLength(0);
+
+    const replaced = sender(jest.fn(async () => ({ ...v2, ...started, status: 'replaced' })));
+    await expect(replaced.transport.sendMessages(request())).resolves.toMatchObject({
+      status: 'replaced',
+      conversationId: 'thread 1',
+      streamId: 'thread 1',
+      generationCreatedAt: 3000,
+    });
+    expect(replaced.attachments).toHaveLength(0);
+  });
+
+  it('refuses a start response that names no stream, or a control word it did not negotiate', async () => {
+    const nameless = sender(jest.fn(async () => ({ conversationId: 'c' })));
+    await expect(nameless.transport.sendMessages(request())).rejects.toMatchObject({
+      code: 'ERR_BAD_RESPONSE',
+    });
+    const legacy = sender(jest.fn(async () => ({ ...started, status: 'settled' })));
+    await expect(legacy.transport.sendMessages(request())).rejects.toMatchObject({
+      code: 'ERR_BAD_RESPONSE',
+    });
+    expect(legacy.attachments).toHaveLength(0);
+  });
+
+  it('reports a generation whose stream will not open as one that dropped, by name', async () => {
+    /** Over already, replaced by a newer one, or a wire that closed: none says how it ended. */
+    for (const failure of [404, 409, 'closed'] as const) {
+      const wire = createWire(failure === 'closed');
+      const { transport, attachments } = sender(
+        jest.fn(async () => ({ ...started, generationProtocolVersion: 2 })),
+        wire,
+      );
+
+      const sending = transport.sendMessages(request());
+      await flush();
+      if (failure !== 'closed') {
+        attachments[0].emit({ type: 'error', status: failure });
+      }
+      const result = await sending;
+
+      expect(result).toMatchObject({
+        status: 'stream',
+        stream: { streamId: 'thread 1', generationCreatedAt: 3000, generationProtocolVersion: 2 },
+      });
+      expect(result.status === 'stream' ? await drain(result.stream) : undefined).toEqual([]);
+    }
+  });
+
+  it('posts again after a dropped connection, and gives up on an answer that is not one', async () => {
+    jest.useFakeTimers();
+    try {
+      const offline = Object.assign(new Error('offline'), { code: 'ERR_NETWORK' });
+      const start = jest.fn().mockRejectedValueOnce(offline).mockResolvedValueOnce(started);
+      const { transport, attachments } = sender(start);
+      const sending = transport.sendMessages(request());
+      await jest.advanceTimersByTimeAsync(1000);
+      attachments[0].emit({ type: 'open' });
+      await expect(sending).resolves.toMatchObject({ status: 'stream' });
+      expect(start).toHaveBeenCalledTimes(2);
+
+      const refused = Object.assign(new Error('bad'), { response: { status: 400, data: {} } });
+      const rejecting = sender(jest.fn().mockRejectedValue(refused));
+      await expect(rejecting.transport.sendMessages(request())).rejects.toBe(refused);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('refuses a turn with no endpoint to send it to', async () => {
+    const start = jest.fn();
+    const { transport } = sender(start);
+
+    await expect(
+      transport.sendMessages(request({ payload: { ...payload, endpoint: undefined } })),
+    ).rejects.toMatchObject({ code: 'ERR_BAD_REQUEST' });
+    expect(start).not.toHaveBeenCalled();
+  });
+});
+
 describe('a Chat following a generation through the transport', () => {
   const createState = (): ChatState & { messages: TMessage[] } => {
     let messages: TMessage[] = [];
@@ -342,6 +498,71 @@ describe('a Chat following a generation through the transport', () => {
 
     expect(attachments).toHaveLength(0);
     expect(chat.status).toBe('ready');
+    chat.dispose();
+  });
+  const drive = (status: ChatStreamStatus) => {
+    const wire = createWire();
+    const state = createState();
+    const finished: Array<{ isDisconnect: boolean; isSettled: boolean; isError: boolean }> = [];
+    const abort = jest.fn(async () => ({ success: true }));
+    const start = jest.fn(async () => ({
+      streamId: 'thread 1',
+      conversationId: 'thread 1',
+      generationCreatedAt: 3000,
+      generationProtocolVersion: 2,
+    }));
+    const chat = new Chat({
+      id: 'thread 1',
+      state,
+      transport: createGenerationTransport({
+        wire: () => wire.wire,
+        getStatus: async () => status,
+        start,
+        abort,
+      }),
+      prepareRequest: () => ({
+        payload: { endpoint: 'agents', conversationId: 'thread 1', text: 'Go' } as never,
+      }),
+      onFinish: ({ isDisconnect, isSettled, isError }) =>
+        finished.push({ isDisconnect, isSettled, isError }),
+    });
+    return { chat, abort, finished, attachments: wire.attachments };
+  };
+
+  it('finds what became of a turn that was over before its stream opened', async () => {
+    const { chat, finished, attachments } = drive({ active: false });
+
+    const sending = chat.sendMessage({ parts: [{ type: 'text', text: 'Go' }] });
+    await flush();
+    attachments[0].emit({ type: 'error', status: 404 });
+    await sending;
+
+    /** The start says nothing of how the turn ended, so it is a dropped stream, not a failure. */
+    expect(finished).toEqual([{ isDisconnect: true, isSettled: false, isError: true }]);
+
+    /** Asking again finds nothing running, which settles the turn for the host to read back. */
+    await chat.resumeStream();
+    expect(finished[1]).toEqual({ isDisconnect: false, isSettled: true, isError: false });
+    expect(chat.status).toBe('ready');
+    expect(attachments).toHaveLength(1);
+    chat.dispose();
+  });
+
+  it('stops the generation a start began when the stop lands before its stream opens', async () => {
+    const { chat, abort, attachments } = drive(running);
+
+    const sending = chat.sendMessage({ parts: [{ type: 'text', text: 'Go' }] });
+    await flush();
+    expect(attachments).toHaveLength(1);
+    const stopping = chat.stop();
+    await sending;
+    await stopping;
+    await flush();
+
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(abort.mock.calls[0]).toMatchObject([
+      { endpoint: 'agents', streamId: 'thread 1', generationCreatedAt: 3000 },
+    ]);
     chat.dispose();
   });
 });
