@@ -33,6 +33,7 @@ import {
   useConversationCodeEnvironmentRecovery,
   useIsReplacingConversationCodeEnvironment,
 } from '~/data-provider';
+import { useAgentsCatalogPending } from '~/Providers/AgentsMapContext';
 import { useWorkspacePreferences } from './workspacePreferences';
 import useAgentToolPermissions from './useAgentToolPermissions';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
@@ -81,6 +82,7 @@ export interface CodeWorkspaceResult {
 export default function useCodeWorkspace(
   conversation: TConversation | null,
   addedConversation?: TConversation | null,
+  handoff = false,
 ): CodeWorkspaceResult {
   const { data: startupConfig } = useGetStartupConfig();
   const protocol = resolveCodeWorkspaceProtocol(startupConfig);
@@ -94,6 +96,7 @@ export default function useCodeWorkspace(
     permission: Permissions.USE,
   });
   const agentsMap = useAgentsMapContext();
+  const agentsPending = useAgentsCatalogPending();
   const { agent: primaryAgent } = useAgentToolPermissions(conversation?.agent_id);
   const { agent: addedAgent } = useAgentToolPermissions(addedConversation?.agent_id);
   const statefulCodeSessions = agentsConfig?.statefulCodeSessions as
@@ -156,7 +159,11 @@ export default function useCodeWorkspace(
     attachedEnvironments.map(({ id }) => id),
     required && selectionMetadataComplete,
     // Poll progress is not workspace state; keep unchanged refreshes off the send path.
-    { notifyOnChangeProps: ['data', 'isLoading', 'isError'] },
+    {
+      notifyOnChangeProps: handoff
+        ? ['data', 'isLoading', 'isError', 'fetchStatus']
+        : ['data', 'isLoading', 'isError'],
+    },
   );
   const attachedEnvironmentIds = useMemo(
     () => new Set(attachedEnvironments.map(({ id }) => id)),
@@ -297,6 +304,7 @@ export default function useCodeWorkspace(
       primaryAgent,
       addedAgent,
       agentsMap,
+      agentsPending,
       statefulCodeSessions,
       startupConfig,
       canRunCode,

@@ -29,7 +29,8 @@ import { isTargetReady } from './ask/guards';
 export default function useTurnServices({
   index,
   conversation,
-}: Pick<ChatTurnsParams, 'index' | 'conversation'>): TurnServices {
+  handoff = false,
+}: Pick<ChatTurnsParams, 'index' | 'conversation' | 'handoff'>): TurnServices {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const discardFiles = useDiscardPastedFiles(index, conversation?.conversationId);
@@ -45,7 +46,7 @@ export default function useTurnServices({
   const addedConversation = index === 0 || index === 1 ? settings.addedConversation : null;
   const { getExpiry } = useUserKey(conversation?.endpoint ?? '');
   const getConversation = useGetConversation(index);
-  const codeWorkspaceState = useCodeWorkspace(conversation, addedConversation);
+  const codeWorkspaceState = useCodeWorkspace(conversation, addedConversation, handoff);
   const codeApprovalState = useCodeApprovalMode(
     conversation,
     addedConversation,

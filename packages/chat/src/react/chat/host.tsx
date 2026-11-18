@@ -45,6 +45,8 @@ export interface AbortStreamResponse {
 /** The pane state `ask` and `regenerate` read and write for one pane. */
 export type ChatTurnsParams = {
   index: number;
+  /** A driven automatic handoff is waiting for admission; ordinary panes omit it. */
+  handoff?: boolean;
   files?: Map<string, ExtendedFile>;
   /** Without it a send leaves the composer's files alone. */
   setFiles?: Dispatch<SetStateAction<Map<string, ExtendedFile>>>;

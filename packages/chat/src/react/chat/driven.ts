@@ -27,6 +27,8 @@ export type DrivenContractOptions = {
    */
   index: number;
   handoff?: boolean;
+  /** The driven chat synchronously accepted a submission from any of its actions. */
+  onAccepted?: () => void;
 };
 
 const ignore = (): void => undefined;
@@ -50,6 +52,7 @@ export function useDrivenContract({
   followed,
   index,
   handoff = false,
+  onAccepted,
 }: DrivenContractOptions): ChatContract & {
   readiness: TurnReadiness;
   attempt: ReturnType<typeof useTurns>['attempt'];
@@ -101,11 +104,13 @@ export function useDrivenContract({
    * to arrives in the same call.
    */
   const shown = useRef<TMessage[]>();
+  const accepted = useRef(false);
   const holdRows = useCallback((messages: TMessage[]) => {
     shown.current = messages;
   }, []);
   const sendSubmission = useCallback(
     (next: SetStateAction<TSubmission | null>) => {
+      accepted.current = false;
       const submission = typeof next === 'function' ? next(null) : next;
       const messages = shown.current;
       shown.current = undefined;
@@ -116,13 +121,17 @@ export function useDrivenContract({
         /** The chat took nothing, so the flags `ask` raised for the turn come back down. */
         setIsSubmitting(false);
         setShowStopButton(false);
+      } else {
+        accepted.current = true;
+        onAccepted?.();
       }
     },
-    [send, setIsSubmitting, setShowStopButton],
+    [send, setIsSubmitting, setShowStopButton, onAccepted],
   );
 
   const turnsParams: ChatTurnsParams = {
     index,
+    handoff,
     files,
     setFiles,
     getMessages,
@@ -141,7 +150,12 @@ export function useDrivenContract({
   };
   const useReadiness = host.useTurnReadiness ?? useReady;
   const readiness = useReadiness(conversation, handoff);
-  const turns = useTurns(turnsParams, services, () => (!canSend() ? 'pending' : readiness));
+  const turns = useTurns(
+    turnsParams,
+    services,
+    () => (!canSend() ? 'pending' : readiness),
+    () => accepted.current,
+  );
   const attempt = turns.attempt;
   const { ask, regenerate, handleRegenerate, handleContinue } = useTurnHandlers({
     ask: turns.ask,

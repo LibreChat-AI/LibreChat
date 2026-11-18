@@ -11,6 +11,7 @@ export type DrivenThreadProps = {
   /** The pane the host keys this chat's state by; see `useDrivenContract`. */
   index: number;
   handoff?: boolean;
+  onAccepted?: () => void;
   slots?: ChatScreenMessagesSlots;
   /** Drawn under the list, inside the chat's contract: the surface's composer. */
   children?: (contract: ReturnType<typeof useDrivenContract>) => ReactElement | null;
@@ -26,10 +27,11 @@ export default function DrivenThread({
   followed,
   index,
   handoff,
+  onAccepted,
   slots,
   children,
 }: DrivenThreadProps): ReactElement {
-  const contract = useDrivenContract({ id, followed, index, handoff });
+  const contract = useDrivenContract({ id, followed, index, handoff, onAccepted });
   return (
     <>
       <ContractThread contract={contract} followed={followed} slots={slots} />

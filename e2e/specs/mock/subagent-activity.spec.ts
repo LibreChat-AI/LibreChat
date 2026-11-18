@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { ParentSubagentIndex, SubagentThreadView, TMessage } from 'librechat-data-provider';
-import type { BrowserContext, Locator, Page } from '@playwright/test';
+import type { BrowserContext, Locator, Page, Route } from '@playwright/test';
 import type { AgentDetail } from './agents.helpers';
 import {
   MOCK_ENDPOINTS,
@@ -351,6 +351,7 @@ test.describe('detached subagent activity', () => {
     'refetch-success',
     'refetch-denial',
     'workspace',
+    'manual-edit',
   ] as const) {
     test(`continues a finished child and preserves pending words on ${action} @scenario:subagent-continue-opens-side-chat-${action}`, async ({
       page,
@@ -367,7 +368,8 @@ test.describe('detached subagent activity', () => {
         sawWorkspace = resolve;
       });
       let workspaceConversation = '';
-      const refetch = action === 'refetch-success' || action === 'refetch-denial';
+      const refetch =
+        action === 'refetch-success' || action === 'refetch-denial' || action === 'manual-edit';
       const promote = action === 'promote' || action === 'promote-clear';
       /** The fixture's parent dispatches exactly two children; the first is the one continued. */
       const childNames = [
@@ -412,16 +414,8 @@ test.describe('detached subagent activity', () => {
         });
         createdAgentIds.push(parent.id);
 
-        /** Warm the canonical query through its ordinary UI before testing stale success. */
-        if (refetch) {
-          const warm = page.waitForResponse(
-            (response) => new URL(response.url()).pathname === `/api/agents/${children[0].id}`,
-          );
-          await selectAgent(page, childNames[0]);
-          expect((await warm).ok()).toBeTruthy();
-        }
         /** The destination's history can load before its selected agent details. */
-        await page.route(`**/api/agents/${children[0].id}`, async (route) => {
+        const gateAgent = async (route: Route) => {
           if (route.request().method() !== 'GET') {
             await route.continue();
             return;
@@ -448,7 +442,8 @@ test.describe('detached subagent activity', () => {
           } else {
             await route.continue();
           }
-        });
+        };
+        if (!refetch) await page.route(`**/api/agents/${children[0].id}`, gateAgent);
 
         await selectAgent(page, parentName);
         const response = await sendMessageAndWaitForCompletion(
@@ -458,6 +453,19 @@ test.describe('detached subagent activity', () => {
         expect(response.ok()).toBeTruthy();
         /** The path, not the whole address: the app drops the agent query once the turn is in. */
         const parentPath = new URL(page.url()).pathname;
+        if (refetch) {
+          /** Warm after parent setup. Return through history so selecting another builder
+           * agent cannot discard the target cache that this case needs to keep. */
+          const warm = page.waitForResponse(
+            (response) => new URL(response.url()).pathname === `/api/agents/${children[0].id}`,
+          );
+          await selectAgent(page, childNames[0]);
+          expect((await warm).ok()).toBeTruthy();
+          await openChatHistory(page);
+          await conversationRow(page, `${new URL(page.url()).origin}${parentPath}`).click();
+          await expect(page).toHaveURL(new RegExp(`${parentPath}$`));
+          await page.route(`**/api/agents/${children[0].id}`, gateAgent);
+        }
 
         if (workspace) {
           /** Reuse the paired-worker boundary fixture. Reload only setup configuration, before
@@ -539,6 +547,24 @@ test.describe('detached subagent activity', () => {
         await expect(sideChat.getByRole('textbox', { name: 'Message input' })).toHaveValue(
           'What did you find?',
         );
+        if (action === 'manual-edit') {
+          await sideChat.locator('button[id^="edit-"]').first().click();
+          await sideChat.getByTestId('message-text-editor').fill('Follow up from the transcript.');
+          await sideChat.getByRole('button', { name: 'Update & rerun', exact: true }).click();
+          await expect.poll(() => starts.slice(startsBefore)).toEqual([sideConversationId]);
+          await expect(sideChat).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
+          await expect(sideChat.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+          const details = page.waitForResponse(
+            (response) => new URL(response.url()).pathname === `/api/agents/${children[0].id}`,
+          );
+          releaseAgent();
+          expect((await details).ok()).toBeTruthy();
+          await expect(sideChat.getByRole('textbox', { name: 'Message input' })).toHaveValue(
+            'What did you find?',
+          );
+          expect(starts.slice(startsBefore)).toEqual([sideConversationId]);
+          return;
+        }
         if (workspace) {
           /** Only the coding destination's resolved details cause this first status query. */
           await workspaceRequested;

@@ -19,6 +19,7 @@ import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { turnInputs } from '../../../core/code/__fixtures__/turn';
 import { SideChatHostProvider } from '../../../react/side/host';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { useChatContext } from '../../../react/chat/context';
 import { ChatHostProvider } from '../../../react/chat/host';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import { useFollowChat } from '../../../react/follow';
@@ -108,7 +109,17 @@ const comparison = { conversationId: 'main-comparison', endpoint: 'openAI' } as 
 /** Reads what a row of the side chat is given, from where a row reads it. */
 function UserRow({ text }: { text: string }) {
   const added = useMessagesHost().useGetAddedConvo()();
-  return <div data-testid="row" data-added={added?.conversationId ?? 'none'}>{`user=${text}`}</div>;
+  const chat = useChatContext();
+  return (
+    <>
+      <div data-testid="row" data-added={added?.conversationId ?? 'none'}>{`user=${text}`}</div>
+      <button
+        onClick={() => chat.ask({ ...user, text: 'Edited transcript task.' }, { isEdited: true })}
+      >
+        Resubmit transcript
+      </button>
+    </>
+  );
 }
 
 const messagesHost = createMessagesHost({
@@ -152,9 +163,19 @@ function setup({
     getStatus: async () => ({ active: false }),
   };
   const openConversation = jest.fn();
+  let activeChat: ReturnType<typeof useFollowChat>['chat'];
   const sideChatHost: SideChatHost = {
-    useChat: ({ conversationId: id, endpoint }, options) =>
-      useFollowChat({ id: id ?? '', transport, loadMessages, endpoint, ...options }),
+    useChat: ({ conversationId: id, endpoint }, options) => {
+      const followed = useFollowChat({
+        id: id ?? '',
+        transport,
+        loadMessages,
+        endpoint,
+        ...options,
+      });
+      activeChat = followed.chat;
+      return followed;
+    },
     useOpenConversation: () => openConversation,
     useSheetLayout: () => false,
     useClearsFooter: () => false,
@@ -194,9 +215,11 @@ function setup({
           onClose();
           setCurrent(null);
         }}
-        onHandedTextTaken={() => {
-          onHandedTextTaken();
-          setCurrent((value) => value && { conversation: value.conversation });
+        onHandedTextTaken={(expected) => {
+          onHandedTextTaken(expected);
+          setCurrent((value) =>
+            value === expected ? { conversation: value.conversation } : value,
+          );
         }}
       />
     );
@@ -235,6 +258,7 @@ function setup({
   return {
     ...view,
     store,
+    getChat: () => activeChat,
     queryClient,
     open: (next: SideChat) => act(() => store.set(sideChatAtom, next)),
     refresh: () => view.rerender(tree()),
@@ -262,6 +286,92 @@ const settle = () =>
   });
 
 describe('SideChatPanel', () => {
+  it('does not clear a newer same-destination draft published during actual send acceptance', async () => {
+    const services = createTurnServices({ readiness: 'pending' });
+    const view = setup({ chat: { conversation, text: 'Old question.' }, services });
+    await waitFor(() => expect(field()).toHaveValue('Old question.'));
+    let replaced = false;
+    const unsubscribe = view.queryClient.getQueryCache().subscribe((event) => {
+      if (replaced || event.type !== 'updated' || event.query.queryKey[0] !== 'messages') return;
+      const rows = event.query.state.data as TMessage[] | undefined;
+      if (!rows?.some((row) => row.text === 'Old question.')) return;
+      replaced = true;
+      view.store.set(sideChatDraftFamily(conversationId), '');
+      view.store.set(sideChatAtom, { conversation, text: 'New question.' });
+    });
+    services.readiness = 'ready';
+    view.refresh();
+    await waitFor(() => expect(view.streams).toHaveLength(1));
+    expect(replaced).toBe(true);
+    expect(view.store.get(sideChatDraftFamily(conversationId))).toBe('New question.');
+    expect(view.store.get(sideChatAtom)?.text).toBe('New question.');
+    unsubscribe();
+  });
+
+  it('an accepted transcript edit supersedes automatic intent without discarding its unsent draft', async () => {
+    const services = createTurnServices({ readiness: 'pending' });
+    const view = setup({ chat: { conversation, text: 'Original question.' }, services });
+    await waitFor(() => expect(field()).toHaveValue('Original question.'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Resubmit transcript' })[0]);
+    await waitFor(() => expect(view.streams).toHaveLength(1));
+    expect(view.store.get(sideChatAtom)?.text).toBeUndefined();
+    expect(field()).toHaveValue('Original question.');
+    act(() =>
+      view.streams[0].push({
+        type: 'final',
+        data: {
+          final: true,
+          earlyAbort: true,
+          conversation: { conversationId },
+          requestMessage: null,
+          responseMessage: null,
+        },
+      } as unknown as ChatEvent),
+    );
+    await settle();
+    services.readiness = 'ready';
+    view.refresh();
+    await settle();
+    expect(view.sendMessages).toHaveBeenCalledTimes(1);
+    expect(field()).toHaveValue('Original question.');
+    expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a declined automatic request editable and releases its synchronous send lock', async () => {
+    const services = createTurnServices({ readiness: 'pending' });
+    const view = setup({ chat: { conversation, text: 'Keep these words.' }, services });
+    await waitFor(() => expect(field()).toHaveValue('Keep these words.'));
+    const decline = jest.spyOn(view.getChat()!, 'sendMessage').mockResolvedValueOnce(undefined);
+    services.readiness = 'ready';
+    view.refresh();
+    await settle();
+    expect(view.sendMessages).not.toHaveBeenCalled();
+    expect(field()).toHaveValue('Keep these words.');
+    decline.mockRestore();
+    fireEvent.click(screen.getByTestId('composer-send-button'));
+    await waitFor(() => expect(view.streams).toHaveLength(1));
+    expect(view.sendMessages.mock.calls[0][0].payload).toMatchObject({ text: 'Keep these words.' });
+    expect(field()).toHaveValue('');
+  });
+
+  it('accepts a genuinely new handoff for the same mounted destination', async () => {
+    const view = setup({ chat: { conversation, text: 'First question.' } });
+    await waitFor(() => expect(view.streams).toHaveLength(1));
+    const asked = view.sendMessages.mock.calls[0][0].payload as unknown as TMessage;
+    act(() =>
+      view.streams[0].push(final(asked, reply('answer-first', 'First answer.', asked.messageId))),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Stop generating' })).not.toBeInTheDocument(),
+    );
+    await settle();
+    view.open({ conversation, text: 'Second question.' });
+    await waitFor(() => expect(view.streams).toHaveLength(2));
+    expect(view.sendMessages.mock.calls[1][0].payload).toMatchObject({ text: 'Second question.' });
+    expect(field()).toHaveValue('');
+    expect(view.onHandedTextTaken).toHaveBeenCalledTimes(2);
+  });
+
   it('shows the conversation beside the main one, under its title', async () => {
     setup();
 

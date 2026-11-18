@@ -4,7 +4,6 @@ import { Outlet } from 'react-router-dom';
 import { useMediaQuery } from '@librechat/client';
 import {
   useFileMap,
-  useAgentsMap,
   useAuthContext,
   useReplyAlerts,
   useUnseenBadge,
@@ -16,14 +15,6 @@ import {
   useUnseenConversations,
 } from '~/hooks';
 import {
-  PromptGroupsProvider,
-  AssistantsMapContext,
-  AgentsMapContext,
-  SetConvoProvider,
-  FileMapContext,
-  MCPAppsPolicyProvider,
-} from '~/Providers';
-import {
   UnifiedSidebar,
   MOBILE_DRAWER_WIDTH_VAR,
   MOBILE_DRAWER_STRIP_WIDTH,
@@ -33,6 +24,13 @@ import {
   CodeHighlightThrottleContext,
   normalizeCodeHighlightThrottleMs,
 } from '~/components/Chat/Messages/Content/Parts/useLazyHighlight';
+import {
+  PromptGroupsProvider,
+  AssistantsMapContext,
+  SetConvoProvider,
+  FileMapContext,
+  MCPAppsPolicyProvider,
+} from '~/Providers';
 import { ComposerHostProvider, appComposerHost } from '~/Providers/ComposerHostContext';
 import { StreamHostProvider, appStreamHost } from '~/Providers/StreamHostContext';
 import KeyboardShortcutsDialog from '~/components/Nav/KeyboardShortcutsDialog';
@@ -41,6 +39,7 @@ import { ChatHostProvider, appChatHost } from '~/Providers/ChatHostContext';
 import KeyboardDeleteDialog from '~/components/Nav/KeyboardDeleteDialog';
 import { useUserTermsQuery, useGetStartupConfig } from '~/data-provider';
 import { MobileDrawerScrim } from '~/components/UnifiedSidebar/mobile';
+import { AgentCatalogProvider } from '~/Providers/AgentsMapContext';
 import AnalyticsConsent from '~/components/System/AnalyticsConsent';
 import useKeyboardShortcuts from '~/hooks/useKeyboardShortcuts';
 import useDrawerDismiss from '~/hooks/Nav/useDrawerDismiss';
@@ -139,7 +138,6 @@ function RootLayout() {
   useHealthCheck(isAuthenticated);
 
   const assistantsMap = useAssistantsMap({ isAuthenticated });
-  const agentsMap = useAgentsMap({ isAuthenticated });
   const fileMap = useFileMap({ isAuthenticated });
 
   const { data: config, isSuccess: isConfigReady, error: configError } = useGetStartupConfig();
@@ -184,7 +182,7 @@ function RootLayout() {
       <SetConvoProvider>
         <FileMapContext.Provider value={fileMap}>
           <AssistantsMapContext.Provider value={assistantsMap}>
-            <AgentsMapContext.Provider value={agentsMap}>
+            <AgentCatalogProvider isAuthenticated={isAuthenticated}>
               <PromptGroupsProvider>
                 <Banner onHeightChange={setBannerHeight} />
                 <div className="flex" style={{ height: `calc(100dvh - ${bannerHeight}px)` }}>
@@ -254,7 +252,7 @@ function RootLayout() {
                 gtmId={config?.analyticsGtmId}
                 consentRequired={config?.interface?.analyticsConsent !== false}
               />
-            </AgentsMapContext.Provider>
+            </AgentCatalogProvider>
             {config?.interface?.termsOfService?.modalAcceptance === true && (
               <TermsAndConditionsModal
                 open={showTerms}

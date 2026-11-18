@@ -57,6 +57,8 @@ export function useTurns(
   }: ChatTurnsParams,
   services: TurnServices,
   admission?: () => TurnReadiness,
+  /** Optional synchronous confirmation from the driven publication owner. */
+  accepted?: () => boolean,
 ): { ask: TAskFunction; attempt: (text: string) => Attempt; regenerate: TRegenerateFunction } {
   const store = useStore();
   const queryClient = useQueryClient();
@@ -373,13 +375,16 @@ export function useTurns(
         ? current
         : codeDecision.apply(current),
     );
-    /** Armed at the point of no return: every refusal above returns before it, so a rejected
-     *  send never has to unwind the guard, and `ask` runs to completion synchronously, which is
-     *  the whole window it has to cover. */
+    /** Close the synchronous double-submit window before publication. A driven owner that
+     * declines after preflight releases this attempt's lock below. */
     askInFlightRef.current = true;
     setSubmissionStart(Date.now());
     store.set(launchedConversationFamily(index), submission.conversation);
     setSubmission(submission);
+    if (accepted?.() === false) {
+      askInFlightRef.current = false;
+      return admission?.() === 'pending' ? 'pending' : 'blocked';
+    }
     logger.dir('message_stream', {
       conversationId,
       messageId: currentMsg.messageId,

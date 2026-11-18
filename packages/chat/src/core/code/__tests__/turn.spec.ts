@@ -3,6 +3,34 @@ import { resolveTurnCode, resolveTurnCodeResult } from '../turn';
 import * as workspace from '../workspace';
 
 describe('resolveTurnCode', () => {
+  it.each(['fetching', 'paused'] as const)(
+    'retains a cached-error workspace during %s',
+    (fetchStatus) => {
+      const inputs = turnInputs();
+      inputs.workspace.statuses['personal-vm'] = {
+        ...inputs.workspace.statuses['personal-vm']!,
+        isLoading: false,
+        isError: true,
+        fetchStatus,
+      };
+      expect(resolveTurnCodeResult(inputs, inputs.workspace.conversation).state).toBe('pending');
+      inputs.workspace.statuses['personal-vm']!.fetchStatus = 'idle';
+      expect(resolveTurnCodeResult(inputs, inputs.workspace.conversation).state).toBe('blocked');
+    },
+  );
+
+  it('distinguishes a partial catalog from a settled missing catalog', () => {
+    const inputs = turnInputs();
+    inputs.workspace.primaryAgent = { ...agent, agent_ids: ['later-page'] };
+    inputs.workspace.agentsMap = { [agent.id]: agent };
+    inputs.workspace.agentsPending = true;
+    expect(resolveTurnCodeResult(inputs, inputs.workspace.conversation).state).toBe('pending');
+    inputs.workspace.agentsPending = false;
+    expect(resolveTurnCodeResult(inputs, inputs.workspace.conversation).state).toBe('blocked');
+    inputs.workspace.agentsMap = undefined;
+    expect(resolveTurnCodeResult(inputs, inputs.workspace.conversation).state).toBe('blocked');
+  });
+
   it('admits a sealed without-attached decision before irrelevant linked metadata loads', () => {
     const inputs = turnInputs();
     inputs.workspace.primaryAgent = { ...agent, agent_ids: ['agent_child'] };

@@ -22,6 +22,7 @@ import { showStopButtonByIndex } from '../../generation';
 import { isSubmittingFamily } from '../../submission';
 import { useDrivenContract } from '../driven';
 import { useFollowChat } from '../../follow';
+import { useTurnActions } from '../actions';
 import { ChatHostProvider } from '../host';
 import { filesFamily } from '../../pane';
 
@@ -179,7 +180,13 @@ function setup({
   stored = [user, reply('response-1', 'Hi')],
   services = createTurnServices(),
   canSend,
-}: { stored?: TMessage[]; services?: TurnServices; canSend?: () => boolean } = {}) {
+  onAccepted,
+}: {
+  stored?: TMessage[];
+  services?: TurnServices;
+  canSend?: () => boolean;
+  onAccepted?: () => void;
+} = {}) {
   const queryClient = new QueryClient();
   const store = createStore();
   const harness = createTransport();
@@ -220,8 +227,10 @@ function setup({
         id: conversationId,
         followed: canSend == null ? followed : { ...followed, canSend },
         index: SIDE_PANE,
+        onAccepted,
       });
-      return { followed, contract };
+      const actions = useTurnActions(contract.ask, conversationId);
+      return { followed, contract, actions };
     },
     { wrapper, initialProps: { live: false } },
   );
@@ -230,6 +239,57 @@ function setup({
 }
 
 describe('useDrivenContract', () => {
+  it.each(['edit', 'regenerate', 'continue', 'preview'] as const)(
+    'announces actual acceptance for %s',
+    async (action) => {
+      const onAccepted = jest.fn();
+      const view = setup({ onAccepted });
+      await view.ready();
+      act(() => {
+        if (action === 'edit')
+          view.result.current.contract.ask(
+            { ...user, text: 'Edited question' },
+            { isEdited: true },
+          );
+        else if (action === 'regenerate')
+          view.result.current.contract.regenerate({ parentMessageId: user.messageId });
+        else if (action === 'preview')
+          view.result.current.actions.sendMessage({
+            parts: [{ type: 'text', text: 'Preview followup.' }],
+          });
+        else
+          view.result.current.contract.handleContinue({
+            preventDefault: jest.fn(),
+          } as unknown as React.MouseEvent<HTMLButtonElement>);
+      });
+      await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+      expect(onAccepted).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('retains automatic intent when the real follower declines after preflight', async () => {
+    const onAccepted = jest.fn();
+    const view = setup({ onAccepted });
+    await view.ready();
+    const decline = jest
+      .spyOn(view.result.current.followed.chat!, 'sendMessage')
+      .mockResolvedValueOnce(undefined);
+    let outcome: string | undefined;
+    act(() => {
+      outcome = view.result.current.contract.attempt('Keep these words.');
+    });
+    expect(outcome).not.toBe('accepted');
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(view.sendMessages).not.toHaveBeenCalled();
+    decline.mockRestore();
+    view.rerender({ live: false });
+    act(() => {
+      outcome = view.result.current.contract.attempt('Keep these words.');
+    });
+    expect(outcome).toBe('accepted');
+    expect(onAccepted).toHaveBeenCalledTimes(1);
+  });
+
   it('retains manual refusal diagnostics and false/accepted-undefined return values', async () => {
     const inputs = createTurnCodeInputs({ recoveryPending: true });
     const services = createTurnServices({ readCodeInputs: () => inputs });

@@ -12,6 +12,7 @@ import {
   sideChatAvailableAtom,
 } from '@librechat/chat/react';
 import type { TConversation, TStartupConfig } from 'librechat-data-provider';
+import type { SideChat } from '@librechat/chat/react';
 import type { JotaiStore } from 'test/harness';
 import type { Artifact } from '~/common';
 import { prepareUndockedDocument } from '~/components/Artifacts/undockedWindow';
@@ -39,6 +40,7 @@ const mockOpenChildLabel = 'Open Child Activity';
 const mockSideChatLabel = 'Side chat loaded';
 const mockOpenSideChatLabel = 'Open Side Chat';
 const mockAskSideChatLabel = 'Ask for a side chat';
+let mockSideChatProps: { chat: SideChat; onHandedTextTaken: (expected: SideChat) => void };
 const mockSelectAgentConversationLabel = 'Select Agent Conversation';
 const mockStartAgentRunLabel = 'Start Agent Run';
 /**
@@ -86,7 +88,8 @@ jest.mock('@librechat/chat/components', () => {
     ),
     loadSideChatPanel: () =>
       Promise.resolve({
-        default: function MockSideChatPanel() {
+        default: function MockSideChatPanel(props: typeof mockSideChatProps) {
+          mockSideChatProps = props;
           const parent = useParentSubagents();
           return (
             <aside>
@@ -429,6 +432,47 @@ describe('Presentation Artifact loading', () => {
       expect(detachedDocument.body.textContent).toContain(mockArtifactPanelLabel),
     );
   });
+
+  it.each(['same', 'different'] as const)(
+    'an old pane callback cannot consume a newer %s destination handoff',
+    async (destination) => {
+      let atoms!: JotaiStore;
+      renderPresentation(
+        <ChatSurfaceHarness
+          seed={(store) => {
+            atoms = store;
+          }}
+        >
+          <RecoilRoot>
+            <Presentation>
+              <OpenSideChat />
+            </Presentation>
+          </RecoilRoot>
+        </ChatSurfaceHarness>,
+      );
+      fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
+      await screen.findByText(mockSideChatLabel);
+      const conversation = atoms.get(sideChatAtom)!.conversation;
+      const captured = mockSideChatProps.chat;
+      const consume = mockSideChatProps.onHandedTextTaken;
+      act(() => {
+        atoms.set(sideChatAtom, {
+          conversation: {
+            ...conversation,
+            conversationId: destination === 'same' ? conversation.conversationId : 'new-side',
+          },
+          text: 'Same question.',
+        });
+      });
+      const replacement = atoms.get(sideChatAtom)!;
+      expect(replacement).not.toBe(captured);
+      act(() => consume(captured));
+      expect(atoms.get(sideChatAtom)).toBe(replacement);
+      expect(atoms.get(sideChatAtom)?.text).toBe('Same question.');
+      act(() => mockSideChatProps.onHandedTextTaken(replacement));
+      expect(atoms.get(sideChatAtom)?.text).toBeUndefined();
+    },
+  );
 
   it('shows a side chat beside the conversation, with child activity read for its own conversation', async () => {
     renderPresentation(

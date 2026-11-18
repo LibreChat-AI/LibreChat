@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { isHistoryRevalidating } from '@librechat/chat/react';
 import {
   QueryKeys,
   isAgentsEndpoint,
@@ -50,7 +51,8 @@ export function getTargetReadiness(
 function matches(key: QueryKey, target: TConversation | null): boolean {
   return (
     target != null &&
-    ((key[0] === QueryKeys.agent && key[1] === target.agent_id) ||
+    ((key.length === 2 && key[0] === QueryKeys.messages && key[1] === target.conversationId) ||
+      (key[0] === QueryKeys.agent && key[1] === target.agent_id) ||
       (key[0] === QueryKeys.assistant &&
         key[1] === target.endpoint &&
         key[2] === target.assistant_id))
@@ -69,10 +71,14 @@ export default function useTargetReadiness(
       ? conversation.agent_id
       : undefined;
   const agent = useGetAgentByIdQuery(agentId, { enabled });
-  const snapshot = useCallback(
-    (): TurnReadiness => (enabled ? getTargetReadiness(client, conversation) : 'ready'),
-    [client, conversation, enabled],
-  );
+  const snapshot = useCallback((): TurnReadiness => {
+    if (!enabled) return 'ready';
+    const readiness = getTargetReadiness(client, conversation);
+    return readiness === 'ready' &&
+      isHistoryRevalidating(client, conversation?.conversationId ?? null)
+      ? 'pending'
+      : readiness;
+  }, [client, conversation, enabled]);
   const subscribe = useCallback(
     (notify: () => void) => {
       if (!enabled) return () => undefined;

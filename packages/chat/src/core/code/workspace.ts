@@ -96,6 +96,8 @@ export interface CodeEnvironmentStatusSnapshot {
   data?: TCodeEnvironmentStatusResponse;
   isLoading: boolean;
   isError: boolean;
+  /** Native observer state, including an optimistic mount refetch or offline pause. */
+  fetchStatus?: 'fetching' | 'paused' | 'idle';
 }
 
 export interface CodeWorkspaceProtocol {
@@ -143,6 +145,8 @@ export interface CodeWorkspaceAgents {
   primaryAgent?: Agent;
   addedAgent?: Agent;
   agentsMap?: TAgentsMap;
+  /** The existing catalog owner is still loading missing linked metadata. */
+  agentsPending?: boolean;
   statefulCodeSessions?: CodeSessionsConfig;
 }
 
@@ -1021,7 +1025,7 @@ export function resolveCodeWorkspace(inputs: CodeWorkspaceInputs): CodeWorkspace
     mode: inferredMode,
     state: status.state,
     canSubmit,
-    metadataPending: !reachable.complete && agentsMap == null,
+    metadataPending: !reachable.complete && (inputs.agentsPending ?? agentsMap == null),
     visible: status.visible,
     environments: environments.environmentResults,
     machineOptions: environments.machineOptions,

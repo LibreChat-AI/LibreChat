@@ -208,3 +208,86 @@ it('blocks unavailable endpoints and invalid saved targets', () => {
   client.setQueryData([QueryKeys.agent, 'agent_1'], { id: 'different' });
   expect(getTargetReadiness(client, selected())).toBe('blocked');
 });
+
+it.each(['success', 'failure', 'cancel'] as const)(
+  'tracks external history revalidation through %s with unchanged rows',
+  async (outcome) => {
+    const { client, wrapper } = setupClient();
+    const conversation = selected();
+    const key = [QueryKeys.messages, conversation.conversationId];
+    const rows = [{ messageId: 'same' }];
+    client.setQueryData([QueryKeys.agent, 'agent_1'], detail);
+    client.setQueryData(key, rows, { updatedAt: Date.now() - 10000 });
+    await client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' });
+    let resolve!: (value: typeof rows) => void;
+    let reject!: (error: Error) => void;
+    const fetch = client
+      .fetchQuery(
+        key,
+        () =>
+          new Promise<typeof rows>((yes, no) => {
+            resolve = yes;
+            reject = no;
+          }),
+      )
+      .catch(() => undefined);
+    const { result } = renderHook(() => useTargetReadiness(conversation), { wrapper });
+    expect(result.current).toBe('pending');
+    await act(async () => {
+      if (outcome === 'success') resolve(rows);
+      else if (outcome === 'failure') reject(new Error('history unavailable'));
+      else await client.cancelQueries({ queryKey: key, exact: true });
+      await fetch;
+    });
+    await waitFor(() => expect(result.current).toBe('ready'));
+    expect(client.getQueryData(key)).toBe(rows);
+    expect(getAgent).not.toHaveBeenCalled();
+  },
+);
+
+it('follows only the current exact history key and unsubscribes when disabled', async () => {
+  const { client, wrapper } = setupClient();
+  client.setQueryData([QueryKeys.agent, 'agent_1'], detail);
+  client.setQueryData([QueryKeys.agent, 'agent_2'], { ...detail, id: 'agent_2' });
+  const first = selected();
+  const key = [QueryKeys.messages, first.conversationId];
+  client.setQueryData(key, [], { updatedAt: Date.now() - 10000 });
+  let renders = 0;
+  const { result, rerender, unmount } = renderHook(
+    ({ id, enabled }) => {
+      renders++;
+      return useTargetReadiness(selected(id), enabled);
+    },
+    { wrapper, initialProps: { id: 'agent_1', enabled: true } },
+  );
+  expect(result.current).toBe('ready');
+  await client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' });
+  let release!: (value: unknown[]) => void;
+  const request = client.fetchQuery(
+    key,
+    () =>
+      new Promise<unknown[]>((resolve) => {
+        release = resolve;
+      }),
+  );
+  await waitFor(() => expect(result.current).toBe('pending'));
+  rerender({ id: 'agent_2', enabled: true });
+  expect(result.current).toBe('ready');
+  const before = renders;
+  await act(async () => {
+    release([]);
+    await request;
+  });
+  expect(renders).toBe(before);
+  act(() => {
+    client.setQueryData([QueryKeys.messages, selected('agent_2').conversationId, 'branch'], []);
+  });
+  expect(renders).toBe(before);
+  rerender({ id: 'agent_1', enabled: false });
+  expect(result.current).toBe('ready');
+  const disabled = renders;
+  act(() => client.setQueryData(key, []));
+  expect(renders).toBe(disabled);
+  unmount();
+  expect(getAgent).not.toHaveBeenCalled();
+});

@@ -23,12 +23,11 @@ type SideChatComposerProps = {
   /** The reader's unsent words, which the panel holds so they outlive the composer. */
   value: string;
   onChange: (value: string) => void;
-  conversationId: string;
   title: string;
   /** Whether the conversation is in and the pane holds it, so a turn can be built for it. */
   ready: boolean;
   /** Words written for this conversation before it opened; see {@link SideChat.text}. */
-  handedText?: string;
+  handoff?: SideChat;
   onHandedTextTaken: () => void;
   clearsFooter: boolean;
   /**
@@ -49,10 +48,9 @@ function SideChatComposer({
   readiness,
   value,
   onChange: setValue,
-  conversationId,
   title,
   ready,
-  handedText,
+  handoff,
   onHandedTextTaken,
   clearsFooter,
   focusWhenReady,
@@ -78,31 +76,32 @@ function SideChatComposer({
    * Words the reader wrote before this conversation opened are its next turn. They are sent
    * once, when the conversation can take them; if it cannot, they are left in the field.
    */
-  const handed = useRef<string>();
+  const handedText = handoff?.text;
+  const handed = useRef<SideChat>();
   useEffect(() => {
     if (
       !ready ||
       readiness === 'pending' ||
       handedText == null ||
       handedText === '' ||
-      handed.current === conversationId
+      handed.current === handoff
     ) {
       return;
     }
     const outcome = value === handedText && readiness === 'ready' ? attempt(handedText) : 'blocked';
     if (outcome === 'pending') return;
-    handed.current = conversationId;
+    handed.current = handoff;
     if (outcome === 'accepted') setValue('');
-    onHandedTextTaken();
-  }, [attempt, conversationId, handedText, onHandedTextTaken, readiness, ready, setValue, value]);
+    else onHandedTextTaken();
+  }, [attempt, handoff, handedText, onHandedTextTaken, readiness, ready, setValue, value]);
 
-  /** Editing or an accepted manual send supersedes automatic intent, including after rollback. */
+  /** Editing supersedes automatic intent; accepted sends consume it at the driven owner. */
   const consume = useCallback(() => {
-    if (handedText && handed.current !== conversationId) {
-      handed.current = conversationId;
+    if (handedText && handed.current !== handoff) {
+      handed.current = handoff;
       onHandedTextTaken();
     }
-  }, [conversationId, handedText, onHandedTextTaken]);
+  }, [handoff, handedText, onHandedTextTaken]);
   const change = useCallback(
     (text: string) => {
       consume();
@@ -116,9 +115,9 @@ function SideChatComposer({
     if (text === '' || ask({ text }) === false) {
       return;
     }
-    consume();
+    handed.current = handoff;
     setValue('');
-  }, [ask, consume, setValue, value]);
+  }, [ask, handoff, setValue, value]);
 
   /** The main chat form's own Enter decision table, so a rebound submit shortcut holds here. */
   const resolveKeyVerdict = useCallback(
@@ -177,7 +176,7 @@ export default function SideChatPanel({
   chat: SideChat;
   onClose: () => void;
   /** The words handed over with the conversation were sent, or put in the field. */
-  onHandedTextTaken: () => void;
+  onHandedTextTaken: (expected: SideChat) => void;
 }): ReactNode {
   const localize = useLocalize();
   const host = useSideChatHost();
@@ -187,6 +186,7 @@ export default function SideChatPanel({
   const { handOffComposerText } = useChatSurface();
   const conversationId = chat.conversation.conversationId ?? '';
   const [draft, setDraft] = useAtom(sideChatDraftFamily(conversationId));
+  const takeText = useCallback(() => onHandedTextTaken(chat), [chat, onHandedTextTaken]);
   /**
    * A turn stopped before the server kept it is gone from the list. Its words go back in the
    * field, as main chat keeps them as a draft, unless the reader has written something since.
@@ -283,6 +283,7 @@ export default function SideChatPanel({
         index={SIDE_CHAT_PANE}
         followed={followed}
         handoff={!!chat.text}
+        onAccepted={chat.text ? takeText : undefined}
       >
         {(contract) => (
           <SideChatComposer
@@ -291,11 +292,10 @@ export default function SideChatPanel({
             readiness={contract.readiness}
             value={draft}
             onChange={setDraft}
-            conversationId={conversationId}
             title={title}
             ready={held && !followed.isLoading}
-            handedText={chat.text}
-            onHandedTextTaken={onHandedTextTaken}
+            handoff={chat.text ? chat : undefined}
+            onHandedTextTaken={takeText}
             clearsFooter={clearsFooter}
             focusWhenReady={!isSheet}
           />

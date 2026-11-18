@@ -43,6 +43,12 @@ export function resolveTurnCodeResult(
       return { state: 'blocked' };
     }
     if (workspace.recoveryPending || workspace.replacingDecision) return { state: 'pending' };
+    if (
+      Object.values(workspace.statuses).some(
+        (status) => status?.fetchStatus === 'fetching' || status?.fetchStatus === 'paused',
+      )
+    )
+      return { state: 'pending' };
     const terminal = derivation.environments.some(
       ({ state }) => state === 'unavailable' || state === 'unsupported' || state === 'missing',
     );

@@ -12,6 +12,7 @@ import {
   SideChatHostProvider,
   ParentSubagentsProvider,
 } from '@librechat/chat/react';
+import type { SideChat } from '@librechat/chat/react';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
@@ -72,7 +73,10 @@ export default function Presentation({
   const setSideChat = useSetAtom(sideChatAtom);
   const closeSideChat = useCallback(() => setSideChat(null), [setSideChat]);
   const takeSideChatText = useCallback(
-    () => setSideChat((current) => current && { conversation: current.conversation }),
+    (expected: SideChat) =>
+      setSideChat((current) =>
+        current === expected ? { conversation: current.conversation } : current,
+      ),
     [setSideChat],
   );
   const previousConversationIdRef = useRef<string | null>(null);
