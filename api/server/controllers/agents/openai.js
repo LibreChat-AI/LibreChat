@@ -2,9 +2,6 @@ const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
-  createOpenAIToolCallStream: createAcceptedToolCallStream,
-} = require('@librechat/agents/openai');
-const {
   EModelEndpoint,
   ResourceType,
   PermissionBits,
@@ -17,7 +14,7 @@ const {
   createRemoteExecutionContext,
   getRemoteRunKeyId,
   createChunk,
-  createServerToolResults,
+  createChatCompletionToolProjection,
   applyContextToAgent,
   buildRunToolSet,
   buildInitialToolSessions,
@@ -1034,22 +1031,15 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         }
       };
 
-      const toolCallStream = createAcceptedToolCallStream({
+      const projection = createChatCompletionToolProjection({
+        streaming: isStreaming,
         signal: execution.signal,
-        toolCalls: isStreaming ? tracker.toolCalls : aggregator.toolCalls,
-        ...(isStreaming && {
-          emit: (delta) => writeSSE(res, createChunk(context, delta)),
-        }),
+        tracker,
+        aggregator,
+        writer: res,
+        context,
+        include: request.include,
       });
-
-      const results = request.include?.includes('server_tool_results')
-        ? createServerToolResults({
-            signal: execution.signal,
-            ...(isStreaming && { emit: (delta) => writeSSE(res, createChunk(context, delta)) }),
-          })
-        : undefined;
-      if (tracker) tracker.serverToolResults = results;
-      const projection = results?.wrap(toolCallStream) ?? toolCallStream;
 
       // Event handlers for OpenAI-compatible streaming
       const handlers = {
@@ -1155,6 +1145,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const initialSessions = buildInitialToolSessions({ agents: runAgents });
 
       const run = await createRun({
+        ...projection.runOptions,
         sdkModelHost: req?.app?.locals?.sdkModelHost,
         agents: runAgents,
         messages: formattedMessages,
@@ -1287,7 +1278,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           aggregator.toolCalls,
           usage,
           true,
-          ...(results ? [results.response()] : []),
+          projection.response(),
         );
         res.json(response);
         logger.debug(

@@ -303,6 +303,7 @@ type CreateRunAppConfig = Pick<
 
 type CreateRunFn = (params: {
   sdkModelHost?: SdkModelHost;
+  eagerToolExecution?: boolean;
   modelCallbacks?: ReturnType<typeof createApiModelCallbacks>;
   agents: unknown[];
   messages: unknown[];
@@ -893,6 +894,8 @@ export async function createAgentChatCompletion(
           },
     );
 
+    const target = tracker ?? aggregator!;
+
     // Convert messages to internal format
     const messages = convertMessages(request.messages);
 
@@ -910,6 +913,7 @@ export async function createAgentChatCompletion(
        */
       const safeUser: Record<string, unknown> = { ...createSafeUser(reqUser), id: userId };
       const run = await deps.createRun({
+        ...target.toolExecution,
         sdkModelHost: deps.sdkModelHost,
         modelCallbacks: createApiModelCallbacks({
           appConfig: deps.appConfig,
@@ -929,7 +933,6 @@ export async function createAgentChatCompletion(
       });
 
       if (run) {
-        const target = tracker ?? aggregator!;
         await completeOpenAIToolCalls(
           {
             finish: () => target.finishToolCalls?.(),

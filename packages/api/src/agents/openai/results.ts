@@ -201,7 +201,18 @@ export function createServerToolResults({
           },
         },
         finish() {
+          if (finished) return;
+          const check = () => {
+            if (!signal?.aborted) return;
+            abort();
+            const error = new Error('Agent response aborted');
+            error.name = 'AbortError';
+            throw error;
+          };
+          check();
+          if (closed) return;
           projection.finish();
+          check();
           finished = true;
           closed = true;
           release();

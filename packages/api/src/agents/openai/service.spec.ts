@@ -188,6 +188,7 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
         );
       });
       await createAgentChatCompletion(req, res, deps);
+      expect(createRun.mock.calls[0][0]).toHaveProperty('eagerToolExecution', false);
       const expected = {
         call_id: 'server',
         name: 'lookup',

@@ -2331,6 +2331,7 @@ export async function createRun({
   sdkResumeState,
   streaming = true,
   streamUsage = true,
+  eagerToolExecution = true,
 }: {
   agents: RunAgent[];
   signal: AbortSignal;
@@ -2340,6 +2341,8 @@ export async function createRun({
   conversationId?: string;
   streaming?: boolean;
   streamUsage?: boolean;
+  /** Host-owned execution policy; observed Chat results require post-acceptance execution. */
+  eagerToolExecution?: boolean;
   requestBody?: t.RequestBody;
   codeApprovalMode?: CodeApprovalMode;
   user?: IUser;
@@ -3266,7 +3269,7 @@ export async function createRun({
     // `interrupt()` from its tool body, which must run inside the Pregel task
     // frame — a speculative eager execution could never pause the run.
     eagerEventToolExecution: {
-      enabled: true,
+      enabled: eagerToolExecution,
       excludeToolNames: [
         CREATE_FILE_TOOL_NAME,
         EDIT_FILE_TOOL_NAME,

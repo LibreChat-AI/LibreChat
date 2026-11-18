@@ -87,6 +87,18 @@ accepted model response + sdk disposition (owner/call identity)
   -> JSON tool_results / indexed SSE delta.tool_results
 ```
 
+For this selector, both Chat hosts disable the SDK's speculative eager tool
+prestart. Tools execute after model acceptance, so the observer receives final
+processed ToolNode results rather than trying to associate a failed provider
+attempt's early output with an accepted fallback. Normal Chat requests and the
+Responses API retain their existing execution policy. Custom `createRun` adapters
+must forward the supplied `eagerToolExecution: false` option.
+
+This trades tool/model-stream overlap for authoritative result observation:
+opted-in tools start after the model finishes its accepted call, and failed
+provider attempts do not speculatively execute them. Tool latency may therefore
+be higher for opted-in requests; there is no production latency estimate.
+
 The collector never changes execution requests, tool ownership, `finish_reason`,
 authorization, billing or artifact callbacks. It consumes only accepted SDK-owned
 calls with matching completed execution owner, name and call ID. Pinned SDK 4.2.10

@@ -180,8 +180,8 @@ jest.mock('~/server/services/ApiKeys/grants', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
-  createServerToolResults: (...args) =>
-    jest.requireActual('@librechat/api').createServerToolResults(...args),
+  createChatCompletionToolProjection: (...args) =>
+    jest.requireActual('@librechat/api').createChatCompletionToolProjection(...args),
   getModelEndUsage: (...args) => jest.requireActual('@librechat/api').getModelEndUsage(...args),
   createApiModelCallbacks: (...args) =>
     jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
@@ -637,7 +637,10 @@ describe('OpenAIChatCompletionController', () => {
       req.body.stream = streaming;
       api.validateRequest.mockReturnValueOnce({ request: req.body });
       mockProcessStream.mockImplementationOnce(async () => {
-        const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+        const { customHandlers: handlers, eagerToolExecution } = api.createRun.mock.calls.at(-1)[0];
+        expect(eagerToolExecution).toBe(
+          req.body.include?.includes('server_tool_results') ? false : undefined,
+        );
         expect(handlers.on_run_step).toBeUndefined();
         expect(handlers.on_run_step_delta).toBeUndefined();
         expect(handlers.on_run_step_completed).toBeUndefined();
@@ -701,7 +704,10 @@ describe('OpenAIChatCompletionController', () => {
       let completion;
       api.validateRequest.mockReturnValueOnce({ request: req.body });
       mockProcessStream.mockImplementationOnce(async () => {
-        const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+        const { customHandlers: handlers, eagerToolExecution } = api.createRun.mock.calls.at(-1)[0];
+        expect(eagerToolExecution).toBe(
+          req.body.include?.includes('server_tool_results') ? false : undefined,
+        );
         await handlers.on_model_response.handle('on_model_response', {
           type: 'model_response',
           id: 'accepted-server',
@@ -781,7 +787,10 @@ describe('OpenAIChatCompletionController', () => {
       req.body.stream = streaming;
       api.validateRequest.mockReturnValueOnce({ request: req.body });
       mockProcessStream.mockImplementationOnce(async () => {
-        const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+        const { customHandlers: handlers, eagerToolExecution } = api.createRun.mock.calls.at(-1)[0];
+        expect(eagerToolExecution).toBe(
+          req.body.include?.includes('server_tool_results') ? false : undefined,
+        );
         await handlers.on_model_response.handle('on_model_response', {
           type: 'model_response',
           id: 'discarded',
@@ -1114,6 +1123,7 @@ describe('OpenAIChatCompletionController', () => {
       expect.anything(),
       mockCompletionUsage,
       true,
+      undefined,
     );
   });
 

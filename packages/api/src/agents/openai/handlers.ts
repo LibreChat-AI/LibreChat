@@ -14,6 +14,7 @@ import type {
   OpenAIResponseContext,
   ChatCompletionChunk,
   CompletionUsage,
+  ServerToolResultFields,
   ToolCall,
 } from './types';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
@@ -66,6 +67,7 @@ export function writeSSE(writer: OpenAIWriter, data: ChatCompletionChunk | strin
 export interface OpenAIStreamTracker {
   /** Successful response completion, installed by the response handlers. */
   serverToolResults?: ServerToolResults;
+  toolExecution?: { eagerToolExecution?: false };
   finishToolCalls?: () => void;
   abortToolCalls?: () => void;
   /** Whether any text content was emitted */
@@ -117,6 +119,7 @@ export function createOpenAIStreamTracker(): OpenAIStreamTracker {
 export interface OpenAIContentAggregator {
   /** Successful response completion, installed by the response handlers. */
   serverToolResults?: ServerToolResults;
+  toolExecution?: { eagerToolExecution?: false };
   finishToolCalls?: () => void;
   abortToolCalls?: () => void;
   /** Accumulated text chunks */
@@ -778,31 +781,69 @@ export interface OpenAIAggregationHandlerConfig {
 
 type OpenAIContentHandlerConfig = OpenAIContentStreamConfig | OpenAIAggregationHandlerConfig;
 
+type ChatCompletionToolProjectionConfig = {
+  include?: 'server_tool_results'[];
+  signal?: AbortSignal;
+} & (
+  | {
+      streaming: true;
+      tracker: OpenAIStreamTracker;
+      writer: OpenAIWriter;
+      context: OpenAIResponseContext;
+      aggregator?: OpenAIContentAggregator;
+    }
+  | {
+      streaming: false;
+      aggregator: OpenAIContentAggregator;
+      tracker?: OpenAIStreamTracker;
+      writer?: OpenAIWriter;
+      context?: OpenAIResponseContext;
+    }
+);
+
+/** Both HTTP hosts share selection, execution policy, framing and terminal ownership. */
+export function createChatCompletionToolProjection(
+  config: ChatCompletionToolProjectionConfig,
+): ReturnType<typeof createAcceptedToolCallStream> & {
+  runOptions: { eagerToolExecution?: false };
+  response(): ServerToolResultFields | undefined;
+} {
+  const target = config.streaming ? config.tracker : config.aggregator;
+  const emit = config.streaming
+    ? (delta: ChatCompletionChunkChoice['delta']) =>
+        writeSSE(config.writer, createChunk(config.context, delta))
+    : undefined;
+  const accepted = createAcceptedToolCallStream({
+    signal: config.signal,
+    toolCalls: target.toolCalls,
+    emit,
+  });
+  const results = config.include?.includes('server_tool_results')
+    ? createServerToolResults({ signal: config.signal, emit })
+    : undefined;
+  const projection = results?.wrap(accepted) ?? accepted;
+  // Opt-in observation needs accepted, processed ToolNode completions. Eager
+  // prestart emits before acceptance and can reuse a failed provider attempt.
+  const runOptions = results ? { eagerToolExecution: false as const } : {};
+  target.serverToolResults = results;
+  target.toolExecution = runOptions;
+  target.finishToolCalls = projection.finish;
+  target.abortToolCalls = projection.abort;
+  return { ...projection, runOptions, response: () => results?.response() };
+}
+
 export function createOpenAIHandlers(
   config: OpenAIContentHandlerConfig,
   toolExecuteOptions?: ToolExecuteOptions,
 ): Record<string, EventHandler> {
-  const target = 'aggregator' in config ? config.aggregator : config.tracker;
-  const toolCallProjection = createAcceptedToolCallStream({
-    signal: config.signal,
-    toolCalls: target.toolCalls,
-    emit:
-      'aggregator' in config
-        ? undefined
-        : (delta) => writeSSE(getStreamWriter(config), createChunk(config.context, delta)),
-  });
-  const results = config.include?.includes('server_tool_results')
-    ? createServerToolResults({
-        signal: config.signal,
-        ...(!('aggregator' in config) && {
-          emit: (delta) => writeSSE(getStreamWriter(config), createChunk(config.context, delta)),
-        }),
-      })
-    : undefined;
-  const projection = results?.wrap(toolCallProjection) ?? toolCallProjection;
-  target.serverToolResults = results;
-  target.finishToolCalls = projection.finish;
-  target.abortToolCalls = projection.abort;
+  const projection =
+    'aggregator' in config
+      ? createChatCompletionToolProjection({ ...config, streaming: false })
+      : createChatCompletionToolProjection({
+          ...config,
+          streaming: true,
+          writer: getStreamWriter(config),
+        });
   const handlers: Record<string, EventHandler> = {
     ...projection.handlers,
     [GraphEvents.ON_MESSAGE_DELTA]: new OpenAIMessageDeltaHandler(config),

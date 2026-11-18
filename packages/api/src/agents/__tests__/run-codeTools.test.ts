@@ -522,6 +522,20 @@ describe('createRun code-tool eager/session wiring', () => {
     );
   });
 
+  it('lets observed Chat results defer tool execution until model acceptance', async () => {
+    await createRun({
+      agents: [makeAgent()] as never,
+      signal: new AbortController().signal,
+      eagerToolExecution: false,
+    });
+    expect((Run.create as jest.Mock).mock.calls[0][0].eagerEventToolExecution).toEqual(
+      expect.objectContaining({
+        enabled: false,
+        excludeToolNames: expect.arrayContaining(['create_file', 'execute_code']),
+      }),
+    );
+  });
+
   it('declares create_file/edit_file/read_file as code-session participants', async () => {
     const runConfig = await captureRunConfig();
     expect(runConfig.codeSessionToolNames).toEqual(

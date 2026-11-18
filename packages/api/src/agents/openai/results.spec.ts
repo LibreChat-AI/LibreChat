@@ -6,7 +6,8 @@ import { buildNonStreamingResponse } from './service';
 function fixture(options: Parameters<typeof createServerToolResults>[0] = {}) {
   const collector = createServerToolResults(options);
   const calls = new Map();
-  const projection = collector.wrap(createOpenAIToolCallStream({ toolCalls: calls }));
+  const delegate = createOpenAIToolCallStream({ toolCalls: calls });
+  const projection = collector.wrap(delegate);
   const accept = async (agent = 'a', id = 'call', disposition = 'sdk') => {
     await projection.handlers.on_model_response.handle('on_model_response', {
       type: 'model_response',
@@ -41,7 +42,7 @@ function fixture(options: Parameters<typeof createServerToolResults>[0] = {}) {
       { agentId: agent } as never,
     );
   };
-  return { collector, calls, projection, accept, complete };
+  return { collector, calls, delegate, projection, accept, complete };
 }
 
 describe('server tool result projection', () => {
@@ -236,6 +237,56 @@ describe('server tool result projection', () => {
     await f.complete();
     f.projection.finish();
     f.projection.abort();
+    expect(f.collector.response().tool_results).toHaveLength(1);
+  });
+
+  it('discards unpublished results when cancellation has no following event', async () => {
+    const controller = new AbortController();
+    const f = fixture({ signal: controller.signal });
+    await f.accept();
+    await f.complete();
+    controller.abort();
+    expect(() => f.projection.finish()).toThrow(expect.objectContaining({ name: 'AbortError' }));
+    f.projection.abort();
+    expect(f.collector.response()).toEqual({ tool_results: [] });
+  });
+
+  it('does not seal success when the delegate cancels during finish', async () => {
+    const controller = new AbortController();
+    const f = fixture({ signal: controller.signal });
+    jest.spyOn(f.delegate, 'finish').mockImplementation(() => controller.abort());
+    await f.accept();
+    await f.complete();
+    expect(() => f.projection.finish()).toThrow(expect.objectContaining({ name: 'AbortError' }));
+    f.projection.abort();
+    expect(f.collector.response()).toEqual({ tool_results: [] });
+  });
+
+  it('does not finalize after the result sink cancels reentrantly', async () => {
+    const controller = new AbortController();
+    const emit = jest.fn(() => controller.abort());
+    const f = fixture({ signal: controller.signal, emit });
+    const finish = jest.spyOn(f.delegate, 'finish');
+    await f.accept();
+    await f.complete();
+    expect(() => f.projection.finish()).toThrow(expect.objectContaining({ name: 'AbortError' }));
+    f.projection.abort();
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(finish).not.toHaveBeenCalled();
+    expect(f.collector.response()).toEqual({ tool_results: [] });
+  });
+
+  it('seals a successful finish once before normal finally cleanup', async () => {
+    const controller = new AbortController();
+    const f = fixture({ signal: controller.signal });
+    const finish = jest.spyOn(f.delegate, 'finish');
+    await f.accept();
+    await f.complete();
+    f.projection.finish();
+    f.projection.finish();
+    controller.abort();
+    f.projection.abort();
+    expect(finish).toHaveBeenCalledTimes(1);
     expect(f.collector.response().tool_results).toHaveLength(1);
   });
 
