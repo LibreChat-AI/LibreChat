@@ -307,6 +307,7 @@ export {
 export { default as SubagentConversation } from './components/subagents/conversation';
 export { default as SharedSubagentActivityDialog } from './components/subagents/shared';
 export { loadSubagentThreadPanel } from './components/subagents/load';
+export { loadSideChatPanel } from './components/side/load';
 
 /** Part helpers moved from the app: copy and action buttons, language icons, expand/collapse. */
 export {

@@ -12,6 +12,8 @@ type ApprovalInputs = Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'>;
 const mockReadWorkspaceInputs = jest.fn<CodeWorkspaceInputs, []>();
 const mockReadApprovalInputs = jest.fn<ApprovalInputs, []>();
 const mockGetLatestConversation = jest.fn<TConversation | null, []>(() => null);
+/** The comparison conversation each code hook was handed on the last render. */
+const mockComparisons: { workspace?: unknown; approval?: unknown } = {};
 
 jest.mock('react-router-dom', () => ({ useNavigate: () => jest.fn() }));
 jest.mock('~/hooks/Files/useSetFilesToDelete', () => () => jest.fn());
@@ -20,11 +22,13 @@ jest.mock('~/Providers/AgentsMapContext', () => ({ useAgentsMapContext: () => ({
 jest.mock('~/hooks/Conversations/useGetConversation', () => () => mockGetLatestConversation);
 /** Each render's reader closes over that render's values, as the real hooks' readers do, so an
  *  adapter holding a reader from an earlier render keeps returning the earlier values. */
-jest.mock('~/hooks/Agents/useCodeWorkspace', () => () => {
+jest.mock('~/hooks/Agents/useCodeWorkspace', () => (_conversation: unknown, added: unknown) => {
+  mockComparisons.workspace = added;
   const rendered = mockReadWorkspaceInputs();
   return { mode: undefined, readInputs: () => rendered };
 });
-jest.mock('~/hooks/Agents/useCodeApprovalMode', () => () => {
+jest.mock('~/hooks/Agents/useCodeApprovalMode', () => (_conversation: unknown, added: unknown) => {
+  mockComparisons.approval = added;
   const rendered = mockReadApprovalInputs();
   return { readInputs: () => rendered };
 });
@@ -94,6 +98,25 @@ describe('useTurnServices readCodeInputs', () => {
       expect(result.current.readCodeInputs().workspace).toBe(firstWorkspace);
     },
   );
+
+  it("keeps the model main chat is compared with out of any other pane's turns", () => {
+    /** A comparison agent that has not loaded: main chat waits for it, a side pane does not. */
+    const comparison = conversation({ endpoint: EModelEndpoint.agents, agent_id: 'agent_compare' });
+    settings = { ...settings, addedConversation: comparison };
+    const submitted = conversation({ endpoint: EModelEndpoint.openAI, model: 'gpt-5' });
+
+    const main = renderHook(() => useTurnServices({ index: 0, conversation: submitted }), {
+      wrapper,
+    });
+    expect(main.result.current.canSubmit?.(submitted)).toBe(false);
+    expect(mockComparisons).toEqual({ workspace: comparison, approval: comparison });
+
+    const side = renderHook(() => useTurnServices({ index: 3, conversation: submitted }), {
+      wrapper,
+    });
+    expect(side.result.current.canSubmit?.(submitted)).toBe(true);
+    expect(mockComparisons).toEqual({ workspace: null, approval: null });
+  });
 
   it('checks the submitted target against current query data, not the rendered conversation', () => {
     const rendered = conversation({ endpoint: EModelEndpoint.openAI, model: 'gpt-5' });

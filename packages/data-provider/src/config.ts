@@ -3520,6 +3520,10 @@ export const interfaceSchema = z
      *  default; a deployment that cannot use popups can turn it off and keep
      *  the docked pane. */
     artifactUndocking: z.boolean().optional(),
+    /** Opening a conversation of the reader's own beside the main one: continuing a
+     *  subagent's thread opens the new chat in the side panel instead of leaving
+     *  the conversation. Enabled by default; false restores the navigation. */
+    sideChat: z.boolean().optional(),
     /** Asks each viewer for consent before Google Tag Manager (`ANALYTICS_GTM_ID`)
      *  loads. A deployment that settles consent itself, such as an internal one
      *  covered by its own policy, can set false to load the container without the
@@ -3763,6 +3767,7 @@ export const interfaceSchema = z
     contextUsage: true,
     contextCost: false,
     artifactUndocking: true,
+    sideChat: true,
     feedback: true,
     peoplePicker: {
       users: true,

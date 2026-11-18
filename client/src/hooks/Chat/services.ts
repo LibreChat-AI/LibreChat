@@ -35,7 +35,14 @@ export default function useTurnServices({
   const discardFiles = useDiscardPastedFiles(index, conversation?.conversationId);
   const setFilesToDelete = useSetFilesToDelete();
   const agentsMap = useAgentsMapContext();
-  const { isTemporary, config, auth, getEphemeralAgent, addedConversation } = useChatSettings();
+  const settings = useChatSettings();
+  const { isTemporary, config, auth, getEphemeralAgent } = settings;
+  /**
+   * The conversation main chat is being compared with rides along with main chat's turns, from
+   * either of its panes. A conversation in any other pane is on its own: that comparison's
+   * readiness, workspace and approvals have no say in what it can send.
+   */
+  const addedConversation = index === 0 || index === 1 ? settings.addedConversation : null;
   const { getExpiry } = useUserKey(conversation?.endpoint ?? '');
   const getConversation = useGetConversation(index);
   const codeWorkspaceState = useCodeWorkspace(conversation, addedConversation);

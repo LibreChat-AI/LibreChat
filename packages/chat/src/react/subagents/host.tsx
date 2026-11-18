@@ -109,6 +109,11 @@ export type SubagentNavigation = {
   openConversation: (conversation: TConversation) => void;
   /** Opens a conversation by id. */
   openConversationId: (conversationId: string) => void;
+  /**
+   * Opens a conversation beside the one on screen, with words the reader wrote for it as its
+   * next turn. Absent where the app has no place beside the conversation, or keeps it closed.
+   */
+  openBeside?: (conversation: TConversation, text?: string) => void;
 };
 
 /**

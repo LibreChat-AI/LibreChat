@@ -1,11 +1,12 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { useSetAtom } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { CSSTransition } from 'react-transition-group';
 import { createGenerationTransport } from '@librechat/chat';
 import { SteerPart, ScrollToBottom } from '@librechat/chat/components';
 import { ForkOptions, QueryKeys, dataService } from 'librechat-data-provider';
-import { useFollowChat, setDefaultSubagentsHost } from '@librechat/chat/react';
+import { sideChatAtom, useFollowChat, setDefaultSubagentsHost } from '@librechat/chat/react';
 import type {
   FollowedChat,
   SubagentsHost,
@@ -184,9 +185,14 @@ function useToolCallPart(
 function useNavigation(): SubagentNavigation {
   const { navigateToConvo } = useNavigateToConvo();
   const navigate = useNavigate();
+  const setSideChat = useSetAtom(sideChatAtom);
+  const sideChat = useChatSettings().config.sideChat === true;
   return {
     openConversation: (conversation) => navigateToConvo(conversation),
     openConversationId: (conversationId) => navigate(`/c/${encodeURIComponent(conversationId)}`),
+    ...(sideChat && {
+      openBeside: (conversation, text) => setSideChat({ conversation, text }),
+    }),
   };
 }
 
