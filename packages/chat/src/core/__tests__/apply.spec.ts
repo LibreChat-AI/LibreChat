@@ -999,6 +999,19 @@ describe('a turn whose shape the server states', () => {
     expect(read().find((message) => message.messageId === 'resp-9')).toBe(sibling);
   });
 
+  it('builds a plain turn on its own reply, not on an abandoned one under the same message', () => {
+    const abandoned = reply('resp-0', ['Abandoned attempt']);
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, abandoned]);
+
+    applyEvent(createdAs({ responseMessageId: 'resp-1' }), context);
+    applyEvent(opened('s0', 0), context);
+    applyEvent(token('s0', 'Hi'), context);
+
+    expect(texts(read(), 'resp-1')).toEqual(['Hi']);
+    expect(read().find((message) => message.messageId === 'resp-0')).toBe(abandoned);
+  });
+
   it("takes a regeneration at the server's word where the list holds no earlier answer", () => {
     const { applyEvent } = createEventApplier();
     const { context, read } = createList([
@@ -1183,6 +1196,7 @@ describe('state beside the message list', () => {
     const taken = {
       type: 'steer_applied',
       data: {
+        conversationId: 'thread-1',
         steerId: 'steer-1',
         clientSteerId: 'client-1',
         index: 1,
@@ -1191,18 +1205,18 @@ describe('state beside the message list', () => {
       },
     } as ChatEvent;
 
-    applyEvent(created, ctx);
-    /** Its response is not drawn yet, so the part waits; the chip does not. */
+    /** No frame has named its turn yet, so the part has nowhere to go; the chip does not wait. */
     applyEvent(taken, ctx);
-    expect(names()).toEqual(['bindResponse', 'resolve']);
-    expect(calls[1]).toEqual(['resolve', 'thread-1', 'steer-1', 'client-1', undefined]);
+    expect(names()).toEqual(['resolve']);
+    expect(calls[0]).toEqual(['resolve', 'thread-1', 'steer-1', 'client-1', undefined]);
 
+    applyEvent(created, ctx);
     applyEvent(opened('s0', 0), ctx);
     applyEvent(token('s0', 'Hi'), ctx);
 
     expect(names().filter((name) => name !== 'tap')).toEqual([
-      'bindResponse',
       'resolve',
+      'bindResponse',
       'markLive',
     ]);
     expect(calls.find(([name]) => name === 'markLive')).toEqual(['markLive', 'steer-1']);

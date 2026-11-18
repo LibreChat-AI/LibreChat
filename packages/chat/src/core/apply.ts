@@ -277,11 +277,19 @@ function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventS
     });
   /** The server's word on the turn's shape, where it gives one; else what the list implies. */
   const regenerated = turn != null ? turn.isRegenerate === true || anchored : anchored || answered;
+  const listed = loaded != null || anchored ? messages : [...messages, userMessage];
   return {
     ...base,
     isRegenerate: regenerated,
     ...(anchored && { compact: true }),
-    messages: loaded != null || anchored ? messages : [...messages, userMessage],
+    /**
+     * A turn that is not regenerate-shaped builds its first step on the last row of the list,
+     * so its reply is put there, as main chat's own handler puts its placeholder: in a list that
+     * holds an abandoned reply or another branch, the last row is otherwise some other answer.
+     */
+    messages: regenerated
+      ? listed
+      : [...listed.filter((message) => message !== placeholder), initialResponse],
     initialResponse,
   } as EventSubmission;
 }
