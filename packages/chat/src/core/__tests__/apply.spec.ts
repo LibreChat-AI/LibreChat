@@ -919,6 +919,215 @@ describe('side frames', () => {
   });
 });
 
+describe('state beside the message list', () => {
+  /** Main chat's handlers for that state, recording what they are called with and in what order. */
+  const record = () => {
+    const calls: Array<[string, ...unknown[]]> = [];
+    const log =
+      (name: string, result?: unknown) =>
+      (...args: unknown[]): unknown => {
+        calls.push([name, ...args]);
+        return result;
+      };
+    const init = {
+      usage: {
+        bindResponse: log('bindResponse'),
+        contextHandler: log('context'),
+        usageHandler: log('usage'),
+        tapStream: log('tap'),
+        tapContent: log('tapContent'),
+        finalizeUsage: log('finalize'),
+        backfillUsage: log('backfill'),
+        seedLiveFromContent: log('seedLive'),
+      },
+      onAttachment: log('attachment'),
+      onTitle: log('title'),
+      steers: {
+        resolve: log('resolve', ['steer-1']),
+        markLiveApplied: log('markLive'),
+        update: log('update'),
+        seed: log('seed'),
+        settleApplied: log('settle'),
+      },
+    } as unknown as Parameters<typeof createEventApplier>[0];
+    return { calls, init, names: () => calls.map(([name]) => name) };
+  };
+
+  const context: ChatEvent = {
+    type: 'context_usage',
+    data: { breakdown: { maxContextTokens: 1000 } },
+  } as ChatEvent;
+  const usage: ChatEvent = { type: 'token_usage', data: { output_tokens: 5 } } as ChatEvent;
+  const attachment: ChatEvent = {
+    type: 'attachment',
+    data: { messageId: 'resp-1', file_id: 'file-1', filename: 'chart.png' },
+  } as ChatEvent;
+  const title: ChatEvent = {
+    type: 'title',
+    data: { event: 'title', data: { conversationId: 'thread-1', title: 'A title' } },
+  };
+  const relabel: ChatEvent = {
+    type: 'steer_updated',
+    data: { conversationId: 'thread-1', steers: [] },
+  };
+
+  it('gives each live frame to the handler main chat gives it, bound to the turn', () => {
+    const { calls, init, names } = record();
+    const { applyEvent } = createEventApplier(init);
+    const { context: ctx } = createList();
+
+    for (const event of [
+      created,
+      opened('s0', 0),
+      token('s0', 'Hi'),
+      context,
+      usage,
+      attachment,
+      title,
+      relabel,
+      final('Hi'),
+    ]) {
+      applyEvent(event, ctx);
+    }
+
+    expect(names()).toEqual([
+      'bindResponse',
+      'tap',
+      'context',
+      'usage',
+      'attachment',
+      'title',
+      'update',
+      'finalize',
+    ]);
+    const turn = expect.objectContaining({
+      userMessage: expect.objectContaining({ messageId: 'user-1' }),
+    });
+    expect(calls[2]).toEqual(['context', (context as { data: unknown }).data, turn]);
+    expect(calls[3]).toEqual(['usage', (usage as { data: unknown }).data, turn]);
+    expect(calls[4]).toEqual([
+      'attachment',
+      { data: (attachment as { data: unknown }).data, submission: turn },
+    ]);
+    expect(calls[5]).toEqual(['title', (title as { data: unknown }).data]);
+    expect(calls[7]).toEqual(['finalize', (final('Hi') as { data: unknown }).data, turn]);
+  });
+
+  it('rebuilds what a late joiner missed from the snapshot, then applies what it carries', () => {
+    const { calls, init, names } = record();
+    const { applyEvent } = createEventApplier(init);
+    const { context: ctx } = createList();
+    const collected = [{ output_tokens: 3 }];
+    const reading = { breakdown: { maxContextTokens: 1000 } };
+    const pending = [{ steerId: 'steer-2', text: 'Later' }];
+
+    applyEvent(
+      snapshot('Hel', {
+        collectedUsage: collected,
+        contextUsage: reading,
+        pendingSteers: pending,
+        titleEvent: { event: 'title', data: { title: 'A title' } },
+        replayEvents: [
+          { event: 'on_token_usage', data: { output_tokens: 1 } },
+          { event: 'attachment', data: { messageId: 'resp-1', file_id: 'file-1' } },
+        ],
+      } as Partial<Agents.ResumeState>),
+      ctx,
+    );
+
+    expect(names()).toEqual([
+      'bindResponse',
+      'backfill',
+      'context',
+      'seedLive',
+      'seed',
+      'settle',
+      'title',
+      'usage',
+      'attachment',
+    ]);
+    expect(calls[1][1]).toBe(collected);
+    expect(calls[2][1]).toBe(reading);
+    expect(calls[3][1]).toEqual([{ type: ContentTypes.TEXT, text: 'Hel' }]);
+    expect(calls[4].slice(0, 3)).toEqual(['seed', 'thread-1', pending]);
+    expect(calls[5]).toEqual(['settle', 'thread-1', [{ type: ContentTypes.TEXT, text: 'Hel' }]]);
+  });
+
+  it('clears chips with an empty snapshot list, which a steer taken while away would strand', () => {
+    const { calls, init } = record();
+    const { applyEvent } = createEventApplier(init);
+    const { context: ctx } = createList();
+
+    applyEvent(snapshot('Hel'), ctx);
+
+    expect(calls.find(([name]) => name === 'seed')).toEqual(['seed', 'thread-1', []]);
+  });
+
+  it('settles a steer chip as soon as the server says it was taken, and marks its part as drawn', () => {
+    const { calls, init, names } = record();
+    const { applyEvent } = createEventApplier(init);
+    const { context: ctx, read } = createList();
+    const part = {
+      type: ContentTypes.STEER,
+      [ContentTypes.STEER]: 'Go deeper',
+      steerId: 'steer-1',
+    };
+    const taken = {
+      type: 'steer_applied',
+      data: {
+        steerId: 'steer-1',
+        clientSteerId: 'client-1',
+        index: 1,
+        responseMessageId: 'resp-1',
+        part,
+      },
+    } as ChatEvent;
+
+    applyEvent(created, ctx);
+    /** Its response is not drawn yet, so the part waits; the chip does not. */
+    applyEvent(taken, ctx);
+    expect(names()).toEqual(['bindResponse', 'resolve']);
+    expect(calls[1]).toEqual(['resolve', 'thread-1', 'steer-1', 'client-1', undefined]);
+
+    applyEvent(opened('s0', 0), ctx);
+    applyEvent(token('s0', 'Hi'), ctx);
+
+    expect(names().filter((name) => name !== 'tap')).toEqual([
+      'bindResponse',
+      'resolve',
+      'markLive',
+    ]);
+    expect(calls.find(([name]) => name === 'markLive')).toEqual(['markLive', 'steer-1']);
+    expect(read()[1].content?.[1]).toEqual(part);
+  });
+
+  it('holds a frame that needs its turn until a frame names the turn', () => {
+    const { calls, init, names } = record();
+    const { applyEvent } = createEventApplier(init);
+    const { context: ctx } = createList();
+
+    applyEvent(attachment, ctx);
+    applyEvent(usage, ctx);
+    expect(names()).toEqual([]);
+
+    applyEvent(created, ctx);
+
+    expect(names()).toEqual(['bindResponse', 'attachment', 'usage']);
+    expect(calls[1][1]).toMatchObject({ data: { file_id: 'file-1' } });
+  });
+
+  it('keeps no such state where no handler is given, and still applies the messages', () => {
+    const { applyEvent } = createEventApplier();
+    const { context: ctx, read } = createList();
+
+    for (const event of [created, opened('s0', 0), token('s0', 'Hi'), usage, attachment, title]) {
+      applyEvent(event, ctx);
+    }
+
+    expect(textOf(read())).toEqual(['Hi']);
+  });
+});
+
 describe('a Chat that applies events the way main chat does', () => {
   const createState = (initial: TMessage[]): ChatState => {
     let messages = initial;

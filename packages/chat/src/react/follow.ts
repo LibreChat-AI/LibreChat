@@ -6,6 +6,7 @@ import type {
   ChatTransport,
   ChatConnection,
   ChatFinishResult,
+  EventApplierInit,
   EventApplierEffect,
 } from '../core';
 import { Chat, MAX_RETRIES, getReconnectDelay, createEventApplier } from '../core';
@@ -33,10 +34,42 @@ export type FollowChatOptions = {
   enabled?: boolean;
   /** Live status a step reports beside the message list. */
   onEffect?: (effect: EventApplierEffect) => void;
-  /** Every stream event after it was applied: usage, titles, attachments. */
+  /**
+   * The handlers for what the stream changes beside the message list: usage, attachments, the
+   * title and steer chips. A host that passes main chat's keeps the state main chat keeps, for
+   * live frames and for what a late joiner missed. Read on every call.
+   */
+  beside?: FollowBeside;
+  /** Every stream event after it was applied. */
   onEvent?: (event: ChatEvent) => void;
   onFinish?: (result: ChatFinishResult) => void;
 };
+
+export type FollowBeside = Pick<EventApplierInit, 'usage' | 'onAttachment' | 'onTitle' | 'steers'>;
+
+/** The same handlers, looked up when a frame arrives, so the caller's latest are the ones called. */
+const forwardBeside = (read: () => FollowBeside | undefined): Required<FollowBeside> => ({
+  usage: {
+    bindResponse: (submission) => read()?.usage?.bindResponse(submission),
+    contextHandler: (data, submission) => read()?.usage?.contextHandler(data, submission),
+    usageHandler: (data, submission) => read()?.usage?.usageHandler(data, submission),
+    tapStream: (data, submission) => read()?.usage?.tapStream(data, submission),
+    tapContent: (text, submission) => read()?.usage?.tapContent(text, submission),
+    finalizeUsage: (data, submission) => read()?.usage?.finalizeUsage(data, submission),
+    backfillUsage: (entries, submission) => read()?.usage?.backfillUsage(entries, submission),
+    seedLiveFromContent: (content, submission) =>
+      read()?.usage?.seedLiveFromContent(content, submission),
+  },
+  onAttachment: (params) => read()?.onAttachment?.(params),
+  onTitle: (frame) => read()?.onTitle?.(frame),
+  steers: {
+    resolve: (...args) => read()?.steers?.resolve(...args) ?? [],
+    markLiveApplied: (steerId) => read()?.steers?.markLiveApplied(steerId),
+    update: (event) => read()?.steers?.update(event),
+    seed: (...args) => read()?.steers?.seed(...args),
+    settleApplied: (...args) => read()?.steers?.settleApplied(...args),
+  },
+});
 
 export type FollowedChat = {
   /** The chat, once the conversation's `id` has one. */
@@ -103,12 +136,13 @@ export function useFollowChat({
   live = false,
   enabled = true,
   onEffect,
+  beside,
   onEvent,
   onFinish,
 }: FollowChatOptions): FollowedChat {
   const queryClient = useQueryClient();
-  const host = useRef({ transport, loadMessages, live, onEffect, onEvent, onFinish });
-  host.current = { transport, loadMessages, live, onEffect, onEvent, onFinish };
+  const host = useRef({ transport, loadMessages, live, onEffect, beside, onEvent, onFinish });
+  host.current = { transport, loadMessages, live, onEffect, beside, onEvent, onFinish };
   const [attempt, setAttempt] = useState(0);
   const [entry, setEntry] = useState<Entry>();
   const [load, setLoad] = useState<Load>({ id, attempt, state: 'loading' });
@@ -133,6 +167,7 @@ export function useFollowChat({
     const applier = createEventApplier({
       schedule: perFrame,
       onEffect: (effect) => host.current.onEffect?.(effect),
+      ...forwardBeside(() => host.current.beside),
     });
     const chat = new Chat({
       id,

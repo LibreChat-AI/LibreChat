@@ -527,6 +527,31 @@ describe('useFollowChat', () => {
     expect(streams).toHaveLength(1);
   });
 
+  it("hands what the stream changes beside the list to the caller's handlers, as they are now", async () => {
+    const { transport, streams } = createTransport(running);
+    const first = jest.fn();
+    const second = jest.fn();
+    const { rerender, loadMessages } = setup({ transport, beside: { onAttachment: first } });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    act(() => streams[0].push(snapshot('Partial')));
+    await settle();
+
+    const file = { messageId: 'task-1:assistant', file_id: 'file-1', filename: 'chart.png' };
+    act(() => streams[0].push({ type: 'attachment', data: file } as ChatEvent));
+    await settle();
+    expect(first).toHaveBeenCalledWith(expect.objectContaining({ data: file }));
+
+    rerender({ id: 'thread-1', transport, loadMessages, beside: { onAttachment: second } });
+    act(() =>
+      streams[0].push({ type: 'attachment', data: { ...file, file_id: 'file-2' } } as ChatEvent),
+    );
+    await settle();
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ file_id: 'file-2' }) }),
+    );
+  });
+
   it('leaves the conversation it was following when the id changes', async () => {
     const { transport, streams } = createTransport(running);
     const { result, rerender, loadMessages } = setup({ transport });
