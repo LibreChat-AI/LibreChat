@@ -86,7 +86,11 @@ import { InMemoryEventTransport } from './implementations/InMemoryEventTransport
 import { InMemoryJobStore } from './implementations/InMemoryJobStore';
 import { attachAskUserQuestionAnswers, normalizeResumeRunStepIndices } from '~/agents/hitl/resume';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
-import { emitChunkWithReceipt } from './internal/chunkPublication';
+import {
+  readChunkEmission,
+  stampChunkEmission,
+  emitChunkWithReceipt,
+} from './internal/chunkPublication';
 import { resolveCoalesceWindowMs } from './internal/coalescing';
 import {
   REDIS_ABORT_TERMINAL_GRACE_MS,
@@ -519,6 +523,15 @@ function isCoalescableDeltaEvent(eventType: string | undefined): boolean {
   );
 }
 
+/**
+ * Deltas a client appends to text it already holds, and that every emitter folds into the
+ * run's content before emitting. Run-step deltas are left out: OAuth and action prompts emit
+ * them without folding, so a content snapshot cannot be assumed to hold one.
+ */
+function isAppendedTextDelta(eventType: string | undefined): boolean {
+  return eventType === 'on_message_delta' || eventType === 'on_reasoning_delta';
+}
+
 function getReplayStepId(event: t.ServerSentEvent): unknown {
   if (!('event' in event) || !event.data || typeof event.data !== 'object') {
     return undefined;
@@ -911,6 +924,14 @@ class GenerationJobManagerClass {
 
   /** Jobs actively owned by this process, pinned to their durable creation epoch. */
   private ownedJobs = new Map<string, number>();
+
+  /**
+   * This manager's identity on published chunks, with a count of everything it has emitted.
+   * A resume on the replica that hosts a run copies the run's content at a known count, and
+   * the pair lets it recognise its own deltas up to that count when Pub/Sub hands them back.
+   */
+  private readonly emitterId = randomUUID();
+  private emissionOrdinal = 0;
 
   /** Serializes replay-event read/modify/write updates per stream. */
   private replayEventWriteQueues = new Map<string, Promise<void>>();
@@ -6441,6 +6462,10 @@ class GenerationJobManagerClass {
       sequence: number;
     }> = [];
     let snapshotFrontier = 0;
+    /** The Redis snapshot is the live content of a run this replica hosts. */
+    let hostsRun = false;
+    /** This manager's emission count when that content was copied for the client. */
+    let localFrontier: number | undefined;
     let snapshotClassified = this._isRedis;
     const classifyEmission = (event: t.ServerSentEvent, sequence: number): void => {
       if (sequence <= snapshotFrontier) {
@@ -6571,6 +6596,9 @@ class GenerationJobManagerClass {
             onContentSnapshot: (snapshot) => {
               recoveryContentSnapshot = snapshot;
             },
+            onLocalContent: () => {
+              hostsRun = true;
+            },
           }),
           this.jobStore.getJob(streamId),
         ]);
@@ -6698,6 +6726,12 @@ class GenerationJobManagerClass {
         if (capturedEventSet.has(event) || snapshotCoveredEventSet.has(event)) {
           return;
         }
+        if (localFrontier != null && isAppendedTextDelta((event as { event?: string }).event)) {
+          const emission = readChunkEmission(event);
+          if (emission?.[0] === this.emitterId && emission[1] <= localFrontier) {
+            return;
+          }
+        }
         onChunk(event);
       };
       subscription = await this.attachSubscription(
@@ -6735,6 +6769,32 @@ class GenerationJobManagerClass {
       }
       if (this.detachSubscriptionDuringShutdown(subscription)) {
         return cancelResumeSubscription();
+      }
+
+      /**
+       * A snapshot of this replica's own run is the run's live content array. It was read
+       * before the subscription existed and is serialized after it, so every delta in between
+       * reached the client twice: once in the snapshot and once from Pub/Sub. Take it again
+       * now that Pub/Sub is attached, as a copy at a known emission count, and let delivery
+       * skip this manager's text and reasoning deltas up to that count. Everything else is
+       * still delivered: the client applies those events idempotently, and only the content
+       * is exact at the count.
+       */
+      if (hostsRun && resumeState != null) {
+        let copiedAt: number | undefined;
+        const anchored = await this.getResumeState(streamId, runtime.createdAt, {
+          copyLocalContent: true,
+          onLocalContent: () => {
+            copiedAt = this.emissionOrdinal;
+          },
+        });
+        if (options?.signal?.aborted || this.detachSubscriptionDuringShutdown(subscription)) {
+          return cancelResumeSubscription();
+        }
+        if (anchored != null && copiedAt != null) {
+          resumeState = anchored;
+          localFrontier = copiedAt;
+        }
       }
 
       // Close the snapshot→subscribe race: getResumeState() snapshots BEFORE we attach the
@@ -7129,6 +7189,11 @@ class GenerationJobManagerClass {
       return;
     }
     const sequence = ++runtime.emissionSequence;
+    /** Counted in the same synchronous step as the caller's fold into the run's content. */
+    const ordinal = ++this.emissionOrdinal;
+    if (this._isRedis) {
+      stampChunkEmission(event, [this.emitterId, ordinal]);
+    }
     let signalSnapshotReady!: () => void;
     const snapshotReady = new Promise<void>((resolve) => {
       signalSnapshotReady = resolve;
@@ -9112,6 +9177,9 @@ class GenerationJobManagerClass {
       readIf?: (job: Readonly<SerializableJobData>) => boolean;
       onContentSnapshot?: (snapshot: Awaited<ReturnType<IJobStore['getContentParts']>>) => void;
       onCreatedSnapshot?: (createdEventEmitted: boolean) => void;
+      /** Passed to the content read: see {@link ContentPartsReadOptions}. */
+      copyLocalContent?: boolean;
+      onLocalContent?: () => void;
     },
   ): Promise<t.ResumeState | null> {
     const recoveryStartedAt =
@@ -9171,6 +9239,8 @@ class GenerationJobManagerClass {
     const [result, runSteps, queuedSteers, claimedSteers] = await Promise.all([
       this.jobStore.getContentParts(streamId, jobData.createdAt, {
         durableOnly: options?.durableOnly === true || unresolvedOverflowValidation,
+        ...(options?.copyLocalContent === true && { copyLocal: true }),
+        ...(options?.onLocalContent != null && { onLocal: options.onLocalContent }),
       }),
       this.jobStore.getRunSteps(streamId, jobData.createdAt),
       this.jobStore.peekSteers(streamId, jobData.createdAt),

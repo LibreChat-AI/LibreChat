@@ -1013,6 +1013,24 @@ export interface ScheduleCleanupScope {
   userId?: string;
 }
 
+export interface ContentPartsReadOptions {
+  durableOnly?: boolean;
+  /** Return a copy of this replica's own run content instead of the live array. */
+  copyLocal?: boolean;
+  /**
+   * Called synchronously, at the instant of the read, when the content is the run's own
+   * array on this replica rather than a rebuild of the durable log. With `copyLocal`, the
+   * caller can record here what the run had emitted when the copy was taken.
+   */
+  onLocal?: () => void;
+}
+
+export interface ContentPartsSnapshot {
+  content: Agents.MessageContentComplex[];
+  reconstructedEventCount?: number;
+  durableEventCount?: number;
+}
+
 export interface IJobStore {
   readonly detachedAgentEventActionStoreMode?: DetachedAgentEventActionStoreMode;
   /** Receipt evidence survives loss of the generation worker; absent is volatile. */
@@ -1113,12 +1131,8 @@ export interface IJobStore {
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
-    options?: { durableOnly?: boolean },
-  ): Promise<{
-    content: Agents.MessageContentComplex[];
-    reconstructedEventCount?: number;
-    durableEventCount?: number;
-  } | null>;
+    options?: ContentPartsReadOptions,
+  ): Promise<ContentPartsSnapshot | null>;
 
   getRunSteps(streamId: string, expectedCreatedAt?: number): Promise<Agents.RunStep[]>;
 
@@ -1449,12 +1463,8 @@ export interface IJobStoreV2 extends IJobStore {
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
-    options?: { durableOnly?: boolean },
-  ): Promise<{
-    content: Agents.MessageContentComplex[];
-    reconstructedEventCount?: number;
-    durableEventCount?: number;
-  } | null>;
+    options?: ContentPartsReadOptions,
+  ): Promise<ContentPartsSnapshot | null>;
 
   /** Atomically records the only recovery outcome for one overflow identity. */
   settleEarlyBufferRecovery(

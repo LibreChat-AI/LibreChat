@@ -36,6 +36,8 @@ import type {
   ScheduleCleanupScope,
   ScheduleProviderOwner,
   ActiveJobFilter,
+  ContentPartsSnapshot,
+  ContentPartsReadOptions,
 } from '~/stream/interfaces/IJobStore';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
@@ -4476,12 +4478,8 @@ export class RedisJobStore implements IJobStoreV2 {
   async getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
-    options?: { durableOnly?: boolean },
-  ): Promise<{
-    content: Agents.MessageContentComplex[];
-    reconstructedEventCount?: number;
-    durableEventCount?: number;
-  } | null> {
+    options?: ContentPartsReadOptions,
+  ): Promise<ContentPartsSnapshot | null> {
     // 1. Prefer the HOST content array (same-instance fast path): it already
     // contains host-authored steer parts the SDK graph never sees.
     const hostEntry = options?.durableOnly
@@ -4490,7 +4488,11 @@ export class RedisJobStore implements IJobStoreV2 {
     if (hostEntry) {
       const hostParts = hostEntry.value.deref();
       if (hostParts && hostParts.length > 0) {
-        return { content: hostParts };
+        /** The run folds an event into this array and emits it in one synchronous step, so
+         *  a copy taken here holds exactly what the run had emitted when the caller is told. */
+        const content = options?.copyLocal === true ? structuredClone(hostParts) : hostParts;
+        options?.onLocal?.();
+        return { content };
       }
       if (!hostParts) {
         this.deleteLocalEntry(this.localContentParts, streamId, undefined, hostEntry);

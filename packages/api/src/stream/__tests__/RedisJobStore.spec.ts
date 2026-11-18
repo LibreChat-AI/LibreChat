@@ -746,6 +746,30 @@ describe('RedisJobStore', () => {
     );
   });
 
+  test('copies the run content on request and reports the instant of the read', async () => {
+    const store = new RedisJobStore({ isCluster: true } as unknown as Cluster);
+    const live = [{ type: 'text', text: 'one ' }];
+    store.setContentParts('stream-local-copy', live as never, 101);
+
+    const aliased = await store.getContentParts('stream-local-copy', 101);
+    expect(aliased?.content).toBe(live);
+
+    let textAtRead: string | undefined;
+    const reading = store.getContentParts('stream-local-copy', 101, {
+      copyLocal: true,
+      onLocal: () => {
+        textAtRead = live[0].text;
+      },
+    });
+    /** The run keeps writing as soon as the read yields. */
+    live[0] = { type: 'text', text: 'one two ' };
+    const copied = await reading;
+
+    expect(textAtRead).toBe('one ');
+    expect(copied?.content).toEqual([{ type: 'text', text: 'one ' }]);
+    expect(copied?.content).not.toBe(live);
+  });
+
   test('guards local content caches by creation epoch', async () => {
     const evalRedis = jest.fn().mockResolvedValue(false);
     const redis = {

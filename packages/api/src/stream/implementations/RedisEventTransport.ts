@@ -5,6 +5,12 @@ import type { IEventTransport, PreemptMessage } from '~/stream/interfaces/IJobSt
 import type { ChunkPublicationOptions } from '~/stream/internal/chunkPublication';
 import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import {
+  readChunkEmission,
+  parseChunkEmission,
+  stampChunkEmission,
+  registerChunkPublicationCapability,
+} from '~/stream/internal/chunkPublication';
+import {
   MAX_COALESCED_BYTES,
   MAX_COALESCED_EVENTS,
   resolveCoalesceWindowMs,
@@ -13,7 +19,6 @@ import {
   REDIS_ABORT_ACK_TIMEOUT_MS,
   REDIS_EVENT_REORDER_TIMEOUT_MS,
 } from '~/stream/internal/timing';
-import { registerChunkPublicationCapability } from '~/stream/internal/chunkPublication';
 import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { PUBLISH_REPLAY_LUA, READ_REPLAY_LUA } from '../internal/replay';
@@ -75,6 +80,8 @@ interface PubSubMessage {
   events?: unknown[];
   /** Immutable identity of the generation that emitted the event. */
   generationId?: number;
+  /** The emitting manager and its emission count for a CHUNK; absent from older publishers. */
+  emission?: readonly [string, number];
   /** Opaque nonce linking a replacement abort to its owner acknowledgement. */
   abortRequestId?: string;
   /** Payload for PREEMPT messages; fenced by its own createdAt. */
@@ -546,12 +553,14 @@ export class RedisEventTransport implements IEventTransport {
     if (this.pendingBatches.has(streamId)) {
       void this.flushCoalescedChunks(streamId);
     }
+    const emission = readChunkEmission(event);
     return this.publishWithSequence(
       streamId,
       {
         type: EventTypes.CHUNK,
         data: event,
         ...(generationId != null && { generationId }),
+        ...(emission != null && { emission }),
       },
       generationId,
       false,
@@ -589,9 +598,11 @@ export class RedisEventTransport implements IEventTransport {
 
     const batch = pending;
     const payload = JSON.stringify(event);
+    const emission = readChunkEmission(event);
     const [, envelopeSuffix] = RedisEventTransport.buildPayloadParts({
       type: EventTypes.CHUNK,
       ...(generationId != null && { generationId }),
+      ...(emission != null && { emission }),
     });
     batch.events.push(
       payload === undefined ? envelopeSuffix : `,"data":${payload}${envelopeSuffix}`,
@@ -1143,6 +1154,12 @@ export class RedisEventTransport implements IEventTransport {
     streamState: StreamSubscribers,
     message: PubSubMessage,
   ): void {
+    if (message.type === EventTypes.CHUNK) {
+      const emission = parseChunkEmission(message.emission);
+      if (emission != null) {
+        stampChunkEmission(message.data, emission);
+      }
+    }
     for (const [, handlers] of streamState.handlers) {
       if (handlers.onReplayMessage != null) continue;
       switch (message.type) {
