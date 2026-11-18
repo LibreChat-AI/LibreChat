@@ -27,6 +27,12 @@ type SideChatComposerProps = {
   handedText?: string;
   onHandedTextTaken: () => void;
   clearsFooter: boolean;
+  /**
+   * Whether the field takes focus once the conversation is in. A side chat is opened to be
+   * written in, from a control somewhere else on the page. Not as a sheet, whose focus trap
+   * decides where focus starts.
+   */
+  focusWhenReady: boolean;
 };
 
 /**
@@ -43,6 +49,7 @@ function SideChatComposer({
   handedText,
   onHandedTextTaken,
   clearsFooter,
+  focusWhenReady,
 }: SideChatComposerProps): ReactNode {
   const localize = useLocalize();
   const {
@@ -50,6 +57,16 @@ function SideChatComposer({
     composerBindings: { shortcutsEnabled, submitOverride, yieldedChords },
   } = useChatSurface();
   const { ask, isSubmitting, stopGenerating } = contract;
+
+  const field = useRef<HTMLTextAreaElement>(null);
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!ready || !focusWhenReady || focused.current) {
+      return;
+    }
+    focused.current = true;
+    field.current?.focus({ preventScroll: true });
+  }, [focusWhenReady, ready]);
 
   /**
    * Words the reader wrote before this conversation opened are its next turn. They are sent
@@ -103,6 +120,7 @@ function SideChatComposer({
   return (
     <div className={cn('shrink-0 px-3 pt-2', clearsFooter ? 'pb-10' : 'pb-4')}>
       <Composer
+        ref={field}
         value={value}
         onChange={setValue}
         onSubmit={submit}
@@ -242,6 +260,7 @@ export default function SideChatPanel({
             handedText={chat.text}
             onHandedTextTaken={onHandedTextTaken}
             clearsFooter={clearsFooter}
+            focusWhenReady={!isSheet}
           />
         )}
       </DrivenThread>

@@ -242,6 +242,19 @@ describe('SideChatPanel', () => {
     expect(field()).toHaveAttribute('placeholder', 'Message Release follow-up');
   });
 
+  it('puts focus in its field once the conversation is in, wherever it was opened from', async () => {
+    /** The control that opened it: a row's menu in the sidebar, say. */
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    setup();
+
+    await waitFor(() => expect(rows()).toHaveLength(2));
+
+    await waitFor(() => expect(field()).toHaveFocus());
+    opener.remove();
+  });
+
   it('sends what the reader types as the conversation’s next turn, and stops it', async () => {
     const { sendMessages, streams, abort } = setup();
     await waitFor(() => expect(rows()).toHaveLength(2));
