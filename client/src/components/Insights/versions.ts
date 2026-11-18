@@ -1,10 +1,15 @@
 import type { TInsightsAgentVersion } from 'librechat-data-provider';
 
+/** Charts mark only the most recent days with saved versions, so a busy agent stays readable. */
+export const versionMarkerLimit = 5;
+
 export type VersionDay = {
   /** The latest version saved on or before this day; null before the first save. */
   inUse: number | null;
-  /** Versions saved on this day, oldest first. */
+  /** Versions saved on this day, oldest first; the last one is the one in use at the day's end. */
   saved: number[];
+  /** The day gets a marker: it has saved versions and is one of the last marked days. */
+  marked: boolean;
   /** True when today's version is an older one restored after the latest save. */
   restored: boolean;
 };
@@ -29,6 +34,7 @@ export function getVersionDays(
   versions: TInsightsAgentVersion[],
   timeZone: string,
   now: Date = new Date(),
+  limit: number = versionMarkerLimit,
 ): VersionDay[] {
   const dated = versions
     .filter((version) => version.savedAt != null)
@@ -40,12 +46,19 @@ export function getVersionDays(
   const latest = dated.at(-1)?.version ?? null;
   const active = versions.find((version) => version.active)?.version ?? null;
   const today = dayKey(now, timeZone);
+  const marked = new Set(
+    days
+      .map(({ date }) => date)
+      .filter((date) => dated.some((version) => version.day === date))
+      .slice(-limit),
+  );
   return days.map(({ date }) => {
     const restored = date === today && active != null && latest != null && active !== latest;
     const savedBy = dated.filter((version) => version.day <= date);
     return {
       inUse: restored ? active : (savedBy.at(-1)?.version ?? null),
       saved: dated.filter((version) => version.day === date).map((version) => version.version),
+      marked: marked.has(date),
       restored,
     };
   });

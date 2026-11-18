@@ -529,6 +529,28 @@ describe('InsightsView agent selection', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('tags a day with several saves with its last version only', () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: versionedData([
+        { agentId: 'agent-1', version: 1, savedAt: '2026-10-03T09:00:00.000Z', active: false },
+        { agentId: 'agent-1', version: 2, savedAt: '2026-10-03T10:00:00.000Z', active: false },
+        { agentId: 'agent-1', version: 3, savedAt: '2026-10-03T11:00:00.000Z', active: true },
+      ]),
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+    renderView('/insights?agentIds=agent-1');
+    const trend = metricCard('com_insights_messages').getByRole('img');
+    expect(within(trend).getAllByTestId('insights-version-marker')).toHaveLength(1);
+    expect(within(trend).getByText('com_insights_version_tag:3')).toBeVisible();
+    expect(within(trend).queryByText('com_insights_version_tag:2')).not.toBeInTheDocument();
+    expect(trend).toHaveAccessibleName(
+      expect.stringContaining('com_insights_version_saved_earlier:3'),
+    );
+  });
+
   it.each(['/insights', '/insights?agentIds=agent-1&agentIds=agent-2'])(
     'does not mark versions when several agents are selected: %s',
     (path) => {

@@ -22,10 +22,10 @@ describe('getVersionDays', () => {
       new Date('2026-12-01T00:00:00.000Z'),
     );
     expect(result).toEqual([
-      { inUse: 1, saved: [], restored: false },
-      { inUse: 3, saved: [2, 3], restored: false },
-      { inUse: 3, saved: [], restored: false },
-      { inUse: 3, saved: [], restored: false },
+      { inUse: 1, saved: [], marked: false, restored: false },
+      { inUse: 3, saved: [2, 3], marked: true, restored: false },
+      { inUse: 3, saved: [], marked: false, restored: false },
+      { inUse: 3, saved: [], marked: false, restored: false },
     ]);
   });
 
@@ -33,6 +33,7 @@ describe('getVersionDays', () => {
     expect(getVersionDays(days, [version(1, '2026-10-03T10:00:00.000Z', true)], 'UTC')[0]).toEqual({
       inUse: null,
       saved: [],
+      marked: false,
       restored: false,
     });
   });
@@ -50,6 +51,22 @@ describe('getVersionDays', () => {
       [2, false],
       [1, true],
     ]);
+  });
+
+  it('marks only the last days with saved versions', () => {
+    const week = Array.from({ length: 7 }, (_, index) => ({ date: `2026-10-0${index + 1}` }));
+    const saves = week.map(({ date }, index) => version(index + 1, `${date}T10:00:00.000Z`));
+    const result = getVersionDays(week, saves, 'UTC', new Date('2026-12-01T00:00:00.000Z'), 5);
+    expect(result.map(({ marked }) => marked)).toEqual([
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(result[0].saved).toEqual([1]);
   });
 
   it('places a save on the calendar day of the selected time zone', () => {

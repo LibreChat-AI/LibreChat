@@ -829,14 +829,20 @@ export default function InsightsView() {
 
   const versionMarks = useMemo<VersionMark[] | undefined>(() => {
     if (!versionDays) return undefined;
-    return versionDays.map(({ inUse, saved, restored }) => {
-      if (saved.length > 0) {
+    return versionDays.map(({ inUse, saved, marked, restored }) => {
+      // A day with several saves counts as its last one, the version in use at the end of the day.
+      const last = saved.at(-1);
+      if (last != null) {
         return {
-          saved: true,
-          label: localize('com_insights_version_saved_marker', { versions: saved.join(', ') }),
-          tag: saved
-            .map((versionNumber) => localize('com_insights_version_tag', { versionNumber }))
-            .join(', '),
+          saved: marked,
+          label:
+            saved.length > 1
+              ? localize('com_insights_version_saved_earlier', {
+                  versionNumber: last,
+                  earlier: saved.length - 1,
+                })
+              : localize('com_insights_version_saved_marker', { versionNumber: last }),
+          tag: localize('com_insights_version_tag', { versionNumber: last }),
         };
       }
       if (inUse == null) return { saved: false, label: null };
