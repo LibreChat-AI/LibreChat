@@ -323,11 +323,13 @@ export async function encodeAndFormatDocuments(
     useResponsesApi?: boolean;
     model?: string;
     recipientId?: string;
+    admissionId?: string;
     onMissingFile?: MissingAttachmentHandler;
   },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<DocumentResult> {
-  const { provider, endpoint, useResponsesApi, model, recipientId, onMissingFile } = params;
+  const { provider, endpoint, useResponsesApi, model, recipientId, admissionId, onMissingFile } =
+    params;
   if (!files?.length) {
     return { documents: [], files: [] };
   }
@@ -379,6 +381,8 @@ export async function encodeAndFormatDocuments(
             onMissingFile,
             model,
             recipientId,
+            'input',
+            admissionId,
           ),
         },
       });

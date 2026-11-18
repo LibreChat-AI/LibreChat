@@ -6920,6 +6920,109 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
+    describe('live Bedrock document admission', () => {
+      const model = 'anthropic.claude-sonnet-4-20250514-v1:0';
+      const secondaryModel = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
+      let directory;
+      let reads;
+      let row;
+      let secondary;
+      const api = () => require('@librechat/api');
+      beforeEach(() => {
+        const fs = require('fs');
+        directory = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'bedrock-steer-'));
+        fs.writeFileSync(require('path').join(directory, 'late.csv'), 'a,b\n1,2');
+        reads = jest.spyOn(fs, 'createReadStream');
+        row = { ...makeUploadedFile('late-bedrock', 'late.csv', 'text/csv'), bytes: 7 };
+        mockAgent.provider = Providers.BEDROCK;
+        mockAgent.endpoint = EModelEndpoint.bedrock;
+        mockAgent.model_parameters = { model };
+        mockReq.config.paths = { uploads: directory };
+        mockReq.config.fileConfig = {
+          endpoints: { bedrock: { fileLimit: 5 }, secondary: { fileLimit: 5 } },
+        };
+        mockAgent.deliveryRouting = api().resolveTurnDeliveryRouting({
+          agent: mockAgent,
+          config: mockReq.config,
+        });
+        client.modelOptions = { model };
+        secondary = {
+          id: 'loaded-secondary',
+          provider: Providers.BEDROCK,
+          endpoint: 'secondary',
+          model_parameters: { model: secondaryModel },
+        };
+        client.agentConfigs = new Map([[secondary.id, secondary]]);
+        client.turnSharedAttachmentFiles = [];
+        client.turnScopedAttachmentsByAgentId = new Map();
+        client.turnHistoricalAttachmentIds = new Set();
+        client.turnAttachmentEndpointsByAgentId = new Map([
+          [mockAgent.id, { endpoint: mockAgent.endpoint }],
+          [secondary.id, { endpoint: secondary.endpoint }],
+        ]);
+        client.addFileContextToMessage = jest.fn(async () => {});
+      });
+      afterEach(() => {
+        reads.mockRestore();
+        require('fs').rmSync(directory, { recursive: true, force: true });
+      });
+      const build = (steerId) =>
+        api().buildSteerMedia({
+          client,
+          user: mockReq.user,
+          item: { steerId, text: 'read late file', files: [{ file_id: row.file_id }] },
+          getFiles: async () => [row],
+          assertFilesAllowed: (files) => client.admitSteerAttachments(files, steerId),
+        });
+      it('publishes admitted late IDs for loaded secondary/handoff without reading during media encoding', async () => {
+        const media = await build('live-success');
+        expect(reads).not.toHaveBeenCalled();
+        api().settleBedrockSteerDocuments(mockReq, 'live-success', true);
+        // Provider policy lookup remains recipient-bound; validate actual client callbacks below.
+        expect(media.content.some((part) => part.document)).toBe(true);
+        const input = media.content;
+        expect(input.find((part) => part.document).document.source).toEqual({
+          librechatFile: row.file_id,
+        });
+        expect(client.turnSharedAttachmentFiles).toContain(row);
+      });
+      it('does not expose a secondary registration when shared admission is rejected', async () => {
+        mockReq.config.fileConfig.endpoints.secondary.totalSizeLimit = 0.000001;
+        await expect(build('rejected-live')).rejects.toMatchObject({
+          code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+        });
+        expect(client.turnSharedAttachmentFiles).toEqual([]);
+        expect(reads).not.toHaveBeenCalled();
+      });
+      it.each([false, true])(
+        'rolls failed media back without retaining new policies or sticky historical strictness (history: %s)',
+        async (history) => {
+          if (history) {
+            client.turnSharedAttachmentFiles = [row];
+            client.turnHistoricalAttachmentIds = new Set([row.file_id]);
+            api().registerBedrockResumeDocuments(
+              mockReq,
+              [row],
+              [mockAgent, secondary],
+              require('~/server/services/Files/strategies').getStrategyFunctions,
+              new Map(),
+              new Set([row.file_id]),
+            );
+          }
+          const process = client.processAttachments.bind(client);
+          client.processAttachments = async (...args) => {
+            await process(...args);
+            throw new Error('fixture encode failure');
+          };
+          await expect(build('failed-live')).rejects.toThrow('fixture encode failure');
+          client.rollbackSteerAttachmentAdmission('failed-live');
+          expect(client.turnSharedAttachmentFiles).toEqual(history ? [row] : []);
+          expect(client.turnHistoricalAttachmentIds.has(row.file_id)).toBe(history);
+          expect(reads).not.toHaveBeenCalled();
+        },
+      );
+    });
+
     it('counts resubmitted historical files during steering without mutating rejected state', () => {
       const historical = Array.from({ length: 11 }, (_, index) =>
         makeTextFile(`history-${index}`, `history-${index}.txt`, 'context'),

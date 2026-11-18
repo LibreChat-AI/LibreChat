@@ -84,16 +84,21 @@ async function encodeSteerContent({
   steerId,
   fileDocs,
   fileConsumers,
+  admissionId,
 }: {
   client: SteerMediaClient;
   text: string;
   quotes?: string[] | null;
   steerId: string;
   fileDocs: IMongoFile[];
+  admissionId?: string;
   fileConsumers?: TurnFileConsumers;
 }): Promise<SteerMediaResult> {
   const modelText = mergeSteerModelText(text, quotes);
-  const pseudo: PseudoMessage = { messageId: `steer:${steerId}` };
+  const pseudo: PseudoMessage = {
+    messageId: `steer:${steerId}`,
+    ...(admissionId && { documentAdmissionId: admissionId }),
+  };
   await client.addFileContextToMessage(pseudo, fileDocs, fileConsumers);
   const validated = await client.processAttachments(pseudo, fileDocs, fileConsumers);
   const formatted = formatMessage({
@@ -164,6 +169,7 @@ export async function buildSteerMedia({
     text: item.text,
     quotes: item.quotes,
     steerId: item.steerId,
+    admissionId: item.steerId,
     fileDocs,
     fileConsumers,
   });

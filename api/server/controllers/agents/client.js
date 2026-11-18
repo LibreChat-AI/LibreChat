@@ -154,6 +154,8 @@ const {
   collectFileIds,
   dedupeDocumentNames,
   registerBedrockResumeDocuments,
+  prepareBedrockSteerDocuments,
+  settleBedrockSteerDocuments,
   processTextWithTokenLimit,
   logAgentMemorySnapshot,
   createAgentMemoryCallback,
@@ -531,6 +533,14 @@ class AgentClient extends BaseClient {
       [...sharedAttachments, ...(this.turnAggregateOnlyAttachmentFiles ?? [])],
       [...scopedAttachmentsByAgentId.values()].flat(),
     );
+    const publishDocuments = prepareBedrockSteerDocuments(
+      this.options.req,
+      modelBoundFiles,
+      collectReachableAgents([this.options.agent, ...(this.agentConfigs?.values() ?? [])]),
+      getStrategyFunctions,
+      steerId,
+      this.turnAttachmentEndpointsByAgentId,
+    );
     this.turnSteerAttachmentHistory = admitSteerAttachmentHistory({
       state: this.turnSteerAttachmentHistory,
       historicalFileIds: this.turnHistoricalAttachmentIds,
@@ -542,6 +552,7 @@ class AgentClient extends BaseClient {
     if (steerId && modelBoundFiles.length > 0) {
       this.admittedSteerAttachments.set(steerId, modelBoundFiles);
     }
+    publishDocuments();
   }
 
   async assertHistoricalAttachmentLimits(historicalAttachments) {
@@ -956,6 +967,7 @@ class AgentClient extends BaseClient {
   }
 
   rollbackSteerAttachmentAdmission(steerId) {
+    settleBedrockSteerDocuments(this.options?.req, steerId, false);
     const admitted = this.admittedSteerAttachments.get(steerId);
     this.admittedSteerAttachments.delete(steerId);
     if (!admitted?.length) {
@@ -1008,6 +1020,7 @@ class AgentClient extends BaseClient {
           getFiles: db.getFiles,
           assertFilesAllowed: (files) => this.admitSteerAttachments(files, item.steerId),
         });
+        settleBedrockSteerDocuments(this.options.req, item.steerId, true);
         this.admittedSteerAttachments.delete(item.steerId);
         return media;
       },
@@ -2536,14 +2549,6 @@ class AgentClient extends BaseClient {
     this.turnAggregateOnlyAttachmentFiles = retainedHistoricalFileContexts;
     this.turnScopedAttachmentsByAgentId = scopedAttachmentMap;
     this.turnAttachmentEndpointsByAgentId = endpointsByAgentId;
-    registerBedrockResumeDocuments(
-      this.options.req,
-      sharedAttachmentFiles,
-      allAgents.map(({ agent }) => agent),
-      getStrategyFunctions,
-      scopedAttachmentMap,
-      this.turnHistoricalAttachmentIds,
-    );
     assertAgentAttachmentTopology({
       sharedAttachments: sharedAttachmentFiles,
       historicalFileIds: this.turnHistoricalAttachmentIds,
@@ -2557,6 +2562,14 @@ class AgentClient extends BaseClient {
     this.assertTurnAttachmentLimits(
       [...sharedAttachmentFiles, ...retainedHistoricalFileContexts],
       attachmentContextInjections,
+    );
+    registerBedrockResumeDocuments(
+      this.options.req,
+      sharedAttachmentFiles,
+      allAgents.map(({ agent }) => agent),
+      getStrategyFunctions,
+      scopedAttachmentMap,
+      this.turnHistoricalAttachmentIds,
     );
     /** @type {ReturnType<typeof buildAgentScopedContext>} */
     let agentScopedContextPromise;
@@ -3239,6 +3252,13 @@ class AgentClient extends BaseClient {
                 lateAttachmentsByAgentId,
                 unpreparedAgents,
               );
+              const lateAttachmentInjections = [...lateScopedAttachmentMap.values()].flat();
+              attachmentContextInjections.push(...lateAttachmentInjections);
+              attachmentTelemetryFiles.push(...lateAttachmentInjections);
+              this.assertTurnAttachmentLimits(
+                [...liveSharedAttachmentFiles, ...(this.turnAggregateOnlyAttachmentFiles ?? [])],
+                attachmentContextInjections,
+              );
               registerBedrockResumeDocuments(
                 this.options.req,
                 liveSharedAttachmentFiles,
@@ -3246,13 +3266,6 @@ class AgentClient extends BaseClient {
                 getStrategyFunctions,
                 lateScopedAttachmentMap,
                 this.turnHistoricalAttachmentIds,
-              );
-              const lateAttachmentInjections = [...lateScopedAttachmentMap.values()].flat();
-              attachmentContextInjections.push(...lateAttachmentInjections);
-              attachmentTelemetryFiles.push(...lateAttachmentInjections);
-              this.assertTurnAttachmentLimits(
-                [...liveSharedAttachmentFiles, ...(this.turnAggregateOnlyAttachmentFiles ?? [])],
-                attachmentContextInjections,
               );
               const lateEndpointsByAgentId = new Map(
                 unpreparedAgents.map((agent) => [agent.id, { endpoint: agent.endpoint }]),
@@ -5809,14 +5822,6 @@ class AgentClient extends BaseClient {
                 endpointsByAgentId: lateEndpointsByAgentId,
                 tokenCountFn: (text) => countTokens(text),
               });
-              registerBedrockResumeDocuments(
-                this.options.req,
-                liveResumeSharedFiles,
-                unvalidatedAgents,
-                getStrategyFunctions,
-                lateScopedAttachmentMap,
-                this.turnHistoricalAttachmentIds,
-              );
               const lateScopedAttachments = [...lateScopedAttachmentMap.values()].flat();
               resumeScopedAttachments.push(...lateScopedAttachments);
               resumeAttachmentTelemetryFiles.push(...lateScopedAttachments);
@@ -5824,6 +5829,14 @@ class AgentClient extends BaseClient {
                 this,
                 liveResumeSharedFiles,
                 resumeScopedAttachments,
+              );
+              registerBedrockResumeDocuments(
+                this.options.req,
+                liveResumeSharedFiles,
+                unvalidatedAgents,
+                getStrategyFunctions,
+                lateScopedAttachmentMap,
+                this.turnHistoricalAttachmentIds,
               );
               for (const agent of unvalidatedAgents) {
                 agent.instructions = agent.instructions?.trim() || undefined;

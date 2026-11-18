@@ -53,6 +53,7 @@ function recipientKey(endpoint: string, recipientId?: string): string {
 /** Only files already hydrated and authorized by attachment processing can be resolved. */
 export class BedrockDocumentContext {
   private readonly files = new Map<string, RegisteredDocument>();
+  private readonly admissions = new Map<string, BedrockDocumentContext>();
 
   constructor(private readonly req: ServerRequest) {}
 
@@ -65,7 +66,22 @@ export class BedrockDocumentContext {
     model?: string,
     recipientId?: string,
     registration: 'input' | 'topology' = 'input',
+    admissionId?: string,
   ): BedrockDocumentReference {
+    if (admissionId != null) {
+      const admission = this.admissions.get(admissionId);
+      if (!admission) throw new BedrockDocumentError();
+      return admission.register(
+        file,
+        endpoint,
+        maxBytes,
+        getStrategyFunctions,
+        onMissingFile,
+        model,
+        recipientId,
+        registration,
+      );
+    }
     if (!file.file_id) throw new BedrockDocumentError();
     const config = mergeFileConfig(this.req.config?.fileConfig);
     const limits = getEndpointFileConfig({ fileConfig: config, endpoint });
@@ -105,17 +121,49 @@ export class BedrockDocumentContext {
     return { librechatFile: file.file_id };
   }
 
-  get(
+  prepareAdmission(id: string, admission: BedrockDocumentContext): () => void {
+    if (this.admissions.has(id)) throw new BedrockDocumentError();
+    return () => {
+      this.admissions.set(id, admission);
+    };
+  }
+
+  settleAdmission(id: string, commit: boolean): void {
+    const admission = this.admissions.get(id);
+    if (!admission) return;
+    if (commit) {
+      for (const [fileId, incoming] of admission.files) {
+        const existing = this.files.get(fileId);
+        if (!existing) {
+          this.files.set(fileId, incoming);
+          continue;
+        }
+        for (const [key, policy] of incoming.policies) {
+          const previous = existing.policies.get(key);
+          existing.policies.set(key, {
+            maxBytes: Math.min(previous?.maxBytes ?? Infinity, policy.maxBytes),
+            totalBytes: Math.min(previous?.totalBytes ?? Infinity, policy.totalBytes),
+            count: Math.min(previous?.count ?? Infinity, policy.count),
+            onMissingFile: previous?.onMissingFile ?? policy.onMissingFile,
+          });
+        }
+        for (const key of incoming.strictRecipients) existing.strictRecipients.add(key);
+      }
+    }
+    this.admissions.delete(id);
+  }
+
+  private localPolicy(
     id: string,
     model?: string,
     endpoint: string = Providers.BEDROCK,
     recipientId?: string,
-  ): RegisteredDocument & DocumentPolicy {
+  ): (RegisteredDocument & DocumentPolicy) | undefined {
     const entry = this.files.get(id);
     const policy =
       entry?.policies.get(policyKey(endpoint, model, recipientId)) ??
       entry?.policies.get(policyKey(endpoint, undefined, recipientId));
-    if (!entry || !policy) throw new BedrockDocumentError();
+    if (!entry || !policy) return undefined;
     return {
       ...entry,
       ...policy,
@@ -123,6 +171,35 @@ export class BedrockDocumentContext {
         ? undefined
         : policy.onMissingFile,
     };
+  }
+
+  get(
+    id: string,
+    model?: string,
+    endpoint: string = Providers.BEDROCK,
+    recipientId?: string,
+  ): RegisteredDocument & DocumentPolicy {
+    let result = this.localPolicy(id, model, endpoint, recipientId);
+    let strict =
+      this.files.get(id)?.strictRecipients.has(recipientKey(endpoint, recipientId)) === true;
+    for (const admission of this.admissions.values()) {
+      strict ||=
+        admission.files.get(id)?.strictRecipients.has(recipientKey(endpoint, recipientId)) === true;
+      const incoming = admission.localPolicy(id, model, endpoint, recipientId);
+      if (!incoming) continue;
+      result = result
+        ? {
+            ...result,
+            maxBytes: Math.min(result.maxBytes, incoming.maxBytes),
+            totalBytes: Math.min(result.totalBytes, incoming.totalBytes),
+            count: Math.min(result.count, incoming.count),
+            onMissingFile:
+              result.onMissingFile && incoming.onMissingFile ? result.onMissingFile : undefined,
+          }
+        : incoming;
+    }
+    if (!result) throw new BedrockDocumentError();
+    return strict ? { ...result, onMissingFile: undefined } : result;
   }
 
   async read(
@@ -185,6 +262,7 @@ export class BedrockDocumentContext {
       if (file.type === 'application/pdf' && bytes.subarray(0, 5).toString('ascii') !== '%PDF-') {
         throw new BedrockDocumentError();
       }
+      this.get(id, model, endpoint, recipientId);
       return bytes;
     } catch (error) {
       if (isOwnedAbortError(error, budget.signal)) throw error;
@@ -234,6 +312,7 @@ export function registerBedrockResumeDocuments(
   getStrategyFunctions: RegisteredDocument['getStrategyFunctions'],
   scopedFiles: ReadonlyMap<string, IMongoFile[]> = new Map(),
   historicalFileIds?: ReadonlySet<string>,
+  context?: BedrockDocumentContext,
 ): void {
   for (const agent of recipients) {
     if (agent.provider !== Providers.BEDROCK) continue;
@@ -243,7 +322,7 @@ export function registerBedrockResumeDocuments(
     for (const files of [sharedFiles, (agent.id && scopedFiles.get(agent.id)) || []]) {
       for (const file of files) {
         if (!isBedrockDocumentType(file.type) || (!file.filepath && !file.storageKey)) continue;
-        getBedrockDocumentContext(req).register(
+        (context ?? getBedrockDocumentContext(req)).register(
           file,
           endpoint,
           getBedrockDocumentLimit(file.type, configured, model),
@@ -256,4 +335,44 @@ export function registerBedrockResumeDocuments(
       }
     }
   }
+}
+
+/** Prepare only the newly admitted IDs; publish after the synchronous admission checks commit. */
+export function prepareBedrockSteerDocuments(
+  req: ServerRequest,
+  files: IMongoFile[],
+  recipients: Parameters<typeof registerBedrockResumeDocuments>[2],
+  getStrategyFunctions: RegisteredDocument['getStrategyFunctions'],
+  steerId?: string,
+  endpoints?: ReadonlyMap<string, { endpoint?: string | null }>,
+): () => void {
+  const documents = files.filter(
+    (file) => isBedrockDocumentType(file.type) && (file.filepath || file.storageKey),
+  );
+  if (!documents.length) return () => {};
+  const admittedRecipients = Array.from(recipients).filter(
+    (agent) =>
+      agent.provider === Providers.BEDROCK && agent.id && (!endpoints || endpoints.has(agent.id)),
+  );
+  if (!admittedRecipients.length) return () => {};
+  if (!steerId) throw new BedrockDocumentError();
+  const staged = new BedrockDocumentContext(req);
+  registerBedrockResumeDocuments(
+    req,
+    documents,
+    admittedRecipients,
+    getStrategyFunctions,
+    new Map(),
+    new Set(),
+    staged,
+  );
+  return getBedrockDocumentContext(req).prepareAdmission(steerId, staged);
+}
+
+export function settleBedrockSteerDocuments(
+  req: ServerRequest | undefined,
+  steerId: string,
+  commit: boolean,
+): void {
+  if (req) contexts.get(req)?.settleAdmission(steerId, commit);
 }

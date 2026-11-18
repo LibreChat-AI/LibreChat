@@ -1727,6 +1727,7 @@ class BaseClient {
         useResponsesApi: this.usesResponsesApi(),
         model: this.modelOptions?.model ?? this.model,
         recipientId: this.options.agent?.id,
+        admissionId: message.documentAdmissionId,
         onMissingFile,
       },
       getStrategyFunctions,

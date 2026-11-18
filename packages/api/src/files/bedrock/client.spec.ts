@@ -16,6 +16,8 @@ import {
   BedrockDocumentContext,
   getBedrockDocumentContext,
   registerBedrockResumeDocuments,
+  prepareBedrockSteerDocuments,
+  settleBedrockSteerDocuments,
 } from './context';
 import { replayMessageAttachments, AttachmentObjectNotFoundError } from '../encode/utils';
 import { bedrockWireSize, guardBedrockDocuments, withBedrockDocuments } from './client';
@@ -53,11 +55,19 @@ const encode = (
   recipientId?: string,
   endpoint?: string,
   onMissingFile?: MissingAttachmentHandler,
+  admissionId?: string,
 ) =>
   encodeAndFormatDocuments(
     r,
     files,
-    { provider: Providers.BEDROCK, model: selected, recipientId, endpoint, onMissingFile },
+    {
+      provider: Providers.BEDROCK,
+      model: selected,
+      recipientId,
+      endpoint,
+      onMissingFile,
+      admissionId,
+    },
     () => ({
       getDownloadStream: download,
     }),
@@ -1044,4 +1054,256 @@ it('rechecks strict current-input policy when an already-started historical read
   fail(Object.assign(new Error('missing fixture'), { code: 'ENOENT' }));
   await expect(pending).rejects.toBeInstanceOf(AttachmentObjectNotFoundError);
   expect(omitted).not.toHaveBeenCalled();
+});
+
+const steerRecipients = [
+  bedrockRoot,
+  { id: 'secondary', endpoint: 'secondary', provider: Providers.BEDROCK, model: restrictiveModel },
+];
+it('materializes newly admitted steer documents for loaded secondary/handoff with its own endpoint policy', async () => {
+  const r = req();
+  r.config!.fileConfig = {
+    endpoints: { bedrock: { fileSizeLimit: 1 }, secondary: { fileSizeLimit: 0.001 } },
+  };
+  const bytes = Buffer.alloc(2048, 65);
+  const stored = file('steer-new', { type: 'text/csv', bytes: undefined });
+  const download = jest.fn(async () => Readable.from(bytes));
+  const publish = prepareBedrockSteerDocuments(
+    r,
+    [stored],
+    steerRecipients,
+    () => ({ getDownloadStream: download }),
+    's1',
+  );
+  expect(() =>
+    getBedrockDocumentContext(r).get(stored.file_id, restrictiveModel, 'secondary', 'secondary'),
+  ).toThrow(BedrockDocumentError);
+  publish();
+  const encoded = await encode(r, [stored], download, model, 'root', undefined, undefined, 's1');
+  expect(download).not.toHaveBeenCalled();
+  settleBedrockSteerDocuments(r, 's1', true);
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(encoded.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async () => 'primary',
+      Providers.BEDROCK,
+      'root',
+    ),
+  ).resolves.toBe('primary');
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(encoded.documents), restrictiveModel),
+      getBedrockDocumentContext(r),
+      restrictiveModel,
+      undefined,
+      async () => '',
+      'secondary',
+      'secondary',
+    ),
+  ).rejects.toBeInstanceOf(BedrockDocumentError);
+  expect(download).toHaveBeenCalledTimes(2);
+});
+
+it.each([false, true])(
+  'rolls back primary encoding and secondary authorization without sticky current provenance (historical: %s)',
+  async (historical) => {
+    const r = req();
+    const stored = file('rollback-steer');
+    if (historical)
+      registerBedrockResumeDocuments(
+        r,
+        [stored],
+        steerRecipients,
+        () => ({ getDownloadStream: absentStorage }),
+        new Map(),
+        new Set([stored.file_id]),
+      );
+    prepareBedrockSteerDocuments(
+      r,
+      [stored],
+      steerRecipients,
+      () => ({ getDownloadStream: absentStorage }),
+      'failed',
+    )();
+    const encoded = await encode(
+      r,
+      [stored],
+      absentStorage,
+      model,
+      'root',
+      undefined,
+      undefined,
+      'failed',
+    );
+    settleBedrockSteerDocuments(r, 'failed', false);
+    const send = jest.fn(async () => 'omitted');
+    const pending = withBedrockDocuments(
+      request(sdkBlocks(encoded.documents), restrictiveModel),
+      getBedrockDocumentContext(r),
+      restrictiveModel,
+      undefined,
+      send,
+      'secondary',
+      'secondary',
+    );
+    const primary = withBedrockDocuments(
+      request(sdkBlocks(encoded.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      send,
+      Providers.BEDROCK,
+      'root',
+    );
+    if (historical) await expect(primary).resolves.toBe('omitted');
+    else await expect(primary).rejects.toBeInstanceOf(BedrockDocumentError);
+    if (historical) await expect(pending).resolves.toBe('omitted');
+    else {
+      await expect(pending).rejects.toBeInstanceOf(BedrockDocumentError);
+      expect(send).not.toHaveBeenCalled();
+    }
+  },
+);
+
+it('does not roll back another successful overlapping steer and permits a rejected ID to be retried', async () => {
+  const r = req();
+  const stored = file('overlap-steer');
+  const download = async () => Readable.from(pdf);
+  for (const id of ['one', 'two'])
+    prepareBedrockSteerDocuments(
+      r,
+      [stored],
+      steerRecipients,
+      () => ({ getDownloadStream: download }),
+      id,
+    )();
+  settleBedrockSteerDocuments(r, 'one', true);
+  settleBedrockSteerDocuments(r, 'two', false);
+  expect(
+    getBedrockDocumentContext(r).get(stored.file_id, restrictiveModel, 'secondary', 'secondary')
+      .onMissingFile,
+  ).toBeUndefined();
+  prepareBedrockSteerDocuments(
+    r,
+    [stored],
+    steerRecipients,
+    () => ({ getDownloadStream: download }),
+    'two',
+  )();
+  settleBedrockSteerDocuments(r, 'two', false);
+  expect(
+    getBedrockDocumentContext(r).get(stored.file_id, restrictiveModel, 'secondary', 'secondary')
+      .file.file_id,
+  ).toBe(stored.file_id);
+});
+
+it('discards a partially prepared admission without exposing any newly authorized ID', () => {
+  const r = req();
+  const stored = file('partial-steer');
+  expect(() =>
+    prepareBedrockSteerDocuments(
+      r,
+      [stored, file('')],
+      steerRecipients,
+      () => ({ getDownloadStream: absentStorage }),
+      'bad',
+    ),
+  ).toThrow(BedrockDocumentError);
+  expect(() =>
+    getBedrockDocumentContext(r).get(stored.file_id, restrictiveModel, 'secondary', 'secondary'),
+  ).toThrow(BedrockDocumentError);
+});
+
+it('revokes an in-flight newly admitted read before transport after media rollback', async () => {
+  const r = req();
+  const stored = file('in-flight-steer');
+  let opened!: () => void;
+  const started = new Promise<void>((resolve) => {
+    opened = resolve;
+  });
+  let release!: (stream: Readable) => void;
+  const download = () => {
+    opened();
+    return new Promise<Readable>((resolve) => {
+      release = resolve;
+    });
+  };
+  prepareBedrockSteerDocuments(
+    r,
+    [stored],
+    steerRecipients,
+    () => ({ getDownloadStream: download }),
+    'pending',
+  )();
+  const send = jest.fn();
+  const pending = withBedrockDocuments(
+    request(
+      [{ document: { name: 'file', format: 'pdf', source: { librechatFile: stored.file_id } } }],
+      restrictiveModel,
+    ),
+    getBedrockDocumentContext(r),
+    restrictiveModel,
+    undefined,
+    send,
+    'secondary',
+    'secondary',
+  );
+  await started;
+  settleBedrockSteerDocuments(r, 'pending', false);
+  const stream = Readable.from(pdf);
+  release(stream);
+  await expect(pending).rejects.toBeInstanceOf(BedrockDocumentError);
+  expect(send).not.toHaveBeenCalled();
+  expect(stream.destroyed).toBe(true);
+});
+
+it('allows a newly admitted loaded secondary to send first after handoff', async () => {
+  const r = req();
+  const stored = file('handoff-steer');
+  const download = jest.fn(async () => Readable.from(pdf));
+  prepareBedrockSteerDocuments(
+    r,
+    [stored],
+    steerRecipients,
+    () => ({ getDownloadStream: download }),
+    'handoff',
+  )();
+  const encoded = await encode(
+    r,
+    [stored],
+    download,
+    model,
+    'root',
+    undefined,
+    undefined,
+    'handoff',
+  );
+  expect(download).not.toHaveBeenCalled();
+  settleBedrockSteerDocuments(r, 'handoff', true);
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(encoded.documents), restrictiveModel),
+      getBedrockDocumentContext(r),
+      restrictiveModel,
+      undefined,
+      async () => 'secondary',
+      'secondary',
+      'secondary',
+    ),
+  ).resolves.toBe('secondary');
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(encoded.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async () => 'primary',
+      Providers.BEDROCK,
+      'root',
+    ),
+  ).resolves.toBe('primary');
+  expect(download).toHaveBeenCalledTimes(2);
 });
