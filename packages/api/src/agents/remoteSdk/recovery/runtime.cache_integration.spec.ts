@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
-import { randomUUID } from 'node:crypto';
 import { createServer, connect } from 'node:net';
 import { request as httpRequest } from 'node:http';
+import { randomUUID, createHash } from 'node:crypto';
 import { tool } from '@librechat/agents/langchain/tools';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ChatGenerationChunk } from '@langchain/core/outputs';
@@ -10,6 +10,8 @@ import { ensureHandler } from '@langchain/core/callbacks/manager';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
 import {
+  createHostFileService,
+  HostFileAdmission,
   createHostProviderTextService,
   createHostModelService,
   HostModelAdmission,
@@ -21,7 +23,13 @@ import {
   MemorySaver,
   HookRegistry,
 } from '@librechat/agents';
-import type { RunConfig, ToolCallRequest, ToolExecuteBatchRequest } from '@librechat/agents';
+import type {
+  RunConfig,
+  ToolCallRequest,
+  ToolExecuteBatchRequest,
+  HostFileStageRequest,
+  HostFilePublishRequest,
+} from '@librechat/agents';
 import type { AddressInfo, Socket } from 'node:net';
 import type { RedisTestClient } from '../../../stream/__tests__/helpers/redis';
 import type { RemoteSdkFactoryInput } from '../types';
@@ -1147,3 +1155,103 @@ it.each(['input', 'output', 'combined'] as const)(
     }
   },
 );
+
+it('recovers file upload chunks and a committed publication receipt without repeating mutations', async () => {
+  const raw = Buffer.from('PRIVATE-FILE-CONTENT-FOR-RECOVERY');
+  const descriptor = {
+    reference: 'input',
+    revision: 'v1',
+    filename: 'input.txt',
+    mediaType: 'text/plain',
+    bytes: raw.length,
+  };
+  let produced = 0;
+  const runtime = await fixture(async (input) => {
+    const files = input.hostFiles;
+    if (!files) throw new Error('Missing file capability');
+    const content = async function* () {
+      for await (const chunk of files.read(files.sources[0], input.signal)) {
+        produced++;
+        yield chunk;
+      }
+    };
+    const staged = await files.stage(
+      { operationId: 'upload', filename: 'output.txt', mediaType: 'text/plain', bytes: raw.length },
+      content(),
+      input.signal,
+    );
+    await files.publish(staged, 'publication', input.signal);
+    return factory(input);
+  });
+  const stage = jest.fn(
+    async (_request: HostFileStageRequest, content: AsyncIterable<Uint8Array>) => {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of content) {
+        chunks.push(chunk);
+        if (chunks.length === 1) {
+          runtime.drop();
+          await delay(60);
+        }
+      }
+      const data = Buffer.concat(chunks);
+      expect(data).toEqual(raw);
+      return {
+        ...descriptor,
+        reference: 'staged',
+        sha256: createHash('sha256').update(data).digest('hex'),
+      };
+    },
+  );
+  const publish = jest.fn(async (request: HostFilePublishRequest) => {
+    const committed = {
+      operationId: request.operationId,
+      file: { ...descriptor, reference: 'published' },
+    };
+    runtime.drop();
+    await delay(60);
+    return committed;
+  });
+  const files = createHostFileService({
+    identity,
+    descriptor: {
+      version: 1,
+      operations: ['read', 'stage', 'publish'],
+      maxFileBytes: 1024,
+      maxChunkBytes: 8,
+    },
+    admission: new HostFileAdmission({ maxConcurrentOperations: 4, maxBufferedBytes: 64 }),
+    timeoutMs: 5000,
+    store: {
+      read: async (request) => ({
+        reference: request.reference,
+        revision: request.revision,
+        offset: request.offset,
+        data: raw.subarray(request.offset, request.offset + request.length),
+      }),
+      stage,
+      publish,
+    },
+  });
+  try {
+    const run = await createRemoteSdkRun({
+      config: hostConfig(async () => undefined),
+      identity,
+      remote: runtime.remote,
+      hostServices: { files: { ...files, sources: [descriptor] } },
+    });
+    await run.processStream(
+      { messages: [new HumanMessage('copy')] },
+      { version: 'v2', configurable: { thread_id: identity.conversationId } },
+    );
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(produced).toBe(Math.ceil(raw.length / 8));
+    expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    expect(runtime.connections()).toBeGreaterThan(1);
+    expect(runtime.errors).toEqual([]);
+    expect(runtime.journalEntries.join('')).not.toContain('PRIVATE-FILE');
+    expect(runtime.journalEntries.join('')).not.toContain(raw.subarray(0, 8).toString('base64'));
+  } finally {
+    await runtime.close();
+  }
+});

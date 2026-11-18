@@ -166,7 +166,7 @@ adapters and unverified behaviors remain release gates for products that depend 
 | Stream circuit breakers and tool-policy hooks               | Forwarded to the worker; hook failure stops execution                                                                              | Domain tools must also authorize signed caller identity; trusted factories must retain the supplied adapters.                                                                                                                                                    |
 | Agent-builder model, parameters, tools, capabilities        | Opt-in saved-agent primary model settings execute on the host; host schema tools are available                                     | Worker must retain the host model/profile. Fallbacks, local graph tools, and context/summary policy still require adapters.                                                                                                                                      |
 | Host MCP, web/code/browser tools, user tool credentials     | Authorized root-agent schema tools execute through host RPC                                                                        | Host credentials remain local; child-agent authorization and broader host-service parity remain separate integrations.                                                                                                                                           |
-| Uploaded files, generated artifacts, download authorization | Message data can cross the wire                                                                                                    | Host file services, sandbox storage, and artifact authorization do not have remote adapters; attachment/file parity is not established.                                                                                                                          |
+| Uploaded files, generated artifacts, download authorization | Programmatic SDK file read/stage/publish transport; native host adapter pending                                                    | Native authorization/storage/publication activation, sandbox storage, and artifact UI acceptance remain separate; attachment/file parity is not established.                                                                                                     |
 | Live steering and mid-stream preemption                     | Not integrated                                                                                                                     | A remote execution-control adapter and acceptance tests are required.                                                                                                                                                                                            |
 | Foreground/nested/detached subagents                        | Worker may construct its own SDK graph                                                                                             | Native configured compositions are rejected; detached child checkpoint threads/context/usage sinks are not integrated.                                                                                                                                           |
 | Context pruning, compaction, summaries, cache/fading policy | Worker can use SDK features; terminal context metadata is returned                                                                 | Host configuration and continuation policy are not automatically installed on the worker. Main-chat behavioral/performance parity is not established.                                                                                                            |
@@ -454,3 +454,41 @@ Before initial admission, child/summary model calls without root lineage and con
 attempts fail closed; parallel/composed admission needs its own ownership contract. This does not
 establish full main-chat parity. Context pruning, summary/compaction configuration, child/multi-model
 routing, files, production billing/tracing and Console UI acceptance remain separate work.
+
+## Host file transport (SDK 4.2.10)
+
+Programmatic hosts can pass `hostServices.files` to `createRemoteSdkRun`: an already authorized
+`createHostFileService` binding plus a `sources` array of `HostFileDescriptor` values. A worker
+advertising `hostFiles: 1` receives `input.hostFiles`, the SDK's `read`, `stage`, and `publish`
+bindings with those source descriptors. Older workers fail before graph execution when files are
+requested; hosts without a file binding retain the existing behavior. Host services and credentials
+are never serialized into the worker.
+
+The transport uses the existing authenticated, bidirectional WebSocket and recovery protocol.
+Reads fetch one range at a time; uploads are pulled by the host one chunk at a time. No transfer
+buffers an entire file. Negotiated chunk size is capped by the SDK binding and the connection's
+frame/buffer limits, including encoding overhead. Per-invocation cancellation propagates through
+both directions, and execution cancellation ends all transfers. File payloads are encrypted before
+they enter RPC queues and replay journals. Source descriptors are public metadata, so hosts must
+only supply metadata approved for the runtime.
+
+Use a shared `HostFileAdmission` in the host's quota scope. The SDK enforces bound execution
+identity, byte length, SHA-256, deadlines, and cleanup admission; the adapter must still reauthorize
+canonical ACLs/revisions on each operation and apply file/content policies before returning bytes
+or publishing. A reference is not a URL, path, or download credential. Source lists do not create
+child/sibling grants. Publication receipts must flow through the host's native persistence and
+attachment events. The transport never retries a mutation as a new logical operation: live reconnect
+replays existing RPC traffic, while explicit retries require durable host reconciliation using the
+SDK operation ID. Process-restart recovery of an in-flight transfer is not supported.
+
+**Activation boundary:** this is the programmatic transport adapter. The stock Console/chat caller
+does not yet install a native file service. LibreChat's authorized attachment reads, private durable
+staging, publication receipts/events, previews, retention, and browser downloads must be wired in
+that next adapter slice. This transport does not establish file/artifact UI parity, sandbox mounts, rich UI
+artifacts, or production restart-safe publication. No policy gate is bypassed to enable files.
+
+Run `node examples/sdk-runtime/files.cjs` after building `@librechat/api` for a key-free example.
+It starts a separate worker process, runs a transform → publish → SDK reply graph, validates the
+result digest, and reports bytes, publication count, message events, and loopback completion time.
+Temporary filesystem storage and in-memory mutation receipts are fixtures; they are not a
+production storage adapter or a latency-parity benchmark.

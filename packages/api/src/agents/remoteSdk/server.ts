@@ -23,6 +23,7 @@ import type { SdkAgentIdentity } from './identity';
 import { createWorkerModelLifecycle, supportsModelInvocationContext } from './admission';
 import { policyDescriptorSchema, createWorkerProviderTextPolicy } from './policy';
 import { createRuntimeRecovery, recoveryClaimSchema } from './recovery/server';
+import { createWorkerFileChannel, fileChannelSchema } from './files';
 import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { RECOVERY_HEADER_BYTES } from './recovery/socket';
 import { createWorkerToolService } from './hostTools';
@@ -52,6 +53,7 @@ const claimSchema = z.object({
 });
 const startSchema = z.object({
   transportVersion: z.literal(2),
+  files: fileChannelSchema.optional(),
   modelAdmission: z
     .object({ version: z.literal(1), maxEntries: z.number().int().min(16).max(65536) })
     .strict()
@@ -268,6 +270,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         timer.unref();
         const cleanup = () => {
           controller.abort();
+          workerFiles.dispose();
           clearTimeout(timer);
           if (!running) active.delete(controller);
         };
@@ -275,6 +278,11 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         const workerTools = createWorkerToolService({
           call: (method, data, _timeoutMs, signal) =>
             peer.call(method, data, method === 'tools' ? limits.maxRunMs : undefined, signal),
+        });
+        const workerFiles = createWorkerFileChannel({
+          peer: { call: (...args) => peer.call(...args) },
+          limits,
+          signal: controller.signal,
         });
         const workerModel = createWorkerModelChannel({
           peer: { call: (...args) => peer.call(...args) },
@@ -294,12 +302,14 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
               return {
                 transportVersion: 2,
                 hostTools: 2,
+                hostFiles: 1,
                 providerText: 1,
                 hostModel: 1,
                 builderModel: 1,
                 modelAdmission: 1,
                 ...(supportsModelInvocationContext && { modelAdmissionWithProviderText: 1 }),
               };
+            if (method === 'files.chunk') return workerFiles.accept(data, signal);
             if (method === 'model.chunk') return workerModel.accept(data, signal);
             if (method === 'tool.result') return workerTools.accept(data);
             if (method === 'tool.session') return workerTools.accept(data, 'session');
@@ -370,6 +380,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                   ],
                 });
             }
+            const hostFiles = request.files ? workerFiles.bind(identity, request.files) : undefined;
             const hostTools = request.hostTools?.length
               ? createHostToolBindings({
                   identity,
@@ -412,6 +423,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
               const run = await options.createRun({
                 identity,
                 hostTools,
+                hostFiles,
                 hostModel,
                 config: {
                   runId: identity.runId,
