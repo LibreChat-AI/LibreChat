@@ -152,12 +152,13 @@ export async function exchangeAdminCode(
   requestOrigin?: string,
   codeVerifier?: string,
 ): Promise<AdminExchangeResponse | null> {
-  const data = await consumeCacheEntry<AdminExchangeData>(cache, code);
+  const consumed = await consumeCacheEntry<AdminExchangeData>(cache, code);
 
-  if (!data) {
+  if (!consumed) {
     logger.warn('[adminExchange] Invalid or expired authorization code');
     return null;
   }
+  const data = consumed.value;
 
   if (data.origin && data.origin !== requestOrigin) {
     logger.warn('[adminExchange] Authorization code origin mismatch');
