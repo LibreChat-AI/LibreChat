@@ -8,14 +8,20 @@ import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-r
 import type { ConverseCommandInput } from '@aws-sdk/client-bedrock-runtime';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { HttpRequest } from '@smithy/protocol-http';
+import type { TFile } from 'librechat-data-provider';
+import type { RunFileEncodingAgent } from '~/agents/files/encode';
+import type { MissingAttachmentHandler } from '../encode/utils';
 import type { ServerRequest, StrategyFunctions } from '~/types';
 import {
   BedrockDocumentContext,
   getBedrockDocumentContext,
   registerBedrockResumeDocuments,
 } from './context';
+import { replayMessageAttachments, AttachmentObjectNotFoundError } from '../encode/utils';
 import { bedrockWireSize, guardBedrockDocuments, withBedrockDocuments } from './client';
 import { BedrockDocumentError, bedrockRequestLimit } from './limits';
+import { resolveTurnDeliveryRouting } from '~/agents/files/delivery';
+import { createRunFileMessageEncoder } from '~/agents/files/encode';
 import { InFlightBytesSemaphore } from '../encode/memoryGuard';
 import { encodeAndFormatDocuments } from '../encode/document';
 
@@ -46,11 +52,12 @@ const encode = (
   selected = model,
   recipientId?: string,
   endpoint?: string,
+  onMissingFile?: MissingAttachmentHandler,
 ) =>
   encodeAndFormatDocuments(
     r,
     files,
-    { provider: Providers.BEDROCK, model: selected, recipientId, endpoint },
+    { provider: Providers.BEDROCK, model: selected, recipientId, endpoint, onMissingFile },
     () => ({
       getDownloadStream: download,
     }),
@@ -779,4 +786,262 @@ it('does not reset depth or node budgets for nested lookalike message containers
   let nested: object = { text: 'leaf' };
   for (let i = 0; i < 128; i++) nested = { messages: [nested] };
   expect(() => bedrockWireSize({ messages: [nested] }, 32_000_000)).toThrow(BedrockDocumentError);
+});
+
+const absentStorage = async (): Promise<Readable> => {
+  throw Object.assign(new Error('missing fixture'), { code: 'ENOENT' });
+};
+const bedrockRoot = { id: 'root', provider: Providers.BEDROCK, model };
+
+it.each([false, true])(
+  'omits deferred historical storage misses after repeated topology registration (explicit history: %s)',
+  async (explicitHistory) => {
+    const r = req();
+    const stored = file('historical');
+    let encoded: Awaited<ReturnType<typeof encode>> | undefined;
+    await replayMessageAttachments({
+      message: {},
+      addFileContext: async () => undefined,
+      processAttachments: async (onMissingFile) => {
+        encoded = await encode(r, [stored], absentStorage, model, 'root', undefined, onMissingFile);
+        return encoded.files;
+      },
+    });
+    for (let i = 0; i < 2; i++)
+      registerBedrockResumeDocuments(
+        r,
+        [stored],
+        [bedrockRoot],
+        () => ({ getDownloadStream: absentStorage }),
+        new Map(),
+        explicitHistory ? new Set([stored.file_id]) : undefined,
+      );
+    const send = jest.fn(async (input: ConverseCommandInput) => {
+      expect(JSON.stringify(input)).toContain('no longer available');
+      expect(input.messages?.[0].content?.some((part) => part.document != null)).toBe(false);
+    });
+    await withBedrockDocuments(
+      request(sdkBlocks(encoded!.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      send,
+      Providers.BEDROCK,
+      'root',
+    );
+    expect(send).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each(['historical-first', 'current-first'])(
+  'keeps same-file current input strict regardless of registration order: %s',
+  async (order) => {
+    const r = req();
+    const stored = file('current-and-history');
+    const omitted = jest.fn();
+    let encoded: Awaited<ReturnType<typeof encode>> | undefined;
+    for (const historical of order === 'historical-first' ? [true, false] : [false, true]) {
+      encoded = await encode(
+        r,
+        [stored],
+        absentStorage,
+        model,
+        'root',
+        undefined,
+        historical ? omitted : undefined,
+      );
+    }
+    registerBedrockResumeDocuments(r, [stored], [bedrockRoot], () => ({
+      getDownloadStream: absentStorage,
+    }));
+    const send = jest.fn();
+    await expect(
+      withBedrockDocuments(
+        request(sdkBlocks(encoded!.documents)),
+        getBedrockDocumentContext(r),
+        model,
+        undefined,
+        send,
+        Providers.BEDROCK,
+        'root',
+      ),
+    ).rejects.toBeInstanceOf(AttachmentObjectNotFoundError);
+    expect(send).not.toHaveBeenCalled();
+    expect(omitted).not.toHaveBeenCalled();
+  },
+);
+
+it('treats a historical ID reattached this turn as current before its deferred encoding', async () => {
+  const r = req();
+  const stored = file('reattached');
+  const omitted = jest.fn();
+  const encoded = await encode(r, [stored], absentStorage, model, 'root', undefined, omitted);
+  registerBedrockResumeDocuments(
+    r,
+    [stored],
+    [bedrockRoot],
+    () => ({ getDownloadStream: absentStorage }),
+    new Map(),
+    new Set(),
+  );
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(encoded.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async () => '',
+      Providers.BEDROCK,
+      'root',
+    ),
+  ).rejects.toBeInstanceOf(AttachmentObjectNotFoundError);
+  expect(omitted).not.toHaveBeenCalled();
+});
+
+it('restores historical absence policy on resume/late registration without leaking it to a current recipient', async () => {
+  const r = req();
+  const stored = file('resume-absence');
+  const current = await encode(r, [stored], absentStorage, model, 'root');
+  const child = { id: 'late-child', provider: Providers.BEDROCK, model };
+  registerBedrockResumeDocuments(
+    r,
+    [stored],
+    [child],
+    () => ({ getDownloadStream: absentStorage }),
+    new Map(),
+    new Set([stored.file_id]),
+  );
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(current.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async () => 'omitted',
+      Providers.BEDROCK,
+      child.id,
+    ),
+  ).resolves.toBe('omitted');
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(current.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async () => '',
+      Providers.BEDROCK,
+      'root',
+    ),
+  ).rejects.toBeInstanceOf(AttachmentObjectNotFoundError);
+});
+
+it('encodes native run-file PDF for a newly loaded child and resolves it with that exact receiving identity', async () => {
+  const r = req();
+  const agents = new Map<string, RunFileEncodingAgent>();
+  const stored = file('late-shared-pdf', { bytes: pdf.length });
+  const shared: TFile = {
+    file_id: stored.file_id,
+    filename: stored.filename,
+    filepath: stored.filepath,
+    type: stored.type,
+    bytes: pdf.length,
+    user: 'user',
+    object: 'file',
+    usage: 0,
+    embedded: false,
+    llmDeliveryPath: 'provider',
+  };
+  const download = jest.fn(async () => Readable.from(pdf));
+  const encoder = createRunFileMessageEncoder({
+    req: r,
+    getAgent: (id) => agents.get(id),
+    encodeDocuments: async (request, files, params, strategies) => {
+      expect(files).toEqual([shared]);
+      const result = await encodeAndFormatDocuments(
+        request,
+        [stored],
+        { ...params, provider: Providers.BEDROCK },
+        strategies,
+      );
+      return { documents: result.documents.map((part) => ({ ...part })) };
+    },
+    encodeImages: async () => ({ image_urls: [] }),
+    encodeAudios: async () => ({ audios: [] }),
+    encodeVideos: async () => ({ videos: [] }),
+    extractText: async () => undefined,
+    getStrategyFunctions: () => ({ getDownloadStream: download }),
+  });
+  agents.set('late-child', {
+    provider: Providers.BEDROCK,
+    model,
+    deliveryRouting: resolveTurnDeliveryRouting({
+      agent: { provider: Providers.BEDROCK, endpoint: Providers.BEDROCK },
+      config: r.config,
+    }),
+  });
+  const messages = await encoder.encode([shared], 'late-child');
+  expect(download).not.toHaveBeenCalled();
+  const content = messages[0].content;
+  if (!Array.isArray(content)) throw new Error('fixture');
+  const input = request(content);
+  await expect(
+    withBedrockDocuments(
+      input,
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async (wire) => {
+        expect(
+          wire.messages?.[0].content?.find((part) => part.document)?.document?.source?.bytes,
+        ).toEqual(pdf);
+        return 'sent';
+      },
+      Providers.BEDROCK,
+      'late-child',
+    ),
+  ).resolves.toBe('sent');
+  expect(download).toHaveBeenCalledTimes(1);
+  await expect(
+    withBedrockDocuments(
+      input,
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async () => '',
+      Providers.BEDROCK,
+      'different-child',
+    ),
+  ).rejects.toBeInstanceOf(BedrockDocumentError);
+});
+
+it('rechecks strict current-input policy when an already-started historical read reports a miss', async () => {
+  const r = req();
+  const stored = file('in-flight-current');
+  let opened!: () => void;
+  const started = new Promise<void>((resolve) => {
+    opened = resolve;
+  });
+  let fail!: (error: Error) => void;
+  const download = jest.fn(() => {
+    opened();
+    return new Promise<Readable>((_resolve, reject) => {
+      fail = reject;
+    });
+  });
+  const omitted = jest.fn();
+  const encoded = await encode(r, [stored], download, model, 'root', undefined, omitted);
+  const pending = withBedrockDocuments(
+    request(sdkBlocks(encoded.documents)),
+    getBedrockDocumentContext(r),
+    model,
+    undefined,
+    async () => '',
+    Providers.BEDROCK,
+    'root',
+  );
+  await started;
+  await encode(r, [stored], download, model, 'root');
+  fail(Object.assign(new Error('missing fixture'), { code: 'ENOENT' }));
+  await expect(pending).rejects.toBeInstanceOf(AttachmentObjectNotFoundError);
+  expect(omitted).not.toHaveBeenCalled();
 });

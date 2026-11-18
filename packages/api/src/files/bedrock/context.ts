@@ -39,10 +39,15 @@ interface RegisteredDocument {
   >;
   getStrategyFunctions: (source: string) => StrategyFunctions;
   policies: Map<string, DocumentPolicy>;
+  strictRecipients: Set<string>;
 }
 
 function policyKey(endpoint: string, model?: string, recipientId?: string): string {
   return JSON.stringify([endpoint, model, recipientId]);
+}
+
+function recipientKey(endpoint: string, recipientId?: string): string {
+  return JSON.stringify([endpoint, recipientId]);
 }
 
 /** Only files already hydrated and authorized by attachment processing can be resolved. */
@@ -59,6 +64,7 @@ export class BedrockDocumentContext {
     onMissingFile?: MissingAttachmentHandler,
     model?: string,
     recipientId?: string,
+    registration: 'input' | 'topology' = 'input',
   ): BedrockDocumentReference {
     if (!file.file_id) throw new BedrockDocumentError();
     const config = mergeFileConfig(this.req.config?.fileConfig);
@@ -75,7 +81,11 @@ export class BedrockDocumentContext {
       },
       getStrategyFunctions,
       policies: new Map<string, DocumentPolicy>(),
+      strictRecipients: new Set<string>(),
     };
+    if (registration === 'input' && !onMissingFile) {
+      entry.strictRecipients.add(recipientKey(endpoint, recipientId));
+    }
     const key = policyKey(endpoint, model, recipientId);
     const existing = entry.policies.get(key);
     entry.policies.set(key, {
@@ -86,7 +96,10 @@ export class BedrockDocumentContext {
         config.fileContextSizeLimit ?? Infinity,
       ),
       count: Math.min(existing?.count ?? Infinity, limits.fileLimit ?? Infinity),
-      onMissingFile,
+      onMissingFile:
+        registration === 'topology'
+          ? (existing?.onMissingFile ?? onMissingFile)
+          : (onMissingFile ?? existing?.onMissingFile),
     });
     this.files.set(file.file_id, entry);
     return { librechatFile: file.file_id };
@@ -103,7 +116,13 @@ export class BedrockDocumentContext {
       entry?.policies.get(policyKey(endpoint, model, recipientId)) ??
       entry?.policies.get(policyKey(endpoint, undefined, recipientId));
     if (!entry || !policy) throw new BedrockDocumentError();
-    return { ...entry, ...policy };
+    return {
+      ...entry,
+      ...policy,
+      onMissingFile: entry.strictRecipients.has(recipientKey(endpoint, recipientId))
+        ? undefined
+        : policy.onMissingFile,
+    };
   }
 
   async read(
@@ -117,7 +136,6 @@ export class BedrockDocumentContext {
     const {
       file,
       getStrategyFunctions,
-      onMissingFile,
       maxBytes: configured,
     } = this.get(id, model, endpoint, recipientId);
     const cap = clampBedrockLimit(maxBytes, configured);
@@ -173,6 +191,7 @@ export class BedrockDocumentContext {
       if (budget.signal.aborted) throw budget.signal.reason;
       if (error instanceof BedrockDocumentError) throw error;
       if (isStorageNotFoundError(error)) {
+        const onMissingFile = this.get(id, model, endpoint, recipientId).onMissingFile;
         if (onMissingFile) {
           onMissingFile(file);
           return undefined;
@@ -199,6 +218,8 @@ export function getBedrockDocumentContext(req: ServerRequest): BedrockDocumentCo
   return context;
 }
 
+function omitHistoricalDocument(): void {}
+
 /** Registers the shared/scoped topology before encoding or restoring checkpoint file IDs. */
 export function registerBedrockResumeDocuments(
   req: ServerRequest,
@@ -212,6 +233,7 @@ export function registerBedrockResumeDocuments(
   }>,
   getStrategyFunctions: RegisteredDocument['getStrategyFunctions'],
   scopedFiles: ReadonlyMap<string, IMongoFile[]> = new Map(),
+  historicalFileIds?: ReadonlySet<string>,
 ): void {
   for (const agent of recipients) {
     if (agent.provider !== Providers.BEDROCK) continue;
@@ -226,9 +248,10 @@ export function registerBedrockResumeDocuments(
           endpoint,
           getBedrockDocumentLimit(file.type, configured, model),
           getStrategyFunctions,
-          undefined,
+          historicalFileIds?.has(file.file_id) ? omitHistoricalDocument : undefined,
           model,
           agent.id,
+          historicalFileIds != null && !historicalFileIds.has(file.file_id) ? 'input' : 'topology',
         );
       }
     }

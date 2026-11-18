@@ -40,6 +40,7 @@ export interface RunFileEncodingAgent {
 }
 
 export interface RunFileEncodingParams {
+  recipientId: string;
   provider: string;
   endpoint: string;
   model?: string;
@@ -87,6 +88,7 @@ export function createRunFileMessageEncoder(
     const { deliveryRouting } = agent;
     const { endpoint, fileConfig, endpointConfig } = deliveryRouting;
     const params: RunFileEncodingParams = {
+      recipientId: agentId,
       provider: agent.provider,
       endpoint,
       model: agent.model_parameters?.model ?? agent.model ?? undefined,

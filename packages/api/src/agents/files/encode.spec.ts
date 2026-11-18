@@ -112,6 +112,7 @@ describe('createRunFileMessageEncoder', () => {
         provider: 'openAI',
         endpoint: 'child-provider',
         model: 'child-model',
+        recipientId: 'child',
         useResponsesApi: true,
         imageDetail: 'high',
       }),

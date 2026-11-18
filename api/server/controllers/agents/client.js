@@ -2542,6 +2542,7 @@ class AgentClient extends BaseClient {
       allAgents.map(({ agent }) => agent),
       getStrategyFunctions,
       scopedAttachmentMap,
+      this.turnHistoricalAttachmentIds,
     );
     assertAgentAttachmentTopology({
       sharedAttachments: sharedAttachmentFiles,
@@ -3237,6 +3238,14 @@ class AgentClient extends BaseClient {
                 liveSharedAttachmentIds,
                 lateAttachmentsByAgentId,
                 unpreparedAgents,
+              );
+              registerBedrockResumeDocuments(
+                this.options.req,
+                liveSharedAttachmentFiles,
+                unpreparedAgents,
+                getStrategyFunctions,
+                lateScopedAttachmentMap,
+                this.turnHistoricalAttachmentIds,
               );
               const lateAttachmentInjections = [...lateScopedAttachmentMap.values()].flat();
               attachmentContextInjections.push(...lateAttachmentInjections);
@@ -5693,6 +5702,7 @@ class AgentClient extends BaseClient {
         agents,
         getStrategyFunctions,
         resumeScopedAttachmentMap,
+        this.turnHistoricalAttachmentIds,
       );
       this.attachmentMemoryContext = {
         req: this.options.req,
@@ -5805,6 +5815,7 @@ class AgentClient extends BaseClient {
                 unvalidatedAgents,
                 getStrategyFunctions,
                 lateScopedAttachmentMap,
+                this.turnHistoricalAttachmentIds,
               );
               const lateScopedAttachments = [...lateScopedAttachmentMap.values()].flat();
               resumeScopedAttachments.push(...lateScopedAttachments);
