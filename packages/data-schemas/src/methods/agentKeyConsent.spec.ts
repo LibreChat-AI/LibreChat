@@ -178,6 +178,48 @@ it.each([
   expect(await confirm(subject)).toBe(false);
 });
 
+it('holds the pin fences on the grant of a key as on that of a schedule, one agent at a time', async () => {
+  const other = { ...identity, agentId: 'agent_other' };
+  const first = 'a'.repeat(64);
+  const second = 'b'.repeat(64);
+  const pin = (subject: AgentKeyMCPIdentity, digest: string) =>
+    storage.pinScheduleMCPToolDefinition({
+      identity: subject,
+      revision: 'grant-1',
+      consentId: 'consent-1',
+      tool: 'query',
+      digest,
+    });
+  const use = (subject: AgentKeyMCPIdentity, digest: string) =>
+    storage.admitScheduleMCPConsent({
+      identity: subject,
+      revision: 'grant-1',
+      expectedConfigRevision: 0,
+      consentId: 'consent-1',
+      definitions: { query: digest },
+    });
+  await confirm();
+  await confirm(other);
+  const unpinned = (await storage.readScheduleMCPConsent(identity))?.enrollment;
+  await pin(identity, first);
+  // Admission looks at the pin in the same write, and only at this agent's grant.
+  expect(await use(identity, first)).toBe(true);
+  expect(await use(identity, second)).toBe(false);
+  expect(await use(other, second)).toBe(true);
+  // A grant built from the read before the pin would drop it, so it is not written.
+  const replace = (basis: typeof unpinned) =>
+    storage.confirmScheduleMCPConsent({
+      identity,
+      expectedConfigRevision: 0,
+      expectedRevision: 'grant-1',
+      enrollment: grant(identity, 'grant-2'),
+      basis,
+    });
+  expect(await replace(unpinned)).toBe(false);
+  expect(await replace((await storage.readScheduleMCPConsent(identity))?.enrollment)).toBe(true);
+  expect((await storage.readScheduleMCPConsent(other))?.enrollment?.revision).toBe('grant-1');
+});
+
 it('accepts a key with an expiry still ahead', async () => {
   const subject = {
     ...identity,
