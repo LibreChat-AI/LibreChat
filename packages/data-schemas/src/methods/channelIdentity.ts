@@ -126,6 +126,14 @@ export function createChannelIdentityStorage(
         throw new TypeError('Channel identity tenant mismatch');
       if (typeof record.identity.channelRevision !== 'string' || !record.identity.channelRevision)
         throw new TypeError('Channel revision required');
+      // Browser consent can advance an existing pending ticket without provider ingress.
+      const browserConsent =
+        record.identity.provider === 'discord' &&
+        applicationRevision === undefined &&
+        record.state === 'accepted' &&
+        Boolean(expectedRevision);
+      if (record.identity.provider === 'discord' && !applicationRevision && !browserConsent)
+        return false;
       await ensureIndexes();
       if (
         (!record.userId && record.accountLabel != null) ||
@@ -160,6 +168,7 @@ export function createChannelIdentityStorage(
             tenantId: record.tenantId,
             linkId: record.linkId,
             revision: expectedRevision,
+            ...(browserConsent ? { state: 'pending' } : {}),
             'identity.tenantId': record.identity.tenantId,
             'identity.channelId': record.identity.channelId,
             ...channelIdentityScope(record.identity),

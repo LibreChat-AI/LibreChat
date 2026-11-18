@@ -201,6 +201,12 @@ test('Discord authority preserves binding and fences linked admission @scenario:
             await identities.saveChannelIdentity(
               { ...link, revision: randomUUID() },
               link.revision,
+            ),
+          ).toBe(false);
+          expect(
+            await identities.saveChannelIdentity(
+              { ...link, revision: randomUUID() },
+              link.revision,
               configured.revision,
             ),
           ).toBe(false);
@@ -209,6 +215,26 @@ test('Discord authority preserves binding and fences linked admission @scenario:
       const current = await methods.getActiveAgentChannel(channel.channelId);
       expect(current?.applicationRevision).toBe(rotatedRevision);
       expect(current?.encryptedBotToken === rotatedToken).toBe(true);
+      const secondLink = {
+        ...link,
+        identity: { ...identity, externalUserId: snowflake() },
+        linkId: randomUUID(),
+        revision: randomUUID(),
+        ticketHash: 'c'.repeat(64),
+      };
+      const pending = { ...secondLink, state: 'pending' as const, userId: undefined };
+      const accepted = { ...secondLink, state: 'accepted' as const, revision: randomUUID() };
+      expect(await identities.saveChannelIdentity(secondLink, null)).toBe(false);
+      expect(await identities.saveChannelIdentity(pending, null)).toBe(false);
+      expect(await identities.saveChannelIdentity(accepted, null)).toBe(false);
+      expect(await identities.saveChannelIdentity(pending, null, rotatedRevision)).toBe(true);
+      expect(await identities.saveChannelIdentity(accepted, pending.revision)).toBe(true);
+      expect(
+        await identities.saveChannelIdentity(
+          { ...accepted, revision: randomUUID() },
+          accepted.revision,
+        ),
+      ).toBe(false);
       expect(await identities.readChannelIdentity(identity)).toMatchObject({ ...link });
       expect((await admit(event(rotatedRevision))).duplicate).toBe(false);
       const startedAt = new Date();
