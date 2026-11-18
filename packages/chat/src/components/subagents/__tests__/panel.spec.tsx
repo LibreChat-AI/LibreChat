@@ -4771,6 +4771,18 @@ describe('SubagentThreadPanel', () => {
       });
     });
 
+    it("names a self-spawn's brief for the agent it runs as, as the durable view does", () => {
+      view('completed');
+      mockUseThreadChat.mockReturnValue(followedChat());
+
+      mount({ ...selection, subagentType: 'self' });
+
+      expect(screen.getByTestId('followed-thread')).toHaveAttribute(
+        'data-brief-author',
+        'Analyst One',
+      );
+    });
+
     it('shows the thread while its messages load', () => {
       view('completed');
       mockUseThreadChat.mockReturnValue(followedChat({ isLoading: true }));

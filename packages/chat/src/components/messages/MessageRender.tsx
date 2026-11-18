@@ -177,13 +177,18 @@ const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function Me
       }
       label={authored != null ? authored.label : (messageLabel ?? '')}
       showAuthor={authored != null}
-      hoverLabel={getHeaderHoverLabel(
-        hasConfiguredSender,
-        agent?.model,
-        assistant?.model,
-        msg.model,
-        conversation?.model,
-      )}
+      hoverLabel={
+        /** The model is the conversation's agent's, not this author's, so it is not shown. */
+        authored != null
+          ? undefined
+          : getHeaderHoverLabel(
+              hasConfiguredSender,
+              agent?.model,
+              assistant?.model,
+              msg.model,
+              conversation?.model,
+            )
+      }
       timestamp={msg.createdAt ?? msg.clientTimestamp}
       ariaLabel={getMessageAriaLabel(msg, localize)}
       headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
