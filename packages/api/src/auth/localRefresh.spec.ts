@@ -55,6 +55,81 @@ describe('createLocalRefreshHandler provider-session recheck', () => {
     process.env.NODE_ENV = originalNodeEnv;
   });
 
+  it.each(['getUserById', 'findSession', 'setAuthTokens'] as const)(
+    'keeps a %s failure retryable without clearing credentials',
+    async (method) => {
+      const deps = buildDeps({
+        getUserById: jest.fn().mockResolvedValue({ _id: USER_ID, provider: 'local' }),
+        findSession: jest.fn().mockResolvedValue({
+          _id: SESSION_ID,
+          expiration: new Date(Date.now() + 60_000),
+        }),
+      });
+      deps[method].mockRejectedValueOnce(new Error('storage unavailable'));
+      const handler = createLocalRefreshHandler(deps);
+      const res = buildRes();
+
+      await handler({ query: {} } as never, res, signRefreshToken(USER_ID));
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.send).toHaveBeenCalledWith({ code: 'AUTH_SESSION_CHECK_UNAVAILABLE' });
+      expect(res.clearCookie).not.toHaveBeenCalled();
+      expect(deps.deleteSession).not.toHaveBeenCalled();
+      expect(deps.deleteAllUserSessions).not.toHaveBeenCalled();
+
+      const retry = buildRes();
+      await handler({ query: {} } as never, retry, signRefreshToken(USER_ID));
+      expect(retry.status).toHaveBeenCalledWith(200);
+    },
+  );
+
+  it.each([
+    ['malformed', (): string => 'not-a-token'],
+    ['expired', (): string => jwt.sign({ id: USER_ID }, JWT_REFRESH_SECRET, { expiresIn: -1 })],
+    ['not active', (): string => jwt.sign({ id: USER_ID }, JWT_REFRESH_SECRET, { notBefore: 60 })],
+    ['invalid payload', (): string => jwt.sign({ invalid: true }, JWT_REFRESH_SECRET)],
+  ] as const)('rejects a %s credential without querying storage', async (_label, token) => {
+    const deps = buildDeps();
+    const handler = createLocalRefreshHandler(deps);
+    const res = buildRes();
+
+    await handler({ query: {} } as never, res, token());
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.send).toHaveBeenCalledWith('Invalid refresh token');
+    expect(deps.getUserById).not.toHaveBeenCalled();
+  });
+
+  it('keeps a missing server secret retryable without clearing credentials', async () => {
+    delete process.env.JWT_REFRESH_SECRET;
+    const deps = buildDeps();
+    const handler = createLocalRefreshHandler(deps);
+    const res = buildRes();
+
+    await handler({ query: {} } as never, res, signRefreshToken(USER_ID));
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.send).toHaveBeenCalledWith({ code: 'AUTH_SESSION_CHECK_UNAVAILABLE' });
+    expect(res.clearCookie).not.toHaveBeenCalled();
+    expect(deps.getUserById).not.toHaveBeenCalled();
+  });
+
+  it('returns an HTTP authentication failure for a deleted user instead of redirecting to HTML', async () => {
+    const deps = buildDeps({ getUserById: jest.fn().mockResolvedValue(null) });
+    const handler = createLocalRefreshHandler(deps);
+    const app = express();
+    app.post('/api/auth/refresh', async (req, res) => {
+      await handler(req, res, signRefreshToken(USER_ID));
+    });
+
+    const response = await request(app).post('/api/auth/refresh');
+
+    expect(response.status).toBe(401);
+    expect(response.headers.location).toBeUndefined();
+    expect(response.body).toEqual({ message: 'Refresh token expired or not found for this user' });
+    expect(deps.findSession).not.toHaveBeenCalled();
+  });
+
   it('rotates the credential once the provider session authorizes it', async () => {
     const refreshToken = signRefreshToken(USER_ID);
     const deps = buildDeps({
@@ -188,7 +263,7 @@ describe('createLocalRefreshHandler provider-session recheck', () => {
     expect(res.send).toHaveBeenCalledWith({ code: 'AUTH_SESSION_CHECK_UNAVAILABLE' });
   });
 
-  it('re-throws an error the authorizer did not mark as an unavailable check', async () => {
+  it('keeps an unexpected authorizer failure retryable', async () => {
     const refreshToken = signRefreshToken(USER_ID);
     const deps = buildDeps({
       getUserById: jest.fn().mockResolvedValue({ _id: USER_ID, provider: 'openid' }),
@@ -208,10 +283,11 @@ describe('createLocalRefreshHandler provider-session recheck', () => {
 
     await handler({ query: {} } as never, res, refreshToken);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.send).toHaveBeenCalledWith('Invalid refresh token');
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.send).toHaveBeenCalledWith({ code: 'AUTH_SESSION_CHECK_UNAVAILABLE' });
+    expect(res.clearCookie).not.toHaveBeenCalled();
     expect(deps.error).toHaveBeenCalledWith(
-      '[refreshController] Invalid refresh token:',
+      '[refreshController] Session check unavailable:',
       expect.any(Error),
     );
   });
