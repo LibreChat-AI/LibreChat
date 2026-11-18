@@ -171,8 +171,9 @@ function carriedPins(
 ): Pick<ScheduledMCPConsent, 'definitions'> {
   if (!prior?.definitions || !sameResource(prior.resource, target.resource)) return {};
   const allowed = new Set(target.permittedTools.flatMap((selection) => selection.tools));
+  const marked = new Set(prior.changedTools);
   const definitions = prior.definitions.filter(
-    (pin) => allowed.has(pin.tool) && !prior.changedTools?.includes(pin.tool),
+    (pin) => allowed.has(pin.tool) && !marked.has(pin.tool),
   );
   return definitions.length ? { definitions } : {};
 }

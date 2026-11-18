@@ -54,13 +54,21 @@ function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
   );
 }
 
+/** The owner's ticks, and the tools that were marked as changed when they were last made. */
+interface Edited {
+  choice: Record<string, string[]>;
+  changed: Record<string, string[]>;
+}
+
 /**
  * The owner's ticks, kept to what is on offer now. The offer is read again while the dialog
- * is open, and a server or tool the agents dropped has no box left to untick.
+ * is open: a server or tool the agents dropped has no box left to untick, and a tool marked
+ * as changed since the owner last ticked anything loses its tick, so allowing the new
+ * definition is something the owner does with the warning in view.
  */
 function currentChoice(
   data: ScheduleMCPConsentView,
-  edited: Record<string, string[]> | null,
+  edited: Edited | null,
 ): Record<string, string[]> {
   const initial = initialChoice(data);
   if (!edited) return initial;
@@ -68,9 +76,13 @@ function currentChoice(
     data.targets.map((target) => {
       const { serverName } = target.resource;
       const offered = offeredTools(target);
+      const marked = data.changed[serverName] ?? [];
+      const seen = edited.changed[serverName] ?? [];
       return [
         serverName,
-        (edited[serverName] ?? initial[serverName]).filter((tool) => offered.includes(tool)),
+        (edited.choice[serverName] ?? initial[serverName]).filter(
+          (tool) => offered.includes(tool) && (!marked.includes(tool) || seen.includes(tool)),
+        ),
       ];
     }),
   );
@@ -96,14 +108,14 @@ export default function Consent({
   const [hours, setHours] = useState(1);
   const [message, setMessage] = useState<'success' | 'revoked' | 'error' | null>(null);
   /** Null until the owner changes a box, so a refetch cannot overwrite a choice in progress. */
-  const [edited, setEdited] = useState<Record<string, string[]> | null>(null);
+  const [edited, setEdited] = useState<Edited | null>(null);
   const busy = confirm.isLoading || revoke.isLoading || query.isFetching;
   const data: ScheduleMCPConsentView | undefined = query.data;
   const choosing = canConfirm && data?.offer != null;
   const choice = data ? currentChoice(data, edited) : {};
   const chosenCount = Object.values(choice).reduce((count, tools) => count + tools.length, 0);
   const setTools = (serverName: string, tools: string[]) =>
-    setEdited({ ...choice, [serverName]: tools });
+    setEdited({ choice: { ...choice, [serverName]: tools }, changed: data?.changed ?? {} });
   const commit = () => {
     if (!data?.offer || chosenCount === 0) return;
     setMessage(null);

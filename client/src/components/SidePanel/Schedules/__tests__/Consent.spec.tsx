@@ -197,6 +197,46 @@ it('leaves a tool the server changed unticked and says why, until the owner allo
     ),
   );
 });
+it('unticks a tool that is marked as changed while the owner is choosing, until they tick it again', async () => {
+  const granted = {
+    ...view,
+    state: 'active' as const,
+    revision: 'grant',
+    expiresAtMs: Date.now() + 60_000,
+    allowed: { warehouse: ['query'] },
+  };
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(granted);
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  const client = display();
+  // The owner edits a tick, so the dialog now holds their choice and not the stored one.
+  await userEvent.click(await screen.findByRole('checkbox', { name: 'export' }));
+  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+  // A run then sees `query` with a different definition, and the offer is read again.
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...granted,
+    state: 'changed',
+    changed: { warehouse: ['query'] },
+    offer: { digest: 'c'.repeat(64), maxLifetimeHours: 24 },
+  });
+  await client.invalidateQueries();
+  const marked = await screen.findByRole('checkbox', {
+    name: 'query',
+    description: 'com_ui_schedule_consent_tool_changed',
+  });
+  expect(marked).not.toBeChecked();
+  expect(screen.getByRole('checkbox', { name: 'export' })).toBeChecked();
+  // Ticked again with the warning in view, it is sent, and stays ticked across later edits.
+  await userEvent.click(marked);
+  await userEvent.click(screen.getByRole('checkbox', { name: 'export' }));
+  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({ offerDigest: 'c'.repeat(64), allow: { warehouse: ['query'] } }),
+    ),
+  );
+});
 it('names the changed tools when there is nothing to confirm', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,
