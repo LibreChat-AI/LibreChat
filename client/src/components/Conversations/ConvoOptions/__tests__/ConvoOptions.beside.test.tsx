@@ -1,7 +1,7 @@
 import React from 'react';
 import { Provider, createStore } from 'jotai';
 import { ToastContext } from '@librechat/client';
-import { sideChatAtom, sideChatBesideAtom } from '@librechat/chat/react';
+import { sideChatAtom, sideChatBesideAtom, sideChatRequestAtom } from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
 import { act, render, screen, waitFor, fireEvent } from 'test/layout-test-utils';
 import { ChatContext } from '~/Providers/ChatContext';
@@ -153,6 +153,58 @@ describe('ConvoOptions open beside', () => {
     expect(store.get(sideChatAtom)).toBeNull();
     act(() => afterSlide?.());
     expect(store.get(sideChatAtom)).toEqual({ conversation: record });
+  });
+
+  describe('while the sidebar is getting out of the way', () => {
+    /** The row's way out of the sidebar, held open so the test decides when it has left. */
+    const leaving = () => {
+      let afterSlide: (() => void) | undefined;
+      const toggleNav = jest.fn((after?: () => void) => {
+        afterSlide = after;
+      });
+      return { toggleNav, leave: () => act(() => afterSlide?.()) };
+    };
+    const askAndWait = async (toggleNav: jest.Mock) => {
+      mockGetConversation.mockResolvedValue(record);
+      const view = setup({ toggleNav });
+      fireEvent.click(await openBeside());
+      await waitFor(() => expect(toggleNav).toHaveBeenCalledTimes(1));
+      return view;
+    };
+
+    it('opens nothing if the reader has moved to another chat by then', async () => {
+      const { toggleNav, leave } = leaving();
+      const { store } = await askAndWait(toggleNav);
+
+      act(() => store.set(sideChatBesideAtom, { conversationId: 'conversation-3' }));
+      leave();
+
+      expect(store.get(sideChatAtom)).toBeNull();
+    });
+
+    it('opens nothing if another panel was asked for by then', async () => {
+      const { toggleNav, leave } = leaving();
+      const { store } = await askAndWait(toggleNav);
+
+      /** What the page does when an artifact or a child's activity takes the slot. */
+      act(() => store.set(sideChatRequestAtom, null));
+      leave();
+
+      expect(store.get(sideChatAtom)).toBeNull();
+    });
+
+    it('leaves a newer ask to open in its own time', async () => {
+      const { toggleNav, leave } = leaving();
+      const { store } = await askAndWait(toggleNav);
+      const newer = {};
+      act(() => store.set(sideChatRequestAtom, newer));
+
+      leave();
+
+      expect(store.get(sideChatAtom)).toBeNull();
+      /** The older request ends without taking the newer one's place. */
+      expect(store.get(sideChatRequestAtom)).toBe(newer);
+    });
   });
 
   describe('when the answer arrives late', () => {

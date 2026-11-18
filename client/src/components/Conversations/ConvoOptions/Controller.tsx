@@ -235,28 +235,49 @@ function ConvoMenuController({
     store.set(sideChatRequestAtom, request);
     const refuse = (message: string) =>
       showToast({ message, severity: NotificationSeverity.ERROR, showIcon: true });
+    /**
+     * Whether this is still what the reader wants, asked at every step that waits: after the
+     * record is read, and again after the sidebar has got out of the way. It is while no newer
+     * ask or other panel has taken its token, and the chat on screen is the one it was asked
+     * beside and not the conversation itself.
+     */
+    const wanted = (): boolean =>
+      store.get(sideChatRequestAtom) === request &&
+      store.get(sideChatBesideAtom) === beside &&
+      beside.conversationId !== convoId;
+    /** Ends this request, leaving alone a newer one that has taken its place. */
+    const settle = (): void => {
+      if (store.get(sideChatRequestAtom) === request) {
+        store.set(sideChatRequestAtom, null);
+      }
+    };
     queryClient
       .fetchQuery([QueryKeys.conversation, convoId], () => dataService.getConversationById(convoId))
       .then(
         (conversation) => {
-          if (store.get(sideChatRequestAtom) !== request) {
-            return;
-          }
-          store.set(sideChatRequestAtom, null);
-          if (store.get(sideChatBesideAtom) !== beside || beside.conversationId === convoId) {
+          if (!wanted()) {
+            settle();
             return;
           }
           /** Assistants conversations run over their own routes, which a side chat does not drive. */
           if (conversation == null || isAssistantsEndpoint(conversation.endpoint)) {
+            settle();
             refuse(localize('com_ui_side_chat_unsupported'));
             return;
           }
+          const open = () => {
+            const stillWanted = wanted();
+            settle();
+            if (stillWanted) {
+              setSideChat({ conversation });
+            }
+          };
           /**
            * On a small screen the sidebar is a drawer over the chat, so it gets out of the way
            * first, the way it does when a conversation is selected; on a wide one this opens
-           * at once.
+           * at once. The drawer takes a few frames to leave, so the request stays the reader's
+           * newest until then and is asked about once more.
            */
-          const open = () => setSideChat({ conversation });
           if (leaveSidebar.current == null) {
             open();
             return;
@@ -267,7 +288,7 @@ function ConvoMenuController({
           if (store.get(sideChatRequestAtom) !== request) {
             return;
           }
-          store.set(sideChatRequestAtom, null);
+          settle();
           refuse(localize('com_ui_side_chat_load_error'));
         },
       );
