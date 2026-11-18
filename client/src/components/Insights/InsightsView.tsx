@@ -32,7 +32,7 @@ import { cn } from '~/utils';
 type ShortcutRange = Exclude<InsightsRange, 'custom'>;
 type Localize = ReturnType<typeof useLocalize>;
 type SparklinePoint = { date: string; value: number };
-type VersionMark = { label: string | null; saved: boolean; tag?: string };
+type VersionMark = { label: string | null; marked: boolean; tag?: string };
 type CustomDateRange = { startDate: Date; endDate: Date };
 
 type KpiCardData = {
@@ -200,9 +200,9 @@ function Sparkline({
     year: 'numeric',
     timeZone: 'UTC',
   });
-  const savedVersions = points.flatMap((point, index) => {
+  const markedVersions = points.flatMap((point, index) => {
     const mark = versionMarks?.[index];
-    return mark?.saved && mark.label
+    return mark?.marked && mark.label
       ? [
           {
             x: point.x,
@@ -214,7 +214,7 @@ function Sparkline({
   });
 
   const shownTags = visibleTags(
-    savedVersions.map(({ x, tag }) => ({ position: (x / 300) * 100, text: tag ?? '' })),
+    markedVersions.map(({ x, tag }) => ({ position: (x / 300) * 100, text: tag ?? '' })),
     chartWidth,
   );
 
@@ -224,11 +224,11 @@ function Sparkline({
       ref={chartRef}
       className={cn(
         'text-status-info relative h-14 w-full outline-hidden',
-        savedVersions.length > 0 ? 'mt-7' : 'mt-2',
+        markedVersions.length > 0 ? 'mt-7' : 'mt-2',
       )}
       role="img"
       tabIndex={0}
-      aria-label={[label, ...savedVersions.map(({ description }) => description)].join('. ')}
+      aria-label={[label, ...markedVersions.map(({ description }) => description)].join('. ')}
       onFocus={() => setActiveIndex(points.length - 1)}
       onBlur={() => setActiveIndex(undefined)}
       onMouseLeave={() => setActiveIndex(undefined)}
@@ -262,7 +262,7 @@ function Sparkline({
           strokeWidth="2"
           vectorEffect="non-scaling-stroke"
         />
-        {savedVersions.map(({ x }) => (
+        {markedVersions.map(({ x }) => (
           <line
             key={x}
             data-testid="insights-version-marker"
@@ -278,7 +278,7 @@ function Sparkline({
           />
         ))}
       </svg>
-      {savedVersions.map(({ x, tag }, index) => {
+      {markedVersions.map(({ x, tag }, index) => {
         const position = (x / 300) * 100;
         return tag && shownTags.has(index) ? (
           <span
@@ -833,7 +833,7 @@ export default function InsightsView() {
       const last = saved.at(-1);
       if (last != null) {
         return {
-          saved: marked,
+          marked,
           label:
             saved.length > 1
               ? localize('com_insights_version_saved_earlier', {
@@ -844,9 +844,9 @@ export default function InsightsView() {
           tag: localize('com_insights_version_tag', { versionNumber: last }),
         };
       }
-      if (inUse == null) return { saved: false, label: null };
+      if (inUse == null) return { marked: false, label: null };
       return {
-        saved: false,
+        marked: false,
         label: restored
           ? localize('com_insights_version_restored', { versionNumber: inUse })
           : localize('com_ui_agent_version_title', { versionNumber: inUse }),
