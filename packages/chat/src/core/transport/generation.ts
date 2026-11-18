@@ -1,5 +1,10 @@
-import { apiBaseUrl } from 'librechat-data-provider';
-import type { ChatEvent, ChatTransport as WireTransport } from 'librechat-data-provider';
+import { apiBaseUrl, generationServer, removeNullishValues } from 'librechat-data-provider';
+import type {
+  TPayload,
+  ChatEvent,
+  ChatTransportRequest,
+  ChatTransport as WireTransport,
+} from 'librechat-data-provider';
 import type {
   ChatStream,
   ChatTransport,
@@ -11,7 +16,27 @@ import type {
   ChatTransportError,
   ChatReconnectRequest,
 } from '../types';
-import { generationProtocolHeaders, generationStreamUrl } from '../protocol';
+import {
+  getRetryAfterDelay,
+  waitForRetryDelay,
+  isServerNotReadyError,
+  isResumedStartResponse,
+  isSettledStartResponse,
+  isRetryableNetworkError,
+  isReplacedStartResponse,
+  getStartGenerationStreamId,
+  getStartGenerationCreatedAt,
+  isUnnegotiatedV2StartControl,
+  START_GENERATION_NETWORK_RETRIES,
+  getStartGenerationConversationId,
+  START_GENERATION_READINESS_TIMEOUT_MS,
+} from '../resumable/start';
+import {
+  generationStreamUrl,
+  generationProtocolHeaders,
+  GENERATION_PROTOCOL_VERSION,
+  getGenerationProtocolVersion,
+} from '../protocol';
 
 /** What the generation routes need from the app that calls them. */
 export type GenerationTransportInit = {
@@ -22,7 +47,13 @@ export type GenerationTransportInit = {
   wire: () => WireTransport;
   /** Reads a conversation's generation state from the status route. */
   getStatus: (conversationId: string) => Promise<ChatStreamStatus>;
-  /** Starts a turn. Without it the transport only follows generations something else started. */
+  /**
+   * POSTs a turn to the generation route and resolves to the server's start response, the way
+   * the app's transport does for main chat (auth refresh included). With it the transport starts
+   * turns; without it, it only follows generations something else started.
+   */
+  start?: (request: ChatTransportRequest, options?: { signal?: AbortSignal }) => Promise<unknown>;
+  /** Starts a turn some other way than `start`; takes precedence over it. */
   sendMessages?: (request: ChatSendRequest) => Promise<ChatSendResult>;
   /** Stops a generation. Without it a stop is refused. */
   abort?: (request: ChatAbortRequest) => Promise<ChatAbortResult>;
@@ -56,6 +87,8 @@ function openStream(
     generationCreatedAt?: number;
     generationProtocolVersion?: number;
     signal?: AbortSignal;
+    /** Replay the generation so far before live events; false for a turn this client started. */
+    resume: boolean;
   },
 ): Promise<ChatStream | null> {
   const controller = new AbortController();
@@ -85,7 +118,7 @@ function openStream(
     streamId: target.streamId,
     generationCreatedAt: target.generationCreatedAt,
     generationProtocolVersion: target.generationProtocolVersion,
-    resumed: true,
+    resumed: target.resume,
     close,
     async *[Symbol.asyncIterator]() {
       for (;;) {
@@ -146,7 +179,7 @@ function openStream(
       {
         url: generationStreamUrl(apiBaseUrl(), {
           streamId: target.streamId,
-          resume: true,
+          resume: target.resume,
           generationCreatedAt: target.generationCreatedAt,
         }),
         headers: generationProtocolHeaders(),
@@ -161,6 +194,110 @@ function openStream(
 }
 
 /**
+ * POSTs the turn until the server answers it, retrying what main chat's own start retries: a
+ * dropped connection a few times, and a server that is still starting for as long as it says
+ * to wait, within the readiness window.
+ */
+async function requestStart(
+  start: NonNullable<GenerationTransportInit['start']>,
+  request: ChatTransportRequest,
+  signal: AbortSignal | undefined,
+): Promise<unknown> {
+  const deadline = Date.now() + START_GENERATION_READINESS_TIMEOUT_MS;
+  for (let attempt = 1, dropped = 0; ; attempt++) {
+    try {
+      return await start(request, { signal });
+    } catch (error) {
+      const remaining = deadline - Date.now();
+      const networkRetry =
+        isRetryableNetworkError(error) && dropped < START_GENERATION_NETWORK_RETRIES - 1;
+      const notReady = isServerNotReadyError(error) && remaining > 0;
+      if (signal?.aborted === true || !(networkRetry || notReady)) {
+        throw error;
+      }
+      dropped += networkRetry ? 1 : 0;
+      const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+      const delay = notReady ? Math.min(getRetryAfterDelay(error, backoff), remaining) : backoff;
+      if (!(await waitForRetryDelay(delay, signal))) {
+        throw error;
+      }
+    }
+  }
+}
+
+/**
+ * Starts a turn: posts it, reads what the server did with it, and opens the stream of the
+ * generation it started. The server may instead say the turn had already run (`settled`) or
+ * that a newer generation took its place (`replaced`), which the caller is told as they are.
+ */
+async function startTurn(
+  start: NonNullable<GenerationTransportInit['start']>,
+  wire: () => WireTransport,
+  request: ChatSendRequest,
+): Promise<ChatSendResult> {
+  const { payload, abortSignal } = request;
+  if (payload.endpoint == null) {
+    throw transportError('A turn needs an endpoint to be sent to', 'ERR_BAD_REQUEST');
+  }
+  const data = await requestStart(
+    start,
+    {
+      server: generationServer(payload.endpoint),
+      /** Stripped as main chat's start strips it, so the server reads the same body. */
+      payload: removeNullishValues(payload) as TPayload,
+    },
+    abortSignal,
+  );
+  const conversationId = getStartGenerationConversationId(data);
+  const streamId = getStartGenerationStreamId(data);
+  const generationCreatedAt = getStartGenerationCreatedAt(data) ?? undefined;
+  const refused = (): ChatTransportError =>
+    transportError('The generation could not be started', 'ERR_BAD_RESPONSE', {
+      status: 200,
+      data,
+    });
+  if (isSettledStartResponse(data)) {
+    if (conversationId == null) {
+      throw refused();
+    }
+    return {
+      status: 'settled',
+      conversationId,
+      generationProtocolVersion: GENERATION_PROTOCOL_VERSION,
+    };
+  }
+  if (isReplacedStartResponse(data)) {
+    if (conversationId == null || streamId == null || generationCreatedAt == null) {
+      throw refused();
+    }
+    return {
+      status: 'replaced',
+      conversationId,
+      streamId,
+      generationCreatedAt,
+      generationProtocolVersion: GENERATION_PROTOCOL_VERSION,
+    };
+  }
+  /** A v2-only control word is never read as a stream because it also carries a stream id. */
+  if (isUnnegotiatedV2StartControl(data) || streamId == null) {
+    throw refused();
+  }
+  const stream = await openStream(wire(), {
+    streamId,
+    generationCreatedAt,
+    generationProtocolVersion: getGenerationProtocolVersion(data),
+    signal: abortSignal,
+    /** A start the server folded into a generation already running is replayed from its start. */
+    resume: isResumedStartResponse(data),
+  });
+  if (stream == null) {
+    /** The generation was over before its stream could be opened; its result is stored. */
+    return { status: 'settled', conversationId: conversationId ?? request.chatId };
+  }
+  return { status: 'stream', stream };
+}
+
+/**
  * The `Chat` transport over LibreChat's generation routes. Reattaching asks the status route
  * what is running and then opens that generation's stream, replayed from its start, so a chat
  * that joins late holds what one that watched from the first frame holds.
@@ -168,12 +305,15 @@ function openStream(
 export function createGenerationTransport(init: GenerationTransportInit): ChatTransport {
   return {
     sendMessages(request) {
-      if (init.sendMessages == null) {
+      if (init.sendMessages != null) {
+        return init.sendMessages(request);
+      }
+      if (init.start == null) {
         return Promise.reject(
           transportError('This transport only follows running generations', 'ERR_VIEW_ONLY'),
         );
       }
-      return init.sendMessages(request);
+      return startTurn(init.start, init.wire, request);
     },
     async reconnectToStream(request: ChatReconnectRequest) {
       const status = await init.getStatus(request.chatId);
@@ -193,6 +333,7 @@ export function createGenerationTransport(init: GenerationTransportInit): ChatTr
         generationCreatedAt: request.generationCreatedAt ?? status.createdAt,
         generationProtocolVersion: status.generationProtocolVersion,
         signal: request.abortSignal,
+        resume: true,
       });
     },
     abort(request) {
