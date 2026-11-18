@@ -165,7 +165,7 @@ describe('reduceStep', () => {
             tool_call: {
               id: 'call-1',
               name: 'create_file',
-              args: '{"file_path":"skills/demo/SKILL.md"}',
+              args: '{"path":"skills/demo/SKILL.md"}',
               output: 'ok',
             },
           } as never,

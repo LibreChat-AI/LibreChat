@@ -5707,18 +5707,6 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
       };
       // Only the SDK-owned batch field may establish a child execution. Runtime
       // configurable and callback metadata can otherwise carry inherited values.
-      /**
-       * Authored-skill identity has to outlive the per-batch copy below, which
-       * is what makes a skill created in one batch resolvable in the next.
-       * A shallow copy shares object references, so seeding the map on the
-       * run's own configurable lets `rememberAuthoredSkill` mutate it in place
-       * and later batches observe it, exactly as the shared
-       * `accessibleSkillIds` array already crosses batches. A fresh map
-       * assigned onto the copy would be discarded with the copy.
-       */
-      if (incomingConfigurable != null && incomingConfigurable.authoredSkillIdsByName == null) {
-        incomingConfigurable.authoredSkillIdsByName = {};
-      }
       const configurable: Record<string, unknown> | undefined =
         incomingConfigurable == null ? undefined : { ...incomingConfigurable, executionContext };
       const metadata: Record<string, unknown> | undefined =
@@ -5832,6 +5820,15 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
             const mergedConfigurable = resumedSkillConfigurable
               ? mergeToolConfigurables(resumedSkillConfigurable, baseConfigurable)
               : baseConfigurable;
+            /* The graph hands every tool step a fresh configurable, so skills authored in an
+             * earlier batch are bound again from this handler, which outlives the batches. */
+            for (const binding of authoredSkills.recorded(authoredScope)) {
+              rememberAuthoredSkill(
+                [mergedConfigurable],
+                { _id: new Types.ObjectId(binding.id), name: binding.name },
+                { prime: binding.primed },
+              );
+            }
             if (authoredSkills.hasPending) {
               const requestedSkills = new Map<string, ToolCallRequest[]>();
               for (const tc of allowedToolCalls) {

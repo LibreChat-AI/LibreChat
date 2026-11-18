@@ -3775,14 +3775,11 @@ describe('createToolExecuteHandler', () => {
       expect(getSkillByName).toHaveBeenLastCalledWith('shared-name', [SKILL_ID], {});
     });
 
-    it('keeps the authored id reachable after the per-batch configurable copy', async () => {
+    it('keeps the authored id reachable when each batch gets a fresh configurable', async () => {
       /**
-       * `ON_TOOL_EXECUTE` rebuilds the run configurable every batch
-       * (`{ ...incomingConfigurable, executionContext }`), so a map assigned
-       * onto that copy is discarded with it. The map is seeded on the run's own
-       * configurable for exactly this reason; this pins the surviving channel so
-       * a future change that reassigns it instead of mutating it fails here
-       * rather than silently unpinning cross-batch invocation.
+       * LangGraph builds a new top-level `configurable` for every tool step, so
+       * nothing assigned onto one batch's configurable reaches the next. Each
+       * batch below gets its own shallow copy, as the graph does.
        */
       const createdSkill = {
         _id: SKILL_ID,
@@ -3823,12 +3820,8 @@ describe('createToolExecuteHandler', () => {
             args: { path: 'skills/cross-batch-skill/SKILL.md', content: createdSkill.body },
           },
         ],
-        runConfigurable,
+        { ...runConfigurable },
       );
-
-      expect(runConfigurable.authoredSkillIdsByName).toEqual({
-        'cross-batch-skill': SKILL_ID.toString(),
-      });
 
       const [invoked] = await invokeHandlerWithConfig(
         handler,
@@ -3839,7 +3832,7 @@ describe('createToolExecuteHandler', () => {
             args: { skillName: 'cross-batch-skill' },
           },
         ],
-        runConfigurable,
+        { ...runConfigurable },
       );
 
       expect(invoked.status).toBe('success');
