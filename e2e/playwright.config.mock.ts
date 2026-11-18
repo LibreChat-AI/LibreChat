@@ -698,7 +698,7 @@ export default defineConfig({
         ...process.env,
         ...(replicaCount === 1 ? { SCHEDULES_SINGLE_PROCESS: 'true' } : {}),
       },
-      url: baseURL,
+      url: new URL('/readyz', baseURL).href,
       stdout: 'pipe',
       ignoreHTTPSErrors: true,
       timeout: 120_000,

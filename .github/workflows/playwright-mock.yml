@@ -754,6 +754,9 @@ jobs:
       - name: Test Playwright matrix selection, the vote gate, the merge gate and the retried-pass reporter
         run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs .github/scripts/merge-gate.test.mjs e2e/reporters/retried.test.mjs
 
+      - name: Check mock server readiness configuration
+        run: node --test e2e/readiness.test.mjs
+
       - name: Check MCP Apps result gating and same-repository PR eligibility
         run: node --test e2e/mcp-apps/results.test.mjs e2e/mcp-apps/workflow.test.mjs
 
