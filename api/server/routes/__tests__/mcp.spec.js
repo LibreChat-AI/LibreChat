@@ -3471,10 +3471,9 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
-      expect(require('@librechat/api').getUserMCPAuthMap).toHaveBeenCalledWith({
+      expect(require('~/models').findPluginAuthsByKeys).toHaveBeenCalledWith({
         userId: 'test-user-id',
-        servers: ['test-server'],
-        findPluginAuthsByKeys: require('~/models').findPluginAuthsByKeys,
+        pluginKeys: [`${require('librechat-data-provider').Constants.mcp_prefix}test-server`],
       });
     });
   });
@@ -3600,6 +3599,38 @@ describe('MCP Routes', () => {
       );
     });
 
+    it('shares one variable lookup across ordinary non-OAuth server observations', async () => {
+      const config = {
+        server1: { url: 'https://one.example', customUserVars: { API_KEY: { title: 'Key' } } },
+        server2: { url: 'https://two.example', customUserVars: { API_KEY: { title: 'Key' } } },
+      };
+      getMCPSetupData.mockResolvedValue({
+        mcpConfig: config,
+        appConnections: new Map(),
+        userConnections: new Map(),
+        oauthServers: new Set(),
+      });
+      const load = require('@librechat/api').getUserMCPAuthMap;
+      load.mockResolvedValue({});
+      const observe = async (_user, _name, _config, _app, _connections, _oauth, context) => {
+        await context.loadUserMCPAuthMap();
+        return {
+          connectionState: 'disconnected',
+          connectionStateSource: 'unobserved',
+          requiresOAuth: false,
+        };
+      };
+      getServerConnectionStatus.mockImplementationOnce(observe).mockImplementationOnce(observe);
+
+      const response = await request(app).get('/api/mcp/connection/status').expect(200);
+
+      expect(Object.keys(response.body.connectionStatus)).toEqual(['server1', 'server2']);
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(load).toHaveBeenCalledWith(
+        expect.objectContaining({ servers: ['server1', 'server2'] }),
+      );
+    });
+
     it('should resolve independent server statuses concurrently', async () => {
       let releaseFirst;
       let markSecondStarted;
@@ -3643,32 +3674,39 @@ describe('MCP Routes', () => {
       expect(getServerConnectionStatus).toHaveBeenCalledTimes(2);
     });
 
-    it('preserves request-scoped metadata when an individual status check fails', async () => {
-      getMCPSetupData.mockResolvedValue({
-        mcpConfig: {
-          server1: {
-            source: 'config',
-            headers: { 'X-Message': '{{LIBRECHAT_BODY_MESSAGEID}}' },
-            customUserVars: { API_KEY: { title: 'API key' } },
-          },
+    it.each([
+      ['non-OAuth', false, {}],
+      ['OAuth', true, {}],
+      [
+        'request-scoped',
+        false,
+        {
+          source: 'config',
+          headers: { 'X-Message': '{{LIBRECHAT_BODY_MESSAGEID}}' },
+          customUserVars: { API_KEY: { title: 'API key' } },
         },
-        appConnections: new Map(),
-        userConnections: new Map(),
-        oauthServers: new Set(),
-      });
-      getServerConnectionStatus.mockRejectedValueOnce(new Error('status unavailable'));
-
-      const response = await request(app).get('/api/mcp/connection/status');
-
-      expect(response.status).toBe(200);
-      expect(response.body.connectionStatus.server1).toEqual(
-        expect.objectContaining({
+      ],
+    ])(
+      'reports %s lookup failure without inventing authorization or configuration failures',
+      async (_name, requiresOAuth, config) => {
+        getMCPSetupData.mockResolvedValue({
+          mcpConfig: { server1: config },
+          appConnections: new Map(),
+          userConnections: new Map(),
+          oauthServers: new Set(requiresOAuth ? ['server1'] : []),
+        });
+        getServerConnectionStatus.mockRejectedValueOnce(new Error('secret provider diagnostic'));
+        const response = await request(app).get('/api/mcp/connection/status');
+        expect(response.status).toBe(200);
+        expect(response.body.connectionStatus.server1).toEqual({
           connectionState: 'error',
-          requestScoped: true,
-          configurationState: 'needs_configuration',
-        }),
-      );
-    });
+          connectionStateSource: 'unavailable',
+          requiresOAuth,
+          ...(_name === 'request-scoped' && { requestScoped: true }),
+        });
+        expect(JSON.stringify(response.body)).not.toContain('secret provider diagnostic');
+      },
+    );
 
     it('should return 500 when connection status check fails', async () => {
       getMCPSetupData.mockRejectedValue(new Error('Database error'));
