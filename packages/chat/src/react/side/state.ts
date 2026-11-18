@@ -1,7 +1,8 @@
 import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
+import type { Atom, PrimitiveAtom, WritableAtom } from 'jotai';
 import type { TConversation } from 'librechat-data-provider';
-import type { Atom, PrimitiveAtom } from 'jotai';
+import type { SetStateAction } from 'react';
 
 /**
  * The pane number a side chat keys its per-pane state by. Its own, so it shares none of that
@@ -30,8 +31,36 @@ export const sideChatBesideAtom: PrimitiveAtom<SideChatBeside | null> = atom<Sid
 /** Whether the page can show a side chat right now, for whatever offers to open one. */
 export const sideChatAvailableAtom: Atom<boolean> = atom((get) => get(sideChatBesideAtom) != null);
 
+/**
+ * The side chat as it is kept: read it for the one on screen. Written only through
+ * `sideChatAtom`, so that every way of opening or closing one also withdraws a request still
+ * on its way.
+ */
+const shownSideChatAtom = atom<SideChat | null>(null);
+
+/**
+ * The request to open a side chat that is waiting on something, if any: a conversation whose
+ * record is being read. The newest request replaces the one before it, and a side chat opened
+ * or closed by any other means withdraws it, so an answer that arrives late opens nothing over
+ * what the reader chose since. A requester keeps the token it set and opens only while it is
+ * still the one here.
+ */
+export const sideChatRequestAtom: PrimitiveAtom<object | null> = atom<object | null>(null);
+
 /** The side chat on screen, if any. One at a time: it takes the page's side panel. */
-export const sideChatAtom: PrimitiveAtom<SideChat | null> = atom<SideChat | null>(null);
+export const sideChatAtom: WritableAtom<SideChat | null, [SetStateAction<SideChat | null>], void> =
+  atom(
+    (get) => get(shownSideChatAtom),
+    (get, set, next: SetStateAction<SideChat | null>) => {
+      const current = get(shownSideChatAtom);
+      const value = typeof next === 'function' ? next(current) : next;
+      /** A change of what is shown, not a refinement of it, is the reader's newest choice. */
+      if (value?.conversation.conversationId !== current?.conversation.conversationId) {
+        set(sideChatRequestAtom, null);
+      }
+      set(shownSideChatAtom, value);
+    },
+  );
 
 /**
  * The words the reader has written for a side chat and not sent, by its conversation. Held

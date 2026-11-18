@@ -136,6 +136,7 @@ export {
   sideChatAtom,
   SIDE_CHAT_PANE,
   sideChatBesideAtom,
+  sideChatRequestAtom,
   sideChatAvailableAtom,
 } from './react/side/state';
 export type { SideChatBeside } from './react/side/state';

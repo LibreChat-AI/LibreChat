@@ -3,8 +3,8 @@ import { useStore, useSetAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate } from 'react-router-dom';
-import { sideChatAtom, sideChatBesideAtom } from '@librechat/chat/react';
 import { QueryKeys, dataService, isAssistantsEndpoint } from 'librechat-data-provider';
+import { sideChatAtom, sideChatBesideAtom, sideChatRequestAtom } from '@librechat/chat/react';
 import type { MouseEvent, MutableRefObject } from 'react';
 import type { TMessage } from 'librechat-data-provider';
 import {
@@ -224,12 +224,19 @@ function ConvoMenuController({
       return;
     }
     setIsPopoverActive(false);
+    /** The reader's newest ask: one made after it, or a side chat opened meanwhile, replaces it. */
+    const request = {};
+    store.set(sideChatRequestAtom, request);
     const refuse = (message: string) =>
       showToast({ message, severity: NotificationSeverity.ERROR, showIcon: true });
     queryClient
       .fetchQuery([QueryKeys.conversation, convoId], () => dataService.getConversationById(convoId))
       .then(
         (conversation) => {
+          if (store.get(sideChatRequestAtom) !== request) {
+            return;
+          }
+          store.set(sideChatRequestAtom, null);
           if (store.get(sideChatBesideAtom) !== beside || beside.conversationId === convoId) {
             return;
           }
@@ -240,7 +247,13 @@ function ConvoMenuController({
           }
           setSideChat({ conversation });
         },
-        () => refuse(localize('com_ui_side_chat_load_error')),
+        () => {
+          if (store.get(sideChatRequestAtom) !== request) {
+            return;
+          }
+          store.set(sideChatRequestAtom, null);
+          refuse(localize('com_ui_side_chat_load_error'));
+        },
       );
   }, [conversationId, queryClient, setIsPopoverActive, setSideChat, showToast, localize, store]);
 
