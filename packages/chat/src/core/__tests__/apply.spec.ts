@@ -935,6 +935,33 @@ describe('a turn whose shape the server states', () => {
       (part) => (part as { text?: string } | undefined)?.text,
     );
 
+  it('settles a turn that streamed nothing onto the reply it was drawn with, not beside it', () => {
+    const { applyEvent } = createEventApplier();
+    /** As a chat that sent the turn holds it: the message, and its reply under a padded id. */
+    const drawn: TMessage = { ...reply('user-1_', []), parentMessageId: 'user-1' };
+    const { context, read } = createList([user, drawn]);
+
+    applyEvent(createdAs({ responseMessageId: 'resp-1' }), context);
+    applyEvent(final('Done at once'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+    expect(texts(read(), 'resp-1')).toEqual(['Done at once']);
+  });
+
+  it('leaves a reply the final frame does not replace where it is', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, reply('resp-0', ['An earlier answer'])]);
+
+    /** A regeneration answers beside the saved reply; nothing of that reply is this turn's. */
+    applyEvent(createdAs({ responseMessageId: 'resp-1', isRegenerate: true }), context);
+    applyEvent(opened('s0', 0), context);
+    applyEvent(token('s0', 'Again'), context);
+    applyEvent(final('Again'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-0', 'resp-1']);
+    expect(texts(read(), 'resp-0')).toEqual(['An earlier answer']);
+  });
+
   it('draws a continued reply again from empty under its own id, not as a second answer', () => {
     const { applyEvent } = createEventApplier();
     const { context, read } = createList([user, reply('resp-1', ['Stopped here'])]);

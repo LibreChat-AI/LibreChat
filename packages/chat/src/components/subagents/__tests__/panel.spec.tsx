@@ -4711,6 +4711,9 @@ describe('SubagentThreadPanel', () => {
       isLoadingEarlier: false,
       isEarlierError: false,
       loadEarlier: () => undefined,
+      canSend: () => false,
+      send: () => false,
+      stop: () => Promise.resolve(),
       ...overrides,
     });
 

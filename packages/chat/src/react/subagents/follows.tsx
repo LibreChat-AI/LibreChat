@@ -127,6 +127,9 @@ const opening: FollowedChat = {
   isLoadingEarlier: false,
   isEarlierError: false,
   loadEarlier: () => undefined,
+  canSend: () => false,
+  send: () => false,
+  stop: () => Promise.resolve(),
 };
 
 const ThreadFollowsContext: Context<ThreadFollows | undefined> = createContext<
