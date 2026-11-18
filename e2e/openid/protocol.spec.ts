@@ -89,6 +89,19 @@ async function refresh(context: BrowserContext) {
   return { response, body };
 }
 
+async function adminRefresh(refreshToken: string, userId?: string) {
+  const response = await fetch(`${harness.baseURL}/api/admin/oauth/refresh`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken, user_id: userId, provider: 'openid' }),
+    signal: AbortSignal.timeout(30_000),
+  }).catch(() => {
+    throw new Error('Admin renewal transport failed');
+  });
+  const body: AuthBody = await response.json();
+  return { response, body };
+}
+
 async function revoke(sid: string) {
   await harness.admin(`/sessions/${encodeURIComponent(sid)}`, 'DELETE');
   await expect
@@ -103,10 +116,10 @@ function requireSid(sid: string | undefined): string {
   return sid;
 }
 
-test('real admin HTTP refresh recovers stale browser credentials and denies them after logout', async ({
+test('real admin HTTP renewal preserves login attempts and stale-token recovery until logout', async ({
   browser,
 }, info) => {
-  await harness.startApp({ reuse: true, mode: 'enforce' });
+  await harness.startApp({ reuse: true, mode: 'enforce', loginMax: 7 });
   const { context, sid } = await login(browser, 'b');
   const original = (await credentials(context)).refreshToken;
   expect(Boolean(original)).toBe(true);
@@ -118,20 +131,7 @@ test('real admin HTTP refresh recovers stale browser credentials and denies them
   const results: object[] = [];
   await harness.db.collection('users').updateOne({ _id: user._id }, { $set: { role: 'ADMIN' } });
   try {
-    const request = async () => {
-      const response = await fetch(`${harness.baseURL}/api/admin/oauth/refresh`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          refresh_token: original,
-          user_id: String(user._id),
-          provider: 'openid',
-        }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      const body: AuthBody = await response.json();
-      return { response, body };
-    };
+    const request = () => adminRefresh(original, String(user._id));
     const accepted = async (label: string, result: Awaited<ReturnType<typeof request>>) => {
       results.push({ label, status: result.response.status, errorCode: result.body.error_code });
       expect(result.response.status).toBe(200);
@@ -153,6 +153,12 @@ test('real admin HTTP refresh recovers stale browser credentials and denies them
     await accepted('concurrent left', concurrent[0]);
     await accepted('concurrent right', concurrent[1]);
     expect(concurrent[0].body.refreshToken === concurrent[1].body.refreshToken).toBe(true);
+    for (let index = 0; index < 4; index++) {
+      await accepted(`further renewal ${index + 1}`, await request());
+    }
+    // Eight renewals exceed LOGIN_MAX. A separate browser can still complete interactive login.
+    await login(browser);
+    results.push({ label: 'interactive login after eight renewals', accepted: true });
     expect(
       await harness.db
         .collection('refreshtokenbridges')
@@ -181,7 +187,119 @@ test('real admin HTTP refresh recovers stale browser credentials and denies them
       coverage:
         'Real admin HTTP routes with browser-issued OpenID credentials; no admin UI or code exchange.',
     });
+    await harness.startApp({ loginMax: 1000 });
   }
+});
+
+test('a Keycloak outage keeps admin renewal retryable with the same credential', async ({
+  browser,
+}, info) => {
+  test.setTimeout(240_000);
+  await harness.startApp({ reuse: true, mode: 'enforce' });
+  const { context } = await login(browser, 'b');
+  const original = (await credentials(context)).refreshToken;
+  expect(Boolean(original)).toBe(true);
+  const user = await harness.db
+    .collection('users')
+    .findOne({ email: 'b@example.test', provider: 'openid' });
+  if (!user) throw new Error('Browser login did not create its user');
+  const originalRole = user.role;
+  const sessionFilter = { refreshTokenHash: createHash('sha256').update(original).digest('hex') };
+  expect(Boolean(await harness.db.collection('sessions').findOne(sessionFilter))).toBe(true);
+  await harness.db.collection('users').updateOne({ _id: user._id }, { $set: { role: 'ADMIN' } });
+  try {
+    const flights = harness.db.collection('openidrefreshflights');
+    const existingFlightIds = await flights.distinct('_id');
+    await harness.stopKeycloak();
+    try {
+      const unavailable = await adminRefresh(original, String(user._id));
+      expect(unavailable.response.status).toBe(503);
+      expect(unavailable.body.error_code).toBe('AUTH_SESSION_CHECK_UNAVAILABLE');
+      expect(Boolean(unavailable.body.token || unavailable.body.refreshToken)).toBe(false);
+      expect(unavailable.response.headers.has('set-cookie')).toBe(false);
+      expect(Boolean(await harness.db.collection('sessions').findOne(sessionFilter))).toBe(true);
+      const pending = await flights
+        .find(
+          { _id: { $nin: existingFlightIds }, status: 'pending' },
+          { projection: { lockExpiresAt: 1 } },
+        )
+        .toArray();
+      expect(pending).toHaveLength(1);
+      const [flight] = pending;
+      expect(flight.lockExpiresAt).toBeInstanceOf(Date);
+      expect(Number.isFinite(flight.lockExpiresAt.getTime())).toBe(true);
+      // A failed grant keeps its lease. Retry after that lease expires.
+      await expect
+        .poll(
+          async () => {
+            const current = await flights.findOne(
+              { _id: flight._id },
+              { projection: { lockExpiresAt: 1 } },
+            );
+            return (
+              current?.lockExpiresAt instanceof Date &&
+              current.lockExpiresAt.getTime() <= Date.now()
+            );
+          },
+          { timeout: 40_000 },
+        )
+        .toBe(true);
+      await evidence(info, 'admin-provider-outage', {
+        status: unavailable.response.status,
+        errorCode: unavailable.body.error_code,
+        credentialsIssued: false,
+        sessionPreserved: true,
+        grantLeaseExpired: true,
+      });
+    } finally {
+      await harness.startKeycloak();
+    }
+    const recovered = await adminRefresh(original, String(user._id));
+    expect(recovered.response.status).toBe(200);
+    expect(typeof recovered.body.token).toBe('string');
+    expect(typeof recovered.body.refreshToken).toBe('string');
+    expect(recovered.body.refreshToken !== original).toBe(true);
+    await evidence(info, 'admin-provider-recovery', {
+      status: recovered.response.status,
+      sameCredentialRetried: true,
+      credentialRotated: true,
+    });
+  } finally {
+    await harness.db
+      .collection('users')
+      .updateOne(
+        { _id: user._id },
+        originalRole === undefined ? { $unset: { role: '' } } : { $set: { role: originalRole } },
+      );
+  }
+});
+
+test('a real Keycloak invalid grant ends admin renewal while session checks are off', async ({
+  browser,
+}, info) => {
+  await harness.startApp({ reuse: true, mode: 'enforce' });
+  const { context, sid } = await login(browser);
+  const original = (await credentials(context)).refreshToken;
+  expect(Boolean(original)).toBe(true);
+  await harness.startApp({ reuse: true, mode: 'off' });
+  await harness.admin(`/sessions/${encodeURIComponent(requireSid(sid))}`, 'DELETE');
+  await expect
+    .poll(() => harness.deliveries.find((delivery) => delivery.sid === sid)?.status)
+    .toBe(404);
+  const binding = await harness.db.collection('providersessions').findOne({ sid });
+  expect(Boolean(binding)).toBe(true);
+  expect(Boolean(binding?.revokedAt)).toBe(false);
+
+  const denied = await adminRefresh(original);
+  expect(denied.response.status).toBe(401);
+  expect(denied.body).toEqual({ error: 'Refresh failed', error_code: 'REFRESH_FAILED' });
+  await evidence(info, 'admin-invalid-grant', {
+    mode: 'off',
+    logoutDeliveryStatus: 404,
+    localBindingRevoked: false,
+    status: denied.response.status,
+    errorCode: denied.body.error_code,
+  });
 });
 
 for (const reuse of [false, true]) {
@@ -333,22 +451,27 @@ for (const reuse of [false, true]) {
       await harness.stopMongo();
       await harness.gate.release();
       const unavailable = await pending;
-      expect(unavailable.response.status()).toBe(503);
-      expect(unavailable.body.code).toBe('AUTH_SESSION_CHECK_UNAVAILABLE');
+      const failures = [unavailable];
+      // This request fails at user/session lookup, before it can reach the authorization gate.
+      if (!reuse) failures.push(await refresh(live.context));
+      for (const failure of failures) {
+        expect(failure.response.status()).toBe(503);
+        expect(failure.body.code).toBe('AUTH_SESSION_CHECK_UNAVAILABLE');
+        expect(
+          failure.response
+            .headersArray()
+            .some(
+              (header) =>
+                header.name.toLowerCase() === 'set-cookie' &&
+                /^(refreshToken|openid_user_id)=/.test(header.value),
+            ),
+        ).toBe(false);
+      }
       const after = await credentials(live.context);
       expect(after.refreshToken === before.refreshToken).toBe(true);
       expect(after.openid_user_id === before.openid_user_id).toBe(true);
       expect(after['connect.sid'] === before['connect.sid']).toBe(true);
       expect(after.token_provider === before.token_provider).toBe(true);
-      expect(
-        unavailable.response
-          .headersArray()
-          .some(
-            (header) =>
-              header.name.toLowerCase() === 'set-cookie' &&
-              /^(refreshToken|openid_user_id)=/.test(header.value),
-          ),
-      ).toBe(false);
       await harness.admin(`/sessions/${encodeURIComponent(requireSid(revoked.sid))}`, 'DELETE');
       await expect
         .poll(() => harness.deliveries.findIndex((delivery) => delivery.sid === revoked.sid))
@@ -363,6 +486,7 @@ for (const reuse of [false, true]) {
       await evidence(info, 'database-outage', {
         refreshStatus: 503,
         refreshCode: unavailable.body.code,
+        earlyLocalLookupStatus: failures[1]?.response.status(),
         cookiesPreserved: true,
         logoutStatus: harness.deliveries[logoutIndex].status,
         logoutCode: 'AUTH_SESSION_CHECK_UNAVAILABLE',
