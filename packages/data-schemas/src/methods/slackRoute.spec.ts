@@ -93,6 +93,25 @@ describe('workspace routing and live channel authority', () => {
       channelRevision: channel?.revision ?? 'missing',
     });
   };
+  const pendingBinding = (workspaceId: string, channelId: string) =>
+    channels.createAgentChannel({
+      channelId,
+      workspaceId,
+      agentId: `agent-${channelId}`,
+      tenantId: 'org-a',
+      createdBy: 'agent-manager',
+      type: 'slack',
+      status: 'pending_install',
+      credentialMode: 'per_user',
+      revision: `consent-${channelId}`,
+    });
+  /** A raw restore can write another provider, or none, while the row keeps its workspace binding. */
+  const restoreProvider = (channelId: string, provider: 'discord' | 'missing') =>
+    db.models.AgentChannel.collection.updateOne(
+      { channelId },
+      provider === 'missing' ? { $unset: { type: 1 } } : { $set: { type: provider } },
+    );
+  const stored = (channelId: string) => db.models.AgentChannel.collection.findOne({ channelId });
 
   beforeAll(async () => {
     mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
@@ -220,6 +239,144 @@ describe('workspace routing and live channel authority', () => {
       expect(await install('new-authorization')).not.toBe(workspaceId);
       expect(await channels.getActiveAgentChannel('binding-a')).toBeNull();
       expect((await channels.getAgentChannel('binding-a'))?.status).toBe('active');
+    }));
+
+  it.each(['discord', 'missing'] as const)(
+    'refuses to assign or activate a row restored as %s that kept its workspace binding',
+    (provider) =>
+      scoped(async () => {
+        const workspaceId = await install();
+        await pendingBinding(workspaceId, 'control');
+        await pendingBinding(workspaceId, 'restored');
+        const activate = (channelId: string, externalChannelId: string) =>
+          routes.assign({
+            userId: 'agent-manager',
+            isBotAdmin: true,
+            workspaceId,
+            channelId,
+            externalChannelId,
+            channelRevision: `consent-${channelId}`,
+            activate: true,
+          });
+        expect((await activate('control', 'C100')).ok).toBe(true);
+        expect((await routes.read(workspaceId, 'C100'))?.channelId).toBe('control');
+        expect(await channels.getActiveAgentChannel('control')).toMatchObject({
+          status: 'active',
+          encryptedBotToken: 'encrypted-bot-token',
+        });
+
+        await restoreProvider('restored', provider);
+        const before = await stored('restored');
+        expect(await activate('restored', 'C200')).toEqual({
+          ok: false,
+          code: 'channel_unavailable',
+        });
+        expect(await stored('restored')).toEqual(before);
+        expect(await routes.read(workspaceId, 'C200')).toBeNull();
+        expect(await routes.listForChannel('restored')).toEqual({ routes: [] });
+      }),
+  );
+
+  it.each(['discord', 'missing'] as const)(
+    'refuses a new route for an active row restored as %s and leaves it unchanged',
+    (provider) =>
+      scoped(async () => {
+        const workspaceId = await install();
+        await binding(workspaceId, 'control');
+        await binding(workspaceId, 'restored');
+        expect((await assign(workspaceId, 'control', 'C300')).ok).toBe(true);
+
+        await restoreProvider('restored', provider);
+        const before = await stored('restored');
+        expect(await assign(workspaceId, 'restored', 'C400')).toEqual({
+          ok: false,
+          code: 'channel_unavailable',
+        });
+        expect(await stored('restored')).toEqual(before);
+        expect(await routes.read(workspaceId, 'C400')).toBeNull();
+        expect(await routes.listForChannel('restored')).toEqual({ routes: [] });
+        expect((await assign(workspaceId, 'control', 'C500')).ok).toBe(true);
+      }),
+  );
+
+  it.each(['discord', 'missing'] as const)(
+    'reads an active row restored as %s as disabled, without workspace credentials',
+    (provider) =>
+      scoped(async () => {
+        const workspaceId = await install();
+        await binding(workspaceId, 'control');
+        await binding(workspaceId, 'restored');
+        await restoreProvider('restored', provider);
+
+        expect(await channels.getActiveAgentChannel('restored')).toBeNull();
+        const metadata = await channels.getAgentChannelMetadata('restored');
+        const [listed] = await channels.listAgentChannels('agent-restored');
+        expect(metadata).toMatchObject({ channelId: 'restored', status: 'disabled' });
+        expect(listed).toMatchObject({ channelId: 'restored', status: 'disabled' });
+        for (const record of [metadata, listed]) {
+          expect(record).not.toHaveProperty('slack');
+          expect(record).not.toHaveProperty('encryptedBotToken');
+          expect(record).not.toHaveProperty('encryptedSigningSecret');
+        }
+
+        expect((await channels.getAgentChannelMetadata('control'))?.slack).toEqual({
+          appId: 'A123',
+          teamId: 'T123',
+          botUserId: 'U123',
+        });
+        expect(await channels.getActiveAgentChannel('control')).toMatchObject({
+          status: 'active',
+          encryptedBotToken: 'encrypted-bot-token',
+          encryptedSigningSecret: 'encrypted-signing-secret',
+        });
+      }),
+  );
+
+  it('keeps a restored non-Slack row deletable and erasable, and its stale route removable', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      const owner = { tenantId: 'org-a', userId: '000000000000000000000030' };
+      await binding(workspaceId, 'cleared');
+      await binding(workspaceId, 'deleted');
+      await channels.createAgentChannel({
+        channelId: 'erased',
+        workspaceId,
+        agentId: 'agent-erased',
+        tenantId: 'org-a',
+        createdBy: owner.userId,
+        type: 'slack',
+        status: 'active',
+        credentialMode: 'per_user',
+        revision: 'erased-consent',
+      });
+      const targets = { cleared: 'C700', deleted: 'C710', erased: 'C720' };
+      for (const [channelId, externalChannelId] of Object.entries(targets))
+        expect((await assign(workspaceId, channelId, externalChannelId)).ok).toBe(true);
+      const stale = await routes.read(workspaceId, 'C700');
+      for (const channelId of Object.keys(targets)) await restoreProvider(channelId, 'discord');
+
+      expect(
+        await routes.remove({
+          userId: 'admin',
+          workspaceId,
+          externalChannelId: 'C700',
+          expectedRevision: stale?.revision ?? 'missing',
+          channelId: 'cleared',
+        }),
+      ).toEqual({ ok: true, route: null });
+      expect(await routes.read(workspaceId, 'C700')).toBeNull();
+
+      expect(await channels.deleteAgentChannel('deleted', 'agent-manager')).toEqual({
+        status: 'deleted',
+      });
+      expect(await stored('deleted')).toBeNull();
+      expect(await routes.read(workspaceId, 'C710')).toBeNull();
+
+      await closeResponseScopes(db, owner);
+      await eraseChannelPersistenceForUser(db, owner);
+      expect(await stored('erased')).toBeNull();
+      expect(await routes.read(workspaceId, 'C720')).toBeNull();
+      expect((await installations.metadata(workspaceId))?.status).toBe('active');
     }));
 
   it('resolves explicit channel routes before the workspace default and rejects stale replacements', async () =>

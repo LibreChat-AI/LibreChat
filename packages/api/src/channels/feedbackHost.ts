@@ -37,7 +37,8 @@ export function createChannelFeedbackHost(
     actor: ChannelFeedbackActor,
   ) {
     return (
-      channel?.status === 'active' &&
+      channel?.type === 'slack' &&
+      channel.status === 'active' &&
       (channel.tenantId || '_') === actor.tenantId &&
       channel.revision === actor.channelRevision &&
       channel.agentId === actor.agentId &&

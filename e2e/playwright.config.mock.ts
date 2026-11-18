@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -195,8 +196,20 @@ if (!externalCodeBaseUrl) {
   codeApiKeyEnv.LIBRECHAT_CODE_API_KEY = process.env.E2E_CODE_API_KEY;
 }
 
+/** Opt-in: the Slack channel scenarios call the real service routes, which need a service token
+ *  that `neutralizeCredentialEnv` would otherwise blank, and channels enabled in the generated
+ *  deployment config (`slackApp` is operator-only). Without the flag, the environment and the
+ *  generated config are identical to a run that never heard of channels. */
+const channelAcceptance = process.env.E2E_CHANNELS === 'true';
+const channelServiceToken = channelAcceptance
+  ? process.env.E2E_CHANNEL_SERVICE_TOKEN || randomBytes(32).toString('hex')
+  : undefined;
+
 const baseEnv = {
   ...getLocalE2EEnv(),
+  ...(channelServiceToken
+    ? { E2E_CHANNEL_SERVICE_TOKEN: channelServiceToken, CHANNEL_SERVICE_TOKEN: channelServiceToken }
+    : {}),
   CONFIG_PATH: configPath,
   DEPLOYMENT_SKILLS_DIR: deploymentSkillsPath,
   /** Loaded in-process by `@librechat/api`'s `createRun` to swap in a fake model —
@@ -264,6 +277,20 @@ function writeRuntimeMockConfig() {
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
+  if (channelAcceptance) {
+    config = config.replace('\ninterface:\n', '\ninterface:\n  remoteAgents:\n    use: true\n');
+    /** The webhook transport is what shared workspace routing requires; its manifest URLs must be
+     *  HTTPS, and nothing contacts this host. */
+    config = config.replace(
+      '  agents:\n',
+      `  agents:\n    channels: ${JSON.stringify({
+        enabled: true,
+        transport: 'webhook',
+        gatewayUrl: 'https://gateway.e2e.test',
+        slackApp: { enabled: true },
+      })}\n`,
+    );
+  }
   config = config.replace(
     '  agents:\n',
     `  agents:\n    managementApi: ${JSON.stringify({ auth: managementAuth })}\n`,

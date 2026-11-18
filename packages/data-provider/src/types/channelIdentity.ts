@@ -1,5 +1,5 @@
 /** Supplied by authenticated channel ingress, never by browser identity fields. */
-export interface ChannelExternalIdentity {
+export interface SlackChannelExternalIdentity {
   tenantId: string;
   channelId: string;
   channelRevision: string;
@@ -7,6 +7,9 @@ export interface ChannelExternalIdentity {
   externalUserId: string;
   agentId: string;
 }
+
+/** Consent storage and current ingress still accept only Slack identities. */
+export type ChannelExternalIdentity = SlackChannelExternalIdentity;
 
 export interface ChannelLink {
   identity: ChannelExternalIdentity;

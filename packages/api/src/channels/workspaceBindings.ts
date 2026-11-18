@@ -119,7 +119,8 @@ export function createSlackWorkspaceBindingHandlers(deps: {
   ): Promise<AgentChannelRecord | null> {
     if (!id.safeParse(req.params.channelId).success) return null;
     const channel = await deps.channels.getAgentChannelMetadata(req.params.channelId);
-    return channel?.workspaceId &&
+    return channel?.type === 'slack' &&
+      channel.workspaceId &&
       channel.agentId === req.params.agentId &&
       channel.createdBy === principal.id &&
       channel.status !== 'deleting'

@@ -40,6 +40,7 @@ export function channelExternalIdentity(
   channel: AgentChannelRecord,
   externalUserId: string,
 ): ChannelExternalIdentity {
+  if (channel.type !== 'slack') throw new TypeError('Unsupported channel identity provider');
   return {
     tenantId: channel.tenantId || '_',
     channelId: channel.channelId,
@@ -64,6 +65,7 @@ export function createChannelAuthority(deps: ChannelAuthorityDependencies): Chan
   async function current(identity: ChannelExternalIdentity) {
     const channel = await deps.channels.getAgentChannelMetadata(identity.channelId);
     return channel &&
+      channel.type === 'slack' &&
       channel.status === 'active' &&
       (channel.tenantId || '_') === identity.tenantId &&
       channel.agentId === identity.agentId &&
@@ -112,7 +114,12 @@ export function createChannelAuthority(deps: ChannelAuthorityDependencies): Chan
     channel: AgentChannelRecord,
     actor: ChannelRunAdmission['actor'],
   ): Promise<ChannelRunPrincipal | null> {
-    if (actor.teamId !== channel.slack?.teamId || actor.appId !== channel.slack?.appId) return null;
+    if (
+      channel.type !== 'slack' ||
+      actor.teamId !== channel.slack?.teamId ||
+      actor.appId !== channel.slack?.appId
+    )
+      return null;
     const linked = await identity.resolve(channelExternalIdentity(channel, actor.externalUserId));
     if (!linked.ok) return null;
     return {
