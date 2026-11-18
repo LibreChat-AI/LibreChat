@@ -2455,6 +2455,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
               streamId,
               turn: describeCreatedTurn({
                 responseMessageId: respMsgId,
+                sourceMessageId: editedResponseMessageId,
                 isRegenerate,
                 isCompaction,
                 isContinued,

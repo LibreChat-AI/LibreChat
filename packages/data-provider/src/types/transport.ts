@@ -45,9 +45,14 @@ export type ChatCreatedTurn = {
   isRegenerate?: boolean;
   /** No user turn was made: the frame's message is the leaf a compaction summarizes up to. */
   compact?: boolean;
-  /** The reply named by `responseMessageId` is carried on from where it stopped. */
+  /**
+   * The saved reply a continued or an edited turn starts from. A continued reply keeps this id;
+   * an edited rerun is stored under a new one, so `responseMessageId` does not name it.
+   */
+  sourceMessageId?: string;
+  /** The reply named by `sourceMessageId` is carried on from where it stopped. */
   isContinued?: boolean;
-  /** The reply named by `responseMessageId` is rerun after this edit to one of its parts. */
+  /** The reply named by `sourceMessageId` is rerun after this edit to one of its parts. */
   editedContent?: TEditedContent;
 };
 

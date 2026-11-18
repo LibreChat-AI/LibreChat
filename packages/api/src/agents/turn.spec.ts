@@ -32,16 +32,35 @@ describe('describeCreatedTurn', () => {
     });
   });
 
-  it('says which reply is continued, and carries the edit an edited one is rerun with', () => {
-    expect(describeCreatedTurn({ responseMessageId: 'resp-1', isContinued: true })).toEqual({
-      responseMessageId: 'resp-1',
-      isContinued: true,
-    });
+  it('names the reply a continued turn starts from, which keeps its id', () => {
+    expect(
+      describeCreatedTurn({
+        responseMessageId: 'resp-1',
+        sourceMessageId: 'resp-1',
+        isContinued: true,
+      }),
+    ).toEqual({ responseMessageId: 'resp-1', sourceMessageId: 'resp-1', isContinued: true });
+  });
+
+  it('names the reply an edited rerun starts from beside the new id it is stored under', () => {
     const editedContent = { index: 1, type: ContentTypes.TEXT, text: 'Edited' } as const;
-    expect(describeCreatedTurn({ responseMessageId: 'resp-1', editedContent })).toEqual({
-      responseMessageId: 'resp-1',
-      editedContent,
-    });
+    expect(
+      describeCreatedTurn({
+        responseMessageId: 'resp-2',
+        sourceMessageId: 'resp-1',
+        editedContent,
+      }),
+    ).toEqual({ responseMessageId: 'resp-2', sourceMessageId: 'resp-1', editedContent });
+  });
+
+  it('does not name a source for a turn that starts from no reply', () => {
+    expect(
+      describeCreatedTurn({
+        responseMessageId: 'resp-2',
+        sourceMessageId: 'resp-1',
+        isRegenerate: true,
+      }),
+    ).toEqual({ responseMessageId: 'resp-2', isRegenerate: true });
   });
 
   it('leaves out a reply id it was not given', () => {

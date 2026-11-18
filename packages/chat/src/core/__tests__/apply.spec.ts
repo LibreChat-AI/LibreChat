@@ -939,8 +939,12 @@ describe('a turn whose shape the server states', () => {
     const { applyEvent } = createEventApplier();
     const { context, read } = createList([user, reply('resp-1', ['Stopped here'])]);
 
-    applyEvent(createdAs({ responseMessageId: 'resp-1', isContinued: true }), context);
-    expect(read().map((message) => message.messageId)).toEqual(['user-1']);
+    applyEvent(
+      createdAs({ responseMessageId: 'resp-1', sourceMessageId: 'resp-1', isContinued: true }),
+      context,
+    );
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+    expect(texts(read(), 'resp-1')).toEqual([]);
 
     applyEvent(opened('s0', 0), context);
     applyEvent(token('s0', 'Stopped here, then carried on'), context);
@@ -949,14 +953,33 @@ describe('a turn whose shape the server states', () => {
     expect(texts(read(), 'resp-1')).toEqual(['Stopped here, then carried on']);
   });
 
-  it('reruns an edited reply from its own parts with the edit in place', () => {
-    const saved = reply('resp-1', ['Kept', 'Before the edit']);
+  it('continues the reply it was told to, not the answer that happens to be last in the list', () => {
+    const sibling = reply('resp-9', ['Another branch']);
     const { applyEvent } = createEventApplier();
-    const { context, read } = createList([user, saved]);
+    const { context, read } = createList([user, reply('resp-1', ['Stopped here']), sibling]);
+
+    applyEvent(
+      createdAs({ responseMessageId: 'resp-1', sourceMessageId: 'resp-1', isContinued: true }),
+      context,
+    );
+    applyEvent(opened('s0', 0), context);
+    applyEvent(token('s0', 'Carried on'), context);
+
+    expect(texts(read(), 'resp-1')).toEqual(['Carried on']);
+    expect(read().find((message) => message.messageId === 'resp-9')).toBe(sibling);
+  });
+
+  it('reruns an edited reply from its own parts under the new id the server stores it at', () => {
+    const saved = reply('resp-0', ['Kept', 'Before the edit']);
+    const sibling = reply('resp-9', ['Another branch']);
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, saved, sibling]);
 
     applyEvent(
       createdAs({
+        /** An edited rerun gets a fresh id; the reply it starts from is named beside it. */
         responseMessageId: 'resp-1',
+        sourceMessageId: 'resp-0',
         editedContent: { index: 1, type: ContentTypes.TEXT, text: 'After the edit' },
       }),
       context,
@@ -964,14 +987,16 @@ describe('a turn whose shape the server states', () => {
     applyEvent(opened('s0', 0), context);
     applyEvent(token('s0', ' and on'), context);
 
-    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-9', 'resp-1']);
     const drawn = texts(read(), 'resp-1').join('|');
     expect(drawn).toContain('Kept');
     expect(drawn).toContain('After the edit');
     expect(drawn).toContain(' and on');
     expect(drawn).not.toContain('Before the edit');
-    /** The saved row's own parts are not the ones edited. */
-    expect(texts([saved], 'resp-1')).toEqual(['Kept', 'Before the edit']);
+    expect(drawn).not.toContain('Another branch');
+    /** The saved row's own parts are not the ones edited, and the other branch is untouched. */
+    expect(texts([saved], 'resp-0')).toEqual(['Kept', 'Before the edit']);
+    expect(read().find((message) => message.messageId === 'resp-9')).toBe(sibling);
   });
 
   it("takes a regeneration at the server's word where the list holds no earlier answer", () => {

@@ -211,42 +211,44 @@ function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventS
     endpointOption: {},
     userMessage,
   };
-  /** The reply the server names, when the list holds it: the one a turn carries on or reruns. */
-  const named =
-    turn?.responseMessageId == null
+  const replyById = (id: string | undefined): TMessage | undefined =>
+    id == null
       ? undefined
-      : messages.find(
-          (message) => !message.isCreatedByUser && message.messageId === turn.responseMessageId,
-        );
-  if (named != null && turn?.editedContent != null) {
-    /** An edited reply is rerun from its own parts with the edit in place; what the server
-     *  streams lands after them. */
-    const content = withEditedPart(named.content ?? [], turn.editedContent);
-    return {
-      ...base,
-      isRegenerate: false,
-      isEdited: true,
-      editedContent: turn.editedContent,
-      editPrefixLength: content.length,
-      messages,
-      initialResponse: { ...named, content },
-    } as EventSubmission;
-  }
-  if (named != null && turn?.isContinued === true) {
-    /** A continued reply is drawn again from empty under its own id, in place of the row it
-     *  carries on. */
+      : messages.find((message) => !message.isCreatedByUser && message.messageId === id);
+  /** The reply the turn is stored under, when the list already holds a row for it. */
+  const named = replyById(turn?.responseMessageId);
+  /** The saved reply a continued or an edited turn starts from. */
+  const source =
+    turn?.isContinued === true || turn?.editedContent != null
+      ? replyById(turn.sourceMessageId ?? turn.responseMessageId)
+      : undefined;
+  if (source != null && turn != null) {
+    /**
+     * An edited reply is rerun from its own parts with the edit in place, and what the server
+     * streams lands after them; a continued reply with no edit is drawn again from empty. Either
+     * way the reply the turn starts from goes to the end of the list in that state, as main chat
+     * puts its own placeholder there: the first step builds on the last row, and in a list that
+     * holds other branches the last row is otherwise some other answer.
+     */
+    const prefix =
+      turn.editedContent == null
+        ? undefined
+        : withEditedPart(source.content ?? [], turn.editedContent);
     const restarted: TMessage = {
-      ...named,
+      ...source,
       parentMessageId: userMessage.messageId,
-      text: '',
-      content: [],
+      ...(prefix == null ? { text: '', content: [] } : { content: prefix }),
     };
     return {
       ...base,
       isRegenerate: false,
       isEdited: true,
-      isContinued: true,
-      messages: messages.filter((message) => message !== named),
+      ...(turn.isContinued === true && { isContinued: true }),
+      ...(turn.editedContent != null && {
+        editedContent: turn.editedContent,
+        editPrefixLength: prefix?.length ?? 0,
+      }),
+      messages: [...messages.filter((message) => message !== source), restarted],
       initialResponse: restarted,
     } as EventSubmission;
   }
