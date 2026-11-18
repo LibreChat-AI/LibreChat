@@ -1,9 +1,10 @@
-import { rateLimit } from 'express-rate-limit';
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { adminRefreshRateLimitSchema } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { Store } from 'express-rate-limit';
 import type { RequestHandler } from 'express';
 import { createMemoizedConfigLoader } from '~/auth/openid/providerSession/config';
+import { removePorts } from '~/utils/ports';
 
 /** Token renewal uses a separate IP budget so page loads cannot exhaust sign-in attempts. */
 export function createAdminRefreshLimiter({
@@ -22,6 +23,8 @@ export function createAdminRefreshLimiter({
       windowMs,
       max,
       store,
+      keyGenerator: (req) =>
+        ipKeyGenerator(removePorts(req) ?? req.socket.remoteAddress ?? 'unknown'),
       standardHeaders: true,
       legacyHeaders: false,
       message: { message: 'Too many session renewal requests. Try again later.' },
