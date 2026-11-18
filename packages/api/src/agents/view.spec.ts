@@ -4,6 +4,8 @@ import type { ServerRequest } from '~/types';
 import {
   createChildThreadToolCallPartHandler,
   createChildThreadMessagesHandler,
+  MAX_CHILD_MESSAGES_PAGE,
+  MAX_CHILD_MESSAGES_PAGE_BYTES,
   createParentSubagentIndexHandler,
   createSubagentThreadViewHandler,
   PARENT_SUBAGENT_INDEX_LIMITS,
@@ -1588,7 +1590,10 @@ describe('child thread messages read through the parent', () => {
     const deps = {
       getConvoOwnership: jest.fn().mockResolvedValue(parent),
       getSubagentThreadForParent: jest.fn().mockResolvedValue(child),
-      getMessages: jest.fn().mockResolvedValue(rows),
+      /** The reader returns a page newest first. */
+      getMessagesByCursor: jest
+        .fn()
+        .mockResolvedValue({ messages: [...rows].reverse(), nextCursor: null }),
       previewToolCalls: jest.fn(() => (messages: unknown[]) => messages),
       ...overrides,
     } as unknown as Parameters<typeof createChildThreadMessagesHandler>[0];
@@ -1605,9 +1610,17 @@ describe('child thread messages read through the parent', () => {
 
     expect(status).toHaveBeenCalledWith(200);
     expect(json).toHaveBeenCalledWith([...rows, { previewed: true }]);
-    expect(deps.getMessages).toHaveBeenCalledWith(
+    /** One bounded page, however much the thread holds. */
+    expect(deps.getMessagesByCursor).toHaveBeenCalledWith(
       { conversationId: threadId, user: 'user-1' },
-      '-_id -user',
+      {
+        sortField: 'createdAt',
+        sortOrder: -1,
+        limit: MAX_CHILD_MESSAGES_PAGE,
+        maxBytes: MAX_CHILD_MESSAGES_PAGE_BYTES,
+        cursor: null,
+        select: '-_id -user',
+      },
     );
     expect(deps.getSubagentThreadForParent).toHaveBeenCalledWith({
       user: 'user-1',
@@ -1615,6 +1628,70 @@ describe('child thread messages read through the parent', () => {
       conversationId: threadId,
       tenantId: 'tenant-1',
     });
+  });
+
+  const earlierCursor = '2026-11-15T10:00:00.000Z|64d4f005d73ef522e1f48818';
+
+  it('answers a paged request with the page, oldest first, and the cursor of the one before it', async () => {
+    const { deps, handler } = messagesHandler({
+      getMessagesByCursor: jest
+        .fn()
+        .mockResolvedValue({ messages: [...rows].reverse(), nextCursor: earlierCursor }),
+    });
+    const { response, status, json } = createResponse();
+
+    await handler(createRequest({}, { limit: '20' }), response);
+
+    expect(status).toHaveBeenCalledWith(200);
+    expect(json).toHaveBeenCalledWith({ messages: rows, earlier: earlierCursor });
+    expect(deps.getMessagesByCursor).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ limit: 20, cursor: null }),
+    );
+  });
+
+  it('reads the page before a cursor, and says when there is none before that', async () => {
+    const { deps, handler } = messagesHandler();
+    const { response, json } = createResponse();
+
+    await handler(createRequest({}, { cursor: earlierCursor }), response);
+
+    expect(json).toHaveBeenCalledWith({ messages: rows, earlier: null });
+    expect(deps.getMessagesByCursor).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ cursor: earlierCursor, limit: MAX_CHILD_MESSAGES_PAGE }),
+    );
+  });
+
+  it('never reads more than a page, whatever is asked for', async () => {
+    const { deps, handler } = messagesHandler();
+    const { response } = createResponse();
+
+    await handler(createRequest({}, { limit: '5000' }), response);
+
+    expect(deps.getMessagesByCursor).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        limit: MAX_CHILD_MESSAGES_PAGE,
+        maxBytes: MAX_CHILD_MESSAGES_PAGE_BYTES,
+      }),
+    );
+  });
+
+  it.each([
+    ['a limit that is not a count', { limit: 'many' }],
+    ['a limit below one', { limit: '0' }],
+    ['a cursor that is not a page position', { cursor: 'latest' }],
+    ['a cursor given twice', { cursor: [earlierCursor, earlierCursor] }],
+  ])('answers 400 and reads nothing for %s', async (_name, query) => {
+    const { deps, handler } = messagesHandler();
+    const { response, status } = createResponse();
+
+    await handler(createRequest({}, query as Record<string, string>), response);
+
+    expect(status).toHaveBeenCalledWith(400);
+    expect(deps.getMessagesByCursor).not.toHaveBeenCalled();
+    expect(deps.getConvoOwnership).not.toHaveBeenCalled();
   });
 
   it("never sends an event thread's input, and keeps the row in place", async () => {
@@ -1682,7 +1759,7 @@ describe('child thread messages read through the parent', () => {
 
   it('answers 500 without the error text when the read fails', async () => {
     const { handler } = messagesHandler({
-      getMessages: jest.fn().mockRejectedValue(new Error('mongo: secret detail')),
+      getMessagesByCursor: jest.fn().mockRejectedValue(new Error('mongo: secret detail')),
     });
     const { response, status, json } = createResponse();
 

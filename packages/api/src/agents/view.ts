@@ -924,11 +924,38 @@ function withoutEventInput(message: ChildThreadMessage): ChildThreadMessage {
   return visible;
 }
 
+/**
+ * The most rows, and the most stored bytes, one read of a child thread's messages returns. A
+ * thread holds as much as its agent wrote, and a page is read for every card that previews a
+ * running child, so the rest is read a page at a time, on request. These bound a response, as
+ * `MAX_THREAD_MESSAGES` does for the thread view; they are not tuning levers.
+ */
+export const MAX_CHILD_MESSAGES_PAGE: number = 50;
+export const MAX_CHILD_MESSAGES_PAGE_BYTES: number = 2 * 1024 * 1024;
+
+/** A page position as the messages reader formats it: the row's creation time and its id. */
+const CHILD_MESSAGES_CURSOR = /^[^|]{1,64}\|[0-9a-f]{24}$/i;
+
+/** One page of a child thread's messages, oldest first, and where the page before it starts. */
+export type ChildThreadMessagesPage = {
+  messages: ChildThreadMessage[];
+  /** The cursor that reads the page before this one; `null` when this page holds the first row. */
+  earlier: string | null;
+};
+
 export type ChildThreadMessagesDependencies = ChildThreadAccessDependencies & {
-  getMessages: (
+  /** Reads a page newest first, stopping at the row limit or the byte budget. */
+  getMessagesByCursor: (
     filter: { conversationId: string; user: string },
-    select: string,
-  ) => Promise<ChildThreadMessage[] | null>;
+    options: {
+      sortField: 'createdAt';
+      sortOrder: -1;
+      limit: number;
+      maxBytes: number;
+      cursor?: string | null;
+      select: string;
+    },
+  ) => Promise<{ messages: ChildThreadMessage[]; nextCursor: string | null }>;
   /** The conversation messages route's tool-call previewer for this request. */
   previewToolCalls: (
     req: ServerRequest,
@@ -940,6 +967,12 @@ export type ChildThreadMessagesDependencies = ChildThreadAccessDependencies & {
  * as the conversation messages route would send them, with the same projection and tool-call
  * previews, reachable only through the parent the requester owns. The rows are read beside
  * the access check and sent only once it passes.
+ *
+ * Every read is one page: the thread's newest rows, or with `cursor` the rows before a page
+ * already read, never more than `MAX_CHILD_MESSAGES_PAGE` rows or
+ * `MAX_CHILD_MESSAGES_PAGE_BYTES` stored bytes. A request that names `limit` or `cursor` is
+ * answered with the page and the cursor of the one before it. A request that names neither is
+ * from a client that predates paging and reads a bare list, so it gets the newest page as one.
  */
 export function createChildThreadMessagesHandler(deps: ChildThreadMessagesDependencies) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
@@ -947,12 +980,33 @@ export function createChildThreadMessagesHandler(deps: ChildThreadMessagesDepend
       const previewToolCalls = deps.previewToolCalls(req);
       const userId = req.user?.id;
       const { threadId } = req.params as SubagentThreadViewParams;
+      const { limit: requestedLimit, cursor } = req.query ?? {};
+      const paged = requestedLimit != null || cursor != null;
+      const limit = requestedLimit == null ? MAX_CHILD_MESSAGES_PAGE : Number(requestedLimit);
+      if (
+        !Number.isInteger(limit) ||
+        limit < 1 ||
+        (cursor != null && (typeof cursor !== 'string' || !CHILD_MESSAGES_CURSOR.test(cursor)))
+      ) {
+        res.status(400).json({ error: 'Invalid page request' });
+        return;
+      }
       const reading =
         userId && validConversationId(threadId)
           ? deps
-              .getMessages({ conversationId: threadId, user: userId }, CLIENT_MESSAGE_SELECT)
+              .getMessagesByCursor(
+                { conversationId: threadId, user: userId },
+                {
+                  sortField: 'createdAt',
+                  sortOrder: -1,
+                  limit: Math.min(limit, MAX_CHILD_MESSAGES_PAGE),
+                  maxBytes: MAX_CHILD_MESSAGES_PAGE_BYTES,
+                  cursor: typeof cursor === 'string' ? cursor : null,
+                  select: CLIENT_MESSAGE_SELECT,
+                },
+              )
               .then(
-                (messages) => ({ ok: true as const, messages }),
+                (page) => ({ ok: true as const, page }),
                 (error: unknown) => ({ ok: false as const, error }),
               )
           : null;
@@ -963,12 +1017,17 @@ export function createChildThreadMessagesHandler(deps: ChildThreadMessagesDepend
       }
       const read = await reading;
       if (!read.ok) throw read.error;
-      const messages = read.messages ?? [];
-      res
-        .status(200)
-        .json(
-          await previewToolCalls(access.eventThread ? messages.map(withoutEventInput) : messages),
-        );
+      /** Read newest first so the bound keeps the newest rows; sent oldest first, as a list is. */
+      const stored = [...read.page.messages].reverse();
+      const messages = await previewToolCalls(
+        access.eventThread ? stored.map(withoutEventInput) : stored,
+      );
+      if (!paged) {
+        res.status(200).json(messages);
+        return;
+      }
+      const page: ChildThreadMessagesPage = { messages, earlier: read.page.nextCursor };
+      res.status(200).json(page);
     } catch (error) {
       logger.error('[subagentThreads] Failed to read child thread messages', error);
       res.status(500).json({ error: 'Failed to load child messages' });

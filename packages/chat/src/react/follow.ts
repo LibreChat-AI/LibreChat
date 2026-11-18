@@ -19,10 +19,12 @@ export type FollowChatOptions = {
   /** Reaches the conversation's generation; `createGenerationTransport` over the app's routes. */
   transport: ChatTransport;
   /**
-   * Reads the conversation's stored messages. Called when the conversation is opened and again
-   * when a generation it followed ends, since the stored rows are then the settled truth.
+   * Reads the conversation's stored messages: its newest rows, or with `cursor` the rows before
+   * a page already read. Called when the conversation is opened, again when a generation it
+   * followed ends, since the stored rows are then the settled truth, and for an earlier page
+   * when the reader asks for one. A plain list is the whole conversation.
    */
-  loadMessages: () => Promise<TMessage[]>;
+  loadMessages: (cursor?: string) => Promise<TMessage[] | FollowedPage>;
   /**
    * Whether the caller knows a generation is running. Turning true attaches to it, which covers a
    * run that starts after the conversation was opened; one signalled while the stored messages
@@ -43,6 +45,13 @@ export type FollowChatOptions = {
   /** Every stream event after it was applied. */
   onEvent?: (event: ChatEvent) => void;
   onFinish?: (result: ChatFinishResult) => void;
+};
+
+/** One page of stored messages, oldest first. */
+export type FollowedPage = {
+  messages: TMessage[];
+  /** The cursor that reads the page before this one; nothing when this page holds the first row. */
+  earlier?: string | null;
 };
 
 export type FollowBeside = Pick<EventApplierInit, 'usage' | 'onAttachment' | 'onTitle' | 'steers'>;
@@ -96,9 +105,25 @@ export type FollowedChat = {
   /** Whether the stored messages could not be read; `retry` reads them again. */
   isLoadError: boolean;
   retry: () => void;
+  /** Whether the conversation holds rows older than the ones read so far. */
+  hasEarlier: boolean;
+  /** Whether a page of older rows is being read. */
+  isLoadingEarlier: boolean;
+  /** Whether the last read of older rows failed; `loadEarlier` tries it again. */
+  isEarlierError: boolean;
+  /** Reads the page before the oldest row held, and puts it ahead of the list. */
+  loadEarlier: () => void;
 };
 
-type Entry = { id: string; chat: Chat; attach: () => Promise<void>; settle: () => Promise<void> };
+type Entry = {
+  id: string;
+  chat: Chat;
+  attach: () => Promise<void>;
+  settle: () => Promise<void>;
+  loadEarlier: () => Promise<void>;
+};
+/** What is known of the rows before the ones held, for the conversation `id`. */
+type History = { id: string; hasEarlier: boolean; isLoading: boolean; isError: boolean };
 type Load = { id: string; attempt: number; state: 'loading' | 'ready' | 'error' };
 /**
  * One attachment: how it ended, unset when nothing was running, and whether it delivered any of
@@ -113,6 +138,11 @@ type Attachment = { finished?: ChatFinishResult; received: boolean };
 export const ABSENT_RETRIES = 2;
 
 const noMessages: TMessage[] = [];
+const nothing = (): void => undefined;
+const toPage = (read: TMessage[] | FollowedPage): Required<FollowedPage> =>
+  Array.isArray(read)
+    ? { messages: read, earlier: null }
+    : { messages: read.messages, earlier: read.earlier ?? null };
 const unsubscribed = (): (() => void) => () => undefined;
 
 /** One write per frame for streamed tokens, as main chat's step handler coalesces them. */
@@ -152,6 +182,12 @@ export function useFollowChat({
   const [attempt, setAttempt] = useState(0);
   const [entry, setEntry] = useState<Entry>();
   const [load, setLoad] = useState<Load>({ id, attempt, state: 'loading' });
+  const [history, setHistory] = useState<History>({
+    id,
+    hasEarlier: false,
+    isLoading: false,
+    isError: false,
+  });
   const [following, setFollowing] = useState(false);
   const [unattached, setUnattached] = useState(false);
   const wasLive = useRef(false);
@@ -220,10 +256,59 @@ export function useFollowChat({
       return current;
     };
 
+    /** The cursor of the page before the oldest row held; nothing when that row is the first. */
+    let earlier: string | null = null;
+    let readingEarlier = false;
+
+    /**
+     * Reads the newest page. Rows the reader already paged back to are older than it and are
+     * not read again, so they stay ahead of it: the page starts at a row the list holds, and
+     * everything before that row is kept. A page that starts at no row the list holds does not
+     * join onto it, so it replaces the list, and what came before it is read from there.
+     */
     const read = async (): Promise<void> => {
-      const messages = await host.current.loadMessages();
-      if (!stale) {
-        await chat.setMessages(messages);
+      const page = toPage(await host.current.loadMessages());
+      if (stale) {
+        return;
+      }
+      const held = chat.messages;
+      const first = page.messages[0]?.messageId;
+      const joinsAt = first == null ? -1 : held.findIndex((row) => row.messageId === first);
+      if (joinsAt > 0) {
+        await chat.setMessages([...held.slice(0, joinsAt), ...page.messages]);
+        return;
+      }
+      await chat.setMessages(page.messages);
+      earlier = page.earlier;
+      setHistory({ id, hasEarlier: earlier != null, isLoading: false, isError: false });
+    };
+
+    /** Reads the page before the oldest row held and puts it ahead of the list. */
+    const loadEarlier = async (): Promise<void> => {
+      const cursor = earlier;
+      if (stale || !loaded || cursor == null || readingEarlier) {
+        return;
+      }
+      readingEarlier = true;
+      setHistory({ id, hasEarlier: true, isLoading: true, isError: false });
+      try {
+        const page = toPage(await host.current.loadMessages(cursor));
+        /** The list was replaced meanwhile, and with it what "before it" means. */
+        if (stale || earlier !== cursor) {
+          return;
+        }
+        await chat.setMessages((current) => {
+          const known = new Set(current.map((row) => row.messageId));
+          return [...page.messages.filter((row) => !known.has(row.messageId)), ...current];
+        });
+        earlier = page.earlier;
+        setHistory({ id, hasEarlier: earlier != null, isLoading: false, isError: false });
+      } catch {
+        if (!stale && earlier === cursor) {
+          setHistory({ id, hasEarlier: true, isLoading: false, isError: true });
+        }
+      } finally {
+        readingEarlier = false;
       }
     };
 
@@ -332,7 +417,8 @@ export function useFollowChat({
       }
     };
 
-    setEntry({ id, chat, attach, settle });
+    setEntry({ id, chat, attach, settle, loadEarlier });
+    setHistory({ id, hasEarlier: false, isLoading: false, isError: false });
     setLoad({ id, attempt, state: 'loading' });
     setFollowing(false);
     setUnattached(false);
@@ -369,6 +455,9 @@ export function useFollowChat({
   const connection = useSnapshot(subscribe, () => chat?.connection ?? 'idle');
   const error = useSnapshot(subscribe, () => chat?.error);
   const retry = useCallback(() => setAttempt((count) => count + 1), []);
+  const pageBack = current?.loadEarlier;
+  const loadEarlier = useCallback(() => void pageBack?.(), [pageBack]);
+  const older = current != null && history.id === id ? history : undefined;
   const tracked = load.id === id && load.attempt === attempt ? load.state : 'loading';
   const state = enabled ? tracked : 'ready';
 
@@ -383,5 +472,9 @@ export function useFollowChat({
     isUnattached: unattached && current != null,
     isLoadError: state === 'error',
     retry,
+    hasEarlier: older?.hasEarlier ?? false,
+    isLoadingEarlier: older?.isLoading ?? false,
+    isEarlierError: older?.isError ?? false,
+    loadEarlier: current == null ? nothing : loadEarlier,
   };
 }

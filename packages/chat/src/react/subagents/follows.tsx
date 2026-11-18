@@ -123,6 +123,10 @@ const opening: FollowedChat = {
   isUnattached: false,
   isLoadError: false,
   retry: () => undefined,
+  hasEarlier: false,
+  isLoadingEarlier: false,
+  isEarlierError: false,
+  loadEarlier: () => undefined,
 };
 
 const ThreadFollowsContext: Context<ThreadFollows | undefined> = createContext<

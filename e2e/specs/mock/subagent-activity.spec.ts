@@ -240,6 +240,104 @@ test.describe('detached subagent activity', () => {
       }
     }
   });
+  test('reads a long child thread a page at a time, and the rest on request @scenario:subagent-panel-pages-child-history', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = `paged-${Date.now().toString(36)}`;
+    const childNames = [uniqueAgentName('E2E Paged Child A'), uniqueAgentName('E2E Paged Child B')];
+    const parentName = uniqueAgentName('E2E Paged Parent');
+    const createdAgentIds: string[] = [];
+    const cursor = '2026-01-01T00:00:00.000Z|64d4f005d73ef522e1f48818';
+    /** The cursors the page asked the thread's messages with, `null` for its newest page. */
+    const asked: Array<string | null> = [];
+
+    try {
+      await page.goto('/c/new');
+      const token = await getAccessToken(page);
+      const children: AgentDetail[] = [];
+      for (const childName of childNames) {
+        const child = await createAgent(page, token, childName);
+        children.push(child);
+        createdAgentIds.push(child.id);
+      }
+      const parent = await createAgent(page, token, parentName, {
+        enabled: true,
+        allowSelf: false,
+        agent_ids: children.map((child) => child.id),
+      });
+      createdAgentIds.push(parent.id);
+
+      await selectAgent(page, parentName);
+      const response = await sendMessageAndWaitForCompletion(
+        page,
+        `${DETACHED_ACTIVITY_MARKER}${children.map((child) => child.id).join(',')}:${label}`,
+      );
+      expect(response.ok()).toBeTruthy();
+
+      /** Both children run to their end, so the thread is read from storage alone. */
+      await page.getByRole('button', { name: 'Ran 2 agents' }).click();
+      const running = page.locator('[data-subagent-tool-call^="call_e2e_subagent_activity_"]');
+      await expect(running).toHaveCount(2, { timeout: 30_000 });
+      await expect(running.first()).toContainText('Completed', { timeout: 60_000 });
+      await expect(running.nth(1)).toContainText('Completed', { timeout: 60_000 });
+
+      /**
+       * The fixture's thread is two rows, which the server sends as one page. To see a thread
+       * longer than a page, its real rows are served as two pages of one: the reply first, and
+       * the brief behind a cursor. The paging itself (bounds, cursor, order) is the server's and
+       * is covered where it lives; this is the reader's side of it, in the real list.
+       */
+      await page.route(
+        (url) => THREAD_MESSAGES_PATH.test(url.pathname),
+        async (route) => {
+          const url = new URL(route.request().url());
+          const asksFor = url.searchParams.get('cursor');
+          asked.push(asksFor);
+          url.searchParams.delete('cursor');
+          const upstream = await route.fetch({ url: url.toString() });
+          const body = (await upstream.json()) as { messages: TMessage[]; earlier: string | null };
+          expect(body.earlier).toBeNull();
+          const rows = body.messages;
+          await route.fulfill({
+            response: upstream,
+            json:
+              asksFor == null
+                ? { messages: rows.slice(-1), earlier: cursor }
+                : { messages: rows.slice(0, -1), earlier: null },
+          });
+        },
+      );
+      await page.reload();
+
+      await page.getByRole('button', { name: 'Ran 2 agents' }).click();
+      const cards = page.locator('[data-subagent-tool-call^="call_e2e_subagent_activity_"]');
+      await expect(cards).toHaveCount(2, { timeout: 30_000 });
+      await cards.first().click();
+      const panel = childActivityPanel(page);
+      await expect(panel).toContainText(`E2E detached child 1 complete ${label}`, {
+        timeout: 30_000,
+      });
+
+      /** The newest page is on screen, and the reader is told there is more above it. */
+      const earlier = panel.getByRole('button', { name: 'Show earlier messages' });
+      await expect(earlier).toBeVisible();
+      await expect(panel.locator('.message-render')).toHaveCount(1);
+      expect(asked.filter((value) => value != null)).toHaveLength(0);
+
+      await earlier.click();
+
+      /** The page before it is read by its cursor and drawn above; nothing is left to offer. */
+      await expect(panel.locator('.message-render')).toHaveCount(2);
+      await expect(earlier).toHaveCount(0);
+      expect(asked.filter((value) => value != null)).toEqual([cursor]);
+      await expect(panel).toContainText(`E2E detached child 1 complete ${label}`);
+    } finally {
+      for (const agentId of createdAgentIds.reverse()) {
+        await cleanupAgent(page, agentId);
+      }
+    }
+  });
 });
 
 /** A subagent card's row is a picture of the child's thread, not part of this one: its folds

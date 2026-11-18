@@ -13,6 +13,7 @@ import {
   cancelTwoFactorSetup,
   messageToolCallPart,
   subagentThreadMessages,
+  subagentThreadMessagesPage,
   subagentThreadToolCallPart,
 } from '../src/api-endpoints';
 
@@ -140,6 +141,20 @@ describe('child thread read endpoints', () => {
   it('reads a child thread through its parent, encoding both ids', () => {
     expect(subagentThreadMessages('parent/1', 'thread 2')).toBe(
       '/api/convos/parent%2F1/subagents/thread%202/messages',
+    );
+  });
+
+  it('asks for one page of a thread, and for the page before a cursor', () => {
+    expect(subagentThreadMessagesPage('parent/1', 'thread 2', { limit: 50 })).toBe(
+      '/api/convos/parent%2F1/subagents/thread%202/messages?limit=50',
+    );
+    expect(
+      subagentThreadMessagesPage('parent/1', 'thread 2', {
+        limit: 50,
+        cursor: '2026-11-15T10:00:00.000Z|64d4f005d73ef522e1f48818',
+      }),
+    ).toBe(
+      '/api/convos/parent%2F1/subagents/thread%202/messages?limit=50&cursor=2026-11-15T10%3A00%3A00.000Z%7C64d4f005d73ef522e1f48818',
     );
   });
 

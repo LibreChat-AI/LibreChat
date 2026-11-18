@@ -2,13 +2,14 @@
  * @jest-environment jsdom
  */
 import { Provider, createStore } from 'jotai';
-import { act, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { Constants, StepTypes, StepEvents, ContentTypes } from 'librechat-data-provider';
 import type { TMessage, ChatEvent, TConversation } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
 import type { ChatStream, ChatTransport, ChatStreamStatus } from '../../../core';
 import type { ChatContract } from '../../../react/chat/contract';
+import type { FollowChatOptions } from '../../../react/follow';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { useIsMessagesViewReadOnly } from '../../../react/messages/view';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
@@ -179,7 +180,7 @@ function Pane({
   nav,
 }: {
   transport: ChatTransport;
-  loadMessages: () => Promise<TMessage[]>;
+  loadMessages: FollowChatOptions['loadMessages'];
   nav?: boolean;
 }): ReactElement {
   const followed = useFollowChat({ id: 'thread-1', transport, loadMessages });
@@ -325,5 +326,105 @@ describe('FollowedThread', () => {
     mount(<Pane transport={transport} loadMessages={load} nav />);
     await waitFor(() => expect(rows()).toHaveLength(1));
     expect(screen.getByTestId('rail')).toBeInTheDocument();
+  });
+
+  describe('a conversation longer than one page', () => {
+    /** Four stored turns, served two rows at a time from the end. */
+    const stored = [
+      brief,
+      answer('task-1:assistant', 'task-1:user', 'One'),
+      {
+        ...brief,
+        messageId: 'task-2:user',
+        parentMessageId: 'task-1:assistant',
+        text: 'And then?',
+      },
+      answer('task-2:assistant', 'task-2:user', 'Two'),
+    ];
+    const paged = () =>
+      jest.fn(async (cursor?: string) => {
+        const end = cursor == null ? stored.length : Number(cursor);
+        const start = Math.max(0, end - 2);
+        return { messages: stored.slice(start, end), earlier: start > 0 ? String(start) : null };
+      });
+    const earlier = () => screen.queryByRole('button', { name: 'Show earlier messages' });
+
+    it('offers the rows before the newest page, and draws them above it', async () => {
+      const { transport } = createTransport({ active: false });
+      mount(<Pane transport={transport} loadMessages={paged()} />);
+      await waitFor(() =>
+        expect(rows()).toEqual(['task-2:user=And then?', 'task-2:assistant=Two']),
+      );
+
+      const control = earlier();
+      expect(control).toBeInTheDocument();
+      /** Ahead of the first row drawn, where the older rows will go. */
+      expect(
+        control!.compareDocumentPosition(screen.getAllByTestId('row')[0]) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+
+      fireEvent.click(control!);
+      await waitFor(() =>
+        expect(rows()).toEqual([
+          'task-1:user=Research this',
+          'task-1:assistant=One',
+          'task-2:user=And then?',
+          'task-2:assistant=Two',
+        ]),
+      );
+      /** The first row is in: there is nothing earlier to offer. */
+      expect(earlier()).not.toBeInTheDocument();
+    });
+
+    it('says it is loading, and cannot be asked twice', async () => {
+      const { transport } = createTransport({ active: false });
+      const loadMessages = paged();
+      mount(<Pane transport={transport} loadMessages={loadMessages} />);
+      await waitFor(() => expect(earlier()).toBeInTheDocument());
+      let land: (page: { messages: TMessage[]; earlier: null }) => void = () => undefined;
+      loadMessages.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            land = resolve;
+          }),
+      );
+
+      fireEvent.click(earlier()!);
+      const busy = await screen.findByRole('button', { name: 'Loading...' });
+      expect(busy).toBeDisabled();
+      expect(busy).toHaveAttribute('aria-busy', 'true');
+      fireEvent.click(busy);
+      expect(loadMessages).toHaveBeenCalledTimes(2);
+
+      await act(async () => land({ messages: stored.slice(0, 2), earlier: null }));
+      await waitFor(() => expect(rows()).toHaveLength(4));
+    });
+
+    it('says when the earlier rows could not be read, and tries again', async () => {
+      const { transport } = createTransport({ active: false });
+      const loadMessages = paged();
+      mount(<Pane transport={transport} loadMessages={loadMessages} />);
+      await waitFor(() => expect(earlier()).toBeInTheDocument());
+      loadMessages.mockRejectedValueOnce(new Error('offline'));
+
+      fireEvent.click(earlier()!);
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        "Earlier messages couldn't be loaded.",
+      );
+      expect(rows()).toHaveLength(2);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(rows()).toHaveLength(4));
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('draws nothing above a conversation that fits one page', async () => {
+      const { transport } = createTransport({ active: false });
+      mount(<Pane transport={transport} loadMessages={async () => stored} />);
+      await waitFor(() => expect(rows()).toHaveLength(4));
+
+      expect(earlier()).not.toBeInTheDocument();
+    });
   });
 });

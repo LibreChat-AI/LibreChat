@@ -96,7 +96,7 @@ const subagentThreadViewHandler = createSubagentThreadViewHandler({
 const childThreadMessagesHandler = createChildThreadMessagesHandler({
   getConvoOwnership: db.getConvoOwnership,
   getSubagentThreadForParent: db.getSubagentThreadForParent,
-  getMessages: db.getMessages,
+  getMessagesByCursor: db.getMessagesByCursor,
   previewToolCalls: (req) => prepareToolCallPreviews(req, { getAppConfig }),
 });
 const childThreadToolCallPartHandler = createChildThreadToolCallPartHandler({
