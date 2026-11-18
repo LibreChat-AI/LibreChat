@@ -8,6 +8,7 @@ const mockInitializeServer = jest.fn();
 const mockConnectionStatus = jest.fn((): MCPServerStatus | undefined => undefined);
 
 const mockMCPRefresh = jest.fn();
+const mockGetOAuthUrl = jest.fn((): string | undefined => undefined);
 
 jest.mock('~/hooks/MCP/useMCPRefresh', () => ({
   useMCPRefresh: (options: { enabled: boolean; tools?: boolean }) => mockMCPRefresh(options),
@@ -16,7 +17,7 @@ jest.mock('~/hooks/MCP/useMCPRefresh', () => ({
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useMCPServerManager: () => ({
-    getOAuthUrl: () => undefined,
+    getOAuthUrl: mockGetOAuthUrl,
     isCancellable: () => false,
     isInitializing: () => false,
     cancelOAuthFlow: jest.fn(),
@@ -32,12 +33,16 @@ jest.mock('@librechat/client', () => ({
   Spinner: (props: React.ComponentProps<'span'>) => <span {...props} />,
   Button: ({
     children,
+    asChild,
     variant: _variant,
     size: _size,
     ...props
-  }: React.ComponentProps<'button'> & { variant?: string; size?: string }) => (
-    <button {...props}>{children}</button>
-  ),
+  }: React.ComponentProps<'button'> & { variant?: string; size?: string; asChild?: boolean }) =>
+    asChild ? (
+      <span {...props}>{children}</span>
+    ) : (
+      <button {...props}>{children}</button>
+    ),
 }));
 
 describe('ServerInitializationSection', () => {
@@ -80,3 +85,17 @@ describe('ServerInitializationSection', () => {
     expect(mockInitializeServer).toHaveBeenCalledWith('server', false);
   });
 });
+
+  it('renders the OAuth continue action as a real link, not a scripted click', () => {
+    mockConnectionStatus.mockReturnValue({
+      connectionState: 'connecting',
+      requiresOAuth: true,
+    } as unknown as MCPServerStatus);
+    mockGetOAuthUrl.mockReturnValue('https://auth.example/authorize?x=1');
+    render(<ServerInitializationSection serverName="server" requiresOAuth={true} />);
+    const anchor = screen.getByText('com_ui_continue_oauth').closest('a');
+    expect(anchor).not.toBeNull();
+    expect(anchor).toHaveAttribute('href', 'https://auth.example/authorize?x=1');
+    expect(anchor).toHaveAttribute('target', '_blank');
+    expect(anchor).toHaveAttribute('rel', 'noopener noreferrer');
+  });
