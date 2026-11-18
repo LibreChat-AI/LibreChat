@@ -264,18 +264,7 @@ export default function SubagentCall({
     return index < 0 ? undefined : { part: parts[index], index };
   }, [progress?.contentParts]);
 
-  /** Only throttle once the live text is long enough to fill the row. Earlier updates pass
-   *  through so the first tokens appear right away, not after the throttle window. */
-  const shouldThrottlePreview = useMemo(() => {
-    if (!running || tailPart == null) return false;
-    const { part } = tailPart;
-    let text: unknown = '';
-    if (part.type === ContentTypes.TEXT) text = part.text;
-    else if (part.type === ContentTypes.THINK) text = part.think;
-    return typeof text === 'string' && text.length >= PREVIEW_PASSTHROUGH_CHARS;
-  }, [running, tailPart]);
-
-  const preview = useTickerThrottle(tailPart, SUBAGENT_TICKER_THROTTLE_MS, shouldThrottlePreview);
+  const preview = useThrottledRow(tailPart, running);
   const showPreview = running && preview != null;
 
   const prompt = getSubagentPrompt(args);
@@ -587,14 +576,49 @@ const pickTailPart = (tail: TMessage | null): TMessageContentParts | null => {
 function DetachedPreview({ threadId, taskId }: { threadId: string; taskId: string }): ReactNode {
   const status = useDetachedStatus(threadId, taskId);
   const live = status != null && isLiveSubagentStatus(status);
-  /** A running child is followed for its row; the page follows it once, with or without a panel. */
-  useThreadInterest(threadId, { live: true, enabled: live, passive: true });
+  /**
+   * A running child is followed for its row; the page follows it once, with or without a panel.
+   * Its messages outlive the following: a child the page has no room to preview keeps what was
+   * last read for it, which is not what it is doing now, so its row is shown only while it is
+   * being followed.
+   */
+  const followed = useThreadInterest(threadId, { live: true, enabled: live, passive: true });
   const part = useBranchTailSelect(threadId, threadId, pickTailPart);
   const index = useBranchTailSelect(threadId, threadId, pickTailIndex);
-  if (part == null || !live) {
+  const row = useMemo(
+    () => (part == null || index == null ? undefined : { part, index }),
+    [part, index],
+  );
+  const shown = useThrottledRow(row, live && followed);
+  if (shown == null || !live || !followed) {
     return null;
   }
-  return <SubagentPreview key={index} part={part} messageId={`${threadId}:${taskId}:preview`} />;
+  return (
+    <SubagentPreview
+      key={shown.index}
+      part={shown.part}
+      messageId={`${threadId}:${taskId}:preview`}
+    />
+  );
+}
+
+type PreviewRow = { part: TMessageContentParts; index: number };
+
+/**
+ * A child's row at the pace the card redraws it. Short text passes straight through, so the
+ * first tokens appear at once; once the live text is long enough to fill the row it refreshes on
+ * the throttle, wherever the row comes from, instead of on every token.
+ */
+function useThrottledRow(row: PreviewRow | undefined, running: boolean): PreviewRow | undefined {
+  const throttled = useMemo(() => {
+    if (!running || row == null) return false;
+    const { part } = row;
+    let text: unknown = '';
+    if (part.type === ContentTypes.TEXT) text = part.text;
+    else if (part.type === ContentTypes.THINK) text = part.think;
+    return typeof text === 'string' && text.length >= PREVIEW_PASSTHROUGH_CHARS;
+  }, [running, row]);
+  return useTickerThrottle(row, SUBAGENT_TICKER_THROTTLE_MS, throttled);
 }
 
 function extractSubagentType(args: SubagentCallProps['args']): string {

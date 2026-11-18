@@ -61,9 +61,11 @@ function Reader({ threadId, live = false }: { threadId: string; live?: boolean }
 }
 
 function Preview({ threadId }: { threadId: string }): null {
-  useThreadInterest(threadId, { live: true, enabled: true, passive: true });
+  admitted[threadId] = useThreadInterest(threadId, { live: true, enabled: true, passive: true });
   return null;
 }
+
+let admitted: Record<string, boolean>;
 
 let seen: Record<string, FollowedChat | undefined>;
 
@@ -73,6 +75,7 @@ beforeEach(() => {
   seen = {};
   mounted = new Set();
   unmounts = 0;
+  admitted = {};
   jest.useFakeTimers();
 });
 
@@ -168,6 +171,31 @@ describe('ThreadFollowsProvider', () => {
     );
     act(() => jest.advanceTimersByTime(THREAD_LINGER_MS));
     expect([...mounted].sort()).toEqual(previews.slice(1).sort());
+  });
+
+  it('tells a preview whether its thread is being followed, including once it loses its room', () => {
+    const previews = Array.from({ length: MAX_PREVIEWED_THREADS + 1 }, (_, n) => `preview-${n}`);
+    const overflow = previews[MAX_PREVIEWED_THREADS];
+    const cards = previews.map((threadId) => <Preview key={threadId} threadId={threadId} />);
+    const view = render(page(<>{cards}</>));
+    expect(admitted[previews[0]]).toBe(true);
+    expect(admitted[overflow]).toBe(false);
+
+    /** Opened, it is followed whatever the cap; closed again, it is back to having no room. */
+    view.rerender(
+      page(
+        <>
+          {cards}
+          <Reader threadId={overflow} />
+        </>,
+      ),
+    );
+    expect(admitted[overflow]).toBe(true);
+
+    view.rerender(page(<>{cards}</>));
+    act(() => jest.advanceTimersByTime(THREAD_LINGER_MS));
+    expect(admitted[overflow]).toBe(false);
+    expect(mounted.has(overflow)).toBe(false);
   });
 
   it('follows nothing where no page shares followers', () => {

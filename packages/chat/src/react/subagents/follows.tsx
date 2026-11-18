@@ -126,6 +126,11 @@ export class ThreadFollows {
     return this.followed;
   };
 
+  /** Whether the thread is among those followed now, which a preview past the cap is not. */
+  isFollowed(threadId: string): boolean {
+    return this.getThreads().some((thread) => thread.threadId === threadId);
+  }
+
   subscribeResult(threadId: string, listener: Listener): () => void {
     const listeners = this.resultListeners.get(threadId) ?? new Set<Listener>();
     listeners.add(listener);
@@ -233,14 +238,18 @@ export function ThreadFollowsProvider({
   );
 }
 
+const noListener = (): (() => void) => unsubscribed;
+
 /**
  * Says this reader wants a thread followed, without reading what the follower holds: a card
- * reads its row from the thread's messages and has no use for every other change.
+ * reads its row from the thread's messages and has no use for every other change. Returns
+ * whether the thread is being followed, which a preview with no room on the page is not. Where
+ * no page shares followers there is nothing to be admitted to, and the answer is yes.
  */
 export function useThreadInterest(
   threadId: string,
   { live, enabled, passive = false }: { live: boolean; enabled: boolean; passive?: boolean },
-): void {
+): boolean {
   const follows = useThreadFollows();
   useEffect(() => {
     if (follows == null || !enabled || threadId === '') {
@@ -248,6 +257,8 @@ export function useThreadInterest(
     }
     return follows.acquire(threadId, { live, passive });
   }, [follows, threadId, live, enabled, passive]);
+  const followed = (): boolean => follows == null || follows.isFollowed(threadId);
+  return useSyncExternalStore(follows?.subscribeThreads ?? noListener, followed, followed);
 }
 
 /**

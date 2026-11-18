@@ -35,6 +35,7 @@ import {
   subagentProgressKey,
 } from '../../../react/subagents/state';
 import PackageSubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
+import { MAX_PREVIEWED_THREADS, useThreadInterest } from '../../../react/subagents/follows';
 import { ParentSubagentsProvider } from '../../../react/subagents/parents';
 import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
@@ -133,6 +134,14 @@ const partsHost = createMessagePartsHost({
 const mockUseThreadChat = jest.fn();
 const mockRefetchIndex = jest.fn(async () => ({ data: undefined }));
 let seedQueries: ((client: QueryClient) => void) | undefined;
+/** Other readers on the page, mounted ahead of the card under the same providers. */
+let neighbours: ReactNode;
+
+/** Another running child's card, as far as the page's followers are concerned. */
+function OtherPreview({ threadId }: { threadId: string }): null {
+  useThreadInterest(threadId, { live: true, enabled: true, passive: true });
+  return null;
+}
 
 const subagentsHost = createSubagentsHost({
   useAgentsMap: () => agents,
@@ -197,6 +206,7 @@ function Providers({
         <SubagentsHostProvider host={subagentsHost}>
           <ParentSubagentsProvider conversationId="parent-conversation" enabled>
             <JotaiProvider store={store}>
+              {neighbours}
               {withSurface ? (
                 <ChatSurfaceProvider value={surface}>{card}</ChatSurfaceProvider>
               ) : (
@@ -215,6 +225,7 @@ afterEach(() => {
   mockIndexedChildren = new Map();
   currentMessage = defaultMessage;
   seedQueries = undefined;
+  neighbours = undefined;
   mockUseThreadChat.mockReset();
   mockRefetchIndex.mockClear();
 });
@@ -679,6 +690,52 @@ describe('SubagentCall', () => {
       mountDetached();
 
       expect(screen.getByTestId('thread-row')).toHaveTextContent('read_file');
+    });
+
+    it('shows no row for a child the page has no room to follow, whatever was last read for it', () => {
+      mockIndexedChildren = indexed('running');
+      neighbours = Array.from({ length: MAX_PREVIEWED_THREADS }, (_, n) => (
+        <OtherPreview key={n} threadId={`other-thread-${n}`} />
+      ));
+      mountDetached();
+
+      /** Its messages are in the cache, but nothing is reading its stream, so they are stale. */
+      expect(mockUseThreadChat).not.toHaveBeenCalledWith(
+        'parent-conversation',
+        'child-thread-1',
+        expect.anything(),
+      );
+      expect(screen.queryByTestId('thread-row')).toBeNull();
+    });
+
+    it('refreshes a long live row on the throttle, as a foreground child does', async () => {
+      jest.useFakeTimers();
+      mockIndexedChildren = indexed('running');
+      const first = 'First live preview '.repeat(8).trim();
+      const second = 'Second live preview '.repeat(8).trim();
+      const withText = (text: string) => [
+        threadMessages[0],
+        { ...threadMessages[1], content: [{ type: 'text', text }] },
+      ];
+      let cache: QueryClient | undefined;
+      seedQueries = (client) => {
+        cache = client;
+        client.setQueryData(['messages', 'child-thread-1'], withText(first));
+      };
+      mountDetached();
+      expect(screen.getByTestId('thread-row')).toHaveTextContent(first);
+
+      /** The cache tells its readers on a timer; a moment later the newer text has reached the
+       *  card and is being held back. */
+      await act(async () => {
+        cache?.setQueryData(['messages', 'child-thread-1'], withText(second));
+        await jest.advanceTimersByTimeAsync(1);
+      });
+      expect(screen.getByTestId('thread-row')).toHaveTextContent(first);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(SUBAGENT_TICKER_THROTTLE_MS);
+      });
+      expect(screen.getByTestId('thread-row')).toHaveTextContent(second);
     });
 
     it('is not followed and shows no row once it has finished', () => {
