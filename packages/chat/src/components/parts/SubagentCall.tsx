@@ -9,8 +9,8 @@ import type {
   TAttachment,
   TMessageContentParts,
 } from 'librechat-data-provider';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { Agent } from 'librechat-data-provider';
-import type { ReactNode } from 'react';
 import type { MessagePartMessage, MessagePartsHost, ToolCallChrome } from '../../react/host';
 import type { SubagentContentPreview } from '../../react/subagents/state';
 import {
@@ -19,6 +19,7 @@ import {
   useSubagentProgress,
 } from '../../react/subagents/state';
 import { isLiveSubagentStatus, subagentStatusLabelKey } from '../../react/subagents/status';
+import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
 import { isSelfSpawn as isSelfSpawnType } from '../../react/subagents/author';
 import { parseSubagentBackgroundHandle } from '../../core/parts/handle';
 import { lastVisibleContentIdx } from '../../core/parts/activityLabels';
@@ -27,12 +28,12 @@ import { useOpenSubagentPanel } from '../../react/subagents/surface';
 import { useParentSubagents } from '../../react/subagents/parents';
 import { useThreadInterest } from '../../react/subagents/follows';
 import { getSubagentPrompt } from '../../react/subagents/prompt';
+import { PartsPreviewContext } from '../../react/parts/preview';
+import { FailedRevealContext, useFailedReveal } from './reveal';
 import { useToolCallIntent } from '../../react/parts/intent';
 import { useBranchTailSelect } from '../../react/latest';
-import { useMessagePartsHost } from '../../react/host';
 import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
-import { useFailedReveal } from './reveal';
 import { FOLD_GLYPH_CLASS } from './rows';
 
 export interface SubagentCallProps {
@@ -635,6 +636,14 @@ function extractSubagentType(args: SubagentCallProps['args']): string {
 }
 
 const PREVIEW_ROW_HEIGHT = 'h-8';
+/** No request to reveal a failure reaches a picture, and it claims no focus. */
+const NO_REVEAL = { tick: 0, claimFocus: null };
+/** A tool artifact is always some other row's: a picture never draws it and never takes it. */
+const PICTURE_CLAIM: [string | null, Dispatch<SetStateAction<string | null>>] = [
+  'subagent-preview',
+  () => undefined,
+];
+const useNoClaim = (): [string | null, Dispatch<SetStateAction<string | null>>] => PICTURE_CLAIM;
 /**
  * The line above the row dissolves at the top edge instead of being cut through. A mask stencil,
  * not paint: only its alpha is read, so it is not a theme color.
@@ -662,6 +671,7 @@ function SubagentPreview({
 }): ReactNode {
   const host = useMessagePartsHost();
   const content = useMemo(() => [part], [part]);
+  const pictureHost = useMemo(() => ({ ...host, useToolArtifactClaim: useNoClaim }), [host]);
   return (
     <div
       {...INERT}
@@ -675,17 +685,26 @@ function SubagentPreview({
     >
       {/* Held to its last line: what the child wrote most recently is the part in view. */}
       <div className="absolute inset-x-0 bottom-0">
-        {host.renderContentParts({
-          content,
-          messageId,
-          conversationId: null,
-          isCreatedByUser: false,
-          showThinking: false,
-          isSubmitting: true,
-          isLast: true,
-          /** The row is live: a renderer told otherwise draws a tool still running as stopped. */
-          isLatestMessage: true,
-        })}
+        {/* A picture of the child's row and nothing more: the row itself registers what it
+            holds with the app, owns its artifacts and answers a request to reveal a failure. */}
+        <PartsPreviewContext.Provider value={true}>
+          <FailedRevealContext.Provider value={NO_REVEAL}>
+            <MessagePartsHostProvider host={pictureHost}>
+              {host.renderContentParts({
+                content,
+                messageId,
+                conversationId: null,
+                isCreatedByUser: false,
+                showThinking: false,
+                isSubmitting: true,
+                isLast: true,
+                /** The row is live: a renderer told otherwise draws a tool still running as
+                 *  stopped. */
+                isLatestMessage: true,
+              })}
+            </MessagePartsHostProvider>
+          </FailedRevealContext.Provider>
+        </PartsPreviewContext.Provider>
       </div>
     </div>
   );

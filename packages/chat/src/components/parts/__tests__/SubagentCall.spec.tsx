@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Provider as JotaiProvider, createStore, useAtomValue, useStore } from 'jotai';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -35,14 +35,15 @@ import {
   subagentProgressKey,
 } from '../../../react/subagents/state';
 import { MAX_PREVIEWED_THREADS, useThreadInterest } from '../../../react/subagents/follows';
+import { MessagePartsHostProvider, useMessagePartsHost } from '../../../react/host';
 import PackageSubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
 import { ParentSubagentsProvider } from '../../../react/subagents/parents';
 import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
+import { useIsPartsPreview } from '../../../react/parts/preview';
 import { StreamHostProvider } from '../../../react/stream/host';
-import { MessagePartsHostProvider } from '../../../react/host';
 import { FailedRevealContext } from '../reveal';
 import { FOLD_GLYPH_SELECTOR } from '../rows';
 import { litFoldPath } from '../rail';
@@ -123,11 +124,40 @@ const partLine = (part: object | undefined): string => {
   };
   return toolCall?.name ?? text ?? think ?? '';
 };
-const partsHost = createMessagePartsHost({
-  renderContentParts: ({ content, isSubmitting, isLatestMessage }) => (
-    <div data-testid="thread-row" data-live={String(isSubmitting && isLatestMessage === true)}>
-      {content.map(partLine).join('|')}
+/** What a row is told when it is drawn, read the way the app's parts read it. */
+function ThreadRow({ line, live }: { line: string; live: boolean }): ReactNode {
+  const [claim, setClaim] = useMessagePartsHost().useToolArtifactClaim('artifact-1');
+  const reveal = useContext(FailedRevealContext);
+  useEffect(() => {
+    setClaim('thread-row');
+  }, [setClaim]);
+  return (
+    <div
+      data-testid="thread-row"
+      data-live={String(live)}
+      data-preview={String(useIsPartsPreview())}
+      data-claim={String(claim)}
+      data-reveal={String(reveal.tick)}
+    >
+      {line}
     </div>
+  );
+}
+
+let claimedArtifact: string | null = null;
+const partsHost = createMessagePartsHost({
+  /** One claim for the page, as the app keeps one per artifact. */
+  useToolArtifactClaim: () => [
+    claimedArtifact,
+    (next) => {
+      claimedArtifact = typeof next === 'function' ? next(claimedArtifact) : next;
+    },
+  ],
+  renderContentParts: ({ content, isSubmitting, isLatestMessage }) => (
+    <ThreadRow
+      line={content.map(partLine).join('|')}
+      live={isSubmitting && isLatestMessage === true}
+    />
   ),
 });
 
@@ -226,6 +256,7 @@ afterEach(() => {
   currentMessage = defaultMessage;
   seedQueries = undefined;
   neighbours = undefined;
+  claimedArtifact = null;
   mockUseThreadChat.mockReset();
   mockRefetchIndex.mockClear();
 });
@@ -543,6 +574,12 @@ describe('SubagentCall', () => {
     expect(row).not.toHaveTextContent('Working…');
     /** Drawn as a live row, or a tool still running would read as one that was stopped. */
     expect(row).toHaveAttribute('data-live', 'true');
+    /** And as a picture of that row: it is told so, it takes no artifact from the row it
+     *  pictures, and a request to reveal a failure does not reach it. */
+    expect(row).toHaveAttribute('data-preview', 'true');
+    expect(claimedArtifact).toBeNull();
+    rendered.reveal();
+    expect(screen.getByTestId('thread-row')).toHaveAttribute('data-reveal', '0');
     const preview = row.closest('[data-subagent-preview]');
     expect(preview).toHaveAttribute('aria-hidden', 'true');
     expect(preview).toHaveAttribute('inert');
