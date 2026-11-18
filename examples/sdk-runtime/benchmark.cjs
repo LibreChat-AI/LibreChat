@@ -13,6 +13,11 @@ const { HumanMessage } = require('@librechat/agents/langchain/messages');
 const { createRemoteSdkRun } = require('@librechat/api/sdk');
 const { convertToOpenAITool } = require('@langchain/core/utils/function_calling');
 const { createExampleRun, createExampleModel, createExampleTool } = require('./agent.cjs');
+const { createSchemaAdvisorRun } = require('./schema-advisor.cjs');
+const { ExampleAdvisorModel } = require('./schema-advisor-models.cjs');
+const advisor = process.env.SDK_EXAMPLE_GRAPH === 'schema-advisor';
+const createLocalRun = advisor ? createSchemaAdvisorRun : createExampleRun;
+const provider = advisor ? Providers.ANTHROPIC : Providers.OPENAI;
 const hostOwnedModel = process.env.SDK_BENCHMARK_HOST_MODEL === 'true';
 const modelAdmission = new HostModelAdmission({ maxConcurrentCalls: 4, maxRequestBytes: 4194304 });
 
@@ -59,21 +64,21 @@ async function measure(remote) {
     },
     graphConfig: {
       type: 'standard',
-      llmConfig: { provider: Providers.OPENAI },
+      llmConfig: { provider },
       agentId: identity.agentId,
     },
   };
   const model = hostOwnedModel
     ? createHostModelService({
         identity,
-        model: createExampleModel(),
+        model: advisor ? new ExampleAdvisorModel({}) : createExampleModel(),
         descriptor: {
           version: 1,
           reference: 'primary',
-          provider: Providers.OPENAI,
+          provider,
           model: 'deterministic-host',
           streaming: true,
-          tools: [convertToOpenAITool(createExampleTool())],
+          tools: advisor ? [] : [convertToOpenAITool(createExampleTool())],
         },
         admission: modelAdmission,
         limits: { timeoutMs: 10000, maxRequestBytes: 1048576, maxResponseBytes: 4194304 },
@@ -102,7 +107,7 @@ async function measure(remote) {
           }),
         },
       })
-    : await createExampleRun({
+    : await createLocalRun({
         config,
         identity,
         hostModel: model
@@ -135,6 +140,7 @@ async function main() {
     JSON.stringify(
       {
         mode: 'deterministic custom graph, five warm samples',
+        graph: advisor ? 'schema-advisor' : 'example',
         protectedOutput,
         hostOwnedModel,
         local,

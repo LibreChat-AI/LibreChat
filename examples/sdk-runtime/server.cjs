@@ -1,6 +1,7 @@
 const { createRemoteSdkServer, createRedisRuntimeJournal } = require('@librechat/api/sdk');
 const { createExampleRun } = require('./agent.cjs');
 const { createMinimalRun } = require('./minimal.cjs');
+const { createSchemaAdvisorRun } = require('./schema-advisor.cjs');
 
 const secret = process.env.SDK_RUNTIME_SECRET;
 if (!secret || secret.length < 32)
@@ -36,12 +37,13 @@ const runtime = createRemoteSdkServer({
   authorize: (identity) =>
     identity.runtimeId === runtimeId &&
     (!allowedAgents.size || allowedAgents.has(identity.agentId)),
-  createRun: (input) =>
-    process.env.SDK_EXAMPLE_GRAPH === 'simple'
-      ? createMinimalRun(input)
-      : createExampleRun(input, {
-          stepDelayMs: Number(process.env.SDK_EXAMPLE_STEP_DELAY_MS || 0),
-        }),
+  createRun: (input) => {
+    if (process.env.SDK_EXAMPLE_GRAPH === 'schema-advisor') return createSchemaAdvisorRun(input);
+    if (process.env.SDK_EXAMPLE_GRAPH === 'simple') return createMinimalRun(input);
+    return createExampleRun(input, {
+      stepDelayMs: Number(process.env.SDK_EXAMPLE_STEP_DELAY_MS || 0),
+    });
+  },
   onError: () => console.error('Remote SDK run failed'),
 });
 runtime.server.listen(Number(process.env.SDK_RUNTIME_PORT || 8804), '127.0.0.1', () => {

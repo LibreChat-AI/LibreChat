@@ -27,6 +27,7 @@ async function startWorker(graph = 'complex') {
       SDK_RUNTIME_SECRET: 'e2e-remote-sdk-fixture-secret-not-a-production-key',
       SDK_EXAMPLE_GRAPH: graph,
       SDK_EXAMPLE_LIVE_MODEL: 'false',
+      SDK_ADVISOR_PROVIDER: 'fixture',
       SDK_EXAMPLE_STEP_DELAY_MS: '10000',
       SDK_RUNTIME_AGENT_IDS: '',
       OPENAI_API_KEY: '',
@@ -194,5 +195,61 @@ test('runs the minimal SDK example through the real native UI', async ({ page },
     await page.screenshot({ path: info.outputPath('remote-sdk-minimal.png'), fullPage: true });
   } finally {
     await cleanupAgent(page, agentId);
+  }
+});
+
+test('Schema Advisor graph revisions stream into native chat and survive reload', async ({
+  page,
+}, info) => {
+  await stopWorker();
+  await startWorker('schema-advisor');
+  let agentId: string | undefined;
+  try {
+    await page.goto(NEW_CHAT_PATH);
+    const token = await getAccessToken(page);
+    const agent = await requestJson<{ id: string; name: string }>(page, {
+      path: '/api/agents',
+      token,
+      method: 'POST',
+      body: {
+        name: uniqueAgentName('Schema Advisor graph example'),
+        provider: MOCK_ENDPOINTS[0].label,
+        model: MOCK_ENDPOINTS[0].model,
+        sdk_runtime: { id: 'remote-example', protocolVersion: 1 },
+      },
+    });
+    agentId = agent.id;
+    const builder = await openAgentBuilder(page);
+    await builder.getByRole('combobox', { name: 'Agent', exact: true }).click();
+    await page.getByRole('option', { name: agent.name }).click();
+    await builder.getByRole('button', { name: 'Select Agent' }).click();
+    const started = performance.now();
+    await sendMessage(page, 'Investigate the reporting query and review the proposal.');
+    await expect(
+      messagesView(page).getByRole('heading', { name: 'Reviewed example plan' }),
+      workerOutput,
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      messagesView(page).getByText(/Review status: reviewed \(2 rounds\)/),
+    ).toBeVisible();
+    await expect(page.getByTestId('stop-generation-button')).toBeHidden();
+    const visibleMs = performance.now() - started;
+    const url = page.url();
+    await page.screenshot({ path: info.outputPath('schema-advisor-graph.png'), fullPage: true });
+    await page.reload();
+    await expect(
+      messagesView(page).getByRole('heading', { name: 'Reviewed example plan' }),
+    ).toBeVisible();
+    expect(page.url()).toBe(url);
+    await info.attach('schema-advisor-visible-latency', {
+      body: JSON.stringify({
+        visibleMs,
+        model: 'deterministic BaseChatModel',
+        graph: 'introspect/planner/adversarial/revision/render',
+      }),
+      contentType: 'application/json',
+    });
+  } finally {
+    if (agentId) await cleanupAgent(page, agentId);
   }
 });

@@ -33,6 +33,9 @@ loop. Reload during execution or while awaiting approval, resume, stop, and insp
 Stop cancels this example's execution; it does not automatically undo completed side effects.
 
 Set `SDK_EXAMPLE_GRAPH=simple` for the minimal one-agent example in `minimal.cjs`.
+Set `SDK_EXAMPLE_GRAPH=schema-advisor` for the
+[Schema Advisor-shaped graph](SCHEMA_ADVISOR.md): domain state, planner/adversarial revisions,
+checkpoint reconstruction, and native model-class or host-model integration, without a database.
 The default `agent.cjs` demonstrates a custom StateGraph with planning, SDK tool execution,
 review, and conditional refinement. For actual provider calls,
 set `SDK_EXAMPLE_LIVE_MODEL=true`, `OPENAI_API_KEY`, and optionally `SDK_EXAMPLE_MODEL` **on the
