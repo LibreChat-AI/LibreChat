@@ -25,6 +25,8 @@ export type ExecutionSource =
       readonly protocol: AgentRunProtocol;
       /** A background Responses run, whose events go to a stream the owner can follow. */
       readonly background: boolean;
+      /** The personal API key that started the run. Absent for a token or a bound key. */
+      readonly keyId?: string;
     };
 
 /**
@@ -125,11 +127,14 @@ export function createRemoteExecutionContext({
   agentId,
   protocol,
   background,
+  keyId,
 }: {
   principal: ExecutionPrincipal;
   agentId?: string;
   protocol: AgentRunProtocol;
   background: boolean;
+  /** The personal API key that started the run. Absent for a token or a bound key. */
+  keyId?: string;
 }): ExecutionContext {
   return Object.freeze({
     principal: Object.freeze({
@@ -138,7 +143,7 @@ export function createRemoteExecutionContext({
       ...(principal.role ? { role: principal.role } : {}),
     }),
     ...(agentId ? { agentId } : {}),
-    source: Object.freeze({ type: 'remote_api', protocol, background }),
+    source: Object.freeze({ type: 'remote_api', protocol, background, ...(keyId && { keyId }) }),
     unattended: !background,
   });
 }

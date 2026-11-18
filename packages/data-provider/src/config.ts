@@ -1147,8 +1147,22 @@ const remoteApiAuthSchema = z.object({
   oidc: remoteApiOidcSchema.optional(),
 });
 
+/**
+ * Which of the key owner's MCP servers a run started with an API key may use.
+ * `owner`: every server the owner can use, as before. `delegated`: only the servers and
+ * tools the owner approved for that key and that agent; anything else is refused.
+ */
+const remoteApiIntegrationsSchema = z.object({
+  mode: z.enum(['owner', 'delegated']).optional(),
+  /** Longest a grant made for a key may last. */
+  maxLifetimeHours: z.number().int().min(1).max(8760).optional(),
+  /** The servers a key may be granted, each with the recipient the operator vouches for. */
+  resources: z.record(z.string(), scheduledMCPResourceBindingSchema).optional(),
+});
+
 const remoteApiSchema = z.object({
   auth: remoteApiAuthSchema.optional(),
+  integrations: remoteApiIntegrationsSchema.optional(),
   background: z
     .object({
       enabled: z.boolean().default(false),

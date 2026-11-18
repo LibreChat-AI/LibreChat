@@ -27,7 +27,12 @@ const target: ScheduledMCPTarget = {
   ],
   policyRevision: 'p1',
 };
-const jestPins = (pins: ReturnType<typeof pinStorage>) => ({
+const jestPins = (
+  pins: Pick<
+    ScheduleMCPConsentStorage,
+    'pinScheduleMCPToolDefinition' | 'flagScheduleMCPToolChange'
+  >,
+) => ({
   pinScheduleMCPToolDefinition: jest.fn(pins.pinScheduleMCPToolDefinition),
   flagScheduleMCPToolChange: jest.fn(pins.flagScheduleMCPToolChange),
 });

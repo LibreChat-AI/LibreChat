@@ -22,8 +22,16 @@ import type { ClearFileCodeEnvRefsParams } from '~/types/file';
 import type { FileStorageMethods } from './fileStorage';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
 import { createScheduleMCPConsentStorage } from './scheduleConsent';
-export { createScheduleMCPConsentStorage } from './scheduleConsent';
-export type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from './scheduleConsent';
+export {
+  createScheduleMCPConsentStorage,
+  createAgentKeyMCPConsentStorage,
+} from './scheduleConsent';
+export type {
+  MCPConsentStorage,
+  MCPConsentSnapshot,
+  ScheduleMCPConsentStorage,
+  ScheduleConsentSnapshot,
+} from './scheduleConsent';
 import type {
   FileMethods,
   FileOwnerScope,

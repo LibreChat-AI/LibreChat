@@ -1,5 +1,6 @@
 import {
   MAX_SCHEDULED_MCP_SERVER_TOOLS,
+  agentKeyMCPIdentitySchema,
   confirmScheduleMCPConsentSchema,
   scheduledMCPResourceSchema,
   scheduledMCPIdentitySchema,
@@ -50,6 +51,51 @@ it('takes the tools to ask about as an optional choice beside the allowed ones',
   expect(parse({ warehouse: [] })).toBe(true);
   expect(parse(['query'])).toBe(false);
   expect(parse({ warehouse: 'query' })).toBe(false);
+});
+
+it('leaves API key runs unrestricted unless the operator asks for grants', () => {
+  const parse = (integrations?: unknown) =>
+    configSchema.safeParse({
+      version: '1.3.8',
+      endpoints: { agents: { remoteApi: { integrations } } },
+    });
+  const absent = parse();
+  expect(absent.success).toBe(true);
+  expect(absent.success && absent.data.endpoints?.agents?.remoteApi?.integrations).toBeUndefined();
+  expect(
+    parse({
+      mode: 'delegated',
+      maxLifetimeHours: 720,
+      resources: {
+        warehouse: {
+          url: 'https://warehouse.example/mcp',
+          credentialMode: 'stored_oauth',
+          issuer: 'https://issuer.example/',
+          audience: 'warehouse',
+          scopes: ['read'],
+        },
+      },
+    }).success,
+  ).toBe(true);
+  expect(parse({ mode: 'owner' }).success).toBe(true);
+  expect(parse({ mode: 'anything' }).success).toBe(false);
+  expect(parse({ mode: 'delegated', maxLifetimeHours: 0 }).success).toBe(false);
+  expect(parse({ mode: 'delegated', resources: { warehouse: { url: 'not a url' } } }).success).toBe(
+    false,
+  );
+});
+
+it('describes a grant held by an API key by key, owner, tenant and agent', () => {
+  const identity = {
+    keyId: 'key',
+    ownerId: 'owner',
+    tenantId: null,
+    agentId: 'agent_a',
+    invocationMode: 'delegated',
+  };
+  expect(agentKeyMCPIdentitySchema.safeParse(identity).success).toBe(true);
+  expect(agentKeyMCPIdentitySchema.safeParse({ ...identity, scheduleId: 's' }).success).toBe(false);
+  expect(scheduledMCPIdentitySchema.safeParse(identity).success).toBe(false);
 });
 
 it('requires an explicit tenant binding and delegated mode', () => {

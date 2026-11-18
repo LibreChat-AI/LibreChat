@@ -1,41 +1,47 @@
 import { randomUUID } from 'node:crypto';
 import {
   scheduledMCPToolPinSchema,
+  agentKeyMCPIdentitySchema,
+  agentKeyMCPEnrollmentSchema,
   scheduledMCPEnrollmentSchema,
   MAX_SCHEDULED_MCP_SERVER_TOOLS,
 } from 'librechat-data-provider';
-import type { ScheduledMCPIdentity, ScheduledMCPEnrollment } from 'librechat-data-provider';
+import type {
+  MCPGrantIdentity,
+  MCPGrantEnrollment,
+  AgentKeyMCPIdentity,
+  ScheduledMCPIdentity,
+} from 'librechat-data-provider';
 import type { Model } from 'mongoose';
-import type { IScheduleDocument } from '~/types/schedule';
 
-export interface ScheduleConsentSnapshot {
+export interface MCPConsentSnapshot<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
   compatible?: boolean;
   agentId: string;
   enabled: boolean;
   configRevision: number;
-  enrollment: ScheduledMCPEnrollment | null;
+  enrollment: MCPGrantEnrollment<Identity> | null;
   /** The owner edited this schedule without ever authorizing it. */
   required?: boolean;
 }
+export type ScheduleConsentSnapshot = MCPConsentSnapshot<ScheduledMCPIdentity>;
 
-export interface ScheduleMCPConsentStorage {
-  readScheduleMCPConsent: (
-    identity: ScheduledMCPIdentity,
-  ) => Promise<ScheduleConsentSnapshot | null>;
+/** A grant embedded in the document of the subject it acts for: a schedule, or an API key. */
+export interface MCPConsentStorage<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
+  readScheduleMCPConsent: (identity: Identity) => Promise<MCPConsentSnapshot<Identity> | null>;
   confirmScheduleMCPConsent: (input: {
-    identity: ScheduledMCPIdentity;
+    identity: Identity;
     expectedConfigRevision: number;
     expectedRevision: string | null;
-    enrollment: ScheduledMCPEnrollment;
+    enrollment: MCPGrantEnrollment<Identity>;
     /**
      * The stored grant the new one was built from. The write is refused when a run has added
      * a pin or a mark to it since, so the caller reads again instead of dropping the addition.
      */
-    basis?: ScheduledMCPEnrollment | null;
+    basis?: MCPGrantEnrollment<Identity> | null;
   }) => Promise<boolean>;
-  revokeScheduleMCPConsent: (identity: ScheduledMCPIdentity, revision: string) => Promise<boolean>;
+  revokeScheduleMCPConsent: (identity: Identity, revision: string) => Promise<boolean>;
   admitScheduleMCPConsent: (input: {
-    identity: ScheduledMCPIdentity;
+    identity: Identity;
     expectedConfigRevision: number;
     revision: string;
     consentId: string;
@@ -51,7 +57,7 @@ export interface ScheduleMCPConsentStorage {
    * a pin or the grant is no longer the live one; the caller reads again to tell which.
    */
   pinScheduleMCPToolDefinition: (input: {
-    identity: ScheduledMCPIdentity;
+    identity: Identity;
     revision: string;
     consentId: string;
     tool: string;
@@ -59,11 +65,37 @@ export interface ScheduleMCPConsentStorage {
   }) => Promise<boolean>;
   /** Marks a pinned tool as changed. The mark stays until the owner confirms again. */
   flagScheduleMCPToolChange: (input: {
-    identity: ScheduledMCPIdentity;
+    identity: Identity;
     revision: string;
     consentId: string;
     tool: string;
   }) => Promise<boolean>;
+}
+export type ScheduleMCPConsentStorage = MCPConsentStorage<ScheduledMCPIdentity>;
+
+type Filter = Record<string, unknown>;
+type Row = Record<string, unknown>;
+
+/** What differs between the documents a grant can live in. The writes are the same. */
+interface GrantHolder<Identity extends MCPGrantIdentity> {
+  model: () => Model<Row>;
+  /** Where the grant sits inside the holder's document. */
+  path: (identity: Identity) => string;
+  /** Which document, and that it is still live. */
+  scope: (identity: Identity) => Filter;
+  /** What must also hold for the grant to be written or used. */
+  fence: (
+    identity: Identity,
+    input: { expectedConfigRevision?: number; requireEnabled?: boolean },
+  ) => Filter;
+  select: string;
+  parse: (value: unknown) => MCPGrantEnrollment<Identity> | undefined;
+  sameIdentity: (stored: Identity, expected: Identity) => boolean;
+  describe: (row: Row) => Pick<MCPConsentSnapshot, 'enabled' | 'configRevision' | 'required'> & {
+    agentId?: string;
+  };
+  /** Whether the holder's schema validates the grant on write. */
+  runValidators: boolean;
 }
 
 /** A revocation that keeps losing to pin writes gives up; pins per grant are bounded. */
@@ -73,11 +105,14 @@ const REVOKE_ATTEMPTS = 4;
  * Matches while no pin or mark has been added to `basis`. Both lists only ever grow within a
  * grant revision, so an element at the old length is the whole difference.
  */
-function untouchedSince(basis: ScheduledMCPEnrollment | null | undefined) {
+function untouchedSince(
+  path: string,
+  basis: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
+): Filter {
   if (!basis?.consents.length) return {};
   return {
     $and: basis.consents.map((consent) => ({
-      'mcpConsent.consents': {
+      [`${path}.consents`]: {
         $elemMatch: {
           id: consent.id,
           [`definitions.${consent.definitions?.length ?? 0}`]: { $exists: false },
@@ -89,7 +124,7 @@ function untouchedSince(basis: ScheduledMCPEnrollment | null | undefined) {
 }
 
 /** Matches a consent in which none of the tools is marked or pinned to a different digest. */
-function unchangedDefinitions(definitions: Readonly<Record<string, string>> | undefined) {
+function unchangedDefinitions(definitions: Readonly<Record<string, string>> | undefined): Filter {
   const live = Object.entries(definitions ?? {});
   if (live.length === 0) return {};
   return {
@@ -100,58 +135,51 @@ function unchangedDefinitions(definitions: Readonly<Record<string, string>> | un
   };
 }
 
-export function createScheduleMCPConsentStorage(
-  mongoose: typeof import('mongoose'),
-  options: { now?: () => number } = {},
-): ScheduleMCPConsentStorage {
-  const now = options.now ?? Date.now;
-  const model = (): Model<IScheduleDocument> =>
-    mongoose.models.Schedule as Model<IScheduleDocument>;
-  const scope = (identity: ScheduledMCPIdentity) => ({
-    id: identity.scheduleId,
-    user: identity.ownerId,
-    tenantId: identity.tenantId,
-    deleting: { $ne: true },
-    erased: { $ne: true },
-    deletionSuspension: { $exists: false },
-  });
-  const revisionFilter = (revision: string | null) =>
+function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
+  holder: GrantHolder<Identity>,
+  now: () => number,
+): MCPConsentStorage<Identity> {
+  const revisionFilter = (path: string, revision: string | null): Filter =>
     revision == null
-      ? { mcpConsent: { $exists: false } }
-      : { 'mcpConsent.version': 1, 'mcpConsent.revision': revision };
-  const configFilter = (revision: number) =>
-    revision === 0
-      ? { $or: [{ configRevision: 0 }, { configRevision: { $exists: false } }] }
-      : { configRevision: revision };
+      ? { [path]: { $exists: false } }
+      : { [`${path}.version`]: 1, [`${path}.revision`]: revision };
+  const stored = (row: Row, path: string): unknown =>
+    path
+      .split('.')
+      .reduce<unknown>(
+        (value, key) =>
+          value != null && typeof value === 'object' ? (value as Row)[key] : undefined,
+        row,
+      );
 
   return {
     async readScheduleMCPConsent(identity) {
-      const row = await model()
-        .findOne(scope(identity))
-        .select('agent_id enabled configRevision mcpConsent mcpConsentRequired')
+      const row = await holder
+        .model()
+        .findOne(holder.scope(identity))
+        .select(holder.select)
         .read('primary')
-        .lean();
+        .lean<Row>();
       if (!row) return null;
-      const parsed = scheduledMCPEnrollmentSchema.safeParse(row.mcpConsent);
+      const grant = stored(row, holder.path(identity));
+      const enrollment = holder.parse(grant);
+      const { agentId, required, ...described } = holder.describe(row);
       return {
-        agentId: row.agent_id,
-        enabled: row.enabled,
-        configRevision: row.configRevision ?? 0,
-        enrollment: parsed.success ? parsed.data : null,
-        compatible: row.mcpConsent === undefined || parsed.success,
-        ...(row.mcpConsentRequired === true && { required: true }),
+        ...described,
+        agentId: agentId ?? identity.agentId,
+        enrollment: enrollment ?? null,
+        compatible: grant === undefined || enrollment !== undefined,
+        ...(required === true && { required: true }),
       };
     },
     async confirmScheduleMCPConsent(input) {
-      const enrollment = scheduledMCPEnrollmentSchema.parse(input.enrollment);
+      const enrollment = holder.parse(input.enrollment);
       if (
+        !enrollment ||
         enrollment.scheduleRevision !== input.expectedConfigRevision ||
         enrollment.consents.some(
           (consent) =>
-            consent.identity.scheduleId !== input.identity.scheduleId ||
-            consent.identity.ownerId !== input.identity.ownerId ||
-            consent.identity.tenantId !== input.identity.tenantId ||
-            consent.identity.agentId !== input.identity.agentId ||
+            !holder.sameIdentity(consent.identity, input.identity) ||
             consent.identity.invocationMode !== 'delegated' ||
             consent.revision !== enrollment.revision ||
             consent.revokedAtMs != null,
@@ -159,59 +187,68 @@ export function createScheduleMCPConsentStorage(
       )
         throw new Error('Invalid scheduled MCP enrollment binding');
       if (enrollment.consents.some((consent) => consent.absoluteExpiresAtMs <= now())) return false;
-      const result = await model().updateOne(
+      const path = holder.path(input.identity);
+      const result = await holder.model().updateOne(
         {
-          ...scope(input.identity),
-          ...configFilter(input.expectedConfigRevision),
-          ...revisionFilter(input.expectedRevision),
-          ...untouchedSince(input.basis),
-          agent_id: input.identity.agentId,
+          ...holder.scope(input.identity),
+          ...holder.fence(input.identity, {
+            expectedConfigRevision: input.expectedConfigRevision,
+          }),
+          ...revisionFilter(path, input.expectedRevision),
+          ...untouchedSince(path, input.basis),
         },
-        { $set: { mcpConsent: enrollment } },
-        { runValidators: true },
+        { $set: { [path]: enrollment } },
+        { runValidators: holder.runValidators },
       );
       return result.matchedCount === 1;
     },
     async revokeScheduleMCPConsent(identity, revision) {
+      const path = holder.path(identity);
+      const filter = { ...holder.scope(identity), ...revisionFilter(path, revision) };
       // The grant is rewritten whole. A pin or mark a run adds between the read and the write
       // would be dropped, and the next grant would carry one pin fewer, so read again instead.
       for (let attempt = 0; attempt < REVOKE_ATTEMPTS; attempt++) {
-        const snapshot = await model()
-          .findOne({ ...scope(identity), ...revisionFilter(revision) })
-          .select('mcpConsent')
+        const snapshot = await holder
+          .model()
+          .findOne(filter)
+          .select(holder.select)
           .read('primary')
-          .lean();
-        const parsed = scheduledMCPEnrollmentSchema.safeParse(snapshot?.mcpConsent);
-        if (!parsed.success) return false;
+          .lean<Row>();
+        const current = snapshot ? holder.parse(stored(snapshot, path)) : undefined;
+        if (!current) return false;
         const revokedRevision = randomUUID();
         const revokedAtMs = now();
         const enrollment = {
-          ...parsed.data,
+          ...current,
           revision: revokedRevision,
-          consents: parsed.data.consents.map((consent) => ({
+          consents: current.consents.map((consent) => ({
             ...consent,
             revision: revokedRevision,
             revokedAtMs: consent.revokedAtMs ?? revokedAtMs,
           })),
         };
-        const result = await model().updateOne(
-          { ...scope(identity), ...revisionFilter(revision), ...untouchedSince(parsed.data) },
-          { $set: { mcpConsent: enrollment } },
-          { runValidators: true },
-        );
+        const result = await holder
+          .model()
+          .updateOne(
+            { ...filter, ...untouchedSince(path, current) },
+            { $set: { [path]: enrollment } },
+            { runValidators: holder.runValidators },
+          );
         if (result.matchedCount === 1) return true;
       }
       return false;
     },
     async admitScheduleMCPConsent(input) {
-      const result = await model().updateOne(
+      const path = holder.path(input.identity);
+      const result = await holder.model().updateOne(
         {
-          ...scope(input.identity),
-          ...configFilter(input.expectedConfigRevision),
-          ...revisionFilter(input.revision),
-          agent_id: input.identity.agentId,
-          ...(input.requireEnabled !== false && { enabled: true }),
-          'mcpConsent.consents': {
+          ...holder.scope(input.identity),
+          ...holder.fence(input.identity, {
+            expectedConfigRevision: input.expectedConfigRevision,
+            requireEnabled: input.requireEnabled !== false,
+          }),
+          ...revisionFilter(path, input.revision),
+          [`${path}.consents`]: {
             $elemMatch: {
               id: input.consentId,
               revision: input.revision,
@@ -219,10 +256,10 @@ export function createScheduleMCPConsentStorage(
               ...unchangedDefinitions(input.definitions),
             },
           },
-          'mcpConsent.consents.0': { $exists: true },
+          [`${path}.consents.0`]: { $exists: true },
           $nor: [
             {
-              'mcpConsent.consents': {
+              [`${path}.consents`]: {
                 $elemMatch: {
                   $or: [{ revokedAtMs: { $ne: null } }, { absoluteExpiresAtMs: { $lte: now() } }],
                 },
@@ -230,19 +267,20 @@ export function createScheduleMCPConsentStorage(
             },
           ],
         },
-        { $set: { 'mcpConsent.revision': input.revision } },
+        { $set: { [`${path}.revision`]: input.revision } },
         { timestamps: false },
       );
       return result.matchedCount === 1;
     },
     async pinScheduleMCPToolDefinition(input) {
       const pin = scheduledMCPToolPinSchema.parse({ tool: input.tool, digest: input.digest });
-      const result = await model().updateOne(
+      const path = holder.path(input.identity);
+      const result = await holder.model().updateOne(
         {
-          ...scope(input.identity),
-          ...revisionFilter(input.revision),
-          agent_id: input.identity.agentId,
-          'mcpConsent.consents': {
+          ...holder.scope(input.identity),
+          ...holder.fence(input.identity, {}),
+          ...revisionFilter(path, input.revision),
+          [`${path}.consents`]: {
             $elemMatch: {
               id: input.consentId,
               revision: input.revision,
@@ -253,24 +291,121 @@ export function createScheduleMCPConsentStorage(
             },
           },
         },
-        { $push: { 'mcpConsent.consents.$.definitions': pin } },
+        { $push: { [`${path}.consents.$.definitions`]: pin } },
         { timestamps: false },
       );
       return result.matchedCount === 1;
     },
     async flagScheduleMCPToolChange(input) {
-      const result = await model().updateOne(
+      const path = holder.path(input.identity);
+      const result = await holder.model().updateOne(
         {
-          ...scope(input.identity),
-          ...revisionFilter(input.revision),
-          'mcpConsent.consents': {
+          ...holder.scope(input.identity),
+          ...revisionFilter(path, input.revision),
+          [`${path}.consents`]: {
             $elemMatch: { id: input.consentId, 'definitions.tool': input.tool },
           },
         },
-        { $addToSet: { 'mcpConsent.consents.$.changedTools': input.tool } },
+        { $addToSet: { [`${path}.consents.$.changedTools`]: input.tool } },
         { timestamps: false },
       );
       return result.matchedCount === 1;
     },
   };
+}
+
+export function createScheduleMCPConsentStorage(
+  mongoose: typeof import('mongoose'),
+  options: { now?: () => number } = {},
+): ScheduleMCPConsentStorage {
+  return createEmbeddedGrantStorage<ScheduledMCPIdentity>(
+    {
+      model: () => mongoose.models.Schedule as unknown as Model<Row>,
+      path: () => 'mcpConsent',
+      scope: (identity) => ({
+        id: identity.scheduleId,
+        user: identity.ownerId,
+        tenantId: identity.tenantId,
+        deleting: { $ne: true },
+        erased: { $ne: true },
+        deletionSuspension: { $exists: false },
+      }),
+      fence: (identity, { expectedConfigRevision, requireEnabled }) => ({
+        ...(expectedConfigRevision === 0 && {
+          $or: [{ configRevision: 0 }, { configRevision: { $exists: false } }],
+        }),
+        ...(expectedConfigRevision != null &&
+          expectedConfigRevision !== 0 && { configRevision: expectedConfigRevision }),
+        agent_id: identity.agentId,
+        ...(requireEnabled === true && { enabled: true }),
+      }),
+      select: 'agent_id enabled configRevision mcpConsent mcpConsentRequired',
+      parse: (value) => {
+        const parsed = scheduledMCPEnrollmentSchema.safeParse(value);
+        return parsed.success ? parsed.data : undefined;
+      },
+      sameIdentity: (stored, expected) =>
+        stored.scheduleId === expected.scheduleId &&
+        stored.ownerId === expected.ownerId &&
+        stored.tenantId === expected.tenantId &&
+        stored.agentId === expected.agentId,
+      describe: (row) => ({
+        agentId: row.agent_id as string,
+        enabled: row.enabled as boolean,
+        configRevision: (row.configRevision as number | undefined) ?? 0,
+        required: row.mcpConsentRequired === true,
+      }),
+      runValidators: true,
+    },
+    options.now ?? Date.now,
+  );
+}
+
+/**
+ * Grants of an API key, one per agent the key may run, on the key's own document. A grant
+ * dies with its key: deleting or expiring the key removes it, and a bound key holds none.
+ */
+export function createAgentKeyMCPConsentStorage(
+  mongoose: typeof import('mongoose'),
+  options: { now?: () => number } = {},
+): MCPConsentStorage<AgentKeyMCPIdentity> {
+  const now = options.now ?? Date.now;
+  return createEmbeddedGrantStorage<AgentKeyMCPIdentity>(
+    {
+      model: () => mongoose.models.AgentApiKey as unknown as Model<Row>,
+      // The agent id becomes part of a field path, so it is checked against the id shape first.
+      path: (identity) => `mcpGrants.${agentKeyMCPGrantPathSegment(identity.agentId)}`,
+      scope: (identity) => ({
+        _id: agentKeyMCPIdentitySchema.parse(identity).keyId,
+        userId: identity.ownerId,
+        tenantId: identity.tenantId,
+        binding: { $exists: false },
+        $or: [
+          { expiresAt: { $exists: false } },
+          { expiresAt: null },
+          { expiresAt: { $gt: new Date(now()) } },
+        ],
+      }),
+      fence: () => ({}),
+      select: 'mcpGrants',
+      parse: (value) => {
+        const parsed = agentKeyMCPEnrollmentSchema.safeParse(value);
+        return parsed.success ? parsed.data : undefined;
+      },
+      sameIdentity: (stored, expected) =>
+        stored.keyId === expected.keyId &&
+        stored.ownerId === expected.ownerId &&
+        stored.tenantId === expected.tenantId &&
+        stored.agentId === expected.agentId,
+      describe: () => ({ enabled: true, configRevision: 0 }),
+      runValidators: false,
+    },
+    now,
+  );
+}
+
+/** Agent ids are generated from this alphabet. Anything else cannot name a grant. */
+function agentKeyMCPGrantPathSegment(agentId: string): string {
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(agentId)) throw new Error('Invalid agent id for an MCP grant');
+  return agentId;
 }

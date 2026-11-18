@@ -23,7 +23,7 @@ import type {
   UpstreamTokenProviderResolver,
   UpstreamTokenTarget,
 } from '../mcp/oauth/obo';
-import type { ScheduleMCPExecution, createScheduleMCPExecution } from './authorization/execution';
+import type { ScheduleMCPExecution, ScheduleMCPExecutionFactory } from './authorization/execution';
 import type { ParsedServerConfig, UserMCPConnectionOptions } from '../mcp/types';
 import type { ExecutionContext } from '~/agents/authority/context';
 import type { CheckAccessParams } from '../middleware/access';
@@ -183,7 +183,7 @@ interface ScheduleMCPDeps {
   ) => Promise<Record<string, ParsedServerConfig>>;
   findPluginAuthsByKeys: PluginAuthMethods['findPluginAuthsByKeys'];
   resolveUpstreamTokenProvider?: HostUpstreamTokenProviderResolver;
-  execution?: ReturnType<typeof createScheduleMCPExecution>;
+  execution?: ScheduleMCPExecutionFactory;
   connect: (options: UserMCPConnectionOptions) => Promise<{
     fetchToolsSnapshot: (deadlineMs?: number, signal?: AbortSignal) => Promise<MCPToolsSnapshot>;
   }>;

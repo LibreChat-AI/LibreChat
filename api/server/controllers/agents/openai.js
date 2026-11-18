@@ -15,6 +15,7 @@ const {
   writeSSE,
   createRun,
   createRemoteExecutionContext,
+  getRemoteRunKeyId,
   createChunk,
   applyContextToAgent,
   buildRunToolSet,
@@ -299,6 +300,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
     agentId: request.model,
     protocol: 'chat.completions',
     background: false,
+    keyId: getRemoteRunKeyId(req),
   });
   // Request-backed tool adapters still observe the validated envelope payload;
   // shared initialization receives the transport-free runtime below.
@@ -537,6 +539,15 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         agentsEConfig?.backgroundTasks?.ordinaryToolCancellation === true;
       const backgroundCompletionResultMaxChars =
         agentsEConfig?.backgroundTasks?.completionResultMaxChars;
+
+      // Under `remoteApi.integrations.mode: delegated`, a personal key's run may use only
+      // the MCP servers and tools its owner granted that key for this agent.
+      await require('~/server/services/ApiKeys/grants').prepare({
+        req,
+        res,
+        executionContext,
+        signal: execution.signal,
+      });
 
       // Create tool loader
       const loadTools = createToolLoader({

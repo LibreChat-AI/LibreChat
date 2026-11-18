@@ -2,6 +2,7 @@ import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { ExecutionContext } from '~/agents/authority/context';
 import type { ScheduleMCPCompletionLookup } from './continuation';
+import type { ScheduleMCPExecutionFactory } from './execution';
 import type { ScheduleMCPEnrollmentDeps } from './enrollment';
 import {
   isScheduledMCPCompletionRequest,
@@ -36,7 +37,7 @@ export function createScheduleMCPRuntimeHost(
   },
 ): {
   consent: ReturnType<typeof createScheduleMCPConsentHost>;
-  execution: ReturnType<typeof createScheduleMCPExecution>;
+  execution: ScheduleMCPExecutionFactory;
   prepare: (input: {
     req: RuntimeRequest;
     signal?: AbortSignal;

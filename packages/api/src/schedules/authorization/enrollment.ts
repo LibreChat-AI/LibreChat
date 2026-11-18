@@ -5,12 +5,18 @@ import {
   scheduledMCPResourceBindingSchema,
 } from 'librechat-data-provider';
 import type {
+  TModelsConfig,
+  MCPGrantIdentity,
+  ScheduledMCPTarget,
+  ScheduledMCPIdentity,
+  ScheduledMCPResourceBinding,
+} from 'librechat-data-provider';
+import type {
   AgentGraphAccessContext,
   AgentGraphNode,
   IUser,
   AppConfig,
 } from '@librechat/data-schemas';
-import type { ScheduledMCPTarget, TModelsConfig } from 'librechat-data-provider';
 import type { ScheduleMCPEnrollmentResolver } from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ParsedServerConfig } from '~/mcp/types';
@@ -37,9 +43,28 @@ export interface ScheduleMCPEnrollmentDeps {
  * Resolves what the owner can be offered: the MCP tools the agent graph selects, on servers
  * whose recipient the operator declared. Does not connect or mint.
  */
-export function createScheduleMCPEnrollmentResolver(
+export function createScheduleMCPEnrollmentResolver<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+>(
   deps: ScheduleMCPEnrollmentDeps,
-): ScheduleMCPEnrollmentResolver {
+  options: {
+    /** Where the operator declared the servers this kind of grant may cover. */
+    resources?: (
+      appConfig: AppConfig | undefined,
+    ) => Record<string, ScheduledMCPResourceBinding> | undefined;
+    /**
+     * A schedule's grant covers the whole run, so an agent with any other kind of tool cannot
+     * be offered one. A grant that only limits MCP use leaves the agent's other tools alone.
+     */
+    otherTools?: 'refuse' | 'ignore';
+  } = {},
+): ScheduleMCPEnrollmentResolver<Identity> {
+  const declared =
+    options.resources ??
+    ((appConfig: AppConfig | undefined) => {
+      const schedules = appConfig?.interfaceConfig?.schedules;
+      return typeof schedules === 'object' ? schedules?.mcpConsent?.resources : undefined;
+    });
   return async (identity, { signal }) => {
     signal?.throwIfAborted();
     const user = await deps.findUser(identity.ownerId);
@@ -52,8 +77,7 @@ export function createScheduleMCPEnrollmentResolver(
       ...getAppConfigOptionsFromUser(user),
       failClosed: true,
     });
-    const schedules = appConfig?.interfaceConfig?.schedules;
-    const bindings = typeof schedules === 'object' ? schedules?.mcpConsent?.resources : undefined;
+    const bindings = declared(appConfig);
     if (!bindings || !Object.keys(bindings).length) return [];
     const [servers, { tools, candidates: candidateTools }] = await Promise.all([
       deps.getServers(user, (appConfig?.mcpConfig ?? {}) as Record<string, ParsedServerConfig>),
@@ -72,7 +96,10 @@ export function createScheduleMCPEnrollmentResolver(
     const names = Object.keys(servers);
     const aliases = buildServerNameAliases(names);
     const candidates = [...names, ...aliases.keys()];
-    if (candidateTools.some(({ name }) => !isScheduledMCPCandidate(name)))
+    if (
+      options.otherTools !== 'ignore' &&
+      candidateTools.some(({ name }) => !isScheduledMCPCandidate(name))
+    )
       throw new ScheduleMCPConsentError('consent_unavailable');
     const selected = new Map<string, Map<string, Set<string>>>();
     for (const { name: key, agentId } of tools) {

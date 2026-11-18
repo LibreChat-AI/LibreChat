@@ -12,6 +12,7 @@ const {
   createRun,
   applyContextToAgent,
   createRemoteExecutionContext,
+  getRemoteRunKeyId,
   buildInitialToolSessions,
   buildRunToolSet,
   AgentRunEnvelopeError,
@@ -463,6 +464,7 @@ const executeResponse = async (envelope, { req, res }) => {
     agentId: request.model,
     protocol: 'responses',
     background: responseRuntime.background,
+    keyId: getRemoteRunKeyId(req),
   });
   const terminalRunError = createTerminalRunErrorObserver({
     maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
@@ -622,6 +624,15 @@ const executeResponse = async (envelope, { req, res }) => {
 
       // Build allowed providers set
       const allowedProviders = new Set(agentsEConfig?.allowedProviders);
+
+      // Under `remoteApi.integrations.mode: delegated`, a personal key's run may use only
+      // the MCP servers and tools its owner granted that key for this agent.
+      await require('~/server/services/ApiKeys/grants').prepare({
+        req,
+        res,
+        executionContext,
+        signal: execution.signal,
+      });
 
       // Create tool loader
       const loadTools = createToolLoader({

@@ -342,6 +342,8 @@ export function recordScheduledMCPToolAuthFailure(
   getRecorder: () => SchedulesService['recordMCPToolAuthFailure'],
   getRetryPolicy?: () => Promise<ScheduleMCPReceiptRetryPolicy | undefined>,
 ): Promise<boolean> {
+  // A grant held by an API key has no schedule run to record against.
+  if (input.identity != null && !('scheduleId' in input.identity)) return Promise.resolve(false);
   const bearer =
     input.error instanceof ScheduledMCPBearerError ||
     input.error instanceof ScheduledMCPPolicyError;

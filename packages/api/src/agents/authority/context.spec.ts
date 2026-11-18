@@ -188,3 +188,22 @@ describe('toScheduledTokenContext', () => {
     ).toBeUndefined();
   });
 });
+
+it('names the personal API key that started a remote run, and nothing when there is none', () => {
+  const base = {
+    principal: { userId: 'owner' },
+    agentId: 'agent_a',
+    protocol: 'responses' as const,
+    background: true,
+  };
+  expect(createRemoteExecutionContext({ ...base, keyId: 'key-1' }).source).toEqual({
+    type: 'remote_api',
+    protocol: 'responses',
+    background: true,
+    keyId: 'key-1',
+  });
+  expect(createRemoteExecutionContext(base).source).not.toHaveProperty('keyId');
+  expect(createRemoteExecutionContext({ ...base, keyId: undefined }).source).not.toHaveProperty(
+    'keyId',
+  );
+});
