@@ -1,4 +1,7 @@
-import { useMemo, useEffect, useContext, createContext, useSyncExternalStore } from 'react';
+import { useMemo, useEffect, useContext, createContext } from 'react';
+import { selectAtom } from 'jotai/utils';
+import { atom, createStore, useAtomValue, useSetAtom } from 'jotai';
+import type { Atom, PrimitiveAtom } from 'jotai';
 import type { Context, ReactNode } from 'react';
 import type { FollowedChat } from '../follow';
 import { useSubagentsHost } from './host';
@@ -27,11 +30,86 @@ export type ThreadInterest = {
   passive: boolean;
 };
 
+/**
+ * A thread's readers, and what they last asked for between them, which holds for the moment
+ * after the last one leaves.
+ */
+type ThreadReaders = { interests: readonly ThreadInterest[]; live: boolean; opened: boolean };
+type Readers = ReadonlyMap<string, ThreadReaders>;
 type FollowedThread = { threadId: string; live: boolean };
-type Listener = () => void;
 
-const noThreads: readonly FollowedThread[] = [];
-const unsubscribed = (): void => undefined;
+/**
+ * The threads one page follows, each once, however many readers want it: the panel showing a
+ * child's conversation and the card previewing the same child read one stream. A thread is
+ * followed while any reader is interested and let go shortly after the last one leaves. The
+ * atoms belong to one provider, so two pages' followers never meet.
+ */
+export type ThreadFollows = {
+  /**
+   * The store the atoms below are read and written in. Its own, so a reader under some other
+   * Jotai provider than the followers reads the same state they do.
+   */
+  store: ReturnType<typeof createStore>;
+  readers: PrimitiveAtom<Readers>;
+  /** The threads to follow now: every opened one, then previews in the order they asked. */
+  followed: Atom<readonly FollowedThread[]>;
+  /** What a thread's follower last reported; nothing until it has. */
+  result: (threadId: string) => PrimitiveAtom<FollowedChat | undefined>;
+};
+
+const noReaders: Readers = new Map();
+
+const sameThreads = (a: readonly FollowedThread[], b: readonly FollowedThread[]): boolean =>
+  a.length === b.length &&
+  a.every(
+    (thread, index) => thread.threadId === b[index].threadId && thread.live === b[index].live,
+  );
+
+const selectFollowed = (readers: Readers): readonly FollowedThread[] => {
+  const followed: FollowedThread[] = [];
+  let previews = 0;
+  for (const [threadId, { live, opened }] of readers) {
+    if (!opened) {
+      if (previews >= MAX_PREVIEWED_THREADS) {
+        continue;
+      }
+      previews += 1;
+    }
+    followed.push({ threadId, live });
+  }
+  return followed;
+};
+
+const withInterests = (interests: readonly ThreadInterest[], previous?: ThreadReaders) =>
+  interests.length === 0 && previous != null
+    ? { ...previous, interests }
+    : {
+        interests,
+        live: interests.some((interest) => interest.live),
+        opened: interests.some((interest) => !interest.passive),
+      };
+
+const createThreadFollows = (): ThreadFollows => {
+  const readers = atom<Readers>(noReaders);
+  const results = new Map<string, PrimitiveAtom<FollowedChat | undefined>>();
+  return {
+    store: createStore(),
+    readers,
+    followed: selectAtom(readers, selectFollowed, sameThreads),
+    result: (threadId) => {
+      const known = results.get(threadId);
+      if (known != null) {
+        return known;
+      }
+      const created = atom<FollowedChat | undefined>(undefined);
+      results.set(threadId, created);
+      return created;
+    },
+  };
+};
+
+/** Read where no page shares followers: nothing is ever written to these. */
+const unshared: ThreadFollows = createThreadFollows();
 
 /** What a reader holds until the thread's follower has something to report. */
 const opening: FollowedChat = {
@@ -46,123 +124,6 @@ const opening: FollowedChat = {
   isLoadError: false,
   retry: () => undefined,
 };
-
-/**
- * The threads one page follows, each once, however many readers want it: the panel showing a
- * child's conversation and the card previewing the same child read one stream. A thread is
- * followed while any reader is interested and let go when the last one leaves.
- */
-export class ThreadFollows {
-  private readonly interests = new Map<string, Set<ThreadInterest>>();
-  /** What each thread's readers last asked for, which holds while none of them is present. */
-  private readonly asked = new Map<string, { live: boolean; opened: boolean }>();
-  private readonly results = new Map<string, FollowedChat>();
-  private readonly threadListeners = new Set<Listener>();
-  private readonly resultListeners = new Map<string, Set<Listener>>();
-  private followed: readonly FollowedThread[] = noThreads;
-
-  /** Registers a reader's interest; the result lets it go. */
-  acquire(threadId: string, interest: ThreadInterest): () => void {
-    const readers = this.interests.get(threadId) ?? new Set<ThreadInterest>();
-    readers.add(interest);
-    this.interests.set(threadId, readers);
-    this.changed();
-    return () => {
-      readers.delete(interest);
-      if (readers.size > 0) {
-        this.changed();
-        return;
-      }
-      setTimeout(() => {
-        if (readers.size === 0 && this.interests.get(threadId) === readers) {
-          this.interests.delete(threadId);
-          this.asked.delete(threadId);
-          this.changed();
-        }
-      }, THREAD_LINGER_MS);
-    };
-  }
-
-  subscribeThreads = (listener: Listener): (() => void) => {
-    this.threadListeners.add(listener);
-    return () => {
-      this.threadListeners.delete(listener);
-    };
-  };
-
-  /** The threads to follow now: every opened one, then previews in the order they asked. */
-  getThreads = (): readonly FollowedThread[] => {
-    const next: FollowedThread[] = [];
-    let previews = 0;
-    for (const [threadId, readers] of this.interests) {
-      let { live, opened } = this.asked.get(threadId) ?? { live: false, opened: false };
-      if (readers.size > 0) {
-        live = false;
-        opened = false;
-        for (const reader of readers) {
-          live ||= reader.live;
-          opened ||= !reader.passive;
-        }
-        this.asked.set(threadId, { live, opened });
-      }
-      if (!opened) {
-        if (previews >= MAX_PREVIEWED_THREADS) {
-          continue;
-        }
-        previews += 1;
-      }
-      next.push({ threadId, live });
-    }
-    const same =
-      next.length === this.followed.length &&
-      next.every(
-        (thread, index) =>
-          thread.threadId === this.followed[index].threadId &&
-          thread.live === this.followed[index].live,
-      );
-    if (!same) {
-      this.followed = next;
-    }
-    return this.followed;
-  };
-
-  /** Whether the thread is among those followed now, which a preview past the cap is not. */
-  isFollowed(threadId: string): boolean {
-    return this.getThreads().some((thread) => thread.threadId === threadId);
-  }
-
-  subscribeResult(threadId: string, listener: Listener): () => void {
-    const listeners = this.resultListeners.get(threadId) ?? new Set<Listener>();
-    listeners.add(listener);
-    this.resultListeners.set(threadId, listeners);
-    return () => {
-      listeners.delete(listener);
-    };
-  }
-
-  /** What the thread's follower last reported; `opening` until it has. */
-  getResult(threadId: string): FollowedChat {
-    return this.results.get(threadId) ?? opening;
-  }
-
-  /** Called by the thread's follower with each state it reaches, and with nothing when it ends. */
-  publish(threadId: string, result: FollowedChat | undefined): void {
-    if (result == null) {
-      this.results.delete(threadId);
-    } else {
-      this.results.set(threadId, result);
-    }
-    for (const listener of this.resultListeners.get(threadId) ?? []) {
-      listener();
-    }
-  }
-
-  private changed(): void {
-    for (const listener of this.threadListeners) {
-      listener();
-    }
-  }
-}
 
 const ThreadFollowsContext: Context<ThreadFollows | undefined> = createContext<
   ThreadFollows | undefined
@@ -185,10 +146,11 @@ function ThreadFollower({
 }): null {
   const host = useSubagentsHost();
   const followed = host.useThreadChat?.(parentConversationId, threadId, { live, enabled: true });
+  const report = useSetAtom(follows.result(threadId), follows);
   useEffect(() => {
-    follows.publish(threadId, followed);
+    report(followed);
   });
-  useEffect(() => () => follows.publish(threadId, undefined), [follows, threadId]);
+  useEffect(() => () => report(undefined), [report]);
   return null;
 }
 
@@ -199,11 +161,7 @@ function ThreadFollowers({
   follows: ThreadFollows;
   parentConversationId: string;
 }): ReactNode {
-  const threads = useSyncExternalStore(
-    follows.subscribeThreads,
-    follows.getThreads,
-    follows.getThreads,
-  );
+  const threads = useAtomValue(follows.followed, follows);
   return threads.map((thread) => (
     <ThreadFollower
       key={thread.threadId}
@@ -227,9 +185,9 @@ export function ThreadFollowsProvider({
   children: ReactNode;
 }): ReactNode {
   const follows = useMemo(
-    () => ({ parentConversationId, store: new ThreadFollows() }),
+    () => ({ parentConversationId, atoms: createThreadFollows() }),
     [parentConversationId],
-  ).store;
+  ).atoms;
   return (
     <ThreadFollowsContext.Provider value={follows}>
       <ThreadFollowers follows={follows} parentConversationId={parentConversationId} />
@@ -237,8 +195,6 @@ export function ThreadFollowsProvider({
     </ThreadFollowsContext.Provider>
   );
 }
-
-const noListener = (): (() => void) => unsubscribed;
 
 /**
  * Says this reader wants a thread followed, without reading what the follower holds: a card
@@ -250,15 +206,57 @@ export function useThreadInterest(
   threadId: string,
   { live, enabled, passive = false }: { live: boolean; enabled: boolean; passive?: boolean },
 ): boolean {
-  const follows = useThreadFollows();
+  const shared = useThreadFollows();
+  const follows = shared ?? unshared;
+  const setReaders = useSetAtom(follows.readers, follows);
   useEffect(() => {
-    if (follows == null || !enabled || threadId === '') {
+    if (shared == null || !enabled || threadId === '') {
       return;
     }
-    return follows.acquire(threadId, { live, passive });
-  }, [follows, threadId, live, enabled, passive]);
-  const followed = (): boolean => follows == null || follows.isFollowed(threadId);
-  return useSyncExternalStore(follows?.subscribeThreads ?? noListener, followed, followed);
+    const interest: ThreadInterest = { live, passive };
+    setReaders((readers) => {
+      const previous = readers.get(threadId);
+      const next = new Map(readers);
+      next.set(threadId, withInterests([...(previous?.interests ?? []), interest], previous));
+      return next;
+    });
+    return () => {
+      setReaders((readers) => {
+        const previous = readers.get(threadId);
+        if (previous == null) {
+          return readers;
+        }
+        const next = new Map(readers);
+        next.set(
+          threadId,
+          withInterests(
+            previous.interests.filter((reader) => reader !== interest),
+            previous,
+          ),
+        );
+        return next;
+      });
+      setTimeout(() => {
+        setReaders((readers) => {
+          if (readers.get(threadId)?.interests.length !== 0) {
+            return readers;
+          }
+          const next = new Map(readers);
+          next.delete(threadId);
+          return next;
+        });
+      }, THREAD_LINGER_MS);
+    };
+  }, [shared, setReaders, threadId, live, enabled, passive]);
+  const admitted = useMemo(
+    () =>
+      selectAtom(follows.followed, (threads) =>
+        threads.some((thread) => thread.threadId === threadId),
+      ),
+    [follows, threadId],
+  );
+  const followed = useAtomValue(admitted, follows);
+  return shared == null || followed;
 }
 
 /**
@@ -269,16 +267,12 @@ export function useFollowedThread(
   threadId: string,
   options: { live: boolean; enabled: boolean; passive?: boolean },
 ): FollowedChat | undefined {
-  const follows = useThreadFollows();
+  const shared = useThreadFollows();
   useThreadInterest(threadId, options);
-  const subscribe = useMemo(
-    () =>
-      follows == null
-        ? () => unsubscribed
-        : (listener: Listener) => follows.subscribeResult(threadId, listener),
-    [follows, threadId],
-  );
-  const read = (): FollowedChat | undefined => follows?.getResult(threadId);
-  const result = useSyncExternalStore(subscribe, read, read);
-  return options.enabled ? result : undefined;
+  const follows = shared ?? unshared;
+  const result = useAtomValue(follows.result(threadId), follows);
+  if (shared == null || !options.enabled) {
+    return undefined;
+  }
+  return result ?? opening;
 }
