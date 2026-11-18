@@ -58,6 +58,8 @@ import type { ResolveLinkedInstructions } from '../instructions/linked';
 import type { InitializeAgentDbMethods } from '../initialize';
 import type { CodeExecutionContext } from '../execution';
 import type { GraphSubagentHostConfig } from '../discovery';
+import { executionFixture, readTool } from '~/schedules/authorization/execution.helper';
+import { getMCPRequestContext } from '~/mcp/request';
 import type { ProjectFileRecord } from '../../projects/resources';
 import { toCanonicalProjectResource } from '../../projects/resources';
 import { DEFAULT_MAX_CONTEXT_TOKENS } from '../initialize';
@@ -7735,5 +7737,55 @@ describe('snapshot destination admission invariants', () => {
       snapshot('other', 200, { filename: 'other.txt', bytes: 9 * MB }),
     ]);
     expect([...staged.entries()]).toEqual([['first.txt', 'first']]);
+  });
+});
+
+describe("initializeAgent: under a schedule's grant", () => {
+  const selected = [
+    'query_mcp_warehouse',
+    'export_mcp_warehouse',
+    'purge_mcp_archive',
+    Tools.web_search,
+  ];
+  async function initialize(attach: boolean) {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'root';
+    agent.tools = [...selected];
+    loadTools.mockResolvedValue({ toolDefinitions: [] });
+    if (attach) {
+      // The agents select `query` and `export` on the warehouse; the owner allowed `query`.
+      const fixture = await executionFixture('invoke', readTool, undefined, {
+        offered: ['export'],
+      });
+      await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
+    }
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([agent.provider]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+    return loadTools.mock.calls.map(([call]) => call.tools as string[]);
+  }
+
+  it('loads only the MCP tools the owner allowed, and nothing from a server left out', async () => {
+    const [tools, ...retries] = await initialize(true);
+    expect(retries).toEqual([]);
+    expect(tools).toContain('query_mcp_warehouse');
+    expect(tools).toContain(Tools.web_search);
+    expect(tools).not.toContain('export_mcp_warehouse');
+    // The loader is never asked about the archive server, so it is never connected to.
+    expect(tools).not.toContain('purge_mcp_archive');
+  });
+
+  it('loads everything the agent selects for a request with no grant', async () => {
+    const [tools] = await initialize(false);
+    expect(tools).toEqual(expect.arrayContaining(selected));
   });
 });

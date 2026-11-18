@@ -1,19 +1,25 @@
 import type {
-  ScheduledMCPIdentity,
-  ScheduledMCPTarget,
-  ScheduledMCPReadOnlyPolicy,
-} from 'librechat-data-provider';
-import type {
   ScheduleMCPConsentStorage,
   ScheduleConsentSnapshot,
   IUser,
 } from '@librechat/data-schemas';
+import type { ScheduledMCPIdentity, ScheduledMCPTarget } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { getScheduledMCPToolDefinitionDigest, getScheduledMCPPolicyRevision } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { createScheduleMCPConsentService } from './service';
+import { getScheduledMCPPolicyRevision } from './policy';
 import { createScheduleMCPExecution } from './execution';
+
+/** The owner's choice in tests that are not about choosing: every tool on offer. */
+export function allowOffered(targets: readonly ScheduledMCPTarget[]): Record<string, string[]> {
+  return Object.fromEntries(
+    targets.map((target) => [
+      target.resource.serverName,
+      [...new Set(target.permittedTools.flatMap((selection) => selection.tools))],
+    ]),
+  );
+}
 
 export const readTool: Tool = {
   name: 'query',
@@ -25,6 +31,8 @@ export async function executionFixture(
   stage: 'activation' | 'invoke' | 'resume' = 'invoke',
   tool: Tool = readTool,
   url = 'https://resource.example/mcp',
+  /** `offered` adds tools the agents select; `allow` is what the owner picks (default: `tool`). */
+  choice: { offered?: string[]; allow?: string[] } = {},
 ) {
   let time = 1000;
   let allowed = true;
@@ -40,16 +48,6 @@ export async function executionFixture(
     url,
   };
   const user = { id: 'owner', tenantId: 'tenant', role: 'USER' } as IUser;
-  let policy: Record<string, ScheduledMCPReadOnlyPolicy> = {
-    warehouse: {
-      tools: {
-        [tool.name]: {
-          effect: 'read_only',
-          definitionSha256: getScheduledMCPToolDefinitionDigest(tool),
-        },
-      },
-    },
-  };
   const target: ScheduledMCPTarget = {
     resource: {
       serverName: 'warehouse',
@@ -61,8 +59,8 @@ export async function executionFixture(
       configurationRevision: '',
     },
     permittedTools: [
-      { agentId: 'root', tools: [tool.name] },
-      { agentId: 'child', tools: [tool.name] },
+      { agentId: 'root', tools: [tool.name, ...(choice.offered ?? [])] },
+      { agentId: 'child', tools: [tool.name, ...(choice.offered ?? [])] },
     ],
     policyRevision: '',
   };
@@ -71,7 +69,7 @@ export async function executionFixture(
     target.resource,
   );
   const resolveEnrollment = async () => {
-    target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools, policy.warehouse);
+    target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools);
     return structuredClone([target]);
   };
   const snapshot: ScheduleConsentSnapshot = {
@@ -105,7 +103,6 @@ export async function executionFixture(
     resolveEnrollment,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     canUse: async () => allowed,
-    checkToolPolicy: async () => Object.keys(policy.warehouse?.tools ?? {}).length > 0,
     now: () => time,
   });
   const offer = await service.view(identity);
@@ -113,8 +110,9 @@ export async function executionFixture(
     offerDigest: offer.offer!.digest,
     expectedRevision: null,
     lifetimeHours: 1,
+    allow: { warehouse: choice.allow ?? [tool.name] },
   });
-  const loadAuthorization = jest.fn(async () => ({ authority: service.authority, policy }));
+  const loadAuthorization = jest.fn(async () => ({ authority: service.authority }));
   const factory = createScheduleMCPExecution({ storage, loadAuthorization });
   const execution = (await factory.resolve(identity, stage))!;
   return {
@@ -128,16 +126,12 @@ export async function executionFixture(
     execution,
     factory,
     loadAuthorization,
-    policy,
     revoke: () => service.revoke(identity, snapshot.enrollment!.revision),
     expire: () => {
       time = 3_601_000;
     },
     deny: () => {
       allowed = false;
-    },
-    removePolicy: () => {
-      policy = {};
     },
     invocation: (agentId = 'root', selection = tool.name) => execution.bind(agentId, selection),
   };

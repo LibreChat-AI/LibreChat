@@ -38,9 +38,13 @@ const view: ScheduleMCPConsentView = {
         configurationRevision: 'v1',
       },
       policyRevision: 'p1',
-      permittedTools: [{ agentId: 'root', tools: ['query'] }],
+      permittedTools: [
+        { agentId: 'root', tools: ['export', 'query'] },
+        { agentId: 'child', tools: ['query'] },
+      ],
     },
   ],
+  allowed: {},
   offer: { digest: 'a'.repeat(64), maxLifetimeHours: 24 },
 };
 function display() {
@@ -58,7 +62,7 @@ function display() {
 beforeEach(() => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(view);
 });
-it('renders loading, then the exact agent/resource and bounded lifetime', async () => {
+it('renders loading, then the resource, each tool on offer unchecked, and a bounded lifetime', async () => {
   let resolve!: (value: ScheduleMCPConsentView) => void;
   jest.mocked(dataService.getScheduleMCPConsent).mockReturnValue(
     new Promise((done) => {
@@ -69,10 +73,14 @@ it('renders loading, then the exact agent/resource and bounded lifetime', async 
   expect(screen.queryByText('warehouse')).not.toBeInTheDocument();
   resolve(view);
   expect(await screen.findByText('warehouse')).toBeVisible();
-  expect(screen.getByText('root: query')).toBeVisible();
+  expect(screen.getAllByRole('checkbox')).toHaveLength(3);
+  expect(screen.getByRole('checkbox', { name: 'query' })).not.toBeChecked();
+  expect(screen.getByRole('checkbox', { name: 'export' })).not.toBeChecked();
+  expect(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' })).toBeDisabled();
+  expect(screen.getByText('com_ui_schedule_consent_none_selected')).toBeVisible();
   expect(screen.getByRole('spinbutton')).toHaveAttribute('max', '24');
 });
-it('confirms only an offer reference and lifetime, then rereads persisted state', async () => {
+it('confirms the offer reference, lifetime and only the tools the owner ticked, then rereads persisted state', async () => {
   const active = {
     ...view,
     state: 'active' as const,
@@ -84,17 +92,95 @@ it('confirms only an offer reference and lifetime, then rereads persisted state'
     return active;
   });
   display();
-  await userEvent.click(
-    await screen.findByRole('button', { name: 'com_ui_schedule_consent_confirm' }),
-  );
+  await userEvent.click(await screen.findByRole('checkbox', { name: 'query' }));
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
   await waitFor(() =>
     expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith('schedule', {
       offerDigest: view.offer!.digest,
       expectedRevision: null,
       lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
     }),
   );
   expect(await screen.findByText('com_ui_schedule_consent_active')).toBeVisible();
+});
+it('allows or clears every tool on a server with one box', async () => {
+  display();
+  const server = await screen.findByRole('checkbox', {
+    name: 'com_ui_schedule_consent_allow_server',
+  });
+  await userEvent.click(server);
+  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: 'export' })).toBeChecked();
+  expect(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' })).toBeEnabled();
+
+  await userEvent.click(screen.getByRole('checkbox', { name: 'export' }));
+  expect(server).not.toBeChecked();
+  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+
+  await userEvent.click(server);
+  expect(screen.getByRole('checkbox', { name: 'export' })).toBeChecked();
+  await userEvent.click(server);
+  expect(screen.getByRole('checkbox', { name: 'query' })).not.toBeChecked();
+  expect(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' })).toBeDisabled();
+});
+it('starts from what the stored grant allows and is still on offer', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    state: 'active',
+    revision: 'grant',
+    expiresAtMs: Date.now() + 60_000,
+    allowed: { warehouse: ['query', 'retired'] },
+  });
+  display();
+  expect(await screen.findByRole('checkbox', { name: 'query' })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: 'export' })).not.toBeChecked();
+  expect(screen.queryByRole('checkbox', { name: 'retired' })).not.toBeInTheDocument();
+});
+it('drops ticks for a server or tool that leaves the offer while the dialog is open', async () => {
+  const archive = {
+    ...view.targets[0],
+    resource: { ...view.targets[0].resource, serverName: 'archive' },
+    permittedTools: [{ agentId: 'root', tools: ['purge'] }],
+  };
+  jest
+    .mocked(dataService.getScheduleMCPConsent)
+    .mockResolvedValue({ ...view, targets: [archive, ...view.targets] });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  const client = display();
+  await userEvent.click(await screen.findByRole('checkbox', { name: 'purge' }));
+  await userEvent.click(screen.getByRole('checkbox', { name: 'export' }));
+  await userEvent.click(screen.getByRole('checkbox', { name: 'query' }));
+  // The agents drop the archive server and the export tool; the offer is read again.
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    targets: [{ ...view.targets[0], permittedTools: [{ agentId: 'root', tools: ['query'] }] }],
+    offer: { digest: 'b'.repeat(64), maxLifetimeHours: 24 },
+  });
+  await client.invalidateQueries();
+  await waitFor(() =>
+    expect(screen.queryByRole('checkbox', { name: 'purge' })).not.toBeInTheDocument(),
+  );
+  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({ offerDigest: 'b'.repeat(64), allow: { warehouse: ['query'] } }),
+    ),
+  );
+});
+it('lists the allowed tools without boxes when there is nothing to confirm', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    state: 'revoked',
+    revision: 'revoked',
+    allowed: { warehouse: ['query'] },
+    offer: null,
+  });
+  display();
+  expect(await screen.findByText('com_ui_schedule_consent_allowed')).toBeVisible();
+  expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
 });
 it('reopens with persisted expiry and explicitly revokes without enabling a schedule', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
@@ -140,9 +226,8 @@ it('shows API errors and retries without silently accepting a grant', async () =
 it('reports a stale confirmation and reloads the current offer', async () => {
   jest.mocked(dataService.confirmScheduleMCPConsent).mockRejectedValueOnce(new Error('conflict'));
   display();
-  await userEvent.click(
-    await screen.findByRole('button', { name: 'com_ui_schedule_consent_confirm' }),
-  );
+  await userEvent.click(await screen.findByRole('checkbox', { name: 'query' }));
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
   expect(await screen.findByText('com_ui_schedule_consent_error')).toBeVisible();
   await waitFor(() => expect(dataService.getScheduleMCPConsent).toHaveBeenCalledTimes(2));
 });

@@ -44,6 +44,32 @@ The schedule card shows failed servers and links to the selected agent for recov
 A pure pause remains available even when MCP validation fails. This change does not
 re-enable existing schedules automatically or repair credentials on the user's behalf.
 
+## Which tools an enrolled schedule may call
+
+When `interface.schedules.mcpConsent.enabled` is on, the schedule's owner decides. The consent
+offer lists every MCP tool the agent graph selects on servers whose recipient the operator
+declared under `mcpConsent.resources`. The owner ticks servers and tools; the grant stores only
+those. At run time a tool is allowed when the grant lists it for the calling agent and that
+agent still selects it. Anything else is refused with `tool_policy_denied`.
+
+- A tool the agent selects later is not allowed until the owner confirms again. It does not
+  invalidate the tools already allowed.
+- A tool the owner left out does not keep the schedule from running, and the run never loads
+  it. The readiness check looks only at what the grant lists. When the run initializes an
+  agent, only the MCP tools the grant lists for that agent are asked for
+  (`narrowScheduledMCPTools`), so a left-out tool is not defined for the model and a server
+  with nothing allowed is not connected to. Should a call to such a tool be made anyway, the
+  run's hook turns it away with a plain message and records nothing, and the check at the MCP
+  call still refuses it.
+- A tool the agent stops selecting is refused, and the consent view reports `changed`.
+- A server the owner leaves with no tools is left out of the grant: its calls are refused with
+  `consent_missing`.
+- Names, MCP annotations and remembered chat approvals confer nothing.
+
+The operator-declared `mcpConsent.readOnlyPolicy` list is retired. The loader warns when the key
+is still present and ignores it. Tool definitions are not pinned yet: a server that changes what
+an allowed tool does keeps that tool allowed until the pinning follow-up lands.
+
 ## Host token-provider context
 
 `createMCPPreflight` and `createInitializeClient` accept a
@@ -104,7 +130,7 @@ cannot enter URLs, subprocess arguments, OBO assertions or OAuth exchanges.
 No login refresh token or second credential store is added.
 
 The request captures owner, tenant and enrolled root identity, including restored
-approval requests. Every mint/use rechecks current authority and read-only policy.
+approval requests. Every mint/use rechecks current authority and the owner's allowed tools.
 Tokens are cached only within that request and binding, never allow decisions.
 Resource rejection ends the attempt without minting/replaying `tools/call`.
 Interactive sessions, stored OAuth, OBO and static sibling servers retain their

@@ -128,6 +128,7 @@ import { extractAgentContent, extractSkillContent } from '../protection/adapters
 import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
+import { narrowScheduledMCPTools } from '~/schedules/authorization/execution';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
@@ -2234,7 +2235,8 @@ export async function initializeAgent(
     loadTools?.({
       provider,
       agentId: agent.id,
-      tools,
+      // Under a schedule's grant, only the MCP tools its owner allowed are loaded at all.
+      tools: narrowScheduledMCPTools(params.req, agent.id, tools),
       model: agent.model,
       tool_options: agent.tool_options,
       tool_resources: runtimeToolResources,
