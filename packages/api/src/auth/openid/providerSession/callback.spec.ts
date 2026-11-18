@@ -26,7 +26,7 @@ function createAuthorizer(
     establish: jest.fn().mockResolvedValue({ ok: true }),
     authorize: jest.fn().mockResolvedValue({ ok: true }),
     preCheck: jest.fn().mockResolvedValue({ ok: true }),
-    getMode: jest.fn().mockResolvedValue('record'),
+    getMode: jest.fn().mockResolvedValue('enforce'),
     ...overrides,
   };
 }
@@ -157,6 +157,27 @@ describe('establishOpenIDCallbackProviderSession', () => {
     expect(result).toEqual({ ok: false });
     expect(res.redirect).toHaveBeenCalledWith(
       'http://client.test/login?redirect=false&error=OPENID_SESSION_ENDED',
+    );
+  });
+
+  it('logs and redirects with the missing-sid error when enforce denies a missing sid', async () => {
+    const getClaims = jest.fn().mockReturnValue({ sub: 'sub-1', sid: 'sid-1' });
+    const authorizer = createAuthorizer({
+      establish: jest.fn().mockResolvedValue({ ok: false, code: 'OPENID_SESSION_ID_MISSING' }),
+    });
+    const deps = createDeps({ authorizer });
+    const res = createResponse();
+
+    const result = await establishOpenIDCallbackProviderSession(deps, {
+      getClaims,
+      res,
+      clientDomain: 'http://client.test',
+    });
+
+    expect(result).toEqual({ ok: false });
+    expect(logger.warn).toHaveBeenCalled();
+    expect(res.redirect).toHaveBeenCalledWith(
+      'http://client.test/login?redirect=false&error=OPENID_SESSION_ID_MISSING',
     );
   });
 

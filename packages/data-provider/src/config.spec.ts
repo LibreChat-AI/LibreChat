@@ -182,6 +182,10 @@ describe('openid back-channel logout config', () => {
     expect(openidBackchannelLogoutSchema.parse({}).mode).toBe('off');
   });
 
+  it('parses enforce mode', () => {
+    expect(openidBackchannelLogoutSchema.parse({ mode: 'enforce' }).mode).toBe('enforce');
+  });
+
   it('defaults algorithms, timing and rate-limit fields', () => {
     expect(openidBackchannelLogoutSchema.parse({})).toEqual({
       mode: 'off',

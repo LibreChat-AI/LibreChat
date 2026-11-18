@@ -60,7 +60,7 @@ describe('provider-session authorization ordering (real database)', () => {
   it('denies authorize when the revoke lands first', async () => {
     const authorizer = createProviderSessionAuthorizer({
       methods,
-      getConfig: () => Promise.resolve(makeConfig('record')),
+      getConfig: () => Promise.resolve(makeConfig('enforce')),
       logger: makeLogger(),
     });
 
@@ -85,7 +85,7 @@ describe('provider-session authorization ordering (real database)', () => {
   it('denies every later authorize once a revoke lands after an earlier successful authorize', async () => {
     const authorizer = createProviderSessionAuthorizer({
       methods,
-      getConfig: () => Promise.resolve(makeConfig('record')),
+      getConfig: () => Promise.resolve(makeConfig('enforce')),
       logger: makeLogger(),
     });
 
@@ -114,7 +114,7 @@ describe('provider-session authorization ordering (real database)', () => {
   it('a duplicate revoke notification stays harmless and does not shorten retention', async () => {
     const authorizer = createProviderSessionAuthorizer({
       methods,
-      getConfig: () => Promise.resolve(makeConfig('record')),
+      getConfig: () => Promise.resolve(makeConfig('enforce')),
       logger: makeLogger(),
     });
 

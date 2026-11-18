@@ -121,6 +121,9 @@ export const OPENID_SESSION_ENDED = 'OPENID_SESSION_ENDED' as const;
 /** The session check could not be completed; retry, this is not a logout. */
 export const AUTH_SESSION_CHECK_UNAVAILABLE = 'AUTH_SESSION_CHECK_UNAVAILABLE' as const;
 
+/** Verified OpenID claims carried no `sid`, so back-channel-logout enforcement rejected the callback. */
+export const OPENID_SESSION_ID_MISSING = 'OPENID_SESSION_ID_MISSING' as const;
+
 /** The provider session a login verified or a logout notification targets: `(issuer, clientId, sid)`.
  *  `issuer` and `clientId` are normalized and configured identically at login and at logout. */
 export interface ProviderSessionRef {
@@ -4811,9 +4814,9 @@ export const OPENID_BACKCHANNEL_LOGOUT_ALGORITHMS = [
 ] as const;
 
 /** Mode for `POST /oauth/openid/backchannel-logout`: `off` disables it, `record` runs it and
- *  associates sessions and denies revoked ones, but fails open on a missing or unassociated session. */
+ *  associates sessions but fails open, `enforce` also denies a missing or unassociated session. */
 export const openidBackchannelLogoutSchema = z.object({
-  mode: z.enum(['off', 'record']).default('off'),
+  mode: z.enum(['off', 'record', 'enforce']).default('off'),
   /** Permitted logout-token signing algorithms. */
   algorithms: z.array(z.enum(OPENID_BACKCHANNEL_LOGOUT_ALGORITHMS)).min(1).default(['RS256']),
   clockToleranceSec: z.number().int().min(0).max(3600).default(60),

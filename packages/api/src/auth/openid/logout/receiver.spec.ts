@@ -16,7 +16,7 @@ function makeConfig(
   overrides: Partial<ResolvedBackchannelLogoutConfig> = {},
 ): ResolvedBackchannelLogoutConfig {
   return {
-    mode: 'record',
+    mode: 'enforce',
     algorithms: ['RS256'],
     clockToleranceSec: 60,
     maxTokenAgeSec: 120,
@@ -173,10 +173,11 @@ describe('isBackchannelLogoutEnabled', () => {
   });
 
   it('is false when the provider is not configured', () => {
-    expect(isBackchannelLogoutEnabled({ mode: 'record' }, null)).toBe(false);
+    expect(isBackchannelLogoutEnabled({ mode: 'enforce' }, null)).toBe(false);
   });
 
-  it('is true in record mode with a configured client', () => {
+  it('is true in record or enforce mode with a configured client', () => {
     expect(isBackchannelLogoutEnabled({ mode: 'record' }, client)).toBe(true);
+    expect(isBackchannelLogoutEnabled({ mode: 'enforce' }, client)).toBe(true);
   });
 });

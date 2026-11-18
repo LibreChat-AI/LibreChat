@@ -81,7 +81,7 @@ export function isOpenIDRefreshOwnershipError(error: unknown): boolean {
   );
 }
 
-/** A provider session was denied (ended or conflicting). */
+/** A provider session was denied (ended, conflicting, or never associated under enforce). */
 export function createOpenIDSessionEndedError(
   message = 'OpenID provider session ended',
 ): Error & { code: string; status: number } {
