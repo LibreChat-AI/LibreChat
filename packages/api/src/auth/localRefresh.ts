@@ -29,7 +29,9 @@ type RefreshUser = Pick<
   | 'credentialsChangedAt'
 >;
 
-type RefreshSession = Pick<ISession, 'expiration'> & { _id: UserIdentifier };
+type RefreshSession = Pick<ISession, 'expiration' | 'authMethod'> & {
+  _id: UserIdentifier;
+};
 type SessionDeletionResult = { deletedCount?: number };
 type AuthResponseSource = TwoFactorAccount & { __v?: number; federatedTokens?: OIDCTokens };
 
@@ -165,7 +167,11 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
             storageRegion: user.storageRegion,
           });
           /** The setup token outranks the refresh credential that bought it. */
-          const tempToken = mintSetupToken(userId, process.env.JWT_SECRET ?? '');
+          const tempToken = mintSetupToken(
+            userId,
+            process.env.JWT_SECRET ?? '',
+            session.authMethod,
+          );
           if (await isCredentialRetired(userId, credential)) {
             return withdrawSession(res, user, userId);
           }
