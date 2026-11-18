@@ -1,5 +1,8 @@
 import { GraphEvents } from '@librechat/agents';
+import { SystemMessage } from '@langchain/core/messages';
+import { FakeChatModel } from '@langchain/core/utils/testing';
 import { ErrorTypes, Permissions, PermissionTypes } from 'librechat-data-provider';
+import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { ChatCompletionDependencies } from './service';
 import type { ChatCompletionChunk } from './types';
@@ -104,6 +107,48 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
       createRun: createRun as unknown as ChatCompletionDependencies['createRun'],
     };
   });
+
+  it.each([false, true])(
+    'enforces the exact model boundary for embedded callers: blocked=%s',
+    async (blocked) => {
+      deps.appConfig = {
+        filters: {
+          agentInstructions: {
+            pii: {
+              fields: ['instructions'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'private', label: 'private value', regex: 'PRIVATE-INSTRUCTION' },
+              ],
+            },
+          },
+        },
+      };
+      let provider: jest.SpyInstance | undefined;
+      createRun.mockImplementationOnce(
+        async ({
+          modelCallbacks,
+        }: Parameters<NonNullable<ChatCompletionDependencies['createRun']>>[0]) => {
+          const model = new FakeChatModel({
+            callbacks: modelCallbacks as CallbackHandlerMethods[] | undefined,
+          });
+          provider = jest.spyOn(model, '_generate');
+          return {
+            processStream: () =>
+              model.invoke([
+                new SystemMessage(blocked ? 'PRIVATE-INSTRUCTION' : 'safe instruction'),
+              ]),
+          };
+        },
+      );
+      const req = createMockReq({ id: 'user-123' });
+      const res = createMockRes();
+      await createAgentChatCompletion(req, res, deps);
+      expect(provider).toHaveBeenCalledTimes(blocked ? 0 : 1);
+      if (blocked) expectRawFreeFilterError(res, 'PRIVATE-INSTRUCTION');
+      else expect(getResponseMock(res, 'status')).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([true, false])(
     'keeps graph and provider-owned calls internal (stream=%s)',

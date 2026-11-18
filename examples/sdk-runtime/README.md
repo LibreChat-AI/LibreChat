@@ -170,9 +170,10 @@ runtime registration to select the saved agent's primary model and parameters. B
 consume `input.agent.model` and retain `input.hostModel`; model credentials stay in LibreChat.
 The custom graph keeps its plan/review/refine nodes and uses the host-authorized tool schemas.
 This mode requires updated workers with `builderModel: 1` and, for initial persistence admission,
-`modelAdmission: 1`. Protected chat uses native host input callbacks. Protected API callers without
-those callbacks, local graph tools and provider fallbacks remain gated. Combining initial admission
-with explicit provider-text output protection requires `modelAdmissionWithProviderText: 1`, advertised
+`modelAdmission: 1`. Chat, Responses and OpenAI-compatible callers use native host input callbacks.
+Direct programmatic callers must supply those callbacks; local graph tools and provider fallbacks
+remain gated. Combining initial admission with explicit provider-text output protection requires
+`modelAdmissionWithProviderText: 1`, advertised
 only with SDK 4.2.9 invocation-context support. Upgrade separately deployed workers to SDK 4.2.9
 and this bridge version; older workers stay gated. See [the parity matrix](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
 and [configuration](../../docs/sdk/agents.md#saved-agent-builder-models) before enabling it.

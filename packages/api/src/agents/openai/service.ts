@@ -72,6 +72,7 @@ import {
 import {
   assertModelBoundContent,
   hasModelBoundContentProtection,
+  createModelBoundChatModelCallback,
 } from '~/middleware/modelBoundContent';
 import { contentFilterBlockResponse, isContentFilterError } from '~/middleware/contentFilter';
 import { contentFilterUninspectableResponse } from '~/protection/files';
@@ -300,6 +301,7 @@ type CreateRunAppConfig = Pick<
 
 type CreateRunFn = (params: {
   sdkModelHost?: SdkModelHost;
+  modelCallbacks?: ReturnType<typeof createModelBoundChatModelCallback>[];
   agents: unknown[];
   messages: unknown[];
   runId: string;
@@ -902,6 +904,14 @@ export async function createAgentChatCompletion(
       const safeUser: Record<string, unknown> = { ...createSafeUser(reqUser), id: userId };
       const run = await deps.createRun({
         sdkModelHost: deps.sdkModelHost,
+        modelCallbacks: [
+          createModelBoundChatModelCallback({
+            onTraversalFailure: deps.onTraversalFailure,
+            filters,
+            legacyPii,
+            resolvedFiles: modelBoundFiles,
+          }),
+        ],
         agents: [initializedAgent],
         messages,
         runId: requestId,
