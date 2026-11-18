@@ -181,7 +181,7 @@ describe('resource lease Mongo adapter', () => {
       jest.useRealTimers();
     }
     expect(await harness.read(lock.key)).toBeNull();
-    expect(await methods.acquireResourceLock(lock)).toBe(true);
+    expect(await methods.acquireResourceLock({ ...lock, readyWaitMs: 2_000 })).toBe(true);
     expect(build).toHaveBeenCalledTimes(3);
   });
 
