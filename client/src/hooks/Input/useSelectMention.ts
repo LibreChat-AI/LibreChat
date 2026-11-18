@@ -15,6 +15,7 @@ import {
   removeUnavailableTools,
   getModelSpecIconURL,
   getConvoSwitchLogic,
+  specDisplayFieldReset,
   logger,
 } from '~/utils';
 import { useDefaultConvo } from '~/hooks';
@@ -95,13 +96,25 @@ export default function useSelectMention({
         preset.model = assistantsMap?.[newEndpoint]?.[preset.assistant_id]?.model;
       }
 
+      template.spec = spec.name;
+      template.iconURL = preset.iconURL ?? null;
+      template.modelLabel = preset.modelLabel ?? null;
+      template.greeting = preset.greeting ?? undefined;
+
       const isModular = isCurrentModular && isNewModular && shouldSwitch;
       if (isExistingConversation && isModular) {
         template.endpointType = newEndpointType as EModelEndpoint | undefined;
 
         const currentConvo = getDefaultConversation({
           /* target endpointType is necessary to avoid endpoint mixing */
-          conversation: { ...(conversation ?? {}), endpointType: template.endpointType },
+          conversation: {
+            ...(conversation ?? {}),
+            spec: spec.name,
+            iconURL: preset.iconURL ?? null,
+            modelLabel: preset.modelLabel ?? null,
+            greeting: preset.greeting ?? undefined,
+            endpointType: template.endpointType,
+          },
           preset: template,
           cleanOutput: true,
         });
@@ -120,6 +133,7 @@ export default function useSelectMention({
       newConversation({
         template: {
           ...(template as Partial<TConversation>),
+          greeting: preset.greeting ?? undefined,
           chatProjectId: routeChatProjectId ?? conversation?.chatProjectId ?? null,
         },
         preset,
@@ -182,9 +196,7 @@ export default function useSelectMention({
       }
       clearModelForNonEphemeralAgent(template);
 
-      template.spec = null;
-      template.iconURL = null;
-      template.modelLabel = null;
+      Object.assign(template, specDisplayFieldReset);
       if (isExistingConversation && isCurrentModular && isNewModular && shouldSwitch) {
         template.endpointType = newEndpointType;
 
@@ -192,9 +204,7 @@ export default function useSelectMention({
           /* target endpointType is necessary to avoid endpoint mixing */
           conversation: {
             ...(conversation ?? {}),
-            spec: null,
-            iconURL: null,
-            modelLabel: null,
+            ...specDisplayFieldReset,
             endpointType: template.endpointType,
           },
           preset: template,
@@ -220,7 +230,7 @@ export default function useSelectMention({
           ...(template as Partial<TConversation>),
           chatProjectId: routeChatProjectId ?? conversation?.chatProjectId ?? null,
         },
-        preset: { ...kwargs, spec: null, iconURL: null, modelLabel: null, endpoint: newEndpoint },
+        preset: { ...kwargs, ...specDisplayFieldReset, endpoint: newEndpoint },
         keepAddedConvos: isNewModular,
       });
     },
@@ -262,6 +272,7 @@ export default function useSelectMention({
       newPreset.spec = null;
       newPreset.iconURL = newPreset.iconURL ?? null;
       newPreset.modelLabel = newPreset.modelLabel ?? null;
+      newPreset.greeting = newPreset.greeting ?? undefined;
       const isModular = isCurrentModular && isNewModular && shouldSwitch;
       const disableParams = newPreset.defaultPreset === true;
       if (isExistingConversation && isModular) {
@@ -269,9 +280,17 @@ export default function useSelectMention({
         template.spec = null;
         template.iconURL = null;
         template.modelLabel = null;
+        template.greeting = newPreset.greeting ?? undefined;
         const currentConvo = getDefaultConversation({
           /* target endpointType is necessary to avoid endpoint mixing */
-          conversation: { ...(conversation ?? {}), endpointType: template.endpointType },
+          conversation: {
+            ...(conversation ?? {}),
+            spec: null,
+            iconURL: null,
+            modelLabel: null,
+            greeting: newPreset.greeting ?? undefined,
+            endpointType: template.endpointType,
+          },
           preset: template,
           cleanInput: true,
         });
