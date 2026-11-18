@@ -177,6 +177,30 @@ function carriedPins(
   return definitions.length ? { definitions } : {};
 }
 
+/**
+ * Names what the owner was shown: the subject, its configuration, what is on offer, and which
+ * allowed tools were marked as changed. A dialog opened before a tool was marked cannot
+ * confirm past the mark; it is told the offer changed and reads it again.
+ */
+function offerDigest(
+  identity: ScheduledMCPIdentity,
+  configRevision: number,
+  targets: readonly ScheduledMCPTarget[],
+  changed: Record<string, string[]>,
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        identity,
+        configRevision,
+        targets,
+        // Left out while nothing is marked, so an offer made before marks existed still holds.
+        ...(Object.keys(changed).length > 0 && { changed }),
+      }),
+    )
+    .digest('hex');
+}
+
 export interface ScheduleMCPConsentService {
   view: (
     identity: ScheduledMCPIdentity,
@@ -281,9 +305,7 @@ export function createScheduleMCPConsentService(
           offer: null,
         };
       targets = canonicalTargets(resolved);
-      const digest = createHash('sha256')
-        .update(JSON.stringify({ identity, configRevision: snapshot.configRevision, targets }))
-        .digest('hex');
+      const digest = offerDigest(identity, snapshot.configRevision, targets, changedByServer);
       offer = { digest, maxLifetimeHours: limits.maxLifetimeHours };
       if (state === 'active' && !coversGrant(targets, granted)) state = 'changed';
     } else if (!enrollment) state = 'unsupported';
@@ -319,15 +341,12 @@ export function createScheduleMCPConsentService(
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (!snapshot) throw new ScheduleMCPConsentError('consent_not_found');
     // Recompute the digest with the final observed row so an edit cannot reuse an old offer.
-    const digest = createHash('sha256')
-      .update(
-        JSON.stringify({
-          identity,
-          configRevision: snapshot.configRevision,
-          targets: current.targets,
-        }),
-      )
-      .digest('hex');
+    const digest = offerDigest(
+      identity,
+      snapshot.configRevision,
+      current.targets,
+      changedTools(snapshot.enrollment?.consents ?? []),
+    );
     if (digest !== input.offerDigest) throw new ScheduleMCPConsentError('consent_changed');
     const chosen = selectAllowed(current.targets, input.allow);
     options.signal?.throwIfAborted();
@@ -473,12 +492,23 @@ export function createScheduleMCPConsentService(
       );
       if (stored.includes(false)) {
         const latest = await authority.lookupConsent(request.identity, request.resource, options);
-        if (
-          latest.state !== 'found' ||
-          latest.consent.id !== consent.id ||
-          unpinned.some(([tool, digest]) => !pinned(latest.consent, tool, digest))
-        )
+        const current =
+          latest.state === 'found' && latest.consent.id === consent.id ? latest.consent : undefined;
+        const conflicting = unpinned.filter(
+          ([tool, digest]) => !current || !pinned(current, tool, digest),
+        );
+        if (conflicting.length > 0) {
+          // Two first uses saw two definitions. The one that lost leaves the same mark a later
+          // mismatch would, so the tool is refused and the owner is told, whichever won.
+          await Promise.all(
+            conflicting
+              .filter(([tool]) => current?.definitions?.some((pin) => pin.tool === tool))
+              .map(([tool]) =>
+                deps.storage.flagScheduleMCPToolChange({ ...grant, consentId: consent.id, tool }),
+              ),
+          );
           return denial('binding_mismatch');
+        }
       }
       if (options.signal?.aborted) return { state: 'cancelled' };
       if (now() >= consent.absoluteExpiresAtMs) return denial('consent_expired');

@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { scheduledMCPEnrollmentSchema, scheduledMCPToolPinSchema } from 'librechat-data-provider';
+import {
+  scheduledMCPToolPinSchema,
+  scheduledMCPEnrollmentSchema,
+  MAX_SCHEDULED_MCP_SERVER_TOOLS,
+} from 'librechat-data-provider';
 import type { ScheduledMCPIdentity, ScheduledMCPEnrollment } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import type { IScheduleDocument } from '~/types/schedule';
@@ -187,7 +191,7 @@ export function createScheduleMCPConsentStorage(
               revokedAtMs: null,
               // No entry for this tool yet, and room for one more.
               'definitions.tool': { $ne: pin.tool },
-              'definitions.255': { $exists: false },
+              [`definitions.${MAX_SCHEDULED_MCP_SERVER_TOOLS - 1}`]: { $exists: false },
             },
           },
         },

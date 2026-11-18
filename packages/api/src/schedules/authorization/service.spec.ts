@@ -506,6 +506,53 @@ describe('definition pins', () => {
       state: 'denied',
       failure: { reason: 'binding_mismatch' },
     });
+    // The loser marks the tool, so the definition that won the race is refused as well.
+    expect(consent(s).changedTools).toEqual(['query']);
+    expect(await s.service.authority.authorize(use(second), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'binding_mismatch' },
+    });
+    expect(await s.service.view(identity)).toMatchObject({
+      state: 'changed',
+      changed: { warehouse: ['query'] },
+    });
+  });
+
+  it('does not let a dialog opened before a tool was marked confirm past the mark', async () => {
+    const s = setup();
+    await s.enroll();
+    await s.service.authority.authorize(use(first), {});
+    const opened = await s.service.view(identity);
+    // A run sees a different definition while the dialog is open.
+    await s.service.authority.authorize(use(second), {});
+    const stale = {
+      offerDigest: opened.offer!.digest,
+      expectedRevision: opened.revision,
+      lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
+    };
+    jest.mocked(s.storage.confirmScheduleMCPConsent).mockClear();
+    await expect(s.service.confirm(identity, stale)).rejects.toMatchObject({
+      code: 'consent_changed',
+    });
+    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(consent(s).changedTools).toEqual(['query']);
+    // Read again, the owner is shown the mark and can decide.
+    const shown = await s.service.view(identity);
+    expect(shown.offer!.digest).not.toBe(opened.offer!.digest);
+    expect(shown.changed).toEqual({ warehouse: ['query'] });
+    await expect(
+      s.service.confirm(identity, { ...stale, offerDigest: shown.offer!.digest }),
+    ).resolves.toMatchObject({ state: 'active', changed: {} });
+  });
+
+  it('keeps the digest of an offer in which nothing is marked', async () => {
+    const s = setup();
+    const before = await s.service.view(identity);
+    await s.enroll();
+    await s.service.authority.authorize(use(first), {});
+    // Pinning is not a change the owner has to look at again.
+    expect((await s.service.view(identity)).offer!.digest).toBe(before.offer!.digest);
   });
 
   it('does not authorize a first use whose pin could not be stored', async () => {

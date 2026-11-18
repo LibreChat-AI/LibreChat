@@ -121,9 +121,9 @@ export const scheduledMCPConsentSchema = scheduledMCPTargetSchema
     absoluteExpiresAtMs: timestamp,
     revokedAtMs: timestamp.nullable(),
     /** Absent until a tool is first used. One entry per tool, never rewritten. */
-    definitions: z.array(scheduledMCPToolPinSchema).max(256).optional(),
+    definitions: z.array(scheduledMCPToolPinSchema).max(MAX_SCHEDULED_MCP_SERVER_TOOLS).optional(),
     /** Tools a run saw with a definition other than their pin. Refused until confirmed again. */
-    changedTools: z.array(identifier).max(256).optional(),
+    changedTools: z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS).optional(),
   })
   .strict()
   .refine((value) => value.absoluteExpiresAtMs > value.grantedAtMs);
