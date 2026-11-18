@@ -673,9 +673,11 @@ const setCloudFrontAuthCookies = (req, res, user, options = {}) => {
  * @param {ServerResponse} res
  * @param {ISession | null} [_session=null]
  * @param {ServerRequest | null} [req=null]
+ * @param {Object} [options={}] - `authMethod` applies only when a new Session doc is created.
+ * @param {import('@librechat/data-schemas').AuthMethod} [options.authMethod]
  * @returns
  */
-const setAuthTokens = async (userId, res, _session = null, req = null) => {
+const setAuthTokens = async (userId, res, _session = null, req = null, options = {}) => {
   try {
     let session = _session;
     let refreshToken;
@@ -686,7 +688,7 @@ const setAuthTokens = async (userId, res, _session = null, req = null) => {
       refreshTokenExpires = session.expiration.getTime();
       refreshToken = await generateRefreshToken(session);
     } else {
-      const result = await createSession(userId, { expiresIn });
+      const result = await createSession(userId, { expiresIn, authMethod: options.authMethod });
       session = result.session;
       refreshToken = result.refreshToken;
       refreshTokenExpires = session.expiration.getTime();

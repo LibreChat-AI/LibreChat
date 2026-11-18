@@ -1,4 +1,5 @@
 export * from './domain';
+export * from './authMethod';
 export * from './openid';
 export * from './saml';
 export * from './ldap';

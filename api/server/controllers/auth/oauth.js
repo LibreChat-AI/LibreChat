@@ -5,6 +5,7 @@ const {
   getAdminPanelUrl,
   isAdminPanelRedirect,
   generateAdminExchangeCode,
+  resolveAuthMethod,
 } = require('@librechat/api');
 const { syncUserEntraGroupMemberships } = require('~/server/services/PermissionService');
 const { setAuthTokens } = require('~/server/services/AuthService');
@@ -88,7 +89,9 @@ function createOAuthHandler(redirectUri = domains.client) {
           res,
         });
       } else {
-        await setAuthTokens(req.user._id, res, null, req);
+        await setAuthTokens(req.user._id, res, null, req, {
+          authMethod: resolveAuthMethod(req.user.provider),
+        });
         if (
           req.user.provider === 'openid' &&
           isEnabled(process.env.OPENID_USE_END_SESSION_ENDPOINT)
