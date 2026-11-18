@@ -702,6 +702,88 @@ describe('createResponse controller', () => {
   });
 
   it.each([
+    ['max_output_tokens', 1.5, 400],
+    ['max_output_tokens', null, 200],
+    ['temperature', null, 200],
+  ])('mounted numeric control contract: %s=%p returns %s', async (field, value, status) => {
+    const api = require('@librechat/api');
+    const actual = jest.requireActual('@librechat/api');
+    const express = require('express');
+    const request = require('supertest');
+    api.validateResponseRequest.mockImplementationOnce(actual.validateResponseRequest);
+    api.isValidationFailure.mockImplementationOnce(actual.isValidationFailure);
+    const error = api.sendResponsesErrorResponse.getMockImplementation();
+    api.sendResponsesErrorResponse.mockImplementation(actual.sendResponsesErrorResponse);
+    const app = express();
+    app.use(express.json());
+    app.post('/v1/responses', (incoming, outgoing) => {
+      incoming.config = req.config;
+      incoming.user = req.user;
+      return createResponse(incoming, outgoing);
+    });
+    const server = await new Promise((resolve, reject) => {
+      const listening = app.listen(Number(process.env.RESPONSES_TEST_PORT ?? 0), '127.0.0.1', () =>
+        resolve(listening),
+      );
+      listening.once('error', reject);
+    });
+    try {
+      const response = await request(server)
+        .post('/v1/responses')
+        .send({ ...req.body, [field]: value });
+      expect(response.status).toBe(status);
+      if (status === 400) {
+        expect(mockCreateAgentRunEnvelope).not.toHaveBeenCalled();
+        expect(api.initializeAgent).not.toHaveBeenCalled();
+      } else {
+        expect(mockCreateAgentRunEnvelope).toHaveBeenCalledWith(
+          expect.objectContaining({ payload: expect.objectContaining({ [field]: null }) }),
+        );
+        expect(api.initializeAgent).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+      api.sendResponsesErrorResponse.mockImplementation(error);
+    }
+  });
+
+  it.each([
+    ['max_output_tokens', 1.5],
+    ['max_output_tokens', 0],
+    ['max_output_tokens', '10'],
+    ['temperature', '1'],
+  ])('rejects malformed numeric control before execution: %s=%p', async (field, value) => {
+    const api = require('@librechat/api');
+    const actual = jest.requireActual('@librechat/api');
+    api.validateResponseRequest.mockImplementationOnce(actual.validateResponseRequest);
+    api.isValidationFailure.mockImplementationOnce(actual.isValidationFailure);
+    req.body[field] = value;
+    await createResponse(req, res);
+    expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(res, 400, expect.any(String));
+    expect(mockCreateAgentRunEnvelope).not.toHaveBeenCalled();
+    expect(api.initializeAgent).not.toHaveBeenCalled();
+  });
+
+  it.each(['max_output_tokens', 'temperature'])(
+    'admits nullable numeric control without normalizing into another value: %s',
+    async (field) => {
+      const api = require('@librechat/api');
+      const actual = jest.requireActual('@librechat/api');
+      api.validateResponseRequest.mockImplementationOnce(actual.validateResponseRequest);
+      api.isValidationFailure.mockImplementationOnce(actual.isValidationFailure);
+      req.body[field] = null;
+      await createResponse(req, res);
+      expect(api.sendResponsesErrorResponse).not.toHaveBeenCalled();
+      expect(mockCreateAgentRunEnvelope).toHaveBeenCalledWith(
+        expect.objectContaining({ payload: expect.objectContaining({ [field]: null }) }),
+      );
+      expect(api.initializeAgent).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
     [false, false],
     [true, false],
     [false, true],
