@@ -9,7 +9,7 @@ import type { ReactNode } from 'react';
 import type { ChatStream, ChatTransport, ChatStreamStatus } from '../../core';
 import type { FollowChatOptions } from '../follow';
 import { MAX_RETRIES, getReconnectDelay } from '../../core';
-import { useFollowChat } from '../follow';
+import { ABSENT_RETRIES, useFollowChat } from '../follow';
 
 type TestStream = ChatStream & { push(event: ChatEvent): void; closed: boolean };
 
@@ -263,7 +263,7 @@ describe('useFollowChat', () => {
     expect(result.current.isUnattached).toBe(false);
   });
 
-  it('says a run the caller knows of has no stream only once an attachment found none', async () => {
+  it('says a run the caller knows of has no stream only after looking for it again', async () => {
     const { transport } = createTransport(idle);
     let release: (messages: TMessage[]) => void = () => undefined;
     const loadMessages = jest.fn(
@@ -277,10 +277,47 @@ describe('useFollowChat', () => {
     expect(result.current.isUnattached).toBe(false);
 
     loadMessages.mockResolvedValue([brief]);
-    await act(async () => release([brief]));
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        release([brief]);
+        await jest.advanceTimersByTimeAsync(getReconnectDelay(1));
+      });
+      /** Not found once is not yet nothing to attach to. */
+      expect(result.current.isUnattached).toBe(false);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+    } finally {
+      jest.useRealTimers();
+    }
     await waitFor(() => expect(result.current.isUnattached).toBe(true));
     expect(result.current.isFollowing).toBe(false);
-    expect(transport.reconnectToStream).toHaveBeenCalledTimes(1);
+    expect(transport.reconnectToStream).toHaveBeenCalledTimes(1 + ABSENT_RETRIES);
+  });
+
+  it('follows a run whose stream opens a moment after the caller learns of it', async () => {
+    const { transport, streams, setStatus } = createTransport(idle);
+    const { result } = setup({ transport, live: true });
+    await waitFor(() => expect(transport.reconnectToStream).toHaveBeenCalledTimes(1));
+    expect(streams).toHaveLength(0);
+
+    /** The run was announced first; its generation opens now. */
+    setStatus(running);
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(getReconnectDelay(1));
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+    await waitFor(() => expect(streams).toHaveLength(1));
+    act(() => streams[0].push(snapshot('Late start')));
+    await settle();
+
+    expect(textOf(result.current.messages)).toEqual(['Late start']);
+    expect(result.current.isUnattached).toBe(false);
   });
 
   it('says the stream is gone once a dropped one could not be attached again', async () => {

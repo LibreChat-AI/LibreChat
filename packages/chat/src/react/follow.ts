@@ -73,6 +73,12 @@ type Load = { id: string; attempt: number; state: 'loading' | 'ready' | 'error' 
  */
 type Attachment = { finished?: ChatFinishResult; received: boolean };
 
+/**
+ * How many more times a run the caller knows of is looked for after it was not found. Short: a
+ * caller with another way to show the run is waiting on the answer.
+ */
+export const ABSENT_RETRIES = 2;
+
 const noMessages: TMessage[] = [];
 const unsubscribed = (): (() => void) => () => undefined;
 
@@ -206,9 +212,19 @@ export function useFollowChat({
       /** Whether a generation was reached and not lost for good. */
       let reached = false;
       try {
-        for (let failures = 0; !stale; ) {
+        for (let failures = 0, absences = 0; !stale; ) {
           const { finished, received } = await follow();
           reached ||= received || finished != null;
+          /**
+           * The caller says a run is going and none was found. Its stream may not be open yet:
+           * a run is announced as running before its generation is, so the attachment is tried
+           * again shortly before it is taken to have nothing to attach to.
+           */
+          if (!reached && host.current.live && absences < ABSENT_RETRIES) {
+            absences += 1;
+            await pause(getReconnectDelay(absences));
+            continue;
+          }
           if (finished?.isDisconnect !== true) {
             break;
           }
