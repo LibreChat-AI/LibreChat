@@ -40,6 +40,7 @@ const {
   createLazyAgentHistoryResolver,
   resolveToolRoleGrants,
   createChatRunFileBindings,
+  createChatSdkFileSession,
   createAxiosInstance,
   getCodeApiAuthHeaders,
   getCodeExecutionBaseUrl,
@@ -2110,6 +2111,14 @@ const initializeClientWithProvider = async ({
     subagentAggregatorsByToolCallId,
     subagentTasks,
     runFiles: runFileBindings.session,
+    sdkFiles: createChatSdkFileSession({
+      host: req.app?.locals?.sdkFileHost,
+      req,
+      getInputs: () => primaryConfig.currentRequestAttachments,
+      loadFiles: (ids) => db.getRunFileCandidates(ids, req.user.tenantId),
+      filterFiles: filterFilesByAgentAccess,
+      getStrategyFunctions,
+    }),
     /** Resolved endpoint token/pricing config so spending and cost reflect
      *  configured rates for custom-endpoint agents instead of defaults. */
     endpointTokenConfig: primaryConfig.endpointTokenConfig,

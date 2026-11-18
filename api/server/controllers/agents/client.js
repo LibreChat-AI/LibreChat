@@ -5056,6 +5056,7 @@ class AgentClient extends BaseClient {
           (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
         const createRunPromise = createRun({
           sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
+          sdkFiles: this.options.sdkFiles,
           scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
           recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
             getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
@@ -5358,7 +5359,7 @@ class AgentClient extends BaseClient {
       rejectPrivateTextAdmission(this.options.req);
       /** An aborted/erroring run can still have completed compaction before
        * the failure; retain that model-visible state for actor reconciliation. */
-      await this.options.runFiles?.close();
+      await Promise.all([this.options.runFiles?.close(), this.options.sdkFiles?.close()]);
       this.eventActorSummary =
         getLatestEventActorSummary(this.contentParts) ?? this.eventActorSummary;
       /** A run that never came to exist has no state of its own: keep the
@@ -5874,6 +5875,7 @@ class AgentClient extends BaseClient {
         (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
       run = await createRun({
         sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
+        sdkFiles: this.options.sdkFiles,
         sdkResumeState: { content: seedContent, steps: runSteps },
         scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
         recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
@@ -6074,7 +6076,7 @@ class AgentClient extends BaseClient {
         });
       }
     } finally {
-      await this.options.runFiles?.close();
+      await Promise.all([this.options.runFiles?.close(), this.options.sdkFiles?.close()]);
       this.eventActorSummary =
         getLatestEventActorSummary(this.contentParts) ?? this.eventActorSummary;
       /** A run that never came to exist has no state of its own: keep the

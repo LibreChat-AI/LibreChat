@@ -30,6 +30,8 @@ export interface RemoteSdkRecoveryOptions {
 export interface RemoteSdkOptions {
   /** Opt in to the saved-agent host model, configured by the operator. */
   hostModel?: boolean;
+  /** Opt in to native host attachment reads. */
+  hostFiles?: boolean;
   recovery?: RemoteSdkRecoveryOptions;
   url: string;
   secret: string;
