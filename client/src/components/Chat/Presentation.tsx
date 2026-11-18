@@ -1,11 +1,11 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
-import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { EModelEndpoint } from 'librechat-data-provider';
+import { useRecoilValue, useSetRecoilState, useResetRecoilState } from 'recoil';
 import {
   sideChatAtom,
   SIDE_CHAT_PANE,
-  sideChatAvailableAtom,
+  sideChatBesideAtom,
   useIsSubmitting,
   activeSubagentPanel,
   SideChatHostProvider,
@@ -118,11 +118,33 @@ export default function Presentation({
 
   /** A side chat needs this chat to sit beside, and the deployment's leave to open one. */
   const canSideChat = hasStartupConfig === true && startupConfig?.interface?.sideChat !== false;
-  const setSideChatAvailable = useSetAtom(sideChatAvailableAtom);
+  const setSideChatBeside = useSetAtom(sideChatBesideAtom);
   useEffect(() => {
-    setSideChatAvailable(canSideChat);
-    return () => setSideChatAvailable(false);
-  }, [canSideChat, setSideChatAvailable]);
+    setSideChatBeside(canSideChat ? { conversationId: conversationId ?? null } : null);
+    return () => setSideChatBeside(null);
+  }, [canSideChat, conversationId, setSideChatBeside]);
+
+  /**
+   * One panel at a time, and the one asked for last has the slot: a side chat opened while an
+   * artifact or a child's activity is showing takes their place, as each of them takes its.
+   * Undocked, the artifact is in a window of its own and gives up nothing.
+   */
+  const resetCurrentArtifactId = useResetRecoilState(store.currentArtifactId);
+  const setArtifactsVisible = useSetRecoilState(store.artifactsVisibility);
+  const sideChatId = sideChat?.conversation.conversationId ?? null;
+  /** Read when a side chat opens, not watched: docking an artifact later is that panel's ask. */
+  const undocked = useRef(isUndocked);
+  undocked.current = isUndocked;
+  useEffect(() => {
+    if (sideChatId == null) {
+      return;
+    }
+    setSelectedSubagent(null);
+    if (!undocked.current) {
+      resetCurrentArtifactId();
+      setArtifactsVisible(false);
+    }
+  }, [sideChatId, setSelectedSubagent, resetCurrentArtifactId, setArtifactsVisible]);
 
   const artifactsElement = useMemo(() => {
     if (

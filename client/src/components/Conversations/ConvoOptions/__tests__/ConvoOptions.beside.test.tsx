@@ -2,7 +2,7 @@ import React from 'react';
 import { Provider, createStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { sideChatAtom, sideChatAvailableAtom } from '@librechat/chat/react';
+import { sideChatAtom, sideChatBesideAtom } from '@librechat/chat/react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import ConvoOptions from '../ConvoOptions';
@@ -95,7 +95,8 @@ function setup({
   isArchived = false,
 }: { available?: boolean; isActiveConvo?: boolean; isArchived?: boolean } = {}) {
   const store = createStore();
-  store.set(sideChatAvailableAtom, available);
+  /** The reader is in `conversation-1`, with room beside it. */
+  store.set(sideChatBesideAtom, available ? { conversationId: 'conversation-1' } : null);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
@@ -180,5 +181,53 @@ describe('ConvoOptions open beside', () => {
       ),
     );
     expect(store.get(sideChatAtom)).toBeNull();
+  });
+
+  describe('when the reader moves on while the record is read', () => {
+    const slowRecord = () => {
+      let land: (value: typeof record) => void = () => undefined;
+      mockGetConversation.mockReturnValue(
+        new Promise((resolve) => {
+          land = resolve;
+        }),
+      );
+      return (value = record) => act(async () => land(value));
+    };
+
+    it('opens nothing beside a chat they have since left', async () => {
+      const land = slowRecord();
+      const { store } = setup();
+      fireEvent.click(screen.getByRole('button', { name: OPEN_BESIDE }));
+
+      /** Another chat is on screen now: what was asked for was beside the first one. */
+      act(() => store.set(sideChatBesideAtom, { conversationId: 'conversation-3' }));
+      await land();
+
+      expect(store.get(sideChatAtom)).toBeNull();
+      expect(mockShowToast).not.toHaveBeenCalled();
+    });
+
+    it('does not open a conversation beside itself', async () => {
+      const land = slowRecord();
+      const { store } = setup();
+      fireEvent.click(screen.getByRole('button', { name: OPEN_BESIDE }));
+
+      /** The reader opened that very conversation as the chat on screen. */
+      act(() => store.set(sideChatBesideAtom, { conversationId: 'conversation-2' }));
+      await land();
+
+      expect(store.get(sideChatAtom)).toBeNull();
+    });
+
+    it('opens nothing once there is no chat left to sit beside', async () => {
+      const land = slowRecord();
+      const { store } = setup();
+      fireEvent.click(screen.getByRole('button', { name: OPEN_BESIDE }));
+
+      act(() => store.set(sideChatBesideAtom, null));
+      await land();
+
+      expect(store.get(sideChatAtom)).toBeNull();
+    });
   });
 });

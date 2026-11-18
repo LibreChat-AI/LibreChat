@@ -7,6 +7,7 @@ import {
   sideChatAtom,
   activeSubagentPanel,
   isSubmittingFamily,
+  sideChatBesideAtom,
   sideChatAvailableAtom,
 } from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
@@ -457,7 +458,12 @@ describe('Presentation Artifact loading', () => {
 
   describe('whether a side chat can be opened', () => {
     const SideChatAvailability = () => (
-      <span data-testid="side-chat-available">{String(useAtomValue(sideChatAvailableAtom))}</span>
+      <>
+        <span data-testid="side-chat-available">{String(useAtomValue(sideChatAvailableAtom))}</span>
+        <span data-testid="side-chat-beside">
+          {JSON.stringify(useAtomValue(sideChatBesideAtom))}
+        </span>
+      </>
     );
     const mount = () =>
       renderPresentation(
@@ -465,7 +471,7 @@ describe('Presentation Artifact loading', () => {
           <RecoilRoot>
             <SideChatAvailability />
             <Presentation>
-              <span />
+              <SelectAgentConversation />
             </Presentation>
           </RecoilRoot>
         </ChatSurfaceHarness>,
@@ -487,10 +493,52 @@ describe('Presentation Artifact loading', () => {
       expect(available()).toBe('true');
     });
 
+    it('names the chat it would sit beside, and names another once the reader moves', () => {
+      mockStartupConfig = { data: { interface: {} }, isSuccess: true };
+      mount();
+      const first = screen.getByTestId('side-chat-beside').textContent;
+      expect(first).toBe(JSON.stringify({ conversationId: null }));
+
+      fireEvent.click(screen.getByRole('button', { name: mockSelectAgentConversationLabel }));
+
+      expect(screen.getByTestId('side-chat-beside')).toHaveTextContent(
+        JSON.stringify({ conversationId: 'agent-conversation' }),
+      );
+    });
+
     it('is not where the deployment turned side chats off', () => {
       mockStartupConfig = { data: { interface: { sideChat: false } }, isSuccess: true };
       mount();
       expect(available()).toBe('false');
     });
+  });
+
+  it('gives the panel slot to a side chat opened while another panel is showing', async () => {
+    renderPresentation(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Presentation>
+            <OpenSubagentPanel />
+            <OpenArtifactPanel />
+            <OpenSideChat />
+          </Presentation>
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+
+    /** A child's activity holds the slot; the side chat asked for after it takes it. */
+    fireEvent.click(screen.getByRole('button', { name: mockOpenChildLabel }));
+    expect(await screen.findByText(mockChildPanelLabel)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
+    expect(await screen.findByText(mockSideChatLabel)).toBeInTheDocument();
+    expect(screen.queryByText(mockChildPanelLabel)).not.toBeInTheDocument();
+
+    /** The same from an artifact, and back: the panel asked for last is the one shown. */
+    fireEvent.click(screen.getByRole('button', { name: mockOpenArtifactLabel }));
+    expect(await screen.findByText(mockArtifactPanelLabel)).toBeInTheDocument();
+    expect(screen.queryByText(mockSideChatLabel)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
+    expect(await screen.findByText(mockSideChatLabel)).toBeInTheDocument();
+    expect(screen.queryByText(mockArtifactPanelLabel)).not.toBeInTheDocument();
   });
 });

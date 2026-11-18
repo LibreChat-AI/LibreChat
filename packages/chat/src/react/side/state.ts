@@ -1,7 +1,7 @@
 import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
 import type { TConversation } from 'librechat-data-provider';
-import type { PrimitiveAtom } from 'jotai';
+import type { Atom, PrimitiveAtom } from 'jotai';
 
 /**
  * The pane number a side chat keys its per-pane state by. Its own, so it shares none of that
@@ -17,11 +17,18 @@ export type SideChat = {
 };
 
 /**
- * Whether the page can show a side chat right now: a chat is on screen to sit beside, and the
- * deployment keeps side chats on. What offers to open one reads this, so it never offers a
- * place that is not there.
+ * The chat a side chat would sit beside: set while a chat is on screen and the deployment keeps
+ * side chats on, and replaced whenever that chat becomes another. Something that opens a side
+ * chat after a wait compares the value it started under with the one it finds, so it does not
+ * open beside a chat the reader has since left.
  */
-export const sideChatAvailableAtom: PrimitiveAtom<boolean> = atom<boolean>(false);
+export type SideChatBeside = { conversationId: string | null };
+export const sideChatBesideAtom: PrimitiveAtom<SideChatBeside | null> = atom<SideChatBeside | null>(
+  null,
+);
+
+/** Whether the page can show a side chat right now, for whatever offers to open one. */
+export const sideChatAvailableAtom: Atom<boolean> = atom((get) => get(sideChatBesideAtom) != null);
 
 /** The side chat on screen, if any. One at a time: it takes the page's side panel. */
 export const sideChatAtom: PrimitiveAtom<SideChat | null> = atom<SideChat | null>(null);

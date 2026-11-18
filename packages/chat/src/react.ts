@@ -132,7 +132,13 @@ export { useFollowedContract } from './react/chat/followed';
 export type { FollowedContractOptions } from './react/chat/followed';
 export { useDrivenContract } from './react/chat/driven';
 export type { DrivenContractOptions } from './react/chat/driven';
-export { sideChatAtom, SIDE_CHAT_PANE, sideChatAvailableAtom } from './react/side/state';
+export {
+  sideChatAtom,
+  SIDE_CHAT_PANE,
+  sideChatBesideAtom,
+  sideChatAvailableAtom,
+} from './react/side/state';
+export type { SideChatBeside } from './react/side/state';
 export type { SideChat } from './react/side/state';
 export { useSideChatHost, SideChatHostProvider } from './react/side/host';
 export type { SideChatHost } from './react/side/host';
