@@ -21,6 +21,7 @@ import {
 import { isLiveSubagentStatus, subagentStatusLabelKey } from '../../react/subagents/status';
 import { isSelfSpawn as isSelfSpawnType } from '../../react/subagents/author';
 import { parseSubagentBackgroundHandle } from '../../core/parts/handle';
+import { lastVisibleContentIdx } from '../../core/parts/activityLabels';
 import { resolveSubagentAgentId } from '../../react/subagents/identity';
 import { useOpenSubagentPanel } from '../../react/subagents/surface';
 import { useParentSubagents } from '../../react/subagents/parents';
@@ -258,13 +259,9 @@ export default function SubagentCall({
 
   /** The child's newest part: the row it is on right now. */
   const tailPart = useMemo(() => {
-    const parts = progress?.contentParts ?? [];
-    for (let index = parts.length - 1; index >= 0; index--) {
-      if (parts[index] != null) {
-        return { part: parts[index] as TMessageContentParts, index };
-      }
-    }
-    return undefined;
+    const parts = (progress?.contentParts ?? []) as TMessageContentParts[];
+    const index = lastVisibleContentIdx(parts);
+    return index < 0 ? undefined : { part: parts[index], index };
   }, [progress?.contentParts]);
 
   /** Only throttle once the live text is long enough to fill the row. Earlier updates pass
@@ -568,17 +565,20 @@ function useDetachedStatus(threadId: string, taskId: string) {
   );
 }
 
-const pickTailPart = (tail: TMessage | null): TMessageContentParts | null => {
+/**
+ * Where a reply's newest row is: its last part that draws something. A batch of tool calls ends
+ * with an empty label reservation, which draws nothing until its label arrives.
+ */
+const pickTailIndex = (tail: TMessage | null): number | null => {
   if (tail == null || tail.isCreatedByUser) return null;
-  const parts = tail.content ?? [];
-  for (let index = parts.length - 1; index >= 0; index--) {
-    const part = parts[index];
-    if (part != null) return part;
-  }
-  return null;
+  const index = lastVisibleContentIdx(tail.content);
+  return index < 0 ? null : index;
 };
 
-const pickTailLength = (tail: TMessage | null): number | null => tail?.content?.length ?? null;
+const pickTailPart = (tail: TMessage | null): TMessageContentParts | null => {
+  const index = pickTailIndex(tail);
+  return index == null ? null : (tail?.content?.[index] ?? null);
+};
 
 /**
  * A detached child's row, read from its thread's messages wherever something is following that
@@ -590,11 +590,11 @@ function DetachedPreview({ threadId, taskId }: { threadId: string; taskId: strin
   /** A running child is followed for its row; the page follows it once, with or without a panel. */
   useThreadInterest(threadId, { live: true, enabled: live, passive: true });
   const part = useBranchTailSelect(threadId, threadId, pickTailPart);
-  const length = useBranchTailSelect(threadId, threadId, pickTailLength);
+  const index = useBranchTailSelect(threadId, threadId, pickTailIndex);
   if (part == null || !live) {
     return null;
   }
-  return <SubagentPreview key={length} part={part} messageId={`${threadId}:${taskId}:preview`} />;
+  return <SubagentPreview key={index} part={part} messageId={`${threadId}:${taskId}:preview`} />;
 }
 
 function extractSubagentType(args: SubagentCallProps['args']): string {
@@ -659,7 +659,8 @@ function SubagentPreview({
           showThinking: false,
           isSubmitting: true,
           isLast: true,
-          isLatestMessage: false,
+          /** The row is live: a renderer told otherwise draws a tool still running as stopped. */
+          isLatestMessage: true,
         })}
       </div>
     </div>

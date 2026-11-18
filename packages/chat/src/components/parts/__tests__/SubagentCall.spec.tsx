@@ -123,8 +123,10 @@ const partLine = (part: object | undefined): string => {
   return toolCall?.name ?? text ?? think ?? '';
 };
 const partsHost = createMessagePartsHost({
-  renderContentParts: ({ content }) => (
-    <div data-testid="thread-row">{content.map(partLine).join('|')}</div>
+  renderContentParts: ({ content, isSubmitting, isLatestMessage }) => (
+    <div data-testid="thread-row" data-live={String(isSubmitting && isLatestMessage === true)}>
+      {content.map(partLine).join('|')}
+    </div>
   ),
 });
 
@@ -528,6 +530,8 @@ describe('SubagentCall', () => {
     const row = screen.getByTestId('thread-row');
     expect(row).toHaveTextContent('calculator');
     expect(row).not.toHaveTextContent('Working…');
+    /** Drawn as a live row, or a tool still running would read as one that was stopped. */
+    expect(row).toHaveAttribute('data-live', 'true');
     const preview = row.closest('[data-subagent-preview]');
     expect(preview).toHaveAttribute('aria-hidden', 'true');
     expect(preview).toHaveAttribute('inert');
@@ -654,6 +658,27 @@ describe('SubagentCall', () => {
           name: 'Code Reviewer com_ui_subagent_thread_status_running',
         }),
       ).toBeInTheDocument();
+    });
+
+    it('keeps the last row that draws something when an empty label reservation follows it', () => {
+      mockIndexedChildren = indexed('running');
+      seedQueries = (client) =>
+        client.setQueryData(
+          ['messages', 'child-thread-1'],
+          [
+            threadMessages[0],
+            {
+              ...threadMessages[1],
+              content: [
+                ...(threadMessages[1].content ?? []),
+                { type: 'activity_label', activity_label: '' },
+              ],
+            },
+          ],
+        );
+      mountDetached();
+
+      expect(screen.getByTestId('thread-row')).toHaveTextContent('read_file');
     });
 
     it('is not followed and shows no row once it has finished', () => {

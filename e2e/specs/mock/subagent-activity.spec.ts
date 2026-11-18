@@ -242,9 +242,12 @@ test.describe('detached subagent activity', () => {
   });
 });
 
+/** A subagent card's row is a picture of the child's thread, not part of this one: its folds
+ *  take no pointer and are not this history's to expand. */
+const NOT_A_PREVIEW = ':not([data-subagent-preview] *)';
 const HISTORY_FOLDS =
-  '[data-fold-root] > div > button[aria-expanded="false"]:visible, ' +
-  '[data-testid="activity-phase-card"] > div > div > button[aria-expanded="false"]:visible';
+  `[data-fold-root] > div > button[aria-expanded="false"]${NOT_A_PREVIEW}:visible, ` +
+  `[data-testid="activity-phase-card"] > div > div > button[aria-expanded="false"]${NOT_A_PREVIEW}:visible`;
 
 /** How long a click waits for a fold that was counted a moment ago. */
 const FOLD_CLICK_TIMEOUT_MS = 1_000;
