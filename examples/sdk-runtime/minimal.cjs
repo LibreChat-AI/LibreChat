@@ -13,7 +13,7 @@ async function createMinimalRun({
   const run = await Run.create({
     ...config,
     returnContent: true,
-    tokenCounter: () => 1,
+    tokenCounter: agent.model ? undefined : () => 1,
     graphConfig: {
       type: 'standard',
       signal,
@@ -21,11 +21,14 @@ async function createMinimalRun({
       agents: [
         {
           agentId: identity.agentId,
-          provider: Providers.OPENAI,
+          provider: agent.model?.provider ?? Providers.OPENAI,
           instructions: agent.instructions,
           tools: [],
           toolDefinitions: hostTools?.toolDefinitions,
-          clientOptions: { model: 'gpt-4.1-mini' },
+          clientOptions: {
+            model: agent.model?.name ?? 'gpt-4.1-mini',
+            streaming: agent.model?.streaming ?? true,
+          },
         },
       ],
     },

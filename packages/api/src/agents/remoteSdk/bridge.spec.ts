@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 import { tool } from '@librechat/agents/langchain/tools';
 import { ChatGenerationChunk } from '@langchain/core/outputs';
+import { agentsEndpointSchema } from 'librechat-data-provider';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
 import {
@@ -18,11 +19,15 @@ import {
   MemorySaver,
   HookRegistry,
 } from '@librechat/agents';
+import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { RunConfig } from '@librechat/agents';
 import type { AddressInfo } from 'node:net';
 import type { RemoteSdkServerOptions } from './server';
 import type { RemoteSdkFactoryInput } from './types';
+import { createSdkAgentRun, resolveSdkAgentBinding } from '../sdk';
+import { createRun as createHostRun } from '../run';
 import { createRemoteSdkServer } from './server';
+import { createSdkModelHost } from './builder';
 import { createRemoteSdkRun } from './client';
 import { createSdkPeer } from './peer';
 
@@ -1200,7 +1205,7 @@ describe('remote host provider-text protection', () => {
   });
 });
 
-it.each(['providerText', 'model'] as const)(
+it.each(['providerText', 'model', 'builderModel'] as const)(
   'rejects a worker without %s capability before factory admission',
   async (capability) => {
     const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -1215,7 +1220,11 @@ it.each(['providerText', 'model'] as const)(
         onFrame: async () => undefined,
         onCall: async (method) => {
           methods.push(method);
-          return { transportVersion: 2, hostTools: 2 };
+          return {
+            transportVersion: 2,
+            hostTools: 2,
+            ...(capability === 'builderModel' ? { hostModel: 1 } : {}),
+          };
         },
       }),
     );
@@ -1236,7 +1245,20 @@ it.each(['providerText', 'model'] as const)(
         identity,
         remote: { url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, secret },
         hostServices:
-          capability === 'providerText' ? { providerText } : { model: nativeModelBinding() },
+          capability === 'providerText'
+            ? { providerText }
+            : {
+                model: nativeModelBinding(),
+                ...(capability === 'builderModel'
+                  ? {
+                      modelProfile: {
+                        provider: Providers.OPENAI,
+                        name: 'host-native',
+                        streaming: true,
+                      },
+                    }
+                  : {}),
+              },
       });
       await expect(run.processStream({ messages: [] }, invocation())).rejects.toThrow(
         'SDK runtime execution failed',
@@ -1315,4 +1337,176 @@ it('refuses a worker factory that drops the required host model', async () => {
   } finally {
     await runtime.close();
   }
+});
+
+describe('saved-agent builder host model', () => {
+  it('uses the resolved saved-agent configuration through the production createRun path', async () => {
+    const runtime = await fixture(async (input) => {
+      const run = await factory(input);
+      run.Graph!.overrideModel = input.hostModel;
+      const context = run.Graph!.agentContexts.get(identity.agentId)!;
+      context.provider = input.agent.model!.provider;
+      context.clientOptions = {
+        model: input.agent.model!.name,
+        streaming: input.agent.model!.streaming,
+      };
+      return run;
+    });
+    try {
+      const endpoint = agentsEndpointSchema.parse({
+        sdkHostModels: {},
+        sdkRuntimes: {
+          custom: { remote: { ...runtime.remote, hostModel: true }, roles: ['ADMIN'] },
+        },
+      });
+      const native = new TestModel({});
+      native._streamResponseChunks = async function* () {
+        yield new ChatGenerationChunk({
+          text: 'builder reply',
+          message: new AIMessageChunk({ content: 'builder reply' }),
+        });
+      };
+      const initialize = jest.fn(() => native);
+      const delta = jest.fn();
+      const run = await createHostRun({
+        runId: identity.runId,
+        conversationId: identity.conversationId,
+        signal: new AbortController().signal,
+        tokenCounter: () => 1,
+        user: { id: identity.userId, role: 'ADMIN', tenantId: identity.tenantId } as IUser,
+        appConfig: { endpoints: { agents: endpoint } } as AppConfig,
+        sdkModelHost: createSdkModelHost(endpoint.sdkHostModels, initialize),
+        agents: [
+          {
+            id: identity.agentId,
+            name: 'Builder agent',
+            description: '',
+            created_at: 0,
+            avatar: null,
+            provider: Providers.OPENAI,
+            model: 'gpt-4.1',
+            model_parameters: {
+              model: 'gpt-4.1',
+              temperature: 0.25,
+              maxContextTokens: null,
+              max_context_tokens: null,
+              max_output_tokens: null,
+              top_p: null,
+              frequency_penalty: null,
+              presence_penalty: null,
+            },
+            sdk_runtime: { id: 'custom', protocolVersion: 1 },
+          },
+        ],
+        customHandlers: { [GraphEvents.ON_MESSAGE_DELTA]: { handle: delta } },
+      });
+      await run.processStream({ messages: [new HumanMessage('hello')] }, invocation());
+      expect(initialize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: Providers.OPENAI,
+          clientOptions: expect.objectContaining({ model: 'gpt-4.1', temperature: 0.25 }),
+        }),
+      );
+      expect(delta).toHaveBeenCalled();
+    } finally {
+      await runtime.close();
+    }
+  });
+  it.each([false, true])(
+    'streams the saved model with a matching worker profile (mismatch=%s)',
+    async (mismatch) => {
+      let received: RemoteSdkFactoryInput | undefined;
+      const runtime = await fixture(async (input) => {
+        received = input;
+        const run = await factory(input);
+        run.Graph!.overrideModel = input.hostModel;
+        const context = run.Graph!.agentContexts.get(identity.agentId)!;
+        context.provider = input.agent.model!.provider;
+        context.clientOptions = {
+          model: mismatch ? 'worker-model' : input.agent.model!.name,
+          streaming: input.agent.model!.streaming,
+        };
+        return run;
+      });
+      try {
+        const endpoint = agentsEndpointSchema.parse({
+          sdkHostModels: {},
+          sdkRuntimes: {
+            custom: { remote: { ...runtime.remote, hostModel: true }, roles: ['ADMIN'] },
+          },
+        });
+        const registration = resolveSdkAgentBinding(
+          [{ id: identity.agentId, sdk_runtime: { id: 'custom', protocolVersion: 1 } }],
+          endpoint,
+          'ADMIN',
+        )!;
+        const native = new TestModel({});
+        native._streamResponseChunks = async function* () {
+          yield new ChatGenerationChunk({
+            text: 'host reply',
+            message: new AIMessageChunk({ content: 'host reply' }),
+          });
+        };
+        const generate = jest.spyOn(native, '_streamResponseChunks');
+        const modelHost = createSdkModelHost(endpoint.sdkHostModels, () => native);
+        const cfg = hostConfig();
+        if (!('agents' in cfg.graphConfig)) throw new Error('Missing agent config');
+        cfg.graphConfig.agents[0].clientOptions = {
+          model: 'saved-builder-model',
+          apiKey: 'secret-never-sent',
+          temperature: 0.2,
+        };
+        const run = await createSdkAgentRun({ config: cfg, identity, registration, modelHost });
+        const promise = run.processStream({ messages: [new HumanMessage('hello')] }, invocation());
+        if (mismatch) {
+          await expect(promise).rejects.toThrow('SDK runtime execution failed');
+          expect(generate).not.toHaveBeenCalled();
+        } else {
+          await expect(promise).resolves.toBeDefined();
+          expect(generate).toHaveBeenCalled();
+          expect(run.getRunMessages()?.length).toBeGreaterThan(0);
+        }
+        expect(received!.agent.model).toEqual({
+          provider: Providers.OPENAI,
+          name: 'saved-builder-model',
+          streaming: true,
+        });
+        expect(JSON.stringify(received!.agent)).not.toContain('secret-never-sent');
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
+
+  it('keeps protected saved-agent deployments gated even with host execution enabled', () => {
+    const endpoint = agentsEndpointSchema.parse({
+      sdkRuntimes: {
+        custom: {
+          remote: { url: 'ws://localhost:9999', secret, hostModel: true },
+          roles: ['ADMIN'],
+        },
+      },
+    });
+    expect(() =>
+      resolveSdkAgentBinding(
+        [{ id: identity.agentId, sdk_runtime: { id: 'custom', protocolVersion: 1 } }],
+        endpoint,
+        'ADMIN',
+        true,
+      ),
+    ).toThrow(expect.objectContaining({ code: 'sdk_runtime_policy_unsupported' }));
+  });
+
+  it('requires the shared host owner instead of falling back to a worker-owned model', async () => {
+    await expect(
+      createSdkAgentRun({
+        config: hostConfig(),
+        identity,
+        registration: {
+          binding: { id: 'custom', protocolVersion: 1 },
+          remote: { url: 'ws://localhost:9999', secret, hostModel: true },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'sdk_runtime_unavailable' });
+  });
 });

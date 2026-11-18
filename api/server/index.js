@@ -69,6 +69,7 @@ const {
   waitForKeyvRedisClient,
   warnOnUnreachableDeliveryPaths,
   createCodeApiUploadRegistry,
+  createSdkModelHost,
   createRequestSanitizer,
   reportEndpointOverrides,
 } = require('@librechat/api');
@@ -262,6 +263,7 @@ const startServer = async () => {
   await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
   registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
+  app.locals.sdkModelHost = createSdkModelHost(appConfig?.endpoints?.agents?.sdkHostModels);
   await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
   registerBackgroundTaskShutdown({
     interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,

@@ -45,6 +45,8 @@ export async function createRemoteSdkRun({
   remote: RemoteSdkOptions;
   resumeState?: RemoteSdkResumeState;
 }): ReturnType<typeof Run.create> {
+  if (hostServices?.modelProfile && !hostServices.model)
+    throw new Error('Builder model profile requires a host model');
   if (config.clientDelegatedToolNames?.length)
     throw new Error('Remote SDK client-owned tools require a supported ownership adapter');
   if (config.providerTextProtection && !hostServices?.providerText)
@@ -455,7 +457,12 @@ export async function createRemoteSdkRun({
         checkpoint: Boolean(saver),
         humanInTheLoop: config.humanInTheLoop,
         streamLimits: config.streamLimits,
-        agent: { id: identity.agentId, name: agent?.name, instructions: agent?.instructions },
+        agent: {
+          id: identity.agentId,
+          name: agent?.name,
+          instructions: agent?.instructions,
+          model: hostServices?.modelProfile,
+        },
       };
       void (async () => {
         const capabilities = (await peer.call('capabilities', null)) as {
@@ -463,9 +470,12 @@ export async function createRemoteSdkRun({
           hostTools?: number;
           providerText?: number;
           hostModel?: number;
+          builderModel?: number;
         };
         if (capabilities?.transportVersion !== 2)
           throw new Error('Worker transport capability unavailable');
+        if (hostServices?.modelProfile && capabilities?.builderModel !== 1)
+          throw new Error('Worker builder model capability unavailable');
         if (hostServices?.model && capabilities?.hostModel !== 1)
           throw new Error('Worker host model capability unavailable');
         if (providerText && capabilities?.providerText !== 1)
