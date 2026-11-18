@@ -141,15 +141,15 @@ endpoints:
   agents:
     remoteApi:
       integrations:
-        mode: delegated # the default. `owner`: every server the key's owner can use
+        mode: delegated # default `owner`: every server the key's owner can use
         maxLifetimeHours: 168
         resources: # the servers a key may be granted, as for schedules
           warehouse: { url: ..., credentialMode: ..., issuer: ..., audience: ..., scopes: [] }
 ```
 
-`delegated` is the default. With no `resources` declared there is nothing an owner can grant,
-so every key run's MCP tools are refused; the config loader warns a deployment that uses the
-remote API about it. `mode: owner` restores the behaviour from before grants existed.
+`owner` is the default: a key run can use every MCP server its owner can, and nothing here
+applies. Under `delegated` with no `resources` declared there is nothing an owner can grant, so
+every key run's MCP tools are refused; the config loader warns about that configuration.
 
 Under `delegated`, a run started with a personal key (chat completions, Responses, and a
 background Responses worker) is put under that key's grant for the agent before any tool is

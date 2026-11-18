@@ -42,10 +42,9 @@ describe('API key grant wiring', () => {
     });
   });
 
-  it('lets a personal key run through untouched where the operator left key runs unlimited', async () => {
+  it('lets a personal key run through untouched where key runs are not limited', async () => {
     const host = require('./grants');
-    const owner = { remoteApi: { integrations: { mode: 'owner' } } };
-    for (const config of [{ endpoints: { agents: owner } }]) {
+    for (const config of [undefined, { endpoints: { agents: {} } }]) {
       getAppConfig.mockResolvedValueOnce(config);
       const req = { user: { id: 'owner', role: 'USER' } };
       await expect(

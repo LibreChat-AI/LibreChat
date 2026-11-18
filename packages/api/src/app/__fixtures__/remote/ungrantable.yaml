@@ -3,3 +3,8 @@ cache: true
 interface:
   remoteAgents:
     use: true
+endpoints:
+  agents:
+    remoteApi:
+      integrations:
+        mode: delegated

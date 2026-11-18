@@ -278,18 +278,19 @@ describe('createCustomConfigLoader retired schedule tool policy', () => {
     expect(warnings(warn)).not.toContain('readOnlyPolicy');
   });
 
-  it('tells an operator who uses the remote API that key runs have no MCP server to be granted', async () => {
+  it('tells an operator who limits key runs to grants that there is no MCP server to be granted', async () => {
     process.env.CONFIG_PATH = path.join(__dirname, '__fixtures__', 'remote', 'ungrantable.yaml');
     const config = await createLoader()(false);
 
     expect(config?.interface?.remoteAgents).toMatchObject({ use: true });
     expect(warnings(warn)).toContain('Agent API key runs cannot use MCP tools');
     expect(warnings(warn)).toContain('endpoints.agents.remoteApi.integrations.resources');
-    expect(warnings(warn)).toContain('"owner"');
+    expect(warnings(warn)).toContain('"delegated"');
   });
 
-  it.each(['declared', 'owner'])(
-    'says nothing about key runs when the %s configuration answers it',
+  // `unset` uses the remote API and leaves the mode alone: key runs are not limited there.
+  it.each(['declared', 'owner', 'unset'])(
+    'says nothing about key runs when the %s configuration leaves nothing ungrantable',
     async (name) => {
       process.env.CONFIG_PATH = path.join(__dirname, '__fixtures__', 'remote', `${name}.yaml`);
       await createLoader()(false);

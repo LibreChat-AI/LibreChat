@@ -40,10 +40,8 @@ describe('API key routes', () => {
     });
   });
 
-  it('lists keys without the grants flag where the operator left key runs unlimited', async () => {
-    getAppConfig.mockResolvedValueOnce({
-      endpoints: { agents: { remoteApi: { integrations: { mode: 'owner' } } } },
-    });
+  it('lists keys without the grants flag where key runs are not limited', async () => {
+    getAppConfig.mockResolvedValueOnce({ endpoints: { agents: {} } });
     const response = await request(app).get('/api/api-keys');
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ keys: mockKeys });

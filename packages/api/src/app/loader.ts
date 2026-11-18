@@ -159,21 +159,15 @@ function reportRetiredScheduleToolPolicy(configPath: string, config: unknown): v
 }
 
 /**
- * API key runs may use only the MCP tools the key's owner granted, and an owner can grant only
- * servers the operator declared. A deployment that uses the remote API and declares none has
- * every key run's MCP tools refused with nothing to grant, so its operator is told how to
- * declare them or how to keep the earlier behaviour.
+ * Under `delegated`, an API key run may use only the MCP tools the key's owner granted, and an
+ * owner can grant only servers the operator declared. An operator who chooses that mode and
+ * declares none has every key run's MCP tools refused with nothing to grant, so they are told.
  */
 function reportUngrantableKeyRuns(configPath: string, config: unknown): void {
   const root = config as {
-    interface?: { remoteAgents?: unknown };
     endpoints?: { agents?: { remoteApi?: { integrations?: unknown } } };
   } | null;
-  const remoteApi = root?.endpoints?.agents?.remoteApi;
-  if (root?.interface?.remoteAgents == null && remoteApi == null) {
-    return;
-  }
-  const integrations = remoteApi?.integrations as
+  const integrations = root?.endpoints?.agents?.remoteApi?.integrations as
     | { mode?: unknown; resources?: unknown }
     | null
     | undefined;
@@ -181,15 +175,15 @@ function reportUngrantableKeyRuns(configPath: string, config: unknown): void {
     integrations?.resources != null &&
     typeof integrations.resources === 'object' &&
     Object.keys(integrations.resources).length > 0;
-  if (integrations?.mode === 'owner' || declared) {
+  if (integrations?.mode !== 'delegated' || declared) {
     return;
   }
   logger.warn(
-    `Agent API key runs cannot use MCP tools with the configuration in ${configPath}: a key may ` +
-      'use only the servers and tools its owner granted it, and no server is declared under ' +
+    `Agent API key runs cannot use MCP tools with the configuration in ${configPath}: ` +
+      'endpoints.agents.remoteApi.integrations.mode is "delegated", so a key may use only the ' +
+      'servers and tools its owner granted it, and no server is declared under ' +
       'endpoints.agents.remoteApi.integrations.resources. Declare the servers keys may be ' +
-      'granted, or set endpoints.agents.remoteApi.integrations.mode to "owner" to let a key ' +
-      'use every server its owner can, as before.',
+      'granted, or remove the mode to let a key use every server its owner can.',
   );
 }
 
