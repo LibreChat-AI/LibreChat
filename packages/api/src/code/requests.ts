@@ -11,6 +11,25 @@ interface RequestStatus {
 /** A failed body read is transport uncertainty, not malformed application data. */
 export class WorkspaceResponseTransportError extends Error {}
 
+/** Most of an admission window a lost submission may hold back for its same-ID resend. */
+const RESUBMISSION_WINDOW_SHARE = 0.1;
+
+/**
+ * Admission a submission leaves unclaimed so a lost POST can be resent under the same
+ * fingerprint without the resend's window running past the original one: long enough
+ * for a timed-out POST, the lookup that misses it, and the poll between them.
+ */
+function resubmissionWindowMs(
+  available: number,
+  transportTimeoutMs: number,
+  pollIntervalMs: number,
+): number {
+  return Math.min(
+    2 * transportTimeoutMs + pollIntervalMs,
+    Math.floor(available * RESUBMISSION_WINDOW_SHARE),
+  );
+}
+
 export interface DurableWorkspaceTransport<TRequest, TResult> {
   baseURL: string;
   request: TRequest;
@@ -118,10 +137,15 @@ export async function executeDurableWorkspaceRequest<TRequest, TResult>(
       const available = Math.floor(options.deadlineAtMs - Date.now() - options.completionReserveMs);
       if (submissionQueueWaitMs === undefined) {
         if (available < 1) throw options.insufficient();
-        submissionQueueWaitMs = Math.min(options.queueWaitMs, available);
+        submissionQueueWaitMs = Math.min(
+          options.queueWaitMs,
+          available -
+            resubmissionWindowMs(available, options.transportTimeoutMs, options.pollIntervalMs),
+        );
       } else if (available < submissionQueueWaitMs) {
         // Same-ID resubmission must keep its fingerprint without extending admission.
-        // A delayed first POST may still commit. Keep observing it until Stop/deadline.
+        // Past the reserved window, a delayed first POST may still commit. Keep
+        // observing it until Stop/deadline.
         return;
       }
       submissionStarted = true;
