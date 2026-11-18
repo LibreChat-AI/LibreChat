@@ -12,6 +12,7 @@ import {
   skipMissingAttachment,
   getAudioFormat,
   getFileStream,
+  getConfiguredFileSizeLimit,
   isConfiguredProviderMediaType,
 } from './utils';
 import { outboundRequestBudget } from '~/utils/timeouts';
@@ -228,6 +229,33 @@ describe('getFileStream with a read budget', () => {
 /** Uses the real data-provider merge logic so the "inherited default" identity check is exercised. */
 const reqWith = (fileConfig: unknown): ServerRequest =>
   ({ config: fileConfig === undefined ? undefined : { fileConfig } }) as unknown as ServerRequest;
+
+describe('getConfiguredFileSizeLimit', () => {
+  const params = { provider: Providers.BEDROCK };
+
+  it('is undefined without any fileConfig', () => {
+    expect(getConfiguredFileSizeLimit(reqWith(undefined), params)).toBeUndefined();
+  });
+
+  it('reports the inherited default as a limit unless only an explicit one is asked for', () => {
+    const req = reqWith({ endpoints: { default: { fileLimit: 3 } } });
+    expect(getConfiguredFileSizeLimit(req, params)).toBe(512 * 1024 * 1024);
+    expect(getConfiguredFileSizeLimit(req, { ...params, explicit: true })).toBeUndefined();
+  });
+
+  it.each([
+    ['its own endpoint', { endpoints: { [Providers.BEDROCK]: { fileSizeLimit: 10 } } }],
+    ['the default endpoint', { endpoints: { default: { fileSizeLimit: 10 } } }],
+  ])('returns a limit the operator set on %s', (_name, fileConfig) => {
+    const req = reqWith(fileConfig);
+    expect(getConfiguredFileSizeLimit(req, { ...params, explicit: true })).toBe(10 * 1024 * 1024);
+  });
+
+  it('keeps a disabled endpoint at zero', () => {
+    const req = reqWith({ endpoints: { [Providers.BEDROCK]: { disabled: true } } });
+    expect(getConfiguredFileSizeLimit(req, { ...params, explicit: true })).toBe(0);
+  });
+});
 
 describe('isConfiguredProviderMediaType', () => {
   const params = { provider: Providers.OPENAI, endpoint: 'MyGateway' };

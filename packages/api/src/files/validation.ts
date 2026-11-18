@@ -182,9 +182,8 @@ const isExemptFromBedrockDocLimit = (model?: string, mimeType?: string): boolean
 };
 
 /**
- * The most Bedrock accepts for one document of this type on this model. A configured limit can
- * lower it and never raise it: the merged file config always carries a size limit, 512 MB by
- * default, so preferring it meant Bedrock's own limit never applied.
+ * The size limit for one Bedrock document of this type on this model: the operator's limit when
+ * one is set, otherwise Bedrock's own. Known before anything is read, so it also bounds the read.
  */
 export function getBedrockDocumentLimit(
   mimeType: string,
@@ -195,9 +194,7 @@ export function getBedrockDocumentLimit(
   const providerLimit = isExemptFromBedrockDocLimit(model, mimeType)
     ? mbToBytes(32)
     : mbToBytes(4.5);
-  return configuredFileSizeLimit == null
-    ? providerLimit
-    : Math.min(configuredFileSizeLimit, providerLimit);
+  return configuredFileSizeLimit ?? providerLimit;
 }
 
 /**

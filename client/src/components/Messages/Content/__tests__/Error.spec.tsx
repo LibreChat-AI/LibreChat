@@ -174,6 +174,15 @@ describe('LibreChat attachment limits', () => {
     expect(screen.getByText(detail)).toBeVisible();
   });
 
+  it('does not blame the provider for a file over the size limit for its model', () => {
+    const detail =
+      'The attached file "big.csv" is over the 4.5 MB limit for a file sent to this model. Remove it or attach a smaller file, then try again.';
+    renderError(detail, providerMessage);
+    expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+    expect(screen.queryByText('OpenAI could not complete this request.')).not.toBeInTheDocument();
+    expect(screen.getByText(detail)).toBeVisible();
+  });
+
   it.each(['attachment count', 'total attachment size', 'extracted document text'])(
     'does not blame the provider for the local %s limit',
     (label) => {

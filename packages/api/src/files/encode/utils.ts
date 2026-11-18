@@ -24,7 +24,10 @@ export class AttachmentObjectNotFoundError extends Error {
   }
 }
 
-/** One attachment is larger than the model it is going to accepts. */
+/**
+ * One attachment is larger than the limit for the model it is going to. The client recognizes the
+ * opening words (`ProviderError.tsx`) and shows this under its localized attachment-limit headline.
+ */
 export class AttachmentSizeError extends Error {
   readonly code = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
   readonly status = 413;
@@ -37,7 +40,7 @@ export class AttachmentSizeError extends Error {
   ) {
     const megabytes = Number((limit / (1024 * 1024)).toFixed(1));
     super(
-      `The attached file "${filename ?? 'attachment'}" is over the ${megabytes} MB this model accepts for one file. Remove it or attach a smaller file, then try again.`,
+      `The attached file "${filename ?? 'attachment'}" is over the ${megabytes} MB limit for a file sent to this model. Remove it or attach a smaller file, then try again.`,
     );
     this.name = 'AttachmentSizeError';
   }
@@ -173,6 +176,10 @@ export function isStorageNotFoundError(error: unknown): boolean {
  * @param params - Object containing provider and optional endpoint
  * @param params.provider - The provider to get the limit for
  * @param params.endpoint - Optional endpoint name for lookup
+ * @param params.explicit - Return a limit only when the operator set one. Merging fills every
+ * endpoint with the built-in default, so without this any `fileConfig` section yields a limit and
+ * a caller that prefers it over a provider's own limit never applies the provider's. A limit set
+ * to exactly the built-in default reads as inherited.
  * @returns The configured file size limit in bytes, or undefined if not configured
  */
 export const getConfiguredFileSizeLimit = (
@@ -180,18 +187,23 @@ export const getConfiguredFileSizeLimit = (
   params: {
     provider: Providers;
     endpoint?: string;
+    explicit?: boolean;
   },
 ): number | undefined => {
   if (!req.config?.fileConfig) {
     return undefined;
   }
-  const { provider, endpoint } = params;
+  const { provider, endpoint, explicit } = params;
   const fileConfig = mergeFileConfig(req.config.fileConfig);
   const endpointConfig = getEndpointFileConfig({
     fileConfig,
     endpoint: endpoint ?? provider,
   });
-  return endpointConfig?.fileSizeLimit;
+  const limit = endpointConfig?.fileSizeLimit;
+  if (explicit && limit === getEndpointFileConfig({}).fileSizeLimit) {
+    return undefined;
+  }
+  return limit;
 };
 
 /**

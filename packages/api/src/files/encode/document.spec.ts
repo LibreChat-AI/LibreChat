@@ -582,7 +582,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
     });
 
     it('refuses a Bedrock document over the limit from its recorded size, without reading it', async () => {
-      const req = createMockRequest(512, Providers.BEDROCK) as ServerRequest;
+      const req = createMockRequest() as ServerRequest;
       const file = createMockFile(8);
       file.type = 'text/csv';
 
@@ -595,10 +595,14 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
         ),
       ).rejects.toBeInstanceOf(AttachmentSizeError);
       expect(mockedGetFileStream).not.toHaveBeenCalled();
+      expect(mockedGetConfiguredFileSizeLimit).toHaveBeenCalledWith(
+        req,
+        expect.objectContaining({ explicit: true }),
+      );
     });
 
     it('bounds the Bedrock read at the limit and reports an object larger than its record', async () => {
-      const req = createMockRequest(512, Providers.BEDROCK) as ServerRequest;
+      const req = createMockRequest() as ServerRequest;
       const file = createMockFile(1);
       file.type = 'text/csv';
       const limit = mbToBytes(4.5);
@@ -615,6 +619,45 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
         ),
       ).rejects.toBeInstanceOf(AttachmentSizeError);
       expect(mockedGetFileStream.mock.calls[0][5]).toBe(limit);
+    });
+
+    it('reads a Bedrock document up to a limit the operator set above the provider default', async () => {
+      const req = createMockRequest(10, Providers.BEDROCK) as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('a,b').toString('base64'),
+        metadata: file,
+      });
+      mockedValidateBedrockDocument.mockResolvedValue({ isValid: true });
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.BEDROCK },
+        mockStrategyFunctions,
+      );
+      expect(result.documents).toHaveLength(1);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(mbToBytes(10));
+    });
+
+    it('leaves out a replayed Bedrock document that is gone, whatever size was recorded', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+      const onMissingFile = jest.fn();
+      mockedGetFileStream.mockRejectedValue(new AttachmentObjectNotFoundError(file.file_id));
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.BEDROCK, onMissingFile },
+        mockStrategyFunctions,
+      );
+      expect(result.documents).toHaveLength(0);
+      expect(onMissingFile).toHaveBeenCalledWith(file);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(mbToBytes(4.5));
     });
 
     it('leaves reads for other providers unbounded', async () => {

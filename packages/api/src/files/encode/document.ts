@@ -350,13 +350,23 @@ export async function encodeAndFormatDocuments(
     return result;
   }
 
-  const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, { provider, endpoint });
+  /** For Bedrock only a limit the operator set counts, so the inherited 512 MB cannot stand in for it. */
+  const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, {
+    provider,
+    endpoint,
+    explicit: isBedrock,
+  });
 
   /** Bedrock's limit per document, known before anything is read. Other providers read unbounded. */
   const readLimits = processableFiles.map((file) =>
     isBedrock ? getBedrockDocumentLimit(file.type, configuredFileSizeLimit, model) : undefined,
   );
-  for (const [index, file] of processableFiles.entries()) {
+  /**
+   * A file attached this turn is refused from its recorded size, before storage is opened. Replayed
+   * history skips this: an object that is gone has to be reported missing and left out, and the
+   * bounded read still refuses one that is present.
+   */
+  for (const [index, file] of onMissingFile ? [] : processableFiles.entries()) {
     const limit = readLimits[index];
     if (limit != null && (file.bytes ?? 0) > limit) {
       throw new AttachmentSizeError(file.file_id, file.filename, limit);
