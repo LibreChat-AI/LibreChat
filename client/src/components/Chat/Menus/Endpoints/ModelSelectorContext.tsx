@@ -1,7 +1,11 @@
 import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
 import debounce from 'lodash/debounce';
-import { Constants, EModelEndpoint, PermissionBits, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
-import { useToastContext } from '@librechat/client';
+import {
+  EModelEndpoint,
+  PermissionBits,
+  isAgentsEndpoint,
+  isAssistantsEndpoint,
+} from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
 import type { Endpoint, SelectedValues } from '~/common';
 import {
@@ -16,10 +20,8 @@ import { useGetEndpointsQuery, useListAgentsQuery } from '~/data-provider';
 import { useModelSelectorChatContext } from './ModelSelectorChatContext';
 import useWarnModelLocked from '~/hooks/Input/useWarnModelLocked';
 import useSelectMention from '~/hooks/Input/useSelectMention';
-import { useCatalogReady } from '~/hooks/useCatalogWarmup';
-import useModelSpecs from '~/hooks/Agents/specs';
 import useIsModelLocked from '~/hooks/Input/useIsModelLocked';
-
+import { useCatalogReady } from '~/hooks/useCatalogWarmup';
 import { filterItems } from './utils';
 
 type ModelSelectorContextType = {
