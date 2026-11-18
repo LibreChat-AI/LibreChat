@@ -18,6 +18,7 @@ import {
 } from '../encode/utils';
 import { BedrockDocumentError, assertBedrockSize, clampBedrockLimit } from './limits';
 import { getSafeErrorMetadata, isOwnedAbortError } from '~/utils/errors';
+import { steerContentDigest, validateSteerMedia } from './owners';
 import { configuredRequestBudget } from '~/utils/timeouts';
 import { getBedrockDocumentLimit } from '../validation';
 import { resolveDownloadPath } from '~/storage/path';
@@ -60,14 +61,16 @@ export class BedrockDocumentContext {
     string,
     {
       context: BedrockDocumentContext;
-      repair: () => Promise<void>;
+      repair: (owner: StoredSteerOwner) => Promise<void>;
+      binding?: StoredSteerOwner;
       pending?: Promise<void>;
+      retry?: () => Promise<void>;
       repaired: boolean;
     }
   >();
 
-  private readonly repairedSteers = new Set<string>();
-  private readonly storedSteers = new Map<string, ReadonlySet<string>>();
+  private readonly storedSteers = new Map<string, StoredSteerOwner>();
+  private readonly references = new WeakMap<object, { fileId: string; owner?: string }>();
 
   constructor(private readonly req: ServerRequest) {}
 
@@ -95,9 +98,14 @@ export class BedrockDocumentContext {
         recipientId,
         registration,
       );
-      return this.steerRepairs.has(admissionId)
+      const owned = this.steerRepairs.has(admissionId)
         ? { ...reference, librechatSteer: admissionId }
         : reference;
+      this.references.set(owned, {
+        fileId: file.file_id,
+        owner: this.steerRepairs.has(admissionId) ? admissionId : undefined,
+      });
+      return owned;
     }
     if (!file.file_id) throw new BedrockDocumentError();
     const config = mergeFileConfig(this.req.config?.fileConfig);
@@ -135,15 +143,17 @@ export class BedrockDocumentContext {
           : (onMissingFile ?? existing?.onMissingFile),
     });
     this.files.set(file.file_id, entry);
-    return { librechatFile: file.file_id };
+    const reference = { librechatFile: file.file_id };
+    this.references.set(reference, { fileId: file.file_id });
+    return reference;
   }
 
   prepareAdmission(
     id: string,
     admission: BedrockDocumentContext,
-    repair?: () => Promise<void>,
+    repair?: (owner: StoredSteerOwner) => Promise<void>,
   ): () => void {
-    if (this.admissions.has(id)) throw new BedrockDocumentError();
+    if (this.admissions.has(id) || this.steerRepairs.has(id)) throw new BedrockDocumentError();
     return () => {
       this.admissions.set(id, admission);
       if (repair) this.steerRepairs.set(id, { context: admission, repair, repaired: false });
@@ -177,14 +187,68 @@ export class BedrockDocumentContext {
   }
 
   rememberOwners(owners: readonly StoredSteerOwner[]): void {
-    for (const owner of owners) {
-      this.storedSteers.set(owner.steerId, new Set(owner.fileIds));
-      if (owner.fileIds.length === 0) this.repairedSteers.add(owner.steerId);
+    for (const owner of owners) this.storedSteers.set(owner.steerId, owner);
+  }
+
+  bindSteer(
+    id: string,
+    content: unknown,
+    sourceMessageId: string,
+    partIndex: number,
+    files?: readonly { file_id?: string }[],
+  ): StoredSteerOwner | undefined {
+    const owner = this.steerRepairs.get(id);
+    if (!owner) return undefined;
+    if (!Array.isArray(content)) throw new BedrockDocumentError();
+    for (const part of content) {
+      const source = part?.document?.source;
+      if (!source) continue;
+      const bound = this.references.get(source);
+      if (!bound || bound.owner !== id || bound.fileId !== source.librechatFile)
+        throw new BedrockDocumentError();
+      source.librechatSteerSource = sourceMessageId;
+      source.librechatSteerPart = partIndex;
     }
+    owner.binding = {
+      steerId: id,
+      sourceMessageId,
+      partIndex,
+      fileIds: files
+        ? files.flatMap((file) => (file.file_id ? [file.file_id] : []))
+        : [...owner.context.files.keys()],
+      digest: steerContentDigest(content),
+      repaired: false,
+    };
+    return owner.binding;
+  }
+
+  validateReference(source: object): void {
+    const claim = source as Record<string, unknown>,
+      bound = this.references.get(source);
+    if (bound && (bound.fileId !== claim.librechatFile || bound.owner !== claim.librechatSteer))
+      throw new BedrockDocumentError();
+  }
+
+  sourceOwner(source: object, content: unknown): StoredSteerOwner | undefined {
+    this.validateReference(source);
+    const claim = source as Record<string, unknown>;
+    if (typeof claim.librechatSteer !== 'string') return undefined;
+    if (Array.isArray(content))
+      for (const part of content) {
+        const ref = part?.document?.source;
+        if (ref) this.validateReference(ref);
+      }
+    const live = this.steerRepairs.get(claim.librechatSteer);
+    const binding = live?.binding
+      ? { ...live.binding, repaired: live.repaired }
+      : this.storedSteers.get(claim.librechatSteer);
+    return validateSteerMedia(content, binding ? [binding] : []);
   }
 
   isSteerRepaired(id: string): boolean {
-    return this.repairedSteers.has(id) || this.steerRepairs.get(id)?.repaired === true;
+    return (
+      this.steerRepairs.get(id)?.repaired === true || this.storedSteers.get(id)?.repaired === true
+    );
   }
 
   ownsSteer(
@@ -196,7 +260,7 @@ export class BedrockDocumentContext {
   ): boolean {
     const owner = this.steerRepairs.get(id);
     if (!owner) {
-      if (!this.storedSteers.get(id)?.has(fileId)) throw new BedrockDocumentError();
+      if (!this.storedSteers.get(id)?.fileIds.includes(fileId)) throw new BedrockDocumentError();
       return false;
     }
     if (!owner.context.localPolicy(fileId, model, endpoint, recipientId))
@@ -217,26 +281,34 @@ export class BedrockDocumentContext {
     if (!owner.context.localPolicy(fileId, model, endpoint, recipientId))
       throw new BedrockDocumentError();
     signal?.throwIfAborted();
-    owner.pending ??= Promise.resolve()
-      .then(owner.repair)
-      .then(
-        () => {
-          owner.repaired = true;
-          this.repairedSteers.add(id);
-          this.admissions.delete(id);
-        },
-        (error: unknown) => {
-          logger.warn('[BedrockDocument] Steer repair failed', getSafeErrorMetadata(error));
-          throw new Error('Steer attachment recovery failed. Please retry.');
-        },
-      );
-    await owner.pending;
+    owner.retry ??= () => {
+      owner.pending = Promise.resolve()
+        .then(() => {
+          if (!owner.binding) throw new BedrockDocumentError();
+          return owner.repair(owner.binding);
+        })
+        .then(
+          () => {
+            owner.repaired = true;
+            this.admissions.delete(id);
+          },
+          (error: unknown) => {
+            owner.pending = undefined;
+            logger.warn('[BedrockDocument] Steer repair failed', getSafeErrorMetadata(error));
+            throw new Error('Steer attachment recovery failed. Please retry.');
+          },
+        );
+      return owner.pending;
+    };
+    await (owner.pending ?? owner.retry());
     signal?.throwIfAborted();
     return true;
   }
 
   async waitForSteerRepair(id: string): Promise<boolean> {
-    await this.steerRepairs.get(id)?.pending;
+    const owner = this.steerRepairs.get(id);
+    if (owner?.retry && !owner.repaired) await (owner.pending ?? owner.retry());
+    else await owner?.pending;
     return this.isSteerRepaired(id);
   }
 
@@ -432,7 +504,7 @@ export function prepareBedrockSteerDocuments(
   getStrategyFunctions: RegisteredDocument['getStrategyFunctions'],
   steerId?: string,
   endpoints?: ReadonlyMap<string, { endpoint?: string | null }>,
-  repair?: () => Promise<void>,
+  repair?: (owner: StoredSteerOwner) => Promise<void>,
 ): () => void {
   const documents = files.filter(
     (file) => isBedrockDocumentType(file.type) && (file.filepath || file.storageKey),
@@ -470,4 +542,15 @@ export function restoreBedrockSteerOwners(
   owners?: readonly StoredSteerOwner[],
 ): void {
   if (owners?.length) getBedrockDocumentContext(req).rememberOwners(owners);
+}
+
+export function bindBedrockSteerSource(
+  req: ServerRequest,
+  id: string,
+  content: unknown,
+  sourceMessageId: string,
+  partIndex: number,
+  files?: readonly { file_id?: string }[],
+): StoredSteerOwner | undefined {
+  return contexts.get(req)?.bindSteer(id, content, sourceMessageId, partIndex, files);
 }

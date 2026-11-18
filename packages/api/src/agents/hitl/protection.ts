@@ -52,7 +52,11 @@ import {
   getContentTraversalFragments,
   isContentTraversalProtected,
 } from '~/protection/adapters/nested';
-import { collectStoredSteerOwners, withoutRepairedSteerMedia } from '~/files/bedrock/owners';
+import {
+  collectStoredSteerOwners,
+  withoutRepairedSteerMedia,
+  steerReference,
+} from '~/files/bedrock/owners';
 import { getResumeAgentSnapshot, getResumeContentInspection } from './inspection';
 import { extractStoredMessageContent } from '~/protection/adapters/submissions';
 import { agentHasInlineMemoryTools, getMemoryAgentId } from '../memory';
@@ -109,6 +113,7 @@ interface ResumeCheckpointMessage {
   readonly file_ids?: readonly string[];
   readonly metadata?: object;
   readonly additional_kwargs?: {
+    readonly source?: string;
     readonly skillName?: string;
     readonly sourceMessageId?: string;
     readonly sourceMessageIds?: readonly string[];
@@ -1022,6 +1027,12 @@ export async function assertResumeRuntimeContentAllowed(
       .flatMap((message) => {
         const additionalKwargs = message.additional_kwargs;
         return [
+          ...(Array.isArray(message.content)
+            ? message.content.flatMap((part) => {
+                const ref = steerReference(part);
+                return ref?.sourceMessageId ? [ref.sourceMessageId] : [];
+              })
+            : []),
           additionalKwargs?.sourceMessageId,
           ...(Array.isArray(additionalKwargs?.sourceMessageIds)
             ? additionalKwargs.sourceMessageIds
@@ -1084,19 +1095,16 @@ export async function assertResumeRuntimeContentAllowed(
   if (unresolvedSourceMessageId != null) {
     throw new Error('A checkpoint source message is no longer available');
   }
-  const storedSteerOwners = collectStoredSteerOwners([...input.storedMessages, ...sourceMessages]);
-  const repairedSteers = new Set(
-    storedSteerOwners.filter((owner) => owner.fileIds.length === 0).map((owner) => owner.steerId),
-  );
+  const storedSteerOwners = collectStoredSteerOwners(sourceMessages);
   const checkpointFileInputs = [
     ...checkpointMessages.map((message) => ({
       files: message.files,
-      content: withoutRepairedSteerMedia(message.content, repairedSteers),
+      content: withoutRepairedSteerMedia(message.content, storedSteerOwners, {
+        kind: message.additional_kwargs?.source,
+        sourceMessageId: message.additional_kwargs?.sourceMessageId,
+      }),
     })),
-    ...sourceMessages.map((message) => ({
-      files: message.files,
-      content: withoutRepairedSteerMedia(message.content, repairedSteers),
-    })),
+    ...sourceMessages.map((message) => ({ files: message.files, content: message.content })),
   ] as ResumeContentInspectionInput['supplementalMessages'];
   const nonSteerCheckpointFileIds = collectModelBoundHistoricalFileIdState(
     checkpointFileInputs.map((message) => ({

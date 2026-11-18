@@ -4,6 +4,7 @@ import { ContentTypes } from 'librechat-data-provider';
 import type { TFile, TurnFileConsumers } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { SteerQueueItem } from '~/stream/interfaces/IJobStore';
+import type { StoredSteerOwner } from '~/files/bedrock/owners';
 import type { SteerFileFetcher } from './request';
 import type { SteerMediaResult } from './runtime';
 import type { SteerRequestUser } from './refs';
@@ -352,7 +353,11 @@ export async function repairSteerAttachmentRefs({
   publish,
   commit,
   rollback,
+  receipt,
+  sourceMessageId,
 }: {
+  receipt?: StoredSteerOwner;
+  sourceMessageId?: string;
   applied?: { index: number; part: SteerPart };
   publish: (part: SteerPart) => Promise<void>;
   commit: (applied: { index: number; part: SteerPart }) => void;
@@ -363,9 +368,44 @@ export async function repairSteerAttachmentRefs({
     rollback();
     return;
   }
-  const part = { ...applied.part };
+  if (
+    receipt &&
+    (receipt.sourceMessageId !== sourceMessageId ||
+      receipt.partIndex !== applied.index ||
+      receipt.steerId !== applied.part.steerId ||
+      !receipt.fileIds.every((id) => applied.part.files?.some((file) => file.file_id === id)))
+  )
+    throw new Error('Invalid steer repair ownership');
+  const part = {
+    ...applied.part,
+    ...(receipt && { bedrockSource: receipt, bedrockRepaired: true }),
+  };
   delete part.files;
   await publish(part);
   commit({ index: applied.index, part });
   rollback();
+}
+
+export async function publishSteerSource({
+  binding,
+  applied,
+  publish,
+  commit,
+}: {
+  binding?: StoredSteerOwner;
+  applied?: { index: number; part: SteerPart };
+  publish: (part: SteerPart) => Promise<void>;
+  commit: (value: { index: number; part: SteerPart }) => void;
+}): Promise<void> {
+  if (!binding) return;
+  if (
+    !applied ||
+    applied.index !== binding.partIndex ||
+    applied.part.steerId !== binding.steerId ||
+    !binding.fileIds.every((id) => applied.part.files?.some((file) => file.file_id === id))
+  )
+    throw new Error('Invalid steer source ownership');
+  const part = { ...applied.part, bedrockSource: binding };
+  await publish(part);
+  commit({ index: applied.index, part });
 }

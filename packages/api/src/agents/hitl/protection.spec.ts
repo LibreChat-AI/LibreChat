@@ -9,6 +9,7 @@ import {
   isModelBoundAttachmentFile,
 } from '../attachments';
 import { assertResumeContentAllowed, assertResumeRuntimeContentAllowed } from './protection';
+import { steerContentDigest } from '~/files/bedrock/owners';
 
 const user = {
   id: 'user-1',
@@ -858,3 +859,98 @@ describe('assertResumeRuntimeContentAllowed', () => {
     });
   });
 });
+
+it.each(['valid', 'foreign-file', 'mixed-current', 'conflicting-id'])(
+  'validates acknowledged source/file ownership in actual resume projection: %s',
+  async (variant) => {
+    const original = [
+      { type: 'text', text: 'steer words' },
+      {
+        type: 'document',
+        document: {
+          name: 'doc',
+          format: 'pdf',
+          source: {
+            librechatFile: 'history',
+            librechatSteer: 's',
+            librechatSteerSource: 'source',
+            librechatSteerPart: 0,
+          },
+        },
+      },
+    ];
+    const receipt = {
+      sourceMessageId: 'source',
+      partIndex: 0,
+      fileIds: ['history'],
+      digest: steerContentDigest(original),
+    };
+    const source = {
+      messageId: 'source',
+      isCreatedByUser: false,
+      content: [
+        {
+          type: 'steer',
+          steerId: 's',
+          steer: 'steer words',
+          bedrockSource: receipt,
+          bedrockRepaired: true,
+        },
+      ],
+    };
+    let content: Array<Record<string, unknown>> = original;
+    if (variant === 'foreign-file')
+      content = [
+        original[0],
+        {
+          type: 'document',
+          document: {
+            name: 'doc',
+            format: 'pdf',
+            source: {
+              librechatFile: 'current',
+              librechatSteer: 's',
+              librechatSteerSource: 'source',
+              librechatSteerPart: 0,
+            },
+          },
+        },
+      ];
+    else if (variant === 'mixed-current')
+      content = [
+        ...original,
+        {
+          type: 'document',
+          file_id: 'current',
+          document: { name: 'current', format: 'pdf', source: { librechatFile: 'current' } },
+        },
+      ];
+    if (variant === 'conflicting-id')
+      content = [original[0], { ...original[1], file_id: 'untrusted-current' }];
+    const deps = createDependencies();
+    deps.getAgentCheckpointer.mockResolvedValue({
+      getTuple: async () => ({
+        checkpoint: {
+          channel_values: {
+            messages: [
+              {
+                role: 'human',
+                additional_kwargs: { source: 'steer', sourceMessageId: 'source' },
+                content,
+              },
+            ],
+          },
+        },
+      }),
+    });
+    const promise = assertResumeRuntimeContentAllowed(
+      { ...createInput({}), storedMessages: [source], isTemporary: false },
+      deps,
+    );
+    if (variant === 'valid') {
+      const projection = await promise;
+      expect(projection.checkpointFiles).toEqual([]);
+      expect(deps.getFiles).not.toHaveBeenCalled();
+    } else await expect(promise).rejects.toThrow();
+  },
+);

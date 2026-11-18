@@ -7,6 +7,7 @@ export * from './utils';
 export {
   registerBedrockResumeDocuments,
   restoreBedrockSteerOwners,
+  bindBedrockSteerSource,
   prepareBedrockSteerDocuments,
   settleBedrockSteerDocuments,
 } from '../bedrock/context';

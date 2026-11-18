@@ -111,6 +111,7 @@ const {
   isSteerTerminalContinuationSupported,
   buildSteerMedia,
   repairSteerAttachmentRefs,
+  publishSteerSource,
   collectSteerStampTargets,
   stampSteerPartMedia,
   createActivityLabelWiring,
@@ -156,6 +157,7 @@ const {
   dedupeDocumentNames,
   registerBedrockResumeDocuments,
   restoreBedrockSteerOwners,
+  bindBedrockSteerSource,
   prepareBedrockSteerDocuments,
   settleBedrockSteerDocuments,
   processTextWithTokenLimit,
@@ -939,9 +941,11 @@ class AgentClient extends BaseClient {
     }
   }
 
-  async stripSteerAttachmentRefs(streamId, item) {
+  async stripSteerAttachmentRefs(streamId, item, receipt) {
     return repairSteerAttachmentRefs({
       applied: this.appliedSteerParts.get(item.steerId),
+      receipt,
+      sourceMessageId: this.responseMessageId,
       publish: (part) =>
         GenerationJobManager.emitChunk(
           streamId,
@@ -1022,6 +1026,37 @@ class AgentClient extends BaseClient {
             this.admitSteerAttachments(files, item.steerId, () =>
               this.stripSteerAttachmentRefs(streamId, item),
             ),
+        });
+        const binding = bindBedrockSteerSource(
+          this.options.req,
+          item.steerId,
+          media?.content,
+          this.responseMessageId,
+          this.appliedSteerParts.get(item.steerId)?.index,
+          this.appliedSteerParts.get(item.steerId)?.part.files,
+        );
+        await publishSteerSource({
+          binding,
+          applied: this.appliedSteerParts.get(item.steerId),
+          publish: (part) =>
+            GenerationJobManager.emitChunk(
+              streamId,
+              {
+                event: SteerEvents.ON_STEER_APPLIED,
+                data: {
+                  steerId: item.steerId,
+                  index: this.appliedSteerParts.get(item.steerId).index,
+                  part,
+                  responseMessageId: this.responseMessageId,
+                  conversationId: this.conversationId,
+                },
+              },
+              { durable: true, expectedCreatedAt: this.jobCreatedAt },
+            ),
+          commit: (value) => {
+            this.contentParts[value.index] = value.part;
+            this.appliedSteerParts.set(item.steerId, value);
+          },
         });
         settleBedrockSteerDocuments(this.options.req, item.steerId, true);
         return media;

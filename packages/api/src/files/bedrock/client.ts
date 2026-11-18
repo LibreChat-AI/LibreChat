@@ -136,6 +136,7 @@ export async function withBedrockDocuments<T>(
   let visited = 0;
   let messageIndex = 0;
   const repairedMessages = new Map<number, string>();
+  const validatedOwners = new Map<number, ReturnType<BedrockDocumentContext['sourceOwner']>>();
   const clone = (parts: ContentBlock[] | undefined, depth = 0): ContentBlock[] | undefined => {
     if (!parts) return parts;
     if (!Array.isArray(parts)) throw new BedrockDocumentError();
@@ -174,7 +175,15 @@ export async function withBedrockDocuments<T>(
           'librechatSteer' in ref && typeof ref.librechatSteer === 'string'
             ? ref.librechatSteer
             : undefined;
-        if (claimedOwner && context?.isSteerRepaired(claimedOwner)) {
+        context?.validateReference(ref);
+        if (claimedOwner && !validatedOwners.has(messageIndex))
+          validatedOwners.set(
+            messageIndex,
+            context?.sourceOwner(ref, input.messages?.[messageIndex]?.content),
+          );
+        const boundOwner = validatedOwners.get(messageIndex);
+        if (claimedOwner && !boundOwner) throw new BedrockDocumentError();
+        if (claimedOwner && boundOwner?.repaired) {
           repairedMessages.set(messageIndex, claimedOwner);
           return part;
         }

@@ -6,15 +6,21 @@ import { BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime';
 import type { PostToolBatchHookOutput } from '@librechat/agents';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { SteerQueueItem } from '~/stream/interfaces/IJobStore';
+import type { StoredSteerOwner } from './owners';
 import type { ServerRequest } from '~/types';
 import {
   getBedrockDocumentContext,
   prepareBedrockSteerDocuments,
   settleBedrockSteerDocuments,
   restoreBedrockSteerOwners,
+  bindBedrockSteerSource,
 } from './context';
+import {
+  buildSteerMedia,
+  repairSteerAttachmentRefs,
+  publishSteerSource,
+} from '~/agents/steering/media';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { buildSteerMedia, repairSteerAttachmentRefs } from '~/agents/steering/media';
 import { collectStoredSteerOwners, withoutRepairedSteerMedia } from './owners';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
@@ -58,7 +64,7 @@ async function setup(download: () => Promise<Readable>, ids = ['owned']) {
   type Applied = NonNullable<Parameters<typeof repairSteerAttachmentRefs>[0]['applied']>;
   const applied = new Map<string, Applied>();
   const publishers = new Map(ids.map((id) => [id, jest.fn(async () => undefined)]));
-  const repairs = new Map<string, jest.Mock<Promise<void>, []>>();
+  const repairs = new Map<string, jest.Mock<Promise<void>, [StoredSteerOwner]>>();
   for (const id of ids)
     await GenerationJobManager.steering.enqueue(streamId, {
       steerId: id,
@@ -84,9 +90,11 @@ async function setup(download: () => Promise<Readable>, ids = ['owned']) {
       });
     },
     buildMedia: async (item: SteerQueueItem) => {
-      const repair = jest.fn(async () =>
+      const repair = jest.fn(async (receipt: StoredSteerOwner) =>
         repairSteerAttachmentRefs({
           applied: applied.get(item.steerId),
+          receipt,
+          sourceMessageId: 'stored-response',
           publish: publishers.get(item.steerId)!,
           commit: (value) => {
             applied.set(item.steerId, value);
@@ -130,6 +138,21 @@ async function setup(download: () => Promise<Readable>, ids = ['owned']) {
             message.documents = result.documents.map((part) => ({ ...part }));
             return files;
           },
+        },
+      });
+      const binding = bindBedrockSteerSource(
+        req,
+        item.steerId,
+        media?.content,
+        'stored-response',
+        applied.get(item.steerId)!.index,
+      );
+      await publishSteerSource({
+        binding,
+        applied: applied.get(item.steerId),
+        publish: publishers.get(item.steerId)!,
+        commit: (value) => {
+          applied.set(item.steerId, value);
         },
       });
       settleBedrockSteerDocuments(req, item.steerId, true);
@@ -197,14 +220,20 @@ it.each(['missing', 'oversized', 'malformed', 'permission'])(
     await expect(h.chat.invoke(h.messages)).resolves.toMatchObject({ content: 'continued' });
     expect(download).toHaveBeenCalledTimes(1);
     expect(h.repairs.get('owned')).toHaveBeenCalledTimes(1);
-    expect(h.publishers.get('owned')).toHaveBeenCalledTimes(1);
+    expect(h.publishers.get('owned')).toHaveBeenCalledTimes(2);
     expect(h.applied.get('owned')?.part.files).toBeUndefined();
     await h.chat.invoke(h.messages);
     expect(download).toHaveBeenCalledTimes(1);
     const call = h.transport.mock.calls[0] as unknown as [{ body: string }];
     const wire = JSON.parse(call[0].body);
     expect(wire.messages[0].content).toEqual([{ text: '> quoted context\n\nwords owned' }]);
-    const owners = collectStoredSteerOwners([{ content: [h.applied.get('owned')!.part] }]);
+    const owners = collectStoredSteerOwners([
+      {
+        messageId: 'stored-response',
+        isCreatedByUser: false,
+        content: [h.applied.get('owned')!.part],
+      },
+    ]);
     const resumed = request();
     restoreBedrockSteerOwners(resumed, owners);
     const restoredClient = guardBedrockDocuments(
@@ -225,7 +254,7 @@ it.each(['missing', 'oversized', 'malformed', 'permission'])(
       streaming: false,
     }).invoke(h.messages);
     expect(download).toHaveBeenCalledTimes(1);
-    expect(withoutRepairedSteerMedia(h.messages[0].content, new Set(['owned']))).toEqual([
+    expect(withoutRepairedSteerMedia(h.messages[0].content, owners, { kind: 'steer' })).toEqual([
       { type: 'text', text: '> quoted context\n\nwords owned' },
     ]);
     restoredClient.destroy();
@@ -266,17 +295,17 @@ it('does not repair an ordinary current upload failure', async () => {
   h.client.destroy();
 });
 
-it('does not claim durable repair success when publication fails and does not repeat it', async () => {
+it('keeps failed durable repair visible and permits safe idempotent repair retry', async () => {
   const download = jest.fn(async () => {
     throw Object.assign(new Error('missing'), { code: 'ENOENT' });
   });
   const h = await setup(download);
   h.publishers.get('owned')!.mockRejectedValueOnce(new Error('durable publication fixture'));
   await expect(h.chat.invoke(h.messages)).rejects.toThrow('Steer attachment recovery failed');
-  await expect(h.chat.invoke(h.messages)).rejects.toThrow('Steer attachment recovery failed');
-  expect(h.applied.get('owned')?.part.files).toHaveLength(1);
-  expect(h.repairs.get('owned')).toHaveBeenCalledTimes(1);
-  expect(h.transport).not.toHaveBeenCalled();
+  await expect(h.chat.invoke(h.messages)).resolves.toMatchObject({ content: 'continued' });
+  expect(h.applied.get('owned')?.part.files).toBeUndefined();
+  expect(h.repairs.get('owned')).toHaveBeenCalledTimes(2);
+  expect(h.transport).toHaveBeenCalledTimes(1);
   h.client.destroy();
 });
 
@@ -319,5 +348,90 @@ it('repairs only the failing owner when two steers share one file', async () => 
   expect(h.applied.get('one')?.part.files).toBeUndefined();
   expect(h.applied.get('two')?.part.files).toHaveLength(1);
   expect(download).toHaveBeenCalledTimes(2);
+  h.client.destroy();
+});
+
+it('rejects a current source object forged to claim even a matching repaired file owner', async () => {
+  const download = jest.fn(async () => {
+    throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+  });
+  const h = await setup(download);
+  await h.chat.invoke(h.messages);
+  const current = await encodeAndFormatDocuments(
+    h.req,
+    [row],
+    { provider: Providers.BEDROCK, model, recipientId: 'root' },
+    () => ({ getDownloadStream: download }),
+  );
+  const owned = h.messages[0].content;
+  if (!Array.isArray(owned)) throw new Error('fixture');
+  const marker = owned.find((part) => 'document' in part);
+  if (!marker || !('document' in marker)) throw new Error('fixture');
+  const source = current.documents[0];
+  if (!('document' in source)) throw new Error('fixture');
+  Object.assign(source.document.source, (marker.document as { source: object }).source);
+  await expect(
+    h.chat.invoke([new HumanMessage({ content: current.documents.map((part) => ({ ...part })) })]),
+  ).rejects.toThrow();
+  expect(h.transport).toHaveBeenCalledTimes(1);
+  h.client.destroy();
+});
+
+it('rejects foreign, mixed and nested ownership instead of dropping valid sibling media', async () => {
+  const h = await setup(async () => {
+    throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+  });
+  await h.chat.invoke(h.messages);
+  const owners = collectStoredSteerOwners([
+    {
+      messageId: 'stored-response',
+      isCreatedByUser: false,
+      content: [h.applied.get('owned')!.part],
+    },
+  ]);
+  const content = h.messages[0].content;
+  if (!Array.isArray(content)) throw new Error('fixture');
+  expect(() =>
+    withoutRepairedSteerMedia(
+      [
+        ...content,
+        {
+          type: 'document',
+          document: {
+            name: 'foreign',
+            format: 'pdf',
+            source: {
+              librechatFile: 'foreign',
+              librechatSteer: 'owned',
+              librechatSteerSource: 'stored-response',
+              librechatSteerPart: 0,
+            },
+          },
+        },
+      ],
+      owners,
+      { kind: 'steer' },
+    ),
+  ).toThrow();
+  expect(() =>
+    withoutRepairedSteerMedia(content, owners, {
+      kind: 'user',
+      sourceMessageId: 'different-source',
+    }),
+  ).toThrow();
+  expect(
+    collectStoredSteerOwners([
+      { messageId: 'unrelated', isCreatedByUser: false, content: [h.applied.get('owned')!.part] },
+    ]),
+  ).toEqual([]);
+  expect(
+    collectStoredSteerOwners([
+      {
+        messageId: 'stored-response',
+        isCreatedByUser: false,
+        content: [{ type: 'steer', steerId: 'owned', steer: 'text only' }],
+      },
+    ]),
+  ).toEqual([]);
   h.client.destroy();
 });
