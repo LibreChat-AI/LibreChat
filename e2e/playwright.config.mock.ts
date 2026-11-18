@@ -260,10 +260,13 @@ const preservedCredentialEnvKeys = new Set([
  */
 function writeRuntimeMockConfig() {
   const template = fs.readFileSync(configTemplatePath, 'utf8');
+  // Keep this URL out of the other substitutions when the override uses another fixture's default port.
+  const httpMcpPlaceholder = '__E2E_HTTP_MCP_URL__';
   let config =
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
+  config = config.replace('http://127.0.0.1:8765/mcp', httpMcpPlaceholder);
   config = config.replace(
     '  agents:\n',
     `  agents:\n    managementApi: ${JSON.stringify({ auth: managementAuth })}\n`,
@@ -408,6 +411,7 @@ function writeRuntimeMockConfig() {
   if (MCP_OAUTH_PORT !== '8767') {
     config = config.split('127.0.0.1:8767').join(`127.0.0.1:${MCP_OAUTH_PORT}`);
   }
+  config = config.replace(httpMcpPlaceholder, `http://127.0.0.1:${MCP_HTTP_PORT}/mcp`);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, config);
   if (enableDynamicMcp) {
