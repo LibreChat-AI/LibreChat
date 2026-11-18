@@ -4570,6 +4570,19 @@ const exportTelemetry = (plan: string, reason: string, tenantId?: string) => ({
 });
 
 describe('Langfuse run config', () => {
+  it("reports each agent's catalog skills as its available Langfuse skills", async () => {
+    const [withSkills, withoutSkills] = await callAndCapture({
+      agents: [
+        makeAgent({ catalogSkillNames: ['sql-review', 'chart-style'] }),
+        makeAgent({ id: 'agent_2' }),
+      ],
+    });
+    expect(withSkills.langfuse).toEqual({
+      skillsAvailable: [{ name: 'sql-review' }, { name: 'chart-style' }],
+    });
+    expect(withoutSkills.langfuse).toBeUndefined();
+  });
+
   it('passes deterministic Langfuse trace config without tenant metadata by default', async () => {
     const callArgs = await callAndCaptureRunConfig();
     expect(callArgs.langfuse).toEqual({

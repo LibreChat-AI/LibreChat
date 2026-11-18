@@ -1231,6 +1231,7 @@ describe('injectSkillCatalog', () => {
     expect(result.activeSkillIds.map((id) => id.toString()).sort()).toEqual(
       [open._id.toString(), modelHidden._id.toString()].sort(),
     );
+    expect(result.catalogSkillNames).toEqual(['open-skill']);
   });
 
   it('catalog quota counts only model-visible skills (disabled rows do not consume slots)', async () => {
