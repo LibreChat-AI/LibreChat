@@ -1,6 +1,14 @@
 import { Providers } from '@librechat/agents';
 import { mbToBytes } from 'librechat-data-provider';
-import { validatePdf, validateBedrockDocument, validateVideo, validateAudio } from './validation';
+import {
+  validatePdf,
+  validateVideo,
+  validateAudio,
+  validateBedrockDocument,
+  getBedrockDocumentSizeLimit,
+  AttachmentProviderLimitError,
+  ATTACHMENT_PROVIDER_LIMIT_EXCEEDED,
+} from './validation';
 
 describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
   /** Helper to create a PDF buffer with valid header */
@@ -173,13 +181,13 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
       expect(result.error).toContain('2.0MB');
     });
 
-    it('should allow configured limit higher than 4.5MB default', async () => {
+    it('should not let the merged 512MB default raise the 4.5MB limit', async () => {
       const configuredLimit = mbToBytes(512);
       const pdfBuffer = createMockPdfBuffer(5);
       const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider, configuredLimit);
 
-      expect(result.isValid).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.isValid).toBe(false);
+      expect(result.error).toContain('4.5MB');
     });
 
     it('should reject PDFs with invalid header', async () => {
@@ -347,7 +355,7 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
       expect(result.error).toContain('10.0MB');
     });
 
-    it('should allow configuredFileSizeLimit higher than 32MB for exempt models', async () => {
+    it('should not let configuredFileSizeLimit raise the 32MB bound for exempt models', async () => {
       const configuredLimit = mbToBytes(50);
       const pdfBuffer = createMockPdfBuffer(35);
       const model = 'amazon.nova-pro-v1:0';
@@ -359,11 +367,11 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
         model,
       );
 
-      expect(result.isValid).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.isValid).toBe(false);
+      expect(result.error).toContain('32.0MB');
     });
 
-    it('should allow configuredFileSizeLimit higher than 4.5MB for non-exempt models', async () => {
+    it('should not let configuredFileSizeLimit raise 4.5MB for non-exempt models', async () => {
       const configuredLimit = mbToBytes(100);
       const pdfBuffer = createMockPdfBuffer(5);
       const model = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
@@ -375,8 +383,8 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
         model,
       );
 
-      expect(result.isValid).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.isValid).toBe(false);
+      expect(result.error).toContain('4.5MB');
     });
   });
 
@@ -406,7 +414,7 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
       expect(result.error).toContain('4.5MB');
     });
 
-    it('should allow configured limit higher than 4.5MB for non-PDF', async () => {
+    it('should not let the merged 512MB default raise 4.5MB for non-PDF', async () => {
       const fileSize = 5 * 1024 * 1024;
       const configuredLimit = mbToBytes(512);
       const result = await validateBedrockDocument(
@@ -416,8 +424,8 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
         configuredLimit,
       );
 
-      expect(result.isValid).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.isValid).toBe(false);
+      expect(result.error).toContain('4.5MB');
     });
 
     it('should use configured limit when lower than provider limit for non-PDF', async () => {
@@ -880,5 +888,41 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
         expect(result.isValid).toBe(true);
       });
     });
+  });
+});
+
+describe('getBedrockDocumentSizeLimit', () => {
+  const claude = 'claude-sonnet-5-5';
+
+  it("uses Bedrock's 4.5MB limit when nothing is configured", () => {
+    expect(getBedrockDocumentSizeLimit('text/csv', claude)).toBe(mbToBytes(4.5));
+  });
+
+  it('caps the merged 512MB default at the provider limit', () => {
+    expect(getBedrockDocumentSizeLimit('text/csv', claude, mbToBytes(512))).toBe(mbToBytes(4.5));
+    expect(getBedrockDocumentSizeLimit('application/pdf', claude, mbToBytes(512))).toBe(
+      mbToBytes(32),
+    );
+  });
+
+  it('honors a configured limit below the provider limit', () => {
+    expect(getBedrockDocumentSizeLimit('text/csv', claude, mbToBytes(2))).toBe(mbToBytes(2));
+  });
+
+  it("keeps a disabled endpoint's zero limit", () => {
+    expect(getBedrockDocumentSizeLimit('text/csv', claude, 0)).toBe(0);
+  });
+});
+
+describe('AttachmentProviderLimitError', () => {
+  it('carries a stable code, a 413 status and a message naming only the file and sizes', () => {
+    const error = new AttachmentProviderLimitError('report.csv', mbToBytes(8), mbToBytes(4.5));
+
+    expect(error.code).toBe(ATTACHMENT_PROVIDER_LIMIT_EXCEEDED);
+    expect(error.status).toBe(413);
+    expect(error.statusCode).toBe(413);
+    expect(error.message).toBe(
+      'The attached document "report.csv" is 8.0 MB, over the 4.5 MB this model accepts for a document. Remove it or attach a smaller file, then try again.',
+    );
   });
 });

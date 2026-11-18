@@ -18,17 +18,59 @@ import type {
 import type { ReachableAgent } from '~/agents/traversal';
 import type { MissingAttachmentHandler } from './utils';
 import {
+  validatePdf,
+  validateBedrockDocument,
+  getBedrockDocumentSizeLimit,
+  AttachmentProviderLimitError,
+} from '~/files/validation';
+import {
   CONTENT_TRAVERSAL_MAX_DEPTH,
   CONTENT_TRAVERSAL_MAX_NODES,
   ContentTraversalLimitError,
 } from '~/protection/adapters/nested';
 import { getFileStream, getConfiguredFileSizeLimit, skipMissingAttachment } from './utils';
-import { validatePdf, validateBedrockDocument } from '~/files/validation';
 import { someReachableAgent } from '~/agents/traversal';
 import { runGuardedEncode } from './memoryGuard';
 
 /** The longest document name LibreChat sends to Bedrock. */
 const BEDROCK_DOCUMENT_NAME_LIMIT = 200;
+
+/** Refuses a Bedrock document larger than the model accepts, by its stored or decoded size. */
+function assertBedrockDocumentSize(
+  filename: string | undefined,
+  size: number,
+  mimeType: string,
+  model: string | undefined,
+  configuredFileSizeLimit: number | undefined,
+): void {
+  const limit = getBedrockDocumentSizeLimit(mimeType, model, configuredFileSizeLimit);
+  if (size > limit) {
+    throw new AttachmentProviderLimitError(filename || 'document', size, limit);
+  }
+}
+
+/**
+ * Gives a Bedrock document's bytes a JSON form that records only their size.
+ *
+ * The AWS SDK base64-encodes the bytes itself and never calls `toJSON`. Everything else that
+ * serializes the prompt with `JSON.stringify` (trace exporters, stream events, logs) would
+ * otherwise reach `Buffer.prototype.toJSON`, which writes every byte as a decimal array element:
+ * about 3.4 characters per byte, plus a transient array of 8 bytes per byte. Langfuse serializes
+ * the prompt into its span attributes several times per turn, so an 8 MiB CSV became an 87 MB
+ * trace export and hundreds of megabytes of transient heap.
+ *
+ * LangChain's own message serialization (`HumanMessage.toJSON`, used by checkpoints) copies the
+ * Buffer's entries into a plain object first, so it never sees this override.
+ */
+function withByteSizeJson(bytes: Buffer): Buffer {
+  Object.defineProperty(bytes, 'toJSON', {
+    value: () => ({ type: 'omitted_bytes', byteLength: bytes.length }),
+    configurable: true,
+    enumerable: false,
+    writable: true,
+  });
+  return bytes;
+}
 
 /** A content part of a formatted message, as far as document naming needs to read it. */
 export interface PayloadContentPart {
@@ -347,6 +389,23 @@ export async function encodeAndFormatDocuments(
 
   const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, { provider, endpoint });
 
+  /** Refuse an oversized document before reading it into memory. A record with no stored
+   * object is skipped by `getFileStream`, so it is skipped here too. */
+  if (isBedrock) {
+    for (const file of processableFiles) {
+      if (!file.filepath && !file.storageKey) {
+        continue;
+      }
+      assertBedrockDocumentSize(
+        file.filename,
+        file.bytes ?? 0,
+        file.type ?? '',
+        model,
+        configuredFileSizeLimit,
+      );
+    }
+  }
+
   const results = await Promise.allSettled(
     processableFiles.map((file) =>
       runGuardedEncode(file.bytes ?? 0, () =>
@@ -380,6 +439,14 @@ export async function encodeAndFormatDocuments(
       const fileBuffer = Buffer.from(content, 'base64');
       const format = bedrockDocumentFormats[mimeType];
 
+      /** The stored size may be missing or stale; the decoded bytes are authoritative. */
+      assertBedrockDocumentSize(
+        file.filename,
+        fileBuffer.length,
+        mimeType,
+        model,
+        configuredFileSizeLimit,
+      );
       const validation = await validateBedrockDocument(
         fileBuffer.length,
         mimeType,
@@ -401,7 +468,7 @@ export async function encodeAndFormatDocuments(
           name: sanitizedName,
           format,
           source: {
-            bytes: fileBuffer,
+            bytes: withByteSizeJson(fileBuffer),
           },
         },
       });

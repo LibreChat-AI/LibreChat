@@ -182,9 +182,66 @@ const isExemptFromBedrockDocLimit = (model?: string, mimeType?: string): boolean
 };
 
 /**
- * Validates a document against Bedrock size limits. The default limit is 4.5 MB,
- * but Claude 4+ (PDF) and Nova (PDF/DOCX) models are exempt per AWS docs.
- * When exempt, falls back to a 32 MB request-level limit as a reasonable upper bound.
+ * The largest document Bedrock accepts for this model and MIME type: 4.5 MB, or a 32 MB
+ * request-level bound for the exempt combinations (Claude 4+ PDF, Nova PDF/DOCX).
+ *
+ * A configured `fileSizeLimit` can lower this but never raise it. `fileConfig` merges in a
+ * 512 MB default for every endpoint, so any deployment with a `fileConfig` section passed that
+ * default here and Bedrock's own limit stopped applying. The document's bytes then went through
+ * prompt building, tracing and streaming at full size, only for Bedrock to reject them.
+ * @param mimeType - The MIME type of the document
+ * @param model - Optional Bedrock model identifier for model-specific limit exceptions
+ * @param configuredFileSizeLimit - Optional configured file size limit from fileConfig (in bytes)
+ * @returns The effective limit in bytes
+ */
+export function getBedrockDocumentSizeLimit(
+  mimeType: string,
+  model?: string,
+  configuredFileSizeLimit?: number,
+): number {
+  const providerLimit = isExemptFromBedrockDocLimit(model, mimeType)
+    ? mbToBytes(32)
+    : mbToBytes(4.5);
+  return configuredFileSizeLimit == null
+    ? providerLimit
+    : Math.min(configuredFileSizeLimit, providerLimit);
+}
+
+/** Stable code for a document over the size its provider accepts. */
+export const ATTACHMENT_PROVIDER_LIMIT_EXCEEDED = 'ATTACHMENT_PROVIDER_LIMIT_EXCEEDED';
+
+const formatMB = (bytes: number): string => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+/**
+ * An attached document is larger than the model provider accepts. Thrown before the file is
+ * read when its stored size already exceeds the limit, so the turn is refused without loading
+ * it. The message names only the user's own file and the two sizes.
+ */
+export class AttachmentProviderLimitError extends Error {
+  readonly code: typeof ATTACHMENT_PROVIDER_LIMIT_EXCEEDED = ATTACHMENT_PROVIDER_LIMIT_EXCEEDED;
+  readonly status = 413;
+  readonly statusCode = 413;
+
+  constructor(
+    readonly filename: string,
+    readonly observed: number,
+    readonly limit: number,
+  ) {
+    super(
+      `The attached document "${filename}" is ${formatMB(observed)}, over the ${formatMB(limit)} this model accepts for a document. Remove it or attach a smaller file, then try again.`,
+    );
+    this.name = 'AttachmentProviderLimitError';
+  }
+}
+
+export function isAttachmentProviderLimitError(
+  error: unknown,
+): error is AttachmentProviderLimitError {
+  return error instanceof AttachmentProviderLimitError;
+}
+
+/**
+ * Validates a document against Bedrock size limits (see {@link getBedrockDocumentSizeLimit}).
  * @param fileSize - The file size in bytes
  * @param mimeType - The MIME type of the document
  * @param fileBuffer - The file buffer (used for PDF header validation)
@@ -200,10 +257,7 @@ export async function validateBedrockDocument(
   model?: string,
 ): Promise<ValidationResult> {
   try {
-    const exempt = isExemptFromBedrockDocLimit(model, mimeType);
-    /** Default 4.5 MB; exempt models (Claude 4+ PDF, Nova PDF/DOCX) default to 32 MB when unconfigured */
-    const providerLimit = exempt ? mbToBytes(32) : mbToBytes(4.5);
-    const effectiveLimit = configuredFileSizeLimit ?? providerLimit;
+    const effectiveLimit = getBedrockDocumentSizeLimit(mimeType, model, configuredFileSizeLimit);
 
     if (fileSize > effectiveLimit) {
       const limitMB = (effectiveLimit / (1024 * 1024)).toFixed(1);

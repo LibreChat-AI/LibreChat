@@ -7,8 +7,10 @@ import {
   getEndpointFileConfig,
 } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
+import type { AttachmentProviderLimitError } from '~/files/validation';
 import type { TokenCountFn } from '~/utils/text';
 import type { ServerRequest } from '~/types';
+import { isAttachmentProviderLimitError } from '~/files/validation';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
 import { AGENT_ATTACHMENT_LIMIT_EXCEEDED } from './errors';
 import { countTokens } from '~/utils/tokenizer';
@@ -233,10 +235,16 @@ export class AgentAttachmentPolicyError extends Error {
   }
 }
 
+/** Attachment rejections the user resolves by removing or shrinking files, including a
+ * document larger than its model provider accepts. */
 export function isAgentAttachmentLimitError(
   error: unknown,
-): error is AgentAttachmentLimitError | AgentAttachmentPolicyError {
-  return error instanceof AgentAttachmentLimitError || error instanceof AgentAttachmentPolicyError;
+): error is AgentAttachmentLimitError | AgentAttachmentPolicyError | AttachmentProviderLimitError {
+  return (
+    error instanceof AgentAttachmentLimitError ||
+    error instanceof AgentAttachmentPolicyError ||
+    isAttachmentProviderLimitError(error)
+  );
 }
 
 export function collectAgentAttachmentStats(

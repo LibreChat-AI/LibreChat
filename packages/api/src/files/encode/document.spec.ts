@@ -12,6 +12,7 @@ import { encodeAndFormatDocuments, dedupeDocumentNames } from './document';
 
 /** Mock the validation module */
 jest.mock('~/files/validation', () => ({
+  ...jest.requireActual('~/files/validation'),
   validatePdf: jest.fn(),
   validateBedrockDocument: jest.fn(),
 }));
@@ -24,7 +25,12 @@ jest.mock('./utils', () => ({
   AttachmentObjectNotFoundError: jest.requireActual('./utils').AttachmentObjectNotFoundError,
 }));
 
-import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import {
+  validatePdf,
+  validateBedrockDocument,
+  AttachmentProviderLimitError,
+  ATTACHMENT_PROVIDER_LIMIT_EXCEEDED,
+} from '~/files/validation';
 import { getFileStream, getConfiguredFileSizeLimit, AttachmentObjectNotFoundError } from './utils';
 import { Types } from 'mongoose';
 
@@ -706,7 +712,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
     it('should reject Bedrock document when validation fails', async () => {
       const req = createMockRequest() as ServerRequest;
-      const file = createMockDocFile(5, 'text/csv', 'big.csv');
+      const file = createMockDocFile(1, 'text/csv', 'big.csv');
 
       const mockContent = Buffer.from('large-csv-content').toString('base64');
       mockedGetFileStream.mockResolvedValue({
@@ -728,6 +734,129 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
           mockStrategyFunctions,
         ),
       ).rejects.toThrow('Document validation failed');
+    });
+
+    describe('Bedrock document size limit', () => {
+      /** Any `fileConfig` section merges a 512 MB default into every endpoint. */
+      const mergedDefaultRequest = () => createMockRequest(512, Providers.BEDROCK) as ServerRequest;
+
+      it('refuses a document over 4.5 MB before reading it, despite the 512 MB default', async () => {
+        const file = createMockDocFile(8, 'text/csv', 'big.csv');
+
+        const rejection = encodeAndFormatDocuments(
+          mergedDefaultRequest(),
+          [file],
+          { provider: Providers.BEDROCK, model: 'claude-sonnet-5-5' },
+          mockStrategyFunctions,
+        );
+
+        await expect(rejection).rejects.toBeInstanceOf(AttachmentProviderLimitError);
+        await expect(rejection).rejects.toMatchObject({
+          code: ATTACHMENT_PROVIDER_LIMIT_EXCEEDED,
+          status: 413,
+          message: expect.stringContaining('"big.csv" is 8.0 MB, over the 4.5 MB'),
+        });
+        expect(mockedGetFileStream).not.toHaveBeenCalled();
+        expect(mockedValidateBedrockDocument).not.toHaveBeenCalled();
+      });
+
+      it('skips an oversized record with no stored object, as the reader does', async () => {
+        const file = {
+          ...createMockDocFile(8, 'text/csv', 'big.csv'),
+          filepath: undefined,
+        } as unknown as IMongoFile;
+        mockedGetFileStream.mockResolvedValue(null);
+
+        const result = await encodeAndFormatDocuments(
+          mergedDefaultRequest(),
+          [file],
+          { provider: Providers.BEDROCK },
+          mockStrategyFunctions,
+        );
+
+        expect(result.documents).toHaveLength(0);
+      });
+
+      it('refuses by the decoded size when the stored size understates it', async () => {
+        const file = createMockDocFile(1, 'text/csv', 'big.csv');
+        mockedGetFileStream.mockResolvedValue({
+          file,
+          content: Buffer.alloc(mbToBytes(5)).toString('base64'),
+          metadata: file,
+        });
+
+        await expect(
+          encodeAndFormatDocuments(
+            mergedDefaultRequest(),
+            [file],
+            { provider: Providers.BEDROCK },
+            mockStrategyFunctions,
+          ),
+        ).rejects.toBeInstanceOf(AttachmentProviderLimitError);
+        expect(mockedValidateBedrockDocument).not.toHaveBeenCalled();
+      });
+
+      it('reads an exempt Claude 4+ PDF above 4.5 MB', async () => {
+        const file = createMockFile(10);
+        mockedGetFileStream.mockResolvedValue({
+          file,
+          content: Buffer.from('%PDF-1.7').toString('base64'),
+          metadata: file,
+        });
+        mockedValidateBedrockDocument.mockResolvedValue({ isValid: true });
+
+        const result = await encodeAndFormatDocuments(
+          mergedDefaultRequest(),
+          [file],
+          { provider: Providers.BEDROCK, model: 'claude-sonnet-5-5' },
+          mockStrategyFunctions,
+        );
+
+        expect(mockedGetFileStream).toHaveBeenCalledTimes(1);
+        expect(result.documents).toHaveLength(1);
+      });
+
+      it('lets a lower configured limit refuse a document Bedrock would accept', async () => {
+        const file = createMockDocFile(3, 'text/csv', 'data.csv');
+
+        await expect(
+          encodeAndFormatDocuments(
+            createMockRequest(2, Providers.BEDROCK) as ServerRequest,
+            [file],
+            { provider: Providers.BEDROCK },
+            mockStrategyFunctions,
+          ),
+        ).rejects.toMatchObject({ limit: mbToBytes(2) });
+        expect(mockedGetFileStream).not.toHaveBeenCalled();
+      });
+
+      it('serializes the document bytes as their size, not as a byte array', async () => {
+        const file = createMockDocFile(1, 'text/csv', 'data.csv');
+        const csv = Buffer.from('col1,col2\n'.repeat(10_000));
+        mockedGetFileStream.mockResolvedValue({
+          file,
+          content: csv.toString('base64'),
+          metadata: file,
+        });
+        mockedValidateBedrockDocument.mockResolvedValue({ isValid: true });
+
+        const result = await encodeAndFormatDocuments(
+          mergedDefaultRequest(),
+          [file],
+          { provider: Providers.BEDROCK },
+          mockStrategyFunctions,
+        );
+        const block = result.documents[0] as BedrockDocumentBlock;
+        const bytes = block.document.source.bytes as Buffer;
+
+        expect(Buffer.isBuffer(bytes)).toBe(true);
+        expect(bytes.equals(csv)).toBe(true);
+        expect(JSON.parse(JSON.stringify(block)).document.source.bytes).toEqual({
+          type: 'omitted_bytes',
+          byteLength: csv.length,
+        });
+        expect(JSON.stringify(block).length).toBeLessThan(200);
+      });
     });
 
     it('should format OpenAI document with responses API', async () => {
