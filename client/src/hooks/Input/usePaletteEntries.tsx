@@ -486,6 +486,7 @@ export default function usePaletteEntries({
       mcpValues,
       toggleServerSelection,
       connectionStatus,
+      connectionViews,
       initializeServer,
       isInitializing,
       getServerStatusIconProps,
@@ -493,13 +494,23 @@ export default function usePaletteEntries({
     /* The same vocabulary as the MCP menu this palette replaced. Its
        "connecting" string takes the server name, which the row already shows. */
     const getServerStatus = (serverName: string): ItemStatus => {
-      const key = getStatusTextKey(serverName, connectionStatus, isInitializing);
+      const key = getStatusTextKey(
+        serverName,
+        connectionStatus,
+        isInitializing,
+        connectionViews?.[serverName],
+      );
       return {
         label:
           key === 'com_nav_mcp_status_connecting'
             ? localize('com_ui_connecting')
             : localize(key as TranslationKeys),
-        tone: getStatusColor(serverName, connectionStatus, isInitializing),
+        tone: getStatusColor(
+          serverName,
+          connectionStatus,
+          isInitializing,
+          connectionViews?.[serverName],
+        ),
       };
     };
     if (toolsEnabled && canUseMcp && selectableServers) {
@@ -526,7 +537,12 @@ export default function usePaletteEntries({
           /* An unknown status means the server has not reported a connection
              yet, which is not the same as being connected: treat it like a
              disconnected server so it initializes before it can be selected. */
-          if (connectionStatus?.[server.serverName]?.connectionState !== 'connected') {
+          if (
+            !(
+              connectionViews?.[server.serverName]?.canUse ??
+              connectionStatus?.[server.serverName]?.connectionState === 'connected'
+            )
+          ) {
             if (statusProps?.isInitializing) {
               return;
             }
@@ -555,7 +571,8 @@ export default function usePaletteEntries({
           }
           if (
             statusProps?.hasCustomUserVars === true &&
-            connectionStatus?.[server.serverName]?.connectionState === 'connected'
+            (connectionViews?.[server.serverName]?.canUse ??
+              connectionStatus?.[server.serverName]?.connectionState === 'connected')
           ) {
             return [
               {

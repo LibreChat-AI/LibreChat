@@ -33,6 +33,7 @@ export default function ServerInitializationSection({
     availableMCPServers,
     availableMCPServersMap,
     connectionStatus,
+    connectionViews,
     revokeOAuthForServer,
   } = useMCPServerManager({
     conversationId,
@@ -43,7 +44,8 @@ export default function ServerInitializationSection({
   useMCPRefresh({ enabled: availableMCPServers.length > 0 });
 
   const serverStatus = connectionStatus?.[serverName];
-  const isConnected = serverStatus?.connectionState === 'connected';
+  const view = connectionViews?.[serverName];
+  const isConnected = view?.canUse ?? serverStatus?.connectionState === 'connected';
   const hasPendingOAuth =
     requiresOAuth &&
     serverStatus?.requiresOAuth === true &&
@@ -55,7 +57,10 @@ export default function ServerInitializationSection({
   const requestScoped =
     serverStatus?.requestScoped === true ||
     availableMCPServersMap?.[serverName]?.requestScoped === true;
-  const shouldShowReinit = isConnected && !requestScoped && (requiresOAuth || hasCustomUserVars);
+  const shouldShowReinit =
+    isConnected &&
+    !requestScoped &&
+    (view?.state === 'succeeded' || requiresOAuth || hasCustomUserVars);
   /** Saving custom variables makes an on-demand server ready, but it still
    * needs one explicit initialization attempt so callers waiting to attach the
    * runtime wildcard observe `connectionDeferred`. */

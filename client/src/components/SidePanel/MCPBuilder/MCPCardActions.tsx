@@ -2,12 +2,15 @@ import React from 'react';
 import { Button, Spinner, TooltipAnchor } from '@librechat/client';
 import { KeyRound, Pencil, PlugZap, RefreshCw, Unlink, X } from 'lucide-react';
 import type { MCPServerStatus } from 'librechat-data-provider';
+import type { MCPConnectionView } from '~/hooks/MCP/connection';
 import { cn, rowActionClasses, rowActionSlotClasses } from '~/utils';
+import { getMCPConnectionView } from '~/hooks/MCP/connection';
 import { useLocalize } from '~/hooks';
 
 interface MCPCardActionsProps {
   serverName: string;
   serverStatus?: MCPServerStatus;
+  view?: MCPConnectionView;
   isInitializing: boolean;
   canCancel: boolean;
   hasCustomUserVars: boolean;
@@ -40,6 +43,7 @@ interface MCPCardActionsProps {
 export default function MCPCardActions({
   serverName,
   serverStatus,
+  view,
   isInitializing,
   canCancel,
   hasCustomUserVars,
@@ -53,11 +57,16 @@ export default function MCPCardActions({
 }: MCPCardActionsProps) {
   const localize = useLocalize();
 
-  const connectionState = serverStatus?.connectionState;
-  const isConnected = connectionState === 'connected';
-  const isConnecting = connectionState === 'connecting';
-  const isDisconnected = connectionState === 'disconnected';
-  const isError = connectionState === 'error';
+  const requestScoped = view?.requestScoped ?? serverStatus?.requestScoped;
+  const state = (view ?? getMCPConnectionView(serverStatus)).state;
+  const canReconnect = state === 'connected' || state === 'succeeded' || state === 'authorized';
+  const isConnecting = state === 'connecting';
+  const isDisconnected =
+    state === 'disconnected' ||
+    state === 'unknown' ||
+    state === 'needs_authorization' ||
+    state === 'needs_configuration';
+  const isError = state === 'error' || state === 'failed';
 
   /** A run in flight is a state of the row, not an action waiting to be found:
    *  the spinner and the cancel that replaces it stay put without a hover. */
@@ -134,7 +143,7 @@ export default function MCPCardActions({
       )}
 
       {/* Connect button - for disconnected or error states */}
-      {(isDisconnected || isError) && !serverStatus?.requestScoped && (
+      {(isDisconnected || isError) && !requestScoped && (
         <RowAction label={localize('com_nav_mcp_connect')} onClick={() => onInitialize()}>
           <PlugZap className="size-4" aria-hidden="true" />
         </RowAction>
@@ -142,14 +151,14 @@ export default function MCPCardActions({
 
       {/* On-demand servers stay idle between requests, so their user variables
           must remain configurable without a live transport connection. */}
-      {(isConnected || serverStatus?.requestScoped) && hasCustomUserVars && (
+      {(canReconnect || requestScoped) && hasCustomUserVars && (
         <RowAction label={localize('com_ui_configure')} onClick={onConfigClick}>
           <KeyRound className="size-4" aria-hidden="true" />
         </RowAction>
       )}
 
       {/* Refresh button - for connected servers (allows reconnection) */}
-      {isConnected && !serverStatus?.requestScoped && (
+      {canReconnect && !requestScoped && (
         <RowAction label={localize('com_nav_mcp_reconnect')} onClick={() => onInitialize()}>
           <RefreshCw className="size-4" aria-hidden="true" />
         </RowAction>

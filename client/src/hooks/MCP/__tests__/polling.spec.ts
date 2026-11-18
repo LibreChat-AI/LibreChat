@@ -39,6 +39,7 @@ describe('applyMCPDiscoveryAuthorizationState', () => {
       requiresOAuth: true,
       connectionState: 'disconnected',
       authorizationState: 'needs_authorization',
+      connectionStateSource: 'authorization',
       authorizationGeneration: 'generation-1',
     });
   });
@@ -145,6 +146,7 @@ describe('applyPendingOAuthState', () => {
       connectionState: 'connecting',
       authorizationState: 'authorizing',
       authorizationGeneration: 'generation-1',
+      connectionStateSource: 'authorization',
     });
     expect(durableStatus.oauth.connectionState).toBe('connected');
   });
@@ -159,6 +161,7 @@ describe('applyPendingOAuthState', () => {
         requiresOAuth: true,
         connectionState: 'connecting',
         authorizationState: 'authorizing',
+        connectionStateSource: 'authorization',
       },
     });
   });
@@ -279,4 +282,66 @@ describe('isMCPReadyAfterOAuth', () => {
   it('does not treat another OAuth challenge as connection readiness', () => {
     expect(isMCPReadyAfterOAuth({ ...response, oauthRequired: true })).toBe(false);
   });
+});
+
+it('keeps known reauthorization and active OAuth visible after an unavailable read', () => {
+  const unavailable = {
+    oauth: {
+      requiresOAuth: true,
+      connectionState: 'error' as const,
+      connectionStateSource: 'unavailable' as const,
+    },
+  };
+  const discovery = applyMCPDiscoveryAuthorizationState(unavailable, {
+    servers: {
+      oauth: {
+        name: 'oauth',
+        icon: '',
+        authenticated: false,
+        authorizationState: 'reauth_required',
+        authConfig: [],
+        tools: [],
+      },
+    },
+  });
+  expect(discovery?.oauth).toMatchObject({
+    connectionStateSource: 'authorization',
+    authorizationState: 'needs_authorization',
+  });
+  expect(
+    applyPendingOAuthState(unavailable, { oauth: { oauthUrl: 'https://oauth.example' } })?.oauth,
+  ).toMatchObject({ connectionState: 'connecting', connectionStateSource: 'authorization' });
+});
+
+it('uses a newer operation generation for discovery comparison without stamping raw observations', () => {
+  const raw = {
+    example: {
+      requiresOAuth: true,
+      connectionState: 'connected' as const,
+      authorizationState: 'authorized' as const,
+      authorizationGeneration: 'old',
+    },
+  };
+  const catalog = (generation: string) => ({
+    servers: {
+      example: {
+        name: 'example',
+        icon: '',
+        authenticated: false,
+        authorizationState: 'reauth_required' as const,
+        authorizationGeneration: generation,
+        authConfig: [],
+        tools: [],
+      },
+    },
+  });
+  expect(applyMCPDiscoveryAuthorizationState(raw, catalog('old'), { example: 'operation' })).toBe(
+    raw,
+  );
+  expect(
+    applyMCPDiscoveryAuthorizationState(raw, catalog('operation'), { example: 'operation' })
+      ?.example.authorizationState,
+  ).toBe('needs_authorization');
+  expect(raw.example.authorizationGeneration).toBe('old');
+  expect(raw.example.connectionState).toBe('connected');
 });

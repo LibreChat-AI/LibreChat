@@ -2,6 +2,9 @@ import React from 'react';
 import { KeyRound, PlugZap, X } from 'lucide-react';
 import { Button, Spinner, TooltipAnchor } from '@librechat/client';
 import type { MCPServerStatus } from 'librechat-data-provider';
+import type { MCPConnectionView } from '~/hooks/MCP/connection';
+import { getMCPConnectionView } from '~/hooks/MCP/connection';
+import { getStatusColor } from './mcpServerUtils';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -20,6 +23,7 @@ interface InitializingStatusProps extends StatusIconProps {
 export interface MCPServerStatusIconProps {
   serverName: string;
   serverStatus?: MCPServerStatus;
+  view?: MCPConnectionView;
   onConfigClick: (e: React.MouseEvent) => void;
   isInitializing: boolean;
   canCancel: boolean;
@@ -41,6 +45,7 @@ export interface MCPServerStatusIconProps {
 export default function MCPServerStatusIcon({
   serverName,
   serverStatus,
+  view,
   onConfigClick,
   isInitializing,
   canCancel,
@@ -50,106 +55,80 @@ export default function MCPServerStatusIcon({
 }: MCPServerStatusIconProps) {
   localize = useLocalize();
 
-  // Compact mode: render as a small status dot
-  if (compact) {
-    return <CompactStatusDot serverStatus={serverStatus} isInitializing={isInitializing} />;
-  }
-
-  // Loading state: show spinner (with cancel option if available)
-  if (isInitializing) {
+  const presentation =
+    view ??
+    getMCPConnectionView(serverStatus, undefined, undefined, { initializing: isInitializing });
+  if (compact)
     return (
+      <CompactStatusDot
+        serverStatus={serverStatus}
+        isInitializing={isInitializing}
+        view={presentation}
+      />
+    );
+  if (presentation.state === 'connecting') {
+    return canCancel ? (
       <LoadingStatusIcon
         serverName={serverName}
         onConfigClick={onConfigClick}
         onCancel={onCancel}
         canCancel={canCancel}
       />
+    ) : (
+      <ConnectingSpinner serverName={serverName} />
     );
   }
-
-  if (!serverStatus) {
-    return null;
-  }
-
-  const { connectionState, requestScoped } = serverStatus;
-
-  // Connecting: show spinner, with cancel when an OAuth flow is pending.
-  if (connectionState === 'connecting') {
-    if (canCancel) {
-      return (
-        <LoadingStatusIcon
-          serverName={serverName}
-          onConfigClick={onConfigClick}
-          onCancel={onCancel}
-          canCancel={canCancel}
-        />
-      );
-    }
-
-    return <ConnectingSpinner serverName={serverName} />;
-  }
-
-  // Request-scoped servers can only be connected while serving an MCP request.
-  if ((connectionState === 'disconnected' || connectionState === 'error') && requestScoped) {
+  if (presentation.requestScoped) {
     return hasCustomUserVars ? (
       <ConfigureButton serverName={serverName} onConfigClick={onConfigClick} />
     ) : null;
   }
-
-  // Disconnected or Error: show connect button (PlugZap icon)
-  if (connectionState === 'disconnected' || connectionState === 'error') {
-    return <ConnectButton serverName={serverName} onConfigClick={onConfigClick} />;
+  if (presentation.state === 'succeeded') {
+    return hasCustomUserVars ? (
+      <ConfigureButton serverName={serverName} onConfigClick={onConfigClick} />
+    ) : (
+      <ConnectButton
+        serverName={serverName}
+        onConfigClick={onConfigClick}
+        label={localize('com_nav_mcp_reconnect')}
+      />
+    );
   }
-
-  // Connected: only show config button if there are custom vars to configure
-  if (connectionState === 'connected' && hasCustomUserVars) {
-    return <ConfigureButton serverName={serverName} onConfigClick={onConfigClick} />;
+  if (presentation.state === 'connected' || presentation.state === 'authorized') {
+    return hasCustomUserVars ? (
+      <ConfigureButton serverName={serverName} onConfigClick={onConfigClick} />
+    ) : null;
   }
-
-  // Connected without custom vars: no action needed, status shown via dot
-  return null;
+  if (!serverStatus && !view) return null;
+  return <ConnectButton serverName={serverName} onConfigClick={onConfigClick} />;
 }
 
 interface CompactStatusDotProps {
+  view?: MCPConnectionView;
   serverStatus?: MCPServerStatus;
   isInitializing: boolean;
 }
 
-function CompactStatusDot({ serverStatus, isInitializing }: CompactStatusDotProps) {
-  if (isInitializing) {
+function CompactStatusDot({ serverStatus, isInitializing, view }: CompactStatusDotProps) {
+  if (isInitializing || view?.state === 'connecting') {
     return (
-      /** `status-info` rather than `-strong`: the strong slot is a neutral grey
-       *  in both standard palettes, so using it turned this blue dot grey. The
-       *  pulse takes the on-status ink so it inverts with the fill. */
       <div className="border-surface-secondary bg-status-info flex size-3.5 items-center justify-center rounded-full border-2">
         <div className="bg-text-on-status size-1.5 animate-pulse rounded-full" />
       </div>
     );
   }
-
-  if (!serverStatus) {
-    return (
-      <div className="border-surface-secondary bg-status-neutral size-3 rounded-full border-2" />
-    );
-  }
-
-  const { connectionState, requiresOAuth } = serverStatus;
-
-  let colorClass = 'bg-status-neutral';
-  if (connectionState === 'connecting') {
-    colorClass = 'bg-status-info';
-  } else if (serverStatus.requestScoped) {
-    colorClass = 'bg-status-info';
-  } else if (connectionState === 'connected') {
-    colorClass = 'bg-status-success';
-  } else if (connectionState === 'error') {
-    colorClass = 'bg-status-error';
-  } else if (connectionState === 'disconnected' && requiresOAuth) {
-    colorClass = 'bg-status-warning';
-  }
-
   return (
-    <div className={cn('border-surface-secondary size-3 rounded-full border-2', colorClass)} />
+    <div
+      className={cn(
+        'border-surface-secondary size-3 rounded-full border-2',
+        getStatusColor(
+          'server',
+          serverStatus ? { server: serverStatus } : undefined,
+          undefined,
+          view,
+        ),
+      )}
+    />
   );
 }
 
@@ -200,14 +179,16 @@ function ConnectingSpinner({ serverName }: { serverName: string }) {
 }
 
 /** Connect button - shown for disconnected/error states. Uses PlugZap icon. */
-function ConnectButton({ serverName, onConfigClick }: StatusIconProps) {
+function ConnectButton({ serverName, onConfigClick, label }: StatusIconProps & { label?: string }) {
   return (
     <Button
       variant="ghost"
       size="icon"
       onClick={onConfigClick}
       className="hover:bg-surface-secondary size-6 rounded p-1"
-      aria-label={localize('com_nav_mcp_connect_server', { 0: serverName })}
+      aria-label={
+        label ? `${label} ${serverName}` : localize('com_nav_mcp_connect_server', { 0: serverName })
+      }
     >
       <PlugZap className="text-text-secondary size-4" aria-hidden="true" />
     </Button>

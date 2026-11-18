@@ -13,6 +13,7 @@ import {
 } from 'librechat-data-provider';
 import type { MCPServerStatus } from 'librechat-data-provider';
 import type { MouseEvent } from 'react';
+import type { MCPConnectionView } from '~/hooks/MCP/connection';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { McpItem } from '../../items/types';
 import type { AgentForm } from '~/common';
@@ -46,6 +47,7 @@ function getStatusDisplay(
   serverStatus: MCPServerStatus | undefined,
   isInitializing: boolean,
   isConfigured: boolean,
+  view?: MCPConnectionView,
 ): StatusDisplay {
   if (!serverStatus && !isInitializing && !isConfigured) {
     return { labelKey: 'com_ui_tools_mcp_status_unconfigured', dotClass: 'bg-status-neutral' };
@@ -53,9 +55,9 @@ function getStatusDisplay(
   const connectionStatus = serverStatus ? { [serverName]: serverStatus } : undefined;
   const initializing = () => isInitializing;
   return {
-    labelKey: getStatusTextKey(serverName, connectionStatus, initializing) as TranslationKeys,
+    labelKey: getStatusTextKey(serverName, connectionStatus, initializing, view) as TranslationKeys,
     dotClass: cn(
-      getStatusColor(serverName, connectionStatus, initializing),
+      getStatusColor(serverName, connectionStatus, initializing, view),
       (isInitializing || serverStatus?.connectionState === 'connecting') && 'animate-pulse',
     ),
   };
@@ -337,21 +339,24 @@ export default function McpSection({ item }: Props) {
   const statusIconProps = getServerStatusIconProps(serverName);
   const configDialogProps = getConfigDialogProps();
   const connectionState = statusIconProps?.serverStatus?.connectionState;
+  const presentation = statusIconProps?.view?.state ?? connectionState;
   const isInitializing = statusIconProps?.isInitializing ?? false;
   const statusDisplay = getStatusDisplay(
     serverName,
     statusIconProps?.serverStatus,
     isInitializing,
     liveServer.isConfigured,
+    statusIconProps?.view,
   );
   /** A connected server's tools arrive with the (cold-cache) MCP tools fetch, and
    * the server is also briefly toolless while initializing — show a skeleton in
    * both cases instead of a misleading "no tools" message. */
   const toolsLoading =
-    !hasTools && (mcpToolsLoading || isInitializing || connectionState === 'connecting');
+    !hasTools && (mcpToolsLoading || isInitializing || presentation === 'connecting');
   const isConnected = connectionState === 'connected' || liveServer.isConnected === true;
-  const isReadyForAgent = liveServer.isReadyForAgent ?? isConnected;
-  const isBusy = isInitializing || connectionState === 'connecting';
+  const isReadyForAgent =
+    statusIconProps?.view?.canUse ?? liveServer.isReadyForAgent ?? isConnected;
+  const isBusy = isInitializing || presentation === 'connecting';
   const canCancel = statusIconProps?.canCancel === true;
 
   /** Close + clear the OAuth dialog once the server is ready, and don't let it
