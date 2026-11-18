@@ -34,8 +34,8 @@ import {
   subagentProgressByToolCallId,
   subagentProgressKey,
 } from '../../../react/subagents/state';
-import PackageSubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
 import { MAX_PREVIEWED_THREADS, useThreadInterest } from '../../../react/subagents/follows';
+import PackageSubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
 import { ParentSubagentsProvider } from '../../../react/subagents/parents';
 import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
