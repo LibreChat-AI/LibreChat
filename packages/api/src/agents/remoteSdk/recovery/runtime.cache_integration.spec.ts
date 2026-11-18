@@ -30,7 +30,7 @@ import {
   clearRedisTestPrefix,
 } from '../../../stream/__tests__/helpers/redis';
 import { createInitialModelBoundAdmissionCallback } from '../../../middleware/modelBoundContent';
-import { createHostModelLifecycle } from '../admission';
+import { createHostModelLifecycle, supportsModelInvocationContext } from '../admission';
 import { createRedisRuntimeJournal } from './redis';
 import { createRemoteSdkServer } from '../server';
 import { createRuntimeRecovery } from './server';
@@ -1023,9 +1023,11 @@ it('recovers a policy reply after a wire outage without repeating inspection or 
   }
 });
 
-it.each([false, true])(
-  'resumes host model chunks without repeating the provider (input admission=%s)',
-  async (inputAdmission) => {
+it.each(['input', 'output', 'combined'] as const)(
+  'resumes host model chunks without repeating the provider (protection=%s)',
+  async (mode) => {
+    const inputAdmission = mode !== 'output';
+    const outputProtection = mode !== 'input';
     const runtime = await fixture(async (input) => {
       const run = await factory(input);
       run.Graph!.overrideModel = input.hostModel;
@@ -1048,8 +1050,8 @@ it.each([false, true])(
       runtime.drop();
       await delay(50);
       yield new ChatGenerationChunk({
-        text: inputAdmission ? 'approved ' : 'PRIVATE-CANDIDATE ',
-        message: new AIMessageChunk(inputAdmission ? 'approved ' : 'PRIVATE-CANDIDATE '),
+        text: outputProtection ? 'PRIVATE-CANDIDATE ' : 'approved ',
+        message: new AIMessageChunk(outputProtection ? 'PRIVATE-CANDIDATE ' : 'approved '),
       });
       yield new ChatGenerationChunk({ text: 'third', message: new AIMessageChunk('third') });
     };
@@ -1101,9 +1103,13 @@ it.each([false, true])(
         config: hostConfig(async () => {}),
         identity,
         remote: runtime.remote,
-        hostServices: { model, ...(inputAdmission ? { modelLifecycle } : { providerText }) },
+        hostServices: {
+          model,
+          ...(inputAdmission && { modelLifecycle }),
+          ...(outputProtection && { providerText }),
+        },
       });
-      const content = await run.processStream(
+      const result = run.processStream(
         { messages: [new HumanMessage('go')] },
         {
           version: 'v2',
@@ -1119,6 +1125,14 @@ it.each([false, true])(
             : undefined,
         },
       );
+      if (mode === 'combined' && !supportsModelInvocationContext) {
+        await expect(result).rejects.toThrow();
+        expect(invocations).toBe(0);
+        expect(persisted).not.toHaveBeenCalled();
+        expect(runtime.createRun).not.toHaveBeenCalled();
+        return;
+      }
+      const content = await result;
       expect(JSON.stringify(content)).toContain('first approved third');
       expect(runtime.journalEntries.join('')).not.toContain('PRIVATE-CANDIDATE');
       expect(invocations).toBe(1);

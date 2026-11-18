@@ -201,12 +201,6 @@ export async function createRemoteSdkRun({
       return socket;
     };
     const modelAdmission = hostServices?.modelLifecycle?.attach(options.callbacks) === true;
-    if (modelAdmission && hostServices?.providerText) {
-      hostServices.modelLifecycle?.dispose();
-      throw new Error(
-        'Remote model admission with provider-text protection requires SDK invocation context support',
-      );
-    }
     const connection = remote.recovery
       ? connectRecoveringSdkSocket({
           url: remote.url,
@@ -494,11 +488,18 @@ export async function createRemoteSdkRun({
           hostModel?: number;
           builderModel?: number;
           modelAdmission?: number;
+          modelAdmissionWithProviderText?: number;
         };
         if (capabilities?.transportVersion !== 2)
           throw new Error('Worker transport capability unavailable');
         if (modelAdmission && capabilities?.modelAdmission !== 1)
           throw new Error('Worker model admission capability unavailable');
+        if (
+          modelAdmission &&
+          hostServices?.providerText &&
+          capabilities?.modelAdmissionWithProviderText !== 1
+        )
+          throw new Error('Worker protected model admission capability unavailable');
         if (hostServices?.modelProfile && capabilities?.builderModel !== 1)
           throw new Error('Worker builder model capability unavailable');
         if (hostServices?.model && capabilities?.hostModel !== 1)
