@@ -288,3 +288,25 @@ it('removes the response listener after a normal successful operation', async ()
   expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
   expect(res.listenerCount('close')).toBe(0);
 });
+
+it('does not read credential storage for an empty custom-variable map', async () => {
+  const fixture = setup();
+  const res = ownedResponse();
+  fixture.dependencies.getMCPServersRegistry = () => ({
+    recoverServerConfig: jest.fn(),
+    getServerConfig: jest.fn().mockResolvedValue({
+      type: 'streamable-http',
+      url: 'https://mcp.example.test',
+      customUserVars: {},
+    }),
+  });
+  fixture.dependencies.db.findPluginAuthsByKeys = jest
+    .fn()
+    .mockRejectedValue(new Error('synthetic storage failure'));
+  await invokeHandler(fixture.dependencies, res);
+  expect(fixture.dependencies.db.findPluginAuthsByKeys).not.toHaveBeenCalled();
+  expect(fixture.reinitialize).toHaveBeenCalledWith(
+    expect.objectContaining({ userMCPAuthMap: undefined }),
+  );
+  expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+});

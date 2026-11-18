@@ -142,7 +142,11 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
 
       /** @type {Record<string, Record<string, string>> | undefined} */
       let userMCPAuthMap: Record<string, Record<string, string>> | undefined;
-      if (serverConfig.customUserVars && typeof serverConfig.customUserVars === 'object') {
+      if (
+        serverConfig.customUserVars &&
+        typeof serverConfig.customUserVars === 'object' &&
+        Object.keys(serverConfig.customUserVars).length > 0
+      ) {
         userMCPAuthMap = await getUserMCPAuthMap({
           userId: user.id,
           servers: [serverName],
