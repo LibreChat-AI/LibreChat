@@ -2966,6 +2966,65 @@ describe('initializeAgent — maxContextTokens', () => {
     // but Math.max(1024, ...) clamps it
     expect(result.maxContextTokens).toBe(1024);
   });
+
+  describe('output limit moved into modelKwargs (GPT-5+ OpenAI configs)', () => {
+    const modelDefault = 263000;
+
+    async function getBaseContextTokens(llmConfig: Record<string, unknown>) {
+      const { agent, req, res, loadTools, db } = createMocks({
+        maxContextTokens: undefined,
+        modelDefault,
+      });
+      mockGetProviderConfig.mockReturnValue({
+        getOptions: jest
+          .fn()
+          .mockResolvedValue({ llmConfig: { model: 'test-model', ...llmConfig } }),
+        overrideProvider: Providers.OPENAI,
+      });
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+        },
+        db,
+      );
+      return result.baseContextTokens;
+    }
+
+    it('reserves modelKwargs.max_output_tokens (Responses API)', async () => {
+      const baseContextTokens = await getBaseContextTokens({
+        useResponsesApi: true,
+        modelKwargs: { max_output_tokens: 128000 },
+      });
+      expect(baseContextTokens).toBe(modelDefault - 128000);
+    });
+
+    it('reserves modelKwargs.max_completion_tokens (Chat Completions)', async () => {
+      const baseContextTokens = await getBaseContextTokens({
+        modelKwargs: { max_completion_tokens: 128000 },
+      });
+      expect(baseContextTokens).toBe(modelDefault - 128000);
+    });
+
+    it('prefers top-level output limits over modelKwargs', async () => {
+      const baseContextTokens = await getBaseContextTokens({
+        maxTokens: 4096,
+        modelKwargs: { max_completion_tokens: 128000 },
+      });
+      expect(baseContextTokens).toBe(modelDefault - 4096);
+    });
+
+    it('reserves nothing when no output limit is set', async () => {
+      const baseContextTokens = await getBaseContextTokens({ modelKwargs: {} });
+      expect(baseContextTokens).toBe(modelDefault);
+    });
+  });
 });
 
 describe('initializeAgent — manual skill priming (Phase 3)', () => {
