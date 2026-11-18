@@ -125,8 +125,8 @@ test.describe('skill file authoring tools', () => {
     await expect(page.getByRole('heading', { level: 1, name: skillName })).toBeVisible();
     await expect(page.getByText(EDITED_DESCRIPTION)).toBeVisible();
 
-    await page.getByRole('button', { name: 'Delete' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click();
+    await page.getByTestId('app-pane').getByRole('button', { name: 'Delete', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
     await expect(page).toHaveURL((url) => url.pathname === '/skills');
     const token = await getAccessToken(page);
     await expect.poll(async () => findSkill(page, skillName, token)).toBeNull();

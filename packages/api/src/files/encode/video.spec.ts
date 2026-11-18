@@ -11,6 +11,7 @@ jest.mock('./utils', () => ({
   getFileStream: jest.fn(),
   getConfiguredFileSizeLimit: jest.fn(),
   isConfiguredProviderMediaType: jest.fn(),
+  skipMissingAttachment: jest.requireActual('./utils').skipMissingAttachment,
 }));
 
 jest.mock('./memoryGuard', () => ({

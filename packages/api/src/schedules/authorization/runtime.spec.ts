@@ -1,8 +1,12 @@
 import { Permissions, PermissionTypes, AgentCapabilities } from 'librechat-data-provider';
 import type { AppConfig, IRole, ISchedule, AgentGraphAccessContext } from '@librechat/data-schemas';
+import {
+  restoreExecutionContext,
+  createScheduleExecutionContext,
+} from '~/agents/authority/context';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
 import { bindScheduledMCPInvocation, getScheduleMCPExecution } from './execution';
-import { executionFixture, readTool } from './execution.helper';
+import { executionFixture, allowOffered, readTool } from './execution.helper';
 import { createMCPRequestContext } from '~/mcp/request';
 import { createScheduleMCPPreflight } from '../mcp';
 import { ScheduledMCPPolicyError } from './policy';
@@ -28,7 +32,6 @@ async function setup() {
               scopes: [],
             },
           },
-          readOnlyPolicy: fixture.policy,
         },
       },
     },
@@ -71,14 +74,18 @@ async function setup() {
     })),
   );
   const getModelsConfig = jest.fn(async () => ({ test: ['test'] }));
-  const getServers = jest.fn(async () => ({ warehouse: fixture.config }));
+  /** Every server the owner can reach. A test adds to it to give the agents a second one. */
+  const servers: Record<string, typeof fixture.config> = { warehouse: fixture.config };
+  const getServers = jest.fn(async () => servers);
   const resolveGraphAccess = jest.fn(async () => ({}) as AgentGraphAccessContext);
   const getScheduleById = jest.fn(async () => row);
   const getScheduleMCPCompletionState = jest.fn(async () => ({
     identity: fixture.identity,
     enrolled: false,
   }));
+  let pausable = true;
   const host = createScheduleMCPRuntimeHost({
+    canPauseRuns: async () => pausable,
     getScheduleMCPCompletionState,
     methods: { ...fixture.storage, getScheduleById },
     findUser,
@@ -101,6 +108,7 @@ async function setup() {
     offerDigest: offer.offer!.digest,
     expectedRevision: null,
     lifetimeHours: 1,
+    allow: allowOffered(offer.targets),
   });
   row.mcpConsent = fixture.snapshot.enrollment!;
   const connect = jest.fn(async () => ({
@@ -114,11 +122,15 @@ async function setup() {
     getAgentGraphNodes: getNodes,
     resolveAgentGraphAccess: resolveGraphAccess,
     getServerConfigs: getServers,
-    ensureConfigServers: async () => ({ warehouse: fixture.config }),
+    ensureConfigServers: async () => servers,
     findPluginAuthsByKeys: async () => [],
     connect,
     execution: host.execution,
   });
+  /** As the chat controller does, build the context once from the verified trigger. */
+  const prepare = host.prepare;
+  host.prepare = (input) =>
+    prepare({ executionContext: createScheduleExecutionContext(input.req), ...input });
   const context = createMCPRequestContext();
   const req = {
     user: fixture.user,
@@ -151,8 +163,12 @@ async function setup() {
     getAppConfig,
     getScheduleById,
     getScheduleMCPCompletionState,
+    servers,
     setCandidates: (names: string[]) => {
       candidates = names;
+    },
+    cannotPause: () => {
+      pausable = false;
     },
     check: () =>
       preflight('root', fixture.user, {
@@ -212,13 +228,12 @@ it('rebuilds the protected root on resume and refuses revoked consent even after
   await f.host.prepare({
     req,
     context: f.context,
-    restoredContext: {
-      scheduleId: 'schedule',
-      ownerId: 'owner',
+    executionContext: restoreExecutionContext(req, {
+      userId: 'owner',
       tenantId: 'tenant',
-      agentId: 'root',
-      invocationMode: 'delegated',
-    },
+      scheduleId: 'schedule',
+      agent_id: 'root',
+    }),
   });
   expect(getScheduleMCPExecution(f.context)?.stage).toBe('resume');
   await f.host.consent.service.revoke(f.identity, f.snapshot.enrollment!.revision);
@@ -267,17 +282,10 @@ it('ignores spoofed body fields on ordinary chat and refuses cross-tenant trigge
   ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
 });
 
-it('keeps live role denial and policy removal fail-closed for enrolled schedules', async () => {
+it('keeps live role denial fail-closed for enrolled schedules', async () => {
   const f = await setup();
-  const role = await f.getRoleByName();
   f.getRoleByName.mockResolvedValue({ permissions: {} } as IRole);
   await expect(f.check()).rejects.toMatchObject({ code: 'mcp_permission_denied' });
-  f.getRoleByName.mockResolvedValue(role);
-  const schedules = f.config.interfaceConfig?.schedules;
-  if (typeof schedules === 'object') delete schedules.mcpConsent?.readOnlyPolicy;
-  await expect(f.check()).rejects.toMatchObject({
-    outcomes: [expect.objectContaining({ reason: 'tool_policy_denied' })],
-  });
 });
 
 it('does not construct the host for ordinary chats', async () => {
@@ -406,13 +414,10 @@ it.each([false, true])(
         ? {
             req: { user: f.user, _isScheduledFire: true, body: { manual: false } },
             context: f.context,
-            restoredContext: {
-              scheduleId: 'schedule',
-              ownerId: 'owner',
-              tenantId: 'tenant',
-              agentId: 'root',
-              invocationMode: 'delegated',
-            },
+            executionContext: restoreExecutionContext(
+              { user: f.user },
+              { userId: 'owner', tenantId: 'tenant', scheduleId: 'schedule', agent_id: 'root' },
+            ),
             restoredJob: { scheduleId: 'schedule', scheduleManual: true },
           }
         : { req: manualReq, context: f.context },
@@ -496,6 +501,7 @@ it('attaches a legacy monitor without minting a grant and fences its next tool a
     offerDigest: offer.offer!.digest,
     expectedRevision: null,
     lifetimeHours: 1,
+    allow: allowOffered(offer.targets),
   });
   await expect(call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
 });
@@ -651,4 +657,303 @@ it('preserves typed denials and owned cancellation at the preparation boundary',
       jest.fn(),
     ),
   ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+});
+
+describe('a grant for only some of what the agents select', () => {
+  /** The agents select `query` and `export`; the owner allows `query`. */
+  async function partial() {
+    const f = await setup();
+    f.setCandidates(['query_mcp_warehouse', 'export_mcp_warehouse']);
+    const offer = await f.host.consent.service.view(f.identity);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
+    });
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    return f;
+  }
+
+  it('is ready to run, and still refuses the tool the owner left out when it is called', async () => {
+    const f = await partial();
+    await expect(f.check()).resolves.toEqual([{ server: 'warehouse', status: 'ready' }]);
+    await f.host.prepare({ req: f.req, context: f.context });
+    const call = (tool: string) =>
+      bindScheduledMCPInvocation(f.context, 'root', tool)!.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: tool,
+        loadTools: async () => ({ tools: [{ ...readTool, name: tool }], complete: true }),
+      });
+    await expect(call('query')).resolves.toBeUndefined();
+    await expect(call('export')).rejects.toMatchObject({
+      failure: { reason: 'tool_policy_denied' },
+    });
+  });
+
+  it('does not connect to a server the owner left out of the grant', async () => {
+    const f = await setup();
+    const archive = { type: 'streamable-http' as const, url: 'https://archive.example/mcp' };
+    f.servers.archive = archive;
+    Object.assign(f.config.mcpConfig as object, { archive });
+    const consent = (f.config.interfaceConfig!.schedules as { mcpConsent: { resources: object } })
+      .mcpConsent;
+    Object.assign(consent.resources, {
+      archive: {
+        url: archive.url,
+        credentialMode: 'anonymous',
+        issuer: null,
+        audience: null,
+        scopes: [],
+      },
+    });
+    f.setCandidates(['query_mcp_warehouse', 'purge_mcp_archive']);
+    const offer = await f.host.consent.service.view(f.identity);
+    expect(offer.targets.map((target) => target.resource.serverName)).toEqual([
+      'archive',
+      'warehouse',
+    ]);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
+    });
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    f.connect.mockClear();
+    await expect(f.check()).resolves.toEqual([{ server: 'warehouse', status: 'ready' }]);
+    expect(f.connect).toHaveBeenCalledTimes(1);
+    expect(f.connect).toHaveBeenCalledWith(expect.objectContaining({ serverName: 'warehouse' }));
+  });
+
+  it('is not ready once the agents select nothing the owner allowed', async () => {
+    const f = await partial();
+    f.setCandidates(['export_mcp_warehouse']);
+    f.connect.mockClear();
+    await expect(f.check()).rejects.toMatchObject({
+      outcomes: [expect.objectContaining({ reason: 'tool_policy_denied' })],
+    });
+    expect(f.connect).not.toHaveBeenCalled();
+  });
+});
+
+describe('a schedule its owner never authorized', () => {
+  async function unauthorized() {
+    const f = await setup();
+    f.snapshot.enrollment = null;
+    f.row.mcpConsent = undefined;
+    const consent = (f.config.interfaceConfig!.schedules as { mcpConsent: object }).mcpConsent;
+    const call = async () => {
+      const context = createMCPRequestContext();
+      await f.host.prepare({ req: f.req, context });
+      return bindScheduledMCPInvocation(context, 'root', 'query')!.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+      });
+    };
+    /** `Date.now()` is pinned to 1000 by `setup`. */
+    const setDeadline = (ms: number) =>
+      Object.assign(consent, { requireAfter: new Date(ms).toISOString() });
+    return { ...f, consent, call, setDeadline };
+  }
+  const missing = {
+    failure: { reason: 'consent_missing', status: 'mcp_reauth_required', recovery: 'authorize' },
+  };
+
+  it('keeps using MCP tools with no deadline, and until one that has not passed', async () => {
+    const f = await unauthorized();
+    await expect(f.call()).resolves.toBeUndefined();
+    f.setDeadline(1001);
+    await expect(f.call()).resolves.toBeUndefined();
+    expect(await f.host.consent.service.view(f.identity)).toMatchObject({
+      state: 'missing',
+      required: false,
+      requireAfterMs: 1001,
+    });
+  });
+
+  it('is refused MCP tools from the operator deadline on, at readiness and in a run', async () => {
+    const f = await unauthorized();
+    f.setDeadline(1000);
+    await expect(f.call()).rejects.toMatchObject(missing);
+    await expect(f.check()).rejects.toMatchObject({
+      code: 'mcp_reauth_required',
+      outcomes: [expect.objectContaining({ server: 'warehouse', reason: 'consent_missing' })],
+    });
+    expect(await f.host.consent.service.view(f.identity)).toMatchObject({
+      state: 'missing',
+      required: true,
+      requireAfterMs: null,
+    });
+  });
+
+  it('is refused MCP tools once its owner has edited it, with no deadline set', async () => {
+    const f = await unauthorized();
+    f.snapshot.required = true;
+    await expect(f.call()).rejects.toMatchObject(missing);
+  });
+
+  it('is left alone where consent is off, whatever the deadline or the edit mark', async () => {
+    const f = await unauthorized();
+    f.setDeadline(0);
+    f.snapshot.required = true;
+    Object.assign(f.consent, { enabled: false });
+    await expect(f.call()).resolves.toBeUndefined();
+    await expect(f.check()).resolves.toBeDefined();
+  });
+
+  it('runs again once the owner confirms', async () => {
+    const f = await unauthorized();
+    f.setDeadline(0);
+    await expect(f.call()).rejects.toMatchObject(missing);
+    const offer = await f.host.consent.service.view(f.identity);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow: allowOffered(offer.targets),
+    });
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    await expect(f.call()).resolves.toBeUndefined();
+    expect(await f.host.consent.service.view(f.identity)).toMatchObject({
+      state: 'active',
+      required: false,
+      requireAfterMs: null,
+    });
+  });
+
+  it('reads the configuration fail-closed, so an override outage cannot lift the requirement', async () => {
+    const f = await unauthorized();
+    f.setDeadline(0);
+    await expect(f.call()).rejects.toMatchObject(missing);
+    // The override store goes down. Asked without `failClosed`, the config service answers
+    // with the deployment's base, which here does not turn consent on at all.
+    const base = { ...f.config, interfaceConfig: { schedules: { use: true } } } as AppConfig;
+    f.getAppConfig.mockImplementation(async (options) => {
+      if (options?.failClosed) throw new Error('PRIVATE override store');
+      return base;
+    });
+    let failure: unknown;
+    await f.call().catch((error) => {
+      failure = error;
+    });
+    expect(failure).toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+    expect(String(failure)).not.toContain('PRIVATE');
+  });
+
+  it('asks once per run, and not at all for a run that calls no MCP tool', async () => {
+    const f = await unauthorized();
+    f.setDeadline(1001);
+    const context = createMCPRequestContext();
+    f.getAppConfig.mockClear();
+    f.findUser.mockClear();
+    await f.host.prepare({ req: f.req, context });
+    expect(f.getAppConfig).not.toHaveBeenCalled();
+    expect(f.findUser).not.toHaveBeenCalled();
+    const guard = bindScheduledMCPInvocation(context, 'root', 'query')!;
+    const use = () =>
+      guard.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+      });
+    await use();
+    const reads = f.findUser.mock.calls.length;
+    expect(reads).toBeGreaterThan(0);
+    await use();
+    expect(f.findUser).toHaveBeenCalledTimes(reads);
+  });
+
+  it('does not treat a failed lookup as permission, and looks again on the next call', async () => {
+    const f = await unauthorized();
+    f.setDeadline(1001);
+    const context = createMCPRequestContext();
+    await f.host.prepare({ req: f.req, context });
+    f.getAppConfig.mockRejectedValueOnce(new Error('PRIVATE config store'));
+    const guard = bindScheduledMCPInvocation(context, 'root', 'query')!;
+    const use = () =>
+      guard.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+      });
+    let failure: unknown;
+    await use().catch((error) => {
+      failure = error;
+    });
+    expect(failure).toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+    expect(String(failure)).not.toContain('PRIVATE');
+    await expect(use()).resolves.toBeUndefined();
+  });
+});
+
+describe('a tool the owner approves call by call', () => {
+  async function asking() {
+    const f = await setup();
+    const offer = await f.host.consent.service.view(f.identity);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+      allow: allowOffered(offer.targets),
+      ask: { warehouse: ['query'] },
+    });
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    const use = (context: ReturnType<typeof createMCPRequestContext>, toolCallId?: string) =>
+      bindScheduledMCPInvocation(context, 'root', 'query')!.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+        toolCallId,
+      });
+    return { ...f, use };
+  }
+  const refused = { failure: { reason: 'approval_required' } };
+
+  it('takes approvals only from the request that resumes a run', async () => {
+    const f = await asking();
+    const fresh = createMCPRequestContext();
+    await f.host.prepare({ req: f.req, context: fresh, approvedToolCalls: ['call-1'] });
+    expect(getScheduleMCPExecution(fresh)?.mayAsk).toBe(true);
+    await expect(f.use(fresh, 'call-1')).rejects.toMatchObject(refused);
+
+    const req = { user: f.user, _isScheduledFire: true, body: {} };
+    const resumed = createMCPRequestContext();
+    await f.host.prepare({
+      req,
+      context: resumed,
+      executionContext: restoreExecutionContext(req, {
+        userId: 'owner',
+        tenantId: 'tenant',
+        scheduleId: 'schedule',
+        agent_id: 'root',
+      }),
+      approvedToolCalls: ['call-1'],
+    });
+    await expect(f.use(resumed, 'call-1')).resolves.toBeUndefined();
+    await expect(f.use(resumed, 'call-2')).rejects.toMatchObject(refused);
+  });
+
+  it('does not fail the readiness check of a schedule that will ask', async () => {
+    const f = await asking();
+    await expect(f.check()).resolves.toBeDefined();
+  });
+
+  it('reports whether this deployment can pause a scheduled run', async () => {
+    const f = await setup();
+    expect(await f.host.consent.service.view(f.identity)).toMatchObject({ approval: true });
+    f.cannotPause();
+    expect(await f.host.consent.service.view(f.identity)).toMatchObject({ approval: false });
+  });
 });

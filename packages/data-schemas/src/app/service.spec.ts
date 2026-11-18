@@ -2,10 +2,21 @@ import {
   EModelEndpoint,
   AgentCapabilities,
   defaultAssistantsVersion,
+  setPiiRegexProgramSizer,
 } from 'librechat-data-provider';
 import type { DeepPartial, TCustomConfig } from 'librechat-data-provider';
 import { AppService, loadFiltersConfig, loadSummarizationConfig } from './service';
 import logger from '~/config/winston';
+
+/** The server registers RE2; these specs exercise config loading, so any compilable pattern sizes. */
+setPiiRegexProgramSizer((pattern) => {
+  try {
+    new RegExp(pattern);
+    return pattern.length;
+  } catch {
+    return null;
+  }
+});
 
 jest.mock('~/config/winston', () => ({
   __esModule: true,
@@ -364,6 +375,22 @@ describe('AppService admin catalog model-list lifetime', () => {
   });
 });
 
+describe('AppService file list limit', () => {
+  it('carries the configured limit onto the app config the file list route reads', async () => {
+    const result = await AppService({
+      config: { fileListLimit: 250 } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.fileListLimit).toBe(250);
+  });
+
+  it('leaves it unset when librechat.yaml does not set it, so the route keeps its default', async () => {
+    for (const config of [{}, { version: '1.3.0' }]) {
+      const result = await AppService({ config: config as DeepPartial<TCustomConfig> });
+      expect(result.fileListLimit).toBeUndefined();
+    }
+  });
+});
+
 describe('AppService conversation list limits', () => {
   it('carries the configured filter limits onto the app config', async () => {
     const result = await AppService({
@@ -469,5 +496,14 @@ describe('AppService custom endpoint parameters', () => {
     });
     expect(appConfig.config.endpoints?.custom?.[0]).toEqual(gateway);
     expect(written.endpoints?.custom?.[0]).toEqual(gateway);
+  });
+});
+
+describe('AppService spreadsheet parsing policy', () => {
+  it('carries bounded deployment policy into request configuration', async () => {
+    const spreadsheetParsing = { timeoutMs: 30_000, maxConcurrent: 4 };
+    const result = await AppService({ config: { spreadsheetParsing } });
+    expect(result.spreadsheetParsing).toEqual(spreadsheetParsing);
+    expect((await AppService({ config: {} })).spreadsheetParsing).toBeUndefined();
   });
 });

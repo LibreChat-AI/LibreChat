@@ -1,7 +1,13 @@
 import os from 'os';
 import path from 'path';
 import { promises as fs } from 'fs';
-import { moveLocalFile, writeLocalFile, saveLocalBuffer, writeFileAtomic } from '../local';
+import {
+  moveLocalFile,
+  writeLocalFile,
+  saveLocalBuffer,
+  resolveLocalFile,
+  writeFileAtomic,
+} from '../local';
 
 describe('local storage writes', () => {
   let dir: string;
@@ -59,6 +65,95 @@ describe('local storage writes', () => {
     expect(await fs.readFile(path.join(paths.uploads, 'user1', 'b.txt'), 'utf8')).toBe('doc');
   });
 
+  it('returns a URL that addresses the stored file when the name has reserved characters', async () => {
+    const paths = { publicPath: path.join(dir, 'public'), uploads: path.join(dir, 'uploads') };
+    const fileName = 'q#1 100%25?x=1.png';
+
+    const url = await saveLocalBuffer({
+      paths,
+      userId: 'user1',
+      buffer: Buffer.from('png'),
+      fileName,
+    });
+
+    expect(url).toBe('/images/user1/q%231%20100%2525%3Fx%3D1.png');
+    const parsed = new URL(url, 'http://localhost');
+    expect(parsed.pathname).toBe(url);
+    expect(parsed.search).toBe('');
+    expect(parsed.hash).toBe('');
+    const stored = path.join(paths.publicPath, 'images', 'user1', fileName);
+    expect(decodeURIComponent(parsed.pathname.slice('/images/user1/'.length))).toBe(fileName);
+    expect(await fs.readFile(stored, 'utf8')).toBe('png');
+  });
+
+  it('rejects a nested name before creating any directory', async () => {
+    const paths = { publicPath: path.join(dir, 'public'), uploads: path.join(dir, 'uploads') };
+
+    await expect(
+      saveLocalBuffer({
+        paths,
+        userId: 'user1',
+        buffer: Buffer.from('nested'),
+        fileName: 'nested dir/avatar#1.png',
+        basePath: 'uploads',
+      }),
+    ).rejects.toThrow('Nested path detected in filename');
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  it('rejects a nested name in the write and move helpers and keeps the source', async () => {
+    const source = path.join(dir, 'upload.tmp');
+    await fs.writeFile(source, 'moved');
+    const target = path.join(dir, 'target');
+
+    await expect(writeLocalFile(target, 'a/b/avatar.png', 'written')).rejects.toThrow(
+      'Nested path detected in filename',
+    );
+    await expect(moveLocalFile(source, target, 'a/b/avatar.png')).rejects.toThrow(
+      'Nested path detected in filename',
+    );
+
+    expect(await fs.readdir(dir)).toEqual(['upload.tmp']);
+    expect(await fs.readFile(source, 'utf8')).toBe('moved');
+  });
+
+  it('still accepts a name that normalizes to a file directly inside the directory', async () => {
+    const written = await writeLocalFile(path.join(dir, 'out'), 'a/../avatar.png', 'flat');
+
+    expect(await fs.readFile(path.join(dir, 'out', 'avatar.png'), 'utf8')).toBe('flat');
+    expect(written).toBe(path.join(dir, 'out', 'avatar.png'));
+  });
+
+  it('records a name without reserved characters exactly as it is', async () => {
+    const paths = { publicPath: path.join(dir, 'public'), uploads: path.join(dir, 'uploads') };
+
+    const url = await saveLocalBuffer({
+      paths,
+      userId: 'user1',
+      buffer: Buffer.from('png'),
+      fileName: '会社 1.png',
+    });
+
+    expect(url).toBe('/images/user1/会社 1.png');
+    expect(
+      await fs.readFile(path.join(paths.publicPath, 'images', 'user1', '会社 1.png'), 'utf8'),
+    ).toBe('png');
+  });
+
+  it('rejects a name that cannot be encoded before creating any directory', async () => {
+    const paths = { publicPath: path.join(dir, 'public'), uploads: path.join(dir, 'uploads') };
+
+    await expect(
+      saveLocalBuffer({
+        paths,
+        userId: 'user1',
+        buffer: Buffer.from('x'),
+        fileName: 'broken#\uD800.png',
+      }),
+    ).rejects.toThrow(URIError);
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
   it('rejects a traversing file name without creating any directory', async () => {
     const paths = { publicPath: path.join(dir, 'public'), uploads: path.join(dir, 'uploads') };
 
@@ -112,6 +207,35 @@ describe('local storage writes', () => {
     expect(await fs.readFile(path.join(dir, 'written', longName), 'utf8')).toBe('written');
     expect(await fs.readFile(path.join(dir, 'moved', longName), 'utf8')).toBe('moved');
     expect(await fs.readdir(path.join(dir, 'moved'))).toEqual([longName]);
+  });
+
+  describe('resolveLocalFile', () => {
+    beforeEach(() => fs.mkdir(path.join(dir, 'u'), { recursive: true }));
+
+    it('resolves an encoded record to the decoded file', async () => {
+      await fs.writeFile(path.join(dir, 'u', 'a#b.txt'), 'decoded');
+
+      expect(await resolveLocalFile(dir, 'u/a%23b.txt')).toBe(path.join(dir, 'u', 'a#b.txt'));
+    });
+
+    it('resolves a legacy record to the file named by the text as recorded', async () => {
+      await fs.writeFile(path.join(dir, 'u', 'a%23b.txt'), 'legacy');
+
+      expect(await resolveLocalFile(dir, 'u/a%23b.txt')).toBe(path.join(dir, 'u', 'a%23b.txt'));
+    });
+
+    it('prefers the decoded file when both exist, and names it when neither does', async () => {
+      await fs.writeFile(path.join(dir, 'u', 'a%23b.txt'), 'legacy');
+      await fs.writeFile(path.join(dir, 'u', 'a#b.txt'), 'decoded');
+
+      expect(await resolveLocalFile(dir, 'u/a%23b.txt')).toBe(path.join(dir, 'u', 'a#b.txt'));
+      expect(await resolveLocalFile(dir, 'u/gone%23.txt')).toBe(path.join(dir, 'u', 'gone#.txt'));
+    });
+
+    it('leaves a plain path as it is and does not probe outside the root', async () => {
+      expect(await resolveLocalFile(dir, 'u/plain.txt')).toBe(path.join(dir, 'u', 'plain.txt'));
+      expect(await resolveLocalFile(dir, '../a%23.txt')).toBe(path.join(dir, '..', 'a#.txt'));
+    });
   });
 
   it('moves a temp upload into a new directory', async () => {

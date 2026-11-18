@@ -4,11 +4,17 @@ import { NEW_CHAT_PATH } from '../helpers';
 import { resetPinnedState } from './pinned.helpers';
 const modelTrigger = (page: Page) => page.getByRole('button', { name: 'Select a model' }).first();
 
+/**
+ * The query reaches the list after a debounce, and until then the unfiltered menu is still
+ * rendered, so its options would pass for results. Only the search results render the
+ * results announcement, so waiting on it waits for the list the query produced.
+ */
 async function openModelSearch(page: Page, query: string) {
   await modelTrigger(page).click();
   const search = page.locator('#model-search');
   await expect(search).toBeVisible();
   await search.fill(query);
+  await expect(page.getByRole('listbox').getByRole('alert')).toHaveText(/results? found/i);
   await expect(page.getByRole('option').first()).toBeVisible();
   return search;
 }

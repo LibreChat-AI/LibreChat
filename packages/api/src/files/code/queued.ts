@@ -1,4 +1,8 @@
-import { getCodeEnvRefForProfile, resolveSandboxFilename } from 'librechat-data-provider';
+import {
+  FileContext,
+  getCodeEnvRefForProfile,
+  resolveSandboxFilename,
+} from 'librechat-data-provider';
 import type { TFile, TurnFileConsumers, AgentToolResources } from 'librechat-data-provider';
 import type { CodeEnvFile } from '@librechat/agents';
 import type { CodeExecutionRoute } from '../provision/service';
@@ -9,6 +13,9 @@ import {
   createCodeDestinationSet,
   reserveCodeDestination,
   sortCodeFilesByDestinationPriority,
+  selectCodeFileGenerations,
+  getCodeFileDestination,
+  planCodeSnapshotMounts,
 } from './destinations';
 import { appendCodeFileContextLine, getCodeFileContextLine, getCodeFileLocation } from './priming';
 import { getCodeEnvUploadFilename } from './form';
@@ -79,11 +86,13 @@ export function planCodeFileUploads({
   }
 
   const confirmedNames = new Set<string>();
-  const files = sortCodeFilesByDestinationPriority(
+  const files = selectCodeFileGenerations(
     [...state.codeEnvFiles, ...liveFiles.filter((file) => !queuedIds.has(file.file_id))],
     privateIds,
-  ).filter((file): file is TFile => {
+    route,
+  ).files.filter((file): file is TFile => {
     if (!file) return false;
+    if (file.context === FileContext.execute_code_snapshot) return true;
     const ref = getCodeEnvRefForProfile(file.metadata, route);
     const recovery = state.codeEnvRecoveryNames?.get(file.file_id);
     const entityId = state.agentScopedFileIds.has(file.file_id) ? agentId : undefined;
@@ -99,17 +108,34 @@ export function planCodeFileUploads({
   });
 
   const destinations = createCodeDestinationSet();
+  const snapshotMounts = planCodeSnapshotMounts(
+    [...queued.values()].map((candidate) => candidate.file).concat(liveFiles),
+    privateIds,
+    route,
+    state.codeEnvDestinations,
+  );
+  for (const name of snapshotMounts.values()) reserveCodeDestination(destinations, name);
   const liveNames = new Map<string, string>();
   const reserveLiveFiles = (candidate: ProvisionToolContext): void => {
     const candidateQueuedIds = new Set(
       candidate.provisionState?.codeEnvFiles.map((file) => file.file_id),
     );
-    for (const file of candidate.tool_resources?.execute_code?.files ?? []) {
-      if (candidateQueuedIds.has(file.file_id)) continue;
+    const live = candidate.tool_resources?.execute_code?.files ?? [];
+    const winners = new Set(
+      selectCodeFileGenerations(
+        [...(candidate.provisionState?.codeEnvFiles ?? []), ...live],
+        privateIds,
+        route,
+      ).files.flatMap((file) => (file ? [file.file_id] : [])),
+    );
+    for (const file of live) {
+      if (candidateQueuedIds.has(file.file_id) || !winners.has(file.file_id)) continue;
       const name =
-        getCodeEnvRefForProfile(file.metadata, route)?.sandboxFilename ??
-        candidate.provisionState?.codeEnvDestinations?.get(file.file_id) ??
-        resolveSandboxFilename(file.filename, file.type);
+        file.context === FileContext.execute_code_snapshot
+          ? getCodeFileDestination(file, route)
+          : (getCodeEnvRefForProfile(file.metadata, route)?.sandboxFilename ??
+            candidate.provisionState?.codeEnvDestinations?.get(file.file_id) ??
+            resolveSandboxFilename(file.filename, file.type));
       if (reserveCodeDestination(destinations, name) && !liveNames.has(file.file_id)) {
         liveNames.set(file.file_id, name);
       }
@@ -131,8 +157,9 @@ export function planCodeFileUploads({
     // An agent's frozen plan survives later discovery in other execution contexts.
     for (const [id, name] of state.codeEnvDestinations ?? []) {
       if (!queued.has(id)) continue;
-      reserveCodeDestination(destinations, name);
-      advertisedNames.set(id, name);
+      const destination = snapshotMounts.get(id) ?? name;
+      reserveCodeDestination(destinations, destination);
+      advertisedNames.set(id, destination);
     }
     // Inherited paths are hints until checked against this agent's live mounts.
     for (const [id, candidate] of queued) {
@@ -152,15 +179,18 @@ export function planCodeFileUploads({
     if (!file) continue;
     const candidate = queued.get(file.file_id);
     const destination =
+      snapshotMounts.get(file.file_id) ??
       advertisedNames.get(file.file_id) ??
       liveNames.get(file.file_id) ??
       claimCodeDestination(
         destinations,
         getCodeEnvUploadFilename(
           resolveSandboxFilename(
-            getCodeEnvRefForProfile(file.metadata, route)?.sandboxFilename ??
-              candidate?.recoveryName ??
-              file.filename,
+            file.context === FileContext.execute_code_snapshot
+              ? getCodeFileDestination(file, route)
+              : (getCodeEnvRefForProfile(file.metadata, route)?.sandboxFilename ??
+                  candidate?.recoveryName ??
+                  file.filename),
             file.type,
           ),
         ),

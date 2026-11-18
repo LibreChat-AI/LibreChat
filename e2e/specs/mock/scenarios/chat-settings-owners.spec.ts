@@ -1,6 +1,12 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { sendMessage, selectMockEndpoint, MOCK_ENDPOINTS, NEW_CHAT_PATH } from '../helpers';
+import {
+  sendMessageAndWaitForCompletion,
+  selectMockEndpoint,
+  MOCK_ENDPOINTS,
+  NEW_CHAT_PATH,
+  sendMessage,
+} from '../helpers';
 
 /**
  * Save-drafts and temporary chat are app preferences the chat reads through the host's chat
@@ -69,11 +75,15 @@ test.describe('chat settings owners', () => {
 
     await setPreference(page, 'saveDrafts', true);
     await page.reload();
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await sendMessageAndWaitForCompletion(page, `draft-owner-${Date.now()}`);
+    await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+$/);
     const kept = `kept draft ${Date.now()}`;
     await messageInput(page).fill(kept);
     await expect.poll(() => storedDraftContains(page, kept)).toBe(true);
     await page.reload();
     await expect(messageInput(page)).toHaveValue(kept, { timeout: 20000 });
+    await expect(page.getByTestId('send-button')).toBeEnabled();
 
     await messageInput(page).fill('');
     await setPreference(page, 'saveDrafts', false);
@@ -86,5 +96,6 @@ test.describe('chat settings owners', () => {
     await page.reload();
     await expect(messageInput(page)).toBeVisible({ timeout: 20000 });
     await expect(messageInput(page)).toHaveValue('');
+    await expect(page.getByTestId('send-button')).toBeDisabled();
   });
 });

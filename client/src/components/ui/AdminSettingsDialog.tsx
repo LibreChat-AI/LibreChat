@@ -1,9 +1,11 @@
-import { useId, useEffect, useState } from 'react';
+import { useId, useRef, useEffect, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { useForm, Controller } from 'react-hook-form';
 import { ChevronDown, ShieldEllipsis } from 'lucide-react';
+import { useForm, useWatch, Controller } from 'react-hook-form';
 import { Permissions, SystemRoles } from 'librechat-data-provider';
 import {
+  Alert,
+  Input,
   Label,
   Button,
   Switch,
@@ -14,7 +16,13 @@ import {
   OGDialogFooter,
   OGDialogContent,
   OGDialogTrigger,
+  AlertDialog,
+  AlertDialogTitle,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogContent,
   OGDialogDescription,
+  AlertDialogDescription,
 } from '@librechat/client';
 import type { PermissionTypes } from 'librechat-data-provider';
 import type { Control } from 'react-hook-form';
@@ -46,22 +54,10 @@ export interface AdminSettingsDialogProps {
   };
   /** Localization key for the screen-reader description of the dialog */
   descriptionKey?: TranslationKeys;
-  /** Whether to show the admin access warning when ADMIN role and USE permission is displayed (default: true) */
-  showAdminWarning?: boolean;
   /** Custom trigger element. If not provided, uses default button with icon and text */
   trigger?: React.ReactNode;
   /** Additional className for the dialog content */
   dialogContentClassName?: string;
-  /** Custom callback when a permission change requires confirmation */
-  onPermissionConfirm?: (
-    permission: Permissions,
-    newValue: boolean,
-    onChange: (value: boolean) => void,
-  ) => void;
-  /** Permissions that require confirmation before changing (only applies when onPermissionConfirm is provided) */
-  confirmPermissions?: Permissions[];
-  /** Custom content to render after the permissions form (e.g., confirmation dialogs) */
-  extraContent?: React.ReactNode;
 }
 
 type LabelControllerProps = {
@@ -69,16 +65,9 @@ type LabelControllerProps = {
   label: string;
   permission: Permissions;
   control: Control<FormValues, unknown, FormValues>;
-  onConfirm?: (newValue: boolean, onChange: (value: boolean) => void) => void;
 };
 
-const LabelController: React.FC<LabelControllerProps> = ({
-  id,
-  control,
-  permission,
-  label,
-  onConfirm,
-}) => (
+const LabelController: React.FC<LabelControllerProps> = ({ id, control, permission, label }) => (
   <div className="flex items-center justify-between gap-4 px-4 py-3.5">
     <Label
       htmlFor={id}
@@ -94,13 +83,7 @@ const LabelController: React.FC<LabelControllerProps> = ({
           {...field}
           id={id}
           checked={field.value ?? false}
-          onCheckedChange={(val) => {
-            if (val === false && onConfirm) {
-              onConfirm(val, field.onChange);
-            } else {
-              field.onChange(val);
-            }
-          }}
+          onCheckedChange={field.onChange}
           value={(field.value ?? false).toString()}
           aria-label={label}
         />
@@ -116,12 +99,8 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
   menuId,
   mutation,
   descriptionKey,
-  showAdminWarning = true,
   trigger,
   dialogContentClassName,
-  onPermissionConfirm,
-  confirmPermissions = [],
-  extraContent,
 }) => {
   const localize = useLocalize();
   const { user } = useAuthContext();
@@ -130,9 +109,14 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
   const idPrefix = useId();
   const roleLabelId = useId();
   const roleValueId = useId();
+  const lockoutInputId = useId();
+  const lockoutInputRef = useRef<HTMLInputElement>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const [wasSuccessful, setWasSuccessful] = useState(isSuccess);
+  /** Holds a submit that would revoke the ADMIN role's own access until it is confirmed */
+  const [pendingLockout, setPendingLockout] = useState<FormValues | null>(null);
+  const [lockoutConfirmText, setLockoutConfirmText] = useState('');
   const {
     selectedRole,
     isSelectedCustomRole,
@@ -151,6 +135,16 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
     mode: 'onChange',
     defaultValues,
   });
+
+  const hasUsePermission = permissions.some(({ permission }) => permission === Permissions.USE);
+  const useValue = useWatch({ control, name: Permissions.USE });
+  /** Turning USE off for ADMIN hides the feature, and this dialog with it, for every admin;
+   *  only the interface section of librechat.yaml can turn it back on. */
+  const isRevokingAdminUse =
+    hasUsePermission &&
+    selectedRole === SystemRoles.ADMIN &&
+    defaultValues?.[Permissions.USE] === true &&
+    useValue === false;
 
   useEffect(() => {
     if (isSelectedCustomRole && (isCustomRoleLoading || isCustomRoleError)) {
@@ -178,8 +172,31 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
     setIsDialogOpen(open);
   };
 
+  const sectionName = localize(sectionKey);
+
   const onSubmit = (data: FormValues) => {
+    if (isRevokingAdminUse) {
+      setLockoutConfirmText('');
+      setPendingLockout(data);
+      return;
+    }
     mutate({ roleName: selectedRole, updates: data });
+  };
+
+  const handleLockoutOpenChange = (open: boolean) => {
+    if (!open) {
+      setPendingLockout(null);
+      setLockoutConfirmText('');
+    }
+  };
+
+  const confirmLockout = () => {
+    if (!pendingLockout || lockoutConfirmText !== SystemRoles.ADMIN) {
+      return;
+    }
+    mutate({ roleName: selectedRole, updates: pendingLockout });
+    setPendingLockout(null);
+    setLockoutConfirmText('');
   };
 
   const defaultTrigger = (
@@ -208,7 +225,7 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
               </div>
               <div className="min-w-0 space-y-1">
                 <OGDialogTitle className="text-xl leading-7">
-                  {localize('com_ui_admin_settings_section', { section: localize(sectionKey) })}
+                  {localize('com_ui_admin_settings_section', { section: sectionName })}
                 </OGDialogTitle>
                 {descriptionKey && (
                   <OGDialogDescription className="sr-only">
@@ -251,45 +268,25 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
               </div>
 
               <div className="divide-border-light border-border-light bg-surface-secondary divide-y overflow-hidden rounded-xl border">
-                {permissions.map(({ permission, labelKey }) => {
-                  const label = localize(labelKey);
-                  const needsConfirm =
-                    selectedRole === SystemRoles.ADMIN &&
-                    confirmPermissions.includes(permission) &&
-                    onPermissionConfirm;
-
-                  return (
-                    <div key={permission}>
-                      <LabelController
-                        id={`${idPrefix}-${permission}`}
-                        control={control}
-                        permission={permission}
-                        label={label}
-                        onConfirm={
-                          needsConfirm
-                            ? (newValue, onChange) =>
-                                onPermissionConfirm(permission, newValue, onChange)
-                            : undefined
-                        }
-                      />
-                      {showAdminWarning &&
-                        selectedRole === SystemRoles.ADMIN &&
-                        permission === Permissions.USE && (
-                          <div className="border-border-light text-text-destructive border-t px-4 py-3 text-sm break-words whitespace-normal">
-                            <span>{localize('com_ui_admin_access_warning')}</span>{' '}
-                            <a
-                              href="https://www.librechat.ai/docs/configuration/librechat_yaml/object_structure/interface"
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-link underline"
-                            >
-                              {localize('com_ui_more_info')}
-                            </a>
-                          </div>
-                        )}
-                    </div>
-                  );
-                })}
+                {permissions.map(({ permission, labelKey }) => (
+                  <div key={permission}>
+                    <LabelController
+                      id={`${idPrefix}-${permission}`}
+                      control={control}
+                      permission={permission}
+                      label={localize(labelKey)}
+                    />
+                    {permission === Permissions.USE && isRevokingAdminUse && (
+                      <div className="px-4 pb-3.5">
+                        <Alert variant="error">
+                          <p>
+                            {localize('com_ui_admin_lockout_warning', { section: sectionName })}
+                          </p>
+                        </Alert>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -309,9 +306,64 @@ const AdminSettingsDialog: React.FC<AdminSettingsDialogProps> = ({
               </Button>
             </OGDialogFooter>
           </form>
+          <AlertDialog open={pendingLockout !== null} onOpenChange={handleLockoutOpenChange}>
+            <AlertDialogContent
+              className="w-11/12 max-w-md"
+              onOpenAutoFocus={(event) => {
+                /** Radix focuses an AlertDialogCancel by default; start in the field instead */
+                event.preventDefault();
+                lockoutInputRef.current?.focus();
+              }}
+            >
+              <form
+                className="grid gap-4"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  confirmLockout();
+                }}
+              >
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    {localize('com_ui_admin_lockout_title', { section: sectionName })}
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {localize('com_ui_admin_lockout_warning', { section: sectionName })}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="grid gap-2">
+                  <Label htmlFor={lockoutInputId}>
+                    {localize('com_ui_admin_lockout_confirm_label', { role: SystemRoles.ADMIN })}
+                  </Label>
+                  <Input
+                    ref={lockoutInputRef}
+                    id={lockoutInputId}
+                    value={lockoutConfirmText}
+                    onChange={(event) => setLockoutConfirmText(event.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </div>
+                <AlertDialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => handleLockoutOpenChange(false)}
+                  >
+                    {localize('com_ui_cancel')}
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="destructive"
+                    disabled={lockoutConfirmText !== SystemRoles.ADMIN || isLoading}
+                  >
+                    {localize('com_ui_admin_lockout_confirm')}
+                  </Button>
+                </AlertDialogFooter>
+              </form>
+            </AlertDialogContent>
+          </AlertDialog>
         </OGDialogContent>
       </OGDialog>
-      {extraContent}
     </>
   );
 };

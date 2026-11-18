@@ -55,6 +55,7 @@ jest.mock('~/models', () => {
     deleteAclEntries: jest.fn().mockResolvedValue(undefined),
     deleteUserChatProjects: jest.fn().mockResolvedValue(0),
     deleteUserToolFavorites: jest.fn().mockResolvedValue(0),
+    cancelUserToolFavoriteDeletion: jest.fn().mockResolvedValue(undefined),
     deleteRefreshTokenBridges: jest.fn().mockResolvedValue(undefined),
     deleteAllAgentQueuedTurnsForUser: jest.fn().mockResolvedValue(0),
     findUserErasableMCPServers: jest.fn().mockResolvedValue([]),
@@ -64,6 +65,7 @@ jest.mock('~/models', () => {
     deleteUserById: jest.fn().mockResolvedValue({ deletedCount: 1 }),
     deleteAllUserPluginAuths: jest.fn().mockResolvedValue(undefined),
     beginAgentTriggerUserDeletion: jest.fn().mockResolvedValue('acquired'),
+    isAgentTriggerUserDeletionOwner: jest.fn().mockResolvedValue(true),
     cancelAgentTriggerUserDeletion: jest.fn().mockResolvedValue(true),
     deleteUserPrompts: jest.fn().mockResolvedValue(undefined),
     deleteUserSkills: jest.fn().mockResolvedValue(undefined),
@@ -592,9 +594,20 @@ describe('deleteUserController', () => {
 
     expect(mockRes.status).toHaveBeenCalledWith(200);
     expect(mockRes.send).toHaveBeenCalledWith({ message: 'User deleted' });
+    expect(deleteUserById).toHaveBeenCalledWith(userIdStr, {
+      startedAt: beginAgentTriggerUserDeletion.mock.calls[0][1],
+      attemptId: beginAgentTriggerUserDeletion.mock.calls[0][2],
+    });
+    expect(deleteUserById.mock.calls[0][1].attemptId).not.toBe(
+      mockQuiesceUserSchedules.mock.calls[0][1],
+    );
     expect(mockRes.clearCookie).toHaveBeenCalledWith('session_hint');
     expect(deletePasskeysByUser).toHaveBeenCalledWith(userIdStr);
-    expect(beginAgentTriggerUserDeletion).toHaveBeenCalledWith(userId.toString(), expect.any(Date));
+    expect(beginAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      userId.toString(),
+      expect.any(Date),
+      expect.any(String),
+    );
     expect(mockPrepareAgentTriggerUserPurge).toHaveBeenCalledWith(
       userId.toString(),
       expect.any(Date),
@@ -929,7 +942,11 @@ describe('deleteUserController', () => {
     expect(deleteMessages).not.toHaveBeenCalled();
     const deletionFence = beginAgentTriggerUserDeletion.mock.calls[0][1];
     expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(userIdString, deletionFence);
-    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(userIdString, deletionFence);
+    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      userIdString,
+      deletionFence,
+      expect.any(String),
+    );
     expect(deleteUserById).not.toHaveBeenCalled();
     // Account survives -> its suspended schedules are restored under the quiesce token.
     expect(mockRestoreUserSchedules).toHaveBeenCalledWith(
@@ -941,6 +958,42 @@ describe('deleteUserController', () => {
     // re-suspending under a new token — race the restore and strand the disabled snapshot.
     expect(mockRestoreUserSchedules.mock.invocationCallOrder[0]).toBeLessThan(
       cancelAgentTriggerUserDeletion.mock.invocationCallOrder[0],
+    );
+  });
+
+  it.each([false, 'error'])(
+    'does not release the favorite marker without a proven Mongo owner: %s',
+    async (result) => {
+      const db = require('~/models');
+      db.deleteUserAgents.mockRejectedValueOnce(new Error('later cascade failure'));
+      if (result === 'error')
+        db.isAgentTriggerUserDeletionOwner.mockRejectedValueOnce(new Error('Mongo unavailable'));
+      else db.isAgentTriggerUserDeletionOwner.mockResolvedValueOnce(false);
+      const userId = new mongoose.Types.ObjectId().toString();
+      await deleteUserController({ user: { id: userId, tenantId: 'tenant-1' } }, mockRes);
+      expect(mockRes.status).toHaveBeenCalledWith(500);
+      expect(db.deleteUserToolFavorites).toHaveBeenCalledWith(
+        userId,
+        beginAgentTriggerUserDeletion.mock.calls[0][2],
+      );
+      expect(db.cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
+    },
+  );
+
+  it('releases the cascade UUID before releasing Mongo ownership', async () => {
+    const db = require('~/models');
+    db.deleteUserAgents.mockRejectedValueOnce(new Error('later cascade failure'));
+    const userId = new mongoose.Types.ObjectId().toString();
+    await deleteUserController({ user: { id: userId, tenantId: 'tenant-1' } }, mockRes);
+    const token = beginAgentTriggerUserDeletion.mock.calls[0][2];
+    expect(mockRes.status).toHaveBeenCalledWith(500);
+    expect(db.deleteUserToolFavorites).toHaveBeenCalledWith(userId, token);
+    expect(db.cancelUserToolFavoriteDeletion).toHaveBeenCalledWith(userId, token);
+    expect(db.isAgentTriggerUserDeletionOwner.mock.invocationCallOrder[0]).toBeLessThan(
+      db.cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0],
+    );
+    expect(db.cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+      db.cancelAgentTriggerUserDeletion.mock.invocationCallOrder[0],
     );
   });
 
@@ -963,6 +1016,7 @@ describe('deleteUserController', () => {
     expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
       userId.toString(),
       expect.any(Date),
+      expect.any(String),
     );
     expect(deleteUserById).not.toHaveBeenCalled();
   });
@@ -987,7 +1041,11 @@ describe('deleteUserController', () => {
     expect(mockGetActiveJobIdsForUser).not.toHaveBeenCalled();
     const deletionFence = beginAgentTriggerUserDeletion.mock.calls[0][1];
     expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(userIdString, deletionFence);
-    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(userIdString, deletionFence);
+    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      userIdString,
+      deletionFence,
+      expect.any(String),
+    );
     expect(deleteUserById).not.toHaveBeenCalled();
     // Account survives -> its suspended schedules are restored under the quiesce token.
     expect(mockRestoreUserSchedules).toHaveBeenCalledWith(
@@ -1074,6 +1132,7 @@ describe('deleteUserController', () => {
     expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
       userId.toString(),
       expect.any(Date),
+      expect.any(String),
     );
     expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(
       userId.toString(),
@@ -1090,7 +1149,22 @@ describe('deleteUserController', () => {
 
     expect(mockPurgeAgentTriggerDeliveriesForUser).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(String(userId), expect.any(Date));
-    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(String(userId), expect.any(Date));
+    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      String(userId),
+      expect.any(Date),
+      expect.any(String),
+    );
+  });
+
+  it('retains both erasure fences after an unknown final delete outcome', async () => {
+    const db = require('~/models');
+    const userId = new mongoose.Types.ObjectId().toString();
+    db.deleteUserById.mockRejectedValueOnce(new Error('delete acknowledgement lost'));
+    await deleteUserController({ user: { id: userId } }, mockRes);
+    expect(mockRes.status).toHaveBeenCalledWith(500);
+    expect(db.isAgentTriggerUserDeletionOwner).not.toHaveBeenCalled();
+    expect(db.cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
+    expect(db.cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
   });
 
   it('does not purge trigger payloads when the user deletion did not commit', async () => {
@@ -1101,7 +1175,7 @@ describe('deleteUserController', () => {
 
     expect(mockPurgeAgentTriggerDeliveriesForUser).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(String(userId), expect.any(Date));
-    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(String(userId), expect.any(Date));
+    expect(cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
     expect(mockRes.status).toHaveBeenCalledWith(500);
   });
 

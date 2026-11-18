@@ -69,6 +69,10 @@ function SkillIcon({ item }: { item: AgentItem }) {
  * height. Measuring the content and driving an explicit height makes every
  * change a single tween, including a mode swap and the available-skills expand.
  */
+/** `offsetHeight` rounds to a whole pixel, and rounding down clips the content's last pixel, such
+ *  as a bottom border, under the clipping box. The fractional height rounds up instead. */
+const measure = (el: HTMLElement): number => Math.ceil(el.getBoundingClientRect().height);
+
 function MorphHeight({ open, children }: { open: boolean; children: ReactNode }) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [height, setHeight] = useState(0);
@@ -81,12 +85,12 @@ function MorphHeight({ open, children }: { open: boolean; children: ReactNode })
     if (el == null) {
       return;
     }
-    setHeight(el.offsetHeight);
+    setHeight(measure(el));
     const frame = requestAnimationFrame(() => setAnimate(true));
     if (typeof ResizeObserver === 'undefined') {
       return () => cancelAnimationFrame(frame);
     }
-    const observer = new ResizeObserver(() => setHeight(el.offsetHeight));
+    const observer = new ResizeObserver(() => setHeight(measure(el)));
     observer.observe(el);
     return () => {
       cancelAnimationFrame(frame);

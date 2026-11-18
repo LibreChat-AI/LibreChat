@@ -9,6 +9,7 @@ const {
   hasActiveFileFieldPolicy,
   genAzureEndpoint,
   getSafeErrorMetadata,
+  configuredRequestBudget,
   applyAxiosProxyConfig,
   resolveConfigSecret,
   applySSRFSafeAgentIfDirect,
@@ -293,10 +294,17 @@ class STTService {
    * @param {Object} requestData.audioFile - The audio file object containing originalname, mimetype, and size.
    * @param {string} requestData.language - The language code for the transcription.
    * @param {string[]} [allowedAddresses] - Section-level SSRF exemption list of host:port pairs.
+   * @param {import('axios').AxiosRequestConfig} [requestOptions] - Timeout and abort options for the request.
    * @returns {Promise<string>} A promise that resolves to the transcribed text.
    * @throws {Error} If the provider is invalid, the response status is not 200, or the response data is missing.
    */
-  async sttRequest(provider, sttSchema, { audioBuffer, audioFile, language }, allowedAddresses) {
+  async sttRequest(
+    provider,
+    sttSchema,
+    { audioBuffer, audioFile, language },
+    allowedAddresses,
+    requestOptions,
+  ) {
     const strategy = this.providerStrategies[provider];
     if (!strategy) {
       throw new Error('Invalid provider');
@@ -315,7 +323,7 @@ class STTService {
       language,
     );
 
-    const options = { headers };
+    const options = { headers, ...requestOptions };
 
     applyAxiosProxyConfig(options, url);
     applySSRFSafeAgentIfDirect(options, url, allowedAddresses);
@@ -383,6 +391,7 @@ class STTService {
           sttSchema,
           { audioBuffer, audioFile, language },
           allowedAddresses,
+          configuredRequestBudget(req.config, 'speechMs'),
         );
       } catch (error) {
         const uninspectableField = getBlockedUninspectableFileField(req.config?.filters, [

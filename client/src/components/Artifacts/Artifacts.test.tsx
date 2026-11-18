@@ -10,6 +10,11 @@ const mockUseArtifacts = jest.fn();
 let mockIsMobile = false;
 let mockPrefersReducedMotion = false;
 
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  CopyButton: () => null,
+}));
+
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
   useMediaQuery: (query: string) =>
@@ -76,11 +81,6 @@ jest.mock('./DownloadArtifact', () => ({
 jest.mock('./Mermaid/Export', () => ({
   __esModule: true,
   default: () => <div data-testid="mermaid-export" />,
-}));
-
-jest.mock('~/components/Messages/Content/CopyButton', () => ({
-  __esModule: true,
-  default: () => null,
 }));
 
 const ArtifactStateProbe = () => {

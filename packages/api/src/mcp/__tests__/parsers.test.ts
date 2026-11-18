@@ -46,10 +46,53 @@ describe('formatToolContent', () => {
 
       const [content, artifacts] = formatToolContent(result, 'unknown' as t.Provider);
 
-      expect(artifacts).toBeUndefined();
+      expect(artifacts).toEqual({
+        content: [],
+        imageAttachments: [
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAA...' } },
+        ],
+      });
       expect(content).toContain('iVBORw0KGgoAAAA...');
       expect(content).toContain('image/png');
     });
+  });
+
+  describe('unrecognized-provider display images', () => {
+    it.each(['unknown', 'vertexai'])(
+      'retains ordered standalone, remote and embedded images without vision content for %s',
+      (provider) => {
+        const result: t.MCPToolCallResponse = {
+          isError: true,
+          content: [
+            { type: 'text', text: 'Partial result' },
+            { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+            { type: 'image', data: 'https://example.com/chart.png', mimeType: 'image/png' },
+            {
+              type: 'resource',
+              resource: { uri: 'file:///chart.png', mimeType: 'IMAGE/PNG', blob: 'aW1hZ2U=' },
+            },
+            {
+              type: 'resource',
+              resource: { uri: 'ui://chart', mimeType: 'image/png', blob: 'aW1hZ2U=' },
+            },
+          ],
+        };
+        const [content, artifacts] = formatToolContent(result, provider as t.Provider);
+        expect(content).toContain('Partial result');
+        expect(content).toContain('data:IMAGE/PNG;base64,aW1hZ2U=');
+        expect(artifacts?.content).toEqual([]);
+        expect(artifacts?.imageAttachments).toEqual(
+          [
+            'data:image/png;base64,aW1hZ2U=',
+            'https://example.com/chart.png',
+            'data:IMAGE/PNG;base64,aW1hZ2U=',
+            'data:image/png;base64,aW1hZ2U=',
+          ].map((url) => ({ type: 'image_url', image_url: { url } })),
+        );
+        expect(artifacts?.ui_resources?.data).toHaveLength(1);
+        expect(result.isError).toBe(true);
+      },
+    );
   });
 
   describe('recognized providers', () => {
@@ -1340,7 +1383,8 @@ describe('formatToolContent', () => {
       });
 
       expect(artifacts?.ui_resources).toBeUndefined();
-      expect(artifacts?.content).toBeUndefined();
+      expect(artifacts?.content).toEqual([]);
+      expect(artifacts?.imageAttachments).toHaveLength(1);
       expect(content).toContain('base64data');
     });
 
@@ -1361,7 +1405,8 @@ describe('formatToolContent', () => {
       expect(content).toContain('base64data');
       expect(content).toContain(`UI Resource Marker: \\ui{${resource?.resourceId}}`);
       expect(content.split(`UI Resource Marker: \\ui{${resource?.resourceId}}`)).toHaveLength(2);
-      expect(artifacts?.content).toBeUndefined();
+      expect(artifacts?.content).toEqual([]);
+      expect(artifacts?.imageAttachments).toHaveLength(1);
       expect(resource).toMatchObject({ uri: 'ui://legacy', mimeType: 'text/html' });
     });
 
@@ -1382,7 +1427,8 @@ describe('formatToolContent', () => {
       const [content, artifacts] = formatToolContent(result, 'vertexai' as t.Provider);
 
       expect(content).toContain('data:image/png;base64,aW1hZ2U=');
-      expect(artifacts?.content).toBeUndefined();
+      expect(artifacts?.content).toEqual([]);
+      expect(artifacts?.imageAttachments).toHaveLength(1);
       expect(artifacts?.ui_resources?.data).toHaveLength(1);
     });
 

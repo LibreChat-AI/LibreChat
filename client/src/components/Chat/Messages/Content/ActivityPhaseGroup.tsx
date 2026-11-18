@@ -1,63 +1,60 @@
-import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
+import { useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
-import { useTranslation } from 'react-i18next';
 import { ContentTypes } from 'librechat-data-provider';
 import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
-import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import type { CSSProperties, ReactNode } from 'react';
-import type { RailHover } from './rail';
 import {
-  useLocalize,
-  useExpandCollapse,
+  getOutcomeStatus,
+  isSpanFailed,
+  summarizeSpan,
+  getActivityLabelText,
+} from '@librechat/chat';
+import {
+  GeneratedToolLabelContext,
   useLazyCollapseBody,
-  scheduleMessageContentLayoutReconcile,
-  EXPAND_TRANSITION,
-} from '~/hooks';
+  useThrottledValue,
+} from '@librechat/chat/react';
 import {
-  getFailedLines,
-  getLiveActivity,
-  getSpanIconNames,
-  LIVE_ACTIVITY_THROTTLE_MS,
-  LIVE_REASONING_HOLD_MS,
-} from './live';
-import {
+  PhaseLabel,
+  FOLD_EASING,
+  FOLD_RAIL_CLASSES,
+  ROW_GLYPH_SLOT,
+  TOOL_ROW_CLASSES,
   FoldRail,
   RailGlyph,
   useFoldPath,
   useRailHover,
   revealFoldHeader,
   FoldHeaderContext,
-} from './rail';
-import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
-import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
-import { getOutcomeStatus, isSpanFailed, summarizeSpan } from './outcome';
-import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
-import useThrottledValue from '~/hooks/Messages/useThrottledValue';
+  FailedRevealContext,
+  FailedRevealPill,
+  useFailedRevealTrigger,
+  useExpandCollapse,
+  EXPAND_TRANSITION,
+} from '@librechat/chat/components';
+import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { RailHover } from '@librechat/chat/components';
+import type { CSSProperties, ReactNode } from 'react';
+import {
+  getLiveActivity,
+  getSpanIconNames,
+  LIVE_ACTIVITY_THROTTLE_MS,
+  LIVE_REASONING_HOLD_MS,
+} from './live';
+import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import { getActivityLabelText } from '~/utils/activityLabels';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { MessageSurfaceContext } from '../ui/surface';
-import useClockFormat from '~/hooks/useClockFormat';
-import { cn, getMessageTimestamp } from '~/utils';
+import { HeaderActionSlotContext } from './slot';
 import { StackedToolIcons } from './ToolOutput';
-import useTimeTick from '~/hooks/useTimeTick';
 import { getSourceDomains } from './sources';
 import { mapAttachments } from '~/utils/map';
 import { AttachmentGroup } from './Parts';
 import SearchVerticals from './verticals';
+import { cn } from '~/utils';
 
-/** Matches `EXPAND_TRANSITION` so the panel and the label ticker resolve on
- *  the same curve — two properties animating on two different easings is what
- *  makes a fold read as two separate movements.
- *
- *  Written as an arbitrary PROPERTY, not `ease-[…]`: `tailwindcss-animate`
- *  registers its own `ease` utility for `animation-timing-function` alongside
- *  Tailwind's `transition-timing-function` one, so an arbitrary value matches
- *  both, and Tailwind resolves that ambiguity by emitting NOTHING. The class
- *  this replaces had been inert since the plugin landed — the curve it names
- *  never reached the fold. */
-const FOLD_EASING = 'duration-300 [animation-timing-function:cubic-bezier(0.16,1,0.3,1)]';
+export { PhaseLabel } from '@librechat/chat/components';
 
 type ActivityPhasePart = Extract<TMessageContentParts, { type: ContentTypes.ACTIVITY_LABEL }> & {
   activity_label_type?: 'phase';
@@ -108,119 +105,6 @@ function PhaseGlyph({ failed, partial = false }: { failed: boolean; partial?: bo
     </span>
   );
 }
-
-/**
- * The phase header is a ticker, not a title. A client-synthesized card
- * re-titles itself every time it absorbs another finished block, and swapping
- * that text instantly is what makes the absorbed row look like it simply
- * vanished from under the reader. The retired line rises out of the clipped
- * row while the new summary comes up from below, so the work visibly moves
- * into the line that now stands for it.
- */
-/**
- * The shimmering text of a live line, on its own element. `.shimmer` declares
- * `animation`, `position` and `display`, so sharing an element with the ticker
- * would replace the slide with the sweep — the retired line would never leave,
- * and would sit inline beside its successor. `align-top` keeps the inline box
- * from adding descender space, which made a live row 2px taller than the
- * settled row it becomes.
- */
-function LiveLine({ text }: { text: string }) {
-  return <span className="shimmer max-w-full truncate align-top">{text}</span>;
-}
-
-const PhaseLabel = memo(function PhaseLabel({
-  text,
-  animate,
-  source,
-  live = false,
-  grow = true,
-  lineId,
-}: {
-  text: string;
-  animate: boolean;
-  /** Identity of what produced `text`. A streamed sentence keeps its source
-   *  while it grows, and sliding a line out to bring a longer copy of itself
-   *  in would read as flicker, so an unchanged source extends in place. */
-  source?: string;
-  live?: boolean;
-  /** Claim the row's free space, the default. Cleared when something has to
-   *  sit immediately after the text — the box then measures the line itself,
-   *  so its neighbour reads as part of it instead of drifting to the margin. */
-  grow?: boolean;
-  /** Id for the current line, so a live disclosure can be named by it alone. */
-  lineId?: string;
-}) {
-  const [lines, setLines] = useState<{
-    current: string;
-    retired: string | null;
-    entered: boolean;
-    source?: string;
-  }>({ current: text, retired: null, entered: false, source });
-
-  /** Adjusted during render rather than in an effect. A passive effect runs
-   *  after paint, so a swap with no animation would leave the previous summary
-   *  on screen for a frame while the button's `aria-label` already carried the
-   *  new one. React re-renders this component immediately instead. */
-  if (lines.current !== text || lines.source !== source) {
-    const moved = source == null || source !== lines.source;
-    const swaps = animate && lines.current.length > 0 && moved;
-    setLines({
-      current: text,
-      retired: swaps ? lines.current : null,
-      entered: swaps || (lines.entered && source != null && source === lines.source),
-      source,
-    });
-  }
-
-  /** Clears only the retired line. `entered` outlives it on purpose: dropping
-   *  the incoming line's animation class the moment its partner's
-   *  `animationend` fires would snap a still-running slide back to its resting
-   *  position. The class is inert once the animation has finished, and the
-   *  element is keyed by its text, so it cannot replay. */
-  const clearRetired = useCallback(() => {
-    setLines((previous) => (previous.retired == null ? previous : { ...previous, retired: null }));
-  }, []);
-
-  return (
-    <span
-      className={cn(
-        'tool-status-text relative block min-w-0 overflow-hidden text-start',
-        grow && 'flex-1',
-      )}
-      title={text}
-    >
-      {lines.retired != null && (
-        <span
-          key={`retired-${lines.retired}`}
-          className={cn(
-            'absolute inset-x-0 top-0 block truncate',
-            'animate-out fade-out-0 slide-out-to-top-5 [animation-fill-mode:forwards]',
-            FOLD_EASING,
-          )}
-          /** The sweep on the inner span loops forever and its `animationend`
-           *  never comes; only this element's own slide may clear the line. */
-          onAnimationEnd={(event) => event.target === event.currentTarget && clearRetired()}
-          aria-hidden="true"
-        >
-          {live ? <LiveLine text={lines.retired} /> : lines.retired}
-        </span>
-      )}
-      <span
-        /** Keyed by source while live, so a growing sentence updates one
-         *  element instead of remounting — and replaying its slide — per paint. */
-        key={`current-${source ?? lines.current}`}
-        id={lineId}
-        className={cn(
-          'block truncate',
-          lines.entered && `animate-in fade-in-0 slide-in-from-bottom-5 ${FOLD_EASING}`,
-        )}
-      >
-        {live ? <LiveLine text={lines.current} /> : lines.current}
-      </span>
-    </span>
-  );
-});
 
 /** Glyphs a span header shows: up to this many, of which at most `SPAN_SITES`
  *  are the sites a web search read. */
@@ -415,7 +299,11 @@ function LivePhaseHeader({
         {combo !== '' && (
           <span
             id={comboId}
-            className="text-text-secondary shrink-0 text-xs font-normal"
+            className={
+              painted.isBackgroundTaskCheck
+                ? 'text-text-secondary shrink-0 text-xs font-normal'
+                : 'sr-only'
+            }
             data-testid="live-phase-combo"
           >
             {combo}
@@ -443,97 +331,6 @@ function LivePhaseHeader({
         </span>
       )}
     </>
-  );
-}
-
-/**
- * The first failed call of a collapsed card, on a row of its own beneath the
- * header, the way the cursor row peeks while streaming: the failure is
- * readable, and one click away, without unfolding. Its own component so only
- * a collapsed card with a failure pays for the line's lookups.
- */
-function FailedPeekTime({ failedAt }: { failedAt: number | Date }) {
-  useTimeTick();
-  const { i18n } = useTranslation();
-  const hour12 = useClockFormat();
-  const date = new Date(failedAt);
-  if (!Number.isFinite(date.getTime()) || date.getTime() > Date.now()) {
-    return null;
-  }
-  const timestamp = getMessageTimestamp(date.toISOString(), i18n.language, hour12);
-  if (timestamp == null) {
-    return null;
-  }
-  return (
-    <time
-      dateTime={timestamp.iso}
-      title={timestamp.absolute}
-      className="text-text-secondary min-w-0 shrink truncate text-xs"
-      data-testid="activity-phase-failed-time"
-    >
-      {timestamp.relative}
-    </time>
-  );
-}
-
-function FailedPeek({
-  parts,
-  attachmentsById,
-  count,
-  total,
-  onReveal,
-}: {
-  parts: ReadonlyArray<TMessageContentParts | undefined>;
-  attachmentsById: Record<string, TAttachment[] | undefined>;
-  count: number;
-  total: number;
-  onReveal: () => void;
-}) {
-  const localize = useLocalize();
-  const mcpServerNames = useMCPServerNames();
-  const first = useMemo(
-    () => getFailedLines(parts, localize, mcpServerNames, attachmentsById)[0],
-    [parts, localize, mcpServerNames, attachmentsById],
-  );
-  if (first == null) {
-    return null;
-  }
-  return (
-    <button
-      type="button"
-      className={cn(
-        TOOL_ROW_CLASSES,
-        'text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle w-full ps-6 text-start focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-inset',
-      )}
-      onClick={onReveal}
-      data-testid="activity-phase-failed-peek"
-    >
-      <span className={cn(ROW_GLYPH_SLOT, 'text-status-error')} aria-hidden="true">
-        <CircleX size={14} />
-      </span>
-      <span className="tool-status-text flex min-w-0 items-center gap-2">
-        <span
-          className={cn(
-            'max-w-full min-w-0 shrink-0 truncate',
-            isSpanFailed(count, total) ? 'text-status-error font-medium' : 'text-text-primary',
-          )}
-        >
-          {first.text}
-        </span>
-        {first.detail !== '' && (
-          <span className="min-w-0 shrink truncate font-normal">{first.detail}</span>
-        )}
-      </span>
-      {first.failedAt != null && <FailedPeekTime failedAt={first.failedAt} />}
-      {count > 1 && (
-        <span className="shrink-0 text-xs font-normal">
-          {localize('com_ui_plus_n_more', { 0: String(count - 1) })}
-        </span>
-      )}
-      <span className="ms-auto shrink-0 text-xs font-medium underline underline-offset-2">
-        {localize('com_ui_show_error')}
-      </span>
-    </button>
   );
 }
 
@@ -588,6 +385,12 @@ export default function ActivityPhaseGroup({
     [outcomeParts, attachmentsById],
   );
 
+  /** One call and nothing else has no tree to draw, so it lays out like the
+   *  same call without a title: no rail, no indent. */
+  const [actionSlot, setActionSlot] = useState<HTMLSpanElement | null>(null);
+  const soleCall =
+    toolCount === 1 && !outcomeParts?.some((part) => part?.type === ContentTypes.THINK);
+
   const partialMarkerFallback =
     labelPart.status === 'partial' &&
     (!hasContent || failedCount === 0 || isSpanFailed(failedCount, toolCount));
@@ -595,7 +398,7 @@ export default function ActivityPhaseGroup({
   /** Already `smoothStreaming && !reducedMotion` — it owns the media query, so
    *  a second subscription here would install one `matchMedia` listener per
    *  phase card without changing the answer. */
-  const smoothStreaming = useSmoothStreaming();
+  const smoothStreaming = useMessagePartsHost().useSmoothStreaming();
   /** Capture the marker's arrival state. The parent renderer records the new
    *  marker after this commit; a later sibling update must not cancel the
    *  already-scheduled fold before its first animation frame. */
@@ -726,17 +529,6 @@ export default function ActivityPhaseGroup({
    *  swap its text under a reader who is looking at the list. A live span
    *  with no label yet keeps the live line, which is all it has. */
   const showLiveHeader = isLive && (!isExpanded || label.length === 0);
-  const peek =
-    hasContent && !isExpanded && failedCount > 0 && outcomeParts != null ? (
-      <FailedPeek
-        parts={outcomeParts}
-        attachmentsById={attachmentsById}
-        count={failedCount}
-        total={toolCount}
-        onReveal={handleRevealFailed}
-      />
-    ) : null;
-
   /** Only the folding entrance drives the header off its natural height.
    *  History and reduced-motion render the plain, unstyled row. */
   const headerStyle = useMemo<CSSProperties | undefined>(() => {
@@ -830,7 +622,7 @@ export default function ActivityPhaseGroup({
          *  the header stops pinning where its own rows end. */
         className={cn(isExpanded && 'sticky top-0 z-[1]', isExpanded && messageSurface)}
       >
-        <div className="flex items-center gap-2 overflow-hidden">
+        <div className="relative flex items-center gap-2 overflow-hidden pe-6">
           <button
             type="button"
             /** `ring-inset` is not decoration: the clip above is permanent (the
@@ -841,9 +633,9 @@ export default function ActivityPhaseGroup({
              *  the element that depends on it. */
             className={cn(
               'text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle flex h-auto min-h-7 min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-start font-medium hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none focus-visible:ring-inset',
-              /** The open card's title: the one semibold, primary-colour line
-               *  in the fold, so the rows under it read as its contents. */
-              isExpanded && 'text-text-primary font-semibold',
+              /** The open card's title: the one semibold line in the fold, so the
+               *  rows under it read as its contents. Its colour does not change. */
+              isExpanded && 'font-semibold',
             )}
             onClick={handleToggle}
             aria-expanded={isExpanded}
@@ -884,16 +676,16 @@ export default function ActivityPhaseGroup({
             )}
             <ChevronDown
               className={cn(
-                'size-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none',
+                'absolute end-0 size-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none',
                 isExpanded && 'rotate-180',
               )}
               aria-hidden="true"
             />
           </button>
           <FailedRevealPill count={failedCount} total={toolCount} onReveal={handleRevealFailed} />
+          <span ref={setActionSlot} className="flex shrink-0 items-center empty:hidden" />
         </div>
       </div>
-      {peek}
       <div
         id={panelId}
         style={expandStyle}
@@ -903,15 +695,21 @@ export default function ActivityPhaseGroup({
       >
         {shouldRenderBody && (
           <div
-            className={cn('overflow-hidden', FOLD_RAIL_CLASSES)}
+            className={cn('min-h-0 overflow-hidden', !soleCall && FOLD_RAIL_CLASSES)}
             ref={expandRef}
             data-fold-panel=""
           >
-            <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
+            {!soleCall && (
+              <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
+            )}
             <FoldHeaderContext.Provider value={railScope}>
-              <FailedRevealContext.Provider value={revealValue}>
-                {children}
-              </FailedRevealContext.Provider>
+              <HeaderActionSlotContext.Provider value={actionSlot}>
+                <FailedRevealContext.Provider value={revealValue}>
+                  <GeneratedToolLabelContext.Provider value={toolCount === 1 && label.length > 0}>
+                    {children}
+                  </GeneratedToolLabelContext.Provider>
+                </FailedRevealContext.Provider>
+              </HeaderActionSlotContext.Provider>
             </FoldHeaderContext.Provider>
           </div>
         )}

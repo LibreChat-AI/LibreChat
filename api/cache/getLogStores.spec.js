@@ -1,8 +1,24 @@
+jest.mock('@librechat/api', () => {
+  const api = jest.requireActual('@librechat/api');
+  return { ...api, standardCache: jest.fn(api.standardCache) };
+});
+
+const { standardCache } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const getLogStores = require('./getLogStores');
+const appConfigCacheArgs = standardCache.mock.calls.find(([key]) => key === CacheKeys.APP_CONFIG);
 
 describe('auditCache', () => {
+  it('requires APP_CONFIG publication errors to propagate', () => {
+    expect(appConfigCacheArgs).toEqual([
+      CacheKeys.APP_CONFIG,
+      undefined,
+      undefined,
+      { throwOnErrors: true },
+    ]);
+  });
+
   it('logs counts and TTL info without cache keys or values', async () => {
     const secretKey = 'user-id-1234567890';
     const secretValue = 'super-secret-access-token';

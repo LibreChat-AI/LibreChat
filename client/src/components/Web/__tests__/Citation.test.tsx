@@ -7,24 +7,34 @@ import { CitationContext } from '~/components/Web/Context';
 import { SearchContext } from '~/Providers';
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string, values?: { label?: string; pages?: string }) => {
-    if (key === 'com_citation_source') {
-      return 'Source';
-    }
-    if (key === 'com_citation_more_details') {
-      return `More details about ${values?.label ?? ''}`;
-    }
-    if (key === 'com_ui_relevance') {
-      return 'Relevance';
-    }
-    if (key === 'com_file_pages') {
-      return `Pages: ${values?.pages ?? ''}`;
-    }
-    if (key === 'com_file_source') {
-      return 'File source';
-    }
-    return key;
-  },
+  useLocalize:
+    () => (key: string, values?: { label?: string; pages?: string; number?: number }) => {
+      if (key === 'com_sources_previous') {
+        return 'Source précédente';
+      }
+      if (key === 'com_sources_next') {
+        return 'Source suivante';
+      }
+      if (key === 'com_sources_number') {
+        return `Référence ${values?.number}`;
+      }
+      if (key === 'com_citation_source') {
+        return 'Source';
+      }
+      if (key === 'com_citation_more_details') {
+        return `More details about ${values?.label ?? ''}`;
+      }
+      if (key === 'com_ui_relevance') {
+        return 'Relevance';
+      }
+      if (key === 'com_file_pages') {
+        return `Pages: ${values?.pages ?? ''}`;
+      }
+      if (key === 'com_file_source') {
+        return 'File source';
+      }
+      return key;
+    },
 }));
 
 jest.mock('~/components/Chat/Messages/Content/FilePreviewDialog', () => ({
@@ -174,6 +184,43 @@ describe('Citation', () => {
       expect(screen.getByRole('link', { name: title })).toHaveAttribute('href', link);
     },
   );
+
+  it.each(['file', 'search'] as const)('localizes %s source pagination', async (refType) => {
+    const sources = [0, 1].map((index) => ({
+      title: `Document ${index}`,
+      link: `https://example.com/${index}`,
+      ...(refType === 'file' ? { fileId: `file-${index}`, fileName: `Document ${index}` } : {}),
+    }));
+    renderWithProviders(
+      <CompositeCitation
+        node={{
+          properties: {
+            citationId: 'localized-pagination',
+            citations: sources.map((_, index) => ({ turn: 0, refType, index })),
+          },
+        }}
+      />,
+      { '0': { [refType === 'file' ? 'references' : 'organic']: sources } },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More details about Document 0 +1' }));
+    const previous = await screen.findByRole('button', { name: 'Source précédente' });
+    const next = screen.getByRole('button', { name: 'Source suivante' });
+    expect(previous).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Référence 1' })).toHaveAttribute(
+      'aria-current',
+      'true',
+    );
+    fireEvent.click(next);
+    expect(next).toBeDisabled();
+    expect(previous).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Référence 2' })).toHaveAttribute(
+      'aria-current',
+      'true',
+    );
+    fireEvent.click(previous);
+    expect(previous).toBeDisabled();
+  });
 
   it('keeps standalone web citations as links', () => {
     const searchResults = {

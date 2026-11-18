@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
+import { FileContainer, AttachmentImage as Image } from '@librechat/chat/components';
 import type { TFile } from 'librechat-data-provider';
-import FileContainer from '~/components/Chat/Input/Files/FileContainer';
-import Image from '~/components/Chat/Input/Files/Image';
 import { getCachedPreview } from '~/utils';
 import { useLocalize } from '~/hooks';
 
@@ -83,7 +82,7 @@ export default function EditFiles({
                 onDelete={remove}
                 removeLabel={removeLabel}
                 removeDisabled={disabled}
-                buttonClassName="h-[58px]"
+                buttonClassName={file.textPreview ? undefined : 'h-[58px]'}
               />
             )}
           </li>

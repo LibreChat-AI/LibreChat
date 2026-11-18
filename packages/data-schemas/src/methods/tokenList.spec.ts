@@ -18,7 +18,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 const add = (userId: mongoose.Types.ObjectId, type: string, identifier: string) =>

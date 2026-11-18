@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "isolatedDeclarations": false,
+    "rootDir": "..",
+    "paths": {
+      "@librechat/chat": ["../src/index.ts"],
+      "@librechat/chat/*": ["../src/*.ts"]
+    }
+  },
+  "include": ["**/*"]
+}

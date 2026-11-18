@@ -2196,6 +2196,28 @@ describe('server-effective Responses routing', () => {
       }),
     ).toBe(false);
   });
+  it.each([EModelEndpoint.openAI, EModelEndpoint.azureOpenAI])(
+    'uses a Terra release snapshot wildcard only when the family policy is absent on %s',
+    (endpoint) => {
+      const model = 'gpt-6.1-terra-2026-10-26';
+      const route = (routing: ResponsesApiRouting) =>
+        resolveEffectiveUseResponsesApi({ endpoint, model, routing });
+      expect(route({ 'gpt-6.1-terra-*': enabled, '*': disabled })).toBe(true);
+      expect(route({ 'gpt-6.1-terra': enabled, '*': disabled })).toBe(false);
+      expect(route({ 'gpt-6-terra-*': disabled, 'gpt-6.1-terra-*': enabled })).toBe(false);
+      expect(route({ [model]: disabled, 'gpt-6.1-terra-*': enabled })).toBe(false);
+      expect(route({ '*': disabled })).toBe(false);
+    },
+  );
+  it('preserves the existing Sol family wildcard precedence', () => {
+    expect(
+      resolveEffectiveUseResponsesApi({
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-6.1-sol-2026-10-01',
+        routing: { 'gpt-6-sol-*': disabled, 'gpt-6.1-sol-*': enabled },
+      }),
+    ).toBe(false);
+  });
   it('uses native snapshot policy but does not invent an Azure deployment', () => {
     const routing = { 'gpt-6-sol': enabled, 'gpt-6-sol-*': enabled, '*': disabled };
     expect(
@@ -2316,4 +2338,16 @@ describe('vector erasure rollout and concurrency settings', () => {
       expect(fileConfigSchema.safeParse({ vectorDeletionConcurrency }).success).toBe(false);
     },
   );
+});
+
+describe('file deletion retry limit', () => {
+  it('defaults to five automatic retries and accepts an override', () => {
+    expect(mergeFileConfig(undefined).deletionRetryLimit).toBe(5);
+    const config = fileConfigSchema.parse({ deletionRetryLimit: 3 });
+    expect(mergeFileConfig(config).deletionRetryLimit).toBe(3);
+  });
+
+  it.each([0, -1, 1.5, '5'])('rejects invalid retry limit %s', (deletionRetryLimit) => {
+    expect(fileConfigSchema.safeParse({ deletionRetryLimit }).success).toBe(false);
+  });
 });

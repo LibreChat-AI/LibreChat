@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { ACTIVE_JOBS_SUCCESSOR_GRACE_MS } from '@librechat/chat/react';
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { apiBaseUrl, QueryKeys, request, dataService } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
@@ -236,7 +237,7 @@ export const ACTIVE_JOBS_POLL_MS = 5_000;
  * moment a successor appears, and with the tab already focused there is no
  * focus refetch to recover: the pane waits for a reload.
  */
-export const ACTIVE_JOBS_SUCCESSOR_GRACE_MS = 30_000;
+export { ACTIVE_JOBS_SUCCESSOR_GRACE_MS };
 
 /** Module-scoped rather than per-observer: this is one shared query, and a
  *  component mounting mid-handover should inherit the grace, not restart it. */

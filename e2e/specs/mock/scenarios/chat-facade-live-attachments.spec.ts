@@ -15,12 +15,12 @@ type JestReport = {
   testResults: { assertionResults: { title: string; status: string }[] }[];
 };
 
-const runJest = (specs: string[], pattern?: string) => {
+const runJest = (specs: string[], pattern?: string, workspace = 'client') => {
   const args = ['jest', ...specs, '--maxWorkers=2', '--json'];
   if (pattern) {
     args.push('-t', pattern);
   }
-  const result = run('npx', args, { cwd: resolve(repoRoot, 'client') });
+  const result = run('npx', args, { cwd: resolve(repoRoot, workspace) });
   const start = result.stdout.indexOf('{');
   expect(start, result.output).toBeGreaterThanOrEqual(0);
   return { result, report: JSON.parse(result.stdout.slice(start)) as JestReport };
@@ -53,7 +53,11 @@ test.describe('useChat live attachments', () => {
 
   test('the message renderer keeps reconciling stored and live attachments @scenario:message-attachments-merge-live-entries', () => {
     test.setTimeout(240_000);
-    const { result, report } = runJest(['src/hooks/Messages/__tests__/useAttachments.spec.tsx']);
+    const { result, report } = runJest(
+      ['src/components/messages/__tests__/useAttachments.spec.tsx'],
+      undefined,
+      'packages/chat',
+    );
 
     expect(result.status, result.output).toBe(0);
     expect(report.numFailedTests).toBe(0);

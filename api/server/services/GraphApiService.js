@@ -1,6 +1,8 @@
 const client = require('openid-client');
 const {
   isEnabled,
+  createDirectoryTokenRunner,
+  runDirectoryOperation,
   getTokenCacheTtlMs,
   DEFAULT_OAUTH_TOKEN_TTL_SECONDS,
 } = require('@librechat/api');
@@ -9,6 +11,7 @@ const { CacheKeys } = require('librechat-data-provider');
 const { Client } = require('@microsoft/microsoft-graph-client');
 const { getOpenIdConfig } = require('~/strategies/openidStrategy');
 const getLogStores = require('~/cache/getLogStores');
+const runDirectoryTokenExchange = createDirectoryTokenRunner(client.customFetch);
 
 /**
  * @import { TPrincipalSearchResult, TGraphPerson, TGraphUser, TGraphGroup, TGraphPeopleResponse, TGraphUsersResponse, TGraphGroupsResponse } from 'librechat-data-provider'
@@ -36,11 +39,16 @@ const entraIdPrincipalFeatureEnabled = (user) => {
  * @param {string} sub - Subject identifier from token claims
  * @returns {Promise<Client>} Authenticated Graph API client
  */
-const createGraphClient = async (accessToken, sub) => {
+const createGraphClient = async (accessToken, sub, signal) => {
   try {
     // Reason: Use existing OpenID configuration and token exchange pattern from openidStrategy.js
     const openidConfig = getOpenIdConfig();
-    const exchangedToken = await exchangeTokenForGraphAccess(openidConfig, accessToken, sub);
+    const exchangedToken = await exchangeTokenForGraphAccess(
+      openidConfig,
+      accessToken,
+      sub,
+      signal,
+    );
 
     const graphClient = Client.init({
       authProvider: (done) => {
@@ -63,12 +71,12 @@ const createGraphClient = async (accessToken, sub) => {
  * @param {string} sub - Subject identifier
  * @returns {Promise<string>} Graph API access token
  */
-const exchangeTokenForGraphAccess = async (config, accessToken, sub) => {
+const exchangeTokenForGraphAccess = async (config, accessToken, sub, signal) => {
   try {
     const tokensCache = getLogStores(CacheKeys.OPENID_EXCHANGED_TOKENS);
     const cacheKey = `${sub}:graph`;
 
-    const cachedToken = await tokensCache.get(cacheKey);
+    const cachedToken = await runDirectoryOperation(signal, () => tokensCache.get(cacheKey));
     if (cachedToken) {
       return cachedToken.access_token;
     }
@@ -79,22 +87,22 @@ const exchangeTokenForGraphAccess = async (config, accessToken, sub) => {
       .map((scope) => `https://graph.microsoft.com/${scope}`)
       .join(' ');
 
-    const grantResponse = await client.genericGrantRequest(
-      config,
-      'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      {
+    const grantResponse = await runDirectoryTokenExchange(config, signal, () =>
+      client.genericGrantRequest(config, 'urn:ietf:params:oauth:grant-type:jwt-bearer', {
         scope: scopeString,
         assertion: accessToken,
         requested_token_use: 'on_behalf_of',
-      },
+      }),
     );
 
-    await tokensCache.set(
-      cacheKey,
-      {
-        access_token: grantResponse.access_token,
-      },
-      getTokenCacheTtlMs(grantResponse.expires_in, DEFAULT_OAUTH_TOKEN_TTL_SECONDS),
+    await runDirectoryOperation(signal, () =>
+      tokensCache.set(
+        cacheKey,
+        {
+          access_token: grantResponse.access_token,
+        },
+        getTokenCacheTtlMs(grantResponse.expires_in, DEFAULT_OAUTH_TOKEN_TTL_SECONDS),
+      ),
     );
 
     return grantResponse.access_token;

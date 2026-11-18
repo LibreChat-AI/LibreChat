@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
+import type { Locator } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
 import { deleteConversations, deleteMessagesByConversation, withMongo } from '../db';
 
@@ -344,5 +345,92 @@ test.describe('persisted context usage', () => {
     const used = readout?.match(/Context window\s*(\d+)/)?.[1];
     expect(used).toBeDefined();
     expect(peerSum).toBe(Number(used));
+  });
+
+  /** The roll is defined in the shared Tailwind preset because the breakdown now ships from
+   *  @librechat/chat, so an animation name of `none` here means the keyframes never reached
+   *  the app's stylesheet and the panel snaps open. The expanded choice is the host's: the
+   *  package only reads it through props, so a reload proves the app still persists it. */
+  test('rolls the breakdown open and keeps the choice across a reload @scenario:context-breakdown-rolls-open-and-remembers', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const conversationId = randomUUID();
+    cleanupConversationIds.push(conversationId);
+
+    await insertConversation(conversationId, 'Breakdown disclosure fixture', [
+      {
+        messageId: 'disclosure-user-1',
+        parentMessageId: NO_PARENT,
+        text: 'Disclosure prompt',
+        isCreatedByUser: true,
+        sender: 'User',
+        tokenCount: 8,
+      },
+      {
+        messageId: 'disclosure-assistant-1',
+        parentMessageId: 'disclosure-user-1',
+        text: 'Disclosure reply',
+        isCreatedByUser: false,
+        sender: 'Assistant',
+        tokenCount: 5,
+        metadata: {
+          usage: { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.01 },
+          contextUsage: {
+            runId: 'disclosure-run',
+            contextBudget: 300,
+            breakdown: {
+              maxContextTokens: 300,
+              instructionTokens: 20,
+              messageTokens: 80,
+              toolCount: 0,
+              messageCount: 2,
+            },
+          },
+        },
+      },
+    ]);
+
+    const openPopover = async () => {
+      await expect(page.getByText('Disclosure reply')).toBeVisible({ timeout: 30000 });
+      await expect(page.getByTestId('token-usage')).toBeVisible({ timeout: 30000 });
+      await page.getByTestId('token-usage').click();
+      const popover = page.getByRole('region', { name: 'Context usage' });
+      await expect(popover).toBeVisible({ timeout: 10000 });
+      return popover;
+    };
+    const panelAnimation = (popover: Locator) =>
+      popover
+        .getByTestId('context-details')
+        .locator('..')
+        .evaluate((panel) => getComputedStyle(panel).animationName);
+
+    await page.goto(`/c/${conversationId}`, { timeout: 30000 });
+    const popover = await openPopover();
+    const toggle = popover.getByTestId('context-breakdown-toggle');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(popover.getByTestId('context-details')).toHaveCount(0);
+
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(popover.getByTestId('context-details')).toBeVisible();
+    expect(await panelAnimation(popover)).toBe('collapsible-down');
+    await page.keyboard.press('Escape');
+
+    await page.reload({ timeout: 30000 });
+    const reloaded = await openPopover();
+    const reloadedToggle = reloaded.getByTestId('context-breakdown-toggle');
+    await expect(reloadedToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(reloaded.getByTestId('context-details')).toBeVisible();
+
+    /** Reduced motion skips the roll in both directions and the panel still toggles. */
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await reloadedToggle.click();
+    await expect(reloadedToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(reloaded.getByTestId('context-details')).toHaveCount(0);
+    await reloadedToggle.click();
+    await expect(reloaded.getByTestId('context-details')).toBeVisible();
+    expect(await panelAnimation(reloaded)).toBe('none');
   });
 });

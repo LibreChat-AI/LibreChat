@@ -23,8 +23,9 @@
  *
  *   record  --out <timings.json> <dir-or-results.json>...
  *     Rebuilds the timings file from Playwright JSON reports (`results.json`, written beside
- *     each shard's HTML report in CI). Download a run's `playwright-report-memory-*`
- *     artifacts and point this at them.
+ *     each shard's HTML report in CI). Download the `playwright-report-memory-*` artifacts of
+ *     one or more runs and point this at them. A run puts each file in exactly one shard, so a
+ *     file found in several reports was measured by several runs, and its time is their mean.
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -234,10 +235,12 @@ function record(options) {
     throw new Error('record needs --out and at least one report path');
   }
   const totals = new Map();
+  const samples = new Map();
   const reports = options._.flatMap(findReports);
   for (const path of reports) {
     for (const [file, seconds] of fileSeconds(JSON.parse(readFileSync(path, 'utf8')))) {
       totals.set(file, (totals.get(file) ?? 0) + seconds);
+      samples.set(file, (samples.get(file) ?? 0) + 1);
     }
   }
   if (totals.size === 0) {
@@ -246,7 +249,7 @@ function record(options) {
   const files = Object.fromEntries(
     [...totals]
       .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([file, s]) => [file, Math.round(s * 10) / 10]),
+      .map(([file, s]) => [file, Math.round((s / samples.get(file)) * 10) / 10]),
   );
   writeFileSync(options.out, `${JSON.stringify({ files }, null, 2)}\n`);
   console.log(`playwright-shards: recorded ${totals.size} files from ${reports.length} report(s)`);

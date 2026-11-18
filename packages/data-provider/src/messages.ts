@@ -3,6 +3,16 @@ import type { TFile } from './types/files';
 import type { TMessage } from './types';
 import { ContentTypes } from './types/runs';
 
+/** File-library records enrich a message without overwriting its turn-specific display metadata. */
+export function mergeMessageFile(file: Partial<TFile>, stored?: TFile): Partial<TFile> {
+  if (!stored) return file;
+  const textPreview = file.textPreview ?? stored.textPreview;
+  const llmDeliveryPath = file.llmDeliveryPath ?? stored.llmDeliveryPath;
+  if (stored.textPreview === textPreview && stored.llmDeliveryPath === llmDeliveryPath)
+    return stored;
+  return { ...stored, textPreview, llmDeliveryPath };
+}
+
 /** A generated reasoning title describes the text as it existed at generation time.
  *  Any manual edit or merge into a different reasoning step invalidates the entire
  *  title revision domain while preserving unrelated content metadata. */
@@ -93,7 +103,9 @@ export function buildTree({
     };
 
     if (message.files && fileMap) {
-      extendedMessage.files = message.files.map((file) => fileMap[file.file_id ?? ''] ?? file);
+      extendedMessage.files = message.files.map((file) =>
+        mergeMessageFile(file, fileMap[file.file_id ?? '']),
+      );
     }
 
     messageMap[message.messageId] = extendedMessage;

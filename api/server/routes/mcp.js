@@ -74,6 +74,7 @@ const {
   requireJwtAuth,
   configMiddleware,
   canAccessMCPServerResource,
+  requireTermsAcceptanceOnRead,
 } = require('~/server/middleware');
 const { getUserPluginAuthValue } = require('~/server/services/PluginService');
 const { maybeUninstallOAuthMCP } = require('~/server/services/MCP/oauthCleanup');
@@ -128,11 +129,14 @@ router.get('/tools', requireJwtAuth, configMiddleware, checkMCPUsePermissions, a
   return getMCPTools(req, res);
 });
 
+/** The terms gate lets reads through, but this starts an OAuth flow, so it checks for itself. */
+const initiateOAuthMiddleware = [requireJwtAuth, requireTermsAcceptanceOnRead, setOAuthSession];
+
 /**
  * Initiate OAuth flow
  * This endpoint is called when the user clicks the auth link in the UI
  */
-router.get('/:serverName/oauth/initiate', requireJwtAuth, setOAuthSession, async (req, res) => {
+router.get('/:serverName/oauth/initiate', initiateOAuthMiddleware, async (req, res) => {
   try {
     const { serverName } = req.params;
     const { userId, flowId } = req.query;

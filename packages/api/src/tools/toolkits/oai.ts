@@ -70,6 +70,25 @@ const getImageEditPromptDescription = () => {
 /** `auto` or `WIDTHxHEIGHT`; the image API enforces which dimensions the configured model supports. */
 export const IMAGE_SIZE_PATTERN = '^(auto|[1-9][0-9]*x[1-9][0-9]*)$';
 
+const supportsExtendedQuality = [
+  'gpt-image-2.5-flare',
+  'gpt-image-2.5-flare-2026-09-08',
+  'gpt-image-2.5-sunburst',
+  'gpt-image-2.5-sunburst-2026-09-08',
+  'gpt-image-2.6-sunburst',
+  'gpt-image-2.6-flare',
+].includes(process.env.IMAGE_GEN_OAI_MODEL || 'gpt-image-2.5-flare');
+
+const imageQualitySchema: ExtendedJsonSchema = {
+  type: 'string',
+  enum: supportsExtendedQuality
+    ? ['auto', 'high', 'medium', 'low', 'xhigh', 'max']
+    : ['auto', 'high', 'medium', 'low'],
+  description: supportsExtendedQuality
+    ? 'The quality of the image. One of auto (default), high, medium, low, xhigh, or max.'
+    : 'The quality of the image. One of auto (default), high, medium, or low.',
+};
+
 const imageGenOaiJsonSchema: ExtendedJsonSchema = {
   type: 'object',
   properties: {
@@ -84,11 +103,7 @@ const imageGenOaiJsonSchema: ExtendedJsonSchema = {
       description:
         'Sets transparency for the background. Must be one of transparent, opaque or auto (default). When transparent, the output format should be png or webp.',
     },
-    quality: {
-      type: 'string',
-      enum: ['auto', 'high', 'medium', 'low'],
-      description: 'The quality of the image. One of auto (default), high, medium, or low.',
-    },
+    quality: imageQualitySchema,
     size: {
       type: 'string',
       pattern: IMAGE_SIZE_PATTERN,
@@ -118,12 +133,7 @@ Guidelines:
       maxLength: 32000,
       description: getImageEditPromptDescription(),
     },
-    quality: {
-      type: 'string',
-      enum: ['auto', 'high', 'medium', 'low'],
-      description:
-        'The quality of the image. One of auto (default), high, medium, or low. High/medium/low only supported for gpt-image-1.',
-    },
+    quality: imageQualitySchema,
     size: {
       type: 'string',
       pattern: IMAGE_SIZE_PATTERN,

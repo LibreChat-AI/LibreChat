@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { NEW_CHAT_PATH } from '../helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * Colours that used to be literals in components now read roles: the default avatar's hairline

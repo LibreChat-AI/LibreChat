@@ -6,6 +6,7 @@ import type {
   AgentToolOptions,
   ToolApprovalGrantBinding,
 } from './tools';
+import type { TPromptGroupSource, NativePromptSelection, LangfusePromptSelection } from '../types';
 import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
 import type { StatefulCodeEnvironment } from '../stateful-code';
@@ -628,6 +629,8 @@ export namespace Agents {
      * no longer reconstruct the ephemeral config — still rebuilds the same agent/graph.
      */
     resumeContext?: Record<string, unknown>;
+    /** Server-only identities of the initialized participants bound to this pause. */
+    resumeAgentIds?: string[];
     /**
      * Opaque, server-only identity of the stateful code targets selected when a
      * tool approval paused. Resume rejects a changed target before provider or
@@ -770,6 +773,13 @@ export namespace Agents {
 
   export interface SummarizeDeltaEvent {
     id: string;
+    /**
+     * Discard what the step has streamed so far, then apply `delta`. Deltas arrive while the
+     * provider is still responding, so an attempt that is then abandoned (a retry, a fallback
+     * provider) has already shown text; the next attempt's first delta carries this, or a delta
+     * with no content when no attempt follows.
+     */
+    reset?: boolean;
     delta: {
       summary: SummaryContentPart;
     };
@@ -1063,24 +1073,30 @@ export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
   })
   .optional();
 
-/** Selects which revision of a linked prompt group an agent's instructions follow. */
-export type AgentInstructionsPromptSelection =
-  | { type: 'production' }
-  | { type: 'exact'; promptId: string };
+export type AgentInstructionsPromptSelection = NativePromptSelection;
 
 /** A link from an agent to a native LibreChat prompt group used as its instructions. */
-export type AgentInstructionsPrompt = {
+export type NativeAgentInstructionsPrompt = {
   source: 'native';
   groupId: string;
   selection: AgentInstructionsPromptSelection;
 };
 
-/** Returned to an editor who lacks VIEW on the linked group. Hides the group identity.
- *  `matchesCurrent` is set only on a version snapshot's stub (never on the current
- *  agent's own stub): whether that version's raw link equals the agent's current raw
- *  link (same `groupId` and selection), without revealing which group either is. */
+export type LangfuseAgentInstructionsPromptSelection = LangfusePromptSelection;
+
+export type LangfuseAgentInstructionsPrompt = {
+  source: 'langfuse';
+  groupId: string;
+  selection: LangfuseAgentInstructionsPromptSelection;
+};
+
+export type AgentInstructionsPrompt =
+  | NativeAgentInstructionsPrompt
+  | LangfuseAgentInstructionsPrompt;
+
+/** Returned to an editor who lacks VIEW on the linked group; hides its identity. */
 export type RestrictedAgentInstructionsPrompt = {
-  source: 'native';
+  source: TPromptGroupSource;
   restricted: true;
   matchesCurrent?: boolean;
 };
@@ -1099,6 +1115,15 @@ export const InstructionsPromptErrorCode = {
 
 export type InstructionsPromptErrorCode =
   (typeof InstructionsPromptErrorCode)[keyof typeof InstructionsPromptErrorCode];
+
+export const sdkRuntimeBindingSchema = z
+  .object({
+    id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+    protocolVersion: z.literal(1),
+  })
+  .strict();
+
+export type SdkRuntimeBinding = z.infer<typeof sdkRuntimeBindingSchema>;
 
 export type Agent = {
   _id?: string;
@@ -1119,6 +1144,8 @@ export type Agent = {
   tool_kwargs?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   provider: AgentProvider;
+  /** Selects an operator-installed SDK runtime; never contains executable code or credentials. */
+  sdk_runtime?: SdkRuntimeBinding | null;
   model: string | null;
   model_parameters: AgentModelParameters;
   conversation_starters?: string[];
@@ -1184,6 +1211,7 @@ export type Agent = {
 export type TAgentsMap = Record<string, Agent | undefined>;
 
 export type AgentCreateParams = {
+  sdk_runtime?: SdkRuntimeBinding | null;
   git_identity?: AgentGitIdentity;
   name?: string | null;
   description?: string | null;
@@ -1223,6 +1251,7 @@ export type AgentCreateParams = {
 >;
 
 export type AgentUpdateParams = {
+  sdk_runtime?: SdkRuntimeBinding | null;
   name?: string | null;
   description?: string | null;
   avatar?: AgentAvatar | null;

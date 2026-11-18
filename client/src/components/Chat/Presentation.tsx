@@ -1,28 +1,43 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { useIsSubmitting } from '@librechat/chat/react';
-import { EModelEndpoint, FileSources, LocalStorageKeys } from 'librechat-data-provider';
-import type { ExtendedFile } from '~/common';
-import { ParentSubagentsProvider } from '~/components/Chat/Subagents/ParentSubagentsProvider';
+import { EModelEndpoint } from 'librechat-data-provider';
+import {
+  sideChatAtom,
+  SIDE_CHAT_PANE,
+  useIsSubmitting,
+  activeSubagentPanel,
+  SideChatHostProvider,
+  ParentSubagentsProvider,
+} from '@librechat/chat/react';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
-import { useDeleteFilesMutation, useGetStartupConfig } from '~/data-provider';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
-import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
+import { appSideChatHost } from '~/Providers/SideChatHostContext';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
 import { SidePanelGroup } from '~/components/SidePanel';
 import AppChatSurface from '~/components/Chat/Surface';
+import { useGetStartupConfig } from '~/data-provider';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
-import { useSetFilesToDelete } from '~/hooks';
-import { failedFileIdsFrom } from '~/utils';
+import { migrateStoredFileDeletions } from '~/utils';
 import store from '~/store';
 
 const Artifacts = lazyWithRecovery(() => import('~/components/Artifacts/Artifacts'));
-const SubagentThreadPanel = lazyWithRecovery(
-  () => import('~/components/Chat/Subagents/SubagentThreadPanel'),
+/** The panel draws message rows, so the app's message hosts load with it. */
+const SubagentThreadPanel = lazyWithRecovery(() =>
+  Promise.all([
+    import('@librechat/chat/components').then((module) => module.loadSubagentThreadPanel()),
+    import('~/components/Chat/Messages/hosts'),
+  ]).then(([panel]) => panel),
+);
+
+const SideChatPanel = lazyWithRecovery(() =>
+  Promise.all([
+    import('@librechat/chat/components').then((module) => module.loadSideChatPanel()),
+    import('~/components/Chat/Messages/hosts'),
+  ]).then(([panel]) => panel),
 );
 
 export default function Presentation({
@@ -50,6 +65,14 @@ export default function Presentation({
   const selectedSubagent = useAtomValue(activeSubagentPanel);
   const setSelectedSubagent = useSetAtom(activeSubagentPanel);
   const resetSelectedSubagent = useCallback(() => setSelectedSubagent(null), [setSelectedSubagent]);
+  const sideChat = useAtomValue(sideChatAtom);
+  const isSideChatSubmitting = useIsSubmitting(SIDE_CHAT_PANE);
+  const setSideChat = useSetAtom(sideChatAtom);
+  const closeSideChat = useCallback(() => setSideChat(null), [setSideChat]);
+  const takeSideChatText = useCallback(
+    () => setSideChat((current) => current && { conversation: current.conversation }),
+    [setSideChat],
+  );
   const previousConversationIdRef = useRef<string | null>(null);
 
   useArtifactsRegistryLifetime(conversationId);
@@ -66,62 +89,23 @@ export default function Presentation({
     previousConversationIdRef.current = next;
     if (previous != null && previous !== next) {
       setSelectedSubagent((current) => (current?.durable == null ? null : current));
+      /** A side chat sits beside the conversation it was opened from, and leaves with it. */
+      setSideChat(null);
     }
-  }, [conversationId, setSelectedSubagent]);
+  }, [conversationId, setSelectedSubagent, setSideChat]);
 
-  const setFilesToDelete = useSetFilesToDelete();
+  useEffect(() => () => setSideChat(null), [setSideChat]);
+
+  /** One panel at a time: a child's activity opened after the side chat takes its place. */
+  useEffect(() => {
+    if (selectedSubagent != null) {
+      setSideChat(null);
+    }
+  }, [selectedSubagent, setSideChat]);
 
   const { data: startupConfig, isSuccess: hasStartupConfig } = useGetStartupConfig();
-  const { mutateAsync } = useDeleteFilesMutation({
-    onSuccess: (result) => {
-      console.log('Temporary Files deleted');
-      const failed = new Set(failedFileIdsFrom(result));
-      if (failed.size === 0) {
-        setFilesToDelete({});
-        return;
-      }
-      try {
-        const filesToDelete = localStorage.getItem(LocalStorageKeys.FILES_TO_DELETE);
-        const map = JSON.parse(filesToDelete ?? '{}') as Record<string, ExtendedFile>;
-        const remaining: Record<string, ExtendedFile> = {};
-        for (const [key, file] of Object.entries(map)) {
-          if (
-            (file.file_id != null && failed.has(file.file_id)) ||
-            (file.temp_file_id != null && failed.has(file.temp_file_id))
-          ) {
-            remaining[key] = file;
-          }
-        }
-        setFilesToDelete(remaining);
-      } catch {
-        // Keep existing records if reading or parsing fails.
-      }
-    },
-    onError: (error) => {
-      console.log('Error deleting temporary files:', error);
-    },
-  });
 
-  useEffect(() => {
-    const filesToDelete = localStorage.getItem(LocalStorageKeys.FILES_TO_DELETE);
-    const map = JSON.parse(filesToDelete ?? '{}') as Record<string, ExtendedFile>;
-    const files = Object.values(map)
-      .filter(
-        (file) =>
-          file.filepath != null && file.source && !(file.embedded ?? false) && file.temp_file_id,
-      )
-      .map((file) => ({
-        file_id: file.file_id,
-        filepath: file.filepath as string,
-        source: file.source as FileSources,
-        embedded: !!(file.embedded ?? false),
-      }));
-
-    if (files.length === 0) {
-      return;
-    }
-    mutateAsync({ files });
-  }, [mutateAsync]);
+  useEffect(() => migrateStoredFileDeletions(), []);
 
   /* The deployment's answer about the undocked window, resolved once by the
    * host and handed to the pane. Until the config has actually answered the
@@ -152,10 +136,14 @@ export default function Presentation({
    * slot. Undocked, the artifacts pane is in its own window and the side panel
    * is free, so a child-activity panel opened there must survive. */
   useEffect(() => {
-    if (!isUndocked && artifactsElement != null && selectedSubagent != null) {
+    if (isUndocked || artifactsElement == null) {
+      return;
+    }
+    if (selectedSubagent != null) {
       resetSelectedSubagent();
     }
-  }, [artifactsElement, isUndocked, resetSelectedSubagent, selectedSubagent]);
+    closeSideChat();
+  }, [artifactsElement, closeSideChat, isUndocked, resetSelectedSubagent, selectedSubagent]);
 
   const subagentElement = useMemo(() => {
     if (
@@ -174,9 +162,35 @@ export default function Presentation({
     );
   }, [conversationId, selectedSubagent]);
 
+  const sideChatElement = useMemo(() => {
+    if (sideChat == null) {
+      return null;
+    }
+    const { conversationId: sideConversationId, endpoint, agent_id } = sideChat.conversation;
+    return (
+      <SideChatHostProvider host={appSideChatHost}>
+        {/* Children the side conversation's agent dispatches are its own, not the main one's. */}
+        <ParentSubagentsProvider
+          conversationId={sideConversationId ?? ''}
+          enabled={endpoint === EModelEndpoint.agents && agent_id != null}
+          isSubmitting={isSideChatSubmitting}
+        >
+          <Suspense fallback={null}>
+            <SideChatPanel
+              key={sideConversationId}
+              chat={sideChat}
+              onClose={closeSideChat}
+              onHandedTextTaken={takeSideChatText}
+            />
+          </Suspense>
+        </ParentSubagentsProvider>
+      </SideChatHostProvider>
+    );
+  }, [closeSideChat, isSideChatSubmitting, sideChat, takeSideChatText]);
+
   /* Undocked, the pane renders into its own window: the side panel gives its
    * width back to the conversation instead of holding an empty column. */
-  const panelElement = (isUndocked ? null : artifactsElement) ?? subagentElement;
+  const panelElement = (isUndocked ? null : artifactsElement) ?? subagentElement ?? sideChatElement;
 
   return (
     <DragDropWrapper className="bg-surface-canvas relative flex w-full grow overflow-hidden">
@@ -190,7 +204,10 @@ export default function Presentation({
             isSubmitting={isSubmitting}
           >
             <SidePanelGroup panel={panelElement}>
-              <main className="flex h-full flex-col overflow-y-auto" role="main">
+              {/* A size container: the composer caps its width against this column
+                  (`cqw`), so it keeps clear of the edges when the sidebar or a side panel
+                  narrows the column, which a viewport unit cannot see. */}
+              <main className="@container flex h-full flex-col overflow-y-auto" role="main">
                 <MessageSurfaceContext.Provider value="bg-surface-canvas">
                   {children}
                 </MessageSurfaceContext.Provider>

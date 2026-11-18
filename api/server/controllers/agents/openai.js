@@ -14,6 +14,8 @@ const {
 const {
   writeSSE,
   createRun,
+  createRemoteExecutionContext,
+  getRemoteRunKeyId,
   createChunk,
   applyContextToAgent,
   buildRunToolSet,
@@ -26,6 +28,7 @@ const {
   createAgentExecutionContext,
   createMCPRuntimeRequestBody,
   loadSkillStates,
+  loadSkillAccess,
   sendFinalChunk,
   buildCompletionUsage,
   createSafeUser,
@@ -55,6 +58,7 @@ const {
   assertModelBoundContent,
   reportLocatorTraversalFailure,
   hasModelBoundContentProtection,
+  createApiModelCallbacks,
   isContentFilterError,
   getSafeErrorMetadata,
   getUserFacingProviderError,
@@ -109,7 +113,7 @@ const { checkSessionsAlive, loadCodeApiKey } = require('~/server/services/Files/
 const {
   getLinkedInstructionsResolver,
 } = require('~/server/services/Endpoints/agents/linkedInstructions');
-const { getModelsConfig } = require('~/server/controllers/ModelController');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { resolveConfigServers } = require('~/server/services/MCP');
 const { getMCPManager } = require('~/config');
@@ -128,7 +132,7 @@ const filterFilesByRemoteAgentAccess = (params) =>
  * @param {boolean} [runtime.definitionsOnly=true] - When true, returns only serializable
  *   tool definitions without creating full tool instances (for event-driven mode)
  */
-function createToolLoader({ req, res, signal, definitionsOnly = true }) {
+function createToolLoader({ req, res, signal, unattended, definitionsOnly = true }) {
   return async function loadTools({
     tools,
     model,
@@ -156,6 +160,7 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
         definitionsOnly,
         accessibleMcpServerNames,
         streamId: null, // No resumable stream for OpenAI compat
+        unattended,
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
@@ -290,6 +295,13 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
   const requestStartTime = envelope.receivedAt;
   const request = envelope.payload;
   const { principal } = envelope;
+  const executionContext = createRemoteExecutionContext({
+    principal,
+    agentId: request.model,
+    protocol: 'chat.completions',
+    background: false,
+    keyId: getRemoteRunKeyId(req),
+  });
   // Request-backed tool adapters still observe the validated envelope payload;
   // shared initialization receives the transport-free runtime below.
   req.body = request;
@@ -528,8 +540,22 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const backgroundCompletionResultMaxChars =
         agentsEConfig?.backgroundTasks?.completionResultMaxChars;
 
+      // Under `remoteApi.integrations.mode: delegated`, a personal key's run may use only
+      // the MCP servers and tools its owner granted that key for this agent.
+      await require('~/server/services/ApiKeys/grants').prepare({
+        req,
+        res,
+        executionContext,
+        signal: execution.signal,
+      });
+
       // Create tool loader
-      const loadTools = createToolLoader({ req, res, signal: execution.signal });
+      const loadTools = createToolLoader({
+        req,
+        res,
+        signal: execution.signal,
+        unattended: executionContext.unattended,
+      });
 
       // Initialize the agent first to check for disableStreaming
       const endpointOption = {
@@ -600,27 +626,14 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const resolveLinkedInstructions = getLinkedInstructionsResolver();
       const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
       const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
-      const accessibleSkillIds = skillsCapabilityEnabled
-        ? withDeploymentSkillIds(
-            await findAccessibleResources({
-              userId: principal.userId,
-              role: principal.role,
-              resourceType: ResourceType.SKILL,
-              requiredPermissions: PermissionBits.VIEW,
-            }),
-          )
-        : [];
-      const editableSkillIds = skillsCapabilityEnabled
-        ? await findAccessibleResources({
-            userId: principal.userId,
-            role: principal.role,
-            resourceType: ResourceType.SKILL,
-            requiredPermissions: PermissionBits.EDIT,
-          })
-        : [];
-      const skillCreateAllowed = skillsCapabilityEnabled
-        ? await getSkillToolDeps().canCreateSkill({ req })
-        : false;
+      const { accessibleSkillIds, editableSkillIds, skillCreateAllowed } = await loadSkillAccess(
+        { enabled: skillsCapabilityEnabled, userId: principal.userId, role: principal.role },
+        {
+          findAccessibleResources,
+          withDeploymentSkillIds,
+          canCreateSkill: () => getSkillToolDeps().canCreateSkill({ req }),
+        },
+      );
 
       const { skillStates, defaultActiveOnShare } = await loadSkillStates({
         userId: principal.userId,
@@ -710,7 +723,6 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         primaryConfig.subagents?.enabled === true &&
         (primaryConfig.subagents.graphs?.length ?? 0) > 0;
       if (primaryConfig.edges?.length || primaryHasGraphSubagents) {
-        const modelsConfig = await getModelsConfig(req);
         const discoveryParams = {
           req,
           res,
@@ -718,7 +730,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           primaryConfig,
           endpointOption,
           allowedProviders,
-          modelsConfig,
+          getEndpointModels: (endpoint) => getEndpointModelsConfig(req, endpoint),
           loadTools,
           requestFiles: [],
           conversationId,
@@ -829,6 +841,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const modelBoundAgents = [...modelBoundAgentsById.values()];
       const manualSkillPrimes = primaryConfig.manualSkillPrimes;
       const alwaysApplySkillPrimes = primaryConfig.alwaysApplySkillPrimes;
+      const modelBoundFiles = collectModelBoundAgentFiles(modelBoundAgents);
       assertModelBoundContent({
         onTraversalFailure: reportLocatorTraversalFailure,
         filters: appConfig?.filters,
@@ -836,7 +849,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         submittedMessages: request.messages,
         agents: modelBoundAgents,
         skills: [...(manualSkillPrimes ?? []), ...(alwaysApplySkillPrimes ?? [])],
-        files: collectModelBoundAgentFiles(modelBoundAgents),
+        files: modelBoundFiles,
       });
 
       // Determine if streaming is enabled (check both request and agent config)
@@ -905,6 +918,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           const result = await loadToolsForExecution({
             req,
             res,
+            unattended: executionContext.unattended,
             agentResourceType: ResourceType.REMOTE_AGENT,
             conversationId,
             requestBody: mcpRequestBody,
@@ -1131,6 +1145,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const initialSessions = buildInitialToolSessions({ agents: runAgents });
 
       const run = await createRun({
+        sdkModelHost: req?.app?.locals?.sdkModelHost,
         agents: runAgents,
         messages: formattedMessages,
         indexTokenCountMap,
@@ -1141,7 +1156,12 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         appConfig,
         signal: execution.signal,
         customHandlers: handlers,
-        modelCallbacks: [terminalRunError.modelCallback],
+        modelCallbacks: createApiModelCallbacks({
+          appConfig,
+          terminalRunError,
+          onTraversalFailure: reportLocatorTraversalFailure,
+          resolvedFiles: modelBoundFiles,
+        }),
         requestBody: mcpRequestBody,
         user: { ...createSafeUser(req.user), id: userId },
         traceContext: { endpoint: EModelEndpoint.agents },

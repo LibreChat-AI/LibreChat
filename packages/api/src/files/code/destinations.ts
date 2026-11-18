@@ -1,9 +1,16 @@
 import {
+  FileContext,
+  getCodeEnvRefForProfile,
+  resolveSandboxFilename,
+} from 'librechat-data-provider';
+import type { CodeEnvReferenceSet } from 'librechat-data-provider';
+import {
   appendLeafSuffix,
   flattenArtifactPath,
   deterministicHexSuffix,
   FILENAME_SEGMENT_MAX_BYTES,
 } from '~/utils/files';
+import { getCodeEnvUploadFilename } from './form';
 
 /**
  * Sandbox input files mount at a destination derived from their `name`, and
@@ -156,6 +163,7 @@ export function reserveCodeDestination(set: CodeDestinationSet, name: string): b
 }
 
 interface CodeDestinationCandidate {
+  context?: string;
   file_id?: string;
   createdAt?: Date | string | number;
   /** Last content write for a reused code-output record. `processCodeOutput`
@@ -174,6 +182,12 @@ function toTime(value: Date | string | number | undefined): number {
 }
 
 function contentTime(file: CodeDestinationCandidate | null | undefined): number {
+  if (
+    file?.context === FileContext.execute_code_snapshot &&
+    file.metadata?.sourceDispatchedAt != null
+  ) {
+    return toTime(file.metadata.sourceDispatchedAt);
+  }
   return Math.max(toTime(file?.metadata?.sourceDispatchedAt), toTime(file?.createdAt));
 }
 
@@ -219,4 +233,155 @@ export function sortCodeFilesByDestinationPriority<T extends CodeDestinationCand
     }
     return (a?.file_id ?? '').localeCompare(b?.file_id ?? '');
   });
+}
+
+type CodePathCandidate = CodeDestinationCandidate & {
+  filename?: string;
+  tenantId?: string;
+  user?: { toString(): string };
+  type?: string;
+  metadata?: (CodeEnvReferenceSet & { sourceDispatchedAt?: number }) | null;
+};
+
+/** Mount naming only. Captured write paths, not converted names, identify versions. */
+export function getCodeFileDestination(file: CodePathCandidate, routeKey = 'default'): string {
+  if (
+    file.context !== FileContext.execute_code_snapshot &&
+    file.context !== FileContext.execute_code
+  ) {
+    const stored = getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
+    if (stored != null) return stored;
+  }
+  const normalized = getCodeEnvUploadFilename(
+    resolveSandboxFilename(file.filename ?? '', file.type ?? ''),
+  );
+  // A converted artifact's receipt is a mount-name hint only, never byte equivalence.
+  if (file.context === FileContext.execute_code_snapshot && normalized !== file.filename) {
+    return (
+      getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename ?? normalized
+    );
+  }
+  return normalized;
+}
+
+/** Select captured versions among code-eligible inputs before mount conversion. */
+export function selectCodeFileGenerations<T extends CodePathCandidate>(
+  files: Array<T | null | undefined>,
+  privateFileIds?: ReadonlySet<string>,
+  routeKey = 'default',
+): { files: Array<T | null | undefined>; skippedSuperseded: number } {
+  const destinations = new Map<string, T>();
+  const generatedPaths = new Set<string>();
+  let skippedSuperseded = 0;
+  const ordered = sortCodeFilesByDestinationPriority(files, privateFileIds);
+  const keyFor = (file: T): string => {
+    const generated =
+      file.context === FileContext.execute_code_snapshot ||
+      file.context === FileContext.execute_code;
+    const destination = generated
+      ? file.filename
+      : (getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename ??
+        getCodeEnvUploadFilename(resolveSandboxFilename(file.filename ?? '', file.type ?? '')));
+    return JSON.stringify([
+      privateFileIds?.has(file.file_id ?? '') ?? false,
+      file.tenantId ?? null,
+      file.user?.toString() ?? null,
+      destination,
+    ]);
+  };
+  for (const file of ordered) {
+    if (!file) continue;
+    const key = keyFor(file);
+    if (!destinations.has(key)) destinations.set(key, file);
+    if (
+      file.context === FileContext.execute_code_snapshot ||
+      file.context === FileContext.execute_code
+    )
+      generatedPaths.add(key);
+  }
+  const selected = ordered.filter((file) => {
+    if (!file) return true;
+    const key = keyFor(file);
+    // Distinct uploads remain independent unless a generated write owns this path.
+    if (!generatedPaths.has(key) || destinations.get(key) === file) return true;
+    skippedSuperseded++;
+    return false;
+  });
+  return { files: selected, skippedSuperseded };
+}
+
+/** Within each scope, literal snapshots precede legacy captures and converted snapshots. */
+export function planCodeSnapshotMounts<T extends CodePathCandidate>(
+  files: Array<T | null | undefined>,
+  privateFileIds?: ReadonlySet<string>,
+  routeKey = 'default',
+  preferred?: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const destinations = createCodeDestinationSet();
+  const ordered = sortCodeFilesByDestinationPriority(files, privateFileIds);
+  const snapshots: T[] = [];
+  const receipts: T[] = [];
+  const legacyCaptures: T[] = [];
+  const isConverted = (file: T): boolean =>
+    getCodeEnvUploadFilename(resolveSandboxFilename(file.filename ?? '', file.type ?? '')) !==
+    file.filename;
+  const seen = new Set<string>();
+  for (const file of ordered) {
+    if (!file || (file.file_id && seen.has(file.file_id))) continue;
+    if (file.file_id) seen.add(file.file_id);
+    if (file.context === FileContext.execute_code_snapshot) snapshots.push(file);
+    else if (file.context === FileContext.execute_code) legacyCaptures.push(file);
+    else receipts.push(file);
+  }
+  const priority = (file: T): number => {
+    if (!isConverted(file)) return 0;
+    const assigned =
+      preferred?.has(file.file_id ?? '') ||
+      getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
+    return assigned ? 1 : 2;
+  };
+  snapshots.sort((a, b) => priority(a) - priority(b));
+  const names = new Map<string, string>();
+  for (const privateScope of [false, true]) {
+    const inScope = (file: T): boolean =>
+      (privateFileIds?.has(file.file_id ?? '') ?? false) === privateScope;
+    for (const file of receipts) {
+      if (!inScope(file)) continue;
+      const ref = getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey);
+      const name =
+        ref?.sandboxFilename ??
+        (privateScope && ref != null ? getCodeFileDestination(file, routeKey) : undefined);
+      if (!name) continue;
+      if (!privateScope) {
+        reserveCodeDestination(destinations, name);
+        continue;
+      }
+      const destination = claimCodeDestination(destinations, name, file.file_id ?? name);
+      if (file.file_id && destination !== name) names.set(file.file_id, destination);
+    }
+    const claimSnapshot = (file: T): void => {
+      if (!file.file_id || !inScope(file)) return;
+      names.set(
+        file.file_id,
+        claimCodeDestination(
+          destinations,
+          preferred?.get(file.file_id) ?? getCodeFileDestination(file, routeKey),
+          file.file_id,
+        ),
+      );
+    };
+    for (const file of snapshots) {
+      if (!isConverted(file)) claimSnapshot(file);
+    }
+    for (const file of legacyCaptures) {
+      if (!file.file_id || !inScope(file)) continue;
+      // Retain this turn's admission plan, not an alias persisted on another branch.
+      const name = preferred?.get(file.file_id) ?? getCodeFileDestination(file, routeKey);
+      names.set(file.file_id, claimCodeDestination(destinations, name, file.file_id));
+    }
+    for (const file of snapshots) {
+      if (isConverted(file)) claimSnapshot(file);
+    }
+  }
+  return names;
 }

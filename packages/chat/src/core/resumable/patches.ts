@@ -1,4 +1,3 @@
-import { StepTypes, StepEvents, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import type {
   Agents,
   TMessage,
@@ -8,12 +7,15 @@ import type {
   TReasoningLabelEvent,
 } from 'librechat-data-provider';
 import type { ResumableSubscription } from './subscription';
+import type { PlacementContext } from '../parts/place';
 import type { ResumableHost } from './host';
 import {
-  applyPendingAction,
-  countTaggedApprovalParts,
-  findPendingActionMessageIndex,
-} from '../pending';
+  placeSteer,
+  oauthPromptSteps,
+  placeActivityLabel,
+  placePendingAction,
+  placeReasoningLabel,
+} from '../parts/place';
 
 /**
  * Keep retrying across frames (not just once): message updates from the preceding created/step
@@ -22,12 +24,6 @@ import {
  * can't spin forever.
  */
 const PENDING_ACTION_MAX_RETRY_FRAMES = 120;
-
-type PhaseLabelPart = TActivityLabelEvent['part'] & {
-  activity_label_type?: 'phase';
-  activity_start_index?: number;
-  activity_end_index?: number;
-};
 
 /**
  * Places what the stream reports beside its deltas (pending actions, injected steers, activity
@@ -55,49 +51,9 @@ export class ResponsePatcher {
 
   /** Renders a pending MCP OAuth prompt as the tool call it pauses. */
   applyPendingOAuthPrompt(prompt: Agents.PendingMCPOAuthPrompt, submission: EventSubmission): void {
-    const { stepHandler } = this.host.events;
-    const toolCall: Agents.ToolCall = {
-      id: prompt.toolCallId,
-      name: prompt.toolName,
-      args: '',
-      type: ToolCallTypes.TOOL_CALL,
-    };
-    const toolCallDelta: Agents.ToolCallChunk = {
-      id: prompt.toolCallId,
-      name: prompt.toolName,
-      args: '',
-    };
-    stepHandler(
-      {
-        event: StepEvents.ON_RUN_STEP,
-        data: {
-          id: prompt.stepId,
-          runId: prompt.runId,
-          index: prompt.index,
-          type: StepTypes.TOOL_CALLS,
-          stepDetails: {
-            type: StepTypes.TOOL_CALLS,
-            tool_calls: [toolCall],
-          },
-        },
-      },
-      submission,
-    );
-    stepHandler(
-      {
-        event: StepEvents.ON_RUN_STEP_DELTA,
-        data: {
-          id: prompt.stepId,
-          delta: {
-            type: StepTypes.TOOL_CALLS,
-            tool_calls: [toolCallDelta],
-            auth: prompt.authURL,
-            expires_at: prompt.expiresAt,
-          },
-        },
-      },
-      submission,
-    );
+    for (const step of oauthPromptSteps(prompt)) {
+      this.host.events.stepHandler(step, submission);
+    }
   }
 
   /**
@@ -133,31 +89,18 @@ export class ResponsePatcher {
      * would sync a pre-delta copy). */
     host.events.flushPendingDeltas();
     const messages = host.messages.get() ?? [];
-    const index = findPendingActionMessageIndex(messages, pendingAction);
-    if (index < 0) {
+    const placement = placePendingAction(messages, pendingAction);
+    if (placement == null) {
       retryNextFrame();
       return;
     }
-    const updated = applyPendingAction(messages[index], pendingAction);
-    const changed = updated !== messages[index];
-    if (changed) {
-      const nextMessages = [...messages];
-      nextMessages[index] = updated;
-      host.messages.set(nextMessages);
-      host.events.syncStepMessage(updated);
+    if (placement.changed) {
+      this.commit(messages, placement.index, placement.message);
     }
-    // A `tool_approval` pause can carry several `action_requests` whose tool-call
-    // parts render on different frames; tagging only the first to arrive would leave
-    // late siblings with no approval card, and the resume route then 400s the partial
-    // batch ("every paused tool call must be decided"). Keep retrying (bounded) until
-    // EVERY paused call is tagged. `ask_user_question` applies its single synthetic
-    // part in one shot, so it only needs the original "did anything change" retry.
-    if (pendingAction.payload.type === 'tool_approval') {
-      const expected = pendingAction.payload.action_requests.length;
-      if (countTaggedApprovalParts(updated, pendingAction.actionId) < expected) {
-        retryNextFrame();
-      }
-    } else if (!changed) {
+    /** A `tool_approval` pause can carry several calls whose parts render on different frames,
+     *  and the resume route refuses a partial batch, so the retry runs until every paused call
+     *  is tagged; an `ask_user_question` only until its part is written. */
+    if (!placement.settled) {
       retryNextFrame();
     }
   }
@@ -191,17 +134,23 @@ export class ResponsePatcher {
   }
 
   /**
-   * Edit-and-resubmit keeps the retained prefix on the client while the server indexes only
-   * the NEW content, so every server-claimed index (run steps, labels and steers) shifts past
-   * it or lands inside the prefix and overwrites kept content. The captured length is used
-   * over the live array because a resume sync replaces `initialResponse.content` with the
-   * server's completion-local snapshot.
+   * Where this run's side frames land. Edit-and-resubmit keeps the retained prefix on the client
+   * while the server indexes only the NEW content, so every server-claimed index (run steps,
+   * labels and steers) shifts past it. The captured length is used over the live array because
+   * a resume sync replaces `initialResponse.content` with the server's completion-local
+   * snapshot.
    */
-  private editPrefixLength(): number {
+  private placement(): PlacementContext {
     const { sub } = this;
-    return sub.submission.editedContent != null && !sub.run.editPrefixCleared
-      ? (sub.submission.editPrefixLength ?? sub.submission.initialResponse?.content?.length ?? 0)
-      : 0;
+    const prefixLength =
+      sub.submission.editedContent != null && !sub.run.editPrefixCleared
+        ? (sub.submission.editPrefixLength ?? sub.submission.initialResponse?.content?.length ?? 0)
+        : 0;
+    return {
+      placeholderIds: this.livePlaceholderIds(),
+      prefixLength,
+      foldedFirstPart: sub.run.editPrefixFirstPartFolded,
+    };
   }
 
   /** Writes `updated` over the message at `index`, in the cache and the step handler's map. */
@@ -252,19 +201,12 @@ export class ResponsePatcher {
      * steer part is placed and synced. */
     host.events.flushPendingDeltas();
     const messages = host.messages.get() ?? [];
-    const index = host.parts.findSteerTarget(messages, event, this.livePlaceholderIds());
-    if (index < 0) {
+    const placement = placeSteer(messages, event, this.placement());
+    if (placement == null) {
       retryNextFrame();
       return;
     }
-    const prefixLength = this.editPrefixLength();
-    const updated = host.parts.applySteer(
-      messages[index],
-      typeof event.index === 'number' && prefixLength > 0
-        ? { ...event, index: event.index + prefixLength }
-        : event,
-    );
-    if (updated !== messages[index]) {
+    if (placement.changed) {
       /** Stamped only when the inline part is actually committed, in the
        *  same batch, so its first render sees the flag and plays the
        *  one-shot draw-in (`SteerPart` consumes the id on mount). A
@@ -278,8 +220,8 @@ export class ResponsePatcher {
       if (firstApplicationIds.includes(renderedSteerId)) {
         host.steers.markLiveApplied(renderedSteerId);
       }
-      this.commit(messages, index, updated);
-      this.syncSubmissionPlaceholder(updated);
+      this.commit(messages, placement.index, placement.message);
+      this.syncSubmissionPlaceholder(placement.message);
     }
   }
 
@@ -313,70 +255,14 @@ export class ResponsePatcher {
      * copy back into the step handler's authoritative map). */
     host.events.flushPendingDeltas();
     const messages = host.messages.get() ?? [];
-    const index = host.parts.findActivityLabelTarget(messages, event, this.livePlaceholderIds());
-    if (index < 0) {
+    const placement = placeActivityLabel(messages, event, this.placement());
+    if (placement == null) {
       retryNextFrame();
       return;
     }
-    /** Edit-and-resubmit replays the kept prefix into the response before
-     *  the run starts, and the server indexes only the NEW content, so
-     *  run steps offset by that prefix (`useStepHandler`). The label index
-     *  is claimed in the same server-side space and needs the identical
-     *  shift, or it lands inside the prefix and overwrites kept content.
-     *
-     *  Uses `editPrefixLength`, captured when the submission was built,
-     *  for the same reason `useStepHandler` does: a resume sync replaces
-     *  `initialResponse.content` with the server's completion-local
-     *  snapshot, so its length no longer describes the retained prefix.
-     *  Tool cards and the label heading them must land in one index
-     *  space: a label shifting differently from its tools would overwrite
-     *  another part, and a gap fill would miss its own reservation and
-     *  leave the placeholder pending forever. */
-    const prefixLength = this.editPrefixLength();
-    const phasePart = event.part as PhaseLabelPart;
-    let offsetEvent = event;
-    if (prefixLength > 0) {
-      let offsetPart: PhaseLabelPart = phasePart;
-      if (
-        phasePart.activity_label_type === 'phase' &&
-        typeof phasePart.activity_start_index === 'number'
-      ) {
-        let activityStartIndex = phasePart.activity_start_index + prefixLength;
-        const foldedFirstPart = run.editPrefixFirstPartFolded;
-        const targetContent = messages[index]?.content;
-        /** The step handler records an actual server-index-zero text/think
-         *  merge. An empty +prefix slot is insufficient evidence because
-         *  a delayed tool may not have materialized there yet. */
-        if (
-          phasePart.activity_start_index === 0 &&
-          activityStartIndex > 0 &&
-          foldedFirstPart &&
-          targetContent?.[activityStartIndex - 1] != null
-        ) {
-          activityStartIndex -= 1;
-        }
-        offsetPart = {
-          ...phasePart,
-          activity_start_index: activityStartIndex,
-          ...(typeof phasePart.activity_end_index === 'number' && {
-            activity_end_index: host.parts.offsetActivityPhaseBoundary(
-              phasePart.activity_end_index,
-              prefixLength,
-              foldedFirstPart,
-            ),
-          }),
-        };
-      }
-      offsetEvent = {
-        ...event,
-        index: event.index + prefixLength,
-        part: offsetPart,
-      };
-    }
-    const updated = host.parts.applyActivityLabel(messages[index], offsetEvent);
-    if (updated !== messages[index]) {
-      this.commit(messages, index, updated);
-      this.syncSubmissionPlaceholder(updated);
+    if (placement.changed) {
+      this.commit(messages, placement.index, placement.message);
+      this.syncSubmissionPlaceholder(placement.message);
     }
   }
 
@@ -400,32 +286,17 @@ export class ResponsePatcher {
     };
     host.events.flushPendingDeltas();
     const messages = host.messages.get() ?? [];
-    const messageIndex = host.parts.findReasoningLabelTarget(messages, event);
-    if (messageIndex < 0) {
+    const placement = placeReasoningLabel(messages, event, this.placement());
+    if (placement == null) {
       retryNextFrame();
       return;
     }
-    const prefixLength = this.editPrefixLength();
-    let contentIndex = event.index + prefixLength;
-    if (
-      prefixLength > 0 &&
-      event.index === 0 &&
-      run.editPrefixFirstPartFolded &&
-      messages[messageIndex]?.content?.[contentIndex - 1]?.type === ContentTypes.THINK
-    ) {
-      contentIndex -= 1;
-    }
-    const updated = host.parts.applyReasoningLabel(messages[messageIndex], {
-      ...event,
-      index: contentIndex,
-    });
-    if (updated === messages[messageIndex]) {
-      const part = messages[messageIndex]?.content?.[contentIndex];
-      if (part?.type !== ContentTypes.THINK && attempt < PENDING_ACTION_MAX_RETRY_FRAMES) {
+    if (!placement.changed) {
+      if (!placement.settled) {
         retryNextFrame();
       }
       return;
     }
-    this.commit(messages, messageIndex, updated);
+    this.commit(messages, placement.index, placement.message);
   }
 }

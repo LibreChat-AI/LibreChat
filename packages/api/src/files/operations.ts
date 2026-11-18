@@ -7,6 +7,8 @@ import type {
   FileProvisionCommit,
 } from '@librechat/data-schemas';
 
+import { RagEmbeddingError } from './rag/errors';
+
 export type FileStorageUploadObserver = (outcome?: 'rejected') => void;
 
 export type RawProvisionStorage = Pick<
@@ -90,6 +92,9 @@ export function isDefinitiveFileStorageFailure(error: unknown): boolean {
   // RAG wraps the HTTP failure; inspect at most two nested causes.
   for (let depth = 0; depth < 3; depth++) {
     if (typeof current !== 'object' || current === null) return false;
+    if (current instanceof RagEmbeddingError) {
+      return current.code === 'RAG_EMBEDDING_REFUSED';
+    }
     let status: unknown;
     let hasStatus = true;
     if (

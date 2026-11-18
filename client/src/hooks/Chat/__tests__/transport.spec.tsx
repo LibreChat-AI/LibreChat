@@ -2,7 +2,9 @@ import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { useAtomValue, getDefaultStore } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
+import { useResumeOnLoad } from '@librechat/chat/react';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { useLegacyStream as useSSE } from '@librechat/chat/react';
 import { useChat, resumeRequestsAtom } from '@librechat/chat/react';
 import { useChatHelpers, useResumableSSE } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -37,11 +39,9 @@ import { usePaneConversation, usePaneConversationState } from '~/routes/ChatSett
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import { ChatContext, useChatContext } from '~/Providers/ChatContext';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
-import useResumeOnLoad from '~/hooks/SSE/useResumeOnLoad';
 import { StreamHostTestProvider } from 'test/streamHost';
 import { SteerHostTestProvider } from 'test/steerHost';
 import { ChatHostTestProvider } from 'test/chatHost';
-import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 
 jest.mock('~/hooks/AuthContext', () => {
@@ -825,9 +825,17 @@ describe('chat transport boundary', () => {
       set(store.conversationByIndex(0), {
         conversationId: 'convo-1',
         endpoint: 'agents',
+        model: 'gpt-4o',
+        agent_id: 'agent-1',
       } as TConversation);
 
     const seedCache = (queryClient: QueryClient) => {
+      queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.agents]: { order: 0 } });
+      queryClient.setQueryData([QueryKeys.agent, 'agent-1'], {
+        id: 'agent-1',
+        provider: EModelEndpoint.openAI,
+        model: 'gpt-4o',
+      });
       queryClient.setQueryData(startupConfigKey(false), {});
       queryClient.setQueryData([QueryKeys.messages, 'convo-1'], []);
     };

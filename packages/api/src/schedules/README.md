@@ -44,6 +44,123 @@ The schedule card shows failed servers and links to the selected agent for recov
 A pure pause remains available even when MCP validation fails. This change does not
 re-enable existing schedules automatically or repair credentials on the user's behalf.
 
+## Which tools an enrolled schedule may call
+
+When `interface.schedules.mcpConsent.enabled` is on, the schedule's owner decides. The consent
+offer lists every MCP tool the agent graph selects on servers whose recipient the operator
+declared under `mcpConsent.resources`. The owner ticks servers and tools; the grant stores only
+those. At run time a tool is allowed when the grant lists it for the calling agent and that
+agent still selects it. Anything else is refused with `tool_policy_denied`.
+
+- A tool the agent selects later is not allowed until the owner confirms again. It does not
+  invalidate the tools already allowed.
+- A tool the owner left out does not keep the schedule from running, and the run never loads
+  it. The readiness check looks only at what the grant lists. When the run initializes an
+  agent, only the MCP tools the grant lists for that agent are asked for
+  (`narrowScheduledMCPTools`), so a left-out tool is not defined for the model and a server
+  with nothing allowed is not connected to. Should a call to such a tool be made anyway, the
+  run's hook turns it away with a plain message and records nothing, and the check at the MCP
+  call still refuses it.
+- A tool the agent stops selecting is refused, and the consent view reports `changed`.
+- A server the owner leaves with no tools is left out of the grant: its calls are refused with
+  `consent_missing`.
+- Names, MCP annotations and remembered chat approvals confer nothing.
+
+The operator-declared `mcpConsent.readOnlyPolicy` list is retired. The loader warns when the key
+is still present and ignores it.
+
+### A tool the owner approves call by call
+
+Beside allowing a tool, the owner can set it to "ask me first". The grant stores those tools
+(`askTools`), always a subset of the allowed ones.
+
+- **In a run**, the schedule's `PreToolUse` hook answers `ask` for such a tool. The run pauses
+  like any tool approval: the schedule shows "Needs approval" and links to the conversation,
+  where the owner approves, edits or rejects that use.
+- **At the MCP call**, `ScheduledMCPInvocation.authorize` refuses the tool with
+  `approval_required` unless the call's id is one the owner approved in the request that
+  resumed the run. A hook that times out contributes nothing, so this check, not the hook,
+  is what keeps an unapproved call from running.
+- **Approvals do not carry over.** They come from the validated decisions of one resume
+  request and name tool calls, not tools. The next use asks again.
+- **The readiness check** calls nothing and is not asked.
+
+A paused scheduled run needs a shared generation store (Redis streams) and a durable
+checkpointer, and `endpoints.agents.toolApproval.enabled` must not be `false`. Where that
+holds, a grant that asks turns the approval machinery on for its runs in `bypass` mode, so no
+other tool starts prompting. Where it does not, the consent view reports `approval: false`,
+the dialog offers no "ask me first", and confirming with `ask` is rejected: a tool nobody can
+approve would only ever be refused.
+
+### A schedule its owner never authorized
+
+A schedule with no grant keeps using its MCP tools unrestricted, as it did before consent
+existed. That exemption ends in two ways, and only while `mcpConsent.enabled` is on:
+
+- **The owner edits the schedule.** Any edit other than pausing or resuming it marks the
+  schedule (`mcpConsentRequired`).
+- **The operator's deadline passes.** `interface.schedules.mcpConsent.requireAfter` is an ISO
+  8601 instant with an offset, for example `2027-01-01T00:00:00Z`. Unset, there is no deadline.
+
+From then on each MCP call of that schedule is refused with `consent_missing`, at the readiness
+check and in a run, until the owner confirms in the authorization dialog. The run itself still
+starts, so a schedule that uses no MCP tools is unaffected. The consent view reports `required`,
+or `requireAfterMs` while the deadline is still ahead.
+
+A schedule whose agent uses an MCP server the operator has not declared under
+`mcpConsent.resources` cannot be authorized, so the deadline stops it until the server is
+declared. Declare every server scheduled agents rely on before setting the date.
+
+### A tool that changes after it was allowed
+
+The owner allows a tool by name, so the grant also remembers what the tool was. The first
+authorized use of a tool (activation preflight or a run) stores a SHA-256 of its whole live
+definition on the grant: name, description, input and output schemas, annotations. Every later
+use compares the live definition with that pin.
+
+- A different definition is refused with `binding_mismatch` before `tools/call`, and the tool is
+  marked as changed on the grant. It stays refused even if the server restores the old
+  definition. The grant's other tools stay allowed.
+- The consent view reports `changed` and names the tool. Confirming again with the tool ticked
+  accepts what the server offers now: the tool is pinned afresh at its next use.
+- Confirming again keeps the pins of tools that were not marked, so a renewal cannot quietly
+  accept a definition swapped since the last run.
+- A grant made before pins existed is pinned at its next use.
+
+The pin is trust on first use. The consent offer does not connect to the server, so a
+definition that changes between confirming and the first use is the one that gets pinned.
+
+## Grants held by an API key
+
+The same consent service, storage writes and per-call check also serve a second subject: a
+personal agent API key, per agent (`packages/api/src/apiKeys/grants.ts`). The grant lives on
+the key's document (`AgentApiKey.mcpGrants.<agentId>`), so it dies with the key.
+
+```yaml
+endpoints:
+  agents:
+    remoteApi:
+      integrations:
+        mode: delegated # default `owner`: every server the key's owner can use
+        maxLifetimeHours: 168
+        resources: # the servers a key may be granted, as for schedules
+          warehouse: { url: ..., credentialMode: ..., issuer: ..., audience: ..., scopes: [] }
+```
+
+Under `delegated`, a run started with a personal key (chat completions, Responses, and a
+background Responses worker) is put under that key's grant for the agent before any tool is
+loaded. A key with no grant for the agent may not use MCP tools at all (`consent_missing`).
+What differs from a schedule's grant:
+
+- It limits MCP tools only. The agent's other tools are untouched, and an agent that has them
+  can still be granted.
+- A remote run cannot pause for approval, so "ask me first" is not offered for a key.
+- A run started with an OIDC token, or with a key issued to an integration (a channel), names
+  no personal key and is not restricted.
+
+Routes: `GET`, `POST` and `DELETE /api/api-keys/:id/agents/:agentId/mcp-consent`, with the same
+bodies and view as a schedule's.
+
 ## Host token-provider context
 
 `createMCPPreflight` and `createInitializeClient` accept a
@@ -62,12 +179,14 @@ Admission allocates a proposed schedule ID before preflight and persists that sa
 only if creation succeeds. Preflight is validation, not a provisioning/consent hook:
 hosts must not create durable grants keyed by this proposed ID. Failed admission or a
 concurrent idempotency-key winner can discard it. Edits
-and dispatch use the existing schedule ID. Execution derives the context from the
-verified schedule trigger and authenticated owner, then captures it before tool loading.
+and dispatch use the existing schedule ID. The chat controller builds one `ExecutionContext`
+(`packages/api/src/agents/authority/context.ts`) from the verified schedule trigger and
+authenticated owner and passes it to the initializer; the host context above is projected
+from it before tool loading. A caller that passes none gets no schedule identity.
 `agentId` identifies the root scheduled agent throughout child execution and handoffs.
-After an approval pause, the resume host restores the context from the saved job after
-validating ownership, tenancy, agent identity, and schedule liveness. An explicit initializer
-argument carries this restored context; resume body fields cannot replace it.
+After an approval pause, the resume host rebuilds the context from the saved job after
+validating ownership, tenancy, agent identity, and schedule liveness, and passes it the
+same way; resume body fields cannot replace it.
 The existing resolver closure is passed through tool discovery, execution, and reconnects;
 it never goes into tool arguments or durable job payloads.
 
@@ -102,7 +221,7 @@ cannot enter URLs, subprocess arguments, OBO assertions or OAuth exchanges.
 No login refresh token or second credential store is added.
 
 The request captures owner, tenant and enrolled root identity, including restored
-approval requests. Every mint/use rechecks current authority and read-only policy.
+approval requests. Every mint/use rechecks current authority and the owner's allowed tools.
 Tokens are cached only within that request and binding, never allow decisions.
 Resource rejection ends the attempt without minting/replaying `tools/call`.
 Interactive sessions, stored OAuth, OBO and static sibling servers retain their

@@ -12,6 +12,7 @@ import {
   ErrorTypes,
   MAX_SUBAGENT_GRAPH_NODES,
   MAX_GRAPH_SUBAGENT_MEMBERS,
+  sdkRuntimeBindingSchema,
 } from 'librechat-data-provider';
 import type {
   Agent,
@@ -389,20 +390,43 @@ const agentGitIdentityUpdateSchema: z.ZodType<AgentGitIdentity | null | undefine
 /** A 24-character hexadecimal Mongo ObjectId string. */
 const objectIdStringSchema = z.string().refine(isValidObjectIdString);
 
-/** Selects which revision of a linked prompt group an agent's instructions follow. */
-const instructionsPromptSelectionSchema = z.discriminatedUnion('type', [
+const nativeInstructionsPromptSelectionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('production') }).strict(),
   z.object({ type: z.literal('exact'), promptId: objectIdStringSchema }).strict(),
 ]);
 
+const langfuseInstructionsPromptSelectionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('production') }).strict(),
+  z
+    .object({
+      type: z.literal('exact'),
+      version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    })
+    .strict(),
+]);
+
 /** Links an agent's instructions to a native LibreChat prompt group revision. */
-export const agentInstructionsPromptSchema: z.ZodType<AgentInstructionsPrompt> = z
+const nativeAgentInstructionsPromptSchema = z
   .object({
     source: z.literal('native'),
     groupId: objectIdStringSchema,
-    selection: instructionsPromptSelectionSchema,
+    selection: nativeInstructionsPromptSelectionSchema,
   })
   .strict();
+
+const langfuseAgentInstructionsPromptSchema = z
+  .object({
+    source: z.literal('langfuse'),
+    groupId: objectIdStringSchema,
+    selection: langfuseInstructionsPromptSelectionSchema,
+  })
+  .strict();
+
+export const agentInstructionsPromptSchema: z.ZodType<AgentInstructionsPrompt> =
+  z.discriminatedUnion('source', [
+    nativeAgentInstructionsPromptSchema,
+    langfuseAgentInstructionsPromptSchema,
+  ]);
 
 /** Shared field schema: `.nullable().optional()` per contract, `null` removes the link. */
 const agentInstructionsPromptFieldSchema: z.ZodOptional<
@@ -435,6 +459,7 @@ type AgentBaseShape = {
   code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
   repositoryInstructions: z.ZodOptional<EnumOf<'prefer' | 'defer' | 'off'>>;
   git_identity: typeof agentGitIdentitySchema;
+  sdk_runtime: z.ZodOptional<z.ZodNullable<typeof sdkRuntimeBindingSchema>>;
   artifacts: z.ZodOptional<z.ZodString>;
   recursion_limit: z.ZodOptional<z.ZodNumber>;
   conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -446,6 +471,7 @@ type AgentBaseShape = {
 };
 
 export const agentBaseSchema: z.ZodObject<AgentBaseShape> = z.object({
+  sdk_runtime: sdkRuntimeBindingSchema.nullable().optional(),
   name: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
   instructions: z.string().nullable().optional(),
@@ -516,7 +542,11 @@ export interface ValidateAgentModelParams {
   req: LooseRequest;
   res: Response;
   agent: Agent;
-  modelsConfig: TModelsConfig;
+  /**
+   * Loads the model catalog entry for an endpoint. Only the agent's own provider is requested,
+   * so a request never loads the model lists of endpoints none of its agents use.
+   */
+  getEndpointModels: (endpoint: string) => Promise<TModelsConfig>;
   logViolation: (
     req: LooseRequest,
     res: Response,
@@ -544,7 +574,7 @@ interface ValidateAgentModelResult {
 export async function validateAgentModel(
   params: ValidateAgentModelParams,
 ): Promise<ValidateAgentModelResult> {
-  const { req, res, agent, modelsConfig, logViolation } = params;
+  const { req, res, agent, getEndpointModels, logViolation } = params;
   const { model, provider: endpoint } = agent;
 
   if (!model) {
@@ -556,6 +586,7 @@ export async function validateAgentModel(
     };
   }
 
+  const modelsConfig = await getEndpointModels(endpoint);
   if (!modelsConfig) {
     return {
       isValid: false,

@@ -990,6 +990,19 @@ describe('createProvisionFilesCallback', () => {
     ]);
   });
 
+  it('keeps lazily provisioned refs for a code call after a read_file batch', async () => {
+    /* A skill reference read is answered on the host and never reaches the sandbox, so a
+     * read_file batch must not take the handoff from the bash call that follows it. */
+    const { provisionFiles } = buildHarness({
+      contexts: [['agent-a', { provisionState: state([makeFile()], []) }]],
+    });
+    const expected = [expect.objectContaining({ id: 'remote-1', name: 'data.csv' })];
+
+    expect(await provisionFiles([Constants.READ_FILE], 'agent-a')).toEqual(expected);
+    expect(await provisionFiles([Constants.BASH_TOOL], 'agent-a')).toEqual(expected);
+    expect(await provisionFiles([Constants.BASH_TOOL], 'agent-a')).toEqual([]);
+  });
+
   it('reports the name the sandbox stored, not the record name', async () => {
     /* A converted image is uploaded under a corrected extension, so telling the model the
      * record's name points it at a path the sandbox does not have. */

@@ -80,6 +80,29 @@ describe('redactMessage', () => {
     expect(redactMessage('mention @handle and v1.2.3')).toBe('mention @handle and v1.2.3');
   });
 
+  it('keeps scoped package paths in stack frames and still masks addresses beside them', () => {
+    const frames = [
+      '    at Run.processStream (/app/node_modules/@librechat/agents/dist/cjs/run.cjs:120:5)',
+      '    at async KeyvMongo.get (/app/node_modules/@keyv/mongo/dist/index.cjs:10:3)',
+      '    at /app/node_modules/@langchain/core/dist/runnables/base.cjs:1:2',
+      '    at file:///app/node_modules/@scope/pkg/index.mjs:1:1',
+      '    at load (C:\\app\\node_modules\\@scope\\pkg\\index.js:1:1)',
+      '{"stack":"at f (C:\\\\app\\\\node_modules\\\\@scope\\\\pkg\\\\x.js:1:2)"}',
+    ];
+    for (const frame of frames) {
+      expect(redactMessage(frame)).toBe(frame);
+    }
+
+    expect(
+      redactMessage('Error: no user jane@example.com\n    at f (/app/node_modules/@a/b/c.js:1:2)'),
+    ).toBe('Error: no user [REDACTED_EMAIL]\n    at f (/app/node_modules/@a/b/c.js:1:2)');
+    expect(redactMessage('user jane/@example.com ok')).toBe('user [REDACTED_EMAIL] ok');
+    expect(redactMessage('/home/jane@example.com/file.js')).toBe('[REDACTED_EMAIL]');
+    expect(redactMessage('see https://social.example/@jane.doe ok')).toBe(
+      'see [REDACTED_EMAIL] ok',
+    );
+  });
+
   it('masks the whole token for apostrophes, long local parts and combining-mark domains', () => {
     expect(redactMessage("mary.jane'o_connor@example.com")).toBe('[REDACTED_EMAIL]');
     expect(redactMessage(`${'a'.repeat(100)}@example.com ok`)).toBe('[REDACTED_EMAIL] ok');
@@ -812,6 +835,20 @@ describe('redactFormat', () => {
     expect(info['[REDACTED_EMAIL]']).toBe('missing');
     expect(info).not.toHaveProperty(['top@example.net']);
     expect(info.nested).toEqual({ '[REDACTED_EMAIL]': 1, '[REDACTED_EMAIL]#2': 2, other: 3 });
+  });
+
+  it('keeps scoped package frame locations in a redacted Error stack', () => {
+    const error = new Error('lookup failed for jane@example.com');
+    error.stack = [
+      'Error: lookup failed for jane@example.com',
+      '    at KeyvMongo.get (/app/node_modules/@keyv/mongo/dist/index.cjs:10:3)',
+      '    at retryWithBackoff (/app/packages/api/dist/index.cjs:5:7)',
+    ].join('\n');
+    const info = runRedactFormat({ level: 'error', message: 'cache read', error });
+    const stack = String((info.error as Error).stack);
+    expect(stack).not.toContain('jane');
+    expect(stack).toContain('(/app/node_modules/@keyv/mongo/dist/index.cjs:10:3)');
+    expect(stack).toContain('(/app/packages/api/dist/index.cjs:5:7)');
   });
 
   it.each(['error', 'warn', 'info', 'debug'])('redacts info.message for %s level', (level) => {

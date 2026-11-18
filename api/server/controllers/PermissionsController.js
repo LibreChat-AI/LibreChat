@@ -18,11 +18,10 @@ const {
 } = require('@librechat/api');
 const {
   bulkUpdateResourcePermissions,
-  ensureGroupPrincipalExists,
+  preparePermissionPrincipals,
   getResourcePermissionsMap,
   findAccessibleResources,
   getEffectivePermissions,
-  ensurePrincipalExists,
   getAvailableRoles,
 } = require('~/server/services/PermissionService');
 const {
@@ -117,45 +116,11 @@ const updateResourcePermissions = async (req, res) => {
           }
         : null;
 
-    // Ensure updated principals exist in the database before processing permissions
-    const validatedPrincipals = [];
-    for (const principal of updatedPrincipals) {
-      try {
-        let principalId;
-
-        if (principal.type === PrincipalType.PUBLIC) {
-          principalId = null; // Public principals don't need database records
-        } else if (principal.type === PrincipalType.ROLE) {
-          principalId = principal.id; // Role principals use role name as ID
-        } else if (principal.type === PrincipalType.USER) {
-          principalId = await ensurePrincipalExists(principal);
-        } else if (principal.type === PrincipalType.GROUP) {
-          // Pass authContext to enable member fetching for Entra ID groups when available
-          principalId = await ensureGroupPrincipalExists(principal, authContext);
-        } else {
-          logger.error(`Unsupported principal type: ${principal.type}`);
-          continue; // Skip invalid principal types
-        }
-
-        // Update the principal with the validated ID for ACL operations
-        validatedPrincipals.push({
-          ...principal,
-          id: principalId,
-        });
-      } catch (error) {
-        logger.error('Error ensuring principal exists:', {
-          principal: {
-            type: principal.type,
-            id: principal.id,
-            name: principal.name,
-            source: principal.source,
-          },
-          error: error.message,
-        });
-        // Continue with other principals instead of failing the entire operation
-        continue;
-      }
-    }
+    const validatedPrincipals = await preparePermissionPrincipals(
+      updatedPrincipals,
+      authContext,
+      req.config,
+    );
 
     // Add removed principals
     if (removedList.length > 0) {

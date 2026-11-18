@@ -11,8 +11,13 @@ import type { IMongoFile } from '@librechat/data-schemas';
 import type { Agents } from 'librechat-data-provider';
 import type { AxiosInstance } from 'axios';
 import type { ServerRequest, StrategyFunctions } from '~/types';
-import { getOutboundTimeoutMs, outboundRequestBudget } from '~/utils/timeouts';
-import { getFileStream, isAttachmentObjectNotFoundError } from './utils';
+import type { MissingAttachmentHandler } from './utils';
+import {
+  getOutboundTimeoutMs,
+  outboundRequestBudget,
+  configuredRequestBudget,
+} from '~/utils/timeouts';
+import { getFileStream, skipMissingAttachment } from './utils';
 import { validateImage } from '~/files/validation';
 import { sniffImageMimeType } from '~/files/mime';
 import { runGuardedEncode } from './memoryGuard';
@@ -89,19 +94,31 @@ export class AttachmentStorageError extends Error {
 export async function encodeAndFormatImages(
   req: ServerRequest,
   files: ImageEncodingFile[] | null | undefined,
-  params: { provider?: string; endpoint?: string; imageDetail?: Agents.ImageDetail },
+  params: {
+    provider?: string;
+    endpoint?: string;
+    imageDetail?: Agents.ImageDetail;
+    onMissingFile?: MissingAttachmentHandler;
+  },
   { getStrategyFunctions, httpClient }: ImageEncodingDependencies,
   mode?: string,
 ): Promise<ImageResult> {
-  const { provider, endpoint } = params;
+  const { provider, endpoint, onMissingFile } = params;
   const effectiveEndpoint = endpoint ?? provider;
   const promises: Array<ImageEntry | Promise<ImageEntry>> = [];
   const encodingMethods: Record<string, ImageStrategy> = {};
   const result: ImageResult = { files: [], image_urls: [] };
+  const missingFiles = new Set<ImageEncodingFile>();
 
   if (!files?.length) {
     return result;
   }
+
+  /** A later synchronous throw abandons earlier in-flight reads; keep their rejections handled. */
+  const track = (entry: Promise<ImageEntry>): Promise<ImageEntry> => {
+    entry.catch(() => undefined);
+    return entry;
+  };
 
   for (const file of files) {
     const source = file.source ?? FileSources.local;
@@ -111,20 +128,31 @@ export async function encodeAndFormatImages(
     }
 
     if (blobStorageSources.has(source)) {
-      try {
-        const processedFile = await runGuardedEncode(file.bytes ?? 0, () =>
-          getFileStream(req, file, encodingMethods, getStrategyFunctions),
-        );
-        promises.push([file, processedFile?.content ?? null]);
-      } catch (error) {
-        if (isAttachmentObjectNotFoundError(error)) {
-          throw error;
-        }
-        if (typeof error === 'object' && error != null && 'bufferedData' in error) {
-          delete (error as { bufferedData?: unknown }).bufferedData;
-        }
-        throw new AttachmentStorageError();
-      }
+      promises.push(
+        track(
+          runGuardedEncode(file.bytes ?? 0, () =>
+            getFileStream(
+              req,
+              file,
+              encodingMethods,
+              getStrategyFunctions,
+              configuredRequestBudget(req.config, 'imageFetchMs'),
+            ),
+          ).then(
+            (processedFile): ImageEntry => [file, processedFile?.content ?? null],
+            (error: unknown): ImageEntry => {
+              if (skipMissingAttachment(error, file, onMissingFile)) {
+                missingFiles.add(file);
+                return [file, null];
+              }
+              if (typeof error === 'object' && error != null && 'bufferedData' in error) {
+                delete (error as { bufferedData?: unknown }).bufferedData;
+              }
+              throw new AttachmentStorageError();
+            },
+          ),
+        ),
+      );
       continue;
     }
 
@@ -137,7 +165,7 @@ export async function encodeAndFormatImages(
     }
 
     if (source !== FileSources.local && effectiveEndpoint && base64Only.has(effectiveEndpoint)) {
-      const entry = await runGuardedEncode<ImageEntry>(file.bytes ?? 0, async () => {
+      const entry = runGuardedEncode<ImageEntry>(file.bytes ?? 0, async () => {
         const [preparedFile, imageURL] = await preparePayload(req, file);
         const fetchTimeoutMs = getOutboundTimeoutMs(req.config, 'imageFetchMs');
         try {
@@ -151,10 +179,10 @@ export async function encodeAndFormatImages(
           throw new Error(logAxiosError({ message, error }));
         }
       });
-      promises.push(entry);
+      promises.push(track(entry));
       continue;
     }
-    promises.push(preparePayload(req, file));
+    promises.push(track(preparePayload(req, file)));
   }
 
   const detail = params.imageDetail ?? req.body.imageDetail ?? ImageDetail.auto;
@@ -170,6 +198,9 @@ export async function encodeAndFormatImages(
   }
 
   for (const [file, imageContent] of formattedImages) {
+    if (missingFiles.has(file)) {
+      continue;
+    }
     const fileMetadata: ImageResult['files'][number] = {
       type: file.type,
       file_id: file.file_id,

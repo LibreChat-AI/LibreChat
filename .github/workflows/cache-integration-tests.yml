@@ -20,7 +20,12 @@ on:
       - 'packages/data-schemas/package.json'
       - 'redis-config/**'
       - '.github/workflows/cache-integration-tests.yml'
+      - '.github/actions/redis-binaries/**'
       - '!**.md'
+  # The merge queue tests the commit about to land on dev. It has no path filter and no
+  # selection: every job below runs in full.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -39,35 +44,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
+      - name: Test Redis binary provisioning
+        run: node --test .github/actions/redis-binaries/provision.test.mjs
+
+      # The pinned redis-server and redis-cli come from the Actions cache, or
+      # are built from the pinned commit on a miss. apt is not involved: its
+      # lock contention and an unreachable Ubuntu mirror have each taken this
+      # job down before a single test ran.
       - name: Install Redis tools
-        timeout-minutes: 10
-        run: |
-          # Same runner apt contention that broke the MCP job in
-          # playwright-mock.yml: apt-daily/unattended-upgrades hold
-          # /var/lib/apt/lists/lock at boot. Without a step timeout this hung
-          # until the job-level one fired, taking the whole leg with it.
-          sudo systemctl stop apt-daily.service apt-daily-upgrade.service \
-            unattended-upgrades.service 2>/dev/null || true
-          sudo systemctl kill --kill-who=all apt-daily.service \
-            apt-daily-upgrade.service 2>/dev/null || true
-
-          apt_with_lock_wait() {
-            for attempt in $(seq 1 30); do
-              if sudo apt-get -o DPkg::Lock::Timeout=60 "$@"; then
-                return 0
-              fi
-              echo "apt-get $1 could not take the lock (attempt ${attempt}/30), retrying"
-              sleep 10
-            done
-            return 1
-          }
-          apt_with_lock_wait update
-          apt_with_lock_wait install -y redis-server redis-tools
+        timeout-minutes: 8
+        uses: ./.github/actions/redis-binaries
 
       - name: Start Single Redis Instance
         run: |
@@ -97,7 +88,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -162,3 +153,23 @@ jobs:
       - name: Stop Single Redis Instance
         if: always()
         run: redis-cli -p 6379 shutdown || true
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. No job here may be skipped.
+  gate:
+    name: cache-integration
+    needs: [cache_integration_tests]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every cache integration job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/merge-gate.mjs verify

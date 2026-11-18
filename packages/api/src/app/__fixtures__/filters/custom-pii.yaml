@@ -1,0 +1,9 @@
+version: 1.3.17
+cache: true
+filters:
+  messages:
+    pii:
+      customPatterns:
+        - id: org
+          label: Organization id
+          regex: 'ORG-[A-Z0-9]+'

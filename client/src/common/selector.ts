@@ -5,6 +5,9 @@ export interface Endpoint {
   value: string;
   label: string;
   hasModels: boolean;
+  isLoading?: boolean;
+  isUnavailable?: boolean;
+  onRetry?: () => void;
   models?: Array<{ name: string; isGlobal?: boolean }>;
   icon: React.ReactNode;
   agentNames?: Record<string, string>;

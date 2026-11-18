@@ -2,7 +2,7 @@ import {
   confirmScheduleMCPConsentSchema,
   revokeScheduleMCPConsentSchema,
 } from 'librechat-data-provider';
-import type { ScheduledMCPIdentity } from 'librechat-data-provider';
+import type { MCPGrantIdentity, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ScheduleMCPConsentService } from './service';
 import type { ServerRequest } from '~/types';
@@ -14,18 +14,14 @@ export interface ScheduleMCPConsentHandlers {
   revoke: (req: ServerRequest, res: Response) => Promise<void>;
 }
 
-export function createScheduleMCPConsentHandlers(deps: {
-  service: ScheduleMCPConsentService;
-  resolveIdentity: (req: ServerRequest) => Promise<ScheduledMCPIdentity | null>;
+export function createScheduleMCPConsentHandlers<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+>(deps: {
+  service: ScheduleMCPConsentService<Identity>;
+  resolveIdentity: (req: ServerRequest) => Promise<Identity | null>;
 }): ScheduleMCPConsentHandlers {
   const handler =
-    (
-      operation: (
-        req: ServerRequest,
-        res: Response,
-        identity: ScheduledMCPIdentity,
-      ) => Promise<void>,
-    ) =>
+    (operation: (req: ServerRequest, res: Response, identity: Identity) => Promise<void>) =>
     async (req: ServerRequest, res: Response): Promise<void> => {
       try {
         const identity = await deps.resolveIdentity(req);

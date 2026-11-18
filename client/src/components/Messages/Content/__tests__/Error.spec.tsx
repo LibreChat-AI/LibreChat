@@ -48,6 +48,10 @@ jest.mock('~/hooks', () => ({
       );
     },
   useHasAccess: ({ permission }: { permission: string }) => mockAccess[permission] === true,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   /** Mirrors the real hook's contract — a grid style plus a ref — without pulling `useMediaQuery`
    *  and its `matchMedia` dependency into a spec that asserts copy, not motion. */
   useExpandCollapse: (isExpanded: boolean) => ({
@@ -261,6 +265,18 @@ describe('Error — reader-facing provider and fallback copy', () => {
     expect(screen.getByText(prose)).toBeInTheDocument();
     expect(screen.queryByText(catalog.com_error_unknown)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain('{');
+    expectReadable();
+  });
+
+  it.each([
+    [ErrorTypes.MODEL_RATE_LIMIT, 'com_error_model_rate_limit'],
+    [ErrorTypes.MODEL_NOT_FOUND, 'com_error_model_not_found'],
+  ])('keeps the gateway explanation a classified %s carries as its detail', (type, key) => {
+    const info = 'You reached your assigned budget. Ask for more at the service desk.';
+    renderError({ type, info });
+
+    expect(screen.getByText(catalog[key])).toBeInTheDocument();
+    expect(screen.getByText(info)).toBeInTheDocument();
     expectReadable();
   });
 

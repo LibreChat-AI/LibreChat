@@ -63,13 +63,17 @@ const twMerge = extendTailwindMerge({
       ],
       px: [{ px: ['theme-button-x', 'theme-control-x', 'theme-dialog-x'] }],
       gap: [{ gap: ['theme-control-gap'] }],
-      rounded: [{ rounded: ['theme-auth-control', 'theme-auth-action', 'theme-checkbox'] }],
+      rounded: [
+        { rounded: ['theme-control', 'theme-auth-control', 'theme-auth-action', 'theme-checkbox'] },
+      ],
       'space-y': [{ 'space-y': ['theme-dialog-header'] }],
       'font-weight': [{ font: ['theme-control', 'theme-dialog-title-weight', 'theme-label'] }],
       'font-family': [{ font: ['theme-dialog-title'] }],
       'font-size': [{ text: [...TYPE_STEPS] }],
       'outline-w': [{ outline: ['theme-focus'] }],
       'outline-offset': [{ 'outline-offset': ['theme-focus'] }],
+      transition: [{ transition: ['reveal', 'crossfade', 'max-width', 'stroke-dashoffset'] }],
+      blur: [{ blur: ['crossfade'] }],
     },
   },
 });

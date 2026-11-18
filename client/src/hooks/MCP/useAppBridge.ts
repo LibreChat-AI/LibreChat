@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from 'react';
+import { readThemeColor } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
 import { QueryKeys, DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS } from 'librechat-data-provider';
@@ -138,10 +139,9 @@ function readHostTheme(): 'light' | 'dark' {
 }
 
 function buildHostStyleVariables(): McpUiStyles {
-  const computed = getComputedStyle(document.documentElement);
   const variables: Partial<Record<McpUiStyleVariableKey, string>> = {};
   for (const [specVar, lcVar] of Object.entries(HOST_STYLE_VAR_MAP)) {
-    const value = computed.getPropertyValue(lcVar).trim();
+    const value = readThemeColor(lcVar);
     if (value) {
       variables[specVar as McpUiStyleVariableKey] = value;
     }

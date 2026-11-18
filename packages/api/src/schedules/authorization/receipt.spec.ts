@@ -14,11 +14,12 @@ import {
 } from '../service';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
 import { createScheduleMCPExecution, getScheduleMCPExecution } from './execution';
+import { executionFixture, allowOffered, readTool } from './execution.helper';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { createScheduleExecutionContext } from '~/agents/authority/context';
 import { createAgentTriggerExecutionHost } from '~/agents/triggers/host';
 import { createAgentTriggerEnvelope } from '~/agents/triggers/envelope';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
-import { executionFixture, readTool } from './execution.helper';
 import { resolveScheduleMCPCompletion } from './continuation';
 import { retainScheduleMCPCompletion } from './continuation';
 import { createScheduleMCPConsentService } from './service';
@@ -77,7 +78,6 @@ async function setup(legacy = false) {
     resolveEnrollment: async () => [fixture.target],
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     canUse: async () => true,
-    checkToolPolicy: async () => true,
   });
   const enroll = async () => {
     const offer = await consent.view(identity);
@@ -85,13 +85,11 @@ async function setup(legacy = false) {
       offerDigest: offer.offer!.digest,
       expectedRevision: offer.revision,
       lifetimeHours: 1,
+      allow: allowOffered(offer.targets),
     });
   };
   if (!legacy) await enroll();
-  const loadAuthorization = jest.fn(async () => ({
-    authority: consent.authority,
-    policy: fixture.policy,
-  }));
+  const loadAuthorization = jest.fn(async () => ({ authority: consent.authority }));
   const factory = createScheduleMCPExecution({ storage: methods, loadAuthorization });
   const execution = (await factory.resolve(identity, 'invoke'))!;
   const scheduledFor = new Date('2026-10-02T12:00:00Z');
@@ -1144,25 +1142,27 @@ it('stores only a safe preparation outage when initial authorization fails after
   });
   const provider = jest.fn();
   let failure: unknown;
+  const fire = {
+    user: { id: f.scope.userId, tenantId: 'tenant' },
+    _isScheduledFire: true,
+    _isAgentTrigger: true,
+    body: {
+      agent_id: 'root',
+      agentTrigger: {
+        version: 1,
+        event: {
+          type: 'schedule.occurrence',
+          occurredAt: 0,
+          source: { id: f.schedule.id, type: 'schedule' },
+        },
+      },
+    },
+  };
   try {
     await initializeWithScheduleMCPExecution(
       {
-        req: {
-          user: { id: f.scope.userId, tenantId: 'tenant' },
-          _isScheduledFire: true,
-          _isAgentTrigger: true,
-          body: {
-            agent_id: 'root',
-            agentTrigger: {
-              version: 1,
-              event: {
-                type: 'schedule.occurrence',
-                occurredAt: 0,
-                source: { id: f.schedule.id, type: 'schedule' },
-              },
-            },
-          },
-        },
+        req: fire,
+        executionContext: createScheduleExecutionContext(fire),
         context: createMCPRequestContext(),
       },
       () => host,

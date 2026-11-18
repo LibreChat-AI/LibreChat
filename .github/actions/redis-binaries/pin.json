@@ -1,0 +1,6 @@
+{
+  "version": "8.0.5",
+  "commit": "214a4905c3edb6b69ac9a9c5d769b7d3fb81ed54",
+  "repository": "https://github.com/redis/redis.git",
+  "flags": ["BUILD_TLS=no", "USE_SYSTEMD=no"]
+}

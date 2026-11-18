@@ -1,4 +1,9 @@
 import { Constants } from '@librechat/agents';
+import {
+  normalizeServerName,
+  SCHEDULE_APPROVAL_REASON,
+  Constants as ProviderConstants,
+} from 'librechat-data-provider';
 import type { HookCallback } from '@librechat/agents';
 import type { ScheduleMCPExecution } from './execution';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
@@ -30,7 +35,11 @@ export interface ScheduledMCPPolicyAgent {
   }[];
 }
 
-/** No direct actions, arbitrary code or unclassified tools in an enrolled read-only run. */
+/** What the model is told when it calls a tool the schedule's owner did not allow. */
+export const SCHEDULE_TOOL_NOT_ALLOWED =
+  'The owner of this schedule has not allowed this tool. Continue without it.';
+
+/** No direct actions, arbitrary code or unlisted tools in an enrolled run. */
 export function createScheduledMCPRunPolicy(
   execution: ScheduleMCPExecution,
   agents: readonly ScheduledMCPPolicyAgent[],
@@ -42,6 +51,29 @@ export function createScheduledMCPRunPolicy(
   registerAgent: (agent: ScheduledMCPPolicyAgent) => void;
 } {
   const mcpTools = new Map<string, Set<string>>();
+  /**
+   * MCP tools an agent has that the owner did not allow. Only a tool whose server and name
+   * can be read off its key is listed: anything else is left to the check at the call.
+   */
+  const leftOut = new Map<string, Set<string>>();
+  const isLeftOut = (agentId: string, name: string, tool: PolicyTool): boolean => {
+    if (!execution.enrolled) return false;
+    const servers = [tool.mcpRawServerName, tool.serverName].filter((server): server is string =>
+      Boolean(server),
+    );
+    const selections = servers.flatMap((server) =>
+      [server, normalizeServerName(server)]
+        .map((spelling) => `${ProviderConstants.mcp_delimiter}${spelling}`)
+        .filter((suffix) => name.endsWith(suffix) && name.length > suffix.length)
+        .map((suffix) => name.slice(0, -suffix.length)),
+    );
+    return (
+      selections.length > 0 &&
+      !servers.some((server) =>
+        selections.some((selection) => execution.grants(agentId, server, selection)),
+      )
+    );
+  };
   const handoffs = new Map<string, Set<string>>();
   const backgroundTools = new Map<string, Set<string>>();
   const registerGraph = (
@@ -87,13 +119,20 @@ export function createScheduledMCPRunPolicy(
         registerGraph(graph.memberConfigs, graph.definition?.edges ?? []);
       }
       const names = mcpTools.get(agent.id) ?? new Set<string>();
+      const left = leftOut.get(agent.id) ?? new Set<string>();
+      const register = (name: string, tool: PolicyTool): void => {
+        names.add(name);
+        if (isLeftOut(agent.id, name, tool)) left.add(name);
+      };
       for (const tool of agent.toolDefinitions ?? []) {
-        if (tool.toolType === 'mcp' && tool.serverName) names.add(tool.name);
+        if (tool.toolType === 'mcp' && tool.serverName) register(tool.name, tool);
       }
       for (const [name, tool] of agent.toolRegistry ?? []) {
-        if (tool.toolType === 'mcp' && (tool.mcpRawServerName || tool.serverName)) names.add(name);
+        if (tool.toolType === 'mcp' && (tool.mcpRawServerName || tool.serverName))
+          register(name, tool);
       }
       mcpTools.set(agent.id, names);
+      leftOut.set(agent.id, left);
       backgroundTools.set(agent.id, new Set(agent.backgroundToolNames ?? []));
     }
   };
@@ -148,7 +187,17 @@ export function createScheduledMCPRunPolicy(
     registerAgent,
     hook: async (input) => {
       const error = await failure(input);
-      return error ? { decision: 'deny', reason: error.message } : {};
+      if (error) return { decision: 'deny', reason: error.message };
+      if (input.executingAgentId == null) return {};
+      // The owner left this tool out on purpose. The model is told and the run goes on: it is
+      // not a failure of the schedule, so nothing is recorded against the run. Should this hook
+      // be skipped, the call is still refused where it is made, and that refusal is recorded.
+      if (leftOut.get(input.executingAgentId)?.has(input.toolName) === true)
+        return { decision: 'deny', reason: SCHEDULE_TOOL_NOT_ALLOWED };
+      // Pauses the run where it can pause. The call itself is checked again when it is made.
+      return execution.asksAbout(input.executingAgentId, input.toolName)
+        ? { decision: 'ask', reason: SCHEDULE_APPROVAL_REASON }
+        : {};
     },
     // Separate hook: a failed or timed-out receipt must never erase the immediate deny.
     receipt: async (input) => {

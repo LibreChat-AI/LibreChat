@@ -213,6 +213,7 @@ export default function MarketplaceSidebar(props: MarketplaceSidebarProps) {
           isOpen={createOpen}
           setIsOpen={setCreateOpen}
           menuId="marketplace-create-new"
+          sameWidth
           className="pointer-events-auto"
           trigger={
             <Ariakit.MenuButton

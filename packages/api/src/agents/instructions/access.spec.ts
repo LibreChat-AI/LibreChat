@@ -1,6 +1,7 @@
 import { InstructionsPromptErrorCode, PermissionBits, ResourceType } from 'librechat-data-provider';
 import type { AgentInstructionsPrompt } from 'librechat-data-provider';
 import { ContentTraversalLimitError } from '~/protection/adapters/nested';
+import { LangfusePromptRequestError } from '~/langfuse/prompts';
 import { createInstructionsPromptAccess } from './access';
 
 const groupId = '507f1f77bcf86cd799439011';
@@ -32,6 +33,24 @@ const thirdGroupLink: AgentInstructionsPrompt = {
   source: 'native',
   groupId: thirdGroupId,
   selection: { type: 'production' },
+};
+
+const langfuseLink: AgentInstructionsPrompt = {
+  source: 'langfuse',
+  groupId: otherGroupId,
+  selection: { type: 'production' },
+};
+
+const langfuseVersionLink: AgentInstructionsPrompt = {
+  source: 'langfuse',
+  groupId: otherGroupId,
+  selection: { type: 'exact', version: 2 },
+};
+
+const langfuseVersionLink3: AgentInstructionsPrompt = {
+  source: 'langfuse',
+  groupId: otherGroupId,
+  selection: { type: 'exact', version: 3 },
 };
 
 function buildAccess({
@@ -337,9 +356,9 @@ describe('createInstructionsPromptAccess', () => {
       });
       expect(resolve).toHaveBeenCalledWith({
         groupId,
+        source: 'native',
         selection: exactLink.selection,
         filters: undefined,
-        allowedSources: ['native'],
       });
     });
 
@@ -349,9 +368,9 @@ describe('createInstructionsPromptAccess', () => {
       expect(result).toEqual({ ok: true });
       expect(resolve).toHaveBeenCalledWith({
         groupId,
+        source: 'native',
         selection: exactLink.selection,
         filters: undefined,
-        allowedSources: ['native'],
       });
     });
 
@@ -371,9 +390,9 @@ describe('createInstructionsPromptAccess', () => {
       await access.validateLinkWrite({ user, previous: null, next: productionLink, filters });
       expect(resolve).toHaveBeenCalledWith({
         groupId,
+        source: 'native',
         selection: productionLink.selection,
         filters,
-        allowedSources: ['native'],
       });
     });
 
@@ -582,6 +601,269 @@ describe('createInstructionsPromptAccess', () => {
           ok: false,
           status: 403,
           code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+      });
+    });
+
+    describe('the Langfuse rollout switch (linkedInstructions.langfuse.enabled)', () => {
+      it('rejects a new Langfuse link while the switch is off, before any USE/VIEW check', async () => {
+        const { access, canUse, map } = buildAccess({ visibleGroupIds: new Set([otherGroupId]) });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: langfuseLink,
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 400,
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(canUse).not.toHaveBeenCalled();
+        expect(map).not.toHaveBeenCalled();
+      });
+
+      it('rejects a changed Langfuse link while the switch is off', async () => {
+        const { access, canUse, map, resolve } = buildAccess({
+          visibleGroupIds: new Set([otherGroupId]),
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: langfuseLink,
+          next: langfuseVersionLink,
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 400,
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(canUse).not.toHaveBeenCalled();
+        expect(map).not.toHaveBeenCalled();
+        expect(resolve).not.toHaveBeenCalled();
+      });
+
+      it('allows removing a Langfuse link while the switch is off', async () => {
+        const { access, canUse, resolve } = buildAccess();
+        const result = await access.validateLinkWrite({
+          user,
+          previous: langfuseLink,
+          next: null,
+        });
+        expect(result).toEqual({ ok: true });
+        expect(canUse).not.toHaveBeenCalled();
+        expect(resolve).not.toHaveBeenCalled();
+      });
+
+      it('allows re-submitting the unchanged Langfuse link while the switch is off', async () => {
+        const { access, canUse, resolve } = buildAccess();
+        const result = await access.validateLinkWrite({
+          user,
+          previous: langfuseLink,
+          next: { ...langfuseLink },
+        });
+        expect(result).toEqual({ ok: true });
+        expect(canUse).not.toHaveBeenCalled();
+        expect(resolve).not.toHaveBeenCalled();
+      });
+
+      it('allows re-submitting the unchanged pinned Langfuse link while the switch is off', async () => {
+        const { access, canUse, map, resolve } = buildAccess();
+        const result = await access.validateLinkWrite({
+          user,
+          previous: langfuseVersionLink,
+          next: { ...langfuseVersionLink },
+        });
+        expect(result).toEqual({ ok: true });
+        expect(canUse).not.toHaveBeenCalled();
+        expect(map).not.toHaveBeenCalled();
+        expect(resolve).not.toHaveBeenCalled();
+      });
+
+      it('never blocks a native replacement, regardless of the switch', async () => {
+        const { access, canUse, map, resolve } = buildAccess({
+          visibleGroupIds: new Set([groupId]),
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: langfuseLink,
+          next: productionLink,
+        });
+        expect(result).toEqual({ ok: true });
+        expect(canUse).toHaveBeenCalled();
+        expect(map).toHaveBeenCalled();
+        expect(resolve).toHaveBeenCalled();
+      });
+
+      it('rejects a native replacement when USE is denied, even though the switch is off', async () => {
+        const { access } = buildAccess({
+          visibleGroupIds: new Set([groupId]),
+          canUsePromptsResult: false,
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: langfuseLink,
+          next: productionLink,
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 403,
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+      });
+
+      it('rejects a new Langfuse link when the switch is explicitly disabled', async () => {
+        const { access, canUse, map, resolve } = buildAccess({
+          visibleGroupIds: new Set([otherGroupId]),
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: langfuseLink,
+          linkedInstructions: { langfuse: { enabled: false } },
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 400,
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(canUse).not.toHaveBeenCalled();
+        expect(map).not.toHaveBeenCalled();
+        expect(resolve).not.toHaveBeenCalled();
+      });
+
+      it('rejects a Langfuse selection that resolves with an unsupported_content error', async () => {
+        const resolvePrompt = jest.fn(async () => ({
+          ok: false as const,
+          error: { type: 'unsupported_content' as const, reason: 'chat_prompt' as const },
+        }));
+        const { access } = buildAccess({
+          visibleGroupIds: new Set([otherGroupId]),
+          resolvePrompt,
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: langfuseLink,
+          linkedInstructions: { langfuse: { enabled: true } },
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 400,
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+      });
+
+      it('allows a new Langfuse link once the switch is on', async () => {
+        const resolvePrompt = jest.fn(async () => ({
+          ok: true as const,
+          value: {
+            source: 'langfuse' as const,
+            groupId: otherGroupId,
+            prompt: 'hi',
+            type: 'text' as const,
+            version: 3,
+            labels: ['production'],
+          },
+        }));
+        const { access } = buildAccess({
+          visibleGroupIds: new Set([otherGroupId]),
+          resolvePrompt,
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: langfuseLink,
+          linkedInstructions: { langfuse: { enabled: true } },
+        });
+        expect(result).toEqual({ ok: true });
+        expect(resolvePrompt).toHaveBeenCalledWith({
+          groupId: otherGroupId,
+          source: 'langfuse',
+          selection: langfuseLink.selection,
+          filters: undefined,
+        });
+      });
+
+      it('treats a different Langfuse version number as a changed link once the switch is on', async () => {
+        const { access, canUse } = buildAccess({ visibleGroupIds: new Set([otherGroupId]) });
+        await access.validateLinkWrite({
+          user,
+          previous: langfuseVersionLink,
+          next: langfuseVersionLink3,
+          linkedInstructions: { langfuse: { enabled: true } },
+        });
+        expect(canUse).toHaveBeenCalled();
+      });
+
+      it('passes a pinned Langfuse link through as a langfuse exact-version reference', async () => {
+        const { access, resolve } = buildAccess({ visibleGroupIds: new Set([otherGroupId]) });
+        await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: langfuseVersionLink3,
+          linkedInstructions: { langfuse: { enabled: true } },
+        });
+        expect(resolve).toHaveBeenCalledWith({
+          groupId: otherGroupId,
+          source: 'langfuse',
+          selection: { type: 'exact', version: 3 },
+          filters: undefined,
+        });
+      });
+    });
+
+    describe('Langfuse selection resolution', () => {
+      it('maps a thrown LangfusePromptRequestError to UNAVAILABLE and logs only its code', async () => {
+        const resolvePrompt = jest.fn(async () => {
+          throw new LangfusePromptRequestError('timeout', 'Langfuse request timed out');
+        });
+        const { access, logger } = buildAccess({
+          visibleGroupIds: new Set([otherGroupId]),
+          resolvePrompt,
+        });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: langfuseLink,
+          linkedInstructions: { langfuse: { enabled: true } },
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 400,
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(logger.warn).toHaveBeenCalledWith(expect.any(String), { code: 'timeout' });
+      });
+
+      it('propagates an error that is not a LangfusePromptRequestError', async () => {
+        const { access } = buildAccess({
+          visibleGroupIds: new Set([otherGroupId]),
+          resolvePrompt: jest.fn(async () => {
+            throw new Error('unexpected prompt-store failure');
+          }),
+        });
+        await expect(
+          access.validateLinkWrite({
+            user,
+            previous: null,
+            next: langfuseLink,
+            linkedInstructions: { langfuse: { enabled: true } },
+          }),
+        ).rejects.toThrow('unexpected prompt-store failure');
+      });
+
+      it('rejects when the resolved value source does not match the requested link source', async () => {
+        // The mock `resolve` answers with a native value, so this exercises the mismatch.
+        const { access } = buildAccess({ visibleGroupIds: new Set([otherGroupId]) });
+        const result = await access.validateLinkWrite({
+          user,
+          previous: null,
+          next: langfuseLink,
+          linkedInstructions: { langfuse: { enabled: true } },
+        });
+        expect(result).toEqual({
+          ok: false,
+          status: 400,
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
         });
       });
     });
@@ -884,6 +1166,33 @@ describe('createInstructionsPromptAccess', () => {
         });
       });
     });
+
+    describe('Langfuse links', () => {
+      it('stubs a redacted Langfuse link with its own source', async () => {
+        const { access } = buildAccess();
+        const agent = { id: 'a1', instructionsPrompt: langfuseLink };
+        const result = await access.presentForEditor({ user, agent });
+        expect(result).toEqual({
+          id: 'a1',
+          instructionsPrompt: { source: 'langfuse', restricted: true },
+        });
+      });
+
+      it('fails closed on a Langfuse link, keeping its source in the stub', async () => {
+        const { access, logger } = buildAccess({
+          getResourcePermissionsMap: jest.fn(async () => {
+            throw new Error('acl outage');
+          }),
+        });
+        const agent = { id: 'a1', instructionsPrompt: langfuseLink };
+        const result = await access.presentForEditor({ user, agent });
+        expect(result).toEqual({
+          id: 'a1',
+          instructionsPrompt: { source: 'langfuse', restricted: true },
+        });
+        expect(logger.error).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   describe('presentVersionsForEditor', () => {
@@ -987,6 +1296,47 @@ describe('createInstructionsPromptAccess', () => {
         const result = await access.presentVersionsForEditor({ user, versions });
         expect(result).toEqual([
           { name: 'v1', instructionsPrompt: { source: 'native', restricted: true } },
+        ]);
+      });
+
+      it('redacts a Langfuse version link, keeping its source in the stub', async () => {
+        const { access } = buildAccess();
+        const versions = [{ name: 'v1', instructionsPrompt: langfuseVersionLink }];
+        const result = await access.presentVersionsForEditor({ user, versions });
+        expect(result).toEqual([
+          { name: 'v1', instructionsPrompt: { source: 'langfuse', restricted: true } },
+        ]);
+      });
+
+      it('flags a redacted Langfuse version stub as matching when the version number is equal', async () => {
+        const { access } = buildAccess();
+        const versions = [{ name: 'v1', instructionsPrompt: langfuseVersionLink }];
+        const result = await access.presentVersionsForEditor({
+          user,
+          versions,
+          currentLink: langfuseVersionLink,
+        });
+        expect(result).toEqual([
+          {
+            name: 'v1',
+            instructionsPrompt: { source: 'langfuse', restricted: true, matchesCurrent: true },
+          },
+        ]);
+      });
+
+      it('flags a redacted Langfuse version stub as not matching when the version number differs', async () => {
+        const { access } = buildAccess();
+        const versions = [{ name: 'v1', instructionsPrompt: langfuseVersionLink }];
+        const result = await access.presentVersionsForEditor({
+          user,
+          versions,
+          currentLink: langfuseVersionLink3,
+        });
+        expect(result).toEqual([
+          {
+            name: 'v1',
+            instructionsPrompt: { source: 'langfuse', restricted: true, matchesCurrent: false },
+          },
         ]);
       });
     });

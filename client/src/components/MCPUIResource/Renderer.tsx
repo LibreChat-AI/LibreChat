@@ -1,4 +1,4 @@
-import { UIResourceRenderer as LegacyUIResourceRenderer } from '@mcp-ui/client';
+import { Suspense } from 'react';
 import {
   isHtmlMediaType,
   isMcpAppMimeType,
@@ -6,7 +6,16 @@ import {
 } from 'librechat-data-provider';
 import type { UIResource } from 'librechat-data-provider';
 import type { ComponentProps } from 'react';
+import { importWithRecovery, lazyWithRecovery } from '~/lib/assets/lazy';
 import { useMCPAppsPolicy } from '~/Providers/MCPAppsPolicyContext';
+import { MCPAppLoading } from './MCPAppFrame';
+
+/** The SDK behind this renderer is large, and only a deployment that serves legacy HTML needs it. */
+const LegacyUIResourceRenderer = lazyWithRecovery(() =>
+  importWithRecovery(() => import('@mcp-ui/client')).then((m) => ({
+    default: m.UIResourceRenderer,
+  })),
+);
 
 type LegacyRendererProps = ComponentProps<typeof LegacyUIResourceRenderer>;
 
@@ -46,11 +55,19 @@ export default function UIResourceRenderer({
   delete safeHtmlProps.sandboxPermissions;
 
   return (
-    <LegacyUIResourceRenderer
-      {...props}
-      resource={safeResource}
-      htmlProps={safeHtmlProps}
-      supportedContentTypes={['rawHtml']}
-    />
+    <Suspense
+      fallback={
+        <span className="relative block min-h-16">
+          <MCPAppLoading live={false} />
+        </span>
+      }
+    >
+      <LegacyUIResourceRenderer
+        {...props}
+        resource={safeResource}
+        htmlProps={safeHtmlProps}
+        supportedContentTypes={['rawHtml']}
+      />
+    </Suspense>
   );
 }

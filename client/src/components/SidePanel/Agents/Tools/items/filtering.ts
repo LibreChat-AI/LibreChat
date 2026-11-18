@@ -25,7 +25,11 @@ function getCategory(item: AgentItem): string | undefined {
 function matchesSearch(item: AgentItem, search: string): boolean {
   if (!search) return true;
   const term = search.toLowerCase();
-  return item.name.toLowerCase().includes(term) || item.description.toLowerCase().includes(term);
+  if (item.name.toLowerCase().includes(term) || item.description.toLowerCase().includes(term)) {
+    return true;
+  }
+  /** An MCP item's name is its title, so its config key is only reachable through the id. */
+  return item.kind === 'mcp' && item.id.toLowerCase().includes(term);
 }
 
 function matchesKind(item: AgentItem, kind: ItemFilter['kind']): boolean {

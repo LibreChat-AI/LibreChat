@@ -18,6 +18,7 @@ import store from '~/store';
 /** No `useGetStartupConfig`: a hook that still read the deployment config directly would throw. */
 jest.mock('~/data-provider', () => ({
   useTokenConfigQuery: () => ({ data: undefined }),
+  useGetEndpointsQuery: () => ({ data: undefined }),
   useGetAgentByIdQuery: () => ({ data: undefined }),
   useAbortStreamMutation: () => ({ mutateAsync: jest.fn() }),
   supportsGenerationProtocolV2: () => false,
@@ -28,9 +29,9 @@ jest.mock('~/hooks/Messages/useLatestMessage', () => ({
   useLatestMessageId: () => null,
 }));
 
-jest.mock('~/hooks/Chat/useChatFunctions', () => ({
+jest.mock('~/hooks/Chat/services', () => ({
   __esModule: true,
-  default: () => ({ ask: jest.fn(), regenerate: jest.fn() }),
+  default: () => jest.requireActual('test/turnServices').createTestTurnServices(),
 }));
 
 jest.mock('~/hooks/useNewConvo', () => ({

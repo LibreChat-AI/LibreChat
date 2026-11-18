@@ -1,16 +1,21 @@
 import axios from 'axios';
 import yaml from 'js-yaml';
+import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import {
   configSchema,
+  persistenceConfigSchema,
   EModelEndpoint,
   EImageOutputType,
   getMaxSubagents,
   setMaxSubagents,
+  setPiiRegexProgramSizer,
 } from 'librechat-data-provider';
 import type { TCustomConfig, TEndpoint } from 'librechat-data-provider';
 import type { ConfigOverrideIssue } from '@librechat/data-schemas';
 import type { ZodIssue } from 'zod';
+import { getPiiRegexProgramSize } from '~/protection/programSize';
+import { serviceRequestBudget } from '~/utils/timeouts';
 import { checkConfigPolicyLinks } from './interface';
 import { expandCustomEndpoint } from './params';
 import { checkConfigTheme } from './theme';
@@ -19,6 +24,14 @@ export type CustomConfigLoadMode = 'startup' | 'reload';
 
 export interface CustomConfigLoadOptions {
   mode?: CustomConfigLoadMode;
+  /** Storage initialization must distinguish an absent default from an unreadable source. */
+  storageSelection?: boolean;
+}
+
+export interface LoadedCustomConfig {
+  config: TCustomConfig;
+  /** {@link hashCustomConfig} of the file as parsed, before any check rewrote part of it. */
+  digest: string;
 }
 
 export interface CustomConfigLoaderOptions {
@@ -26,6 +39,29 @@ export interface CustomConfigLoaderOptions {
   loadLocal: (configPath: string) => unknown;
   fetchRemote?: (configPath: string) => Promise<unknown>;
   redactConfig: (config: TCustomConfig) => TCustomConfig;
+  /** Runs after each successful load, at startup and on reload, before the config is returned. */
+  onLoad?: (loaded: LoadedCustomConfig) => void;
+}
+
+const CONFIG_DIGEST_LENGTH = 12;
+
+/** Keys are unique within an object, and code-unit order does not vary by locale. */
+function sortKeys(_key: string, value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)));
+}
+
+/**
+ * A short, stable hash of a parsed librechat.yaml: comments, formatting and key order do not
+ * change it, so it moves only when the configuration does. Values are hashed, never logged.
+ */
+export function hashCustomConfig(config: unknown): string {
+  return createHash('sha256')
+    .update(JSON.stringify(config, sortKeys))
+    .digest('hex')
+    .slice(0, CONFIG_DIGEST_LENGTH);
 }
 
 export class ConfigReloadError extends Error {
@@ -103,6 +139,25 @@ function reportPolicyLinkCheck(configPath: string, dropped: string[]): void {
   );
 }
 
+/**
+ * `interface.schedules.mcpConsent.readOnlyPolicy` used to decide which MCP tools a scheduled
+ * chat could call. The schedule's owner chooses now, and the schema drops the key without a
+ * word, so an operator who still relies on it is told.
+ */
+function reportRetiredScheduleToolPolicy(configPath: string, config: unknown): void {
+  const schedules = (config as { interface?: { schedules?: unknown } } | null)?.interface
+    ?.schedules;
+  const consent = (schedules as { mcpConsent?: unknown } | null | undefined)?.mcpConsent;
+  if (consent == null || typeof consent !== 'object' || !('readOnlyPolicy' in consent)) {
+    return;
+  }
+  logger.warn(
+    `Ignoring interface.schedules.mcpConsent.readOnlyPolicy in ${configPath}: it no longer limits ` +
+      'which MCP tools a scheduled chat may call. Each schedule owner now chooses the allowed ' +
+      'tools when granting consent. Remove the key.',
+  );
+}
+
 function reportThemeCheck(configPath: string, errors: string[], warnings: string[]): void {
   if (errors.length > 0) {
     logger.warn(
@@ -118,12 +173,29 @@ function reportThemeCheck(configPath: string, errors: string[], warnings: string
   }
 }
 
+/** Whether `error` is the service request budget running out, not a refused or failed fetch. */
+function isFetchTimeout(error: unknown): boolean {
+  const { code, name, config } = (error ?? {}) as {
+    code?: unknown;
+    name?: unknown;
+    config?: { signal?: { reason?: { name?: unknown } } };
+  };
+  return (
+    code === 'ECONNABORTED' ||
+    code === 'ETIMEDOUT' ||
+    name === 'TimeoutError' ||
+    config?.signal?.reason?.name === 'TimeoutError'
+  );
+}
+
 /** Creates one process-local custom-config reader. */
 export function createCustomConfigLoader({
   defaultConfigPath,
   loadLocal,
   redactConfig,
-  fetchRemote = async (configPath: string): Promise<unknown> => (await axios.get(configPath)).data,
+  onLoad,
+  fetchRemote = async (configPath: string): Promise<unknown> =>
+    (await axios.get(configPath, serviceRequestBudget())).data,
 }: CustomConfigLoaderOptions): (
   printConfig?: boolean,
   options?: CustomConfigLoadOptions,
@@ -144,6 +216,17 @@ export function createCustomConfigLoader({
       cause?: unknown,
       startupLogLevel: 'error' | 'info' = 'error',
     ): null => {
+      if (
+        options.storageSelection &&
+        !(
+          cause instanceof Error &&
+          'code' in cause &&
+          cause.code === 'ENOENT' &&
+          !process.env.CONFIG_PATH
+        )
+      ) {
+        throw new ConfigReloadError('Deployment config unavailable for storage selection');
+      }
       if (mode === 'reload') {
         if (cause == null) {
           logger.error(message);
@@ -171,6 +254,12 @@ export function createCustomConfigLoader({
         try {
           loadedConfig = await fetchRemote(configPath);
         } catch (error) {
+          if (isFetchTimeout(error)) {
+            /** Booting on defaults would drop policy such as `registration.allowedDomains`. */
+            throw new Error(`Timed out fetching the remote config file from ${configPath}`, {
+              cause: error,
+            });
+          }
           return failSourceLoad(`Failed to fetch the remote config file from ${configPath}`, error);
         }
       } else {
@@ -206,14 +295,30 @@ export function createCustomConfigLoader({
         }
       }
 
+      /** The checks below return copies, but `modelSpecs` is assigned onto this object later. */
+      if (
+        typeof loadedConfig === 'object' &&
+        loadedConfig != null &&
+        'persistence' in loadedConfig
+      ) {
+        const persistence = persistenceConfigSchema.safeParse(loadedConfig.persistence);
+        if (!persistence.success) {
+          throw new ConfigReloadError('Invalid persistence configuration');
+        }
+      }
+      const parsedConfig = loadedConfig;
       const themeCheck = checkConfigTheme(loadedConfig);
       loadedConfig = themeCheck.config;
       reportThemeCheck(configPath, themeCheck.errors, themeCheck.warnings);
       const linkCheck = checkConfigPolicyLinks(loadedConfig);
       loadedConfig = linkCheck.config;
       reportPolicyLinkCheck(configPath, linkCheck.dropped);
+      reportRetiredScheduleToolPolicy(configPath, loadedConfig);
 
       setMaxSubagents(getConfiguredMaxSubagents(loadedConfig));
+      /* `filters` PII patterns are sized by RE2, which the shared schema cannot carry. Every
+         entry point loads config through here, the CLI scripts included, so register it here. */
+      setPiiRegexProgramSizer(getPiiRegexProgramSize);
       const result = configSchema.strict().safeParse(loadedConfig);
       if (
         result.error?.issues.some(
@@ -246,6 +351,13 @@ export function createCustomConfigLoader({
           );
         }
 
+        if (
+          typeof loadedConfig === 'object' &&
+          loadedConfig != null &&
+          'persistence' in loadedConfig
+        ) {
+          throw new ConfigReloadError('Invalid configuration containing persistence selection');
+        }
         if (process.env.CONFIG_BYPASS_VALIDATION === 'true') {
           logger.warn(
             'CONFIG_BYPASS_VALIDATION is enabled. Continuing with default configuration despite validation errors.',
@@ -265,6 +377,7 @@ export function createCustomConfigLoader({
         process.exit(1);
       }
 
+      const digest = hashCustomConfig(parsedConfig);
       const customConfig = loadedConfig as TCustomConfig;
       /** Expanded copies are discarded: AppService serves them, and the config stays as written. */
       for (const endpoint of (customConfig.endpoints?.custom ?? []) as TEndpoint[]) {
@@ -281,6 +394,7 @@ export function createCustomConfigLoader({
         logger.debug('Custom config:', loggableConfig);
       }
 
+      onLoad?.({ config: customConfig, digest });
       loadedSuccessfully = true;
       return customConfig;
     } catch (error) {

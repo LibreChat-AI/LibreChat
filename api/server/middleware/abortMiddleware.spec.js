@@ -44,6 +44,8 @@ jest.mock('@librechat/api', () => ({
   getTransactionsConfig: (...args) => mockGetTransactionsConfig(...args),
   sanitizeMessageForTransmit: jest.fn((msg) => msg),
   buildAbortedResponseMetadata: jest.fn().mockReturnValue(null),
+  /** The Assistants stop request is enrolled in the account barrier; its own tests cover that. */
+  withAssistantRun: jest.fn((controller) => controller),
 }));
 
 jest.mock('librechat-data-provider', () => ({

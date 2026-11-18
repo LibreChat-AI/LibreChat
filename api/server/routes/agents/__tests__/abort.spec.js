@@ -51,6 +51,7 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
+  initializeChannelStorageConfig: jest.fn(),
   saveMessage: (...args) => mockSaveMessage(...args),
   getPersistedPrivateTextId: async (...args) =>
     (await mockHasPersistedPrivateText(...args)) ? 'protected-row-id' : null,
@@ -100,6 +101,10 @@ describe('Agent Abort Endpoint', () => {
   beforeAll(() => {
     app = express();
     app.use(express.json());
+    app.use((req, _res, next) => {
+      req.config = { endpoints: { agents: { checkpointer: { type: 'memory' } } } };
+      next();
+    });
     app.use('/api/agents', agentRoutes);
   });
 
@@ -174,6 +179,41 @@ describe('Agent Abort Endpoint', () => {
           jobStreamId,
           expect.objectContaining({ transformAbortContent: expect.any(Function) }),
         );
+      });
+
+      it('should refuse to abort a background child job, which its task store owns', async () => {
+        const jobStreamId = 'child-thread-123';
+
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: {
+            userId: 'test-user-123',
+            subagentTaskId: 'task-1',
+            subagentParentConversationId: 'parent-1',
+          },
+        });
+
+        const response = await request(app)
+          .post('/api/agents/chat/abort')
+          .send({ conversationId: jobStreamId });
+
+        expect(response.status).toBe(409);
+        expect(response.body).toMatchObject({ code: 'CHILD_THREAD_READ_ONLY' });
+        expect(mockGenerationJobManager.abortJob).not.toHaveBeenCalled();
+        expect(mockSaveMessage).not.toHaveBeenCalled();
+        expect(mockSaveConvo).not.toHaveBeenCalled();
+      });
+
+      it("should answer 403, not 409, for another user's background child job", async () => {
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'other-user-456', subagentTaskId: 'task-1' },
+        });
+
+        const response = await request(app)
+          .post('/api/agents/chat/abort')
+          .send({ conversationId: 'child-thread-123' });
+
+        expect(response.status).toBe(403);
+        expect(mockGenerationJobManager.abortJob).not.toHaveBeenCalled();
       });
 
       it('should fail closed when job has no userId metadata', async () => {

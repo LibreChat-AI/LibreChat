@@ -10,10 +10,22 @@ export const MCP_STATUS_LABELS: Record<ScheduleMCPStatus, TranslationKeys> = {
   mcp_unavailable: 'com_ui_schedule_mcp_unavailable',
 };
 
+/** Refusals the owner clears in the schedule's authorization dialog, not by reconnecting. */
+const AUTHORIZATION_REASONS: ReadonlySet<ScheduleMCPOutcome['reason']> = new Set([
+  'consent_missing',
+  'consent_expired',
+  'consent_revoked',
+  'binding_mismatch',
+]);
+
+function needsScheduleAuthorization(outcome: ScheduleMCPOutcome): boolean {
+  return outcome.status === 'mcp_reauth_required' && AUTHORIZATION_REASONS.has(outcome.reason);
+}
+
 export function scheduleMCPStatusLabel(outcome: ScheduleMCPOutcome): TranslationKeys {
-  return outcome.detail === 'unattended_auth_required'
-    ? 'com_ui_schedule_mcp_unattended_auth'
-    : MCP_STATUS_LABELS[outcome.status];
+  if (outcome.detail === 'unattended_auth_required') return 'com_ui_schedule_mcp_unattended_auth';
+  if (needsScheduleAuthorization(outcome)) return 'com_ui_schedule_mcp_authorization';
+  return MCP_STATUS_LABELS[outcome.status];
 }
 
 export function scheduleDisabledMCPLabel(
@@ -64,7 +76,8 @@ export function scheduleMCPNeedsAgentRecovery(outcomes: ScheduleMCPOutcome[]): b
     (outcome) =>
       outcome.status !== 'ready' &&
       outcome.status !== 'mcp_permission_denied' &&
-      outcome.detail !== 'unattended_auth_required',
+      outcome.detail !== 'unattended_auth_required' &&
+      !needsScheduleAuthorization(outcome),
   );
 }
 

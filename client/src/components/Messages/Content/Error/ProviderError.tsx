@@ -1,5 +1,6 @@
 import { ErrorTypes, stripLangChainTroubleshootingUrl } from 'librechat-data-provider';
 import type { ErrorPayload, ErrorRendererProps, UnclassifiedErrorProps } from './parts';
+import type { TranslationKeys } from '~/hooks';
 import {
   ErrorBody,
   ErrorDetails,
@@ -38,6 +39,11 @@ function readRefusalExplanation(json: ErrorPayload): string | undefined {
     readString(readObject(readObject(json, 'info'), 'stop_details'), 'explanation')
   );
 }
+
+const langChainErrorCopy: Record<string, TranslationKeys> = {
+  [ErrorTypes.MODEL_NOT_FOUND]: 'com_error_model_not_found',
+  [ErrorTypes.MODEL_RATE_LIMIT]: 'com_error_model_rate_limit',
+};
 
 /** A provider's own message, flat or nested under `error` the way OpenAI-style bodies carry it. */
 function readProviderError(json: ErrorPayload | undefined): string | undefined {
@@ -90,6 +96,18 @@ export default function ProviderError({ json, message }: ErrorRendererProps) {
           label: localize('com_error_details_provider'),
           value: detail,
         });
+  }
+
+  /** Classified LangChain failures: a gateway may explain the limit or the model in `info`. */
+  const classifiedKey = errorKey != null ? langChainErrorCopy[errorKey] : undefined;
+  if (classifiedKey != null) {
+    return (
+      <ErrorWithDetail
+        headline={localize(classifiedKey)}
+        detail={readString(json, 'info')}
+        label={localize('com_error_details_provider')}
+      />
+    );
   }
 
   if (errorKey === ErrorTypes.NO_SYSTEM_MESSAGES) {

@@ -91,7 +91,8 @@ async function selectAgent(page: Page, agent: AgentDetail) {
 
 /**
  * Pauses a real run at ask_user_question with the fake model's batch and
- * returns the composer popover, identified by its move-to-chat control.
+ * returns the chat, where the batch's card arrives; the composer popover
+ * opens only from that card's move-to-composer control.
  */
 async function openBatch(page: Page, agent: AgentDetail, label: string, long = false) {
   await selectAgent(page, agent);
@@ -99,18 +100,32 @@ async function openBatch(page: Page, agent: AgentDetail, label: string, long = f
   const response = await sendMessage(page, `${marker}:${label}`);
   expect(response.ok()).toBeTruthy();
   await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
-  await expect(page.getByRole('button', { name: MOVE_TO_CHAT })).toBeVisible({ timeout: 30000 });
-  await expect(page.getByRole('group', { name: 'Question navigation' })).toBeVisible();
-  return popoverOf(page);
+  const chat = messagesView(page);
+  await expect(chat.getByRole('button', { name: MOVE_TO_COMPOSER })).toBeVisible({
+    timeout: 30000,
+  });
+  await expect(chat.getByRole('group', { name: 'Question navigation' })).toBeVisible();
+  await expect(popoverOf(page)).toHaveCount(0);
+  return chat;
+}
+
+/** Moves the live batch from its chat card into the composer popover. */
+async function openPopover(page: Page) {
+  await messagesView(page).getByRole('button', { name: MOVE_TO_COMPOSER }).click();
+  const popover = popoverOf(page);
+  await expect(popover).toBeVisible();
+  return popover;
 }
 
 const popoverOf = (page: Page) =>
   page.locator('.popover').filter({ has: page.getByRole('button', { name: MOVE_TO_CHAT }) });
 
-const answerField = (scope: Page | ReturnType<typeof popoverOf>, question: string) =>
+type Scope = Page | ReturnType<Page['locator']>;
+
+const answerField = (scope: Scope, question: string) =>
   scope.getByRole('textbox', { name: new RegExp(`^${escapeRegExp(question)}`) });
 
-const optionRow = (scope: Page | ReturnType<typeof popoverOf>, name: string) =>
+const optionRow = (scope: Scope, name: string) =>
   scope.getByRole('button', { name: new RegExp(`${escapeRegExp(name)}$`) });
 
 test.describe('ask question batch refinements', () => {
@@ -125,7 +140,7 @@ test.describe('ask question batch refinements', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label);
+      const card = await openBatch(page, agent, label);
 
       const generationStarts: string[] = [];
       page.on('request', (request) => {
@@ -134,22 +149,22 @@ test.describe('ask question batch refinements', () => {
         }
       });
 
-      const first = answerField(popover, questions[0].question);
+      const first = answerField(card, questions[0].question);
       await expect(first).toBeVisible();
       await first.fill('typed-first-answer');
       await first.press('Enter');
 
-      await expect(popover.getByText(questions[1].question, { exact: true })).toBeVisible();
-      await expect(popover.getByText(questions[0].question, { exact: true })).toBeHidden();
+      await expect(card.getByText(questions[1].question, { exact: true })).toBeVisible();
+      await expect(card.getByText(questions[0].question, { exact: true })).toBeHidden();
       expect(generationStarts).toEqual([]);
-      await expect(messagesView(page).getByText('typed-first-answer')).toHaveCount(0);
+      await expect(card.getByText('typed-first-answer')).toHaveCount(0);
 
-      const middle = answerField(popover, questions[1].question);
+      const middle = answerField(card, questions[1].question);
       await middle.fill('typed-middle-answer');
       await middle.press('Enter');
-      await expect(popover.getByText(questions[2].question, { exact: true })).toBeVisible();
+      await expect(card.getByText(questions[2].question, { exact: true })).toBeVisible();
 
-      const last = answerField(popover, questions[2].question);
+      const last = answerField(card, questions[2].question);
       await last.fill('typed-last-answer');
       const [resumeRequest] = await Promise.all([
         page.waitForRequest(isResumeRequest),
@@ -161,7 +176,9 @@ test.describe('ask question batch refinements', () => {
         [questions[1].id]: 'typed-middle-answer',
         [questions[2].id]: 'typed-last-answer',
       });
-      await expect(popover).toBeHidden({ timeout: 30000 });
+      await expect(card.getByRole('button', { name: MOVE_TO_COMPOSER })).toBeHidden({
+        timeout: 30000,
+      });
       expect(generationStarts).toEqual([]);
     } finally {
       await cleanupAgent(page, agentId);
@@ -179,7 +196,8 @@ test.describe('ask question batch refinements', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label, true);
+      await openBatch(page, agent, label, true);
+      const popover = await openPopover(page);
 
       const prompt = popover.locator('div[class*="max-h-[25vh]"]').first();
       await expect(prompt).toContainText(`Line 60 of the long clarification for ${label}`);
@@ -241,13 +259,13 @@ test.describe('ask question batch refinements', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label);
+      const card = await openBatch(page, agent, label);
 
-      const row = optionRow(popover, 'Staging');
+      const row = optionRow(card, 'Staging');
       await expect(row).toBeEnabled();
       expectNoFade(await fadeOf(row));
 
-      await answerField(popover, questions[0].question).fill('locks the rows');
+      await answerField(card, questions[0].question).fill('locks the rows');
       await expect(row).toBeDisabled();
       expectNoFade(await fadeOf(row));
     } finally {
@@ -255,7 +273,7 @@ test.describe('ask question batch refinements', () => {
     }
   });
 
-  test('typed answers survive moving the batch to the chat card @scenario:ask-batch-answers-survive-move-to-chat', async ({
+  test('typed answers survive moving the batch between the chat and the composer @scenario:ask-batch-answers-survive-move', async ({
     page,
   }) => {
     test.setTimeout(120000);
@@ -266,23 +284,23 @@ test.describe('ask question batch refinements', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label);
+      const card = await openBatch(page, agent, label);
 
-      await answerField(popover, questions[0].question).fill('kept-across-surfaces');
-      await popover.getByRole('button', { name: 'Next', exact: true }).click();
+      await answerField(card, questions[0].question).fill('kept-across-surfaces');
+      await card.getByRole('button', { name: 'Next', exact: true }).click();
+      await expect(card.getByText(questions[1].question, { exact: true })).toBeVisible();
+
+      /** The popover resumes on step 2, not step 1. */
+      const popover = await openPopover(page);
       await expect(popover.getByText(questions[1].question, { exact: true })).toBeVisible();
+      await expect(popover.getByText(questions[0].question, { exact: true })).toBeHidden();
+
+      await popover.getByRole('button', { name: 'Back', exact: true }).click();
+      await expect(answerField(popover, questions[0].question)).toHaveValue('kept-across-surfaces');
 
       await popover.getByRole('button', { name: MOVE_TO_CHAT }).click();
       await expect(popover).toBeHidden();
-
-      /** The card resumes on step 2, not step 1. */
-      const card = messagesView(page);
-      await expect(card.getByText(questions[1].question, { exact: true })).toBeVisible();
-      await expect(card.getByText(questions[0].question, { exact: true })).toBeHidden();
       await expect(card.getByRole('button', { name: MOVE_TO_COMPOSER })).toBeVisible();
-
-      await card.getByRole('button', { name: 'Back', exact: true }).click();
-      await expect(card.getByText(questions[0].question, { exact: true })).toBeVisible();
       await expect(answerField(card, questions[0].question)).toHaveValue('kept-across-surfaces');
     } finally {
       await cleanupAgent(page, agentId);
@@ -302,20 +320,17 @@ test.describe('ask question batch refinements', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label);
+      await openBatch(page, agent, label);
 
       /** The composer is only writable while the card owns the batch, so the draft is
-       *  typed there and the batch moved back over it, the order a user would hit. */
-      await popover.getByRole('button', { name: MOVE_TO_CHAT }).click();
-      await expect(popover).toBeHidden();
+       *  typed there and the batch moved over it, the order a user would hit. */
       const composer = page.getByRole('textbox', { name: 'Message input' });
       await composer.fill(draft);
       await expect
         .poll(async () => (await composer.boundingBox())?.height ?? 0)
         .toBeGreaterThan(640 * 0.4);
 
-      await messagesView(page).getByRole('button', { name: MOVE_TO_COMPOSER }).click();
-      await expect(popover).toBeVisible();
+      const popover = await openPopover(page);
       await expect(composer).toBeDisabled();
       await expect(composer).toHaveValue(draft);
 
@@ -348,18 +363,18 @@ test.describe('ask question batch refinements', () => {
     try {
       const agent = await createAgent(page);
       agentId = agent.id;
-      const popover = await openBatch(page, agent, label);
+      const card = await openBatch(page, agent, label);
 
       /** A single-select choice records the answer and advances; come back to it. */
-      await optionRow(popover, 'Staging').click();
-      await expect(popover.getByText(questions[1].question, { exact: true })).toBeVisible();
-      await popover.getByRole('button', { name: 'Go to question 1, answered' }).click();
+      await optionRow(card, 'Staging').click();
+      await expect(card.getByText(questions[1].question, { exact: true })).toBeVisible();
+      await card.getByRole('button', { name: 'Go to question 1, answered' }).click();
 
-      const staging = optionRow(popover, 'Staging');
-      const production = optionRow(popover, 'Production');
+      const staging = optionRow(card, 'Staging');
+      const production = optionRow(card, 'Production');
       await expect(staging).toHaveAttribute('aria-pressed', 'true');
 
-      const field = answerField(popover, questions[0].question);
+      const field = answerField(card, questions[0].question);
       await field.fill('something else');
       await expect(staging).toHaveAttribute('aria-pressed', 'false');
       await expect(staging).toBeDisabled();
@@ -369,6 +384,45 @@ test.describe('ask question batch refinements', () => {
       await expect(staging).toBeEnabled();
       await expect(production).toBeEnabled();
       await expect(staging).toHaveAttribute('aria-pressed', 'false');
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
+  });
+
+  test('on a phone-width screen the batch stays in the chat and the composer stays usable @scenario:ask-batch-inline-on-phone', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const label = `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+    const questions = buildBatch(label);
+    let agentId: string | undefined;
+
+    try {
+      const agent = await createAgent(page);
+      agentId = agent.id;
+      const card = await openBatch(page, agent, label);
+      /* The agent builder needs the desktop side panel; the question itself is checked at a
+         phone's width once the run is paused. */
+      await page.setViewportSize({ width: 390, height: 844 });
+
+      const prompt = card.getByText(questions[0].question, { exact: true });
+      await prompt.scrollIntoViewIfNeeded();
+      await expect(prompt).toBeInViewport();
+      await expect(popoverOf(page)).toHaveCount(0);
+
+      const field = answerField(card, questions[0].question);
+      await field.scrollIntoViewIfNeeded();
+      const box = await field.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+      ).toBe(true);
+
+      const composer = page.getByRole('textbox', { name: 'Message input' });
+      await expect(composer).toBeEnabled();
+      await expect(composer).toBeInViewport();
     } finally {
       await cleanupAgent(page, agentId);
     }

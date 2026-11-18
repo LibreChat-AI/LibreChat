@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { TMessage } from 'librechat-data-provider';
+import { unroute } from './fixtures';
 import { withMongo } from './db';
 import {
   loginAdmin,
@@ -183,7 +184,7 @@ test('owner sees original after reload while provider, sharing, and canonical re
     } finally {
       releasePending();
       await pendingResponse.catch(() => undefined);
-      await page.unroute(delayedPath);
+      await unroute(page, delayedPath);
     }
     expect((await pendingResponse).ok()).toBe(true);
     await expect

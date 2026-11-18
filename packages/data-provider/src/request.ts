@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import axios from 'axios';
+import axios, { AxiosHeaders } from 'axios';
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import type * as t from './types';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from './config';
@@ -334,12 +334,31 @@ const redirectToLoginOnce = () => {
   window.location.href = href;
 };
 
-const getBearerToken = () => {
-  const authorization = axios.defaults.headers.common['Authorization'];
+const parseBearerToken = (authorization: unknown) => {
   if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
     return null;
   }
   return authorization.slice('Bearer '.length);
+};
+
+const getBearerToken = () => parseBearerToken(axios.defaults.headers.common['Authorization']);
+
+const getRequestBearerToken = ({ headers }: AxiosRequestConfig) =>
+  parseBearerToken(
+    headers instanceof AxiosHeaders ? headers.get('Authorization') : headers?.['Authorization'],
+  );
+
+/**
+ * A request dispatched before a refresh settled can be answered after it. That 401 describes the
+ * bearer the request carried, not the one now in use, so the request is replayed with the current
+ * bearer instead of starting a second refresh for a session that has already recovered.
+ */
+const getSupersedingToken = (sentToken: string | null) => {
+  if (!sentToken || getAuthRecoveryState().refreshPromise) {
+    return null;
+  }
+  const currentToken = getBearerToken();
+  return currentToken && currentToken !== sentToken ? currentToken : null;
 };
 
 const getJwtExpiryMs = (token: string) => {
@@ -430,23 +449,30 @@ const redirectIfTwoFactorSetupRequired = async (response: Response): Promise<boo
   );
 };
 
+const needsAuthRecovery = (response: Response, url: string) =>
+  response.status === 401 &&
+  !isAuthRecoveryEndpoint(url) &&
+  !isAuthRedirectInProgress() &&
+  getBearerToken() != null;
+
 async function _authenticatedFetch(url: string, options?: RequestInit): Promise<Response> {
   if (typeof window === 'undefined') {
     return fetch(url, options);
   }
 
   const token = (await refreshBeforeRequest(url)) ?? getBearerToken();
-  const response = await fetch(url, withAuthorization(options, token));
-  if (await redirectIfTwoFactorSetupRequired(response)) {
+  let response = await fetch(url, withAuthorization(options, token));
+  if ((await redirectIfTwoFactorSetupRequired(response)) || !needsAuthRecovery(response, url)) {
     return response;
   }
-  if (
-    response.status !== 401 ||
-    isAuthRecoveryEndpoint(url) ||
-    isAuthRedirectInProgress() ||
-    !getBearerToken()
-  ) {
-    return response;
+
+  const supersedingToken = getSupersedingToken(token);
+  if (supersedingToken) {
+    await response.body?.cancel().catch(() => undefined);
+    response = await fetch(url, withAuthorization(options, supersedingToken));
+    if ((await redirectIfTwoFactorSetupRequired(response)) || !needsAuthRecovery(response, url)) {
+      return response;
+    }
   }
 
   let refreshedToken: string | null;
@@ -469,6 +495,11 @@ async function _authenticatedFetch(url: string, options?: RequestInit): Promise<
 }
 
 if (typeof window !== 'undefined') {
+  /** Auth is a bearer token and no route reads an XSRF header. Axios 1.21+ otherwise awaits
+   *  `cookieStore.get` before every same-origin send, and a browser whose cookie store never
+   *  answers then strands every request behind it. */
+  axios.defaults.withXSRFToken = false;
+
   axios.interceptors.request.use(async (config) => {
     const token = await refreshBeforeRequest(config.url);
     if (token) {
@@ -524,6 +555,14 @@ if (typeof window !== 'undefined') {
       }
 
       if (error.response.status === 401 && !originalRequest._retry) {
+        const supersedingToken = isRefreshRequest
+          ? null
+          : getSupersedingToken(getRequestBearerToken(originalRequest));
+        if (supersedingToken) {
+          setRequestAuthorizationHeader(originalRequest, supersedingToken);
+          return axios(originalRequest);
+        }
+
         const hasActiveRecovery = getAuthRecoveryState().refreshPromise != null;
         if (!hasActiveRecovery) {
           console.warn('401 error, refreshing token');

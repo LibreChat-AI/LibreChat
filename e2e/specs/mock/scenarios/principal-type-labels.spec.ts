@@ -282,12 +282,18 @@ test.describe('people picker principal type badges', () => {
             /** The picker debounces the query and keeps the previous result on
              *  screen until the new one lands, so wait for this query's own
              *  option (its name and its type label) before reading any paint. */
-            const option = dialog
+            const listbox = page.getByRole('listbox');
+            await expect(listbox).toBeVisible();
+            await expect(search).toHaveAttribute(
+              'aria-controls',
+              (await listbox.getAttribute('id')) ?? '',
+            );
+            const option = listbox
               .getByRole('option')
               .filter({ hasText: query })
               .filter({ hasText: label });
             await expect(option).toBeVisible({ timeout: 10000 });
-            await expect(dialog.getByRole('option')).toHaveCount(1);
+            await expect(page.getByRole('listbox').getByRole('option')).toHaveCount(1);
 
             const context = `type=${type} variant=${variant} mode=${mode}`;
             assertBadgePaint(await readBadgePaint(option), `resting, ${context}`);

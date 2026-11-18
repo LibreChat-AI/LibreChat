@@ -4,16 +4,12 @@
 const path = require('path');
 const mongoose = require('mongoose');
 const { randomUUID } = require('node:crypto');
-const {
-  createModels,
-  createMethods,
-  runAsSystem,
-  tenantStorage,
-} = require('@librechat/data-schemas');
+const { createModels, runAsSystem, tenantStorage } = require('@librechat/data-schemas');
 const { User } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const {
   eraseUserData,
+  createUserDeletionAttempt,
   GenerationJobManager,
   createStreamServices,
   initializeFileStorage,
@@ -36,13 +32,16 @@ const connect = require('./connect');
 
 const TRIGGER_DRAIN_TIMEOUT_MS = 35_000;
 const TRIGGER_DRAIN_POLL_MS = 100;
-const methods = createMethods(mongoose, { getCache: getLogStores });
+const { initializeFavorites, closeFavorites, ...methods } = require('~/models');
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function gracefulExit(code = 0) {
   try {
-    await mongoose.disconnect();
+    const cleanup = await Promise.allSettled([closeFavorites(), mongoose.disconnect()]);
+    if (cleanup.some((result) => result.status === 'rejected')) {
+      throw new Error('Persistence cleanup failed');
+    }
   } catch (err) {
     console.error('Error disconnecting from MongoDB:', err);
   }
@@ -51,6 +50,9 @@ async function gracefulExit(code = 0) {
 
 (async () => {
   await connect();
+  await initializeFavorites(
+    await require('~/server/services/Config/loadCustomConfig')(false, { storageSelection: true }),
+  );
 
   console.purple('---------------');
   console.purple('Deleting a user and all related data');
@@ -115,11 +117,12 @@ async function gracefulExit(code = 0) {
   let deletionFence;
   let scheduleSuspensionToken;
   let userDeleted = false;
+  const deletionAttempt = createUserDeletionAttempt();
 
   try {
     deletionFence = new Date();
     let fenceState = await runAsSystem(() =>
-      methods.beginAgentTriggerUserDeletion(uid, deletionFence),
+      methods.beginAgentTriggerUserDeletion(uid, deletionFence, deletionAttempt.id),
     );
     if (fenceState === 'in_progress') {
       deletionFence = undefined;
@@ -135,7 +138,7 @@ async function gracefulExit(code = 0) {
 
       const recoveredAt = new Date();
       fenceState = await runAsSystem(() =>
-        methods.recoverStaleAgentTriggerUserDeletion(uid, recoveredAt),
+        methods.recoverStaleAgentTriggerUserDeletion(uid, recoveredAt, deletionAttempt.id),
       );
       if (fenceState !== 'acquired') {
         throw new Error(
@@ -145,6 +148,7 @@ async function gracefulExit(code = 0) {
         );
       }
       deletionFence = recoveredAt;
+      await runAsSystem(() => deletionAttempt.adopt(uid, recoveredAt, methods));
     }
     if (fenceState === 'missing') {
       deletionFence = undefined;
@@ -214,6 +218,7 @@ async function gracefulExit(code = 0) {
       eraseUserData(
         {
           userId: uid,
+          deletionAttemptId: deletionAttempt.id,
           tenantId: user.tenantId,
           checkpointer: userAppConfig?.endpoints?.agents?.checkpointer,
           keepTransactions: !deleteTx,
@@ -283,7 +288,14 @@ async function gracefulExit(code = 0) {
     );
 
     // 6) Finally delete the user document itself
-    const deletedUser = await runAsSystem(() => methods.deleteUserById(uid));
+    const deletedUser = await deletionAttempt.commit(() =>
+      runAsSystem(() =>
+        methods.deleteUserById(uid, {
+          startedAt: deletionFence,
+          attemptId: deletionAttempt.id,
+        }),
+      ),
+    );
     if (deletedUser.deletedCount !== 1) {
       throw new Error('User disappeared before account deletion could commit');
     }
@@ -326,9 +338,12 @@ async function gracefulExit(code = 0) {
       await runAsSystem(() => methods.cancelAgentTriggerUserPurge(uid, deletionFence)).catch(
         (error) => console.error('Failed to disarm trigger purge recovery:', error),
       );
-      await runAsSystem(() => methods.cancelAgentTriggerUserDeletion(uid, deletionFence)).catch(
-        (error) => console.error('Failed to release account-deletion fence:', error),
-      );
+      await runAsSystem(() =>
+        deletionAttempt.cancel(
+          { userId: uid, startedAt: deletionFence, deletionAttemptId: deletionAttempt.id },
+          methods,
+        ),
+      ).catch((error) => console.error('Failed to release account-deletion fence:', error));
     }
     if (hasSharedGenerationStore) {
       await GenerationJobManager.destroy().catch((error) =>
@@ -343,11 +358,7 @@ async function gracefulExit(code = 0) {
   }
 
   return gracefulExit(0);
-})().catch(async (err) => {
-  if (!err.message.includes('fetch failed')) {
-    console.error('There was an uncaught error:');
-    console.error(err);
-    await mongoose.disconnect();
-    process.exit(1);
-  }
+})().catch(async () => {
+  console.error('Account deletion failed; retry before considering the account erased.');
+  await gracefulExit(1);
 });

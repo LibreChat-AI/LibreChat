@@ -15,6 +15,7 @@
  * reached the model) rather than just that some text rendered.
  */
 const http = require('http');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = Number(process.env.E2E_LABEL_PORT) || 8889;
 const PHASE_PROMPT_MARKER = 'Summarize what this phase of an agent run accomplished';
@@ -209,6 +210,7 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 404, { error: { message: `Unhandled ${req.method} ${url.pathname}` } });
 });
 
+keepIdleConnections(server);
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[e2e] fake label server listening on http://127.0.0.1:${PORT}`);
 });

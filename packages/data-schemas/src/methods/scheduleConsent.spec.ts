@@ -160,19 +160,25 @@ it('never overwrites revocation racing an activation edit or carries consent acr
   ).not.toBeNull();
 });
 
-const confirm = (expectedRevision: string | null = null, grant = enrollment()) =>
+const confirm = (
+  expectedRevision: string | null = null,
+  grant = enrollment(),
+  basis?: ScheduledMCPEnrollment | null,
+) =>
   storage.confirmScheduleMCPConsent({
     identity,
     expectedConfigRevision: 0,
     expectedRevision,
     enrollment: grant,
+    basis,
   });
-const admit = (revision = 'grant-1') =>
+const admit = (revision = 'grant-1', definitions?: Record<string, string>) =>
   storage.admitScheduleMCPConsent({
     identity,
     revision,
     expectedConfigRevision: 0,
     consentId: 'consent-1',
+    definitions,
   });
 
 it('leaves legacy schedules unenrolled and does not change enabled/default scheduling state', async () => {
@@ -295,4 +301,167 @@ it('uses only classic update operators for confirmation, revocation and admissio
     expect(JSON.stringify(operation)).not.toContain('$$NOW');
     expect(Object.keys(operation!)).toEqual(['$set']);
   }
+});
+
+it('reports the edit mark of a schedule that was never authorized, and keeps it through a grant', async () => {
+  expect((await storage.readScheduleMCPConsent(identity))?.required).toBeUndefined();
+  const updated = await createScheduleMethods(mongoose).updateScheduleById(
+    identity.scheduleId,
+    owner,
+    { name: 'Renamed', mcpConsentRequired: true },
+    undefined,
+    { expectedConfigRevision: 0 },
+  );
+  expect(updated?.mcpConsentRequired).toBe(true);
+  expect(await storage.readScheduleMCPConsent(identity)).toMatchObject({
+    required: true,
+    enrollment: null,
+    configRevision: 1,
+  });
+  expect(
+    await storage.confirmScheduleMCPConsent({
+      identity,
+      expectedConfigRevision: 1,
+      expectedRevision: null,
+      enrollment: enrollment('grant-1', { scheduleRevision: 1 }),
+    }),
+  ).toBe(true);
+  expect(await storage.readScheduleMCPConsent(identity)).toMatchObject({
+    required: true,
+    enrollment: { revision: 'grant-1' },
+  });
+});
+
+describe('definition pins', () => {
+  const first = 'a'.repeat(64);
+  const second = 'b'.repeat(64);
+  const pin = (digest = first, tool = 'query', revision = 'grant-1') =>
+    storage.pinScheduleMCPToolDefinition({
+      identity,
+      revision,
+      consentId: 'consent-1',
+      tool,
+      digest,
+    });
+  const flag = (tool = 'query', revision = 'grant-1') =>
+    storage.flagScheduleMCPToolChange({ identity, revision, consentId: 'consent-1', tool });
+  const stored = async () => (await storage.readScheduleMCPConsent(identity))?.enrollment;
+
+  it('keeps the first definition a tool was pinned to', async () => {
+    await confirm();
+    expect(await pin(first)).toBe(true);
+    expect(await pin(second)).toBe(false);
+    expect(await pin(second, 'list')).toBe(true);
+    expect((await stored())?.consents[0].definitions).toEqual([
+      { tool: 'query', digest: first },
+      { tool: 'list', digest: second },
+    ]);
+  });
+
+  it('has one winner among concurrent first uses', async () => {
+    await confirm();
+    const digests = Array.from({ length: 6 }, (_, n) => String(n).repeat(64));
+    const results = await Promise.all(digests.map((digest) => pin(digest)));
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect((await stored())?.consents[0].definitions).toEqual([
+      { tool: 'query', digest: digests[results.indexOf(true)] },
+    ]);
+  });
+
+  it('marks a pinned tool as changed without rewriting its pin', async () => {
+    await confirm();
+    expect(await flag()).toBe(false);
+    await pin();
+    expect(await flag()).toBe(true);
+    expect(await flag()).toBe(true);
+    expect((await stored())?.consents[0]).toMatchObject({
+      definitions: [{ tool: 'query', digest: first }],
+      changedTools: ['query'],
+    });
+    expect((await storage.readScheduleMCPConsent(identity))?.compatible).toBe(true);
+  });
+
+  it('writes nothing to a revoked or replaced grant', async () => {
+    await confirm();
+    expect(await pin(first, 'query', 'grant-0')).toBe(false);
+    expect(await flag('query', 'grant-0')).toBe(false);
+    await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+    const revoked = (await stored())!.revision;
+    expect(await pin(first, 'query', revoked)).toBe(false);
+    expect((await stored())?.consents[0].definitions).toBeUndefined();
+  });
+
+  it('rejects a malformed pin before it reaches the record', async () => {
+    await confirm();
+    await expect(pin('not-a-digest')).rejects.toThrow();
+    expect((await stored())?.consents[0].definitions).toBeUndefined();
+  });
+
+  it('does not extend the deadline or change the grant revision', async () => {
+    const grant = enrollment();
+    await confirm(null, grant);
+    await pin();
+    await flag();
+    expect(await stored()).toMatchObject({
+      revision: 'grant-1',
+      consents: [{ absoluteExpiresAtMs: grant.consents[0].absoluteExpiresAtMs }],
+    });
+    expect(await admit()).toBe(true);
+  });
+
+  it('admits a tool only while it is unmarked and pinned to the definition in use', async () => {
+    await confirm();
+    expect(await admit('grant-1', { query: first })).toBe(true);
+    await pin(first);
+    expect(await admit('grant-1', { query: first })).toBe(true);
+    expect(await admit('grant-1', { query: second })).toBe(false);
+    // A tool with no pin yet, and a use that reads no definition, are not held back by it.
+    expect(await admit('grant-1', { list: second })).toBe(true);
+    expect(await admit('grant-1', { query: second, list: second })).toBe(false);
+    await flag();
+    expect(await admit('grant-1', { query: first })).toBe(false);
+    expect(await admit('grant-1', { list: second })).toBe(true);
+    expect(await admit()).toBe(true);
+  });
+
+  it('refuses a confirmation built from a grant that has since gained a pin or a mark', async () => {
+    await confirm();
+    const unpinned = await stored();
+    await pin();
+    expect(await confirm('grant-1', enrollment('grant-2'), unpinned)).toBe(false);
+    const unmarked = await stored();
+    await flag();
+    expect(await confirm('grant-1', enrollment('grant-2'), unmarked)).toBe(false);
+    expect((await stored())?.revision).toBe('grant-1');
+    expect(await confirm('grant-1', enrollment('grant-2'), await stored())).toBe(true);
+    expect((await stored())?.revision).toBe('grant-2');
+  });
+
+  it('revokes without dropping a pin stored between its read and its write', async () => {
+    await confirm();
+    const model = mongoose.models.Schedule;
+    const write = model.updateOne.bind(model);
+    const update = jest
+      .spyOn(model, 'updateOne')
+      .mockImplementationOnce(((...args: Parameters<typeof write>) =>
+        pin().then(() => write(...args))) as typeof model.updateOne);
+    expect(await storage.revokeScheduleMCPConsent(identity, 'grant-1')).toBe(true);
+    update.mockRestore();
+    expect((await stored())?.consents[0]).toMatchObject({
+      revokedAtMs: expect.any(Number),
+      definitions: [{ tool: 'query', digest: first }],
+    });
+  });
+
+  it('uses only classic update operators', async () => {
+    await confirm();
+    const update = jest.spyOn(mongoose.models.Schedule, 'updateOne');
+    await pin();
+    await flag();
+    expect(update.mock.calls.map((call) => Object.keys(Array.from(call)[1]!))).toEqual([
+      ['$push'],
+      ['$addToSet'],
+    ]);
+    update.mockRestore();
+  });
 });

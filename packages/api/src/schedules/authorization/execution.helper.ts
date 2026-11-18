@@ -1,19 +1,90 @@
 import type {
+  MCPGrantIdentity,
+  MCPGrantEnrollment,
   ScheduledMCPIdentity,
   ScheduledMCPTarget,
-  ScheduledMCPReadOnlyPolicy,
 } from 'librechat-data-provider';
 import type {
+  MCPConsentStorage,
   ScheduleMCPConsentStorage,
   ScheduleConsentSnapshot,
   IUser,
 } from '@librechat/data-schemas';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { getScheduledMCPToolDefinitionDigest, getScheduledMCPPolicyRevision } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { createScheduleMCPConsentService } from './service';
+import { getScheduledMCPPolicyRevision } from './policy';
 import { createScheduleMCPExecution } from './execution';
+
+/** The owner's choice in tests that are not about choosing: every tool on offer. */
+export function allowOffered(targets: readonly ScheduledMCPTarget[]): Record<string, string[]> {
+  return Object.fromEntries(
+    targets.map((target) => [
+      target.resource.serverName,
+      [...new Set(target.permittedTools.flatMap((selection) => selection.tools))],
+    ]),
+  );
+}
+
+/** What admission checks in its write: no tool in use is marked or pinned to another digest. */
+export function admitsDefinitions(
+  enrollment: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
+  consentId: string,
+  definitions: Readonly<Record<string, string>> = {},
+): boolean {
+  const consent = enrollment?.consents.find((item) => item.id === consentId);
+  return Object.entries(definitions).every(
+    ([tool, digest]) =>
+      !consent?.changedTools?.includes(tool) &&
+      !consent?.definitions?.some((pin) => pin.tool === tool && pin.digest !== digest),
+  );
+}
+
+/** What a confirmation checks in its write: no pin or mark was added to the grant it read. */
+export function untouchedSince(
+  enrollment: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
+  basis: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
+): boolean {
+  return (basis?.consents ?? []).every((seen) => {
+    const stored = enrollment?.consents.find((item) => item.id === seen.id);
+    return (
+      stored != null &&
+      (stored.definitions?.length ?? 0) === (seen.definitions?.length ?? 0) &&
+      (stored.changedTools?.length ?? 0) === (seen.changedTools?.length ?? 0)
+    );
+  });
+}
+
+/** The two pin writes over an enrollment a fake keeps in memory, with the real fences. */
+export function pinStorage<Identity extends MCPGrantIdentity = ScheduledMCPIdentity>(
+  current: () => MCPGrantEnrollment<Identity> | null | undefined,
+): Pick<MCPConsentStorage<Identity>, 'pinScheduleMCPToolDefinition' | 'flagScheduleMCPToolChange'> {
+  const find = (revision: string, consentId: string) => {
+    const enrollment = current();
+    if (enrollment?.revision !== revision) return;
+    return enrollment.consents.find((consent) => consent.id === consentId);
+  };
+  return {
+    pinScheduleMCPToolDefinition: async ({ revision, consentId, tool, digest }) => {
+      const consent = find(revision, consentId);
+      if (
+        !consent ||
+        consent.revokedAtMs != null ||
+        consent.definitions?.some((pin) => pin.tool === tool)
+      )
+        return false;
+      consent.definitions = [...(consent.definitions ?? []), { tool, digest }];
+      return true;
+    },
+    flagScheduleMCPToolChange: async ({ revision, consentId, tool }) => {
+      const consent = find(revision, consentId);
+      if (!consent?.definitions?.some((pin) => pin.tool === tool)) return false;
+      consent.changedTools = [...new Set([...(consent.changedTools ?? []), tool])];
+      return true;
+    },
+  };
+}
 
 export const readTool: Tool = {
   name: 'query',
@@ -25,6 +96,17 @@ export async function executionFixture(
   stage: 'activation' | 'invoke' | 'resume' = 'invoke',
   tool: Tool = readTool,
   url = 'https://resource.example/mcp',
+  /**
+   * `offered` adds tools the agents select; `allow` is what the owner picks (default: `tool`);
+   * `ask` are the allowed tools the owner approves call by call; `approvedToolCalls` are the
+   * calls the owner approved in the request that resumed the run.
+   */
+  choice: {
+    offered?: string[];
+    allow?: string[];
+    ask?: string[];
+    approvedToolCalls?: string[];
+  } = {},
 ) {
   let time = 1000;
   let allowed = true;
@@ -40,16 +122,6 @@ export async function executionFixture(
     url,
   };
   const user = { id: 'owner', tenantId: 'tenant', role: 'USER' } as IUser;
-  let policy: Record<string, ScheduledMCPReadOnlyPolicy> = {
-    warehouse: {
-      tools: {
-        [tool.name]: {
-          effect: 'read_only',
-          definitionSha256: getScheduledMCPToolDefinitionDigest(tool),
-        },
-      },
-    },
-  };
   const target: ScheduledMCPTarget = {
     resource: {
       serverName: 'warehouse',
@@ -61,8 +133,8 @@ export async function executionFixture(
       configurationRevision: '',
     },
     permittedTools: [
-      { agentId: 'root', tools: [tool.name] },
-      { agentId: 'child', tools: [tool.name] },
+      { agentId: 'root', tools: [tool.name, ...(choice.offered ?? [])] },
+      { agentId: 'child', tools: [tool.name, ...(choice.offered ?? [])] },
     ],
     policyRevision: '',
   };
@@ -71,7 +143,7 @@ export async function executionFixture(
     target.resource,
   );
   const resolveEnrollment = async () => {
-    target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools, policy.warehouse);
+    target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools);
     return structuredClone([target]);
   };
   const snapshot: ScheduleConsentSnapshot = {
@@ -97,15 +169,17 @@ export async function executionFixture(
         snapshot.enrollment?.revision === input.revision &&
         snapshot.enrollment.consents.every(
           (c) => c.revokedAtMs == null && c.absoluteExpiresAtMs > time,
-        ),
+        ) &&
+        admitsDefinitions(snapshot.enrollment, input.consentId, input.definitions),
     ),
+    ...pinStorage(() => snapshot.enrollment),
   };
   const service = createScheduleMCPConsentService({
     storage,
     resolveEnrollment,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     canUse: async () => allowed,
-    checkToolPolicy: async () => Object.keys(policy.warehouse?.tools ?? {}).length > 0,
+    canPause: async () => true,
     now: () => time,
   });
   const offer = await service.view(identity);
@@ -113,10 +187,14 @@ export async function executionFixture(
     offerDigest: offer.offer!.digest,
     expectedRevision: null,
     lifetimeHours: 1,
+    allow: { warehouse: choice.allow ?? [tool.name] },
+    ...(choice.ask && { ask: { warehouse: choice.ask } }),
   });
-  const loadAuthorization = jest.fn(async () => ({ authority: service.authority, policy }));
+  const loadAuthorization = jest.fn(async () => ({ authority: service.authority }));
   const factory = createScheduleMCPExecution({ storage, loadAuthorization });
-  const execution = (await factory.resolve(identity, stage))!;
+  const execution = (await factory.resolve(identity, stage, {
+    approvedToolCalls: choice.approvedToolCalls,
+  }))!;
   return {
     identity,
     config,
@@ -128,16 +206,12 @@ export async function executionFixture(
     execution,
     factory,
     loadAuthorization,
-    policy,
     revoke: () => service.revoke(identity, snapshot.enrollment!.revision),
     expire: () => {
       time = 3_601_000;
     },
     deny: () => {
       allowed = false;
-    },
-    removePolicy: () => {
-      policy = {};
     },
     invocation: (agentId = 'root', selection = tool.name) => execution.bind(agentId, selection),
   };

@@ -15,6 +15,7 @@
 
 const http = require('http');
 const { randomUUID } = require('crypto');
+const { keepIdleConnections } = require('./keepalive');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const {
   StreamableHTTPServerTransport,
@@ -73,6 +74,7 @@ const httpServer = http.createServer(async (req, res) => {
   }
 });
 
+keepIdleConnections(httpServer);
 httpServer.listen(PORT, HOST, () => {
   console.log(`[e2e] fake HTTP MCP server listening on http://${HOST}:${PORT}/mcp`);
 });

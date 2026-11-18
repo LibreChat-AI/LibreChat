@@ -1,11 +1,12 @@
 import React from 'react';
 import { Tools } from 'librechat-data-provider';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TAttachment, TStartupConfig, UIResource } from 'librechat-data-provider';
 import type { MCPAppFrameState } from '~/hooks/MCP';
 import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
 import { MCPAppSuppressionContext, MCPAppViews } from '../MCPAppViews';
-import { useAppBridge, useMCPAppFrame } from '~/hooks/MCP';
+import { useAppBridge } from '~/hooks/MCP/useAppBridge';
+import { useMCPAppFrame } from '~/hooks/MCP';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, values?: Record<number, string>) => {
@@ -17,10 +18,8 @@ jest.mock('~/hooks', () => ({
   },
 }));
 
-jest.mock('~/hooks/MCP', () => ({
-  useAppBridge: jest.fn(),
-  useMCPAppFrame: jest.fn(),
-}));
+jest.mock('~/hooks/MCP', () => ({ useMCPAppFrame: jest.fn() }));
+jest.mock('~/hooks/MCP/useAppBridge', () => ({ useAppBridge: jest.fn() }));
 
 const mockUseAppBridge = useAppBridge as jest.MockedFunction<typeof useAppBridge>;
 const mockUseMCPAppFrame = useMCPAppFrame as jest.MockedFunction<typeof useMCPAppFrame>;
@@ -79,12 +78,44 @@ function attachment(
   } as unknown as TAttachment;
 }
 
+/** The bridge module loads on demand, so an opened View reaches `useAppBridge` a tick after the click. */
+const waitForBridges = (count: number) =>
+  waitFor(() => expect(mockUseAppBridge.mock.calls.length).toBeGreaterThanOrEqual(count));
+const frames = (root: ParentNode) => root.querySelectorAll('iframe[data-sandbox-url]');
+
 describe('MCPAppViews', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUseMCPAppFrame.mockImplementation((resource, options) =>
       makeFrameState(resource as UIResource, options.toolArgs),
     );
+  });
+
+  it('keeps the Close control and shows the loading view while the bridge module loads', async () => {
+    /** The lazy bridge keeps its module once resolved, so only the first Open in this file sees it pending. */
+    const attachments = [
+      attachment({ toolCallId: 'pending', agentId: 'agent', stepId: 'step' }, [app({})]),
+    ];
+    const view = render(
+      <MCPAppsPolicyProvider startupConfig={enabledConfig} ready userId="user-1">
+        <MCPAppViews attachments={attachments} />
+      </MCPAppsPolicyProvider>,
+    );
+    fireEvent.click(view.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
+
+    const close = view.getByRole('button', { name: /com_ui_mcp_app_close_named/ });
+    expect(close).toHaveFocus();
+    const loading = view.getByText('com_ui_loading_interactive_view');
+    expect(loading.parentElement).toHaveStyle({ height: '320px' });
+    /** The frame's own overlay announces the loading once the bridge arrives, so this box stays silent. */
+    expect(view.queryByRole('status')).not.toBeInTheDocument();
+    expect(mockUseAppBridge).not.toHaveBeenCalled();
+
+    await waitForBridges(1);
+    expect(view.queryByText('com_ui_loading_interactive_view')).not.toBeInTheDocument();
+    expect(frames(view.container)).toHaveLength(1);
+    expect(view.getByRole('button', { name: /com_ui_mcp_app_close_named/ })).toBe(close);
+    expect(close).toHaveFocus();
   });
 
   it('does not create frame or bridge hooks without both policy and host identity', () => {
@@ -105,7 +136,7 @@ describe('MCPAppViews', () => {
     expect(mockUseAppBridge).not.toHaveBeenCalled();
   });
 
-  it('retains every wrapper occurrence and gives each App only its own input and result', () => {
+  it('retains every wrapper occurrence and gives each App only its own input and result', async () => {
     const alpha = app({
       toolArgs: { owner: 'alpha' },
       content: [{ type: 'text', text: 'alpha result' }],
@@ -130,6 +161,7 @@ describe('MCPAppViews', () => {
     expect(container.querySelectorAll('iframe[data-sandbox-url]')).toHaveLength(0);
     expect(mockUseAppBridge).not.toHaveBeenCalled();
     screen.getAllByRole('button', { name: /com_ui_mcp_app_open_named/ }).forEach(fireEvent.click);
+    await waitForBridges(2);
     expect(container.querySelectorAll('iframe[data-sandbox-url]')).toHaveLength(2);
     expect(mockUseAppBridge).toHaveBeenNthCalledWith(
       1,
@@ -177,7 +209,7 @@ describe('MCPAppViews', () => {
     expect(view.getByRole('button', { name: /com_ui_mcp_app_close_named/ })).toBeInTheDocument();
   });
 
-  it('applies the published limit to all Views and clears failed capacity notices on release', () => {
+  it('applies the published limit to all Views and clears failed capacity notices on release', async () => {
     const config = {
       mcpApps: { enabled: true, legacyHtmlEnabled: true, maxActiveViews: 1 },
     } as TStartupConfig;
@@ -199,10 +231,10 @@ describe('MCPAppViews', () => {
     fireEvent.click(view.getByRole('button', { name: /com_ui_mcp_app_close_named/ }));
     expect(view.queryByRole('alert')).not.toBeInTheDocument();
     fireEvent.click(view.getAllByRole('button', { name: /com_ui_mcp_app_open_named/ })[1]);
-    expect(view.container.querySelectorAll('iframe[data-sandbox-url]')).toHaveLength(1);
+    await waitFor(() => expect(frames(view.container)).toHaveLength(1));
   });
 
-  it('returns keyboard focus to the replacement App control without stealing focus on peer teardown', () => {
+  it('returns keyboard focus to the replacement App control without stealing focus on peer teardown', async () => {
     const attachments = [
       attachment({ toolCallId: 'focus', agentId: 'agent', stepId: 'step' }, [app({})]),
     ];
@@ -221,15 +253,18 @@ describe('MCPAppViews', () => {
 
     fireEvent.click(view.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
     view.getByRole('button', { name: /com_ui_mcp_app_close_named/ }).focus();
+    await waitForBridges(1);
     act(() => {
       mockUseAppBridge.mock.calls.at(-1)?.[0].onTeardown?.();
     });
     expect(view.getByRole('button', { name: /com_ui_mcp_app_open_named/ })).toHaveFocus();
 
+    const bridgesBefore = mockUseAppBridge.mock.calls.length;
     fireEvent.click(view.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
     const unrelated = document.createElement('button');
     document.body.appendChild(unrelated);
     unrelated.focus();
+    await waitForBridges(bridgesBefore + 1);
     act(() => {
       mockUseAppBridge.mock.calls.at(-1)?.[0].onTeardown?.();
     });
@@ -238,7 +273,7 @@ describe('MCPAppViews', () => {
     unrelated.remove();
   });
 
-  it('does not reserve capacity or mount a bridge for a read-only URI-only App', () => {
+  it('does not reserve capacity or mount a bridge for a read-only URI-only App', async () => {
     const config = {
       mcpApps: { enabled: true, legacyHtmlEnabled: true, maxActiveViews: 1 },
     } as TStartupConfig;
@@ -257,10 +292,10 @@ describe('MCPAppViews', () => {
     expect(mockUseMCPAppFrame).not.toHaveBeenCalled();
     expect(view.getAllByRole('button', { name: /com_ui_mcp_app_open_named/ })).toHaveLength(1);
     fireEvent.click(view.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
-    expect(view.container.querySelectorAll('iframe[data-sandbox-url]')).toHaveLength(1);
+    await waitFor(() => expect(frames(view.container)).toHaveLength(1));
   });
 
-  it('limits simultaneous live bridges and releases the slot on close', () => {
+  it('limits simultaneous live bridges and releases the slot on close', async () => {
     const attachments = [
       attachment(
         { toolCallId: 'batch', agentId: 'agent', stepId: 'step' },
@@ -277,17 +312,17 @@ describe('MCPAppViews', () => {
       .getAllByRole('button', { name: /com_ui_mcp_app_open_named/ })
       .slice(0, 3)
       .forEach(fireEvent.click);
-    expect(view.container.querySelectorAll('iframe[data-sandbox-url]')).toHaveLength(3);
+    await waitFor(() => expect(frames(view.container)).toHaveLength(3));
     fireEvent.click(view.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
     expect(view.getByRole('alert')).toHaveTextContent('com_ui_mcp_app_at_capacity');
-    expect(view.container.querySelectorAll('iframe[data-sandbox-url]')).toHaveLength(3);
+    expect(frames(view.container)).toHaveLength(3);
     fireEvent.click(view.getAllByRole('button', { name: /com_ui_mcp_app_close_named/ })[0]);
-    expect(view.container.querySelectorAll('iframe[data-sandbox-url]')).toHaveLength(2);
+    expect(frames(view.container)).toHaveLength(2);
     fireEvent.click(view.getAllByRole('button', { name: /com_ui_mcp_app_open_named/ }).at(-1)!);
-    expect(view.container.querySelectorAll('iframe[data-sandbox-url]')).toHaveLength(3);
+    await waitFor(() => expect(frames(view.container)).toHaveLength(3));
   });
 
-  it('keeps legitimate same-owner and same-resource occurrences distinct', () => {
+  it('keeps legitimate same-owner and same-resource occurrences distinct', async () => {
     const attachments = [
       attachment({ toolCallId: 'call-0', agentId: 'agent-alpha', stepId: 'step-alpha' }, [
         app({ toolArgs: { occurrence: 'first' }, content: [{ type: 'text', text: 'first' }] }),
@@ -304,6 +339,7 @@ describe('MCPAppViews', () => {
     expect(container.querySelectorAll('iframe[data-sandbox-url]')).toHaveLength(0);
     expect(mockUseAppBridge).not.toHaveBeenCalled();
     screen.getAllByRole('button', { name: /com_ui_mcp_app_open_named/ }).forEach(fireEvent.click);
+    await waitForBridges(2);
     expect(container.querySelectorAll('iframe[data-sandbox-url]')).toHaveLength(2);
     expect(mockUseAppBridge.mock.calls.map(([params]) => params.toolArgs)).toEqual([
       { occurrence: 'first' },
@@ -315,7 +351,7 @@ describe('MCPAppViews', () => {
     ]);
   });
 
-  it('preserves an App frame when unrelated wrappers and resources are inserted or reordered', () => {
+  it('preserves an App frame when unrelated wrappers and resources are inserted or reordered', async () => {
     const target = app({ resourceId: 'target', toolName: 'target', toolArgs: { target: true } });
     const unrelated = app({
       resourceId: 'unrelated',
@@ -338,7 +374,7 @@ describe('MCPAppViews', () => {
     const view = render(renderViews([targetAttachment]));
     expect(view.queryByTitle('MCP App: target')).not.toBeInTheDocument();
     fireEvent.click(view.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
-    const targetFrame = view.getByTitle('MCP App: target');
+    const targetFrame = await view.findByTitle('MCP App: target');
 
     view.rerender(renderViews([unrelatedAttachment, targetAttachment]));
     expect(view.getByTitle('MCP App: target')).toBe(targetFrame);
@@ -354,7 +390,7 @@ describe('MCPAppViews', () => {
     expect(view.getByTitle('MCP App: target')).toBe(targetFrame);
   });
 
-  it('suppresses only attachments owned by an ancestor App surface', () => {
+  it('suppresses only attachments owned by an ancestor App surface', async () => {
     const owned = attachment({ toolCallId: 'call-owned', agentId: 'agent-a', stepId: 'step-a' }, [
       app({ resourceId: 'owned', toolName: 'owned' }),
     ]);
@@ -373,14 +409,14 @@ describe('MCPAppViews', () => {
     expect(view.queryByTitle('MCP App: owned')).not.toBeInTheDocument();
     expect(view.queryByTitle('MCP App: nested')).not.toBeInTheDocument();
     fireEvent.click(view.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
-    expect(view.getByTitle('MCP App: nested')).toBeInTheDocument();
+    expect(await view.findByTitle('MCP App: nested')).toBeInTheDocument();
   });
 
   it.each([
     ['default', 320],
     ['compact', 260],
     ['lower clamp', 80],
-  ])('uses the hook-owned %s height without a second surface minimum', (_label, height) => {
+  ])('uses the hook-owned %s height without a second surface minimum', async (_label, height) => {
     mockUseMCPAppFrame.mockImplementationOnce((resource, options) =>
       makeFrameState(resource as UIResource, options.toolArgs, { height }),
     );
@@ -397,7 +433,7 @@ describe('MCPAppViews', () => {
     );
     expect(view.queryByTitle('MCP App: compact')).not.toBeInTheDocument();
     fireEvent.click(view.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
-    const container = view.getByTitle('MCP App: compact').parentElement;
+    const container = (await view.findByTitle('MCP App: compact')).parentElement;
 
     expect(container).toHaveStyle({ height: `${height}px` });
     expect(container?.style.minHeight).toBe('');

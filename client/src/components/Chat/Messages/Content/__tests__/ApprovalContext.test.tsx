@@ -1,29 +1,37 @@
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { activeGenerationCreatedAtByConvoId } from '@librechat/chat/react';
-import ApprovalProvider, { useApprovalContext, useResumeSubmit } from '../ApprovalContext';
+import type { ResumeSubmitTransport } from '../ApprovalContext';
+import ApprovalProvider, {
+  ResumeSubmitContext,
+  useApprovalContext,
+  useResumeSubmit,
+} from '../ApprovalContext';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import { ChatContext } from '~/Providers/ChatContext';
 
 const mockApprovalMutate = jest.fn();
 const mockAskMutate = jest.fn();
+const getEphemeralAgent = jest.fn(() => ({ mcp: ['server'] }));
 
 jest.mock('~/data-provider', () => ({
   useSubmitToolApprovalMutation: () => ({ mutate: mockApprovalMutate }),
   useSubmitAskAnswerMutation: () => ({ mutate: mockAskMutate }),
 }));
 
-jest.mock('~/store/agents', () => ({
-  useGetEphemeralAgent: () => () => undefined,
-}));
-
 const chatContextValue = {
   conversation: {
     conversationId: 'conversation-1',
     endpoint: 'agents',
+    endpointType: 'custom',
     agent_id: 'agent-1',
+    model: 'model-1',
+    spec: 'spec-1',
+    promptPrefix: 'be brief',
   },
+  getMessages: () => [{ messageId: 'm1', content: [{ type: 'text', text: 'hi' }] }],
+  setMessages: jest.fn(),
 } as unknown as React.ContextType<typeof ChatContext>;
 
 const createWrapper = (generationCreatedAt: number | null) =>
@@ -36,192 +44,29 @@ const createWrapper = (generationCreatedAt: number | null) =>
       return created;
     });
     return (
-      <RecoilRoot>
-        <JotaiProvider store={jotaiStore}>
+      <JotaiProvider store={jotaiStore}>
+        <ChatSettingsContext.Provider value={{ ...defaultChatSettings, getEphemeralAgent }}>
           <ChatContext.Provider value={chatContextValue}>
             <ApprovalProvider>{children}</ApprovalProvider>
           </ChatContext.Provider>
-        </JotaiProvider>
-      </RecoilRoot>
+        </ChatSettingsContext.Provider>
+      </JotaiProvider>
     );
   };
 
-const wrapper = createWrapper(1000);
-
-const pendingAction: import('librechat-data-provider').Agents.PendingAction = {
-  actionId: 'action-1',
-  streamId: 'stream-1',
-  payload: {
-    type: 'tool_approval',
-    action_requests: [
-      { name: 'create_file', arguments: { path: 'one.ts' }, tool_call_id: 'call-1' },
-      { name: 'bash_tool', arguments: { command: 'npm test' }, tool_call_id: 'call-2' },
-    ],
-    review_configs: [
-      {
-        action_name: 'create_file',
-        tool_call_id: 'call-1',
-        allowed_decisions: ['approve', 'reject'],
-      },
-      {
-        action_name: 'bash_tool',
-        tool_call_id: 'call-2',
-        allowed_decisions: ['approve', 'reject'],
-      },
-    ],
-  },
-  createdAt: 1000,
-};
-
-describe('useResumeSubmit', () => {
+describe('app approval resume host', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  test('synchronously deduplicates tool approval submissions and unlocks a retryable error', () => {
+  test('sends conversation fields, the epoch and the ephemeral agent', () => {
     const { result } = renderHook(
       () => ({
         approval: useApprovalContext(),
         resume: useResumeSubmit(),
       }),
-      { wrapper },
+      { wrapper: createWrapper(1000) },
     );
-
-    act(() => {
-      result.current.approval.registerToolCall('action-1', 'call-1');
-      result.current.approval.setDecision('action-1', 'call-1', {
-        tool_call_id: 'call-1',
-        decision: 'approve',
-      });
-    });
-
-    act(() => {
-      result.current.resume.submitToolApproval('action-1');
-      result.current.resume.submitToolApproval('action-1');
-    });
-    expect(mockApprovalMutate).toHaveBeenCalledTimes(1);
-    expect(mockApprovalMutate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationId: 'conversation-1',
-        generationCreatedAt: 1000,
-        actionId: 'action-1',
-      }),
-      expect.any(Object),
-    );
-
-    const firstOptions = mockApprovalMutate.mock.calls[0][1] as {
-      onError: (error: unknown) => void;
-    };
-    act(() => firstOptions.onError(new Error('temporary failure')));
-
-    act(() => {
-      result.current.resume.submitToolApproval('action-1');
-      result.current.resume.submitToolApproval('action-1');
-    });
-    expect(mockApprovalMutate).toHaveBeenCalledTimes(2);
-  });
-
-  test('shares the synchronous submit lock across timeline and composer surfaces', () => {
-    const { result } = renderHook(
-      () => ({
-        approval: useApprovalContext(),
-        timeline: useResumeSubmit(),
-        composer: useResumeSubmit(),
-      }),
-      { wrapper },
-    );
-
-    act(() => {
-      result.current.approval.registerToolCall('action-1', 'call-1');
-      result.current.approval.setDecision('action-1', 'call-1', {
-        tool_call_id: 'call-1',
-        decision: 'approve',
-      });
-      result.current.timeline.submitToolApproval('action-1');
-      result.current.composer.submitToolApproval('action-1');
-    });
-
-    expect(mockApprovalMutate).toHaveBeenCalledTimes(1);
-  });
-
-  test('uses the server action payload as batch membership even when a card is hidden', () => {
-    const authoritativeWrapper = ({ children }: { children: React.ReactNode }) => (
-      <RecoilRoot>
-        <JotaiProvider store={createStore()}>
-          <ApprovalProvider pendingAction={pendingAction}>{children}</ApprovalProvider>
-        </JotaiProvider>
-      </RecoilRoot>
-    );
-    const { result } = renderHook(() => useApprovalContext(), {
-      wrapper: authoritativeWrapper,
-    });
-
-    expect(result.current.getRegisteredCount('action-1')).toBe(2);
-    expect(result.current.getLeadToolCallId('action-1')).toBe('call-1');
-
-    act(() => {
-      result.current.setDecision('action-1', 'call-1', {
-        tool_call_id: 'call-1',
-        decision: 'approve',
-      });
-    });
-    expect(result.current.isReady('action-1')).toBe(false);
-
-    act(() => {
-      result.current.setDecision('action-1', 'call-2', {
-        tool_call_id: 'call-2',
-        decision: 'reject',
-      });
-    });
-    expect(result.current.isReady('action-1')).toBe(true);
-
-    act(() => result.current.unregisterToolCall('action-1', 'call-2'));
-    expect(result.current.getRegisteredCount('action-1')).toBe(2);
-    expect(result.current.isReady('action-1')).toBe(true);
-  });
-
-  test('nested approval providers reuse the chat-level decision state', () => {
-    const nestedWrapper = ({ children }: { children: React.ReactNode }) => (
-      <RecoilRoot>
-        <JotaiProvider store={createStore()}>
-          <ApprovalProvider pendingAction={pendingAction}>
-            <ApprovalProvider>{children}</ApprovalProvider>
-          </ApprovalProvider>
-        </JotaiProvider>
-      </RecoilRoot>
-    );
-    const { result } = renderHook(() => useApprovalContext(), { wrapper: nestedWrapper });
-
-    expect(result.current.getRegisteredCount('action-1')).toBe(2);
-  });
-
-  test('retains a decision across a transient card unregister and re-register', () => {
-    const { result } = renderHook(() => useApprovalContext(), { wrapper });
-    const decision = { tool_call_id: 'call-1', decision: 'approve' } as const;
-
-    act(() => {
-      result.current.registerToolCall('action-1', 'call-1');
-      result.current.setDecision('action-1', 'call-1', decision);
-    });
-    act(() => result.current.unregisterToolCall('action-1', 'call-1'));
-
-    expect(result.current.getDecisions('action-1')).toEqual([]);
-    expect(result.current.getDecision('action-1', 'call-1')).toEqual(decision);
-
-    act(() => result.current.registerToolCall('action-1', 'call-1'));
-    expect(result.current.getDecisions('action-1')).toEqual([decision]);
-    expect(result.current.isReady('action-1')).toBe(true);
-  });
-
-  test('keeps approval and ask-answer resume controls inert before the generation epoch exists', () => {
-    const { result } = renderHook(
-      () => ({
-        approval: useApprovalContext(),
-        resume: useResumeSubmit(),
-      }),
-      { wrapper: createWrapper(null) },
-    );
-
     act(() => {
       result.current.approval.registerToolCall('action-1', 'call-1');
       result.current.approval.setDecision('action-1', 'call-1', {
@@ -232,37 +77,63 @@ describe('useResumeSubmit', () => {
       result.current.resume.submitAskAnswer('ask-1', 'answer');
     });
 
-    expect(mockApprovalMutate).not.toHaveBeenCalled();
-    expect(mockAskMutate).not.toHaveBeenCalled();
-  });
-
-  test('synchronously deduplicates ask answers and unlocks a retryable error', () => {
-    const { result } = renderHook(() => useResumeSubmit(), { wrapper });
-
-    act(() => {
-      result.current.submitAskAnswer('ask-1', 'answer');
-      result.current.submitAskAnswer('ask-1', 'answer');
-    });
-    expect(mockAskMutate).toHaveBeenCalledTimes(1);
+    expect(mockApprovalMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conversation-1',
+        generationCreatedAt: 1000,
+        endpoint: 'agents',
+        endpointType: 'custom',
+        agent_id: 'agent-1',
+        model: 'model-1',
+        spec: 'spec-1',
+        promptPrefix: 'be brief',
+        ephemeralAgent: { mcp: ['server'] },
+        actionId: 'action-1',
+        decisions: [{ tool_call_id: 'call-1', decision: 'approve' }],
+      }),
+      expect.any(Object),
+    );
     expect(mockAskMutate).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: 'conversation-1',
         generationCreatedAt: 1000,
         actionId: 'ask-1',
         answer: 'answer',
+        ephemeralAgent: { mcp: ['server'] },
       }),
       expect.any(Object),
     );
+  });
 
-    const firstOptions = mockAskMutate.mock.calls[0][1] as {
-      onError: (error: unknown) => void;
+  test('omits the epoch when the client has not observed one', () => {
+    const { result } = renderHook(() => useResumeSubmit(), { wrapper: createWrapper(null) });
+    act(() => result.current.submitAskAnswer('ask-1', 'answer'));
+    expect(mockAskMutate.mock.calls[0][0]).not.toHaveProperty('generationCreatedAt');
+  });
+
+  test('an explicit transport replaces the chat mutation until it is cleared', async () => {
+    const first: ResumeSubmitTransport = {
+      submitToolApproval: jest.fn(async () => {}),
+      submitAskAnswer: jest.fn(async () => {}),
     };
-    act(() => firstOptions.onError(new Error('temporary failure')));
-
-    act(() => {
-      result.current.submitAskAnswer('ask-1', 'answer');
-      result.current.submitAskAnswer('ask-1', 'answer');
+    let transport: ResumeSubmitTransport | null = first;
+    const ChatWrapper = createWrapper(1000);
+    const { result, rerender } = renderHook(() => useResumeSubmit(), {
+      wrapper: ({ children }) => (
+        <ChatWrapper>
+          <ResumeSubmitContext.Provider value={transport}>{children}</ResumeSubmitContext.Provider>
+        </ChatWrapper>
+      ),
     });
-    expect(mockAskMutate).toHaveBeenCalledTimes(2);
+    await act(async () => result.current.submitAskAnswer('host-action', 'first'));
+    expect(first.submitAskAnswer).toHaveBeenCalledWith('host-action', 'first');
+    expect(mockAskMutate).not.toHaveBeenCalled();
+    transport = null;
+    rerender();
+    act(() => result.current.submitAskAnswer('chat-action', 'ordinary'));
+    expect(mockAskMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ actionId: 'chat-action', answer: 'ordinary' }),
+      expect.any(Object),
+    );
   });
 });

@@ -1,6 +1,7 @@
 import { maxWorkers, workerIdleMemoryLimit } from '../../config/jest.workers.cjs';
 
 const esModules = [
+  '@librechat/agents',
   '@librechat/code',
   '@langchain/langgraph',
   '@langchain/langgraph-checkpoint',
@@ -32,7 +33,7 @@ export default {
   coverageReporters: ['text', 'cobertura'],
   testResultsProcessor: 'jest-junit',
   transform: {
-    '\\.[jt]sx?$': [
+    '\\.[cm]?[jt]sx?$': [
       'babel-jest',
       {
         presets: [

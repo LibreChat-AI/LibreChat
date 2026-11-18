@@ -5,6 +5,8 @@ import {
   settledSteerQuotes,
   removePendingSteers,
   acceptedClientSteerIds,
+  heldSteerClientIds,
+  withoutPromotedSteers,
   withoutRecoveredSteers,
   updatePendingSteerLabels,
 } from '../chips';
@@ -136,5 +138,44 @@ describe('withoutRecoveredSteers', () => {
     ];
     expect(withoutRecoveredSteers(rows, ['srv', 'local']).map((item) => item.id)).toEqual(['3']);
     expect(withoutRecoveredSteers(rows, ['none'])).toBe(rows);
+  });
+});
+
+describe('withoutPromotedSteers', () => {
+  it('evicts every local copy of a promoted steer and keeps server rows', () => {
+    const rows: QueuedMessage[] = [
+      { id: 'bound', text: 'x', createdAt: 1, recoverySteerId: 'srv' },
+      { id: 'local', text: 'x', createdAt: 2 },
+      { id: 'srv', text: 'x', createdAt: 3, server: { status: 'queued', id: 'turn-1' } },
+      { id: 'other', text: 'z', createdAt: 4 },
+    ];
+    expect(withoutPromotedSteers(rows, ['srv', 'local']).map((item) => item.id)).toEqual([
+      'srv',
+      'other',
+    ]);
+    expect(withoutPromotedSteers(rows, ['none'])).toBe(rows);
+  });
+});
+
+describe('heldSteerClientIds', () => {
+  it('names recovery rows and failed chips, never a chip its run still owns', () => {
+    const rows: QueuedMessage[] = [
+      { id: 'bound', text: 'x', createdAt: 1, recoverySteerId: 'srv', recoveryClientSteerId: 'l1' },
+      { id: 'plain', text: 'y', createdAt: 2 },
+      {
+        id: 'server',
+        text: 'z',
+        createdAt: 3,
+        recoveryClientSteerId: 'l2',
+        server: { status: 'queued', id: 'turn-1' },
+      },
+    ];
+    const chips = [
+      chip('l3', { status: 'failed' }),
+      chip('srv-4', { status: 'failed', clientSteerId: 'l4' }),
+      chip('l5', { status: 'sending' }),
+      chip('srv-6', { status: 'pending', clientSteerId: 'l6' }),
+    ];
+    expect(heldSteerClientIds(chips, rows)).toEqual(['l1', 'l3', 'l4']);
   });
 });

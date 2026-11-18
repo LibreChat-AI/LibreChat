@@ -287,21 +287,21 @@ async function verifyLangfuseCredentials(
   try {
     const auth = Buffer.from(`${publicKey}:${secretKey}`).toString('base64');
     const signal = AbortSignal.timeout(LANGFUSE_VERIFICATION_TIMEOUT_MS);
-    const secretResponse = await fetch(`${destination.baseUrl}/api/public/projects`, {
+    const response = await fetch(`${destination.baseUrl}/api/public/projects`, {
       headers: mergeHeaders(headers, { Authorization: `Basic ${auth}` }),
       signal,
       ...redirectPolicyFor(headers),
     });
-    if (!secretResponse.ok) {
+    if (!response.ok) {
       return {
         success: false,
-        ...getLangfuseTestFailure(secretResponse.status),
-        responseStatus: secretResponse.status >= 500 ? 502 : 400,
+        ...getLangfuseTestFailure(response.status),
+        responseStatus: response.status >= 500 ? 502 : 400,
       };
     }
     let projects: unknown;
     try {
-      projects = await secretResponse.json();
+      projects = await response.json();
     } catch {
       return {
         success: false,
@@ -324,25 +324,6 @@ async function verifyLangfuseCredentials(
         errorCode: 'unexpected_response',
         message: 'Langfuse did not return a project identity',
         responseStatus: 400,
-      };
-    }
-
-    const publicResponse = await fetch(`${destination.baseUrl}/api/public/ingestion`, {
-      method: 'POST',
-      headers: mergeHeaders(headers, {
-        Authorization: `Bearer ${publicKey}`,
-        'X-Langfuse-Public-Key': publicKey,
-        'Content-Type': 'application/json',
-      }),
-      body: JSON.stringify({ batch: [] }),
-      signal,
-      ...redirectPolicyFor(headers),
-    });
-    if (!publicResponse.ok) {
-      return {
-        success: false,
-        ...getLangfuseTestFailure(publicResponse.status),
-        responseStatus: publicResponse.status >= 500 ? 502 : 400,
       };
     }
 

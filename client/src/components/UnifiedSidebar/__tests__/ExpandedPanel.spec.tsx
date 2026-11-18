@@ -145,6 +145,22 @@ describe('ExpandedPanel', () => {
     localStorage.clear();
   });
 
+  describe('sidebar toggle button', () => {
+    it('collapses without forwarding the click event as an afterSlide callback', () => {
+      const { onCollapse } = renderPanel({ expanded: true });
+      fireEvent.click(screen.getByTestId('close-sidebar-button'));
+      expect(onCollapse).toHaveBeenCalledTimes(1);
+      expect(onCollapse).toHaveBeenCalledWith();
+    });
+
+    it('expands without forwarding the click event', () => {
+      const { onExpand } = renderPanel({ expanded: false });
+      fireEvent.click(screen.getByTestId('open-sidebar-button'));
+      expect(onExpand).toHaveBeenCalledTimes(1);
+      expect(onExpand).toHaveBeenCalledWith();
+    });
+  });
+
   describe('NavIconButton collapse toggle', () => {
     it('collapses sidebar when clicking the active icon while expanded', () => {
       const { onCollapse } = renderPanel({ expanded: true });

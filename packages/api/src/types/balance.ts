@@ -8,5 +8,9 @@ export interface BalanceUpdateFields {
   refillIntervalUnit?: RefillIntervalUnit;
   refillAmount?: number;
   refillMode?: BalanceRefillMode;
+  refillAnchor?: string | null;
   lastRefill?: Date;
+  /** Written only together with `tokenCredits`: the credits that grant starts the period with */
+  allotment?: number;
+  allottedAt?: Date;
 }

@@ -1,11 +1,21 @@
-import { AUTH_USER_DOC_BY_ID_PREFIX } from 'librechat-data-provider';
-import { evictAuthUserDocs } from './eviction';
+import {
+  CacheKeys,
+  AUTH_USER_DOC_BY_ID_PREFIX,
+  AUTH_USER_DOC_EVICTION_FENCE_TTL_MS,
+} from 'librechat-data-provider';
+import type { CacheStore } from '~/types';
+import {
+  evictAuthUserDocs,
+  evictAuthUserDocsForUsers,
+  isAuthUserDocEvictionFenced,
+  buildAuthUserDocEvictionFenceKey,
+} from './eviction';
 
 const INDEX_KEY = `${AUTH_USER_DOC_BY_ID_PREFIX}:user-1`;
 const OTHER_INDEX_KEY = `${AUTH_USER_DOC_BY_ID_PREFIX}:user-2`;
 
 /** A Map-backed store that rejects the operations named for a key, as a throwing Redis store does. */
-function makeStore(failures: { get?: string[]; delete?: string[] } = {}) {
+function makeStore(failures: { get?: string[]; set?: string[]; delete?: string[] } = {}) {
   const values = new Map<string, unknown>([
     [INDEX_KEY, ['doc-a', 'doc-b']],
     ['doc-a', { id: 'user-1' }],
@@ -21,6 +31,13 @@ function makeStore(failures: { get?: string[]; delete?: string[] } = {}) {
         throw new Error(`GET ${key} failed`);
       }
       return values.get(key);
+    }),
+    set: jest.fn(async (key: string, value: unknown, _ttl?: number) => {
+      if (failures.set?.includes(key)) {
+        throw new Error(`SET ${key} failed`);
+      }
+      values.set(key, value);
+      return true;
     }),
     delete: jest.fn(async (key: string) => {
       if (failures.delete?.includes(key)) {
@@ -107,5 +124,103 @@ describe('evictAuthUserDocs', () => {
     expect(store.values.has('doc-b')).toBe(false);
     expect(store.values.get(INDEX_KEY)).toEqual(['doc-a', 'doc-b']);
     expectOtherUserCached(store);
+  });
+
+  it('fences the user for longer than a document read before the eviction can live', async () => {
+    const store = makeStore();
+
+    await expect(evictAuthUserDocs(store, { userId: 'user-1' })).resolves.toBe(true);
+
+    expect(store.set).toHaveBeenCalledWith(
+      buildAuthUserDocEvictionFenceKey('user-1'),
+      expect.any(Number),
+      AUTH_USER_DOC_EVICTION_FENCE_TTL_MS,
+    );
+    await expect(isAuthUserDocEvictionFenced(store, 'user-1')).resolves.toBe(true);
+    await expect(isAuthUserDocEvictionFenced(store, 'user-2')).resolves.toBe(false);
+  });
+
+  it('reports a failed fence write even when every document was deleted', async () => {
+    const store = makeStore({ set: [buildAuthUserDocEvictionFenceKey('user-1')] });
+
+    await expect(evictAuthUserDocs(store, { userId: 'user-1' })).resolves.toBe(false);
+
+    expect(store.values.has('doc-a')).toBe(false);
+    expect(store.values.has('doc-b')).toBe(false);
+    expect(store.values.get(INDEX_KEY)).toEqual(['doc-a', 'doc-b']);
+  });
+
+  it('does not fence when only a cache key is evicted', async () => {
+    const store = makeStore();
+
+    await expect(evictAuthUserDocs(store, { cacheKey: 'doc-c' })).resolves.toBe(true);
+
+    expect(store.set).not.toHaveBeenCalled();
+    expect(store.values.has('doc-c')).toBe(false);
+  });
+});
+
+describe('isAuthUserDocEvictionFenced', () => {
+  it('treats an unreadable fence as fenced', async () => {
+    const store = makeStore({ get: [buildAuthUserDocEvictionFenceKey('user-1')] });
+
+    await expect(isAuthUserDocEvictionFenced(store, 'user-1')).resolves.toBe(true);
+  });
+});
+
+describe('evictAuthUserDocsForUsers', () => {
+  const originalMode = process.env.AUTH_USER_CACHE_MODE;
+
+  afterEach(() => {
+    if (originalMode === undefined) {
+      delete process.env.AUTH_USER_CACHE_MODE;
+    } else {
+      process.env.AUTH_USER_CACHE_MODE = originalMode;
+    }
+  });
+
+  function cacheFor(store: ReturnType<typeof makeStore>) {
+    return jest.fn((key: string) =>
+      key === CacheKeys.AUTH_USER_DOC ? (store as CacheStore) : undefined,
+    );
+  }
+
+  it('evicts and fences each distinct user once', async () => {
+    process.env.AUTH_USER_CACHE_MODE = 'on';
+    const store = makeStore();
+
+    await expect(
+      evictAuthUserDocsForUsers(cacheFor(store), [
+        'user-1',
+        { toString: () => 'user-1' },
+        'user-2',
+      ]),
+    ).resolves.toBe(true);
+
+    for (const key of [INDEX_KEY, OTHER_INDEX_KEY, 'doc-a', 'doc-b', 'doc-other']) {
+      expect(store.values.has(key)).toBe(false);
+    }
+    expect(store.set).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a user whose documents may still be served', async () => {
+    process.env.AUTH_USER_CACHE_MODE = 'on';
+    const store = makeStore({ delete: ['doc-other'] });
+
+    await expect(evictAuthUserDocsForUsers(cacheFor(store), ['user-1', 'user-2'])).resolves.toBe(
+      false,
+    );
+    expect(store.values.has('doc-a')).toBe(false);
+  });
+
+  it('leaves the cache alone when the auth user cache is off', async () => {
+    delete process.env.AUTH_USER_CACHE_MODE;
+    const store = makeStore();
+    const getCache = cacheFor(store);
+
+    await expect(evictAuthUserDocsForUsers(getCache, ['user-1'])).resolves.toBe(true);
+
+    expect(getCache).not.toHaveBeenCalled();
+    expect(store.values.get(INDEX_KEY)).toEqual(['doc-a', 'doc-b']);
   });
 });

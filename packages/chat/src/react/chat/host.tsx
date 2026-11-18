@@ -1,15 +1,19 @@
 import { createContext, useContext } from 'react';
 import type {
+  TUser,
+  Agent,
   TMessage,
+  TModelSpec,
   TSubmission,
-  TAttachment,
   TConversation,
   TPendingSteer,
-  UIMappingOptions,
+  TEphemeralAgent,
+  TEndpointsConfig,
+  TAgentQueuedTurnReceipt,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import type { ExtendedFile, TurnCodeInputs } from '../../core';
 import type { ChatContract } from './contract';
-import type { ExtendedFile } from '../../core';
 
 export interface AbortStreamParams {
   /** The stream ID to abort (if known) */
@@ -38,18 +42,71 @@ export interface AbortStreamResponse {
   pendingSteers?: TPendingSteer[];
 }
 
-/** What the host's turn builder needs to submit and regenerate turns for one pane. */
+/** The pane state `ask` and `regenerate` read and write for one pane. */
 export type ChatTurnsParams = {
   index: number;
-  files: Map<string, ExtendedFile>;
-  setFiles: Dispatch<SetStateAction<Map<string, ExtendedFile>>>;
+  files?: Map<string, ExtendedFile>;
+  /** Without it a send leaves the composer's files alone. */
+  setFiles?: Dispatch<SetStateAction<Map<string, ExtendedFile>>>;
   getMessages: ChatContract['getMessages'];
   setMessages: ChatContract['setMessages'];
   isSubmitting: boolean;
   conversation: TConversation | null;
-  latestMessage: TMessage | null;
+  /** The tail of the branch on screen, read when a turn is built: streaming rewrites it on
+   *  every delta, and a pane that held it would render that often. */
+  getLatestMessage: () => TMessage | null;
   setSubmission: Dispatch<SetStateAction<TSubmission | null>>;
   setConversation: Dispatch<SetStateAction<TConversation | null>>;
+};
+
+export type { TurnCodeDecision } from '../../core';
+
+/** The app's logger; `warn` and `error` may reach the app's telemetry. */
+export type TurnLogger = {
+  log: (...args: unknown[]) => void;
+  dir: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
+};
+
+/**
+ * What a pane's turns need from the app: its catalogs, routing, composer files, code workspace
+ * and logging. Getters are read when a turn is sent, so they see the app's current state.
+ */
+export type TurnServices = {
+  logger: TurnLogger;
+  isTemporary: boolean;
+  user?: TUser;
+  modelSpecs?: TModelSpec[];
+  getEndpointsConfig: () => TEndpointsConfig | undefined;
+  /** The agents a send resolves a saved agent's provider and model from, when the agent query
+   *  has not cached it. */
+  agentsMap?: Record<string, Agent | undefined> | null;
+  /**
+   * Storage read: the ephemeral agent settings the app stored for a conversation key, returned
+   * as stored (no defaults or derivation), or `null` when none are stored.
+   */
+  getEphemeralAgent: (conversationId: string) => TEphemeralAgent | null;
+  /** The stored user key expiry of the pane's endpoint, sent with non-agent endpoints. */
+  getUserKey: () => string | undefined;
+  /** The project the route scopes a new chat to. */
+  getRouteProjectId: () => string | null;
+  /**
+   * Storage read, called once per send: the raw values a send's code decision is computed from,
+   * as the app holds them. The package derives the decision; see `resolveTurnCode`.
+   */
+  readCodeInputs: () => TurnCodeInputs;
+  /** Refuses a send until the host's configuration and selected targets are ready. */
+  canSubmit?: (conversation: TConversation | null) => boolean;
+  /** Moves the pane to the route a new chat starts from. */
+  openNewChat: (path: string) => void;
+  /** Marks composer files as submitted, so draft cleanup keeps them. */
+  releaseFiles: (fileIds: (string | undefined)[]) => void;
+  /** Cancels uploads whose exact local paste was accepted inline, without marking them submitted. */
+  cancelUploads?: (fileIds: string[]) => void;
+  /** Discards uploaded sources superseded by an accepted inline replacement. */
+  discardFiles?: (fileIds: string[]) => void;
+  /** Forgets the files queued for deletion once the composer is cleared. */
+  clearFilesToDelete: () => void;
 };
 
 /** The conversation a pane shows, and the setter that replaces or updates it. */
@@ -72,6 +129,23 @@ export type ChatMessageCache = {
   refetchActiveJobs: () => void;
   /** Marks a conversation's stream status stale. */
   refetchStreamStatus: (conversationId: string) => void;
+  /** Marks a conversation's messages stale; only mounted readers refetch. */
+  invalidateMessages: (conversationId: string) => void;
+  /** When a conversation's messages were last fetched, if they ever were. */
+  messagesUpdatedAt: (conversationId: string) => number | undefined;
+  /** Refetches a conversation's messages; rejects when the fetch fails. */
+  reloadMessages: (conversationId: string) => Promise<void>;
+  /** The server's queued-turn receipts last read for a conversation. */
+  readQueuedTurns: (conversationId: string) => TAgentQueuedTurnReceipt[] | undefined;
+};
+
+/** A conversation's messages as the app's data layer loads them. */
+export type ChatMessagesQuery = {
+  messages: TMessage[] | null;
+  /** No data yet for this conversation. */
+  isLoading: boolean;
+  /** A load or background revalidation is in flight. */
+  isFetching: boolean;
 };
 
 /**
@@ -84,23 +158,19 @@ export interface ChatHost {
   usePaneConversation(index: number): ChatPaneConversation;
   /** Starts a fresh conversation in a pane. */
   useNewConversation(index: number): ChatContract['newConversation'];
-  /** Builds and submits turns: `ask` and `regenerate`. */
-  useTurns(params: ChatTurnsParams): Pick<ChatContract, 'ask' | 'regenerate'>;
-  /** The tail of the branch on screen for the pane, read from the messages cached under `key`. */
-  useLatestMessage(index: number, key: string): TMessage | null;
-  /** The id of {@link ChatHost.useLatestMessage}, subscribed on its own. */
-  useLatestMessageId(index: number, key: string): string | null;
-  /** Selects the visible sibling under a parent message. */
-  useSetSiblingIdx(parentMessageId: string | null): (update: SetStateAction<number>) => void;
+  /** What the pane's turns need from the app; see {@link TurnServices}. */
+  useTurnServices(params: ChatTurnsParams): TurnServices;
   /** Stops a resumable generation. */
   useAbortStream(): (params: AbortStreamParams) => Promise<AbortStreamResponse>;
   useMessageCache(): ChatMessageCache;
-  /** Attachments delivered by message id ahead of the message cache. Stable across renders. */
-  useLiveAttachments(): Record<string, TAttachment[] | undefined>;
   /** Whether message feedback controls are on. */
   useFeedbackEnabled(): boolean;
-  /** The app's tool outcome rules for viewing one message; see {@link ChatContract}. */
-  getMappingOptions(live: TAttachment[] | undefined): UIMappingOptions;
+  /** Loads a conversation's messages; `isStreaming` lets the query hold off refetching under a
+   *  live stream. An absent id loads nothing. */
+  useMessages(
+    conversationId: string | undefined,
+    options: { isStreaming: boolean; enabled?: boolean },
+  ): ChatMessagesQuery;
 }
 
 const ChatHostContext = createContext<ChatHost | null>(null);

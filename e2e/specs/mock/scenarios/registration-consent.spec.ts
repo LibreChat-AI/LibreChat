@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { TStartupConfig } from 'librechat-data-provider';
 import type { Browser, Page } from '@playwright/test';
+import { closeContext, expect, test } from '../fixtures';
 
 /**
  * A deployment's policies are agreed to on the way in, so both ways in state
@@ -90,7 +90,7 @@ test.describe('registration consent', () => {
       await terms.focus();
       await expect(terms).toBeFocused();
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -108,7 +108,7 @@ test.describe('registration consent', () => {
       await expect(page.locator(`a[href="${PRIVACY_URL}"]`)).toHaveCount(1);
       await expect(page.getByText(/agree to the Terms of Service/i)).toHaveCount(0);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -123,7 +123,7 @@ test.describe('registration consent', () => {
       await expect(page.getByRole('button', { name: 'Submit registration' })).toBeVisible();
       await expect(page.getByText(/By continuing/i)).toHaveCount(0);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -144,7 +144,7 @@ test.describe('registration consent', () => {
       await expect(page.getByText(/By continuing/i)).toHaveCount(0);
       await expect(page.locator('a[href=""]')).toHaveCount(0);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -164,7 +164,7 @@ test.describe('registration consent', () => {
       await expect(page.locator(`a[href="${PRIVACY_URL}"]`)).toHaveCount(1);
       await expect(page.locator(`a[href="${TERMS_URL}"]`)).toHaveCount(1);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -188,7 +188,7 @@ test.describe('registration consent', () => {
       await expect(page.locator(`a[href="${PRIVACY_URL}"]`)).toHaveCount(1);
       await expect(page.locator(`a[href="${TERMS_URL}"]`)).toHaveCount(1);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -212,7 +212,7 @@ test.describe('registration consent', () => {
       await expect(page.locator(`a[href="${PRIVACY_URL}"]`)).toHaveCount(1);
       await expect(page.locator(`a[href="${TERMS_URL}"]`)).toHaveCount(1);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 });

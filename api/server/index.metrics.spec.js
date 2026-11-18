@@ -101,8 +101,10 @@ describe('Server metrics route', () => {
 
   afterAll(async () => {
     delete process.env.METRICS_SECRET;
-    await promisify(server.close).call(server);
-    await mongoServer.stop();
+    if (server) {
+      await promisify(server.close).call(server);
+    }
+    await mongoServer?.stop();
     await mongoose.disconnect();
   });
 

@@ -668,6 +668,7 @@ function appendAgentDefinitionContent(
 
 export function extractAgentContent(
   input: AgentContentInput | null | undefined,
+  shouldInspect?: (fragment: TextContentFragment) => boolean,
 ): readonly TextContentFragment[] {
   const fragments: TextContentFragment[] = [];
   const traversalErrors: ContentTraversalLimitError[] = [];
@@ -679,6 +680,7 @@ export function extractAgentContent(
     '/toolDefinitions',
     traversalErrors,
     traversalBudget,
+    shouldInspect,
   );
   collectTraversalAwareContent(fragments, traversalErrors, () =>
     extractModelParameterContent(input),
@@ -692,6 +694,7 @@ function extractFunctionToolContent(
   tool: FunctionToolContentInput | null | undefined,
   path: JsonPointer,
   traversalBudget: VisitNestedStringsBudget,
+  shouldInspect?: (fragment: TextContentFragment) => boolean,
 ): void {
   const definition = tool?.function ?? tool;
   if (definition == null) {
@@ -718,6 +721,21 @@ function extractFunctionToolContent(
     field: 'description',
   });
   const parameterId = `function-tool.parameters.${fragments.length}`;
+  if (
+    shouldInspect?.(
+      fragment(
+        parameterId,
+        `${definitionPath}/parameters` as JsonPointer,
+        '',
+        'tool_argument',
+        'arguments',
+        'json',
+        'inspect_only',
+      ),
+    ) === false
+  ) {
+    return;
+  }
   fragments.push(
     ...extractSubmittedValueContent(
       definition.parameters,
@@ -733,7 +751,7 @@ function extractFunctionToolContent(
           'inspect_only',
         ),
       ],
-      [{ source: 'tool_argument', fields: ['arguments'] }],
+      [{ source: 'tool_argument', fields: ['arguments'], legacyPii: false }],
       traversalBudget,
     ),
   );
@@ -761,6 +779,7 @@ function appendFunctionToolsContent(
   path: JsonPointer,
   traversalErrors: ContentTraversalLimitError[],
   traversalBudget: VisitNestedStringsBudget,
+  shouldInspect?: (fragment: TextContentFragment) => boolean,
 ): void {
   const complete = visitBoundedSubmittedArray<string | FunctionToolContentInput>(
     tools,
@@ -775,6 +794,7 @@ function appendFunctionToolsContent(
           tool,
           `${path}/${index}` as JsonPointer,
           traversalBudget,
+          shouldInspect,
         );
       } catch (error) {
         if (!(error instanceof ContentTraversalLimitError)) {
@@ -789,7 +809,7 @@ function appendFunctionToolsContent(
     traversalErrors.push(
       new ContentTraversalLimitError(fragments, [
         { source: 'agent_instruction', fields: ['name', 'description'] },
-        { source: 'tool_argument', fields: ['name', 'arguments'] },
+        { source: 'tool_argument', fields: ['name', 'arguments'], legacyPii: false },
       ]),
     );
   }
@@ -810,6 +830,7 @@ function throwCollectedTraversalErrors(
 
 export function extractAssistantContent(
   input: AssistantContentInput | null | undefined,
+  shouldInspect?: (fragment: TextContentFragment) => boolean,
 ): readonly TextContentFragment[] {
   const fragments: TextContentFragment[] = [];
   const traversalErrors: ContentTraversalLimitError[] = [];
@@ -821,8 +842,16 @@ export function extractAssistantContent(
     '/toolDefinitions',
     traversalErrors,
     traversalBudget,
+    shouldInspect,
   );
-  appendFunctionToolsContent(fragments, input?.tools, '/tools', traversalErrors, traversalBudget);
+  appendFunctionToolsContent(
+    fragments,
+    input?.tools,
+    '/tools',
+    traversalErrors,
+    traversalBudget,
+    shouldInspect,
+  );
   collectTraversalAwareContent(fragments, traversalErrors, () =>
     extractModelParameterContent(input),
   );
@@ -832,6 +861,7 @@ export function extractAssistantContent(
 
 export function extractAssistantActionContent(
   input: AssistantActionContentInput | null | undefined,
+  shouldInspect?: (fragment: TextContentFragment) => boolean,
 ): readonly TextContentFragment[] {
   const fragments: TextContentFragment[] = [];
   const traversalErrors: ContentTraversalLimitError[] = [];
@@ -842,6 +872,7 @@ export function extractAssistantActionContent(
     '/functions',
     traversalErrors,
     traversalBudget,
+    shouldInspect,
   );
   collectTraversalAwareContent(fragments, traversalErrors, () =>
     extractSubmittedValueContent(

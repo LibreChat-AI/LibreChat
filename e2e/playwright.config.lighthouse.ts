@@ -15,7 +15,8 @@ export default defineConfig({
   ...mockConfig,
   testDir: 'lighthouse',
   outputDir: 'lighthouse/.test-results',
-  timeout: 300_000,
+  // Covers the confirming batch an over-budget audit measures before it fails.
+  timeout: 600_000,
   retries: 0,
   reporter: [['line']],
   webServer: servers.map((server) => ({

@@ -2,12 +2,7 @@
  * Tests for client-side image resizing utility
  */
 
-import {
-  resizeImage,
-  isAnimatedImage,
-  shouldResizeImage,
-  supportsClientResize,
-} from '../imageResize';
+import { resizeImage, isAnimatedImage, shouldResizeImage } from '../imageResize';
 
 const createChunk = (type: string, data: number[] = []): number[] => [
   (data.length >>> 24) & 0xff,
@@ -75,6 +70,58 @@ const createWebP = (flags: number): File =>
 
 describe('imageResize utility', () => {
   describe('supportsClientResize', () => {
+    let supportsClientResize: typeof import('../imageResize').supportsClientResize;
+
+    beforeEach(() => {
+      jest.isolateModules(() => {
+        supportsClientResize = jest.requireActual('../imageResize').supportsClientResize;
+      });
+    });
+
+    it('probes a supported document only once across repeated callers', () => {
+      const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext');
+      for (let index = 0; index < 64; index++) {
+        expect(supportsClientResize()).toBe(true);
+      }
+      expect(getContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries a null context instead of caching a transient failure', () => {
+      const getContext = jest
+        .spyOn(HTMLCanvasElement.prototype, 'getContext')
+        .mockReturnValueOnce(null);
+      expect(supportsClientResize()).toBe(false);
+      expect(supportsClientResize()).toBe(true);
+      expect(supportsClientResize()).toBe(true);
+      expect(getContext).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries a throwing context instead of caching a transient failure', () => {
+      const getContext = jest
+        .spyOn(HTMLCanvasElement.prototype, 'getContext')
+        .mockImplementationOnce(() => {
+          throw new Error('Canvas unavailable');
+        });
+      expect(supportsClientResize()).toBe(false);
+      expect(supportsClientResize()).toBe(true);
+      expect(supportsClientResize()).toBe(true);
+      expect(getContext).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(['HTMLCanvasElement', 'FileReader', 'Image'] as const)(
+      'still rejects a missing %s after a successful probe',
+      (api) => {
+        expect(supportsClientResize()).toBe(true);
+        const descriptor = Object.getOwnPropertyDescriptor(global, api)!;
+        try {
+          Object.defineProperty(global, api, { ...descriptor, value: undefined });
+          expect(supportsClientResize()).toBe(false);
+        } finally {
+          Object.defineProperty(global, api, descriptor);
+        }
+      },
+    );
+
     it('should return true when all required APIs are available', () => {
       const result = supportsClientResize();
       expect(result).toBe(true);

@@ -1150,7 +1150,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     expect(mockInitializeClient.mock.calls[0][0].scheduleJobIdentity.scheduleMCPCompletion).toEqual(
       lineage,
     );
-    expect(mockInitializeClient.mock.calls[0][0].scheduledTokenContext).toBeUndefined();
+    expect(mockInitializeClient.mock.calls[0][0].executionContext).toBeUndefined();
     expect(capturedInit.isScheduledFire).not.toBe(true);
     expect(mockClaimScheduleResume).not.toHaveBeenCalled();
     expect(mockRecordScheduleOutcome).not.toHaveBeenCalled();
@@ -1393,13 +1393,14 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       await settled;
 
       expect(capturedInit.isScheduledFire).toBe(true);
-      expect(mockInitializeClient.mock.calls[0][0].scheduledTokenContext).toEqual({
-        scheduleId: 'schedule-1',
-        ownerId: USER_ID,
-        tenantId: TENANT_ID,
+      expect(mockInitializeClient.mock.calls[0][0].executionContext).toEqual({
+        principal: { userId: USER_ID, tenantId: TENANT_ID },
         agentId: AGENT_ID,
-        invocationMode: 'delegated',
+        source: { type: 'schedule', id: 'schedule-1', manual: false, resumed: true },
+        unattended: false,
       });
+      // The owner's validated decisions, not the request body, name what may now run.
+      expect(mockInitializeClient.mock.calls[0][0].approvedToolCalls).toEqual(['tc1']);
 
       expect(mockClaimScheduleResume).toHaveBeenCalledWith('schedule-1', scheduledFor, {
         expectedConfigRevision: 4,
@@ -3387,6 +3388,22 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
 
       const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
       expect(client.resumeCompletion).toHaveBeenCalledWith(expect.objectContaining({ runSteps }));
+    });
+
+    it('restores authored skills only from the claimed generation metadata', async () => {
+      const authoredSkills = [
+        { agentId: 'agent-1', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+      ];
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({ metadata: { authoredSkills } }),
+      );
+      await post({ ...approveBody(), authoredSkills: [{ name: 'untrusted' }] });
+      await settled;
+      await flush();
+      const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
+      expect(client.resumeCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({ authoredSkills }),
+      );
     });
 
     it('reapplies retained ask answers before resuming a later tool approval', async () => {

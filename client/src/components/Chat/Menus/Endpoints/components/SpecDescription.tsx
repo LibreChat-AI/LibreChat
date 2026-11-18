@@ -20,12 +20,12 @@ export default function SpecDescription({ description }: SpecDescriptionProps) {
   }
 
   if (!description.trim().startsWith('<')) {
-    return <span className="break-words text-xs font-normal">{description}</span>;
+    return <span className="text-xs font-normal break-words">{description}</span>;
   }
 
   return (
     <span
-      className="inline-flex items-center gap-1 break-words text-xs font-normal [&_img]:inline-block [&_img]:h-3.5 [&_img]:w-3.5"
+      className="inline-flex items-center gap-1 text-xs font-normal break-words [&_img]:inline-block [&_img]:h-3.5 [&_img]:w-3.5"
       dangerouslySetInnerHTML={{ __html: sanitize(description) }}
     />
   );

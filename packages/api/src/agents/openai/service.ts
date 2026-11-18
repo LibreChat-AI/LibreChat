@@ -1,4 +1,5 @@
 import type { LocatorTraversalReporter } from '../../protection/diagnostics';
+import type { SdkModelHost } from '../remoteSdk/builder';
 /**
  * OpenAI-compatible chat completions service for agents.
  *
@@ -81,11 +82,13 @@ import { collectReachableAgents } from '../traversal';
 import { resolveRecursionLimit } from '../config';
 import { getDynamicToolContexts } from '../hitl';
 import { createSafeUser } from '~/utils';
+import { createApiModelCallbacks } from '../policy';
 
 /**
  * Dependencies for the chat completion service
  */
 export interface ChatCompletionDependencies {
+  sdkModelHost?: SdkModelHost;
   readonly onTraversalFailure?: LocatorTraversalReporter;
   /** Get agent by ID */
   getAgent: (params: { id: string }) => Promise<Agent | null>;
@@ -231,8 +234,8 @@ interface InitializeAgentParams {
    */
   resolveWebSearchGrant?: () => Promise<boolean>;
   /**
-   * Resolves this agent's `instructionsPrompt` link (a linked native prompt
-   * group). `initializeAgent` calls it only when the agent carries a
+   * Resolves this agent's `instructionsPrompt` link (a linked native or Langfuse
+   * prompt group). `initializeAgent` calls it only when the agent carries a
    * resolvable link; absent, a linked agent falls back to empty instructions
    * with a warning, since there is no default resolution path.
    */
@@ -297,6 +300,8 @@ type CreateRunAppConfig = Pick<
 >;
 
 type CreateRunFn = (params: {
+  sdkModelHost?: SdkModelHost;
+  modelCallbacks?: ReturnType<typeof createApiModelCallbacks>;
   agents: unknown[];
   messages: unknown[];
   runId: string;
@@ -898,6 +903,12 @@ export async function createAgentChatCompletion(
        */
       const safeUser: Record<string, unknown> = { ...createSafeUser(reqUser), id: userId };
       const run = await deps.createRun({
+        sdkModelHost: deps.sdkModelHost,
+        modelCallbacks: createApiModelCallbacks({
+          appConfig: deps.appConfig,
+          onTraversalFailure: deps.onTraversalFailure,
+          resolvedFiles: modelBoundFiles,
+        }),
         agents: [initializedAgent],
         messages,
         runId: requestId,

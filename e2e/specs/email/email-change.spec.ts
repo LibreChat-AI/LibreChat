@@ -70,6 +70,7 @@ test.describe('account settings · registered email', () => {
     expect(new URL(verificationURL).searchParams.get('type')).toBe('email-change');
 
     await page.goto(verificationURL);
+    await page.getByRole('button', { name: 'Confirm email change' }).click();
     await expect(
       page.getByRole('heading', { name: /Email address changed successfully/ }),
     ).toBeVisible();

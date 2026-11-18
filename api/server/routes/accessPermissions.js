@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const { findSharedLinkById } = require('~/models');
 const express = require('express');
 const {
   AccessRoleIds,
@@ -158,8 +158,7 @@ const rejectSharedLinkOwnerPermissionChanges = async (req, res, next) => {
   }
 
   try {
-    const SharedLink = mongoose.models.SharedLink;
-    const link = await SharedLink.findById(req.params.resourceId, 'user').lean();
+    const link = await findSharedLinkById(req.params.resourceId);
     const ownerId = link?.user?.toString();
     const touchesOwner = ownerId
       ? userMutations.some((principal) => principal.id?.toString() === ownerId)

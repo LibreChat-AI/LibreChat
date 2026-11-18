@@ -33,6 +33,7 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   isEnabled: jest.fn(() => true),
+  createBackgroundChildAbortGuard: jest.fn(() => (_req, _res, next) => next()),
   detectGenerationRetry: async (req, _res, next) => {
     req._isConfirmedGenerationRetry = await mockHasGenerationClaim(
       req.user?.id,
@@ -67,6 +68,7 @@ jest.mock('~/server/middleware', () => ({
     req.user = { id: 'user-1' };
     next();
   },
+  requireTermsAcceptance: (_req, _res, next) => next(),
   moderateText: (_req, _res, next) => next(),
   messageIpLimiter: (...args) => mockIpLimiter(...args),
   configMiddleware: (...args) => mockConfigMiddleware(...args),
@@ -104,6 +106,11 @@ jest.mock('~/server/controllers/agents/queuedTurns', () => ({
 }));
 jest.mock('~/models', () => ({}));
 jest.mock('~/server/services/Schedules', () => ({}));
+jest.mock('~/server/services/Responses', () => ({
+  reviewBackgroundResponse: (_req, _res, next) => next(),
+  submitBackgroundResponseReview: (_req, _res, next) => next(),
+  cancelOwnerBackgroundResponse: (_req, _res, next) => next(),
+}));
 
 const agentsRouter = require('../index');
 const app = express();

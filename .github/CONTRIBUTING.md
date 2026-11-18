@@ -90,6 +90,7 @@ Project maintainers have the right and responsibility to remove, edit, or reject
     - `npm install` sets the hooks up for you; set `HUSKY=0` to opt out.
     - The pre-commit hook runs the Static Checks CI job locally, scoped to the files in the commit. Run it by hand with `npm run static-checks`, against a base ref with `npm run static-checks -- --against origin/dev`, or with the slow gates (TypeScript, config migration tests, unused i18n keys, unused npm packages) via `npm run static-checks:full`.
     - Every commit gets ESLint, Prettier, import order and circular-dependency detection; the slower gates stay opt-in so commits stay fast.
+    - The pre-push hook runs the slower gates too, except the config migration tests, against exactly the commit being pushed and scoped to its diff from `dev`. It refuses a push from a worktree with uncommitted or untracked changes, or of a ref that is not checked out, because the checks read the working tree; commit or move those changes aside, or bypass with `git push --no-verify` (CI still runs). A pass is remembered, so pushing the same content again does not rerun it.
 3. After your changes, reinstall packages in your current branch using `npm run reinstall` and ensure everything still works. 
     - Restart the ESLint server ("ESLint: Restart ESLint Server" in VS Code command bar) and your IDE after reinstalling or updating.
 4. Clear web app localStorage and cookies before and after changes.

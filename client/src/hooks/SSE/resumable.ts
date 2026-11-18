@@ -1,17 +1,6 @@
 import { useCallback } from 'react';
 import { documentVisibility } from '@librechat/chat';
 import type { ResumableServices, ResumableStreamParams } from '@librechat/chat/react';
-import type { ResumableParts } from '@librechat/chat';
-import {
-  logger,
-  applySteerPart,
-  applyReasoningLabel,
-  findSteerMessageIndex,
-  applyActivityLabelPart,
-  offsetActivityPhaseBoundary,
-  findActivityLabelMessageIndex,
-  findReasoningLabelMessageIndex,
-} from '~/utils';
 import { useGetUserBalance, fetchStreamStatus } from '~/data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
@@ -20,17 +9,7 @@ import useResumableSteers from './steers';
 import useResumableCache from './cache';
 import useResumablePane from './pane';
 import useSteerState from './steer';
-
-/** How the app's message parts place steers and labels onto a response. */
-const resumableParts: ResumableParts = {
-  applySteer: applySteerPart,
-  findSteerTarget: findSteerMessageIndex,
-  applyActivityLabel: applyActivityLabelPart,
-  findActivityLabelTarget: findActivityLabelMessageIndex,
-  offsetActivityPhaseBoundary,
-  applyReasoningLabel,
-  findReasoningLabelTarget: findReasoningLabelMessageIndex,
-};
+import { logger } from '~/utils';
 
 export { ABORT_SWEEP_STATUSES, selectLocalSteersForQueue } from '@librechat/chat';
 
@@ -103,7 +82,6 @@ export function useResumableServices({
             debugWindow.__closeClean = closeClean;
           }
         : undefined,
-      parts: resumableParts,
     }),
     [cache, queue, pane, steers, events, usage, getMessages, setMessages, transport, token],
   );

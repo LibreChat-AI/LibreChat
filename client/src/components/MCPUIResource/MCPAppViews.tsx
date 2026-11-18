@@ -1,4 +1,5 @@
 import React, {
+  Suspense,
   useCallback,
   useEffect,
   useId,
@@ -13,12 +14,29 @@ import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
 import { useMCPAppsHost, useMCPAppViewAtCapacity } from '~/Providers/MCPAppsPolicyContext';
 import { selectToolCallUIResources, getInlineResourceHtml } from '~/utils/mcpApps';
 import { useIsMessagesViewReadOnly } from '~/Providers/MessagesViewContext';
-import { MCPAppApproval, useMCPAppApproval } from '~/hooks/MCP/approval';
-import { useAppBridge, useMCPAppFrame } from '~/hooks/MCP';
-import { MCPAppFrame } from './MCPAppFrame';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
+import { MCPAppLoading } from './MCPAppFrame';
 import { useLocalize } from '~/hooks';
 
 const DEFAULT_APP_VIEW_HEIGHT = 320;
+
+const BridgedAppFrame = lazyWithRecovery(() => import('./Bridge'));
+
+/**
+ * Same box the opened view occupies before its app reports a size, so the swap does not move
+ * anything. It is silent: the frame that replaces it announces the same loading through its own
+ * status, so a live region here would announce it twice.
+ */
+function BridgeLoading() {
+  return (
+    <div
+      className="relative my-2 overflow-hidden"
+      style={{ height: DEFAULT_APP_VIEW_HEIGHT, maxWidth: '100%' }}
+    >
+      <MCPAppLoading spinner live={false} />
+    </div>
+  );
+}
 
 function CapacityNotice() {
   const localize = useLocalize();
@@ -50,56 +68,6 @@ function ActiveMCPAppView({
   ordinal: number;
 }) {
   const localize = useLocalize();
-  const { policy } = useMCPAppsHost();
-  // Reuse the deployment operation limit to bound requests awaiting consent in this View.
-  const approval = useMCPAppApproval(policy.operationLimits?.maxActive);
-  const frame = useMCPAppFrame(app, {
-    defaultHeight: DEFAULT_APP_VIEW_HEIGHT,
-    toolArgs: app.toolArgs,
-  });
-  useAppBridge({
-    iframeRef: frame.iframeRef,
-    resource: app,
-    toolArgs: frame.toolArgs,
-    toolResult: frame.toolResult,
-    userId,
-    onRequestAction: approval.request,
-    onCancelAction: approval.cancel,
-    attempt: frame.attempt,
-    active: frame.active,
-    onSizeChanged: frame.onSizeChanged,
-    onLoaded: frame.onLoaded,
-    onTeardown: () => {
-      // A peer can tear down while the user is in its frame or approval dialog. Restore
-      // their place without stealing focus if they have already moved elsewhere.
-      const focusedInView =
-        closeButtonRef.current?.parentElement?.contains(document.activeElement) ?? false;
-      const focusedInApproval =
-        approval.pending !== null &&
-        document.activeElement?.closest('[role="alertdialog"]') != null;
-      approval.cancel();
-      close(focusedInView || focusedInApproval);
-    },
-    onFailed: frame.onFailed,
-  });
-
-  let body: React.ReactNode = null;
-  if (frame.kind === 'unavailable') {
-    body = (
-      <div className="border-border-light bg-surface-secondary text-text-secondary my-2 flex items-center gap-2 rounded-lg border px-4 py-3 text-sm">
-        {localize('com_ui_mcp_app_shared_unavailable')}
-      </div>
-    );
-  } else if (frame.status !== 'tornDown') {
-    body = (
-      <div
-        className="relative my-2 overflow-hidden"
-        style={{ height: frame.height, width: frame.width, maxWidth: '100%' }}
-      >
-        <MCPAppFrame frame={frame} resource={app} spinner />
-      </div>
-    );
-  }
   return (
     <>
       <Button
@@ -112,21 +80,16 @@ function ActiveMCPAppView({
       >
         {localize('com_ui_mcp_app_close')}
       </Button>
-      {body}
-      <MCPAppApproval
-        action={approval.pending}
-        approve={approval.approve}
-        cancel={approval.cancel}
-        close={() => {
-          approval.cancel();
-          close();
-        }}
-        onCloseAutoFocus={(event) => {
-          event.preventDefault();
-          // The dialog has no persistent trigger. Return focus to the host View control.
-          (openButtonRef.current ?? closeButtonRef.current)?.focus();
-        }}
-      />
+      <Suspense fallback={<BridgeLoading />}>
+        <BridgedAppFrame
+          app={app}
+          userId={userId}
+          close={close}
+          closeButtonRef={closeButtonRef}
+          openButtonRef={openButtonRef}
+          defaultHeight={DEFAULT_APP_VIEW_HEIGHT}
+        />
+      </Suspense>
     </>
   );
 }

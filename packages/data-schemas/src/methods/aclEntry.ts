@@ -1,5 +1,7 @@
 import { Types } from 'mongoose';
+import { createHash } from 'node:crypto';
 import {
+  ResourceType,
   PrincipalType,
   PrincipalModel,
   PermissionBits,
@@ -28,6 +30,21 @@ import logger from '~/config/winston';
 const EMPTY_SUPERSETS: readonly number[] = Object.freeze([]);
 
 const supersetCache = new Map<number, readonly number[]>();
+
+function isDuplicateKeyError(error: unknown): boolean {
+  return typeof error === 'object' && error != null && (error as { code?: unknown }).code === 11000;
+}
+
+/** Names an entry after the grant it records, so two inserts of the same grant collide on `_id`. */
+function grantEntryId(
+  principalType: string,
+  principalId: string | Types.ObjectId | null | undefined,
+  resourceType: string,
+  resourceId: string | Types.ObjectId,
+): Types.ObjectId {
+  const grant = [resourceType, resourceId, principalType, principalId ?? ''].join(':');
+  return new Types.ObjectId(createHash('sha256').update(grant).digest().subarray(0, 12));
+}
 
 /**
  * Enumerates every `permBits` value (in the range `[0, MAX_PERM_BITS]`) whose
@@ -131,6 +148,8 @@ export const OWNER_ACL_PERMISSION_BIT_SUPERSETS: readonly number[] =
 const OBJECT_ID_HEX = /^[0-9a-fA-F]{24}$/;
 
 export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
+  deleteSharedLinkAclEntries: (resourceIds: string[]) => Promise<DeleteResult>;
+  updateSharedLinkAclExpiration: (resourceId: string, expiredAt: Date | null) => Promise<void>;
   findEntriesByResource: (
     resourceType: string,
     resourceId: string | Types.ObjectId,
@@ -169,6 +188,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     session?: ClientSession,
     roleId?: string | Types.ObjectId,
     expiredAt?: Date,
+    uniqueEntry?: boolean,
   ) => Promise<IAclEntry | null>;
   modifyPermissionBits: (
     principalType: string,
@@ -399,6 +419,10 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
    * @param grantedBy - The ID of the user granting the permission
    * @param session - Optional MongoDB session for transactions
    * @param roleId - Optional role ID to associate with this permission
+   * @param uniqueEntry - Derive the `_id` of a newly created entry from the principal and the
+   *   resource. The upsert matches on those fields, which no unique index covers, so two grants
+   *   that both find nothing each insert a row. Callers that can race set this: the second insert
+   *   then collides on `_id` and is replayed as an update of the first.
    * @returns The created or updated ACL entry
    */
   async function grantPermission(
@@ -411,6 +435,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     session?: ClientSession,
     roleId?: string | Types.ObjectId,
     expiredAt?: Date,
+    uniqueEntry?: boolean,
   ): Promise<IAclEntry | null> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
     const query: Record<string, unknown> = {
@@ -441,6 +466,16 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
         ...(roleId && { roleId }),
         ...(expiredAt && { expiredAt }),
       },
+      ...(uniqueEntry && {
+        $setOnInsert: {
+          _id: grantEntryId(
+            principalType,
+            query.principalId as string | Types.ObjectId | undefined,
+            resourceType,
+            resourceId,
+          ),
+        },
+      }),
     };
 
     const options = {
@@ -449,7 +484,15 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
       ...(session ? { session } : {}),
     };
 
-    return await AclEntry.findOneAndUpdate(query, update, options);
+    try {
+      return await AclEntry.findOneAndUpdate(query, update, options);
+    } catch (error) {
+      /** A duplicate key aborts a transaction, so only a standalone write can be replayed. */
+      if (!uniqueEntry || session?.inTransaction() || !isDuplicateKeyError(error)) {
+        throw error;
+      }
+      return await AclEntry.findOneAndUpdate(query, update, options);
+    }
   }
 
   /**
@@ -907,7 +950,28 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     return ownedIds.filter((id) => !multiOwnerIds.has(id.toString()));
   }
 
+  async function deleteSharedLinkAclEntries(resourceIds: string[]): Promise<DeleteResult> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    return AclEntry.deleteMany({
+      resourceType: ResourceType.SHARED_LINK,
+      resourceId: { $in: resourceIds },
+    });
+  }
+
+  async function updateSharedLinkAclExpiration(
+    resourceId: string,
+    expiredAt: Date | null,
+  ): Promise<void> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    await AclEntry.updateMany(
+      { resourceType: ResourceType.SHARED_LINK, resourceId },
+      expiredAt instanceof Date ? { $set: { expiredAt } } : { $unset: { expiredAt: 1 } },
+    );
+  }
+
   return {
+    deleteSharedLinkAclEntries,
+    updateSharedLinkAclExpiration,
     findEntriesByResource,
     findEntriesByPrincipalsAndResource,
     hasPermission,

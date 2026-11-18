@@ -6,6 +6,18 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import SourcesErrorBoundary from '../SourcesErrorBoundary';
 
+jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string) => {
+    if (key === 'com_sources_temporarily_unavailable') {
+      return 'Sources temporairement indisponibles';
+    }
+    if (key === 'com_ui_reload_page') {
+      return 'Reload the page';
+    }
+    return key;
+  },
+}));
+
 // Component that throws an error for testing
 const ThrowError = ({ shouldThrow }: { shouldThrow: boolean }) => {
   if (shouldThrow) {
@@ -42,7 +54,7 @@ describe('SourcesErrorBoundary - NEW COMPONENT test', () => {
       </SourcesErrorBoundary>,
     );
 
-    expect(screen.getByText('Sources temporarily unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Sources temporairement indisponibles')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reload the page' })).toBeInTheDocument();
   });
 

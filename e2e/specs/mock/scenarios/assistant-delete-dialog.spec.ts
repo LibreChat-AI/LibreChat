@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { getAccessToken, requestJson } from '../helpers';
 import { openSidebar } from './sidebar';
+import { unroute } from '../fixtures';
 
 /**
  * The Assistant Builder's delete control confirms through the shared `OGDialog` template.
@@ -157,10 +158,10 @@ test.describe('assistant delete confirmation', () => {
         page.getByText('There was an error deleting the assistant', { exact: true }),
       ).toBeVisible();
 
-      await page.unroute(deleteUrl);
+      await unroute(page, deleteUrl);
       expect(await assistantExists(page, assistant.id)).toBe(true);
     } finally {
-      await page.unroute(deleteUrl);
+      await unroute(page, deleteUrl);
       await deleteAssistant(page, assistant.id);
     }
   });
