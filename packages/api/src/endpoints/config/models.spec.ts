@@ -433,8 +433,9 @@ describe('createLoadConfigModels – safe failure logging', () => {
     async (operation) => {
       const warn = jest.spyOn(logger, 'warn').mockImplementation();
       const cache = tokenConfigCache();
-      if (operation === 'set')
-        jest.spyOn(cache, 'get').mockResolvedValue({ model: { context: 1024 } });
+      if (operation === 'set') {
+        await cache.set('First', { model: { context: 1024 } });
+      }
       jest.spyOn(cache, operation).mockRejectedValue(failure);
       const load = createLoadConfigModels({
         getAppConfig: jest.fn().mockResolvedValue({
