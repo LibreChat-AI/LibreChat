@@ -322,11 +322,12 @@ export async function encodeAndFormatDocuments(
     endpoint?: string;
     useResponsesApi?: boolean;
     model?: string;
+    recipientId?: string;
     onMissingFile?: MissingAttachmentHandler;
   },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<DocumentResult> {
-  const { provider, endpoint, useResponsesApi, model, onMissingFile } = params;
+  const { provider, endpoint, useResponsesApi, model, recipientId, onMissingFile } = params;
   if (!files?.length) {
     return { documents: [], files: [] };
   }
@@ -376,6 +377,8 @@ export async function encodeAndFormatDocuments(
             getBedrockDocumentLimit(file.type, configuredFileSizeLimit, model),
             getStrategyFunctions,
             onMissingFile,
+            model,
+            recipientId,
           ),
         },
       });

@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import { ChatBedrockConverse } from '@langchain/aws';
 import { HumanMessage } from '@langchain/core/messages';
 import { MemorySaver } from '@langchain/langgraph-checkpoint';
@@ -43,10 +44,17 @@ const encode = (
   files: IMongoFile[],
   download: StrategyFunctions['getDownloadStream'],
   selected = model,
+  recipientId?: string,
+  endpoint?: string,
 ) =>
-  encodeAndFormatDocuments(r, files, { provider: Providers.BEDROCK, model: selected }, () => ({
-    getDownloadStream: download,
-  }));
+  encodeAndFormatDocuments(
+    r,
+    files,
+    { provider: Providers.BEDROCK, model: selected, recipientId, endpoint },
+    () => ({
+      getDownloadStream: download,
+    }),
+  );
 const sdkBlocks = (documents: Awaited<ReturnType<typeof encode>>['documents']) =>
   documents.map((part) => {
     if (!('document' in part)) throw new Error('fixture');
@@ -503,4 +511,272 @@ it('keeps a real 4 MiB attachment out of prompt and checkpoint allocation', asyn
     checkpointBytes: checkpoint.byteLength,
     reads: opened,
   });
+});
+
+it.each(['open', 'read'])(
+  'sanitizes private storage %s failures and bounded diagnostics',
+  async (phase) => {
+    const r = req();
+    const privateError = Object.assign(
+      new Error('EACCES /private/owner/document.pdf upstream diagnostics'),
+      { code: 'EACCES' },
+    );
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const result = await encode(r, [file()], async () => {
+      if (phase === 'open') throw privateError;
+      return Readable.from(
+        (async function* () {
+          throw privateError;
+          yield pdf;
+        })(),
+      );
+    });
+    const error = await withBedrockDocuments(
+      request(sdkBlocks(result.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async () => '',
+    ).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(BedrockDocumentError);
+    expect(String(error)).not.toContain('/private');
+    expect(warn).toHaveBeenCalledWith('[BedrockDocument] Storage read failed', { type: 'Error' });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('/private');
+  },
+);
+
+it.each(['text/csv', 'application/csv'])(
+  'sends the registered CSV alias %s without rejecting equivalent formats',
+  async (type) => {
+    const r = req();
+    const content = Buffer.from('a,b\n1,2');
+    const result = await encode(r, [file('csv-alias', { type, bytes: content.length })], async () =>
+      Readable.from(content),
+    );
+    await withBedrockDocuments(
+      request(sdkBlocks(result.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async (input) => {
+        expect(input.messages?.[0].content?.[1].document?.source?.bytes).toEqual(content);
+      },
+    );
+  },
+);
+
+const restrictiveModel = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
+const sixMiB = (): Buffer => {
+  const bytes = Buffer.alloc(6 * 1024 * 1024, 65);
+  bytes.write('%PDF-');
+  return bytes;
+};
+
+it('isolates normal registration by recipient/model without weakening the stricter sender', async () => {
+  const r = req();
+  const bytes = sixMiB();
+  const stored = file('normal-shared', { bytes: undefined });
+  const download = jest.fn(async () => Readable.from(bytes));
+  const root = await encode(r, [stored], download, model, 'root');
+  const child = await encode(r, [stored], download, restrictiveModel, 'child');
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(root.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async () => 'root',
+      Providers.BEDROCK,
+      'root',
+    ),
+  ).resolves.toBe('root');
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(child.documents), restrictiveModel),
+      getBedrockDocumentContext(r),
+      restrictiveModel,
+      undefined,
+      async () => 'child',
+      Providers.BEDROCK,
+      'child',
+    ),
+  ).rejects.toBeInstanceOf(BedrockDocumentError);
+});
+
+it('isolates normal endpoint configuration and does not raise the strict recipient limit', async () => {
+  const r = req();
+  r.config!.fileConfig = {
+    endpoints: { generous: { fileSizeLimit: 1 }, strict: { fileSizeLimit: 0.001 } },
+  };
+  const content = Buffer.alloc(2048, 65);
+  const stored = file('endpoint-file', { type: 'text/csv', bytes: undefined });
+  const download = async () => Readable.from(content);
+  const root = await encode(r, [stored], download, model, 'root', 'generous');
+  const child = await encode(r, [stored], download, model, 'child', 'strict');
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(root.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async () => 'ok',
+      'generous',
+      'root',
+    ),
+  ).resolves.toBe('ok');
+  await expect(
+    withBedrockDocuments(
+      request(sdkBlocks(child.documents)),
+      getBedrockDocumentContext(r),
+      model,
+      undefined,
+      async () => '',
+      'strict',
+      'child',
+    ),
+  ).rejects.toBeInstanceOf(BedrockDocumentError);
+});
+
+it.each([false, true])(
+  'restores scoped/shared resume policies without cross-recipient clamping (shared: %s)',
+  async (shared) => {
+    const original = req();
+    const bytes = sixMiB();
+    const stored = file('resume-six', { bytes: bytes.length });
+    const download = jest.fn(async () => Readable.from(bytes));
+    const root = await encode(original, [stored], download, model, 'root');
+    const resumed = req();
+    registerBedrockResumeDocuments(
+      resumed,
+      shared ? [stored] : [],
+      [
+        { id: 'root', provider: Providers.BEDROCK, model },
+        { id: 'child', provider: Providers.BEDROCK, model: restrictiveModel },
+      ],
+      () => ({ getDownloadStream: download }),
+      new Map(shared ? [] : [['root', [stored]]]),
+    );
+    await expect(
+      withBedrockDocuments(
+        request(sdkBlocks(root.documents)),
+        getBedrockDocumentContext(resumed),
+        model,
+        undefined,
+        async () => 'root',
+        Providers.BEDROCK,
+        'root',
+      ),
+    ).resolves.toBe('root');
+    await expect(
+      withBedrockDocuments(
+        request(sdkBlocks(root.documents), restrictiveModel),
+        getBedrockDocumentContext(resumed),
+        restrictiveModel,
+        undefined,
+        async () => '',
+        Providers.BEDROCK,
+        'child',
+      ),
+    ).rejects.toBeInstanceOf(BedrockDocumentError);
+    expect(download).toHaveBeenCalledTimes(1);
+  },
+);
+
+it('permits an allowed shared document for both resumed recipients', async () => {
+  const original = req();
+  const stored = file();
+  const download = jest.fn(async () => Readable.from(pdf));
+  const result = await encode(original, [stored], download, model, 'root');
+  const resumed = req();
+  registerBedrockResumeDocuments(
+    resumed,
+    [stored],
+    [
+      { id: 'root', provider: Providers.BEDROCK, model },
+      { id: 'child', provider: Providers.BEDROCK, model: restrictiveModel },
+    ],
+    () => ({ getDownloadStream: download }),
+  );
+  for (const [recipient, selected] of [
+    ['root', model],
+    ['child', restrictiveModel],
+  ]) {
+    await expect(
+      withBedrockDocuments(
+        request(sdkBlocks(result.documents), selected),
+        getBedrockDocumentContext(resumed),
+        selected,
+        undefined,
+        async () => 'ok',
+        Providers.BEDROCK,
+        recipient,
+      ),
+    ).resolves.toBe('ok');
+  }
+  expect(download).toHaveBeenCalledTimes(2);
+});
+
+it('accepts long individually valid history and tools without a request-global message node cap', async () => {
+  const r = req();
+  const result = await encode(r, [file('tiny', { type: 'text/csv', bytes: 1 })], async () =>
+    Readable.from(Buffer.from('x')),
+  );
+  const input = request(sdkBlocks(result.documents));
+  input.messages!.unshift(
+    ...Array.from({ length: 900 }, () => ({
+      role: 'user' as const,
+      content: Array.from({ length: 6 }, () => ({ text: 'short' })),
+    })),
+  );
+  input.toolConfig = {
+    tools: Array.from({ length: 64 }, (_, i) => ({
+      toolSpec: {
+        name: `tool_${i}`,
+        inputSchema: {
+          json: {
+            type: 'object',
+            properties: Object.fromEntries(
+              Array.from({ length: 40 }, (_, j) => [`arg_${j}`, { type: 'string' }]),
+            ),
+          },
+        },
+      },
+    })),
+  };
+  await expect(
+    withBedrockDocuments(input, getBedrockDocumentContext(r), model, undefined, async () => 'ok'),
+  ).resolves.toBe('ok');
+});
+
+it('still rejects a pathological single message, cyclic data and oversized bytes', () => {
+  expect(() =>
+    bedrockWireSize(
+      { messages: [{ content: Array.from({ length: 4096 }, () => ({ text: 'x' })) }] },
+      32_000_000,
+    ),
+  ).toThrow(BedrockDocumentError);
+  const cyclic: { self?: unknown } = {};
+  cyclic.self = cyclic;
+  expect(() => bedrockWireSize({ messages: [cyclic] }, 32_000_000)).toThrow(BedrockDocumentError);
+  expect(() =>
+    bedrockWireSize({ messages: [{ content: [{ text: 'x'.repeat(1000) }] }] }, 100),
+  ).toThrow(BedrockDocumentError);
+  expect(() =>
+    bedrockWireSize(
+      {
+        toolConfig: {
+          tools: [
+            { toolSpec: { inputSchema: { json: Array.from({ length: 4096 }, () => ({})) } } },
+          ],
+        },
+      },
+      32_000_000,
+    ),
+  ).toThrow(BedrockDocumentError);
+});
+
+it('does not reset depth or node budgets for nested lookalike message containers', () => {
+  let nested: object = { text: 'leaf' };
+  for (let i = 0; i < 128; i++) nested = { messages: [nested] };
+  expect(() => bedrockWireSize({ messages: [nested] }, 32_000_000)).toThrow(BedrockDocumentError);
 });

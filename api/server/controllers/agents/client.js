@@ -2536,6 +2536,13 @@ class AgentClient extends BaseClient {
     this.turnAggregateOnlyAttachmentFiles = retainedHistoricalFileContexts;
     this.turnScopedAttachmentsByAgentId = scopedAttachmentMap;
     this.turnAttachmentEndpointsByAgentId = endpointsByAgentId;
+    registerBedrockResumeDocuments(
+      this.options.req,
+      sharedAttachmentFiles,
+      allAgents.map(({ agent }) => agent),
+      getStrategyFunctions,
+      scopedAttachmentMap,
+    );
     assertAgentAttachmentTopology({
       sharedAttachments: sharedAttachmentFiles,
       historicalFileIds: this.turnHistoricalAttachmentIds,
@@ -5682,9 +5689,10 @@ class AgentClient extends BaseClient {
       const resumeAttachmentTelemetryFiles = [...resumeSharedFiles, ...resumeScopedAttachments];
       registerBedrockResumeDocuments(
         this.options.req,
-        resumeAttachmentTelemetryFiles,
+        resumeSharedFiles,
         agents,
         getStrategyFunctions,
+        resumeScopedAttachmentMap,
       );
       this.attachmentMemoryContext = {
         req: this.options.req,
@@ -5791,6 +5799,13 @@ class AgentClient extends BaseClient {
                 endpointsByAgentId: lateEndpointsByAgentId,
                 tokenCountFn: (text) => countTokens(text),
               });
+              registerBedrockResumeDocuments(
+                this.options.req,
+                liveResumeSharedFiles,
+                unvalidatedAgents,
+                getStrategyFunctions,
+                lateScopedAttachmentMap,
+              );
               const lateScopedAttachments = [...lateScopedAttachmentMap.values()].flat();
               resumeScopedAttachments.push(...lateScopedAttachments);
               resumeAttachmentTelemetryFiles.push(...lateScopedAttachments);

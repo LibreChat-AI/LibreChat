@@ -1593,6 +1593,8 @@ export async function initializeAgent(
               client,
               getBedrockDocumentContext(params.req as ServerRequest),
               model,
+              agent.endpoint ?? provider,
+              agent.id,
             )
         : undefined,
       appConfig,

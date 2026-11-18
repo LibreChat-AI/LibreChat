@@ -1,3 +1,5 @@
+import { Providers } from '@librechat/agents';
+import { bedrockDocumentFormats } from 'librechat-data-provider';
 import { ConverseCommand, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
 import type {
   Message,
@@ -25,8 +27,9 @@ import { getBedrockDocumentLimit } from '../validation';
 /** Counts JSON and base64 without constructing a JSON string or a byte-number array. */
 export function bedrockWireSize(value: unknown, cap: number): number {
   let bytes = 0;
-  let nodes = 0;
   const ancestors = new Set<object>();
+  const root =
+    value != null && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
   const add = (size: number): void => {
     bytes += size;
     if (bytes > cap) throw new BedrockDocumentError();
@@ -44,8 +47,13 @@ export function bedrockWireSize(value: unknown, cap: number): number {
       } else if (c >= 0xdc00 && c <= 0xdfff) add(3);
     }
   };
-  const visit = (item: unknown, depth: number): void => {
-    if (++nodes > CONTENT_TRAVERSAL_MAX_NODES || depth > CONTENT_TRAVERSAL_MAX_DEPTH)
+  const visit = (
+    item: unknown,
+    depth: number,
+    budget: { nodes: number },
+    segmentItems = false,
+  ): void => {
+    if (++budget.nodes > CONTENT_TRAVERSAL_MAX_NODES || depth > CONTENT_TRAVERSAL_MAX_DEPTH)
       throw new BedrockDocumentError();
     if (item === null) return add(4);
     if (typeof item === 'string') return string(item);
@@ -57,9 +65,12 @@ export function bedrockWireSize(value: unknown, cap: number): number {
     add(2);
     let count = 0;
     if (Array.isArray(item)) {
+      if (segmentItems && item.length > CONTENT_TRAVERSAL_MAX_NODES)
+        throw new BedrockDocumentError();
       for (const child of item) {
         if (count++) add(1);
-        visit(child, depth + 1);
+        if (segmentItems) visit(child, 0, { nodes: 0 });
+        else visit(child, depth + 1, budget);
       }
     } else {
       for (const [key, child] of Object.entries(item)) {
@@ -67,12 +78,18 @@ export function bedrockWireSize(value: unknown, cap: number): number {
         if (count++) add(1);
         string(key);
         add(1);
-        visit(child, depth + 1);
+        visit(
+          child,
+          depth + 1,
+          budget,
+          (item === root && (key === 'messages' || key === 'system')) ||
+            (item === root?.toolConfig && key === 'tools'),
+        );
       }
     }
     ancestors.delete(item);
   };
-  visit(value, 0);
+  visit(value, 0, { nodes: 0 });
   return bytes;
 }
 
@@ -102,6 +119,8 @@ export async function withBedrockDocuments<T>(
   model: string | undefined,
   signal: AbortSignal | undefined,
   send: (input: ConverseCommandInput) => Promise<T>,
+  endpoint: string = Providers.BEDROCK,
+  recipientId?: string,
 ): Promise<T> {
   const targets: Target[] = [];
   let countLimit = BEDROCK_DOCUMENT_COUNT;
@@ -142,8 +161,9 @@ export async function withBedrockDocuments<T>(
         typeof ref.librechatFile === 'string'
       ) {
         id = ref.librechatFile;
-        const registered = context?.get(id);
-        if (!registered || registered.file.type !== mime) throw new BedrockDocumentError();
+        const registered = context?.get(id, model, endpoint, recipientId);
+        if (!registered || bedrockDocumentFormats[registered.file.type] !== document.format)
+          throw new BedrockDocumentError();
         cap = clampBedrockLimit(cap, registered.maxBytes);
         rawLimit = clampBedrockLimit(rawLimit, registered.totalBytes);
         countLimit = clampBedrockLimit(countLimit, registered.count);
@@ -169,9 +189,10 @@ export async function withBedrockDocuments<T>(
   if ((input.messages?.length ?? 0) > CONTENT_TRAVERSAL_MAX_NODES) throw new BedrockDocumentError();
   const prepared = {
     ...input,
-    messages: input.messages?.map(
-      (message): Message => ({ ...message, content: clone(message.content) ?? [] }),
-    ),
+    messages: input.messages?.map((message): Message => {
+      visited = 0;
+      return { ...message, content: clone(message.content) ?? [] };
+    }),
   };
   if (targets.length === 0) return send(input);
   const wireLimit = bedrockRequestLimit(model);
@@ -188,7 +209,9 @@ export async function withBedrockDocuments<T>(
         for (const target of targets) {
           signal?.throwIfAborted();
           const limit = Math.min(target.cap, rawLimit, Math.floor(remaining / 4) * 3);
-          const bytes = target.id ? await context!.read(target.id, limit, signal) : target.bytes;
+          const bytes = target.id
+            ? await context!.read(target.id, limit, signal, model, endpoint, recipientId)
+            : target.bytes;
           if (!bytes) {
             missing.add(target.source);
             continue;
@@ -245,6 +268,8 @@ export function guardBedrockDocuments(
   client: BedrockRuntimeClient,
   context?: BedrockDocumentContext,
   model?: string,
+  endpoint: string = Providers.BEDROCK,
+  recipientId?: string,
 ): BedrockRuntimeClient {
   const send = client.send.bind(client);
   const execute = async (
@@ -269,6 +294,8 @@ export function guardBedrockDocuments(
         installWireLimit(prepared.middlewareStack, bedrockRequestLimit(resolvedModel));
         return send(prepared, options);
       },
+      endpoint,
+      recipientId,
     );
   };
   client.send = ((

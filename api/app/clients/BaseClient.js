@@ -1726,6 +1726,7 @@ class BaseClient {
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
         useResponsesApi: this.usesResponsesApi(),
         model: this.modelOptions?.model ?? this.model,
+        recipientId: this.options.agent?.id,
         onMissingFile,
       },
       getStrategyFunctions,

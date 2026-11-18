@@ -344,6 +344,7 @@ export async function initializeBedrock(
         client,
         params.req ? getBedrockDocumentContext(params.req) : undefined,
         model,
+        endpoint,
       );
 
   const streamRate =
