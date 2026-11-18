@@ -6,7 +6,7 @@ const { ChatGenerationChunk } = require('@langchain/core/outputs');
 const { agentsEndpointSchema } = require('librechat-data-provider');
 
 /** Real host model and authenticated socket bridge; only the provider and storage are fake. */
-async function createRemotePolicyFixture({ blocked = false, beforeProvider } = {}) {
+async function createRemotePolicyFixture({ blocked = false, beforeProvider, usage } = {}) {
   const api = jest.requireActual('@librechat/api');
   const { Run } = jest.requireActual('@librechat/agents');
   const { createRemoteSdkServer } = jest.requireActual('@librechat/api/sdk');
@@ -76,11 +76,18 @@ async function createRemotePolicyFixture({ blocked = false, beforeProvider } = {
       model.bindTools = () => model;
       model._generate = async (messages) => {
         const content = await provider(messages);
-        return { generations: [{ text: content, message: new AIMessage(content) }] };
+        return {
+          generations: [
+            { text: content, message: new AIMessage({ content, usage_metadata: usage }) },
+          ],
+        };
       };
       model._streamResponseChunks = async function* (messages) {
         const content = await provider(messages);
-        yield new ChatGenerationChunk({ text: content, message: new AIMessageChunk(content) });
+        yield new ChatGenerationChunk({
+          text: content,
+          message: new AIMessageChunk({ content, usage_metadata: usage }),
+        });
       };
       return model;
     },

@@ -539,11 +539,15 @@ describe('OpenAIChatCompletionController', () => {
     'enforces native input policy through the remote bridge: stream=%s blocked=%s',
     async (stream, blocked) => {
       const { createRemotePolicyFixture } = require('~/test/helpers/remotePolicy');
-      const fixture = await createRemotePolicyFixture({ blocked });
+      const fixture = await createRemotePolicyFixture({
+        blocked,
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+      });
       const api = require('@librechat/api');
       const actual = jest.requireActual('@librechat/api');
       const names = [
         'createRun',
+        'recordCollectedUsage',
         'createSafeUser',
         'createChunk',
         'writeSSE',
@@ -563,17 +567,40 @@ describe('OpenAIChatCompletionController', () => {
       );
       try {
         await OpenAIChatCompletionController(req, res);
+        // The controller tracks accounting asynchronously; observe completed writes,
+        // including any recorder invoked during execution settlement.
+        await Promise.all(mockRecordCollectedUsage.mock.results.map(({ value }) => value));
         expect(fixture.factory).toHaveBeenCalledTimes(1);
         expect(fixture.provider).toHaveBeenCalledTimes(blocked ? 0 : 1);
         if (blocked) {
-          expect(mockRecordCollectedUsage).not.toHaveBeenCalled();
+          // Calling the real recorder with empty usage is also a valid no-charge path.
+          for (const [, { collectedUsage }] of mockRecordCollectedUsage.mock.calls) {
+            expect(collectedUsage).toEqual([]);
+          }
+          expect(mockSpendTokens).not.toHaveBeenCalled();
+          expect(mockSpendStructuredTokens).not.toHaveBeenCalled();
+          expect(mockUpdateBalance).not.toHaveBeenCalled();
+          expect(mockBulkInsertTransactions).not.toHaveBeenCalled();
           expect(JSON.stringify([res.json.mock.calls, res.write.mock.calls])).not.toContain(
             'RUNTIME-PRIVATE-CANARY',
           );
         } else {
           expect(fixture.errors.map((error) => error.stack)).toEqual([]);
           expect(res.status).not.toHaveBeenCalled();
+          // Positive control: real provider usage must reach the real recorder and
+          // debit these same storage spies, so the blocked assertions are not vacuous.
           expect(mockRecordCollectedUsage).toHaveBeenCalled();
+          expect(mockBulkInsertTransactions).toHaveBeenCalledTimes(1);
+          expect(mockBulkInsertTransactions).toHaveBeenCalledWith([
+            expect.objectContaining({ user: 'user-123', tokenType: 'prompt', rawAmount: -100 }),
+            expect.objectContaining({ user: 'user-123', tokenType: 'completion', rawAmount: -50 }),
+          ]);
+          expect(mockUpdateBalance).toHaveBeenCalledTimes(1);
+          expect(mockUpdateBalance).toHaveBeenCalledWith({
+            user: 'user-123',
+            incrementValue: -150,
+            balanceConfig: { enabled: true },
+          });
         }
         expect(fixture.sdkModelHost.snapshot().calls).toBe(0);
       } finally {
