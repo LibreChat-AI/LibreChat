@@ -1036,6 +1036,16 @@ export default function SubagentThreadPanel({
       threadView?.title,
     ],
   );
+  /**
+   * Who a child's brief came from. A self-spawn is briefed by the agent it runs as, and its
+   * enclosing message can belong to another agent on a parallel lane, so the child's author is
+   * the one to show; any other child is briefed by the agent that dispatched it.
+   */
+  const dispatcher = isSelfSpawn && selection.event == null ? childAuthor : parentAuthor;
+  const briefAuthor = useMemo(
+    () => ({ icon: dispatcher.icon, label: dispatcher.name }),
+    [dispatcher.icon, dispatcher.name],
+  );
   const panelTitle = childAuthor.name;
   const actorOptions = useMemo<OptionWithIcon[]>(() => {
     if (selection.event == null) return [];
@@ -1597,7 +1607,7 @@ export default function SubagentThreadPanel({
         <SubagentConversation
           turns={conversationTurns}
           author={childAuthor}
-          parentAuthor={isSelfSpawn && selection.event == null ? childAuthor : parentAuthor}
+          parentAuthor={dispatcher}
           conversationId={threadId || selection.parentConversationId}
           interactive={selection.host === 'conversation' && selection.durable == null}
           recovery={
@@ -1752,6 +1762,7 @@ export default function SubagentThreadPanel({
                 threadId={threadId}
                 followed={followed}
                 agentId={taskView?.agentId ?? foregroundAgentId}
+                briefAuthor={briefAuthor}
                 controls={activity.controls}
                 controlsTruncated={activity.controlsTruncated}
                 onCancelControl={

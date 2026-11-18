@@ -4,6 +4,7 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import type { TConversation, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
 import type { ChildActivity } from '../../react/subagents/adapters';
+import type { TMessageAuthor } from '../../react/messages/author';
 import type { ChatScreenMessagesSlots } from '../pane/messages';
 import type { FollowedChat } from '../../react/follow';
 import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
@@ -24,6 +25,8 @@ export type FollowedChildThreadProps = {
   followed: FollowedChat;
   /** The agent the child runs as, which its replies are drawn for. */
   agentId?: string;
+  /** Who briefed the child: the agent that dispatched it, which its brief is drawn for. */
+  briefAuthor?: TMessageAuthor;
   /** The guidance sent to the task, as the task's durable view reports it. */
   controls?: ChildActivity['controls'];
   /** Earlier guidance than `controls` holds exists. */
@@ -43,6 +46,7 @@ export default function FollowedChildThread({
   threadId,
   followed,
   agentId,
+  briefAuthor,
   controls = noControls,
   controlsTruncated = false,
   onCancelControl,
@@ -127,6 +131,7 @@ export default function FollowedChildThread({
             followed={followed}
             conversation={conversation}
             slots={slots}
+            userAuthor={briefAuthor}
           />
         </div>
       </ToolContentQueryContext.Provider>

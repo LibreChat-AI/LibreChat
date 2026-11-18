@@ -6,7 +6,7 @@ import { Provider, createStore } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
-import type { TMessage, SubagentControlReceipt } from 'librechat-data-provider';
+import type { Agent, TMessage, SubagentControlReceipt } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
 import type { ConversationSeenSource } from '../../../react/messages/host';
 import type { ToolContentQuery } from '../../../react/parts/disclosure';
@@ -95,6 +95,8 @@ const messagesHost = createMessagesHost({
 });
 
 const partsHost = createMessagePartsHost({
+  /** The child's agent has a model, which a reply's header may show; a brief's must not. */
+  useAgent: () => ({ id: 'agent-1', name: 'Child agent', model: 'child-model' }) as Agent,
   renderContentParts: ({ messageId, content }) => (
     <RowProbe
       messageId={messageId}
@@ -199,6 +201,24 @@ describe('FollowedChildThread', () => {
       latestMessageId: 'task:assistant',
       conversation: { conversationId: 'child-thread', endpoint: 'agents', agent_id: 'agent-1' },
     });
+  });
+
+  it("draws the child's brief as the turn of the agent that sent it, not the reader's", () => {
+    mount(followedChat(), {}, { briefAuthor: { label: 'Lead agent', icon: <span>LA</span> } });
+
+    const brief = screen.getByRole('heading', { name: /Lead agent/ });
+    expect(brief).toBeVisible();
+    expect(brief).not.toHaveClass('sr-only');
+    expect(brief).toHaveTextContent('LA');
+    /** Named for its author alone: the model on offer is the child's, not the sender's. */
+    expect(brief).not.toHaveTextContent('child-model');
+    expect(rows()[0]).toBe('task:user=Investigate the release.');
+  });
+
+  it('leaves a brief with no known sender as a plain user-side turn', () => {
+    mount(followedChat());
+
+    expect(screen.queryByText('LA')).toBeNull();
   });
 
   it("reads a tool call's full output through the host's parent-scoped query", () => {
