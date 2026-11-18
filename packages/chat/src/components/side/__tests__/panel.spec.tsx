@@ -16,6 +16,7 @@ import { sideChatAtom, sideChatDraftFamily } from '../../../react/side/state';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { turnInputs } from '../../../core/code/__fixtures__/turn';
 import { SideChatHostProvider } from '../../../react/side/host';
 import { MessagePartsHostProvider } from '../../../react/host';
 import { ChatHostProvider } from '../../../react/chat/host';
@@ -234,6 +235,7 @@ function setup({
   return {
     ...view,
     store,
+    queryClient,
     open: (next: SideChat) => act(() => store.set(sideChatAtom, next)),
     refresh: () => view.rerender(tree()),
     /** Draws the panel again from nothing, as the layout does when it moves it. */
@@ -595,6 +597,164 @@ describe('SideChatPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open as the main chat' }));
     expect(view.handOffComposerText).toHaveBeenCalledWith(conversationId, 'Transfer these words.');
     expect(view.store.get(sideChatDraftFamily(conversationId))).toBe('New side words.');
+  });
+
+  it.each(['attached', 'legacy', 'recovery', 'replacement'] as const)(
+    'preserves automatic intent through real %s workspace admission',
+    async (mode) => {
+      const inputs = turnInputs();
+      if (mode === 'legacy') inputs.workspace.startupConfig = {};
+      if (mode === 'recovery') inputs.workspace.recoveryPending = true;
+      else if (mode === 'replacement') inputs.workspace.replacingDecision = true;
+      else inputs.workspace.statuses['personal-vm'] = { isLoading: true, isError: false };
+      const services = createTurnServices({ readCodeInputs: () => inputs });
+      const selected = { ...conversation, ...inputs.workspace.conversation!, conversationId };
+      inputs.workspace.conversation = selected;
+      inputs.approval.conversation = selected;
+      const view = setup({
+        chat: { conversation: selected, text: 'Use the workspace.' },
+        services,
+      });
+      await waitFor(() => expect(rows()).toHaveLength(2));
+      expect(view.sendMessages).not.toHaveBeenCalled();
+      expect(view.store.get(sideChatAtom)?.text).toBe('Use the workspace.');
+      view.refresh();
+      view.refresh();
+      expect(services.logger.warn).not.toHaveBeenCalled();
+      inputs.workspace.recoveryPending = false;
+      inputs.workspace.replacingDecision = false;
+      inputs.workspace.statuses = turnInputs().workspace.statuses;
+      view.refresh();
+      await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+      view.refresh();
+      await settle();
+      expect(view.sendMessages).toHaveBeenCalledTimes(1);
+      expect(field()).toHaveValue('');
+    },
+  );
+
+  it('keeps terminal workspace refusal manual without retrying on unrelated renders', async () => {
+    const inputs = turnInputs();
+    inputs.workspace.statuses['personal-vm'] = { isLoading: false, isError: true };
+    const view = setup({
+      chat: { conversation, text: 'Unavailable workspace.' },
+      services: createTurnServices({ readCodeInputs: () => inputs }),
+    });
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    expect(view.store.get(sideChatAtom)?.text).toBeUndefined();
+    expect(field()).toHaveValue('Unavailable workspace.');
+    inputs.workspace.statuses = turnInputs().workspace.statuses;
+    view.refresh();
+    await settle();
+    expect(view.sendMessages).not.toHaveBeenCalled();
+  });
+
+  it('sends an explicit without-attached decision without waiting for unrelated workspace status', async () => {
+    const inputs = turnInputs();
+    inputs.workspace.conversation = {
+      ...inputs.workspace.conversation!,
+      codeEnvironmentMode: 'without_attached',
+      codeWorkspaces: undefined,
+    };
+    inputs.workspace.statuses['personal-vm'] = { isLoading: true, isError: false };
+    const view = setup({
+      chat: {
+        conversation: { ...conversation, codeEnvironmentMode: 'without_attached' },
+        text: 'No attached workspace.',
+      },
+      services: createTurnServices({ readCodeInputs: () => inputs }),
+    });
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+    expect(field()).toHaveValue('');
+  });
+
+  it.each(['close', 'remount'] as const)(
+    'preserves known withdrawn words through %s during reconciliation',
+    async (action) => {
+      const view = setup();
+      await waitFor(() => expect(rows()).toHaveLength(2));
+      fireEvent.change(field(), { target: { value: 'Keep withdrawn words.' } });
+      fireEvent.click(screen.getByTestId('composer-send-button'));
+      await waitFor(() => expect(view.streams).toHaveLength(1));
+      let cleaned = false;
+      const unsubscribe = view.queryClient.getQueryCache().subscribe((event) => {
+        if (
+          event.type !== 'updated' ||
+          event.query.queryKey[0] !== 'messages' ||
+          event.query.queryKey[1] !== conversationId
+        )
+          return;
+        const messages = event.query.state.data as TMessage[] | undefined;
+        if (!cleaned && messages?.length === 2) {
+          cleaned = true;
+          if (action === 'close') view.store.set(sideChatAtom, null);
+          view.unmount();
+        }
+      });
+      act(() =>
+        view.streams[0].push({
+          type: 'final',
+          data: {
+            final: true,
+            earlyAbort: true,
+            conversation: { conversationId },
+            requestMessage: null,
+            responseMessage: null,
+          },
+        } as unknown as ChatEvent),
+      );
+      await waitFor(() => expect(cleaned).toBe(true));
+      await settle();
+      unsubscribe();
+      expect(view.store.get(sideChatDraftFamily(conversationId))).toBe('Keep withdrawn words.');
+      if (action === 'close') view.open({ conversation });
+      view.remount();
+      await waitFor(() => expect(field()).toHaveValue('Keep withdrawn words.'));
+      expect(view.sendMessages).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('restitutes known withdrawal before stop acknowledgement so promotion transfers exactly one copy', async () => {
+    const view = setup();
+    let acknowledge!: () => void;
+    view.abort.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          acknowledge = () => resolve({ success: true });
+        }),
+    );
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    fireEvent.change(field(), { target: { value: 'Move the withdrawn words.' } });
+    fireEvent.click(screen.getByTestId('composer-send-button'));
+    await waitFor(() => expect(view.streams).toHaveLength(1));
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop generating' }));
+    await waitFor(() => expect(view.abort).toHaveBeenCalledTimes(1));
+    act(() =>
+      view.streams[0].push({
+        type: 'final',
+        data: {
+          final: true,
+          earlyAbort: true,
+          conversation: { conversationId },
+          requestMessage: null,
+          responseMessage: null,
+        },
+      } as unknown as ChatEvent),
+    );
+    try {
+      await waitFor(() => expect(field()).toHaveValue('Move the withdrawn words.'));
+      fireEvent.click(screen.getByRole('button', { name: 'Open as the main chat' }));
+      expect(view.handOffComposerText).toHaveBeenCalledTimes(1);
+      expect(view.handOffComposerText).toHaveBeenCalledWith(
+        conversationId,
+        'Move the withdrawn words.',
+      );
+      expect(view.store.get(sideChatDraftFamily(conversationId))).toBe('');
+    } finally {
+      await act(async () => acknowledge());
+    }
+    await settle();
+    expect(view.store.get(sideChatDraftFamily(conversationId))).toBe('');
   });
 
   it('does not submit a pending handoff after the panel closes', async () => {

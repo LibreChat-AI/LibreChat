@@ -199,6 +199,8 @@ export interface CodeWorkspaceDerivation {
   mode?: CodeEnvironmentMode;
   state: CodeWorkspaceState;
   canSubmit: boolean;
+  /** A linked-agent catalog is still unknown, rather than loaded with a missing target. */
+  metadataPending?: boolean;
   visible: boolean;
   environments: CodeWorkspaceEnvironmentResult[];
   machineOptions?: TPublicCodeEnvironment[];
@@ -1019,6 +1021,7 @@ export function resolveCodeWorkspace(inputs: CodeWorkspaceInputs): CodeWorkspace
     mode: inferredMode,
     state: status.state,
     canSubmit,
+    metadataPending: !reachable.complete && agentsMap == null,
     visible: status.visible,
     environments: environments.environmentResults,
     machineOptions: environments.machineOptions,

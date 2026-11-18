@@ -63,8 +63,8 @@ export type FollowChatOptions = {
   onEvent?: (event: ChatEvent) => void;
   onFinish?: (result: ChatFinishResult) => void;
   /**
-   * A turn sent from here was stopped before the server kept anything of it. Its rows are gone
-   * from the list; its words were the reader's and can be offered back to them.
+   * A turn sent from here was stopped before the server kept anything of it. Preserve its words
+   * for the conversation's draft owner before awaited reconciliation can unmount this pane.
    */
   onWithdrawn?: (turn: SubmittedTurn) => void;
 };
@@ -138,7 +138,8 @@ export type FollowedChat = {
   /**
    * Whether the conversation can take a turn at this instant: its stored messages are in, and no
    * generation is being started, followed, looked for or read back. Read when a turn is about to
-   * be built, since the answer a render holds can be a commit old.
+   * be built, since the answer a render holds can be a commit old. A refused check requests one
+   * render when its local phase becomes sendable again.
    */
   canSend: () => boolean;
   /**
@@ -257,6 +258,7 @@ export function useFollowChat({
     onWithdrawn,
   };
   const [attempt, setAttempt] = useState(0);
+  const [, notifyPhase] = useState(0);
   const [entry, setEntry] = useState<Entry>();
   const [load, setLoad] = useState<Load>({ id, attempt, state: 'loading' });
   const [history, setHistory] = useState<History>({
@@ -291,6 +293,7 @@ export function useFollowChat({
     let reads = 0;
     /** The reader's stop in flight, which the turn it ends waits for instead of reattaching. */
     let stopping: Promise<void> | undefined;
+    let awaitingSend = false;
     const applier = createEventApplier({
       schedule: perFrame,
       onEffect: (effect) => host.current.onEffect?.(effect),
@@ -396,6 +399,7 @@ export function useFollowChat({
         setHistory({ id, hasEarlier: earlier != null, isLoading: false, isError: false });
       } finally {
         reads -= 1;
+        publishPhase();
       }
     };
 
@@ -489,6 +493,7 @@ export function useFollowChat({
         if (!stale) {
           setFollowing(false);
           setUnattached(!reached);
+          publishPhase();
         }
       }
       if (owed) {
@@ -523,6 +528,7 @@ export function useFollowChat({
           return;
         }
         loaded = true;
+        publishPhase();
         setLoad({ id, attempt, state: 'ready' });
         /**
          * A run the caller signalled during the read had nothing to attach to until now. With the
@@ -538,13 +544,27 @@ export function useFollowChat({
       }
     };
 
-    const canSend = (): boolean =>
+    const eligible = (): boolean =>
       !stale &&
       loaded &&
       !attaching &&
       !driving &&
       reads === 0 &&
       (chat.status === 'ready' || chat.status === 'error');
+
+    /** A refused eligibility check opts into one wake; read-only followers and accepted
+     * sends need no extra render. Phase completion is not a message/status snapshot change. */
+    const canSend = (): boolean => {
+      const ready = eligible();
+      if (!ready && !stale) awaitingSend = true;
+      return ready;
+    };
+    const publishPhase = (): void => {
+      if (!stale && awaitingSend && eligible()) {
+        awaitingSend = false;
+        notifyPhase((revision) => revision + 1);
+      }
+    };
 
     /**
      * How a turn sent from here ended decides what follows it.
@@ -568,6 +588,11 @@ export function useFollowChat({
       let own =
         current.foreign !== true && finished?.isDisconnect !== true && finished?.isSettled !== true;
       try {
+        /** Restitution belongs to the conversation, before any await can let its pane leave.
+         * Promotion can then move that draft; ordinary close/remount keeps it. */
+        if (!stale && own && current.withdrawn === true) {
+          host.current.onWithdrawn?.(turn);
+        }
         if (stopped != null) {
           await stopped.catch(() => undefined);
         }
@@ -583,9 +608,6 @@ export function useFollowChat({
           if (completed != null) {
             await chat.setMessages(completed);
           }
-          if (!stale && current.withdrawn === true) {
-            host.current.onWithdrawn?.(turn);
-          }
           /**
            * However the turn ended, it may not leave its empty reply behind as one still on its
            * way: nothing more will fill it, and the next turn would be refused as answering a
@@ -598,6 +620,7 @@ export function useFollowChat({
       } finally {
         /** Only now can another turn be built: on the list this one left, not the one before it. */
         driving = false;
+        publishPhase();
       }
       if (stale) {
         return;

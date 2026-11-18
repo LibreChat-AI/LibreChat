@@ -17,7 +17,7 @@ import type { TMessage, ChatEvent, TConversation } from 'librechat-data-provider
 import type { ChatStream, ChatTransport, ChatSendRequest, ChatStreamStatus } from '../../../core';
 import type { ChatHost, TurnServices } from '../host';
 import type { ExtendedFile } from '../../../core';
-import { createTurnServices } from '../__fixtures__/services';
+import { createTurnServices, createTurnCodeInputs } from '../__fixtures__/services';
 import { showStopButtonByIndex } from '../../generation';
 import { isSubmittingFamily } from '../../submission';
 import { useDrivenContract } from '../driven';
@@ -230,6 +230,27 @@ function setup({
 }
 
 describe('useDrivenContract', () => {
+  it('retains manual refusal diagnostics and false/accepted-undefined return values', async () => {
+    const inputs = createTurnCodeInputs({ recoveryPending: true });
+    const services = createTurnServices({ readCodeInputs: () => inputs });
+    const view = setup({ services });
+    await view.ready();
+    let result: false | void;
+    act(() => {
+      result = view.result.current.contract.ask({ text: 'Wait for recovery.' });
+    });
+    expect(result!).toBe(false);
+    expect(services.logger.warn).toHaveBeenCalledWith(
+      '[useTurns] Refusing to send without an available code workspace',
+    );
+    inputs.workspace.recoveryPending = false;
+    act(() => {
+      result = view.result.current.contract.ask({ text: 'Now recovered.' });
+    });
+    expect(result!).toBeUndefined();
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+  });
+
   it('sends the turn ask builds through the chat, and shows the generation it starts', async () => {
     const { result, sendMessages, streams, store, loadMessages, ready } = setup();
     await ready();
@@ -675,7 +696,7 @@ describe('useDrivenContract', () => {
     ]);
   });
 
-  it('does not restore a withdrawn turn after cleanup during its real reconciliation write', async () => {
+  it('offers withdrawn words before cleanup during its real reconciliation write', async () => {
     const view = setup();
     await view.ready();
     act(() => view.result.current.contract.ask({ text: 'Do not restore after leaving.' }));
@@ -709,7 +730,7 @@ describe('useDrivenContract', () => {
     await waitFor(() => expect(cleaned).toBe(true));
     await settle();
     unsubscribe();
-    expect(view.onWithdrawn).not.toHaveBeenCalled();
+    expect(view.onWithdrawn).toHaveBeenCalledTimes(1);
   });
 
   it('takes back a turn stopped before the server kept anything of it', async () => {

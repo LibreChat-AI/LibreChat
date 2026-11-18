@@ -22,14 +22,15 @@ export interface TurnCodeDecision {
   apply: (conversation: TConversation) => TConversation | null;
 }
 
-/**
- * The code decision for one send, or `null` when the send has to wait: a recovery or replacement
- * is in flight, or the attached workspaces cannot be resolved yet.
- */
-export function resolveTurnCode(
+export type TurnCodeResult =
+  | { state: 'ready'; decision: TurnCodeDecision }
+  | { state: 'pending' | 'blocked' };
+
+/** The same single workspace derivation used by both manual and automatic admission. */
+export function resolveTurnCodeResult(
   { workspace, approval, latest }: TurnCodeInputs,
   submitted: TConversation | null,
-): TurnCodeDecision | null {
+): TurnCodeResult {
   const derivation = resolveCodeWorkspace(workspace);
   const latestApprovalMode = latest?.codeApprovalMode;
   const submission = derivation.resolveSubmission(
@@ -37,7 +38,19 @@ export function resolveTurnCode(
     latest?.codeEnvironmentMode ?? submitted?.codeEnvironmentMode,
   );
   if (submission == null) {
-    return null;
+    const requestedMode = latest?.codeEnvironmentMode ?? submitted?.codeEnvironmentMode;
+    if (requestedMode === 'without_attached' && !derivation.supportsEnvironmentDecisions) {
+      return { state: 'blocked' };
+    }
+    if (workspace.recoveryPending || workspace.replacingDecision) return { state: 'pending' };
+    const terminal = derivation.environments.some(
+      ({ state }) => state === 'unavailable' || state === 'unsupported' || state === 'missing',
+    );
+    const loading =
+      derivation.metadataPending === true ||
+      derivation.state === 'loading' ||
+      Object.values(workspace.statuses).some((status) => status?.isLoading === true);
+    return { state: !terminal && loading ? 'pending' : 'blocked' };
   }
   const { modes, selected } = resolveCodeApprovalModes({
     ...approval,
@@ -45,17 +58,29 @@ export function resolveTurnCode(
   });
   const { codeEnvironmentMode, codeWorkspaces } = submission;
   return {
-    code: {
-      approvalMode: resolveSubmittedCodeApprovalMode({
-        requested: latestApprovalMode,
-        modes,
-        fallback: selected,
-        codeEnvironmentMode,
-      }),
-      latestApprovalMode,
-      environmentMode: codeEnvironmentMode,
-      workspaces: codeWorkspaces,
+    state: 'ready',
+    decision: {
+      code: {
+        approvalMode: resolveSubmittedCodeApprovalMode({
+          requested: latestApprovalMode,
+          modes,
+          fallback: selected,
+          codeEnvironmentMode,
+        }),
+        latestApprovalMode,
+        environmentMode: codeEnvironmentMode,
+        workspaces: codeWorkspaces,
+      },
+      apply: (current) => withSubmittedCodeDecision(current, submission),
     },
-    apply: (current) => withSubmittedCodeDecision(current, submission),
   };
+}
+
+/** A manual send's code decision, retaining the established null refusal contract. */
+export function resolveTurnCode(
+  inputs: TurnCodeInputs,
+  submitted: TConversation | null,
+): TurnCodeDecision | null {
+  const result = resolveTurnCodeResult(inputs, submitted);
+  return result.state === 'ready' ? result.decision : null;
 }

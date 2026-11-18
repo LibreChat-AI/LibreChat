@@ -1,103 +1,56 @@
-import { Tools, EModelEndpoint, CODE_ENVIRONMENT_DECISION_VERSION } from 'librechat-data-provider';
-import type {
-  Agent,
-  TConfig,
-  TConversation,
-  CodeWorkspaceSelection,
-} from 'librechat-data-provider';
-import type { TurnCodeInputs } from '../turn';
-import { resolveTurnCode } from '../turn';
-
-const agent: Agent = {
-  id: 'agent_primary',
-  name: null,
-  description: null,
-  created_at: 0,
-  avatar: null,
-  provider: EModelEndpoint.openAI,
-  model: null,
-  model_parameters: {
-    temperature: null,
-    maxContextTokens: null,
-    max_context_tokens: null,
-    max_output_tokens: null,
-    top_p: null,
-    frequency_penalty: null,
-    presence_penalty: null,
-  },
-  stateful_code_sessions: true,
-  tools: [Tools.execute_code],
-  code_environment_id: 'personal-vm',
-};
-
-const conversation = (overrides: Partial<TConversation> = {}): TConversation => ({
-  conversationId: 'new',
-  title: 'Code',
-  endpoint: EModelEndpoint.agents,
-  agent_id: 'agent_primary',
-  createdAt: '2026-09-01T00:00:00.000Z',
-  updatedAt: '2026-09-01T00:00:00.000Z',
-  ...overrides,
-});
-
-const statefulCodeSessions: NonNullable<TConfig['statefulCodeSessions']> = {
-  allowedEnvironments: ['user'],
-  approvalsEnabled: true,
-  approvalModes: ['ask', 'acceptEdits'],
-  environments: [
-    {
-      id: 'personal-vm',
-      name: 'Personal VM',
-      type: 'attached',
-      configSchema: {
-        permissions: {
-          fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
-          commandExecution: { allowed: ['ask'], default: 'ask' },
-        },
-      },
-    },
-  ],
-};
-
-const projectA: CodeWorkspaceSelection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
-const projectB: CodeWorkspaceSelection = { environmentId: 'personal-vm', workspaceId: 'project-b' };
-
-/** An agents chat that requires a workspace, with two ready and the first chosen. */
-const turnInputs = (overrides: Partial<TurnCodeInputs> = {}): TurnCodeInputs => ({
-  workspace: {
-    conversation: conversation({ codeEnvironmentMode: 'attached', codeWorkspaces: [projectA] }),
-    primaryAgent: agent,
-    agentsMap: {},
-    statefulCodeSessions,
-    startupConfig: { codeEnvironmentDecisionVersion: CODE_ENVIRONMENT_DECISION_VERSION },
-    canRunCode: true,
-    capabilities: ['execute_code', 'stateful_code_sessions'],
-    configurationLoaded: true,
-    recoveryPending: false,
-    replacingDecision: false,
-    statuses: {
-      'personal-vm': {
-        data: {
-          environmentId: 'personal-vm',
-          status: 'ready',
-          workspaces: [{ id: 'project-a' }, { id: 'project-b' }],
-        },
-        isLoading: false,
-        isError: false,
-      },
-    },
-    getPreferredWorkspace: () => undefined,
-  },
-  approval: {
-    conversation: conversation({ conversationId: 'conversation-1' }),
-    statefulCodeSessions,
-    reachable: { agents: [agent], complete: true },
-  },
-  latest: null,
-  ...overrides,
-});
+import { agent, conversation, projectA, projectB, turnInputs } from '../__fixtures__/turn';
+import { resolveTurnCode, resolveTurnCodeResult } from '../turn';
+import * as workspace from '../workspace';
 
 describe('resolveTurnCode', () => {
+  it('admits a sealed without-attached decision before irrelevant linked metadata loads', () => {
+    const inputs = turnInputs();
+    inputs.workspace.primaryAgent = { ...agent, agent_ids: ['agent_child'] };
+    inputs.workspace.agentsMap = undefined;
+    const selected = conversation({
+      codeEnvironmentMode: 'without_attached',
+      codeWorkspaces: undefined,
+    });
+    inputs.workspace.conversation = selected;
+    expect(resolveTurnCodeResult(inputs, selected).state).toBe('ready');
+  });
+
+  it('keeps an unsupported legacy without-attached decision terminal while other data loads', () => {
+    const inputs = turnInputs();
+    inputs.workspace.startupConfig = {};
+    inputs.workspace.statuses['personal-vm'] = { isLoading: true, isError: false };
+    const selected = conversation({
+      codeEnvironmentMode: 'without_attached',
+      codeWorkspaces: undefined,
+    });
+    inputs.workspace.conversation = selected;
+    expect(resolveTurnCodeResult(inputs, selected).state).toBe('blocked');
+  });
+
+  it('distinguishes unknown linked metadata from a loaded missing target', () => {
+    const inputs = turnInputs();
+    inputs.workspace.primaryAgent = { ...agent, agent_ids: ['agent_child'] };
+    inputs.workspace.agentsMap = undefined;
+    expect(resolveTurnCodeResult(inputs, inputs.workspace.conversation).state).toBe('pending');
+    inputs.workspace.agentsMap = {};
+    expect(resolveTurnCodeResult(inputs, inputs.workspace.conversation).state).toBe('blocked');
+  });
+
+  it('derives workspace once for a reason-preserving attempt and once for the manual wrapper', () => {
+    const derive = jest.spyOn(workspace, 'resolveCodeWorkspace');
+    try {
+      const inputs = turnInputs();
+      const selected = inputs.workspace.conversation;
+      expect(resolveTurnCodeResult(inputs, selected).state).toBe('ready');
+      expect(derive).toHaveBeenCalledTimes(1);
+      derive.mockClear();
+      expect(resolveTurnCode(inputs, selected)).not.toBeNull();
+      expect(derive).toHaveBeenCalledTimes(1);
+    } finally {
+      derive.mockRestore();
+    }
+  });
+
   it('waits while a recovery is pending', () => {
     const inputs = turnInputs();
     expect(

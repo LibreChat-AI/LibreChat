@@ -3,12 +3,11 @@ import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { Constants, EModelEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import type { TAskFunction, TRegenerateFunction } from '../../core';
-import type { ChatTurnsParams, TurnServices } from './host';
+import type { TAskFunction, TAskProps, TOptions, TRegenerateFunction } from '../../core';
+import type { ChatTurnsParams, TurnServices, TurnReadiness } from './host';
 import {
   buildTurn,
   resolveSender,
-  resolveTurnCode,
   createRegenerate,
   isSubmittableMessage,
   isInlineablePastedText,
@@ -26,12 +25,16 @@ import {
   showStopButtonByIndex,
   launchedConversationFamily,
 } from '../generation';
+import { resolveTurnCodeResult } from '../../core/code/turn';
 import { revealedQueuedTurnFamily } from '../steer/atoms';
 import { siblingIdxFamily, siblingKey } from '../thread';
 import { resolveSubmittedReasoning } from './reasoning';
 import { activeUsageResponseIdFamily } from '../usage';
 import { isSubmittingFamily } from '../submission';
 import { isHistoryRevalidating } from './guards';
+
+type Attempt = 'accepted' | 'pending' | 'blocked';
+type Submit = (props: TAskProps, options?: TOptions, automatic?: boolean) => Attempt;
 
 /**
  * Submits and regenerates turns for one pane: refuses a send the chat cannot take yet, drains
@@ -53,7 +56,8 @@ export function useTurns(
     conversation: immutableConversation,
   }: ChatTurnsParams,
   services: TurnServices,
-): { ask: TAskFunction; regenerate: TRegenerateFunction } {
+  admission?: () => TurnReadiness,
+): { ask: TAskFunction; attempt: (text: string) => Attempt; regenerate: TRegenerateFunction } {
   const store = useStore();
   const queryClient = useQueryClient();
   const setIsSubmitting = useSetAtom(isSubmittingFamily(index));
@@ -107,7 +111,7 @@ export function useTurns(
     [store],
   );
 
-  const ask: TAskFunction = (
+  const submit: Submit = (
     {
       text,
       overrideConvoId,
@@ -135,6 +139,7 @@ export function useTurns(
       overrideExpectedPredecessorCreatedAt,
       overrideQueuedMessageOrigin,
     } = {},
+    automatic = false,
   ) => {
     text = text.trim();
     /**
@@ -147,19 +152,21 @@ export function useTurns(
     /** A compaction sends no text: it replays the branch, like a regenerate, with the response
      *  placeholder parented onto the leaf. */
     const regenerateShaped = isRegenerate || compact;
+    /** An accepted or revealed local turn is newer explicit intent; it must not arm an
+     * automatic retry. Temporary transport/workspace phases below keep their pending intent. */
     if (
       askInFlightRef.current ||
-      !!isSubmitting ||
       store.get(revealedQueuedTurnFamily(immutableConversation?.conversationId ?? '')) != null ||
       (!regenerateShaped && !isSubmittableMessage(text, availableFileCount))
     ) {
-      return false;
+      return 'blocked';
     }
+    if (isSubmitting) return 'pending';
 
     if (!regenerateShaped && overrideFiles == null && files != null) {
       for (const file of files.values()) {
         if (file.progress < 1 && !isInlineablePastedText(file)) {
-          return false;
+          return 'pending';
         }
       }
     }
@@ -167,31 +174,34 @@ export function useTurns(
     /** The builder resolves `promptPrefix` on its copy; the pane's conversation stays as is. */
     const conversation = immutableConversation == null ? null : { ...immutableConversation };
     if (services.canSubmit?.(conversation) === false) {
-      return false;
+      return admission?.() === 'pending' ? 'pending' : 'blocked';
     }
-    const codeDecision = resolveTurnCode(services.readCodeInputs(), conversation);
-    if (codeDecision == null) {
-      logger.warn('[useTurns] Refusing to send without an available code workspace');
-      return false;
+    const codeResult = resolveTurnCodeResult(services.readCodeInputs(), conversation);
+    if (codeResult.state !== 'ready') {
+      if (!automatic)
+        logger.warn('[useTurns] Refusing to send without an available code workspace');
+      return codeResult.state;
     }
+    const codeDecision = codeResult.decision;
 
     const endpoint = conversation?.endpoint;
     if (endpoint === null) {
       console.error('No endpoint available');
-      return false;
+      return 'blocked';
     }
 
     conversationId = conversationId ?? conversation?.conversationId ?? null;
     if (conversationId == 'search') {
       console.error('cannot send any message under search view!');
-      return false;
+      return 'blocked';
     }
 
     const cachedMessages = getMessages(conversationId);
     const isExistingConversation = conversationId != null && conversationId !== Constants.NEW_CONVO;
     if (isExistingConversation && overrideMessages == null && cachedMessages == null) {
-      logger.warn('[useTurns] Refusing to send before existing conversation history loads');
-      return false;
+      if (!automatic)
+        logger.warn('[useTurns] Refusing to send before existing conversation history loads');
+      return 'pending';
     }
 
     /**
@@ -204,22 +214,24 @@ export function useTurns(
       overrideMessages == null &&
       isHistoryRevalidating(queryClient, conversationId)
     ) {
-      logger.warn('[useTurns] Refusing to send while conversation history revalidates');
-      return false;
+      if (!automatic)
+        logger.warn('[useTurns] Refusing to send while conversation history revalidates');
+      return 'pending';
     }
 
     const latestMessage = getLatestMessage();
     if (isContinued && !latestMessage) {
       console.error('cannot continue AI message without latestMessage!');
-      return false;
+      return 'blocked';
     }
 
     if (parentMessageId == null && hasPendingAssistantParent(latestMessage)) {
-      logger.warn(
-        '[useTurns] Refusing to append to a preliminary assistant message',
-        latestMessage,
-      );
-      return false;
+      if (!automatic)
+        logger.warn(
+          '[useTurns] Refusing to append to a preliminary assistant message',
+          latestMessage,
+        );
+      return 'pending';
     }
 
     setShowStopButton(false);
@@ -376,7 +388,10 @@ export function useTurns(
       isRegenerate: turn.regenerateShaped,
       isContinued,
     });
+    return 'accepted';
   };
+  const ask: TAskFunction = (...args) => (submit(...args) === 'accepted' ? undefined : false);
+  const attempt = (text: string): Attempt => submit({ text }, undefined, true);
 
-  return { ask, regenerate: createRegenerate(ask, getMessages) };
+  return { ask, attempt, regenerate: createRegenerate(ask, getMessages) };
 }

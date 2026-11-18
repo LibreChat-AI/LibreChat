@@ -50,7 +50,10 @@ export function useDrivenContract({
   followed,
   index,
   handoff = false,
-}: DrivenContractOptions): ChatContract & { readiness: TurnReadiness } {
+}: DrivenContractOptions): ChatContract & {
+  readiness: TurnReadiness;
+  attempt: ReturnType<typeof useTurns>['attempt'];
+} {
   const host = useChatHost();
   const { chat, status, isLoading, isFollowing, canSend, send, stop } = followed;
   const [files, setFiles] = useAtom(filesFamily(index));
@@ -136,7 +139,10 @@ export function useDrivenContract({
     ...appServices,
     canSubmit: (submitted) => canSend() && appServices.canSubmit?.(submitted) !== false,
   };
-  const turns = useTurns(turnsParams, services);
+  const useReadiness = host.useTurnReadiness ?? useReady;
+  const readiness = useReadiness(conversation, handoff);
+  const turns = useTurns(turnsParams, services, () => (!canSend() ? 'pending' : readiness));
+  const attempt = turns.attempt;
   const { ask, regenerate, handleRegenerate, handleContinue } = useTurnHandlers({
     ask: turns.ask,
     regenerate: turns.regenerate,
@@ -159,12 +165,13 @@ export function useDrivenContract({
   const [optionSettings, setOptionSettings] = useAtom(optionSettingsFamily(index));
   const feedbackEnabled = host.useFeedbackEnabled();
 
-  const useReadiness = host.useTurnReadiness ?? useReady;
-  const readiness = useReadiness(conversation, handoff);
-  return useMemo<ChatContract & { readiness: TurnReadiness }>(
+  return useMemo<
+    ChatContract & { readiness: TurnReadiness; attempt: ReturnType<typeof useTurns>['attempt'] }
+  >(
     () => ({
       index,
       readiness,
+      attempt,
       conversation,
       setConversation,
       newConversation,
@@ -202,6 +209,7 @@ export function useDrivenContract({
       id,
       index,
       readiness,
+      attempt,
       conversation,
       setConversation,
       newConversation,

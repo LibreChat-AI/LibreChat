@@ -160,6 +160,70 @@ const setup = (initial: Partial<FollowChatOptions> & Pick<FollowChatOptions, 'tr
 };
 
 describe('useFollowChat', () => {
+  it.each([
+    { outcome: 'joined', observed: true },
+    { outcome: 'failed', observed: true },
+    { outcome: 'joined', observed: false },
+    { outcome: 'failed', observed: false },
+  ] as const)(
+    'publishes eligibility only on demand after a $outcome read (observed=$observed)',
+    async ({ outcome, observed }) => {
+      const { transport, streams, setStatus } = createTransport(running);
+      const stored = [brief, answer('Stored')];
+      const loadMessages = jest.fn<Promise<TMessage[]>, []>(async () => stored);
+      const client = new QueryClient();
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      );
+      const seen: boolean[] = [];
+      const view = renderHook(
+        (props: FollowChatOptions) => {
+          const followed = useFollowChat(props);
+          const eligible = observed ? followed.canSend() : true;
+          seen.push(eligible);
+          return { followed, eligible };
+        },
+        { wrapper, initialProps: { id: 'thread-1', transport, loadMessages, live: true } },
+      );
+      await waitFor(() => expect(streams).toHaveLength(1));
+      setStatus(idle);
+      act(() => streams[0].push(final('Stored')));
+      await waitFor(() => expect(view.result.current.followed.canSend()).toBe(true));
+      await settle();
+      if (outcome === 'joined') {
+        await act(async () =>
+          view.result.current.followed.chat?.setMessages([
+            { ...brief, messageId: 'older' },
+            ...stored,
+          ]),
+        );
+      }
+      const before = view.result.current.followed.messages;
+      let release!: (messages: TMessage[]) => void;
+      let reject!: (error: Error) => void;
+      loadMessages.mockImplementation(
+        () =>
+          new Promise((resolve, fail) => {
+            release = resolve;
+            reject = fail;
+          }),
+      );
+      view.rerender({ id: 'thread-1', transport, loadMessages, live: false });
+      /** A real sender is refused while this read owns the list. No incidental render is needed. */
+      if (observed) expect(view.result.current.followed.canSend()).toBe(false);
+      const renders = seen.length;
+      await act(async () =>
+        outcome === 'joined' ? release(stored) : reject(new Error('read failed')),
+      );
+      if (observed) await waitFor(() => expect(view.result.current.eligible).toBe(true));
+      expect(view.result.current.followed.canSend()).toBe(true);
+      expect(view.result.current.followed.messages).toBe(before);
+      const transitions = seen.filter((value, index) => index === 0 || value !== seen[index - 1]);
+      expect(seen.length).toBe(renders + (observed ? 1 : 0));
+      expect(transitions[transitions.length - 1]).toBe(true);
+    },
+  );
+
   it('shows the stored messages and opens no stream when nothing is running', async () => {
     const { transport } = createTransport(idle);
     const { result, loadMessages, queryClient } = setup({ transport });

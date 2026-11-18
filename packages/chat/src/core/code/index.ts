@@ -1,4 +1,5 @@
 export * from './routing';
 export * from './approval';
 export * from './workspace';
-export * from './turn';
+export { resolveTurnCode } from './turn';
+export type { TurnCodeInputs, TurnCodeDecision } from './turn';

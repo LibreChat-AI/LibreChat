@@ -21,6 +21,7 @@ import {
 } from './agents.helpers';
 import history from '../../fixtures/subagent-history.cjs';
 import { openChatHistory } from './scenarios/sidebar';
+import { installCodeMocks, singleMachine } from './scenarios/codeWorkspaceMocks';
 
 const DETACHED_ACTIVITY_MARKER = 'E2E_SUBAGENT_ACTIVITY:';
 /** Long enough for a stream that was going to reattach on its own to have done so. */
@@ -349,12 +350,23 @@ test.describe('detached subagent activity', () => {
     'switch',
     'refetch-success',
     'refetch-denial',
+    'workspace',
   ] as const) {
     test(`continues a finished child and preserves pending words on ${action} @scenario:subagent-continue-opens-side-chat-${action}`, async ({
       page,
     }) => {
       test.setTimeout(120_000);
       const label = `beside-${Date.now().toString(36)}`;
+      const workspace = action === 'workspace';
+      let releaseWorkspace: () => void = () => undefined;
+      const workspaceReady = new Promise<void>((resolve) => {
+        releaseWorkspace = resolve;
+      });
+      let sawWorkspace: () => void = () => undefined;
+      const workspaceRequested = new Promise<void>((resolve) => {
+        sawWorkspace = resolve;
+      });
+      let workspaceConversation = '';
       const refetch = action === 'refetch-success' || action === 'refetch-denial';
       const promote = action === 'promote' || action === 'promote-clear';
       /** The fixture's parent dispatches exactly two children; the first is the one continued. */
@@ -415,6 +427,21 @@ test.describe('detached subagent activity', () => {
             return;
           }
           observedAgent();
+          if (workspace) {
+            const response = await route.fetch();
+            const body = await response.json();
+            await route.fulfill({
+              response,
+              json: {
+                ...body,
+                tools: ['execute_code'],
+                stateful_code_sessions: true,
+                code_environment_id: 'env-zimacube',
+                code_workspace_id: 'librechat',
+              },
+            });
+            return;
+          }
           await agentReady;
           if (action === 'refetch-denial') {
             await route.fulfill({ status: 403, json: { message: 'Agent access denied.' } });
@@ -431,6 +458,53 @@ test.describe('detached subagent activity', () => {
         expect(response.ok()).toBeTruthy();
         /** The path, not the whole address: the app drops the agent query once the turn is in. */
         const parentPath = new URL(page.url()).pathname;
+
+        if (workspace) {
+          /** Reuse the paired-worker boundary fixture. Reload only setup configuration, before
+           * opening the handoff; no refresh or navigation is used to wake its pending attempt. */
+          await installCodeMocks(page, { environments: [singleMachine()] });
+          await page.route('**/api/code-environments/env-zimacube/status', async (route) => {
+            sawWorkspace();
+            await workspaceReady;
+            await route.fallback();
+          });
+          await page.route('**/api/convos/fork*', async (route) => {
+            const response = await route.fetch();
+            const body = await response.json();
+            expect(body.conversation).toBeTruthy();
+            workspaceConversation = body.conversation.conversationId;
+            await route.fulfill({
+              response,
+              json: {
+                ...body,
+                conversation: {
+                  ...body.conversation,
+                  codeEnvironmentMode: 'attached',
+                  codeWorkspaces: [{ environmentId: 'env-zimacube', workspaceId: 'librechat' }],
+                },
+              },
+            });
+          });
+          await page.route(/\/api\/agents\/chat\/[^/?]+(?:\?.*)?$/, async (route) => {
+            const request = route.request();
+            if (
+              request.method() !== 'POST' ||
+              !workspaceConversation ||
+              request.postDataJSON()?.conversationId !== workspaceConversation
+            ) {
+              await route.continue();
+              return;
+            }
+            const body = request.postDataJSON();
+            expect(body.codeEnvironmentMode).toBe('attached');
+            expect(body.codeWorkspaces).toEqual([
+              { environmentId: 'env-zimacube', workspaceId: 'librechat' },
+            ]);
+            /** This fixture proves client admission and its single HTTP submission, not code-worker execution. */
+            await route.fulfill({ status: 200, json: { conversationId: workspaceConversation } });
+          });
+          await page.reload();
+        }
 
         await page.getByRole('button', { name: 'Ran 2 agents' }).click();
         const cards = page.locator('[data-subagent-tool-call^="call_e2e_subagent_activity_"]');
@@ -465,6 +539,20 @@ test.describe('detached subagent activity', () => {
         await expect(sideChat.getByRole('textbox', { name: 'Message input' })).toHaveValue(
           'What did you find?',
         );
+        if (workspace) {
+          /** Only the coding destination's resolved details cause this first status query. */
+          await workspaceRequested;
+          expect(starts.slice(startsBefore)).toEqual([]);
+          await expect(sideChat.getByRole('textbox', { name: 'Message input' })).toHaveValue(
+            'What did you find?',
+          );
+          releaseWorkspace();
+          await expect.poll(() => starts.slice(startsBefore)).toEqual([sideConversationId]);
+          await expect(sideChat.getByRole('textbox', { name: 'Message input' })).toHaveValue('');
+          await expect(sideChat.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+          expect(starts.slice(startsBefore)).toEqual([sideConversationId]);
+          return;
+        }
         if (action === 'refetch-denial') {
           const denied = page.waitForResponse(
             (response) => new URL(response.url()).pathname === `/api/agents/${children[0].id}`,
@@ -576,6 +664,7 @@ test.describe('detached subagent activity', () => {
         await expect(main).toContainText('And then?');
       } finally {
         releaseAgent();
+        releaseWorkspace();
         for (const agentId of createdAgentIds.reverse()) {
           await cleanupAgent(page, agentId);
         }

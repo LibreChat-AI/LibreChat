@@ -4,6 +4,7 @@ import { ArrowUpRight, X } from 'lucide-react';
 import { cn, Button, Composer, useLocalize, useFocusTrap } from '@librechat/client';
 import type { ComposerStopProps, ComposerKeyVerdict } from '@librechat/client';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
+import type { useDrivenContract } from '../../react/chat/driven';
 import type { ChatContract } from '../../react/chat/contract';
 import type { TurnReadiness } from '../../react/chat/host';
 import type { SideChat } from '../../react/side/state';
@@ -17,6 +18,7 @@ import DrivenThread from '../pane/Driven';
 
 type SideChatComposerProps = {
   contract: ChatContract;
+  attempt: ReturnType<typeof useDrivenContract>['attempt'];
   readiness: TurnReadiness;
   /** The reader's unsent words, which the panel holds so they outlive the composer. */
   value: string;
@@ -43,6 +45,7 @@ type SideChatComposerProps = {
  */
 function SideChatComposer({
   contract,
+  attempt,
   readiness,
   value,
   onChange: setValue,
@@ -86,12 +89,12 @@ function SideChatComposer({
     ) {
       return;
     }
+    const outcome = value === handedText && readiness === 'ready' ? attempt(handedText) : 'blocked';
+    if (outcome === 'pending') return;
     handed.current = conversationId;
-    if (value === handedText && readiness === 'ready' && ask({ text: handedText }) !== false) {
-      setValue('');
-    }
+    if (outcome === 'accepted') setValue('');
     onHandedTextTaken();
-  }, [ask, conversationId, handedText, onHandedTextTaken, readiness, ready, setValue, value]);
+  }, [attempt, conversationId, handedText, onHandedTextTaken, readiness, ready, setValue, value]);
 
   /** Editing or an accepted manual send supersedes automatic intent, including after rollback. */
   const consume = useCallback(() => {
@@ -284,6 +287,7 @@ export default function SideChatPanel({
         {(contract) => (
           <SideChatComposer
             contract={contract}
+            attempt={contract.attempt}
             readiness={contract.readiness}
             value={draft}
             onChange={setDraft}
