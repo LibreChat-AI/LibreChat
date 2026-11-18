@@ -10,14 +10,19 @@ jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en-US' } }),
 }));
+const mockListAgents = jest.fn();
 jest.mock('~/data-provider', () => ({
-  useListAgentsQuery: () => ({
-    data: [
-      { id: 'agent_a', name: 'Analyst' },
-      { id: 'agent_b', name: 'Builder' },
-    ],
-  }),
+  useListAgentsQuery: () => mockListAgents(),
 }));
+const listed = {
+  data: [
+    { id: 'agent_a', name: 'Analyst' },
+    { id: 'agent_b', name: 'Builder' },
+  ],
+  isLoading: false,
+  isError: false,
+  refetch: jest.fn(),
+};
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return {
@@ -76,6 +81,7 @@ const pick = async (name: string) => {
 };
 
 beforeEach(() => {
+  mockListAgents.mockReturnValue(listed);
   jest
     .mocked(dataService.getApiKeyMCPConsent)
     .mockImplementation(async (_id, agentId) =>
@@ -94,6 +100,42 @@ it('asks for nothing until an agent is picked', async () => {
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
   // Nothing is loading either: a disabled query must not leave a spinner turning.
   expect(document.querySelector('svg.spinner')).toBeNull();
+});
+
+it('says the agents are loading, and offers no picker yet', () => {
+  mockListAgents.mockReturnValue({ ...listed, data: undefined, isLoading: true });
+  display();
+  expect(document.querySelector('svg.spinner')).not.toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'com_ui_agent' })).not.toBeInTheDocument();
+  expect(screen.queryByText('com_ui_api_key_grant_choose_agent')).not.toBeInTheDocument();
+});
+
+it('says the agents could not be loaded and lets the owner try again', async () => {
+  const refetch = jest.fn();
+  mockListAgents.mockReturnValue({ ...listed, data: undefined, isError: true, refetch });
+  display();
+  expect(screen.getByRole('alert')).toHaveTextContent('com_ui_api_key_grant_agents_error');
+  // No empty picker and no instruction to choose from it.
+  expect(screen.queryByRole('combobox', { name: 'com_ui_agent' })).not.toBeInTheDocument();
+  expect(screen.queryByText('com_ui_api_key_grant_choose_agent')).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+  expect(refetch).toHaveBeenCalledTimes(1);
+});
+
+it('keeps a list it already has usable when a refresh fails', async () => {
+  mockListAgents.mockReturnValue({ ...listed, isError: true });
+  display();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  await pick('Analyst');
+  expect(await screen.findByRole('checkbox', { name: 'query' })).toBeVisible();
+});
+
+it('says so when the owner has no agent to pick', () => {
+  mockListAgents.mockReturnValue({ ...listed, data: [] });
+  display();
+  expect(screen.getByText('com_ui_api_key_grant_no_agents')).toBeVisible();
+  expect(screen.queryByRole('combobox', { name: 'com_ui_agent' })).not.toBeInTheDocument();
+  expect(screen.queryByText('com_ui_api_key_grant_choose_agent')).not.toBeInTheDocument();
 });
 
 it('shows and confirms the grant of this key for the picked agent', async () => {

@@ -1450,6 +1450,8 @@
   "com_ui_api_key_grant_title": "MCP access for this key",
   "com_ui_api_key_grant_boundary": "Choose which MCP servers and tools a run started with this key may use for the agent you pick, until the fixed deadline. Anything left unchecked is refused, and so is every MCP tool of an agent you have not confirmed.",
   "com_ui_api_key_grant_choose_agent": "Pick an agent to see what this key may use with it.",
+  "com_ui_api_key_grant_agents_error": "Your agents could not be loaded, so there is nothing to pick yet.",
+  "com_ui_api_key_grant_no_agents": "You have no agents this key could run.",
   "com_ui_api_key_grant_changed": "The agent, a server binding or an allowed tool changed. Review and confirm again.",
   "com_ui_api_key_grant_unsupported": "There is nothing to grant for this agent: it uses no MCP server this deployment offers to API keys.",
   "com_ui_api_key_grant_confirmed": "Access recorded.",
