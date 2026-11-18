@@ -675,6 +675,7 @@ export type TCodeEnvironmentMoveResponse = {
 
 /** Sanitized results of server request shaping for each saved toggle state. */
 export type ResponsesApiRoute = {
+  firstPartyEndpoint?: boolean;
   default: boolean;
   on: boolean;
   off: boolean;

@@ -5314,7 +5314,13 @@ export const alternateName = {
 const responsesOnlyOpenAIModels = ['gpt-6-astra'];
 /** Tool calls with Sol/Luna/Terra require Responses. Do not offer
  * these on Assistants, which cannot use the native request-routing path. */
-const responsesReasoningOpenAIModels = ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna'];
+const responsesReasoningOpenAIModels = [
+  'gpt-6.2-sol',
+  'gpt-6.1-sol',
+  'gpt-6-sol',
+  'gpt-6.1-terra',
+  'gpt-6-luna',
+];
 /** Catalog models whose native execution defaults to the Responses API. */
 export const responsesPreferredOpenAIModels: readonly string[] = [
   // Restricted to approved Daybreak projects, never a universal catalog default.

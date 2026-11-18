@@ -3648,6 +3648,62 @@ describe('built-in provider request shaping', () => {
     });
   });
 
+  it.each(['none', 'minimal'])(
+    'normalizes Sol 6.2 summary effort %s after user overrides',
+    async (effort) => {
+      const result = await summarizeWith(
+        { reasoning_effort: effort, temperature: 0.7 },
+        'gpt-6.2-sol',
+      );
+      expect(result).toMatchObject({ firstPartyEndpoint: true, reasoning: { effort: 'low' } });
+      expect(result.temperature).toBeUndefined();
+    },
+  );
+
+  it('clears inherited unsupported controls when switching summaries to Sol 6.2', async () => {
+    const sourceModel = 'gpt-6.1-sol';
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        streaming: false,
+        modelOptions: {
+          model: sourceModel,
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+        addParams: { modelKwargs: { reasoning: { effort: 'none' }, temperature: 0.7 } },
+      },
+      EModelEndpoint.openAI,
+    );
+    const agents = await callAndCapture({
+      agents: [makeAgent({ model: sourceModel, model_parameters: llmConfig })],
+      appConfig: makeAppConfig([]),
+      summarizationConfig: {
+        provider: 'openAI',
+        model: 'gpt-6.2-sol',
+        parameters: { reasoning_effort: 'none' },
+      },
+    });
+    const config = agents[0].summarizationConfig;
+    expect(config).toMatchObject({
+      parameters: {
+        reasoning: { effort: 'low' },
+        modelKwargs: { reasoning: { effort: 'low' } },
+      },
+    });
+    expect(config).toHaveProperty('parameters.temperature', undefined);
+    expect(config).not.toHaveProperty('parameters.modelKwargs.temperature');
+    expect(llmConfig.modelKwargs).toHaveProperty('reasoning.effort', 'none');
+  });
+
+  it('keeps Sol gateway summary controls unchanged', async () => {
+    const result = await summarizeWith(
+      { baseURL: 'https://gateway.internal/v1', reasoning_effort: 'none', temperature: 0.7 },
+      'gpt-6.2-sol',
+    );
+    expect(result).toMatchObject({ reasoning: { effort: 'none' }, temperature: 0.7 });
+  });
+
   it('does not claim a first-party endpoint behind a user configuration.baseURL', async () => {
     const parameters = await summarizeWith({
       configuration: { baseURL: 'https://gateway.internal/v1' },
