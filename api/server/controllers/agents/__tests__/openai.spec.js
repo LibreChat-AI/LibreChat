@@ -175,6 +175,9 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  getModelEndUsage: (...args) => jest.requireActual('@librechat/api').getModelEndUsage(...args),
+  createApiModelCallbacks: (...args) =>
+    jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
   createFileProvisionRecovery: () =>
     jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
@@ -526,6 +529,60 @@ describe('OpenAIChatCompletionController', () => {
       off: jest.fn(),
     };
   });
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'enforces native input policy through the remote bridge: stream=%s blocked=%s',
+    async (stream, blocked) => {
+      const { createRemotePolicyFixture } = require('~/test/helpers/remotePolicy');
+      const fixture = await createRemotePolicyFixture({ blocked });
+      const api = require('@librechat/api');
+      const actual = jest.requireActual('@librechat/api');
+      const names = [
+        'createRun',
+        'createSafeUser',
+        'createChunk',
+        'writeSSE',
+        'sendFinalChunk',
+        'buildNonStreamingResponse',
+        'createOpenAIStreamTracker',
+        'createOpenAIContentAggregator',
+      ];
+      const originals = names.map((name) => [name, api[name].getMockImplementation()]);
+      for (const name of names) api[name].mockImplementation(actual[name]);
+      fixture.configure(req);
+      req.body.stream = stream;
+      api.validateRequest.mockReturnValueOnce({ request: req.body });
+      api.initializeAgent.mockResolvedValueOnce(fixture.agent);
+      require('@librechat/agents').formatAgentMessages.mockImplementationOnce(
+        jest.requireActual('@librechat/agents').formatAgentMessages,
+      );
+      try {
+        await OpenAIChatCompletionController(req, res);
+        expect(fixture.factory).toHaveBeenCalledTimes(1);
+        expect(fixture.provider).toHaveBeenCalledTimes(blocked ? 0 : 1);
+        if (blocked) {
+          expect(mockRecordCollectedUsage).not.toHaveBeenCalled();
+          expect(JSON.stringify([res.json.mock.calls, res.write.mock.calls])).not.toContain(
+            'RUNTIME-PRIVATE-CANARY',
+          );
+        } else {
+          expect(fixture.errors.map((error) => error.stack)).toEqual([]);
+          expect(res.status).not.toHaveBeenCalled();
+          expect(mockRecordCollectedUsage).toHaveBeenCalled();
+        }
+        expect(fixture.sdkModelHost.snapshot().calls).toBe(0);
+      } finally {
+        for (const [name, implementation] of originals)
+          api[name].mockImplementation(implementation);
+        await fixture.close();
+      }
+    },
+  );
 
   it.each([true, false])(
     'keeps SDK- and provider-executed calls out of the mounted endpoint (stream=%s)',

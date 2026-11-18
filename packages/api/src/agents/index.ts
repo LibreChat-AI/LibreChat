@@ -49,6 +49,7 @@ export * from './migration';
 export * from './parameters';
 export * from './input';
 export * from './plan';
+export * from './policy';
 export * from './prewarm';
 export * from './ptc';
 export * from './openai';

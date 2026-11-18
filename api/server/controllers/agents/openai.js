@@ -57,6 +57,7 @@ const {
   assertModelBoundContent,
   reportLocatorTraversalFailure,
   hasModelBoundContentProtection,
+  createApiModelCallbacks,
   isContentFilterError,
   getSafeErrorMetadata,
   getUserFacingProviderError,
@@ -829,6 +830,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const modelBoundAgents = [...modelBoundAgentsById.values()];
       const manualSkillPrimes = primaryConfig.manualSkillPrimes;
       const alwaysApplySkillPrimes = primaryConfig.alwaysApplySkillPrimes;
+      const modelBoundFiles = collectModelBoundAgentFiles(modelBoundAgents);
       assertModelBoundContent({
         onTraversalFailure: reportLocatorTraversalFailure,
         filters: appConfig?.filters,
@@ -836,7 +838,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         submittedMessages: request.messages,
         agents: modelBoundAgents,
         skills: [...(manualSkillPrimes ?? []), ...(alwaysApplySkillPrimes ?? [])],
-        files: collectModelBoundAgentFiles(modelBoundAgents),
+        files: modelBoundFiles,
       });
 
       // Determine if streaming is enabled (check both request and agent config)
@@ -1143,7 +1145,12 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         appConfig,
         signal: execution.signal,
         customHandlers: handlers,
-        modelCallbacks: [terminalRunError.modelCallback],
+        modelCallbacks: createApiModelCallbacks({
+          appConfig,
+          terminalRunError,
+          onTraversalFailure: reportLocatorTraversalFailure,
+          resolvedFiles: modelBoundFiles,
+        }),
         requestBody: mcpRequestBody,
         user: { ...createSafeUser(req.user), id: userId },
         traceContext: { endpoint: EModelEndpoint.agents },

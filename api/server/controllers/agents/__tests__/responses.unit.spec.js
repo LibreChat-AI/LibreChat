@@ -207,6 +207,8 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createApiModelCallbacks: (...args) =>
+    jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
   captureResponseAccountingUsage: (...args) =>
     jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
   resolveResponseContinuation: (...args) =>
@@ -3050,6 +3052,7 @@ describe('createResponse controller', () => {
 
   describe('foreground production composition', () => {
     const names = [
+      'createSafeUser',
       'createResponseContext',
       'createResponseTracker',
       'createResponseAggregator',
@@ -3162,6 +3165,136 @@ describe('createResponse controller', () => {
         .map((chunk) => JSON.parse(chunk.slice(6).trim()))
         .find((event) => event.type === 'response.completed')?.response;
     };
+    it.each([
+      [false, false, false],
+      [true, false, false],
+      [false, true, false],
+      [true, true, false],
+      [false, false, true],
+      [true, false, true],
+      [false, true, true],
+      [true, true, true],
+    ])(
+      'enforces native input policy through the remote bridge: stream=%s blocked=%s continuation=%s',
+      async (stream, blocked, continuation) => {
+        const { createRemotePolicyFixture } = require('~/test/helpers/remotePolicy');
+        const fixture = await createRemotePolicyFixture({ blocked });
+        const api = require('@librechat/api');
+        const actual = jest.requireActual('@librechat/api');
+        const db = require('~/models');
+        fixture.configure(req);
+        require('@librechat/agents').formatAgentMessages.mockImplementationOnce(
+          jest.requireActual('@librechat/agents').formatAgentMessages,
+        );
+        api.initializeAgent.mockResolvedValueOnce(fixture.agent);
+        api.createRun.mockImplementation(actual.createRun);
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: {
+            model: 'agent-123',
+            input: 'Hello',
+            stream,
+            store: true,
+            ...(continuation && { previous_response_id: 'previous' }),
+          },
+        });
+        if (continuation) {
+          db.getConvo.mockResolvedValueOnce({ conversationId: 'previous' });
+          db.getMessages.mockResolvedValueOnce([
+            {
+              messageId: 'prior-input',
+              parentMessageId: '00000000-0000-0000-0000-000000000000',
+              isCreatedByUser: true,
+              text: 'Previous question',
+            },
+            {
+              messageId: 'prior-answer',
+              parentMessageId: 'prior-input',
+              isCreatedByUser: false,
+              text: 'Previous answer',
+            },
+          ]);
+        }
+        try {
+          await createResponse(req, res);
+          expect(fixture.factory).toHaveBeenCalledTimes(1);
+          if (!blocked)
+            expect(fixture.errors.map(({ code, stack }) => ({ code, stack }))).toEqual([]);
+          if (blocked) expect(fixture.provider.mock.calls).toEqual([]);
+          expect(fixture.provider).toHaveBeenCalledTimes(blocked ? 0 : 1);
+          if (blocked) {
+            if (!stream) expect(res.status).toHaveBeenCalledWith(400);
+            expect(completed(res, stream)?.status).not.toBe('completed');
+            expect(db.saveMessage).not.toHaveBeenCalled();
+            expect(db.saveConvo).not.toHaveBeenCalled();
+            expect(JSON.stringify([res.json.mock.calls, res.write.mock.calls])).not.toContain(
+              'RUNTIME-PRIVATE-CANARY',
+            );
+          } else {
+            expect(api.sendResponsesErrorResponse.mock.calls).toEqual([]);
+            expect(completed(res, stream)?.status).toBe('completed');
+            expect(db.saveMessage).toHaveBeenCalled();
+          }
+          expect(fixture.sdkModelHost.snapshot().calls).toBe(0);
+        } finally {
+          await fixture.close();
+        }
+      },
+    );
+
+    it.each([false, true])(
+      'cancels protected remote provider work without persisting late output: stream=%s',
+      async (stream) => {
+        let started;
+        let release;
+        const entered = new Promise((resolve) => {
+          started = resolve;
+        });
+        const pending = new Promise((resolve) => {
+          release = resolve;
+        });
+        const { createRemotePolicyFixture } = require('~/test/helpers/remotePolicy');
+        const fixture = await createRemotePolicyFixture({
+          beforeProvider: async () => {
+            started();
+            await pending;
+          },
+        });
+        const api = require('@librechat/api');
+        const db = require('~/models');
+        fixture.configure(req);
+        api.initializeAgent.mockResolvedValueOnce(fixture.agent);
+        api.createRun.mockImplementation(jest.requireActual('@librechat/api').createRun);
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: { model: 'agent-123', input: 'Hello', stream, store: true },
+        });
+        require('@librechat/agents').formatAgentMessages.mockImplementationOnce(
+          jest.requireActual('@librechat/agents').formatAgentMessages,
+        );
+        const request = createResponse(req, res);
+        try {
+          await entered;
+          const job = await mockRealExecutionManager.getJob('resp_mock-123');
+          await mockRealExecutionManager.abortJob('resp_mock-123', {
+            expectedCreatedAt: job.createdAt,
+            awaitProviderDrain: false,
+          });
+          release();
+          await request;
+          expect(completed(res, stream)?.status).not.toBe('completed');
+          expect(db.saveMessage).not.toHaveBeenCalled();
+          expect(db.saveConvo).not.toHaveBeenCalled();
+          expect(fixture.provider).toHaveBeenCalledTimes(1);
+          expect(JSON.stringify([res.json.mock.calls, res.write.mock.calls])).not.toContain(
+            'Approved answer',
+          );
+        } finally {
+          release();
+          await request;
+          await fixture.close();
+        }
+      },
+    );
+
     it.each([false, true])(
       'publishes tool results, accounting and successful storage after real host drain: stream=%s',
       async (stream) => {
