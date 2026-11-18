@@ -39,7 +39,7 @@ export function mapAdminRefreshError(error: unknown): AdminAuthErrorResponse {
     error !== null &&
     (('error' in error && error.error === 'invalid_grant') ||
       ('code' in error && error.code === 'invalid_grant'));
-  if (rejected && (status === undefined || status === 400 || status === 401)) {
+  if (rejected && (status === undefined || status === 400 || status === 401 || status === 403)) {
     return { status: 401, body: { error: 'Refresh failed', error_code: 'REFRESH_FAILED' } };
   }
   return {

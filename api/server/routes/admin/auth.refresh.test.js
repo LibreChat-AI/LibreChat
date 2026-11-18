@@ -1,5 +1,6 @@
 const express = require('express');
 const request = require('supertest');
+const { dirname } = require('node:path');
 
 jest.mock('passport', () => ({
   authenticate: jest.fn(() => (req, res, next) => next()),
@@ -141,6 +142,7 @@ jest.mock('~/server/middleware', () => ({
 
 const passport = require('passport');
 const openIdClient = require('openid-client');
+const realOpenIdClient = jest.requireActual(dirname(require.resolve('openid-client/package.json')));
 const { logger } = require('@librechat/data-schemas');
 const {
   isEnabled,
@@ -325,6 +327,44 @@ describe('admin auth OpenID refresh route', () => {
       error: 'Refresh failed',
       error_code: 'REFRESH_FAILED',
     });
+    expect(applyAdminRefresh).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [400, 401],
+    [401, 401],
+    [403, 401],
+    [429, 503],
+    [500, 503],
+    [503, 503],
+  ])('maps a real SDK HTTP %s invalid grant to HTTP %s', async (providerStatus, expectedStatus) => {
+    const config = new realOpenIdClient.Configuration(
+      { issuer: 'https://issuer.example.com', token_endpoint: 'https://issuer.example.com/token' },
+      'admin-client',
+      'admin-client-secret',
+    );
+    const providerRequest = jest.fn(
+      async () =>
+        new Response(JSON.stringify({ error: 'invalid_grant' }), {
+          status: providerStatus,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    config[realOpenIdClient.customFetch] = providerRequest;
+    getOpenIdConfig.mockReturnValue(config);
+    openIdClient.refreshTokenGrant.mockImplementation(realOpenIdClient.refreshTokenGrant);
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-refresh-token' });
+
+    expect(providerRequest).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(expectedStatus);
+    expect(response.body).toEqual(
+      expectedStatus === 401
+        ? { error: 'Refresh failed', error_code: 'REFRESH_FAILED' }
+        : { error: 'Session renewal unavailable', error_code: 'AUTH_SESSION_CHECK_UNAVAILABLE' },
+    );
     expect(applyAdminRefresh).not.toHaveBeenCalled();
   });
 

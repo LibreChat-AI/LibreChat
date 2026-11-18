@@ -125,13 +125,16 @@ describe('applyGoogleAdminRefresh', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('throws REFRESH_FAILED when Google rejects the grant', async () => {
-    fetchMock.mockResolvedValueOnce(makeStatus(400, { error: 'invalid_grant' }));
-    await expect(applyGoogleAdminRefresh(deps, baseOptions)).rejects.toMatchObject({
-      code: 'REFRESH_FAILED',
-      status: 401,
-    });
-  });
+  it.each([400, 403])(
+    'throws REFRESH_FAILED for a Google HTTP %s invalid grant',
+    async (status) => {
+      fetchMock.mockResolvedValueOnce(makeStatus(status, { error: 'invalid_grant' }));
+      await expect(applyGoogleAdminRefresh(deps, baseOptions)).rejects.toMatchObject({
+        code: 'REFRESH_FAILED',
+        status: 401,
+      });
+    },
+  );
 
   it('keeps network failures retryable', async () => {
     fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));

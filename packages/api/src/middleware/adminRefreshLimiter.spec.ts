@@ -6,6 +6,7 @@ import { createAdminRefreshLimiter } from './adminRefreshLimiter';
 
 function createApp(config = {}) {
   const app = express();
+  app.set('trust proxy', 1);
   const getAppConfig = jest.fn(
     async () => ({ config: { rateLimits: { adminRefresh: config } } }) as AppConfig,
   );
@@ -59,5 +60,43 @@ describe('createAdminRefreshLimiter', () => {
       message: 'Too many session renewal requests. Try again later.',
     });
     await request(app).post('/login').expect(204);
+  });
+
+  it('keeps one IPv4 budget when a trusted proxy forwards changing source ports', async () => {
+    const { app } = createApp({ max: 2 });
+    for (const port of [50001, 50002]) {
+      await request(app)
+        .post('/refresh')
+        .set('X-Forwarded-For', `198.51.100.24:${port}`)
+        .expect(204);
+    }
+    const rejected = await request(app)
+      .post('/refresh')
+      .set('X-Forwarded-For', '198.51.100.24:50003');
+    expect(rejected.status).toBe(429);
+    await request(app).post('/refresh').set('X-Forwarded-For', '198.51.100.25:50003').expect(204);
+  });
+
+  it('keeps IPv6 subnet grouping when a proxy adds brackets and a source port', async () => {
+    const { app } = createApp({ max: 2 });
+    for (const address of ['2001:db8:1234:5600::1', '[2001:db8:1234:56ff::2]:50002']) {
+      await request(app).post('/refresh').set('X-Forwarded-For', address).expect(204);
+    }
+    const rejected = await request(app)
+      .post('/refresh')
+      .set('X-Forwarded-For', '2001:db8:1234:56aa::3');
+    expect(rejected.status).toBe(429);
+    await request(app).post('/refresh').set('X-Forwarded-For', '2001:db8:1234:5700::1').expect(204);
+  });
+
+  it('shares the IPv4 budget with mapped IPv6 addresses and source ports', async () => {
+    const { app } = createApp({ max: 2 });
+    for (const address of ['198.51.100.24', '::ffff:198.51.100.24']) {
+      await request(app).post('/refresh').set('X-Forwarded-For', address).expect(204);
+    }
+    const rejected = await request(app)
+      .post('/refresh')
+      .set('X-Forwarded-For', '[::ffff:198.51.100.24]:50003');
+    expect(rejected.status).toBe(429);
   });
 });

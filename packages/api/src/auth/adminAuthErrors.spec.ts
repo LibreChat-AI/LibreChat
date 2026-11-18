@@ -48,6 +48,7 @@ describe('mapAdminRefreshError', () => {
     { error: 'invalid_grant', status: 429 },
     { error: 'invalid_grant', status: 503 },
     { error: 'invalid_client', status: 401 },
+    { error: 'access_denied', status: 403 },
     { error: 'server_error', status: 500 },
   ])('preserves credentials after an unconfirmed rejection: %j', (error) => {
     expect(mapAdminRefreshError(error)).toEqual({
@@ -59,6 +60,8 @@ describe('mapAdminRefreshError', () => {
   it.each([
     { error: 'invalid_grant', status: 400 },
     { code: 'invalid_grant', status: 401 },
+    { error: 'invalid_grant', status: 403 },
+    { code: 'invalid_grant', status: 403 },
   ])('ends the session after a confirmed invalid grant: %j', (error) => {
     expect(mapAdminRefreshError(error)).toEqual({
       status: 401,
