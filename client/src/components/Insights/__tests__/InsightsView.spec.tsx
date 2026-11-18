@@ -520,7 +520,6 @@ describe('InsightsView agent selection', () => {
       );
     }
     const trend = metricCard('com_insights_messages').getByRole('img');
-    // The tag above each saved version's line is shown without hovering.
     expect(within(trend).getByText('com_insights_version_tag:2')).toBeVisible();
     fireEvent.focus(trend);
     expect(within(trend).getByText('com_ui_agent_version_title:2')).toBeInTheDocument();

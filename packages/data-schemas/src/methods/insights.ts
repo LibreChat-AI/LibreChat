@@ -90,11 +90,8 @@ const defaultRange = '7d';
 const churnedUserWindowDays = 28;
 const churnedUserLimit = 8;
 const dayMs = 24 * 60 * 60 * 1000;
-/** A reply's usage rows are recorded around its own creation time; looking this far past
- * the period edges keeps replies near a boundary attributed to their model. */
 const replyUsageWindowMs = dayMs;
-/** Usage recorded for the reply's own run. Title, summarization, memory and sub-agent usage
- * also carries the reply's messageId but comes from other models, so it only counts as spend. */
+/** Contexts of the reply's own run; title, summary and sub-agent usage only count as spend. */
 const replyUsageContexts = ['message', 'abort', 'incomplete', 'reasoning', null];
 
 const responseRating = { $cond: [{ $eq: ['$isCreatedByUser', false] }, '$feedback.rating', null] };
@@ -274,7 +271,6 @@ function messageScope(match: Record<string, unknown>, agentIds: string[]): Pipel
   return [{ $match: { ...match, insightsAgentId: { $in: agentIds } } }];
 }
 
-/** Usage ledger rows of the selected root agents in the period. */
 function transactionScope(
   agentIds: string[],
   tenantId: string | undefined,
@@ -359,8 +355,7 @@ const sameSortedList = (left?: unknown[], right?: unknown[]) => {
     .every((value, index) => value === sortedRight[index]);
 };
 
-/** The agent builder's version panel (`isActiveVersion`) marks as active the newest saved version
- *  whose settings match the agent's current ones; Insights reports the same version. */
+/** Same rule as the agent builder's version panel (`isActiveVersion`). */
 const matchesCurrentSettings = (version: VersionSettings, current: VersionSettings) =>
   version.name === current.name &&
   version.description === current.description &&
@@ -703,7 +698,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         : Promise.resolve([] as ChurnedUserActivity[]),
       Transaction.aggregate<ModelSpend>([
         ...transactionScope(agentIds, options.tenantId, { $gte: from, $lte: to }),
-        // Deduplicate ledger rows before daily totals, independently of conversation joins.
         {
           $group: {
             _id: '$insightsTransaction._id',
@@ -737,10 +731,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         },
         { $sort: { date: 1, model: 1 } },
       ]),
-      // Each reply counts once, under the model of its own run's last completion usage row.
-      // The model and the reply are read separately and matched by message in code, so no
-      // reply is looked up one by one in the messages collection.
-      Transaction.aggregate<ReplyModel>([
+        Transaction.aggregate<ReplyModel>([
         ...transactionScope(
           agentIds,
           options.tenantId,

@@ -32,7 +32,6 @@ import { cn } from '~/utils';
 type ShortcutRange = Exclude<InsightsRange, 'custom'>;
 type Localize = ReturnType<typeof useLocalize>;
 type SparklinePoint = { date: string; value: number };
-/** One entry per sparkline point: the agent version label for that day, and whether one was saved. */
 type VersionMark = { label: string | null; saved: boolean; tag?: string };
 type CustomDateRange = { startDate: Date; endDate: Date };
 
@@ -157,7 +156,6 @@ function LoadingState({ message }: { message: string }) {
   );
 }
 
-/** Keeps a version tag inside the card when its line sits near either edge. */
 const tagAlignment = { start: '', center: '-translate-x-1/2', end: '-translate-x-full' };
 
 function Sparkline({
@@ -823,7 +821,6 @@ export default function InsightsView() {
     setPage(1);
   }, [isRecoveringAgentFilters, setUrlSearchParams, urlSearchParams]);
 
-  /** Version numbers only mean something within one agent, so marks need a single agent. */
   const versionDays = useMemo(() => {
     if (!data?.agentVersions || effectiveAgentIds.length !== 1) return undefined;
     const versions = data.agentVersions.filter(({ agentId }) => agentId === effectiveAgentIds[0]);
@@ -834,7 +831,6 @@ export default function InsightsView() {
   const versionMarks = useMemo<VersionMark[] | undefined>(() => {
     if (!versionDays) return undefined;
     return versionDays.map(({ inUse, saved, marked, restored }) => {
-      // A day with several saves counts as its last one, the version in use at the end of the day.
       const last = saved.at(-1);
       if (last != null) {
         return {

@@ -120,7 +120,6 @@ export type TInsightsAggregateResponse = {
   summary: TInsightsSummary;
   daily: TInsightsDailyPoint[];
   models: TInsightsModel[];
-  /** Saved version history of the selected agents. */
   agentVersions?: TInsightsAgentVersion[];
 };
 

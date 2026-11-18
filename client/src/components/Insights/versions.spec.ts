@@ -79,7 +79,6 @@ describe('visibleTags', () => {
   const tags = (...positions: number[]) => positions.map((position) => ({ position, text: 'v22' }));
 
   it('keeps the newer of two tags on neighbouring days', () => {
-    // Two days apart by about 3.4% of a 500 px chart: the tags would overlap.
     expect([...visibleTags(tags(10, 89.6, 93), 500)]).toEqual([2, 0]);
   });
 

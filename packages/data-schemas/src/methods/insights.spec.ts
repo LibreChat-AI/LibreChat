@@ -128,7 +128,6 @@ describe('Insights methods', () => {
     await mongoose.models.Agent.collection.insertOne({
       id: 'agent-a',
       tenantId: 'tenant-a',
-      // Restored to version 1: current settings equal it; tool order does not matter.
       name: 'Agent',
       instructions: 'first',
       tools: ['search', 'code'],
@@ -185,7 +184,6 @@ describe('Insights methods', () => {
       toTimestamp: '2026-10-07T23:59:59Z',
     };
     const result = await methods.getInsights(options);
-    // The newest version matching the agent's current settings is active, as in the version panel.
     expect(result.agentVersions).toEqual([
       { agentId: 'agent-a', version: 1, savedAt: '2026-09-01T12:00:00.000Z', active: false },
       { agentId: 'agent-a', version: 2, savedAt: null, active: false },
@@ -600,7 +598,6 @@ describe('Insights methods', () => {
       feedback: feedbackCounts(0, 1, { inaccurate: 1 }),
       spendUSD: 1.25,
     });
-    // The prompt row has no completion row for the response, so the reply stays unattributed.
     expect(aggregate.models).toEqual([
       {
         model: 'model-x',
@@ -1142,7 +1139,6 @@ describe('Insights methods', () => {
         { date: '2026-10-06', spendUSD: null },
         { date: '2026-10-07', spendUSD: 0.125 },
       ]);
-      // Per-model spend adds up to the total; only usage rows with rawAmount carry tokens.
       expect(root.models).toEqual([
         {
           model: 'model-x',
@@ -1382,7 +1378,6 @@ describe('Insights methods', () => {
         tokenValue: -150_000,
         createdAt: at(59),
       },
-      // Sub-agent and title usage carry the reply's messageId but are not the reply's own run.
       {
         ...usage,
         messageId: 'handoff',
@@ -1503,7 +1498,6 @@ describe('Insights methods', () => {
       tokenType: 'completion',
     };
     await mongoose.models.Transaction.collection.insertMany([
-      // Usage recorded just before the period still identifies the model of a reply inside it.
       {
         ...usage,
         messageId: 'inside',

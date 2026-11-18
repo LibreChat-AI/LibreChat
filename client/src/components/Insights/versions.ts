@@ -1,20 +1,14 @@
 import type { TInsightsAgentVersion } from 'librechat-data-provider';
 
-/** Charts mark only the most recent days with saved versions, so a busy agent stays readable. */
 export const versionMarkerLimit = 5;
 
 export type VersionDay = {
-  /** The latest version saved on or before this day; null before the first save. */
   inUse: number | null;
-  /** Versions saved on this day, oldest first; the last one is the one in use at the day's end. */
   saved: number[];
-  /** The day gets a marker: it has saved versions and is one of the last marked days. */
   marked: boolean;
-  /** True when today's version is an older one restored after the latest save. */
   restored: boolean;
 };
 
-/** Calendar day of an instant in the given time zone, as the daily buckets key it. */
 export function dayKey(instant: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone,
@@ -26,9 +20,7 @@ export function dayKey(instant: Date, timeZone: string): string {
   return `${part('year')}-${part('month')}-${part('day')}`;
 }
 
-/** Saved versions only carry a date, so a day shows the latest version saved by then. A revert
- *  copies an older version back without always saving a dated entry; the server marks the version
- *  active now, which is shown on today's point only, because the revert's date is unknown. */
+/** A restore has no saved date, so a restored older version only shows on today's point. */
 export function getVersionDays(
   days: Array<{ date: string }>,
   versions: TInsightsAgentVersion[],
@@ -64,20 +56,16 @@ export function getVersionDays(
   });
 }
 
-/** Where a tag sits against its line: centred, or kept inside the chart near either edge. */
 export function tagAnchor(position: number): 'start' | 'center' | 'end' {
   if (position < 8) return 'start';
   if (position > 92) return 'end';
   return 'center';
 }
 
-/** Approximate width of a short tag such as "v22" in the chart's extra-small text. */
 const tagCharPx = 7;
 const tagGapPx = 6;
 
-/** Tags that fit without overlapping, by index. Walking from the newest, a tag is kept when it
- *  ends before the last kept one starts, so the most recent versions stay readable. Without a
- *  measured width (first render, tests) every tag is kept. */
+/** Indexes of the tags that fit, newest first; all of them until the chart has been measured. */
 export function visibleTags(tags: Array<{ position: number; text: string }>, widthPx: number) {
   const visible = new Set<number>();
   if (widthPx <= 0) {
