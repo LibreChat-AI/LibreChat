@@ -72,6 +72,7 @@ const {
   createDisconnectSnapshotQueue,
   isTemporaryTurn,
   getPreliminaryResponseMessageId,
+  describeCreatedTurn,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -2452,6 +2453,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                   req.body.files.length > 0 && { files: req.body.files }),
               },
               streamId,
+              turn: describeCreatedTurn({
+                responseMessageId: respMsgId,
+                isRegenerate,
+                isCompaction,
+                isContinued,
+                editedContent,
+              }),
             },
             { expectedCreatedAt: jobCreatedAt },
           ).catch((err) => {

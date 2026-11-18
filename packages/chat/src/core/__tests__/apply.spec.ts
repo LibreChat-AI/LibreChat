@@ -919,6 +919,89 @@ describe('side frames', () => {
   });
 });
 
+describe('a turn whose shape the server states', () => {
+  const reply = (id: string, texts: string[]): TMessage => ({
+    messageId: id,
+    conversationId: 'thread-1',
+    parentMessageId: 'user-1',
+    isCreatedByUser: false,
+    text: '',
+    content: texts.map((text) => ({ type: ContentTypes.TEXT, text })),
+  });
+  const createdAs = (turn: object): ChatEvent =>
+    ({ type: 'created', data: { created: true, message: user, turn } }) as ChatEvent;
+  const texts = (messages: TMessage[], id: string) =>
+    (messages.find((message) => message.messageId === id)?.content ?? []).map(
+      (part) => (part as { text?: string } | undefined)?.text,
+    );
+
+  it('draws a continued reply again from empty under its own id, not as a second answer', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, reply('resp-1', ['Stopped here'])]);
+
+    applyEvent(createdAs({ responseMessageId: 'resp-1', isContinued: true }), context);
+    expect(read().map((message) => message.messageId)).toEqual(['user-1']);
+
+    applyEvent(opened('s0', 0), context);
+    applyEvent(token('s0', 'Stopped here, then carried on'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+    expect(texts(read(), 'resp-1')).toEqual(['Stopped here, then carried on']);
+  });
+
+  it('reruns an edited reply from its own parts with the edit in place', () => {
+    const saved = reply('resp-1', ['Kept', 'Before the edit']);
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, saved]);
+
+    applyEvent(
+      createdAs({
+        responseMessageId: 'resp-1',
+        editedContent: { index: 1, type: ContentTypes.TEXT, text: 'After the edit' },
+      }),
+      context,
+    );
+    applyEvent(opened('s0', 0), context);
+    applyEvent(token('s0', ' and on'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+    const drawn = texts(read(), 'resp-1').join('|');
+    expect(drawn).toContain('Kept');
+    expect(drawn).toContain('After the edit');
+    expect(drawn).toContain(' and on');
+    expect(drawn).not.toContain('Before the edit');
+    /** The saved row's own parts are not the ones edited. */
+    expect(texts([saved], 'resp-1')).toEqual(['Kept', 'Before the edit']);
+  });
+
+  it("takes a regeneration at the server's word where the list holds no earlier answer", () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([
+      user,
+      { ...reply('resp-0', ['Other branch']), parentMessageId: 'user-0' },
+    ]);
+
+    applyEvent(createdAs({ responseMessageId: 'resp-1', isRegenerate: true }), context);
+    applyEvent(opened('s0', 0), context);
+    applyEvent(token('s0', 'Again'), context);
+
+    /** Not seeded from the reply at the tail, which a plain turn would carry on from. */
+    expect(texts(read(), 'resp-1')).toEqual(['Again']);
+    expect(texts(read(), 'resp-0')).toEqual(['Other branch']);
+  });
+
+  it('reads a frame without a stated shape by what the list implies, as before', () => {
+    const { applyEvent } = createEventApplier();
+    const { context, read } = createList([user, reply('resp-0', ['Earlier answer'])]);
+
+    applyEvent(created, context);
+    applyEvent(opened('s0', 0), context);
+    applyEvent(token('s0', 'Hi'), context);
+
+    expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-0', 'resp-1']);
+  });
+});
+
 describe('state beside the message list', () => {
   /** Main chat's handlers for that state, recording what they are called with and in what order. */
   const record = () => {

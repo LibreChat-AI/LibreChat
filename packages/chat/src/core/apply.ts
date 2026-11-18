@@ -35,6 +35,7 @@ import { buildCreatedInitialResponse } from './resumable/messages';
 import { placeResumedResponse } from './resumable/placement';
 import { normalizeFrame } from './transport/frames';
 import { getEditPrefix } from './steps/content';
+import { withEditedPart } from './content';
 import { mergeFinalFrame } from './chat';
 
 /** A step's side channel that is not a write to the message list. */
@@ -188,14 +189,67 @@ function settledFinal(
  * padded id a turn draws its reply at before the server names it, is the reply to carry on from.
  * Any other reply already under the message is a saved answer, so the turn starts empty beside
  * it and leaves it in place, as it does under a compaction's anchor.
+ *
+ * A frame that states the turn's shape (`turn`) is taken at its word: a regeneration, a
+ * compaction, a continued reply and an edited one all name messages the list already holds, and
+ * only the server knows which this is. A frame without it, from a server that predates it, is
+ * read by what the list implies, which cannot tell a continued or edited reply from a
+ * regeneration.
  */
 function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventSubmission {
   const loaded = messages.find((message) => message.messageId === data.message.messageId);
-  const anchored =
+  const { turn } = data;
+  /** What the list implies when the server does not say: a named leaf that is no user turn. */
+  const impliedAnchor =
     loaded == null ? data.message.isCreatedByUser === false : isAnchor(loaded, data.message);
+  const anchored = turn != null ? turn.compact === true : impliedAnchor;
   const userMessage =
     loaded ??
     ({ ...data.message, isCreatedByUser: data.message.isCreatedByUser !== false } as TMessage);
+  const base = {
+    conversation: { conversationId: userMessage.conversationId },
+    endpointOption: {},
+    userMessage,
+  };
+  /** The reply the server names, when the list holds it: the one a turn carries on or reruns. */
+  const named =
+    turn?.responseMessageId == null
+      ? undefined
+      : messages.find(
+          (message) => !message.isCreatedByUser && message.messageId === turn.responseMessageId,
+        );
+  if (named != null && turn?.editedContent != null) {
+    /** An edited reply is rerun from its own parts with the edit in place; what the server
+     *  streams lands after them. */
+    const content = withEditedPart(named.content ?? [], turn.editedContent);
+    return {
+      ...base,
+      isRegenerate: false,
+      isEdited: true,
+      editedContent: turn.editedContent,
+      editPrefixLength: content.length,
+      messages,
+      initialResponse: { ...named, content },
+    } as EventSubmission;
+  }
+  if (named != null && turn?.isContinued === true) {
+    /** A continued reply is drawn again from empty under its own id, in place of the row it
+     *  carries on. */
+    const restarted: TMessage = {
+      ...named,
+      parentMessageId: userMessage.messageId,
+      text: '',
+      content: [],
+    };
+    return {
+      ...base,
+      isRegenerate: false,
+      isEdited: true,
+      isContinued: true,
+      messages: messages.filter((message) => message !== named),
+      initialResponse: restarted,
+    } as EventSubmission;
+  }
   const optimisticId = `${userMessage.messageId}_`;
   let placeholder: TMessage | undefined;
   let answered = false;
@@ -203,7 +257,11 @@ function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventS
     if (message.isCreatedByUser || message.parentMessageId !== userMessage.messageId) {
       continue;
     }
-    if (message.messageId === optimisticId || message.messageId === userMessage.responseMessageId) {
+    if (
+      message === named ||
+      message.messageId === optimisticId ||
+      message.messageId === userMessage.responseMessageId
+    ) {
       placeholder = message;
     } else {
       answered = true;
@@ -215,13 +273,13 @@ function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventS
       initialResponse: { text: '', isCreatedByUser: false } as TMessage,
       userMessage,
     });
+  /** The server's word on the turn's shape, where it gives one; else what the list implies. */
+  const regenerated = turn != null ? turn.isRegenerate === true || anchored : anchored || answered;
   return {
-    conversation: { conversationId: userMessage.conversationId },
-    endpointOption: {},
-    isRegenerate: anchored || answered,
+    ...base,
+    isRegenerate: regenerated,
     ...(anchored && { compact: true }),
     messages: loaded != null || anchored ? messages : [...messages, userMessage],
-    userMessage,
     initialResponse,
   } as EventSubmission;
 }
