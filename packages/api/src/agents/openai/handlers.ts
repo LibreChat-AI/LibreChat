@@ -1,3 +1,5 @@
+import type { ServerToolResults } from './results';
+import { createServerToolResults } from './results';
 /**
  * OpenAI-compatible event handlers for agent streaming.
  *
@@ -63,6 +65,7 @@ export function writeSSE(writer: OpenAIWriter, data: ChatCompletionChunk | strin
  */
 export interface OpenAIStreamTracker {
   /** Successful response completion, installed by the response handlers. */
+  serverToolResults?: ServerToolResults;
   finishToolCalls?: () => void;
   abortToolCalls?: () => void;
   /** Whether any text content was emitted */
@@ -113,6 +116,7 @@ export function createOpenAIStreamTracker(): OpenAIStreamTracker {
  */
 export interface OpenAIContentAggregator {
   /** Successful response completion, installed by the response handlers. */
+  serverToolResults?: ServerToolResults;
   finishToolCalls?: () => void;
   abortToolCalls?: () => void;
   /** Accumulated text chunks */
@@ -162,6 +166,7 @@ export function createOpenAIContentAggregator(): OpenAIContentAggregator {
 
 /** Legacy stream configuration; retained for existing package consumers. */
 export interface OpenAIStreamHandlerConfig {
+  include?: 'server_tool_results'[];
   signal?: AbortSignal;
   res: OpenAIWriter;
   context: OpenAIResponseContext;
@@ -766,6 +771,7 @@ export class OpenAIReasoningDeltaHandler implements EventHandler {
  * Create all handlers for OpenAI streaming format
  */
 export interface OpenAIAggregationHandlerConfig {
+  include?: 'server_tool_results'[];
   aggregator: OpenAIContentAggregator;
   signal?: AbortSignal;
 }
@@ -785,10 +791,20 @@ export function createOpenAIHandlers(
         ? undefined
         : (delta) => writeSSE(getStreamWriter(config), createChunk(config.context, delta)),
   });
-  target.finishToolCalls = toolCallProjection.finish;
-  target.abortToolCalls = toolCallProjection.abort;
+  const results = config.include?.includes('server_tool_results')
+    ? createServerToolResults({
+        signal: config.signal,
+        ...(!('aggregator' in config) && {
+          emit: (delta) => writeSSE(getStreamWriter(config), createChunk(config.context, delta)),
+        }),
+      })
+    : undefined;
+  const projection = results?.wrap(toolCallProjection) ?? toolCallProjection;
+  target.serverToolResults = results;
+  target.finishToolCalls = projection.finish;
+  target.abortToolCalls = projection.abort;
   const handlers: Record<string, EventHandler> = {
-    ...toolCallProjection.handlers,
+    ...projection.handlers,
     [GraphEvents.ON_MESSAGE_DELTA]: new OpenAIMessageDeltaHandler(config),
     [GraphEvents.CHAT_MODEL_END]: new OpenAIModelEndHandler(config),
     [GraphEvents.CHAT_MODEL_STREAM]: new OpenAIChatModelStreamHandler(),
@@ -837,7 +853,12 @@ export function sendFinalChunk(
     };
   }
 
-  const finalChunk = createChunk(context, {}, reason, usage);
+  const finalChunk = createChunk(
+    context,
+    tracker.serverToolResults?.incomplete ? { tool_results_incomplete: true } : {},
+    reason,
+    usage,
+  );
   writeSSE(writer, finalChunk);
 
   // Send [DONE] marker

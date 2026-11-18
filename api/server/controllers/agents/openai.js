@@ -17,6 +17,7 @@ const {
   createRemoteExecutionContext,
   getRemoteRunKeyId,
   createChunk,
+  createServerToolResults,
   applyContextToAgent,
   buildRunToolSet,
   buildInitialToolSessions,
@@ -1041,9 +1042,18 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         }),
       });
 
+      const results = request.include?.includes('server_tool_results')
+        ? createServerToolResults({
+            signal: execution.signal,
+            ...(isStreaming && { emit: (delta) => writeSSE(res, createChunk(context, delta)) }),
+          })
+        : undefined;
+      if (tracker) tracker.serverToolResults = results;
+      const projection = results?.wrap(toolCallStream) ?? toolCallStream;
+
       // Event handlers for OpenAI-compatible streaming
       const handlers = {
-        ...toolCallStream.handlers,
+        ...projection.handlers,
         // Text content streaming
         on_message_delta: createHandler((data) => {
           const content = data?.delta?.content;
@@ -1191,7 +1201,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         version: 'v2',
       };
 
-      await completeOpenAIToolCalls(toolCallStream, async () => {
+      await completeOpenAIToolCalls(projection, async () => {
         await run.processStream({ messages: formattedMessages }, config, {
           callbacks: {
             [Callback.TOOL_ERROR]: (graph, error, toolId) => {
@@ -1277,6 +1287,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           aggregator.toolCalls,
           usage,
           true,
+          ...(results ? [results.response()] : []),
         );
         res.json(response);
         logger.debug(

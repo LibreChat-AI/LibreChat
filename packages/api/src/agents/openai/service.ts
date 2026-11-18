@@ -1,5 +1,7 @@
 import type { LocatorTraversalReporter } from '../../protection/diagnostics';
 import type { SdkModelHost } from '../remoteSdk/builder';
+import type { ServerToolResultFields } from './types';
+import { validateChatIncludes } from './results';
 /**
  * OpenAI-compatible chat completions service for agents.
  *
@@ -523,6 +525,8 @@ export function validateRequest(body: unknown): ChatCompletionValidationResult {
   }
 
   const request = body as Record<string, unknown>;
+  const includeError = validateChatIncludes(request.include);
+  if (includeError) return { valid: false, error: includeError };
 
   if (!request.model || typeof request.model !== 'string') {
     return { valid: false, error: 'model (agent_id) is required' };
@@ -603,6 +607,7 @@ export function buildNonStreamingResponse(
   usage: CompletionUsage,
   /** True when the map contains only accepted client-owned calls, not legacy run-step history. */
   acceptedToolCallsOnly = false,
+  results?: ServerToolResultFields,
 ): ChatCompletionResponse {
   const toolCallsArray = Array.from(toolCalls.values());
   const finishReason =
@@ -619,6 +624,7 @@ export function buildNonStreamingResponse(
         message: {
           role: 'assistant',
           content: text || null,
+          ...results,
           ...(reasoning && { reasoning }),
           ...(toolCallsArray.length > 0 && { tool_calls: toolCallsArray }),
         },
@@ -872,9 +878,10 @@ export async function createAgentChatCompletion(
     // Create event handlers
     const eventHandlers = createOpenAIHandlers(
       handlerConfig
-        ? { ...handlerConfig, signal: abortController.signal }
+        ? { ...handlerConfig, signal: abortController.signal, include: request.include }
         : {
             aggregator: aggregator!,
+            include: request.include,
             signal: abortController.signal,
           },
       deps.toolExecuteOptions == null
@@ -982,6 +989,7 @@ export async function createAgentChatCompletion(
         aggregator.toolCalls,
         usage,
         true,
+        aggregator.serverToolResults?.response(),
       );
       res.json(response);
     }

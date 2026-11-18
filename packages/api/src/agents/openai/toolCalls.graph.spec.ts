@@ -264,76 +264,108 @@ describe('tool-call projection with real SDK graph dispatch', () => {
       '{"i":1}',
     ]);
   });
-  it('keeps tools executed by the SDK out of the final OpenAI response', async () => {
-    const frames: string[] = [];
-    const tracker = createOpenAIStreamTracker();
-    const context = { requestId: 'accepted', created: 1, model: 'fixture' };
-    const res: Response = Object.create(response);
-    jest.spyOn(res, 'write').mockImplementation((frame) => {
-      frames.push(String(frame));
-      return true;
-    });
-    const config = { tracker, context, res };
-    const executed: string[] = [];
-    const handlers = createOpenAIHandlers(config);
-    const run = await Run.create({
-      runId: 'accepted-host-integration',
-      skipCleanup: true,
-      tokenCounter: () => 1,
-      graphConfig: {
-        type: 'standard',
-        maxContextTokens: 100_000,
-        llmConfig: {
-          provider: Providers.OPENAI,
-          streaming: false,
-          streamUsage: false,
+  it.each([false, true])(
+    'observes SDK tool results only when opted in (include=%s)',
+    async (observe) => {
+      const frames: string[] = [];
+      const tracker = createOpenAIStreamTracker();
+      const context = { requestId: 'accepted', created: 1, model: 'fixture' };
+      const res: Response = Object.create(response);
+      jest.spyOn(res, 'write').mockImplementation((frame) => {
+        frames.push(String(frame));
+        return true;
+      });
+      const config = {
+        tracker,
+        context,
+        res,
+        include: observe ? ['server_tool_results' as const] : undefined,
+      };
+      const executed: string[] = [];
+      const handlers = createOpenAIHandlers(config);
+      const owners: unknown[] = [];
+      if (observe) {
+        const complete = handlers.on_run_step_completed;
+        handlers.on_run_step_completed = {
+          handle(event, data, metadata, graph) {
+            owners.push(metadata?.agentId);
+            return complete.handle(event, data, metadata, graph);
+          },
+        };
+      }
+      const run = await Run.create({
+        runId: 'accepted-host-integration',
+        skipCleanup: true,
+        tokenCounter: () => 1,
+        graphConfig: {
+          type: 'standard',
+          maxContextTokens: 100_000,
+          llmConfig: {
+            provider: Providers.OPENAI,
+            streaming: false,
+            streamUsage: false,
+          },
+          tools: [
+            tool(
+              async ({ city }) => {
+                executed.push(city);
+                return 'sunny';
+              },
+              {
+                name: 'lookup',
+                description: 'Weather',
+                schema: z.object({ city: z.string() }),
+              },
+            ),
+          ],
         },
-        tools: [
-          tool(
-            async ({ city }) => {
-              executed.push(city);
-              return 'sunny';
-            },
-            {
-              name: 'lookup',
-              description: 'Weather',
-              schema: z.object({ city: z.string() }),
-            },
-          ),
-        ],
-      },
-      customHandlers: handlers,
-    });
-    if (run.Graph == null) throw new Error('Missing graph');
-    let calls = 0;
-    run.Graph.overrideModel = {
-      invoke: async (messages: BaseMessage[]): Promise<AIMessageChunk> => {
-        calls++;
-        return messages.some((message) => message.getType() === 'tool')
-          ? new AIMessageChunk('done')
-          : new AIMessageChunk({
-              content: '',
-              tool_calls: [{ id: 'internal', name: 'lookup', args: { city: 'Paris' } }],
-            });
-      },
-    };
+        customHandlers: handlers,
+      });
+      if (run.Graph == null) throw new Error('Missing graph');
+      let calls = 0;
+      run.Graph.overrideModel = {
+        invoke: async (messages: BaseMessage[]): Promise<AIMessageChunk> => {
+          calls++;
+          return messages.some((message) => message.getType() === 'tool')
+            ? new AIMessageChunk('done')
+            : new AIMessageChunk({
+                content: '',
+                tool_calls: [{ id: 'internal', name: 'lookup', args: { city: 'Paris' } }],
+              });
+        },
+      };
 
-    await run.processStream(
-      { messages: [new HumanMessage('weather')] },
-      { configurable: { thread_id: 'accepted-host-integration' }, version: 'v2' },
-    );
-    sendFinalChunk(config);
+      await run.processStream(
+        { messages: [new HumanMessage('weather')] },
+        { configurable: { thread_id: 'accepted-host-integration' }, version: 'v2' },
+      );
+      sendFinalChunk(config);
 
-    expect(calls).toBe(2);
-    expect(executed).toEqual(['Paris']);
-    expect(tracker.toolCalls.size).toBe(0);
-    const chunks: ChatCompletionChunk[] = frames
-      .filter((frame) => frame !== 'data: [DONE]\n\n')
-      .map((frame) => JSON.parse(frame.slice(6)));
-    expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])).toEqual([]);
-    expect(chunks.some((chunk) => chunk.choices[0].delta.content === 'done')).toBe(true);
-    expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('stop');
-  });
+      expect(calls).toBe(2);
+      expect(executed).toEqual(['Paris']);
+      if (observe) expect(owners).toEqual([expect.any(String)]);
+      expect(tracker.toolCalls.size).toBe(0);
+      const chunks: ChatCompletionChunk[] = frames
+        .filter((frame) => frame !== 'data: [DONE]\n\n')
+        .map((frame) => JSON.parse(frame.slice(6)));
+      expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])).toEqual([]);
+      expect(chunks.some((chunk) => chunk.choices[0].delta.content === 'done')).toBe(true);
+      expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_results ?? [])).toEqual(
+        observe
+          ? [
+              {
+                index: 0,
+                call_id: 'internal',
+                name: 'lookup',
+                arguments: '{"city":"Paris"}',
+                output: 'sunny',
+              },
+            ]
+          : [],
+      );
+      expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('stop');
+    },
+  );
 
   it('assembles the name before emitting when real SDK chunks split it', async () => {
     const tracker = createOpenAIStreamTracker();

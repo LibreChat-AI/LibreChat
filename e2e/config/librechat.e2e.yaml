@@ -106,7 +106,9 @@ mcpServers:
     timeout: 30000
   e2e-http:
     type: streamable-http
-    url: http://127.0.0.1:8765/mcp
+    url: &e2e-http-url http://127.0.0.1:8765/mcp
+    # The fixture is explicitly anonymous; enrollment and execution bind the same auth descriptor.
+    requiresOAuth: false
     title: E2E HTTP
     description: Local HTTP MCP fixture for allowlist-override e2e tests.
     timeout: 30000
@@ -183,6 +185,15 @@ endpoints:
   # Default capabilities plus run_in_background (off by default upstream) so the
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
+    remoteApi:
+      integrations:
+        resources:
+          e2e-http:
+            url: *e2e-http-url
+            credentialMode: anonymous
+            issuer: null
+            audience: null
+            scopes: []
     sdkHostFiles: {}
     sdkRuntimes:
       remote-example:
