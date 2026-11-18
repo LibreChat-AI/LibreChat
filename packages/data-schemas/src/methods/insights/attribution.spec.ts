@@ -81,7 +81,6 @@ it('derives immutable root hints for writes, ignores forged hints, and keeps spe
     (await methods.getInsights({ agentIds: ['agent-a'], showDetails: false })).summary
       .totalResponses,
   ).toBe(1);
-  // Deleting a conversation deletes its messages; its usage ledger rows are retained.
   await mongoose.models.Conversation.deleteMany({});
   await mongoose.models.Message.deleteMany({ conversationId });
   const deleted = await methods.getInsights({ agentIds: ['agent-a'], showDetails: false });
@@ -181,7 +180,6 @@ it('gives records saved before their conversation the hint once the conversation
   const hintOf = async (collection: 'Message' | 'Transaction', messageId: string) =>
     (await mongoose.models[collection].collection.findOne({ messageId }))?.insightsAgentId;
 
-  // A new agent chat: the first prompt is saved before the conversation exists.
   await messages.saveMessage(
     { userId: owner.toString() },
     { conversationId, messageId: 'first-prompt', isCreatedByUser: true },
@@ -205,7 +203,6 @@ it('gives records saved before their conversation the hint once the conversation
   expect(await hintOf('Message', 'first-prompt')).toBe('agent-a');
   expect(await hintOf('Transaction', 'first-prompt')).toBe('agent-a');
 
-  // A new chat without an agent is marked as not counted.
   await messages.saveMessage(
     { userId: owner.toString() },
     {
@@ -220,7 +217,6 @@ it('gives records saved before their conversation the hint once the conversation
   );
   expect(await hintOf('Message', 'plain-prompt')).toBe('');
 
-  // Saving an existing conversation again does not touch records that already have a hint.
   await mongoose.models.Message.collection.updateOne(
     { messageId: 'first-prompt' },
     { $set: { insightsAgentId: 'kept' } },
@@ -240,7 +236,6 @@ it('attributes chat writes made with the conversation as the app loads it', asyn
     { conversationId, endpoint: 'agents', agent_id: 'agent-a' },
     { initialAgentId: 'agent-a' },
   );
-  // A chat turn keeps the loaded conversation on the request; the root agent is not selected.
   const loaded = await conversations.getConvo(owner.toString(), conversationId);
   expect(loaded).not.toBeNull();
   expect(loaded).not.toHaveProperty('initial_agent_id');

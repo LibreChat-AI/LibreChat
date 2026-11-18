@@ -265,8 +265,7 @@ function conversationScope(
   ];
 }
 
-/** Records attributed to a selected root agent when they were saved. Eligibility (root agent,
- * owner, temporary and sub-agent chats) is decided at write time, so reads need no join. */
+/** Eligibility is decided when records are saved, so reads trust `insightsAgentId`. */
 function messageScope(match: Record<string, unknown>, agentIds: string[]): PipelineStage[] {
   return [{ $match: { ...match, insightsAgentId: { $in: agentIds } } }];
 }
@@ -776,8 +775,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             rating: responseRating,
           },
         },
-        // Replies are kept after the projection: an `isCreatedByUser` filter in the first stage
-        // makes MongoDB choose the model index, which reads every agent's replies.
+        // Filtering replies in the first stage makes MongoDB pick the model index instead.
         { $match: { outcome: { $ne: null } } },
       ]),
       agentIds.length > 0

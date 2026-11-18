@@ -33,8 +33,7 @@ export async function resolveInsightsAttributions(
     identities.set(insightsIdentityKey(record), record);
   }
   const result = new Map<string, string>();
-  /** `initial_agent_id` is not selected when the app loads a conversation, so a loaded copy
-   *  without it says nothing about the root: only a copy that settles the hint skips the read. */
+  /** Loaded conversations lack `initial_agent_id` (`select: false`), so those are read again. */
   const conversations = cachedConversations.filter((conversation) => {
     const key = insightsIdentityKey(conversation);
     const decisive =
@@ -67,8 +66,7 @@ export async function resolveInsightsAttributions(
       ).lean<InsightsConversationContext[]>()),
     );
   for (const conversation of conversations) {
-    /** Insights reads trust the hint without re-checking the conversation, so every chat it
-     *  must not count is marked here: sub-agent threads and temporary chats. */
+    /** Reads trust the hint, so chats that must not count are marked here. */
     if (
       Object.prototype.hasOwnProperty.call(conversation, 'subagentThread') ||
       conversation.isTemporary === true
@@ -108,8 +106,7 @@ export async function withInsightsAttribution<
   });
 }
 
-/** A new conversation's first records are saved before the conversation exists, so they could not
- *  resolve a hint then. When the conversation is created, those records receive it. */
+/** The first records of a new conversation are saved before it exists; this attributes them. */
 export async function attributeEarlierRecords(
   mongoose: typeof import('mongoose'),
   saved: Record<string, unknown>,

@@ -55,8 +55,7 @@ const fixtures = {
   },
 };
 
-/** Fixtures are inserted directly, like data from before the migration, so every read first
- * runs the real migration: hints come from the production attribution rule. */
+/** Fixtures are inserted directly, so every read first runs the real migration. */
 async function migrateInsightsAttribution() {
   for (const collection of ['conversations', 'messages', 'transactions'] as const) {
     let after: string | undefined;
@@ -486,7 +485,6 @@ describe('Insights methods', () => {
           spendUSD: count ? 0.25 : null,
         });
       }
-      // Reads never write; only the migration gives a legacy agent conversation a fixed root.
       const fields: { initial_agent_id?: unknown; agent_id?: unknown } = attribution;
       const legacyRoot =
         !('initial_agent_id' in fields) &&
@@ -632,7 +630,6 @@ describe('Insights methods', () => {
     expect(JSON.stringify(aggregate)).not.toContain(privateValue);
     expect(userFind).not.toHaveBeenCalled();
     expect(conversationAggregate).toHaveBeenCalledTimes(1);
-    // Messages per day, unique users, users per day, and replies for the Models table.
     expect(messageAggregate).toHaveBeenCalledTimes(4);
     const pipelines = [
       ...conversationAggregate.mock.calls,

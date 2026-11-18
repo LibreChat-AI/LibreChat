@@ -2792,8 +2792,7 @@ export function createConversationMethods(
       }
 
       if (conversationResult.lastErrorObject?.updatedExisting === false) {
-        /** `initial_agent_id` is not selected back, so pass the value this insert just wrote.
-         *  Statistics attribution must never fail the conversation save itself. */
+        /** `initial_agent_id` is not selected back, so pass the value this insert just wrote. */
         try {
           await attributeEarlierRecords(mongoose, {
             ...(conversation.toObject() as Record<string, unknown>),
