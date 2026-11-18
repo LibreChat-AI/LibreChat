@@ -517,6 +517,19 @@ export default defineConfig(({ command }) => ({
                 return null;
               },
             },
+            /**
+             * `@librechat/chat` ships one file per module so the message list, which it loads
+             * through `import()`, can stay out of boot. Left alone, Rolldown gives each module
+             * a boot chunk shares with a different set of lazy chunks its own small file; this
+             * folds the ones every page loads back into one. `$initial` is decided on the
+             * import graph before tree-shaking, and the entry files re-export the message list,
+             * so the entries and the list's own modules are left out of the test.
+             */
+            {
+              name: 'chat-boot',
+              test: /packages[\\/]chat[\\/]dist[\\/](?!(?:components|react|index)\.mjs$|components[\\/](?:messages|pane[\\/]messages)[\\/.])/,
+              tags: ['$initial'],
+            },
           ],
         },
         entryFileNames: 'assets/[name].[hash].js',
@@ -616,6 +629,13 @@ function readLoadingLabels(): Record<string, string> {
 const LAZY_ONLY_PACKAGES =
   /\/node_modules\/(?:@sentry|@hyperdx|@opentelemetry|katex|rehype-katex|highlight\.js|lowlight|rehype-highlight|mermaid|@codesandbox|@tanstack\/react-query-devtools|superjson|@mcp-ui|html-to-image|heic-to|monaco-editor)\//;
 
+/**
+ * App modules that only message surfaces load. A static import of a barrel that registers them
+ * (the message parts barrel registers the full markdown renderer) puts them on every page.
+ */
+const LAZY_ONLY_MODULES =
+  /\/client\/src\/components\/(?:Chat\/Messages\/Content\/(?:Markdown|ContentParts|Parts\/renderers)\.tsx|Chat\/Messages\/hosts\.ts)$/;
+
 export function lazyChunkGuard(): Plugin {
   return {
     name: 'lazy-chunk-guard',
@@ -641,15 +661,20 @@ export function lazyChunkGuard(): Plugin {
       const leaks: string[] = [];
       for (const fileName of boot) {
         for (const id of chunks.get(fileName)?.moduleIds ?? []) {
-          const match = id.replace(/\\/g, '/').match(LAZY_ONLY_PACKAGES);
+          const path = id.replace(/\\/g, '/');
+          const match = path.match(LAZY_ONLY_PACKAGES);
           if (match) {
             leaks.push(`${match[0].slice(14, -1)} in ${fileName}`);
+          }
+          const module = path.match(LAZY_ONLY_MODULES);
+          if (module) {
+            leaks.push(`${module[0].slice(1)} in ${fileName}`);
           }
         }
       }
       if (leaks.length > 0) {
         this.error(
-          `Lazy-only libraries reached by static imports at boot: ${[...new Set(leaks)].join(', ')}. ` +
+          `Lazy-only libraries or modules reached by static imports at boot: ${[...new Set(leaks)].join(', ')}. ` +
             'A chunk rule in vite.config.ts probably grouped them with code the boot path imports.',
         );
       }

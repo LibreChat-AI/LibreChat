@@ -2,7 +2,7 @@ import {
   scheduleMCPOutcomeSchema,
   isScheduleMCPAuthorizationFailure,
 } from 'librechat-data-provider';
-import type { JobMetadataPatch } from './interfaces/IJobStore';
+import type { JobMetadataPatch, SerializableJobData } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
 import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 
@@ -11,6 +11,32 @@ export function parseTerminalPersistenceOwner(value: unknown): 'external' | unde
   if (value === undefined) return undefined;
   if (value !== 'external') throw new Error('terminal_persistence_owner_invalid');
   return value;
+}
+
+type ChildThreadMarkers = Pick<SerializableJobData, 'agentEventBindingId' | 'subagentTaskId'>;
+
+/**
+ * A job the subagent task store runs for a background child. The store owns its terminal
+ * state, so a route that would end or steer the job hands off to the store instead.
+ */
+export function isBackgroundChildJob(job: Pick<SerializableJobData, 'subagentTaskId'>): boolean {
+  return job.subagentTaskId != null && job.subagentTaskId !== '';
+}
+
+/**
+ * A job whose stream is a subagent child thread: a background child's, or an event-bound
+ * child's, since an event binding always targets a reserved child thread. Child threads are
+ * not listed conversations: a client has no row to mark for them and no record to load.
+ */
+export function isChildThreadJob(job: ChildThreadMarkers): boolean {
+  return (
+    isBackgroundChildJob(job) || (job.agentEventBindingId != null && job.agentEventBindingId !== '')
+  );
+}
+
+/** A job a client can show as a running chat. */
+export function isListedChatJob(job: ChildThreadMarkers): boolean {
+  return !isChildThreadJob(job);
 }
 
 /** The acknowledgement carries the reply ID already reserved for this generation. */
@@ -92,6 +118,12 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   }
   if (metadata.agentEventBindingId) {
     patch.agentEventBindingId = metadata.agentEventBindingId;
+  }
+  if (metadata.subagentTaskId) {
+    patch.subagentTaskId = metadata.subagentTaskId;
+  }
+  if (metadata.subagentParentConversationId) {
+    patch.subagentParentConversationId = metadata.subagentParentConversationId;
   }
   if (metadata.agentEventExpectedAction) {
     patch.agentEventExpectedAction = metadata.agentEventExpectedAction;

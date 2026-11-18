@@ -45,6 +45,19 @@ jest.mock('@librechat/api', () => ({
   createSequentialChainEdges: jest.fn(),
 }));
 
+/** What the chat controller passes for a fresh occurrence, or the resume host for a restored one. */
+function scheduledContext(req, restored, scheduleId) {
+  const { restoreExecutionContext, createScheduleExecutionContext } = require('@librechat/api');
+  return restored
+    ? restoreExecutionContext(req, {
+        userId: req.user.id,
+        tenantId: req.user.tenantId,
+        scheduleId,
+        agent_id: PRIMARY_ID,
+      })
+    : createScheduleExecutionContext(req);
+}
+
 /** Captured by the `getDefaultHandlers` mock so tests can drive the
  *  `ON_TOOL_EXECUTE` pipeline with a real subagent id and observe whether
  *  the tool context (agent, tool_resources, skill ACLs) was preserved. */
@@ -223,14 +236,7 @@ describe('initializeClient — processAgent ACL gate', () => {
       req,
       res: {},
       signal,
-      scheduledTokenContext: restored
-        ? {
-            scheduleId: 'sched-1',
-            ownerId: req.user.id,
-            agentId: PRIMARY_ID,
-            invocationMode: 'delegated',
-          }
-        : undefined,
+      executionContext: scheduledContext(req, restored, 'sched-1'),
       endpointOption: makeEndpointOption(),
     });
 
@@ -298,14 +304,7 @@ describe('initializeClient — processAgent ACL gate', () => {
         signal: new AbortController().signal,
         endpointOption: makeEndpointOption(),
         jobCreatedAt: 42,
-        scheduledTokenContext: restored
-          ? {
-              scheduleId: 'sched-bearer',
-              ownerId: req.user.id,
-              agentId: PRIMARY_ID,
-              invocationMode: 'delegated',
-            }
-          : undefined,
+        executionContext: scheduledContext(req, restored, 'sched-bearer'),
       });
       expect(bind).toHaveBeenCalledWith(
         {
@@ -447,6 +446,26 @@ describe('initializeClient — processAgent ACL gate', () => {
       expect(mockInitializeAgent).not.toHaveBeenCalled();
     } finally {
       await store.destroy();
+    }
+  });
+
+  it('hands the approved tool calls of a resumed request to scheduled preparation', async () => {
+    const req = makeReq();
+    req._isScheduledFire = true;
+    const host = require('~/server/services/Schedules/consent');
+    const prepare = jest.spyOn(host, 'prepare').mockResolvedValue(undefined);
+    mockInitializeAgent.mockImplementationOnce(async () => makePrimaryConfig([]));
+    try {
+      await initializeClient({
+        req,
+        res: {},
+        endpointOption: makeEndpointOption(),
+        signal: new AbortController().signal,
+        approvedToolCalls: ['tc1'],
+      });
+      expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ approvedToolCalls: ['tc1'] }));
+    } finally {
+      prepare.mockRestore();
     }
   });
 

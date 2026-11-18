@@ -1,60 +1,19 @@
 import { Constants } from '@librechat/agents';
+import { SCHEDULE_APPROVAL_REASON } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { getScheduledMCPToolDefinitionDigest, isScheduledMCPToolReadOnly } from './policy';
+import {
+  scheduleAsksEveryUse,
+  narrowScheduledMCPTools,
+  collectApprovedToolCalls,
+  bindScheduledMCPInvocation,
+} from './execution';
+import { createScheduledMCPRunPolicy, SCHEDULE_TOOL_NOT_ALLOWED } from './run';
+import { createMCPRequestContext, getMCPRequestContext } from '~/mcp/request';
 import { executionFixture, readTool } from './execution.helper';
-import { bindScheduledMCPInvocation } from './execution';
-import { createMCPRequestContext } from '~/mcp/request';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
-import { createScheduledMCPRunPolicy } from './run';
 import { ScheduledMCPPolicyError } from './policy';
 
 const catalog = (tools: Tool[] = [readTool]) => ({ tools, complete: true });
-
-it('requires a trusted exact-definition declaration, ignoring misleading names and annotations', () => {
-  const mutating: Tool = {
-    name: 'get_read_only_data',
-    inputSchema: { type: 'object' },
-    annotations: { readOnlyHint: true, destructiveHint: false },
-  };
-  expect(isScheduledMCPToolReadOnly(mutating)).toBe(false);
-  expect(
-    isScheduledMCPToolReadOnly(mutating, {
-      tools: {
-        query: {
-          effect: 'read_only',
-          definitionSha256: getScheduledMCPToolDefinitionDigest(readTool),
-        },
-      },
-    }),
-  ).toBe(false);
-  expect(
-    isScheduledMCPToolReadOnly(readTool, {
-      tools: {
-        query: {
-          effect: 'read_only',
-          definitionSha256: getScheduledMCPToolDefinitionDigest(readTool),
-        },
-      },
-    }),
-  ).toBe(true);
-});
-
-it('canonicalizes object key order without dropping policy-relevant definition fields', () => {
-  const left: Tool = {
-    name: 'read',
-    inputSchema: { type: 'object', properties: { x: { type: 'string', maxLength: 8 } } },
-  };
-  const right: Tool = {
-    inputSchema: { properties: { x: { maxLength: 8, type: 'string' } }, type: 'object' },
-    name: 'read',
-  };
-  expect(getScheduledMCPToolDefinitionDigest(left)).toBe(
-    getScheduledMCPToolDefinitionDigest(right),
-  );
-  expect(
-    getScheduledMCPToolDefinitionDigest({ ...right, outputSchema: { type: 'object' } }),
-  ).not.toBe(getScheduledMCPToolDefinitionDigest(left));
-});
 
 it.each(['root', 'child'])(
   'checks the actual %s operation through the real consent service',
@@ -96,16 +55,11 @@ it.each([
     },
   ],
   [
-    'selected tool change',
-    'binding_mismatch',
-    (f: Awaited<ReturnType<typeof executionFixture>>) => {
-      f.target.permittedTools[0].tools.push('write');
-    },
-  ],
-  [
-    'policy removal',
+    'the agent dropping the tool',
     'tool_policy_denied',
-    (f: Awaited<ReturnType<typeof executionFixture>>) => f.removePolicy(),
+    (f: Awaited<ReturnType<typeof executionFixture>>) => {
+      f.target.permittedTools[0].tools = ['other'];
+    },
   ],
 ] as const)('rechecks %s after admission on approval resume', async (_name, reason, change) => {
   const f = await executionFixture('resume');
@@ -121,18 +75,93 @@ it.each([
   ).rejects.toMatchObject({ failure: { reason, automaticReplay: false } });
 });
 
-it('refuses a changed catalog, an incomplete snapshot, and ambiguous duplicate definitions', async () => {
+it('refuses a tool the owner did not allow, even though the agent selects it', async () => {
+  const exportTool: Tool = { name: 'export', inputSchema: { type: 'object' } };
+  const f = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+  const input = {
+    user: f.user,
+    serverName: 'warehouse',
+    serverConfig: f.config,
+    loadTools: async () => catalog([readTool, exportTool]),
+  };
+
+  await expect(
+    f.invocation('root', 'export').authorize({ ...input, toolName: 'export' }),
+  ).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied', automaticReplay: false } });
+  await expect(f.invocation().authorize({ ...input, toolName: 'query' })).resolves.toBeUndefined();
+});
+
+it('keeps an allowed tool authorized after the agent selects another tool', async () => {
   const f = await executionFixture();
-  for (const snapshot of [
-    catalog([
-      {
-        ...readTool,
-        inputSchema: { type: 'object', properties: { mutation: { type: 'boolean' } } },
-      },
-    ]),
-    { ...catalog(), complete: false },
-    catalog([readTool, readTool]),
+  f.target.permittedTools[0].tools.push('write');
+
+  await expect(
+    f.invocation().authorize({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: f.config,
+      toolName: 'query',
+      loadTools: async () => catalog(),
+    }),
+  ).resolves.toBeUndefined();
+});
+
+it('pins the live definition on first use and refuses the tool once the server changes it', async () => {
+  const fixture = await executionFixture();
+  const call = (tool: Tool = readTool, agentId = 'root') =>
+    fixture.invocation(agentId).authorize({
+      user: fixture.user,
+      serverName: 'warehouse',
+      serverConfig: fixture.config,
+      toolName: 'query',
+      loadTools: async () => catalog([tool]),
+    });
+  await call();
+  // Key order is not a change; a new description, schema or annotation is.
+  await call({
+    inputSchema: readTool.inputSchema,
+    description: readTool.description,
+    name: 'query',
+  });
+  for (const changed of [
+    { ...readTool, description: 'Read a fixed resource, then forward it' },
+    { ...readTool, inputSchema: { type: 'object' as const, properties: { to: {} } } },
+    { ...readTool, annotations: { readOnlyHint: true } },
   ]) {
+    const other = await executionFixture();
+    await other.invocation().authorize({
+      user: other.user,
+      serverName: 'warehouse',
+      serverConfig: other.config,
+      toolName: 'query',
+      loadTools: async () => catalog(),
+    });
+    await expect(
+      other.invocation().authorize({
+        user: other.user,
+        serverName: 'warehouse',
+        serverConfig: other.config,
+        toolName: 'query',
+        loadTools: async () => catalog([changed]),
+      }),
+    ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  }
+  await expect(call({ ...readTool, description: 'Changed' })).rejects.toMatchObject({
+    failure: { reason: 'binding_mismatch', status: 'mcp_reauth_required' },
+  });
+  // The other agent's use of the same tool is refused too, and so is the original definition.
+  await expect(call(readTool, 'child')).rejects.toMatchObject({
+    failure: { reason: 'binding_mismatch' },
+  });
+  expect(await fixture.service.view(fixture.identity)).toMatchObject({
+    state: 'changed',
+    changed: { warehouse: ['query'] },
+  });
+});
+
+it('refuses an incomplete snapshot and ambiguous duplicate definitions', async () => {
+  const f = await executionFixture();
+  for (const snapshot of [{ ...catalog(), complete: false }, catalog([readTool, readTool])]) {
     await expect(
       f.invocation().authorize({
         user: f.user,
@@ -287,7 +316,35 @@ it('installs an independent ceiling for root, child, handoff, and lazy tools wit
       ],
     ]),
   });
-  expect(await call('query_mcp_warehouse', 'handoff')).toEqual({});
+  // An agent that joins the run later is held to the same grant. The fixture's grant lists
+  // root and child: an agent it does not list has the tool turned away, one it lists does not.
+  expect(await call('query_mcp_warehouse', 'handoff')).toEqual({
+    decision: 'deny',
+    reason: SCHEDULE_TOOL_NOT_ALLOWED,
+  });
+  const lazy = createScheduledMCPRunPolicy(f.execution, [{ id: 'root' }]);
+  lazy.registerAgent({
+    id: 'child',
+    toolRegistry: new Map([
+      [
+        'query_mcp_warehouse',
+        { name: 'query_mcp_warehouse', serverName: 'warehouse', toolType: 'mcp' },
+      ],
+    ]),
+  });
+  expect(
+    await lazy.hook(
+      {
+        hook_event_name: 'PreToolUse',
+        runId: 'run',
+        toolName: 'query_mcp_warehouse',
+        executingAgentId: 'child',
+        toolInput: {},
+        toolUseId: 'tool',
+      },
+      new AbortController().signal,
+    ),
+  ).toEqual({});
 });
 
 it('refuses a consent deadline crossed while the final database admission is in flight', async () => {
@@ -431,3 +488,184 @@ it.each(['consent_revoked', 'rbac_denied', 'binding_mismatch'] as const)(
     ).rejects.toBe(error);
   },
 );
+
+describe('the tools a run loads under a grant', () => {
+  it('keeps what the owner allowed and every tool that is not an MCP tool', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+    const keys = [
+      'query_mcp_warehouse',
+      'export_mcp_warehouse',
+      'purge_mcp_archive',
+      'web_search',
+      'execute_code',
+    ];
+    expect(fixture.execution.narrow('root', keys)).toEqual([
+      'query_mcp_warehouse',
+      'web_search',
+      'execute_code',
+    ]);
+    // A grant is per agent: one it does not list keeps no MCP tool.
+    expect(fixture.execution.narrow('stranger', keys)).toEqual(['web_search', 'execute_code']);
+  });
+
+  it('loads no key that stands for a whole server unless the grant lists a tool on it', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+    const keys = [
+      'query_mcp_warehouse',
+      'sys__all__sys_mcp_warehouse',
+      'sys__server__sys_mcp_warehouse',
+      'sys__all__sys_mcp_archive',
+      'sys__server__sys_mcp_archive',
+      'web_search',
+    ];
+    // "Every tool" names none of them, so it would define what the owner left out.
+    expect(fixture.execution.narrow('root', keys)).toEqual([
+      'query_mcp_warehouse',
+      'sys__server__sys_mcp_warehouse',
+      'web_search',
+    ]);
+    expect(fixture.execution.narrow('stranger', keys)).toEqual(['web_search']);
+  });
+
+  it('leaves the tools of a schedule nobody authorized as they are', async () => {
+    const fixture = await executionFixture();
+    fixture.snapshot.enrollment = null;
+    const legacy = (await fixture.factory.resolve(fixture.identity, 'invoke'))!;
+    const keys = ['query_mcp_warehouse', 'purge_mcp_archive'];
+    expect(legacy.narrow('root', keys)).toEqual(keys);
+  });
+
+  it('narrows through the request the execution is attached to, and no other', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+    const req = {};
+    const keys = ['query_mcp_warehouse', 'export_mcp_warehouse'];
+    // No context was ever opened for this request: nothing is narrowed and none is opened.
+    expect(narrowScheduledMCPTools(req, 'root', keys)).toBe(keys);
+    expect(narrowScheduledMCPTools(undefined, 'root', keys)).toBe(keys);
+    await fixture.factory.attach(getMCPRequestContext(req)!, fixture.identity, 'invoke');
+    expect(narrowScheduledMCPTools(req, 'root', keys)).toEqual(['query_mcp_warehouse']);
+    expect(narrowScheduledMCPTools({}, 'root', keys)).toBe(keys);
+  });
+});
+
+describe('a tool the owner approves call by call', () => {
+  const use = (
+    fixture: Awaited<ReturnType<typeof executionFixture>>,
+    extra: { toolCallId?: string; readiness?: true } = {},
+    agentId = 'root',
+  ) =>
+    fixture.invocation(agentId).authorize({
+      user: fixture.user,
+      serverName: 'warehouse',
+      serverConfig: fixture.config,
+      toolName: 'query',
+      loadTools: async () => catalog(),
+      ...extra,
+    });
+  const refused = { failure: { reason: 'approval_required', automaticReplay: false } };
+
+  it('is refused when the call carries no approval, whatever the run hook did', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { ask: ['query'] });
+    await expect(use(fixture)).rejects.toMatchObject(refused);
+    await expect(use(fixture, { toolCallId: 'call-1' })).rejects.toMatchObject(refused);
+  });
+
+  it('tells an approval card that the tool is asked about on every use', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['export'],
+      allow: ['export', 'query'],
+      ask: ['query'],
+    });
+    const req = {};
+    const asks = scheduleAsksEveryUse(req);
+    // Built before the grant is attached, as on a resume, and false for any other request.
+    expect(asks(['query_mcp_warehouse'])).toBe(false);
+    await fixture.factory.attach(getMCPRequestContext(req)!, fixture.identity, 'invoke');
+    expect(asks(['query_mcp_warehouse'])).toBe(true);
+    expect(asks(['other_name', 'query_mcp_warehouse'])).toBe(true);
+    expect(asks(['export_mcp_warehouse'])).toBe(false);
+    expect(scheduleAsksEveryUse(undefined)(['query_mcp_warehouse'])).toBe(false);
+  });
+
+  it('runs the call the owner approved, and only that call', async () => {
+    const fixture = await executionFixture('resume', readTool, undefined, {
+      ask: ['query'],
+      approvedToolCalls: ['call-1'],
+    });
+    await expect(use(fixture, { toolCallId: 'call-1' })).resolves.toBeUndefined();
+    await expect(use(fixture, { toolCallId: 'call-1' }, 'child')).resolves.toBeUndefined();
+    await expect(use(fixture, { toolCallId: 'call-2' })).rejects.toMatchObject(refused);
+    await expect(use(fixture)).rejects.toMatchObject(refused);
+  });
+
+  it('passes a readiness check, which calls nothing', async () => {
+    const fixture = await executionFixture('activation', readTool, undefined, { ask: ['query'] });
+    await expect(use(fixture, { readiness: true })).resolves.toBeUndefined();
+  });
+
+  it('leaves a tool the owner simply allowed alone', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['list'],
+      allow: ['list', 'query'],
+      ask: ['list'],
+    });
+    await expect(use(fixture)).resolves.toBeUndefined();
+  });
+
+  it('tells the run which tools to pause for, by either spelling of the server', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['list'],
+      allow: ['list', 'query'],
+      ask: ['query'],
+    });
+    expect(fixture.execution.mayAsk).toBe(true);
+    expect(fixture.execution.asksAbout('root', 'query_mcp_warehouse')).toBe(true);
+    expect(fixture.execution.asksAbout('child', 'query_mcp_warehouse')).toBe(true);
+    expect(fixture.execution.asksAbout('root', 'list_mcp_warehouse')).toBe(false);
+    expect(fixture.execution.asksAbout('other', 'query_mcp_warehouse')).toBe(false);
+    expect((await executionFixture()).execution.mayAsk).toBe(false);
+  });
+
+  it('pauses the run for it and for nothing else', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['list'],
+      allow: ['list', 'query'],
+      ask: ['query'],
+    });
+    const agent = {
+      id: 'root',
+      toolDefinitions: ['query', 'list', 'write'].map((name) => ({
+        name: `${name}_mcp_warehouse`,
+        toolType: 'mcp',
+        serverName: 'warehouse',
+      })),
+    };
+    const policy = createScheduledMCPRunPolicy(fixture.execution, [agent]);
+    const decide = (toolName: string, executingAgentId = 'root') =>
+      policy.hook(
+        { toolName, toolInput: {}, executingAgentId } as Parameters<typeof policy.hook>[0],
+        new AbortController().signal,
+      );
+    expect(await decide('query_mcp_warehouse')).toEqual({
+      decision: 'ask',
+      reason: SCHEDULE_APPROVAL_REASON,
+    });
+    expect(await decide('list_mcp_warehouse')).toEqual({});
+    expect(await decide('execute_code')).toMatchObject({ decision: 'deny' });
+  });
+});
+
+it('reads approvals only from a validated resume value', () => {
+  expect(
+    collectApprovedToolCalls({
+      a: { type: 'approve' },
+      b: { type: 'edit', updatedInput: {} },
+      c: { type: 'reject' },
+      d: { type: 'respond', responseText: 'no' },
+      e: null,
+      f: 'approve',
+    }),
+  ).toEqual(['a', 'b']);
+  for (const value of [undefined, null, 'approve', [{ type: 'approve' }], { answers: {} }])
+    expect(collectApprovedToolCalls(value)).toEqual([]);
+});

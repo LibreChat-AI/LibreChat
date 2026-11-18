@@ -128,6 +128,7 @@ import { extractAgentContent, extractSkillContent } from '../protection/adapters
 import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
+import { narrowScheduledMCPTools } from '~/schedules/authorization/execution';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
@@ -136,6 +137,7 @@ import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import { getGoogleInputTokenLimit } from '~/endpoints/google/llm';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
@@ -2233,7 +2235,8 @@ export async function initializeAgent(
     loadTools?.({
       provider,
       agentId: agent.id,
-      tools,
+      // Under a schedule's grant, only the MCP tools its owner allowed are loaded at all.
+      tools: narrowScheduledMCPTools(params.req, agent.id, tools),
       model: agent.model,
       tool_options: agent.tool_options,
       tool_resources: runtimeToolResources,
@@ -2434,6 +2437,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
     });
     toolDefinitions = codeExecResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.execute_code, codeExecResult.toolNames);
@@ -2719,6 +2723,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
       skillStates: params.skillStates,
       defaultActiveOnShare: params.defaultActiveOnShare,
       maxCatalogSkills: getMaxCatalogSkills(runtime),
@@ -2813,7 +2818,14 @@ export async function initializeAgent(
 
   const agentMaxContextNum = Number(agentMaxContextTokens) || DEFAULT_MAX_CONTEXT_TOKENS;
   const maxOutputTokensNum = Number(maxOutputTokens) || 0;
-  const baseContextTokens = Math.max(0, agentMaxContextNum - maxOutputTokensNum);
+  const sharedInputLimit =
+    agent.provider === Providers.GOOGLE || agent.provider === Providers.VERTEXAI
+      ? (getGoogleInputTokenLimit(tokensModel ?? '', maxOutputTokensNum) ?? Infinity)
+      : Infinity;
+  const baseContextTokens = Math.max(
+    0,
+    Math.min(agentMaxContextNum - maxOutputTokensNum, sharedInputLimit),
+  );
 
   const toMongoFiles = (files: Array<TFile | undefined> | undefined): IMongoFile[] =>
     (files ?? []).filter((a): a is TFile => a != null).map((a) => a as unknown as IMongoFile);
@@ -2953,7 +2965,7 @@ export async function initializeAgent(
       provisionWarnings != null && provisionWarnings.length > 0 ? provisionWarnings : undefined,
     maxContextTokens:
       maxContextTokens != null && maxContextTokens > 0
-        ? maxContextTokens
+        ? Math.min(maxContextTokens, sharedInputLimit)
         : Math.max(1024, Math.round(baseContextTokens * (1 - DEFAULT_RESERVE_RATIO))),
     primedCodeFiles,
     codeContextEntries,

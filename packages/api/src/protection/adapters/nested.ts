@@ -106,6 +106,8 @@ export interface UninspectableNestedContentResponse {
 export type ContentTraversalScope = {
   [Source in ContentSource]: {
     readonly source: Source;
+    /** False when this scope cannot contain a legacy-inspected fragment. */
+    readonly legacyPii?: false;
     readonly fields: readonly ContentFieldMap[Source][];
   };
 }[ContentSource];
@@ -355,10 +357,11 @@ export function isContentTraversalProtected(params: {
     hasActivePatterns(params.legacyPii) &&
     scopes.some(
       (scope) =>
-        scope.source === 'message' ||
-        scope.source === 'assembled_context' ||
-        (scope.source === 'tool_argument' &&
-          (scope.fields.includes('arguments') || scope.fields.includes('output'))),
+        scope.legacyPii !== false &&
+        (scope.source === 'message' ||
+          scope.source === 'assembled_context' ||
+          (scope.source === 'tool_argument' &&
+            (scope.fields.includes('arguments') || scope.fields.includes('output')))),
     )
   ) {
     return true;

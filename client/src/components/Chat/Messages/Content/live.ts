@@ -1,10 +1,10 @@
+import { firstErrorLine } from '@librechat/chat';
 import { boundIntentLabel, getToolCallIntent } from '@librechat/chat/react';
 import {
   Constants,
   ContentTypes,
   isOpaqueReasoning,
   readableReasoning,
-  stripToolCallErrorPrefix,
 } from 'librechat-data-provider';
 import {
   hasPendingApprovalInPart,
@@ -28,7 +28,8 @@ import type { SpanOutcome, SpanSummary } from '@librechat/chat';
 import type { TOptions } from 'i18next';
 import type { TranslationKeys } from '~/hooks';
 import { hasPendingAuthInPart } from '~/utils/groupToolCalls';
-import { isError } from './ToolOutput';
+
+export { firstErrorLine };
 
 /** How often a live fold's header may repaint. A streamed intent moves the
  *  newest line on nearly every delta; the header is a glanceable status, not a
@@ -437,27 +438,6 @@ export type FailedLine = {
   /** The failure time, if the host recorded it. Detached tasks use settlement, not dispatch. */
   failedAt?: number | Date;
 };
-
-const PROCESSING_PREFIX = /^Error processing tool:?\s*/i;
-/** Whatever prefix survives the two above, so a peek row does not spend its
- *  one line on the word the red glyph beside it already says. */
-const GENERIC_ERROR_PREFIX = /^Error:\s*/i;
-
-/** The opening line of an error, for a peek row that has one line to spend. */
-export function firstErrorLine(output: string | null | undefined): string {
-  /** Only output that IS an error. A step the run closed as failed, or a
-   *  task failed by its status attachment, can carry ordinary output, and
-   *  showing that in red as the reason would misreport the failure. */
-  if (!output || !isError(output)) {
-    return '';
-  }
-  const cleaned = stripToolCallErrorPrefix(output)
-    .replace(PROCESSING_PREFIX, '')
-    .replace(GENERIC_ERROR_PREFIX, '')
-    .trim();
-  const newline = cleaned.indexOf('\n');
-  return newline === -1 ? cleaned : cleaned.slice(0, newline).trim();
-}
 
 /**
  * Every failed call in a span, in order, as the line its card shows plus the

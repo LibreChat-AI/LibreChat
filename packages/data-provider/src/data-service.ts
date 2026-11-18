@@ -1523,6 +1523,38 @@ export function getSubagentThread(
   return request.get(endpoints.subagentThread(parentConversationId, threadId, taskId, cursor));
 }
 
+/** The most rows one read of a child thread's messages asks for; the server holds the same bound. */
+export const SUBAGENT_THREAD_MESSAGES_PAGE = 50;
+
+/**
+ * One page of a child thread's messages, in the shape and with the previews of a conversation
+ * load: the thread's newest rows, or with `cursor` the rows before a page already read. A
+ * thread can hold more than is worth reading at once, so it is read a page at a time.
+ */
+export async function getSubagentThreadMessages(
+  parentConversationId: string,
+  threadId: string,
+  options?: { toolPreviews?: boolean; cursor?: string },
+): Promise<t.SubagentThreadMessagesPage> {
+  const url = endpoints.subagentThreadMessagesPage(parentConversationId, threadId, {
+    limit: SUBAGENT_THREAD_MESSAGES_PAGE,
+    cursor: options?.cursor,
+  });
+  const page = await request.get<s.TMessage[] | t.SubagentThreadMessagesPage>(
+    options?.toolPreviews === true ? withToolCallPreviews(url) : url,
+  );
+  /** A server that predates paging answers with the whole thread as a list. */
+  return Array.isArray(page) ? { messages: page, earlier: null } : page;
+}
+
+/** The full tool call behind a preview in a child thread; `params.conversationId` is the thread. */
+export function getSubagentThreadToolCallPart(
+  parentConversationId: string,
+  params: q.ToolCallPartParams,
+): Promise<q.ToolCallPartResponse> {
+  return request.get(endpoints.subagentThreadToolCallPart(parentConversationId, params));
+}
+
 export function getSubagentTaskContent(
   parentConversationId: string,
   threadId: string,

@@ -20,7 +20,7 @@ import type {
 } from '~/mcp/types';
 import type { ScheduleMCPFailureInput, ScheduleMCPSettlementBoundary } from './types';
 import type { ScheduleMCPEnrollmentResolver } from './authorization/service';
-import type { ScheduledTokenContext } from './context';
+import type { ExecutionContext } from '~/agents/authority/context';
 import {
   getMCPRequestContext,
   getMCPRequestSignal,
@@ -32,14 +32,15 @@ import {
   isMCPTransportAuthenticationError,
   createScheduledMCPTransportError,
 } from '~/mcp/errors';
+import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
 import { getScheduledMCPConfigurationRevision } from './authorization/configuration';
-import { readScheduleFireContext, isScheduleFireRequest } from './trigger';
 import { getScheduleMCPExecution } from './authorization/execution';
 import { ScheduleMCPConsentError } from './authorization/service';
 import { usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
 import { holdMCPRequestFailure } from '~/mcp/signal';
 import { awaitOboOperation } from '~/mcp/oauth/obo';
 import { isOwnedAbortError } from '~/utils/errors';
+import { isScheduleFireRequest } from './trigger';
 import { applyRequestHeaders } from '~/mcp/utils';
 
 export { ScheduledMCPBearerError } from '~/mcp/errors';
@@ -132,6 +133,24 @@ export function createScheduledMCPBearerHost(deps: {
         onFailure?.(error);
         throw error;
       };
+      /** What the owner allowed on this server, among what its agents still select. */
+      const grantedSelections = async (
+        target: ScheduledMCPTarget,
+        signal?: AbortSignal,
+      ): Promise<ScheduledMCPToolSelection[]> => {
+        const lookup = await awaitOboOperation(
+          deps.authority.lookupConsent(captured, target.resource, { signal }),
+          signal,
+        );
+        // With no grant for the server, authorizing the whole selection reports why.
+        if (lookup.state !== 'found') return target.permittedTools;
+        return lookup.consent.permittedTools
+          .map(({ agentId, tools }) => {
+            const current = target.permittedTools.find((item) => item.agentId === agentId);
+            return { agentId, tools: tools.filter((tool) => current?.tools.includes(tool)) };
+          })
+          .filter((item) => item.tools.length > 0);
+      };
       const authorize = async (
         target: ScheduledMCPTarget,
         selection: ScheduledMCPToolSelection,
@@ -221,7 +240,9 @@ export function createScheduledMCPBearerHost(deps: {
             const { [authorization[0][0]]: _authorization, ...headers } = effective.headers ?? {};
             if (/\{\{LIBRECHAT_(?:OPENID_|GRAPH_)/.test(JSON.stringify({ ...effective, headers })))
               deny('unsupported_mode', serverName);
-            const selections = selection ? [selection] : target.permittedTools;
+            // A connection is for the whole server, so it is admitted for what the owner
+            // allowed on it, not for everything the agents select there.
+            const selections = selection ? [selection] : await grantedSelections(target, signal);
             if (!selections.length) deny('tool_policy_denied', serverName);
             const authorizations = await Promise.all(
               selections.map((item) => authorize(target, item, stage, signal, onFailure)),
@@ -493,7 +514,7 @@ export function rejectScheduledMCPBearer(
 export function prepareScheduledMCPBearer(input: {
   req: Parameters<typeof isScheduleFireRequest>[0] & { user: { id: string; tenantId?: string } };
   context?: RequestScopedMCPConnectionStore;
-  restoredContext?: ScheduledTokenContext;
+  executionContext?: ExecutionContext;
   host?: ScheduledMCPBearerHost;
   signal?: AbortSignal;
   streamId?: string | null;
@@ -506,20 +527,10 @@ export function prepareScheduledMCPBearer(input: {
   const execution = getScheduleMCPExecution(context);
   if (!isScheduleFireRequest(input.req) && !execution) return;
   input.signal?.throwIfAborted();
-  const fire = readScheduleFireContext(input.req);
-  const root = input.restoredContext;
-  const identity =
-    execution?.identity ??
-    root ??
-    (fire && typeof input.req.body?.agent_id === 'string'
-      ? {
-          scheduleId: fire.scheduleId,
-          ownerId: input.req.user.id,
-          tenantId: input.req.user.tenantId,
-          agentId: input.req.body.agent_id,
-          invocationMode: 'delegated' as const,
-        }
-      : undefined);
+  const schedule = getScheduleSource(input.executionContext);
+  const identity = execution?.identity ?? toScheduledTokenContext(input.executionContext);
+  /** Only a resumed run with a complete restored identity re-enters at the resume stage. */
+  const resumed = schedule?.resumed === true && identity != null && !execution;
   if (context && !identity) {
     attachScheduledMCPBearer(context, {
       scheduleId: '',
@@ -561,9 +572,14 @@ export function prepareScheduledMCPBearer(input: {
     context,
     captured,
     input.host,
-    execution?.stage ?? (root ? 'resume' : 'invoke'),
+    execution?.stage ?? (resumed ? 'resume' : 'invoke'),
     input.signal,
-    { manual: execution?.manual === true || (!execution && fire?.manual === true), onFailure },
+    {
+      manual:
+        execution?.manual === true ||
+        (!execution && schedule?.resumed === false && schedule.manual),
+      onFailure,
+    },
   );
 }
 

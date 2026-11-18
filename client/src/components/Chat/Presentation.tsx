@@ -3,14 +3,18 @@ import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { EModelEndpoint } from 'librechat-data-provider';
 import {
-  activeSubagentPanel,
+  sideChatAtom,
+  SIDE_CHAT_PANE,
   useIsSubmitting,
+  activeSubagentPanel,
+  SideChatHostProvider,
   ParentSubagentsProvider,
 } from '@librechat/chat/react';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
+import { appSideChatHost } from '~/Providers/SideChatHostContext';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
 import { SidePanelGroup } from '~/components/SidePanel';
@@ -21,8 +25,19 @@ import { migrateStoredFileDeletions } from '~/utils';
 import store from '~/store';
 
 const Artifacts = lazyWithRecovery(() => import('~/components/Artifacts/Artifacts'));
+/** The panel draws message rows, so the app's message hosts load with it. */
 const SubagentThreadPanel = lazyWithRecovery(() =>
-  import('@librechat/chat/components').then((module) => module.loadSubagentThreadPanel()),
+  Promise.all([
+    import('@librechat/chat/components').then((module) => module.loadSubagentThreadPanel()),
+    import('~/components/Chat/Messages/hosts'),
+  ]).then(([panel]) => panel),
+);
+
+const SideChatPanel = lazyWithRecovery(() =>
+  Promise.all([
+    import('@librechat/chat/components').then((module) => module.loadSideChatPanel()),
+    import('~/components/Chat/Messages/hosts'),
+  ]).then(([panel]) => panel),
 );
 
 export default function Presentation({
@@ -50,6 +65,14 @@ export default function Presentation({
   const selectedSubagent = useAtomValue(activeSubagentPanel);
   const setSelectedSubagent = useSetAtom(activeSubagentPanel);
   const resetSelectedSubagent = useCallback(() => setSelectedSubagent(null), [setSelectedSubagent]);
+  const sideChat = useAtomValue(sideChatAtom);
+  const isSideChatSubmitting = useIsSubmitting(SIDE_CHAT_PANE);
+  const setSideChat = useSetAtom(sideChatAtom);
+  const closeSideChat = useCallback(() => setSideChat(null), [setSideChat]);
+  const takeSideChatText = useCallback(
+    () => setSideChat((current) => current && { conversation: current.conversation }),
+    [setSideChat],
+  );
   const previousConversationIdRef = useRef<string | null>(null);
 
   useArtifactsRegistryLifetime(conversationId);
@@ -66,8 +89,19 @@ export default function Presentation({
     previousConversationIdRef.current = next;
     if (previous != null && previous !== next) {
       setSelectedSubagent((current) => (current?.durable == null ? null : current));
+      /** A side chat sits beside the conversation it was opened from, and leaves with it. */
+      setSideChat(null);
     }
-  }, [conversationId, setSelectedSubagent]);
+  }, [conversationId, setSelectedSubagent, setSideChat]);
+
+  useEffect(() => () => setSideChat(null), [setSideChat]);
+
+  /** One panel at a time: a child's activity opened after the side chat takes its place. */
+  useEffect(() => {
+    if (selectedSubagent != null) {
+      setSideChat(null);
+    }
+  }, [selectedSubagent, setSideChat]);
 
   const { data: startupConfig, isSuccess: hasStartupConfig } = useGetStartupConfig();
 
@@ -102,10 +136,14 @@ export default function Presentation({
    * slot. Undocked, the artifacts pane is in its own window and the side panel
    * is free, so a child-activity panel opened there must survive. */
   useEffect(() => {
-    if (!isUndocked && artifactsElement != null && selectedSubagent != null) {
+    if (isUndocked || artifactsElement == null) {
+      return;
+    }
+    if (selectedSubagent != null) {
       resetSelectedSubagent();
     }
-  }, [artifactsElement, isUndocked, resetSelectedSubagent, selectedSubagent]);
+    closeSideChat();
+  }, [artifactsElement, closeSideChat, isUndocked, resetSelectedSubagent, selectedSubagent]);
 
   const subagentElement = useMemo(() => {
     if (
@@ -124,9 +162,35 @@ export default function Presentation({
     );
   }, [conversationId, selectedSubagent]);
 
+  const sideChatElement = useMemo(() => {
+    if (sideChat == null) {
+      return null;
+    }
+    const { conversationId: sideConversationId, endpoint, agent_id } = sideChat.conversation;
+    return (
+      <SideChatHostProvider host={appSideChatHost}>
+        {/* Children the side conversation's agent dispatches are its own, not the main one's. */}
+        <ParentSubagentsProvider
+          conversationId={sideConversationId ?? ''}
+          enabled={endpoint === EModelEndpoint.agents && agent_id != null}
+          isSubmitting={isSideChatSubmitting}
+        >
+          <Suspense fallback={null}>
+            <SideChatPanel
+              key={sideConversationId}
+              chat={sideChat}
+              onClose={closeSideChat}
+              onHandedTextTaken={takeSideChatText}
+            />
+          </Suspense>
+        </ParentSubagentsProvider>
+      </SideChatHostProvider>
+    );
+  }, [closeSideChat, isSideChatSubmitting, sideChat, takeSideChatText]);
+
   /* Undocked, the pane renders into its own window: the side panel gives its
    * width back to the conversation instead of holding an empty column. */
-  const panelElement = (isUndocked ? null : artifactsElement) ?? subagentElement;
+  const panelElement = (isUndocked ? null : artifactsElement) ?? subagentElement ?? sideChatElement;
 
   return (
     <DragDropWrapper className="bg-surface-canvas relative flex w-full grow overflow-hidden">

@@ -276,7 +276,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       mkdirSync(dirname(output), { recursive: true });
       writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`);
       console.log(
-        'Advisory CRAP baseline | CC: ESLint classic | Coverage: statements, excluding nested functions',
+        'Refactor hints (advisory) | CC: ESLint classic | Coverage: whole-function statements, excluding nested functions',
       );
       console.log('File\tFunction\tLine:Column\tCC\tStatement coverage\tCRAP');
       for (const row of report.functions) {

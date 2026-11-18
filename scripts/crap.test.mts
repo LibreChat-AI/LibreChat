@@ -188,7 +188,7 @@ test('CLI resolves source/output paths from package cwd and writes advisory JSON
     spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8' });
   const result = run('coverage/favorites/coverage-final.json', 'src/favorite.ts');
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Advisory CRAP/);
+  assert.match(result.stdout, /Refactor hints \(advisory\)/);
   assert.match(result.stdout, /0\.0% \(0\/1\)\s+2\.00/);
   const report = JSON.parse(readFileSync(join(cwd, 'coverage', 'favorites', 'crap.json'), 'utf8'));
   assert.deepEqual(report, createReport(coverageFile, [file]));

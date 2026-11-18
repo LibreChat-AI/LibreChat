@@ -42,20 +42,24 @@ import {
   ErrorTypes,
   Permissions,
   EModelEndpoint,
+  EImageOutputType,
   EToolResources,
   FileContext,
   FileSources,
   PermissionTypes,
   AgentCapabilities,
   configSchema,
+  setFileConfigRegexCompiler,
 } from 'librechat-data-provider';
-import type { IMongoFile } from '@librechat/data-schemas';
+import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
 import type { Agent, TFile, FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~/types';
 import type { ResolveLinkedInstructions } from '../instructions/linked';
 import type { InitializeAgentDbMethods } from '../initialize';
 import type { CodeExecutionContext } from '../execution';
 import type { GraphSubagentHostConfig } from '../discovery';
+import { executionFixture, readTool } from '~/schedules/authorization/execution.helper';
+import { getMCPRequestContext } from '~/mcp/request';
 import type { ProjectFileRecord } from '../../projects/resources';
 import { toCanonicalProjectResource } from '../../projects/resources';
 import { DEFAULT_MAX_CONTEXT_TOKENS } from '../initialize';
@@ -147,6 +151,7 @@ import { selectCodeFiles } from '~/files/code/priming';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
 import { canAgentGraphPause } from '../hitl/admission';
+import { configureFileConfigRegexEngine } from '../../files/regexEngine';
 
 const realUtils = jest.requireActual<typeof import('~/utils')>('~/utils');
 
@@ -5491,6 +5496,153 @@ describe('initializeAgent — authorized run file snapshots', () => {
     return result;
   }
 
+  it('hydrates TXT, Office and subsequent TXT through cached production MIME policy before inspection', async () => {
+    const { assertModelBoundContent } = jest.requireActual<
+      typeof import('../../middleware/modelBoundContent')
+    >('../../middleware/modelBoundContent');
+    const officeMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    const config: AppConfig = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: EImageOutputType.PNG,
+      fileConfig: {
+        endpoints: {
+          openAI: {
+            supportedMimeTypes: ['text/plain', officeMime],
+            defaultLLMDeliveryPath: { fallback: 'text' as const },
+          },
+        },
+      },
+      filters: {
+        messages: {
+          pii: {
+            starterPatterns: [],
+            customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
+          },
+        },
+      },
+    };
+    configureFileConfigRegexEngine();
+    try {
+      let cachedPolicy;
+      for (const type of ['text/plain', officeMime, 'text/plain']) {
+        const { agent, req, loadTools, db } = setup();
+        agent.tools = [];
+        req.config = config;
+        const file = Object.freeze(
+          inputFile({
+            type,
+            filename: type === officeMime ? 'context.docx' : 'context.txt',
+            text: 'safe extracted text',
+            llmDeliveryPath: 'text',
+          }),
+        );
+        const result = await initializeAgent(
+          {
+            req,
+            agent,
+            loadTools,
+            authorizedRunFiles: [file],
+            allowedProviders: new Set([Providers.OPENAI]),
+          },
+          db,
+        );
+        expect(result.requestAttachments).toHaveLength(1);
+        expect(result.requestAttachments[0].text).toBe('safe extracted text');
+        expect(() =>
+          assertModelBoundContent({ filters: config.filters, agents: [result as never] }),
+        ).not.toThrow();
+        cachedPolicy ??= result.deliveryRouting.fileConfig;
+        expect(result.deliveryRouting.fileConfig).toBe(cachedPolicy);
+        expect(file.filepath).toBe('/uploads/current.pdf');
+        expect(db.getFiles).not.toHaveBeenCalled();
+        expect(db.getConvoFiles).not.toHaveBeenCalled();
+        expect(db.getToolFilesByIds).not.toHaveBeenCalled();
+      }
+    } finally {
+      setFileConfigRegexCompiler((pattern) => new RegExp(pattern));
+    }
+  });
+
+  it('inspects a hydrated initialized agent with a large tool catalog without extra file reads', async () => {
+    const { assertModelBoundContent } = jest.requireActual<
+      typeof import('../../middleware/modelBoundContent')
+    >('../../middleware/modelBoundContent');
+    const loadedToolDefinitions = Array.from({ length: 67 }, (_, index) => ({
+      name: `report_${index}`,
+      description: 'Query a report',
+      parameters: {
+        type: 'object',
+        properties: Object.fromEntries(
+          Array.from({ length: 64 }, (_, field) => [
+            `field_${field}`,
+            { type: 'string', description: 'A report dimension', enum: ['one', 'two'] },
+          ]),
+        ),
+      },
+    }));
+    const { agent, req, loadTools, db } = createMocks({ loadedToolDefinitions });
+    req.config = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: EImageOutputType.PNG,
+      fileConfig: {
+        endpoints: {
+          openAI: {
+            supportedMimeTypes: ['text/plain'],
+            defaultLLMDeliveryPath: { fallback: 'text' },
+          },
+        },
+      },
+      filters: {
+        files: {
+          pii: {
+            starterPatterns: [],
+            fields: ['content', 'extracted_text'],
+            uninspectable: 'block',
+          },
+        },
+      },
+    };
+    const file = Object.freeze(
+      inputFile({
+        type: 'text/plain',
+        filename: 'context.txt',
+        text: 'safe extracted text',
+        llmDeliveryPath: 'text',
+      }),
+    );
+    const result = await initializeAgent(
+      {
+        req,
+        agent,
+        loadTools,
+        authorizedRunFiles: [file],
+        allowedProviders: new Set([Providers.OPENAI]),
+      },
+      db,
+    );
+    expect(result.toolDefinitions).toHaveLength(67);
+    expect(result.requestAttachments).toHaveLength(1);
+    expect(() =>
+      assertModelBoundContent({ filters: req.config?.filters, agents: [result as never] }),
+    ).not.toThrow();
+    expect(db.getFiles).not.toHaveBeenCalled();
+    expect(db.getConvoFiles).not.toHaveBeenCalled();
+    expect(db.getToolFilesByIds).not.toHaveBeenCalled();
+    expect(file.filepath).toBe('/uploads/current.pdf');
+
+    // Responses callers can merge definitions after initialization; the final check must see them.
+    result.toolDefinitions?.push({
+      name: 'caller',
+      description: 'data:application/pdf;base64,c2VjcmV0',
+      parameters: { type: 'object' },
+    });
+    expect(() =>
+      assertModelBoundContent({ filters: req.config?.filters, agents: [result as never] }),
+    ).toThrow('Submitted file content could not be inspected before processing.');
+  });
+
   it.each([undefined, 'Extracted document contents'])(
     'advertises a queued file before tool execution with extracted text %p',
     async (text) => {
@@ -7585,5 +7737,55 @@ describe('snapshot destination admission invariants', () => {
       snapshot('other', 200, { filename: 'other.txt', bytes: 9 * MB }),
     ]);
     expect([...staged.entries()]).toEqual([['first.txt', 'first']]);
+  });
+});
+
+describe("initializeAgent: under a schedule's grant", () => {
+  const selected = [
+    'query_mcp_warehouse',
+    'export_mcp_warehouse',
+    'purge_mcp_archive',
+    Tools.web_search,
+  ];
+  async function initialize(attach: boolean) {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'root';
+    agent.tools = [...selected];
+    loadTools.mockResolvedValue({ toolDefinitions: [] });
+    if (attach) {
+      // The agents select `query` and `export` on the warehouse; the owner allowed `query`.
+      const fixture = await executionFixture('invoke', readTool, undefined, {
+        offered: ['export'],
+      });
+      await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
+    }
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([agent.provider]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+    return loadTools.mock.calls.map(([call]) => call.tools as string[]);
+  }
+
+  it('loads only the MCP tools the owner allowed, and nothing from a server left out', async () => {
+    const [tools, ...retries] = await initialize(true);
+    expect(retries).toEqual([]);
+    expect(tools).toContain('query_mcp_warehouse');
+    expect(tools).toContain(Tools.web_search);
+    expect(tools).not.toContain('export_mcp_warehouse');
+    // The loader is never asked about the archive server, so it is never connected to.
+    expect(tools).not.toContain('purge_mcp_archive');
+  });
+
+  it('loads everything the agent selects for a request with no grant', async () => {
+    const [tools] = await initialize(false);
+    expect(tools).toEqual(expect.arrayContaining(selected));
   });
 });

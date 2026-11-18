@@ -959,7 +959,13 @@ describe('SSE stream tenant isolation', () => {
     });
 
     it('reports an already-settled generation when natural completion wins the abort CAS', async () => {
+      /** Read by the child-job guard, by the route, and again after the abort lost its CAS. */
       mockGenerationJobManager.getJob
+        .mockResolvedValueOnce({
+          metadata: { userId: 'user-123', generationProtocolVersion: 2 },
+          status: 'running',
+          createdAt: 1000,
+        })
         .mockResolvedValueOnce({
           metadata: { userId: 'user-123', generationProtocolVersion: 2 },
           status: 'running',
@@ -996,7 +1002,13 @@ describe('SSE stream tenant isolation', () => {
     });
 
     it('keeps the legacy abort ACK shape when natural completion wins for protocol v1', async () => {
+      /** Read by the child-job guard, by the route, and again after the abort lost its CAS. */
       mockGenerationJobManager.getJob
+        .mockResolvedValueOnce({
+          metadata: { userId: 'user-123', generationProtocolVersion: 1 },
+          status: 'running',
+          createdAt: 1000,
+        })
         .mockResolvedValueOnce({
           metadata: { userId: 'user-123', generationProtocolVersion: 1 },
           status: 'running',

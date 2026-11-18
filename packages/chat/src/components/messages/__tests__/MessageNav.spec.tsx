@@ -2572,3 +2572,115 @@ it('classifies a DOM-only System row separately from assistant navigation', () =
     '<div data-system-turn="true"><div data-testid="message-body">Task finished</div></div>';
   expect(buildFallbackEntry(node, 'system')).toMatchObject({ isSystem: true });
 });
+
+describe('MessageNav thread resize', () => {
+  type ResizeRecord = { contentRect: { width: number; height: number } };
+  type Watch = { callback: (records: ResizeRecord[]) => void; targets: Set<Element> };
+
+  const originalResizeObserver = window.ResizeObserver;
+  let watches: Watch[] = [];
+
+  beforeEach(() => {
+    watches = [];
+    window.ResizeObserver = class {
+      private readonly watch: Watch;
+      constructor(callback: Watch['callback']) {
+        this.watch = { callback, targets: new Set() };
+        watches.push(this.watch);
+      }
+      observe(target: Element): void {
+        this.watch.targets.add(target);
+      }
+      unobserve(target: Element): void {
+        this.watch.targets.delete(target);
+      }
+      disconnect(): void {
+        this.watch.targets.clear();
+      }
+    } as unknown as typeof ResizeObserver;
+  });
+
+  afterEach(() => {
+    window.ResizeObserver = originalResizeObserver;
+  });
+
+  const messages = [
+    buildMessage({ messageId: 'a', text: 'alpha', isCreatedByUser: true }),
+    buildMessage({ messageId: 'b', text: 'bravo' }),
+    buildMessage({ messageId: 'c', text: 'charlie', isCreatedByUser: true }),
+  ];
+
+  /** Reports a new size for the thread's content, then lets `ms` pass. */
+  function resize(content: Element, width: number, height: number, ms: number) {
+    act(() => {
+      for (const { callback, targets } of watches) {
+        if (targets.has(content)) {
+          callback([{ contentRect: { width, height } }]);
+        }
+      }
+      jest.advanceTimersByTime(ms);
+    });
+  }
+
+  /** Counts how often the rail measures the thread's rows. */
+  function countRowReads(content: Element) {
+    const counter = { reads: 0 };
+    for (const row of content.querySelectorAll('.message-render')) {
+      Object.defineProperty(row, 'offsetHeight', {
+        configurable: true,
+        get() {
+          counter.reads += 1;
+          return 150;
+        },
+      });
+    }
+    return counter;
+  }
+
+  it('measures the rows again on the next frame when only the height changes', () => {
+    const { content } = renderNav(messages);
+    const counter = countRowReads(content);
+    resize(content, 800, 1000, 20);
+    counter.reads = 0;
+
+    resize(content, 800, 1400, 20);
+
+    expect(counter.reads).toBe(messages.length);
+  });
+
+  it('waits for a changing width to hold still, then measures once', () => {
+    const { content } = renderNav(messages);
+    const counter = countRowReads(content);
+    resize(content, 800, 1000, 20);
+    counter.reads = 0;
+
+    /** A sidebar sliding shut reports a new width on every frame of the slide. */
+    resize(content, 760, 1000, 16);
+    resize(content, 700, 1040, 16);
+    resize(content, 640, 1100, 16);
+    expect(counter.reads).toBe(0);
+
+    resize(content, 600, 1150, 100);
+    expect(counter.reads).toBe(0);
+
+    act(() => {
+      jest.advanceTimersByTime(60);
+    });
+    expect(counter.reads).toBe(messages.length);
+  });
+
+  it('drops the pending measurement when the rail unmounts mid-slide', () => {
+    const { content, unmount } = renderNav(messages);
+    const counter = countRowReads(content);
+    resize(content, 800, 1000, 20);
+    resize(content, 700, 1000, 16);
+    counter.reads = 0;
+
+    unmount();
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(counter.reads).toBe(0);
+  });
+});

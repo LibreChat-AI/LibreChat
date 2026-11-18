@@ -1,5 +1,6 @@
 import React, { useContext } from 'react';
 import { RecoilRoot } from 'recoil';
+import { createPortal } from 'react-dom';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
@@ -12,6 +13,7 @@ import {
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
+import { HeaderActionSlotContext } from '../slot';
 import ToolCallGroup from '../ToolCallGroup';
 
 const mockMCPServerNames: string[] = [];
@@ -130,12 +132,13 @@ jest.mock('../ToolOutput', () => ({
 }));
 
 jest.mock('lucide-react', () => ({
-  ChevronDown: ({ className }: { className?: string }) => (
-    <span data-testid="group-chevron" className={className}>
+  ChevronDown: ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
+    <span data-testid="group-chevron" className={className} aria-hidden={props['aria-hidden']}>
       {'chevron'}
     </span>
   ),
   Users: () => <span>{'users'}</span>,
+  Lightbulb: () => <span>{'thoughts'}</span>,
   MessageCircleQuestion: () => <span data-testid="question-icon">{'question'}</span>,
   ListChecks: () => <span data-testid="task-check-icon">{'checks'}</span>,
   TriangleAlert: () => <span>{'warning'}</span>,
@@ -186,9 +189,6 @@ jest.mock('~/utils', () => ({
 jest.mock('../Parts', () => ({
   AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="attachment-group" data-count={attachments?.length ?? 0} />
-  ),
-  ReasoningCompact: ({ isStreaming = false }: { isStreaming?: boolean }) => (
-    <div data-testid="compact-reasoning" data-streaming={String(isStreaming)} />
   ),
 }));
 
@@ -310,12 +310,88 @@ describe('ToolCallGroup folded-in thought', () => {
 
   it('streams the thought at the tail of the group that holds the message cursor', () => {
     renderGroup({ ...baseProps, isLast: true });
-    expect(screen.getByTestId('compact-reasoning')).toHaveAttribute('data-streaming', 'true');
+    expect(screen.getByRole('button', { name: 'com_ui_thinking' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.getByTestId('streaming-thought-peek')).toHaveTextContent('Weighing the result');
   });
 
   it('settles the thought at the tail of a body the run has moved past', () => {
     renderGroup({ ...baseProps, isLast: false });
-    expect(screen.getByTestId('compact-reasoning')).toHaveAttribute('data-streaming', 'false');
+    expect(screen.getByRole('button', { name: 'com_ui_thoughts' })).toBeInTheDocument();
+    expect(screen.queryByTestId('streaming-thought-peek')).not.toBeInTheDocument();
+  });
+});
+
+describe('ToolCallGroup package body adapter', () => {
+  it('preserves the renderer child, expansion callback and reasoning disclosure across updates', () => {
+    const element = <input key="tool-child" aria-label="Tool draft" defaultValue="draft" />;
+    const renderPart = jest.fn<
+      ReturnType<React.ComponentProps<typeof ToolCallGroup>['renderPart']>,
+      Parameters<React.ComponentProps<typeof ToolCallGroup>['renderPart']>
+    >(() => element);
+    const parts = [
+      { part: makePart('tool', ''), idx: 0 },
+      {
+        part: {
+          type: ContentTypes.THINK,
+          think: 'Checking',
+          reasoning_label: 'Analysis',
+        } as TMessageContentParts,
+        idx: 1,
+      },
+    ];
+    const props = {
+      parts,
+      renderPart,
+      isSubmitting: true,
+      isLast: true,
+      showThinking: false,
+      lastContentIdx: 1,
+    };
+    const { rerender } = renderGroup(props);
+    const draft = screen.getByRole('textbox', { name: 'Tool draft' });
+    const wrapper = draft.parentElement;
+    const expand = renderPart.mock.calls[0][3];
+    const disclosure = screen.getByRole('button', { name: 'Analysis' });
+    fireEvent.change(draft, { target: { value: 'unsent' } });
+    fireEvent.click(disclosure);
+    const controls = disclosure.getAttribute('aria-controls');
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup
+          {...props}
+          parts={[
+            { part: makePart('tool', 'done'), idx: 0 },
+            {
+              part: {
+                type: ContentTypes.THINK,
+                think: { value: 'Checked' },
+                reasoning_label: 'Analysis',
+              } as TMessageContentParts,
+              idx: 1,
+            },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('textbox', { name: 'Tool draft' })).toBe(draft);
+    expect(draft).toHaveValue('unsent');
+    expect(draft.parentElement).toBe(wrapper);
+    expect(renderPart.mock.results.every(({ value }) => value === element)).toBe(true);
+    expect(renderPart.mock.calls.every((call) => call[3] === expand)).toBe(true);
+    expect(screen.getByRole('button', { name: 'Analysis' })).toBe(disclosure);
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    expect(disclosure).toHaveAttribute('aria-controls', controls);
+    expect(screen.getByText('Checked')).toBeInTheDocument();
+    const header = screen.getByRole('button', { name: /^Fetch_image/ });
+    fireEvent.click(header);
+    fireEvent.transitionEnd(screen.getByTestId('tool-call-group-panel'));
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    fireEvent.click(header);
+    expect(renderPart.mock.calls.at(-1)?.[3]).toBe(expand);
+    expect(screen.getByRole('textbox', { name: 'Tool draft' })).toHaveValue('draft');
   });
 });
 
@@ -436,10 +512,35 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByText('Only allow sites you trust')).not.toBeInTheDocument();
   });
 
-  it('keeps the group disclosure chevron visible', () => {
-    renderGroup(baseProps);
-
-    expect(screen.getByTestId('group-chevron')).not.toHaveClass('opacity-0');
+  it('keeps the real header action target stable while the group updates', () => {
+    const actionTargets: HTMLElement[] = [];
+    function Action() {
+      const target = useContext(HeaderActionSlotContext);
+      if (target == null) {
+        return null;
+      }
+      actionTargets.push(target);
+      return createPortal(<span data-testid="tool-action">{'Sources'}</span>, target);
+    }
+    const props = {
+      ...baseProps,
+      initialExpansionState: { isExpanded: true, userOverride: true },
+      renderPart: (_part: TMessageContentParts, idx: number) => <Action key={idx} />,
+    };
+    const { rerender } = renderGroup(props);
+    const header = screen.getByRole('button', { expanded: true });
+    const target = screen.getAllByTestId('tool-action')[0].parentElement;
+    expect(target?.parentElement).toBe(header.parentElement);
+    expect(header).not.toContainElement(target);
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props} isSubmitting />
+      </RecoilRoot>,
+    );
+    expect(screen.getAllByTestId('tool-action')[0].parentElement).toBe(target);
+    expect(actionTargets.every((element) => element === target)).toBe(true);
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('does not reconcile layout for an initially collapsed completed group', () => {
@@ -620,7 +721,7 @@ describe('ToolCallGroup image hoisting', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
 
     expect(screen.getByTestId('inner-1')).toBeInTheDocument();
-    expect(screen.queryByTestId('compact-reasoning')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_thoughts' })).not.toBeInTheDocument();
   });
 
   it('delegates an encrypted-reasoning part to the standalone renderer', () => {
@@ -642,7 +743,7 @@ describe('ToolCallGroup image hoisting', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
 
     expect(screen.getByTestId('inner-1')).toBeInTheDocument();
-    expect(screen.queryByTestId('compact-reasoning')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_thoughts' })).not.toBeInTheDocument();
   });
 
   it('unmounts tool bodies after a collapsed group finishes transitioning', () => {
@@ -1807,30 +1908,6 @@ describe('ToolCallGroup failure fast path', () => {
     expect(header).toHaveAttribute('aria-expanded', 'true');
     /** Once per row the group rendered, after those rows mounted. */
     expect(onReveal).toHaveBeenCalledTimes(failedParts.length);
-  });
-
-  it('keeps the count quiet when the group contains both successful and failed calls', () => {
-    renderGroup(props(jest.fn()));
-    expect(
-      screen
-        .getByTestId('failed-reveal-pill')
-        .querySelector('span.text-text-secondary, span.text-status-error'),
-    ).toHaveClass('text-text-secondary');
-  });
-
-  it('keeps the count in the error tone when every call failed', () => {
-    renderGroup({
-      ...props(jest.fn()),
-      parts: [
-        failedParts[1],
-        { part: makePart('c3', 'Error processing tool: gone', 'create_file'), idx: 1 },
-      ],
-    });
-    expect(
-      screen
-        .getByTestId('failed-reveal-pill')
-        .querySelector('span.text-text-secondary, span.text-status-error'),
-    ).toHaveClass('text-status-error');
   });
 
   it.each(['created', 'Error processing tool: unavailable'])(

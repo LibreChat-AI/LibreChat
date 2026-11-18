@@ -1,10 +1,11 @@
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { relative, resolve } from 'node:path';
 import { Instrumenter } from '@stryker-mutator/instrumenter';
-
 import type { Mutant, MutationRange } from '@stryker-mutator/api/core';
 import type { mutationSelection } from './risk.mts';
+import { LoggingIgnorer } from './ignore.mts';
 
 type Target = ReturnType<typeof mutationSelection>[number];
 
@@ -35,6 +36,39 @@ export interface ShardPlan {
 const compare = (a: { line: number; column: number }, b: typeof a) =>
   a.line - b.line || a.column - b.column;
 
+/** Counts for a run summary. A shard's target keeps its file's whole changed-function list, so
+ * only functions that overlap one of the target's own mutate ranges count (a range can sit in a
+ * function or span several whole ones). A file whose ranges are all outside functions
+ * (module-level code) counts in `files` but not `functionFiles`. */
+export function mutatedScope(targets: Target[]) {
+  let functions = 0;
+  let functionFiles = 0;
+  for (const target of targets) {
+    const ranges = target.mutate.map(mutationRange);
+    const owners = target.functions.filter(({ location }) => {
+      // Function locations are one-based in both line and column; ranges use zero-based lines
+      // and columns.
+      const start = { line: location.start.line - 1, column: location.start.column - 1 };
+      const end = { line: location.end.line - 1, column: location.end.column - 1 };
+      return ranges.some((range) => compare(start, range.end) < 0 && compare(range.start, end) < 0);
+    });
+    functions += owners.length;
+    if (owners.length) functionFiles++;
+  }
+  return { functions, functionFiles, files: targets.length };
+}
+
+const count = (value: number, noun: string) => `${value} ${noun}${value === 1 ? '' : 's'}`;
+
+/** One summary sentence for `mutatedScope`, naming module-level-only files separately. */
+export function describeMutatedScope(targets: Target[]): string {
+  const { functions, functionFiles, files } = mutatedScope(targets);
+  const changed = `Changed functions: ${functions} in ${count(functionFiles, 'file')}.`;
+  const outside = files - functionFiles;
+  if (!outside) return changed;
+  return `${changed} Mutated files: ${files}, of which ${outside} ${outside === 1 ? 'has' : 'have'} changes only outside functions.`;
+}
+
 export function mutationRange(pattern: string): MutationRange {
   const match = /:(\d+):(\d+)-(\d+):(\d+)$/u.exec(pattern);
   if (!match) throw new Error(`Invalid mutation range: ${pattern}`);
@@ -59,6 +93,34 @@ export function mutantKey(
     mutant.mutatorName,
     mutant.replacement,
   ]);
+}
+
+/** Inverse of `mutantKey`, for rendering an unfinished mutant's location without a live report. */
+export function parseMutantKey(key: string): {
+  file: string;
+  location: { start: { line: number; column: number }; end: { line: number; column: number } };
+  mutatorName: string;
+  replacement: string;
+} {
+  const [file, startLine, startColumn, endLine, endColumn, mutatorName, replacement] =
+    JSON.parse(key);
+  return {
+    file,
+    location: {
+      start: { line: startLine, column: startColumn },
+      end: { line: endLine, column: endColumn },
+    },
+    mutatorName,
+    replacement,
+  };
+}
+
+/** A reconstructed shard (run.mts, after its worker is killed at the execution-budget deadline)
+ * is complete once every planned mutant key was actually finished before the kill; only the final
+ * `completion.json` write raced with it. Recording that case as `'partial'` would make merge.mts
+ * reject an otherwise-complete shard as incomplete. */
+export function isReconstructedShardComplete(expected: string[], finished: Set<string>): boolean {
+  return expected.every((key) => finished.has(key));
 }
 
 export function assertMutants(expected: string[], actual: string[]) {
@@ -105,9 +167,11 @@ export async function planShards(
     error: silent,
     fatal: silent,
   });
+  // Same ignorer the real run loads (./ignore.mts), so a planned mutant's ignored status here
+  // matches what the real run reports, keeping the expected and actual mutant sets identical.
   const { mutants } = await instrumenter.instrument(sources, {
     plugins: null,
-    ignorers: [],
+    ignorers: [new LoggingIgnorer()],
     excludedMutations: [],
   });
   const groups = targets.flatMap((target) =>
@@ -155,6 +219,12 @@ export async function planShards(
     shard.expected.push(...group.expected);
   }
   for (const shard of shards) shard.expected.sort();
+  // Selection and ignore logic live in these two modules; a change to either must invalidate a
+  // cached plan even when the diff and lockfile are unchanged.
+  const tooling = [
+    readFileSync(fileURLToPath(new URL('./lines.mts', import.meta.url)), 'utf8'),
+    readFileSync(fileURLToPath(new URL('./ignore.mts', import.meta.url)), 'utf8'),
+  ].join('\n');
   const digest = createHash('sha256')
     .update(
       JSON.stringify({
@@ -166,6 +236,7 @@ export async function planShards(
         shards,
         sources: sources.map(({ content }) => content),
         lock: readFileSync('package-lock.json', 'utf8'),
+        tooling,
       }),
     )
     .digest('hex');

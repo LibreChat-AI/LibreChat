@@ -99,6 +99,7 @@ describe('ChatSettingsProvider', () => {
       canRenameRunningChat: false,
       loaded: false,
       balanceEnabled: false,
+      sideChat: false,
     });
   });
 
@@ -129,6 +130,7 @@ describe('ChatSettingsProvider', () => {
       steerArmConfirmationTimeoutMs: 3_000,
       loaded: true,
       balanceEnabled: true,
+      sideChat: true,
     });
   });
 

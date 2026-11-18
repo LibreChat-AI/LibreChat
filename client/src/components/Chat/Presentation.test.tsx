@@ -3,7 +3,7 @@ import { useSetAtom } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { activeSubagentPanel, isSubmittingFamily } from '@librechat/chat/react';
+import { sideChatAtom, activeSubagentPanel, isSubmittingFamily } from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { JotaiStore } from 'test/harness';
 import type { Artifact } from '~/common';
@@ -29,6 +29,8 @@ const mockArtifactPanelLabel = 'Artifact panel loaded';
 const mockOpenArtifactLabel = 'Open Artifact';
 const mockChildPanelLabel = 'Child activity panel loaded';
 const mockOpenChildLabel = 'Open Child Activity';
+const mockSideChatLabel = 'Side chat loaded';
+const mockOpenSideChatLabel = 'Open Side Chat';
 const mockSelectAgentConversationLabel = 'Select Agent Conversation';
 const mockStartAgentRunLabel = 'Start Agent Run';
 const mockUseParentSubagentsQuery = jest.fn(
@@ -58,6 +60,18 @@ jest.mock('@librechat/chat/components', () => {
     ...jest.requireActual<typeof import('@librechat/chat/components')>(
       '@librechat/chat/components',
     ),
+    loadSideChatPanel: () =>
+      Promise.resolve({
+        default: function MockSideChatPanel() {
+          const parent = useParentSubagents();
+          return (
+            <aside>
+              {mockSideChatLabel}
+              <span data-testid="side-parent">{parent.conversationId}</span>
+            </aside>
+          );
+        },
+      }),
     loadSubagentThreadPanel: () =>
       Promise.resolve({
         default: function MockSubagentThreadPanel() {
@@ -73,6 +87,9 @@ jest.mock('@librechat/chat/components', () => {
       }),
   };
 });
+
+/** The mocked panel draws no message rows, so it needs no app message hosts. */
+jest.mock('~/components/Chat/Messages/hosts', () => ({}));
 
 jest.mock('~/components/Chat/Input/Files/DragDropWrapper', () => ({
   __esModule: true,
@@ -158,6 +175,26 @@ const OpenSubagentPanel = ({ durable = true }: { durable?: boolean }) => {
   return (
     <button type="button" onClick={open}>
       {mockOpenChildLabel}
+    </button>
+  );
+};
+
+const OpenSideChat = () => {
+  const setConversation = useSetRecoilState(store.conversationByIndex(0));
+  const setSideChat = useSetAtom(sideChatAtom);
+  const open = () => {
+    setConversation({ conversationId: 'parent-conversation' } as TConversation);
+    setSideChat({
+      conversation: {
+        conversationId: 'side-conversation',
+        endpoint: 'agents',
+        agent_id: 'agent-1',
+      } as TConversation,
+    });
+  };
+  return (
+    <button type="button" onClick={open}>
+      {mockOpenSideChatLabel}
     </button>
   );
 };
@@ -360,5 +397,52 @@ describe('Presentation Artifact loading', () => {
     await waitFor(() =>
       expect(detachedDocument.body.textContent).toContain(mockArtifactPanelLabel),
     );
+  });
+
+  it('shows a side chat beside the conversation, with child activity read for its own conversation', async () => {
+    renderPresentation(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Presentation>
+            <OpenSideChat />
+            <OpenSubagentPanel />
+            <SelectAgentConversation />
+          </Presentation>
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
+
+    expect(await screen.findByText(mockSideChatLabel)).toBeInTheDocument();
+    /** Children its agent dispatches belong to the side conversation, not the one beside it. */
+    expect(screen.getByTestId('side-parent')).toHaveTextContent('side-conversation');
+    expect(mockUseParentSubagentsQuery).toHaveBeenCalledWith(
+      'side-conversation',
+      { enabled: true },
+      false,
+    );
+
+    /** One panel at a time: a child's activity opened afterwards takes its place. */
+    fireEvent.click(screen.getByRole('button', { name: mockOpenChildLabel }));
+    expect(await screen.findByText(mockChildPanelLabel)).toBeInTheDocument();
+    expect(screen.queryByText(mockSideChatLabel)).not.toBeInTheDocument();
+  });
+
+  it('closes the side chat when the conversation it sits beside changes', async () => {
+    renderPresentation(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Presentation>
+            <OpenSideChat />
+            <SelectAgentConversation />
+          </Presentation>
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
+    expect(await screen.findByText(mockSideChatLabel)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: mockSelectAgentConversationLabel }));
+    await waitFor(() => expect(screen.queryByText(mockSideChatLabel)).not.toBeInTheDocument());
   });
 });

@@ -91,6 +91,8 @@ function responseBody(value: unknown): value is TerminalResponse {
 export interface ResponseExecutionRuntime {
   completion?: ResponseTerminalCompletion;
   responseId: string;
+  /** A background worker run, whose events go to a stream the owner can follow. */
+  background: boolean;
   inputChain: <T>(chain: { messages: T[]; parentMessageId: string }) => {
     messages: T[];
     parentMessageId: string;
@@ -131,8 +133,6 @@ export interface ResponseExecutionRuntime {
   toolContext: (execution: { createdAt: number }) => {
     streamId: string | null;
     jobCreatedAt?: number;
-    /** A foreground run answers an API client and has no stream its owner can follow. */
-    unattended?: boolean;
   };
   connection?: AgentExecutionConnection;
   hooks: Pick<
@@ -819,7 +819,8 @@ export function createResponseExecutionRuntime(
     toolContext: (execution) =>
       admission
         ? { streamId: admission.record.responseId, jobCreatedAt: execution.createdAt }
-        : { streamId: null, unattended: true },
+        : { streamId: null },
+    background: admission != null,
     responseId:
       admission?.record.responseId ?? (continuation.generateResponseId ?? generateResponseId)(),
     connection: admission

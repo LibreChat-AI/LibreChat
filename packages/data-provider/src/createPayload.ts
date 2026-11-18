@@ -11,6 +11,14 @@ function getUserTimezone(): string | undefined {
   }
 }
 
+/**
+ * The route a turn for an agents-route endpoint is posted to. Custom endpoint names are
+ * user-defined and may contain `/`, which would otherwise split into extra path segments and
+ * miss the `/:endpoint` route.
+ */
+export const generationServer = (endpoint: string): string =>
+  `${EndpointURLs[s.EModelEndpoint.agents]}/${encodeURIComponent(endpoint)}`;
+
 export default function createPayload(submission: t.TSubmission) {
   const {
     isEdited,
@@ -39,9 +47,7 @@ export default function createPayload(submission: t.TSubmission) {
   };
 
   const endpoint = _e as s.EModelEndpoint;
-  /** Custom endpoint names are user-defined and may contain `/`, which would
-   * otherwise split into extra path segments and miss the `/:endpoint` route. */
-  let server = `${EndpointURLs[s.EModelEndpoint.agents]}/${encodeURIComponent(endpoint)}`;
+  let server = generationServer(endpoint);
   if (s.isAssistantsEndpoint(endpoint)) {
     server =
       EndpointURLs[(endpointType ?? endpoint) as 'assistants' | 'azureAssistants'] +

@@ -936,8 +936,11 @@ describe('MCPManager', () => {
   });
 
   describe('callTool - scheduled authority boundary', () => {
-    async function setupScheduled(stage: 'invoke' | 'resume' = 'invoke') {
-      const fixture = await executionFixture(stage);
+    async function setupScheduled(
+      stage: 'invoke' | 'resume' = 'invoke',
+      choice?: Parameters<typeof executionFixture>[3],
+    ) {
+      const fixture = await executionFixture(stage, undefined, undefined, choice);
       const request = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: 'read' }] });
       const snapshot = jest.fn().mockResolvedValue({ tools: [readTool], complete: true });
       const connection = {
@@ -983,8 +986,19 @@ describe('MCPManager', () => {
       },
     );
 
-    it('rejects misleading mutating metadata and changed definitions without reaching tools/call', async () => {
+    it.each([
+      ['no longer lists', []],
+      ['lists twice', [readTool, readTool]],
+    ])('rejects a tool the live catalog %s without reaching tools/call', async (_case, tools) => {
       const { request, snapshot, call } = await setupScheduled();
+      snapshot.mockResolvedValue({ tools, complete: true });
+      await expect(call()).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied' } });
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('stops dispatching a tool whose definition changed after its first use', async () => {
+      const { request, snapshot, call } = await setupScheduled();
+      await call();
       snapshot.mockResolvedValue({
         tools: [
           {
@@ -996,8 +1010,34 @@ describe('MCPManager', () => {
         ],
         complete: true,
       });
-      await expect(call()).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied' } });
+      await expect(call()).rejects.toMatchObject({
+        failure: { reason: 'binding_mismatch', automaticReplay: false },
+      });
+      snapshot.mockResolvedValue({ tools: [readTool], complete: true });
+      await expect(call('child')).rejects.toMatchObject({
+        failure: { reason: 'binding_mismatch' },
+      });
+      expect(request.mock.calls.filter(([input]) => input.method === 'tools/call')).toHaveLength(1);
+    });
+
+    it('dispatches a tool the owner approves call by call only for the approved call', async () => {
+      const { request, call } = await setupScheduled('resume', {
+        ask: ['query'],
+        approvedToolCalls: ['approved-call'],
+      });
+      const within = (id: string) =>
+        withToolApprovalExecution({ validateExecution: async () => {} }, () =>
+          withToolApprovalTransport({ toolCall: { id }, metadata: { agentId: 'root' } }, () =>
+            call(),
+          ),
+        );
+      const refused = { failure: { reason: 'approval_required', automaticReplay: false } };
+      await expect(within('other-call')).rejects.toMatchObject(refused);
+      // No approval session at all: nothing could have asked the owner.
+      await expect(call()).rejects.toMatchObject(refused);
       expect(request).not.toHaveBeenCalled();
+      await within('approved-call');
+      expect(request.mock.calls.filter(([input]) => input.method === 'tools/call')).toHaveLength(1);
     });
 
     it('fences consent revoked during live tools/list immediately before dispatch', async () => {

@@ -210,3 +210,7 @@ export * from './postgres/migrations';
 export * from './postgres/favorite';
 export * from './postgres/import';
 export * from './postgres/mongo';
+
+export { migrateMCPReservationIndex } from './migrations/mcpReservations';
+
+export { repairAuthorizationDuplicates } from './migrations/authorization';

@@ -40,6 +40,7 @@ const {
   createLazyAgentHistoryResolver,
   resolveToolRoleGrants,
   createChatRunFileBindings,
+  createChatSdkFileSession,
   createAxiosInstance,
   getCodeApiAuthHeaders,
   getCodeExecutionBaseUrl,
@@ -265,17 +266,7 @@ const initializeClientWithProvider = async ({
 
   /** @type {Array<UsageMetadata>} */
   const collectedUsage = [];
-  /**
-   * Vertex Gemini 3 thought signatures captured from `chat_model_end` events,
-   * keyed by `tool_call_id`. Persisted on
-   * `responseMessage.metadata.thoughtSignatures` so subsequent conversation
-   * turns can restore each signature onto the right reconstructed AIMessage's
-   * `additional_kwargs.signatures` and avoid 400s when resuming after a tool
-   * round-trip without a final text reply. Always allocated; capture path
-   * is a no-op for providers that don't emit signatures (OpenAI, Anthropic,
-   * Bedrock, etc.).
-   * @type {Record<string, string>}
-   */
+  /** @type {import('@librechat/api').GoogleThoughtSignatures} */
   const collectedThoughtSignatures = {};
   /** @type {ArtifactPromises} */
   const artifactPromises = [];
@@ -2120,6 +2111,15 @@ const initializeClientWithProvider = async ({
     subagentAggregatorsByToolCallId,
     subagentTasks,
     runFiles: runFileBindings.session,
+    sdkFiles: createChatSdkFileSession({
+      audit: (event) => logger.warn('[agents:sdk-files]', event),
+      host: req.app?.locals?.sdkFileHost,
+      req,
+      getInputs: () => primaryConfig.currentRequestAttachments,
+      loadFiles: (ids) => db.getRunFileCandidates(ids, req.user.tenantId, { storageOnly: true }),
+      filterFiles: filterFilesByAgentAccess,
+      getStrategyFunctions,
+    }),
     /** Resolved endpoint token/pricing config so spending and cost reflect
      *  configured rates for custom-endpoint agents instead of defaults. */
     endpointTokenConfig: primaryConfig.endpointTokenConfig,
@@ -2160,7 +2160,7 @@ function createInitializeClient(dependencies = {}) {
       params.req,
       dependencies.resolveUpstreamTokenProvider,
       params.signal,
-      params.scheduledTokenContext,
+      params.executionContext,
     );
     return initializeWithScheduleMCPExecution(
       {
@@ -2170,8 +2170,9 @@ function createInitializeClient(dependencies = {}) {
           params.req,
           params.res,
         ),
-        restoredContext: params.scheduledTokenContext,
+        executionContext: params.executionContext,
         restoredJob: params.scheduleJobIdentity,
+        approvedToolCalls: params.approvedToolCalls,
       },
       () => require('~/server/services/Schedules/consent'),
       () =>
@@ -2179,7 +2180,7 @@ function createInitializeClient(dependencies = {}) {
           {
             req: params.req,
             context: getMCPRequestContext(params.req),
-            restoredContext: params.scheduledTokenContext,
+            executionContext: params.executionContext,
             host: dependencies.scheduledBearerHost,
             signal: params.signal,
             streamId: params.req._resumableStreamId,

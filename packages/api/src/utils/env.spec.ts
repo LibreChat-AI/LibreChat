@@ -2425,6 +2425,30 @@ describe('resolveHeaders agent placeholders', () => {
     expect(result['X-Agent-Id']).toBe('agent_HTbJ5rDW0kOOK1a5MPBSt');
   });
 
+  it.each(['1', '12'])(
+    'emits the persisted id for parallel runtime node %s without mutating its identity',
+    (index) => {
+      const agent = { id: `${persistedAgent.id}____${index}` };
+      expect(
+        resolveHeaders({
+          headers: { 'X-Meta': 'agent={{LIBRECHAT_AGENT_ID}};ref={{LIBRECHAT_AGENT_ID}}' },
+          agent,
+          stripUnresolved: true,
+        }),
+      ).toEqual({ 'X-Meta': `agent=${persistedAgent.id};ref=${persistedAgent.id}` });
+      expect(agent.id).toBe(`${persistedAgent.id}____${index}`);
+    },
+  );
+
+  it.each(['agent_with_underscores', 'agent_with____text', 'agent_with___1'])(
+    'preserves non-runtime suffixes in persisted id %s',
+    (id) => {
+      expect(resolveHeaders({ headers: agentHeaders, agent: { id } })).toEqual({
+        'X-Agent-Id': id,
+      });
+    },
+  );
+
   it('resolves alongside user and body placeholders without interfering', () => {
     const result = resolveHeaders({
       headers: {

@@ -2,10 +2,7 @@ import {
   Constants,
   buildServerNameAliases,
   splitMCPToolKey,
-  normalizeServerName,
-  stripServerNamePrefix,
   scheduledMCPResourceBindingSchema,
-  scheduledMCPReadOnlyPolicySchema,
 } from 'librechat-data-provider';
 import type {
   AgentGraphAccessContext,
@@ -36,7 +33,10 @@ export interface ScheduleMCPEnrollmentDeps {
   ) => Promise<Record<string, ParsedServerConfig>>;
 }
 
-/** Resolves persisted selections and operator-declared recipients without connecting or minting. */
+/**
+ * Resolves what the owner can be offered: the MCP tools the agent graph selects, on servers
+ * whose recipient the operator declared. Does not connect or mint.
+ */
 export function createScheduleMCPEnrollmentResolver(
   deps: ScheduleMCPEnrollmentDeps,
 ): ScheduleMCPEnrollmentResolver {
@@ -48,10 +48,10 @@ export function createScheduleMCPEnrollmentResolver(
     user.id = identity.ownerId;
     if (!(await deps.canUseRoot(identity.agentId, user)))
       throw new ScheduleMCPConsentError('consent_forbidden');
-    const [appConfig, baseConfig] = await Promise.all([
-      deps.getAppConfig({ ...getAppConfigOptionsFromUser(user), failClosed: true }),
-      deps.getAppConfig({ baseOnly: true, failClosed: true }),
-    ]);
+    const appConfig = await deps.getAppConfig({
+      ...getAppConfigOptionsFromUser(user),
+      failClosed: true,
+    });
     const schedules = appConfig?.interfaceConfig?.schedules;
     const bindings = typeof schedules === 'object' ? schedules?.mcpConsent?.resources : undefined;
     if (!bindings || !Object.keys(bindings).length) return [];
@@ -124,34 +124,7 @@ export function createScheduleMCPEnrollmentResolver(
     signal?.throwIfAborted();
     for (const target of targets.values()) {
       target.permittedTools.sort((a, b) => a.agentId.localeCompare(b.agentId));
-      const baseSchedules = baseConfig?.interfaceConfig?.schedules;
-      const declaration =
-        typeof baseSchedules === 'object'
-          ? baseSchedules.mcpConsent?.readOnlyPolicy?.[target.resource.serverName]
-          : undefined;
-      const effective =
-        typeof schedules === 'object'
-          ? schedules.mcpConsent?.readOnlyPolicy?.[target.resource.serverName]
-          : undefined;
-      if (effective != null && JSON.stringify(effective) !== JSON.stringify(declaration))
-        throw new ScheduleMCPConsentError('consent_unavailable');
-      const policy = scheduledMCPReadOnlyPolicySchema.safeParse(declaration);
-      if (
-        !policy.success ||
-        target.permittedTools.some(({ tools }) =>
-          tools.some(
-            (selection) =>
-              Object.keys(policy.data.tools).filter(
-                (name) =>
-                  name === selection ||
-                  stripServerNamePrefix(name, normalizeServerName(target.resource.serverName)) ===
-                    selection,
-              ).length !== 1,
-          ),
-        )
-      )
-        throw new ScheduleMCPConsentError('consent_unavailable');
-      target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools, policy.data);
+      target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools);
     }
     return [...targets.values()];
   };

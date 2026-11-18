@@ -18,8 +18,12 @@ let mockContext: {
 };
 let mockLatestMessage: TMessage | null;
 
+/** The hook's own projection runs over the leaf, so what it reads of one stays under test. */
 jest.mock('~/hooks/Messages/useLatestMessage', () => ({
-  useLatestMessage: () => mockLatestMessage,
+  useLatestMessageSelect: <TData,>(
+    _index: number,
+    pick: (tail: TMessage | null) => TData | null,
+  ): TData | null => pick(mockLatestMessage),
 }));
 
 type ContentPart = NonNullable<TMessage['content']>[number];

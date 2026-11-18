@@ -368,6 +368,10 @@ export interface SerializableJobData {
   agentEventDetachedTerminalEvidence?: AgentEventDetachedTerminalEvidence;
   /** Trusted actor binding copied from the authenticated delivery envelope. */
   agentEventBindingId?: string;
+  /** The background subagent task this generation streams; set only by the task store. */
+  subagentTaskId?: string;
+  /** The conversation that dispatched that task. */
+  subagentParentConversationId?: string;
   agentEventExpectedAction?: import('~/agents/triggers/types').AgentTriggerExpectedAction;
   /** Versioned pointer to the canonical signed Conversation suspension. */
   agentEventSuspension?: import('~/agents/triggers/types').AgentEventSuspensionProjection;
@@ -410,6 +414,9 @@ export interface SerializableJobData {
    */
   steersClosed?: boolean;
 }
+
+/** Narrows an owner's active jobs, such as to the ones a client lists as chats. */
+export type ActiveJobFilter = (job: SerializableJobData) => boolean;
 
 /** Exact active hash replaced by one atomic job creation. Built-in stores keep
  * this as non-enumerable transaction metadata; Redis also retains a private
@@ -523,6 +530,8 @@ export type JobMetadataPatch = Partial<
     | 'agentEventDetachedActionProducerRequired'
     | 'agentEventDetachedTerminalEvidence'
     | 'agentEventBindingId'
+    | 'subagentTaskId'
+    | 'subagentParentConversationId'
     | 'agentEventExpectedAction'
     | 'agentEventSuspension'
     | 'agentEventLegacyTurnToken'
@@ -1075,10 +1084,17 @@ export interface IJobStore {
   clearTerminalHostAction?(streamId: string, expectedCreatedAt?: number): Promise<void>;
   cleanup(): Promise<number>;
   recordActivity?(streamId: string, expectedCreatedAt?: number): void;
+  /** Refreshes a running generation's idle clock and storage lifetimes without an event.
+   * False when the epoch is not current or the job is not running. */
+  touchJob?(streamId: string, expectedCreatedAt: number): Promise<boolean>;
   getJobCount(): Promise<number>;
   getJobCountByStatus(status: JobStatus): Promise<number>;
   destroy(): Promise<void>;
-  getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]>;
+  getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]>;
 
   /** Complete owner cleanup query, including terminal host work and legacy-index recovery.
    * Managers retain the global-index fallback for older third-party stores. */
@@ -1094,6 +1110,15 @@ export interface IJobStore {
     contentParts: Agents.MessageContentComplex[],
     expectedCreatedAt?: number,
   ): void;
+  /**
+   * A synchronous copy of the content array `setContentParts` registered on this replica, or
+   * null when this replica does not host the run. A store that only ever returns copies from
+   * `getContentParts` has no need for it.
+   */
+  copyHostContent?(
+    streamId: string,
+    expectedCreatedAt?: number,
+  ): Agents.MessageContentComplex[] | null;
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
@@ -1380,9 +1405,14 @@ export interface IJobStoreV2 extends IJobStore {
    * Also performs self-healing cleanup of stale entries.
    *
    * @param userId - The user ID to query
+   * @param accept - Leaves out the active jobs it returns false for
    * @returns Array of conversation IDs with active jobs
    */
-  getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]>;
+  getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]>;
 
   // ===== Content State Methods =====
   // These methods manage volatile content state tied to each job.

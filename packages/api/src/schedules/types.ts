@@ -13,7 +13,12 @@ import type { SlotClaimResult } from './capacity';
 export interface ScheduleLimits {
   /** Feature-level switch: when false the engine claims/fires nothing. */
   enabled: boolean;
-  mcpConsent?: { enabled: boolean; maxLifetimeHours: number };
+  mcpConsent?: {
+    enabled: boolean;
+    maxLifetimeHours: number;
+    /** From then on a never-authorized schedule can no longer use MCP tools. */
+    requireAfterMs?: number;
+  };
   maxPerUser: number;
   minIntervalMinutes: number;
   autoDisableAfterFailures: number;

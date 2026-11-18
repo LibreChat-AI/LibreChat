@@ -13,6 +13,11 @@ export interface CheckpointIdentity {
   legacyCheckpointId?: string;
 }
 
+/** Continuation reads must observe acknowledged writes, never a lagging replica. */
+export interface CheckpointReadOptions {
+  consistency: 'authoritative';
+}
+
 export interface CheckpointPayload {
   type: string;
   bytes: Uint8Array;
@@ -52,10 +57,14 @@ export interface CheckpointGeneration {
 export interface CheckpointRepository {
   setup(): Promise<Error[]>;
   setupOwnershipIndexes(): Promise<void>;
-  get(identity: CheckpointIdentity): Promise<SerializedCheckpoint | null>;
+  get(
+    identity: CheckpointIdentity,
+    options?: CheckpointReadOptions,
+  ): Promise<SerializedCheckpoint | null>;
   list(selection: CheckpointSelection): AsyncIterable<SerializedCheckpoint>;
   readWrites(
     identity: CheckpointIdentity & { checkpointId: string },
+    options?: CheckpointReadOptions,
   ): Promise<SerializedCheckpointWrite[]>;
   save(
     identity: CheckpointIdentity,

@@ -106,7 +106,13 @@ function ControlMessage(props: ControlMessageProps) {
   });
 }
 
-function SubagentControlHistory({
+/**
+ * The guidance sent to a task, oldest first, leaving out what `content` already shows where it
+ * was injected: an applied steer is a part of the reply, and drawing its receipt as well would
+ * show it twice. What is left is guidance still waiting to be taken, with the control that
+ * withdraws it, and guidance that failed or was refused.
+ */
+export function SubagentControlHistory({
   controls,
   onCancelControl,
   content,
@@ -114,7 +120,7 @@ function SubagentControlHistory({
   content: TMessageContentParts[];
   controls: NonNullable<ChildActivity['controls']>;
   onCancelControl?: (controlId: string) => void;
-}) {
+}): ReactNode {
   const localize = useLocalize();
   if (controls.length === 0) return null;
   /** Storage keeps actionable accepted receipts ahead of bounded terminal history.
@@ -239,6 +245,7 @@ export function SubagentActivityScrollSurface({
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const followBottom = useRef(true);
   const { showScrollButton: scrollButtonPreference, maximizeChatSpace } = useChatSurface();
   const { renderJumpToLatest } = useSubagentsHost();
 
@@ -247,20 +254,21 @@ export function SubagentActivityScrollSurface({
     const content = contentRef.current;
     if (scroll == null || content == null || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
-      if (isAtBottom) scroll.scrollTop = scroll.scrollHeight;
+      if (followBottom.current) scroll.scrollTop = scroll.scrollHeight;
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [isAtBottom]);
+  }, []);
 
   const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
-    setIsAtBottom(
-      element.scrollHeight - element.scrollTop - element.clientHeight <= AT_BOTTOM_THRESHOLD_PX,
-    );
+    followBottom.current =
+      element.scrollHeight - element.scrollTop - element.clientHeight <= AT_BOTTOM_THRESHOLD_PX;
+    setIsAtBottom(followBottom.current);
   }, []);
 
   const scrollToBottom = useCallback(() => {
+    followBottom.current = true;
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: 'smooth',

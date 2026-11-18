@@ -1,6 +1,10 @@
-import { renderHook } from '@testing-library/react';
+import { Provider, createStore } from 'jotai';
+import { sideChatAtom } from '@librechat/chat/react';
 import { ForkOptions } from 'librechat-data-provider';
+import { act, renderHook } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
+import { ChatSettingsContext, defaultChatSettings } from '../ChatSettingsContext';
 import { appSubagentsHost } from '../SubagentsHostContext';
 
 const mockThreadRefetch = jest.fn();
@@ -128,6 +132,47 @@ describe('appSubagentsHost writes and navigation', () => {
     const { result } = renderHook(() => appSubagentsHost.useNavigation());
     result.current.openConversation(conversation);
     expect(mockNavigateToConvo).toHaveBeenCalledWith(conversation);
+  });
+
+  it('offers a place beside the conversation only where the deployment keeps side chats on', () => {
+    const conversation: TConversation = {
+      conversationId: 'continued-chat',
+      title: 'Continued',
+      endpoint: null,
+      createdAt: '2026-11-03T00:00:00.000Z',
+      updatedAt: '2026-11-03T00:00:00.000Z',
+    };
+    const store = createStore();
+    const withSettings = (sideChat: boolean | undefined) =>
+      function Wrapper({ children }: { children: ReactNode }) {
+        return (
+          <Provider store={store}>
+            <ChatSettingsContext.Provider
+              value={{
+                ...defaultChatSettings,
+                config: { ...defaultChatSettings.config, sideChat },
+              }}
+            >
+              {children}
+            </ChatSettingsContext.Provider>
+          </Provider>
+        );
+      };
+
+    /** Off, or not answered yet: the continuation navigates, as it always has. */
+    for (const sideChat of [false, undefined]) {
+      const closed = renderHook(() => appSubagentsHost.useNavigation(), {
+        wrapper: withSettings(sideChat),
+      });
+      expect(closed.result.current.openBeside).toBeUndefined();
+    }
+
+    const open = renderHook(() => appSubagentsHost.useNavigation(), {
+      wrapper: withSettings(true),
+    });
+    act(() => open.result.current.openBeside?.(conversation, 'Carry on.'));
+    expect(store.get(sideChatAtom)).toEqual({ conversation, text: 'Carry on.' });
+    expect(mockNavigateToConvo).not.toHaveBeenCalled();
   });
 });
 

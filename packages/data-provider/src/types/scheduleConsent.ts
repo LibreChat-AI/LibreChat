@@ -2,6 +2,12 @@ import { z } from 'zod';
 
 export const DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS = 168;
 
+/**
+ * Sent as the description of an approval request that a schedule's owner asked for. It is a
+ * code, not a sentence: the approval card shows its own wording in the reader's language.
+ */
+export const SCHEDULE_APPROVAL_REASON = 'schedule_owner_approval';
+
 const identifier = z.string().trim().min(1).max(256);
 const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const safeUrl = z
@@ -22,22 +28,6 @@ const safeUrl = z
       return false;
     }
   });
-
-/** Service policy for tools whose every admitted operation is read-only. Never inferred from MCP hints. */
-export const scheduledMCPReadOnlyPolicySchema = z
-  .object({
-    tools: z.record(
-      identifier,
-      z
-        .object({
-          effect: z.literal('read_only'),
-          definitionSha256: z.string().regex(/^[a-f0-9]{64}$/),
-        })
-        .strict(),
-    ),
-  })
-  .strict();
-export type ScheduledMCPReadOnlyPolicy = z.infer<typeof scheduledMCPReadOnlyPolicySchema>;
 
 export const scheduledMCPFailureReasonSchema = z.enum([
   'consent_missing',
@@ -94,10 +84,18 @@ export type ScheduledMCPResourceBinding = z.infer<typeof scheduledMCPResourceBin
 export type ScheduledMCPResource = z.infer<typeof scheduledMCPResourceSchema>;
 export type ScheduledMCPCredentialMode = ScheduledMCPResource['credentialMode'];
 
+const MAX_AGENT_TOOLS = 256;
+const MAX_SERVER_AGENTS = 100;
+/**
+ * The most distinct tools one server can hold across the agents that select them. Lists kept
+ * per server, not per agent, are sized by it, so they can always represent a valid offer.
+ */
+export const MAX_SCHEDULED_MCP_SERVER_TOOLS = MAX_AGENT_TOOLS * MAX_SERVER_AGENTS;
+
 export const scheduledMCPToolSelectionSchema = z
   .object({
     agentId: identifier,
-    tools: z.array(identifier).min(1).max(256),
+    tools: z.array(identifier).min(1).max(MAX_AGENT_TOOLS),
   })
   .strict();
 export type ScheduledMCPToolSelection = z.infer<typeof scheduledMCPToolSelectionSchema>;
@@ -105,11 +103,20 @@ export type ScheduledMCPToolSelection = z.infer<typeof scheduledMCPToolSelection
 export const scheduledMCPTargetSchema = z
   .object({
     resource: scheduledMCPResourceSchema,
-    permittedTools: z.array(scheduledMCPToolSelectionSchema).min(1).max(100),
+    permittedTools: z.array(scheduledMCPToolSelectionSchema).min(1).max(MAX_SERVER_AGENTS),
     policyRevision: identifier,
   })
   .strict();
 export type ScheduledMCPTarget = z.infer<typeof scheduledMCPTargetSchema>;
+
+/** What an allowed tool looked like the first time an authorized run used it. */
+export const scheduledMCPToolPinSchema = z
+  .object({
+    tool: identifier,
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export type ScheduledMCPToolPin = z.infer<typeof scheduledMCPToolPinSchema>;
 
 export const scheduledMCPConsentSchema = scheduledMCPTargetSchema
   .extend({
@@ -119,6 +126,12 @@ export const scheduledMCPConsentSchema = scheduledMCPTargetSchema
     grantedAtMs: timestamp,
     absoluteExpiresAtMs: timestamp,
     revokedAtMs: timestamp.nullable(),
+    /** Absent until a tool is first used. One entry per tool, never rewritten. */
+    definitions: z.array(scheduledMCPToolPinSchema).max(MAX_SCHEDULED_MCP_SERVER_TOOLS).optional(),
+    /** Tools a run saw with a definition other than their pin. Refused until confirmed again. */
+    changedTools: z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS).optional(),
+    /** Allowed tools the owner wants to approve call by call. A run pauses before each use. */
+    askTools: z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS).optional(),
   })
   .strict()
   .refine((value) => value.absoluteExpiresAtMs > value.grantedAtMs);
@@ -139,6 +152,22 @@ export const confirmScheduleMCPConsentSchema = z
     offerDigest: z.string().regex(/^[a-f0-9]{64}$/),
     expectedRevision: identifier.nullable(),
     lifetimeHours: z.number().int().min(1).max(8760),
+    /**
+     * The tools the owner allows, by server, chosen from the offer. A server left out, or
+     * listed with no tools, is not allowed. Anything not listed here is refused at run time.
+     */
+    allow: z
+      .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
+      .refine((value) => Object.keys(value).length <= 32)
+      .refine((value) => Object.values(value).some((tools) => tools.length > 0)),
+    /**
+     * Of the allowed tools, the ones the owner wants to approve call by call, by server.
+     * Each must also be listed in `allow`.
+     */
+    ask: z
+      .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
+      .refine((value) => Object.keys(value).length <= 32)
+      .optional(),
   })
   .strict();
 export type ConfirmScheduleMCPConsent = z.infer<typeof confirmScheduleMCPConsentSchema>;
@@ -149,6 +178,19 @@ export interface ScheduleMCPConsentView {
   state: 'missing' | 'active' | 'expired' | 'revoked' | 'changed' | 'unsupported';
   revision: string | null;
   expiresAtMs: number | null;
+  /** With an offer, every server and tool the owner may choose from; otherwise the stored grant. */
   targets: ScheduledMCPTarget[];
+  /** The tools the stored grant allows, by server. Empty when there is none. */
+  allowed: Record<string, string[]>;
+  /** Allowed tools whose definition changed since first use, by server. Refused until confirmed again. */
+  changed: Record<string, string[]>;
+  /** Allowed tools the stored grant asks the owner about before each use, by server. */
+  asking: Record<string, string[]>;
+  /** Whether a scheduled run can pause for the owner's approval on this deployment. */
+  approval: boolean;
+  /** With no grant: whether the schedule's MCP tools are refused until the owner confirms. */
+  required: boolean;
+  /** With no grant and not yet required: when the operator's deadline makes it so. */
+  requireAfterMs: number | null;
   offer: { digest: string; maxLifetimeHours: number } | null;
 }

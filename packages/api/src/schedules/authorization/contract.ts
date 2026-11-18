@@ -36,6 +36,11 @@ export interface ScheduledMCPAuthorizationRequest {
   /** Set only by the owner-authorized manual trigger or its verified resume metadata. */
   readonly manual?: boolean;
   readonly selection: ScheduledMCPToolSelection;
+  /**
+   * Digest of each selected tool's live definition, by tool. A tool is pinned to the first
+   * one seen and refused once it differs. Absent at mint, where no catalog is read.
+   */
+  readonly definitions?: Readonly<Record<string, string>>;
 }
 
 /** Ephemeral observation, not a transferable grant or permission to cache an allow decision. */
@@ -46,6 +51,8 @@ export type ScheduledMCPAuthorizationResult =
       readonly consentRevision: string;
       readonly policyRevision: string;
       readonly validUntilMs: number;
+      /** The owner approves each use of this tool. The caller must hold that approval. */
+      readonly approvalRequired?: true;
     }
   | { readonly state: 'denied'; readonly failure: ScheduledMCPFailure }
   | { readonly state: 'cancelled' };

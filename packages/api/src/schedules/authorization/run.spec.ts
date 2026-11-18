@@ -9,8 +9,8 @@ import {
   executeHooks,
 } from '@librechat/agents';
 import type { GraphEdge } from '@librechat/agents';
-import { executionFixture } from './execution.helper';
-import { createScheduledMCPRunPolicy } from './run';
+import { createScheduledMCPRunPolicy, SCHEDULE_TOOL_NOT_ALLOWED } from './run';
+import { executionFixture, readTool } from './execution.helper';
 
 async function setup(edges: GraphEdge[]) {
   const fixture = await executionFixture();
@@ -183,4 +183,81 @@ it('denies only host-marked ordinary background MCP work, while retaining foregr
       new AbortController().signal,
     ),
   ).toEqual({});
+});
+
+describe('a tool the owner left out of the grant', () => {
+  const tool = (name: string) => ({
+    name: `${name}_mcp_warehouse`,
+    toolType: 'mcp',
+    serverName: 'warehouse',
+  });
+  /** The agents select `query` and `export`; the owner allowed `query`. */
+  async function partial() {
+    const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+    const record = jest.fn(async () => true);
+    const policy = createScheduledMCPRunPolicy(
+      fixture.execution,
+      [{ id: 'root', toolDefinitions: [tool('query'), tool('export')] }],
+      [],
+      record,
+    );
+    const input = (toolName: string, executingAgentId = 'root') =>
+      ({ toolName, toolInput: {}, executingAgentId }) as Parameters<typeof policy.hook>[0];
+    const signal = new AbortController().signal;
+    return { fixture, policy, record, input, signal };
+  }
+
+  it('is turned away with a plain message, and nothing is recorded against the run', async () => {
+    const { policy, record, input, signal } = await partial();
+    const call = input('export_mcp_warehouse');
+    expect(await policy.hook(call, signal)).toEqual({
+      decision: 'deny',
+      reason: SCHEDULE_TOOL_NOT_ALLOWED,
+    });
+    await policy.receipt(call, signal);
+    expect(record).not.toHaveBeenCalled();
+    expect(await policy.hook(input('query_mcp_warehouse'), signal)).toEqual({});
+  });
+
+  it('is turned away for an agent that joins the run later, by its registry key', async () => {
+    const { policy, input, signal } = await partial();
+    policy.registerAgent({
+      id: 'child',
+      toolRegistry: new Map([
+        ['export_mcp_warehouse', { ...tool('export'), mcpRawServerName: 'warehouse' }],
+        ['query_mcp_warehouse', { ...tool('query'), mcpRawServerName: 'warehouse' }],
+      ]),
+    });
+    expect(await policy.hook(input('export_mcp_warehouse', 'child'), signal)).toMatchObject({
+      decision: 'deny',
+      reason: SCHEDULE_TOOL_NOT_ALLOWED,
+    });
+    expect(await policy.hook(input('query_mcp_warehouse', 'child'), signal)).toEqual({});
+  });
+
+  it('still records a tool that is not an MCP tool at all as a refusal', async () => {
+    const { policy, record, input, signal } = await partial();
+    const call = input('execute_code');
+    expect(await policy.hook(call, signal)).toMatchObject({ decision: 'deny' });
+    await policy.receipt(call, signal);
+    expect(record).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a tool whose key does not name its server to the check at the call', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+    const policy = createScheduledMCPRunPolicy(fixture.execution, [
+      {
+        id: 'root',
+        toolDefinitions: [{ name: 'export', toolType: 'mcp', serverName: 'warehouse' }],
+      },
+    ]);
+    expect(
+      await policy.hook(
+        { toolName: 'export', toolInput: {}, executingAgentId: 'root' } as Parameters<
+          typeof policy.hook
+        >[0],
+        new AbortController().signal,
+      ),
+    ).toEqual({});
+  });
 });
