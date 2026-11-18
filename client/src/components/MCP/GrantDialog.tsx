@@ -1,4 +1,5 @@
 import { useState, useId } from 'react';
+import { Tools } from 'librechat-data-provider';
 import {
   Button,
   Input,
@@ -42,6 +43,13 @@ const statusKeys = {
   changed: 'com_ui_schedule_consent_changed',
   unsupported: 'com_ui_schedule_consent_unsupported',
 } as const;
+
+/** Built-in tools the owner knows by name. Any other, such as an action, is shown by its key. */
+const toolKeys = new Map<string, TranslationKeys>([
+  [Tools.execute_code, 'com_ui_schedule_consent_tool_code'],
+  [Tools.web_search, 'com_ui_schedule_consent_tool_web'],
+  [Tools.file_search, 'com_ui_schedule_consent_tool_files'],
+]);
 
 const messageKeys = {
   error: 'com_ui_schedule_consent_error',
@@ -196,6 +204,36 @@ function Grant({
     data?.asking ??
     {};
   const noteId = useId();
+  const otherId = useId();
+  /** Null until the owner changes one of the other tools, with the grant it was changed against. */
+  const [editedOther, setEditedOther] = useState<{
+    revision: string | null;
+    tools: string[];
+  } | null>(null);
+  /** The agents' tools that are not MCP tools: each one allowed or left out, like an MCP tool. */
+  const offeredOther = data?.tools.offered ?? [];
+  const other = (
+    (editedOther?.revision === data?.revision ? editedOther?.tools : undefined) ??
+    data?.tools.allowed ??
+    []
+  ).filter((tool) => offeredOther.includes(tool));
+  const setOther = (tools: string[]) => setEditedOther({ revision: data?.revision ?? null, tools });
+  /** One click for an owner who trusts the agent as it is: every server, every tool. */
+  const allowEverything = () => {
+    if (!data) return;
+    setEdited({
+      choice: Object.fromEntries(
+        data.targets.map((target) => [target.resource.serverName, offeredTools(target)]),
+      ),
+      revision: data.revision,
+      changed: data.changed,
+    });
+    setOther(offeredOther);
+  };
+  const toolLabel = (tool: string) => {
+    const key = toolKeys.get(tool);
+    return key ? localize(key) : tool;
+  };
   const setTools = (serverName: string, tools: string[]) =>
     setEdited({
       choice: { ...choice, [serverName]: tools },
@@ -227,11 +265,14 @@ function Grant({
         allow: choice,
         // Always sent: left out, the server keeps what the stored grant asks about.
         ask,
+        // Likewise: left out, the server keeps the other tools the stored grant allows.
+        tools: other,
       },
       {
         onSuccess: () => {
           setEdited(null);
           setEditedAsking(null);
+          setEditedOther(null);
           setMessage('success');
         },
         onError: () => setMessage('error'),
@@ -283,6 +324,11 @@ function Grant({
             <p id={noteId} className="text-status-warning text-sm">
               {localize('com_ui_schedule_consent_ask_unavailable')}
             </p>
+          )}
+          {choosing && (
+            <Button variant="outline" disabled={busy} onClick={allowEverything}>
+              {localize('com_ui_schedule_consent_allow_all')}
+            </Button>
           )}
           <ul className="space-y-2">
             {data.targets.map((target) => (
@@ -354,6 +400,46 @@ function Grant({
               </li>
             ))}
           </ul>
+          {choosing && offeredOther.length > 0 && (
+            <fieldset className="space-y-1" disabled={busy}>
+              <legend className="text-sm font-medium">
+                {localize('com_ui_schedule_consent_other_tools')}
+              </legend>
+              <ul className="space-y-1 pl-6">
+                {offeredOther.map((tool) => (
+                  <li key={tool} className="flex items-center gap-2">
+                    <Checkbox
+                      id={`${otherId}-${tool}`}
+                      checked={other.includes(tool)}
+                      disabled={busy}
+                      aria-labelledby={`${otherId}-${tool}-label`}
+                      onCheckedChange={(checked) =>
+                        setOther(
+                          checked === true
+                            ? offeredOther.filter((name) => name === tool || other.includes(name))
+                            : other.filter((name) => name !== tool),
+                        )
+                      }
+                    />
+                    <Label
+                      id={`${otherId}-${tool}-label`}
+                      htmlFor={`${otherId}-${tool}`}
+                      className="text-xs break-all"
+                    >
+                      {toolLabel(tool)}
+                    </Label>
+                  </li>
+                ))}
+              </ul>
+            </fieldset>
+          )}
+          {!choosing && data.tools.allowed.length > 0 && (
+            <p className="text-text-secondary text-xs">
+              {localize('com_ui_schedule_consent_other_allowed', {
+                tools: data.tools.allowed.map(toolLabel).join(', '),
+              })}
+            </p>
+          )}
           {canConfirm && data.offer && (
             <>
               <Label htmlFor={inputId}>{localize('com_ui_schedule_consent_hours')}</Label>

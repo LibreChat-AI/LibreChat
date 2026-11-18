@@ -1,6 +1,7 @@
 import { Constants } from '@librechat/agents';
 import { SCHEDULE_APPROVAL_REASON } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { HookCallback } from '@librechat/agents';
 import {
   scheduleAsksEveryUse,
   narrowScheduledMCPTools,
@@ -347,6 +348,38 @@ it('installs an independent ceiling for root, child, handoff, and lazy tools wit
   ).toEqual({});
 });
 
+it('lets a run use the other tools its owner allowed, and code tools only with code execution', async () => {
+  const f = await executionFixture('invoke', readTool, undefined, {
+    tools: ['execute_code', 'send_action_mail.example', 'web_search'],
+    allowTools: ['execute_code', 'web_search'],
+  });
+  const mcp = [{ name: 'query_mcp_warehouse', serverName: 'warehouse', toolType: 'mcp' }];
+  const decide = (execution: typeof f.execution, toolName: string, executingAgentId = 'root') =>
+    createScheduledMCPRunPolicy(execution, [
+      { id: 'root', toolDefinitions: mcp },
+      { id: 'child', toolDefinitions: mcp },
+    ]).hook(
+      { toolName, toolInput: {}, executingAgentId } as Parameters<HookCallback<'PreToolUse'>>[0],
+      new AbortController().signal,
+    );
+  const refused = { decision: 'deny', reason: expect.any(String) };
+  expect(await decide(f.execution, 'web_search')).toEqual({});
+  expect(await decide(f.execution, 'web_search', 'child')).toEqual({});
+  // The code environment's tools go by several names; code execution allows them all.
+  expect(await decide(f.execution, 'execute_code')).toEqual({});
+  expect(await decide(f.execution, 'bash_tool')).toEqual({});
+  // Left out by the owner, or not something the owner was offered at all.
+  expect(await decide(f.execution, 'send_action_mail.example')).toEqual(refused);
+  expect(await decide(f.execution, 'memory')).toEqual(refused);
+
+  const without = await executionFixture('invoke', readTool, undefined, {
+    tools: ['execute_code', 'web_search'],
+    allowTools: ['web_search'],
+  });
+  expect(await decide(without.execution, 'bash_tool')).toEqual(refused);
+  expect(await decide(without.execution, 'web_search')).toEqual({});
+});
+
 it('refuses a consent deadline crossed while the final database admission is in flight', async () => {
   const f = await executionFixture();
   jest.mocked(f.storage.admitScheduleMCPConsent).mockImplementationOnce(async () => {
@@ -490,41 +523,72 @@ it.each(['consent_revoked', 'rbac_denied', 'binding_mismatch'] as const)(
 );
 
 describe('the tools a run loads under a grant', () => {
-  it('keeps what the owner allowed and every tool that is not an MCP tool', async () => {
-    const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
-    const keys = [
+  const keys = [
+    'query_mcp_warehouse',
+    'export_mcp_warehouse',
+    'purge_mcp_archive',
+    'web_search',
+    'execute_code',
+    'send_action_mail.example',
+    // The SDK's own controls are not the owner's to allow: they always load.
+    'tool_search',
+  ];
+
+  it('keeps the MCP tools and the other tools the owner allowed, each on its own', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['export'],
+      tools: ['execute_code', 'send_action_mail.example', 'web_search'],
+      allowTools: ['send_action_mail.example', 'web_search'],
+    });
+    expect(fixture.execution.narrow('root', keys)).toEqual([
       'query_mcp_warehouse',
-      'export_mcp_warehouse',
-      'purge_mcp_archive',
       'web_search',
-      'execute_code',
-    ];
+      'send_action_mail.example',
+      'tool_search',
+    ]);
+    expect(fixture.execution.grantsTool('root', 'web_search')).toBe(true);
+    expect(fixture.execution.grantsTool('root', 'execute_code')).toBe(false);
+    // A grant is per agent: one it does not list keeps only the controls.
+    expect(fixture.execution.narrow('stranger', keys)).toEqual(['tool_search']);
+    expect(fixture.execution.grantsTool('stranger', 'web_search')).toBe(false);
+  });
+
+  it('loads none of the other tools when the owner allowed none', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      tools: ['execute_code', 'web_search'],
+    });
+    expect(fixture.execution.narrow('root', keys)).toEqual(['query_mcp_warehouse', 'tool_search']);
+  });
+
+  it('leaves the other tools alone under a grant that limits MCP tools only', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { coversTools: false });
     expect(fixture.execution.narrow('root', keys)).toEqual([
       'query_mcp_warehouse',
       'web_search',
       'execute_code',
+      'send_action_mail.example',
+      'tool_search',
     ]);
-    // A grant is per agent: one it does not list keeps no MCP tool.
-    expect(fixture.execution.narrow('stranger', keys)).toEqual(['web_search', 'execute_code']);
+    expect(fixture.execution.grantsTool('root', 'web_search')).toBe(false);
   });
 
   it('loads no key that stands for a whole server unless the grant lists a tool on it', async () => {
     const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
-    const keys = [
+    const wildcards = [
       'query_mcp_warehouse',
       'sys__all__sys_mcp_warehouse',
       'sys__server__sys_mcp_warehouse',
       'sys__all__sys_mcp_archive',
       'sys__server__sys_mcp_archive',
-      'web_search',
+      'tool_search',
     ];
     // "Every tool" names none of them, so it would define what the owner left out.
-    expect(fixture.execution.narrow('root', keys)).toEqual([
+    expect(fixture.execution.narrow('root', wildcards)).toEqual([
       'query_mcp_warehouse',
       'sys__server__sys_mcp_warehouse',
-      'web_search',
+      'tool_search',
     ]);
-    expect(fixture.execution.narrow('stranger', keys)).toEqual(['web_search']);
+    expect(fixture.execution.narrow('stranger', wildcards)).toEqual(['tool_search']);
   });
 
   it('leaves the tools of a schedule nobody authorized as they are', async () => {

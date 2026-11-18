@@ -199,10 +199,14 @@ it('uses the same real enrollment policy at readiness, root, and child invocatio
   }
 });
 
-it.each(
-  [[], ['execute_code'], ['query_mcp_warehouse', 'write_action_api']].map((tools) => ({ tools })),
-)(
-  'refuses prohibited or empty protected candidate sets before connecting: %s',
+it('does not refuse a run because its agent also has tools that are not MCP tools', async () => {
+  const f = await setup();
+  f.setCandidates(['query_mcp_warehouse', 'write_action_api', 'execute_code']);
+  await expect(f.check()).resolves.toBeDefined();
+});
+
+it.each([[], ['execute_code']].map((tools) => ({ tools })))(
+  'refuses a protected run that selects no MCP tool before connecting: %s',
   async ({ tools }) => {
     const f = await setup();
     f.setCandidates(tools);

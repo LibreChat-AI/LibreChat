@@ -69,6 +69,24 @@ agent still selects it. Anything else is refused with `tool_policy_denied`.
 The operator-declared `mcpConsent.readOnlyPolicy` list is retired. The loader warns when the key
 is still present and ignores it.
 
+### Tools that are not MCP tools
+
+An agent's other tools (code execution, web search, file search, each action, any other tool it
+carries) are offered too, each as its own item, and the dialog has one control that allows
+every server and tool at once. The grant stores them per agent (`tools`). Under a grant:
+
+- One the owner allowed loads and runs. The code environment's tools go by several names and
+  are all allowed by code execution.
+- One the owner left out is not loaded for the run, like a left-out MCP tool, and does not keep
+  the schedule from running.
+- A tool that reaches the run without having been offered, or the SDK's own controls aside, is
+  still refused with `tool_policy_denied`.
+- A grant made before these tools could be chosen lists none, so none of them loads until the
+  owner confirms again.
+
+A grant still needs at least one MCP tool: a schedule whose agents use no MCP server has
+nothing to authorize and runs as before. An API key's grant limits MCP tools only.
+
 ### A tool the owner approves call by call
 
 Beside allowing a tool, the owner can set it to "ask me first". The grant stores those tools

@@ -14,7 +14,11 @@ import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
 import type { MCPToolsSnapshot } from '~/mcp/connection';
 import type { ScheduledMCPAuthority } from './contract';
 import type { ScheduledTokenContext } from '../context';
-import { getScheduledMCPToolDefinitionDigest, ScheduledMCPPolicyError } from './policy';
+import {
+  isScheduledToolItem,
+  ScheduledMCPPolicyError,
+  getScheduledMCPToolDefinitionDigest,
+} from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { findMCPRequestContext } from '~/mcp/request';
@@ -55,10 +59,16 @@ export interface ScheduleMCPExecution<Identity extends MCPGrantIdentity = Schedu
    */
   readonly grants: (agentId: string, serverName: string, selectionName: string) => boolean;
   /**
-   * The agent's tool keys the run may load: every key that is not an MCP tool, and the MCP
-   * tools the grant lists for the agent. A run that has no grant keeps them all.
+   * The agent's tool keys the run may load: the MCP tools the grant lists for the agent, and,
+   * where the grant covers the agent's other tools, the ones it lists of those. A run that has
+   * no grant keeps them all.
    */
   readonly narrow: (agentId: string, toolKeys: readonly string[]) => string[];
+  /**
+   * Whether the grant lists this tool, one that is not an MCP tool, for the agent. Always
+   * false where the grant does not cover the agents' other tools.
+   */
+  readonly grantsTool: (agentId: string, toolKey: string) => boolean;
   /** Whether the grant asks the owner about any tool, so this run may pause. */
   readonly mayAsk: boolean;
   /** Whether the owner approves each use of this tool, by the name the run calls it. */
@@ -141,6 +151,11 @@ export interface ScheduleMCPExecutionDeps<
   }>;
   /** Whether a subject with no grant may not use MCP tools. Absent, it always may. */
   requiresGrant?: (identity: Identity) => Promise<boolean>;
+  /**
+   * Whether a grant also decides which of the agents' other tools a run loads, so that one
+   * it does not list is left out. Absent, a grant limits MCP tools only.
+   */
+  coversTools?: boolean;
 }
 
 export interface ScheduleMCPExecutionOptions {
@@ -195,6 +210,12 @@ export function createScheduleMCPExecution<
         new Map(permittedTools.map(({ agentId, tools }) => [agentId, new Set(tools)])),
       ]),
     );
+    /** The agents' tools that are not MCP tools, as the owner allowed them. */
+    const others = new Map<string, ReadonlySet<string>>(
+      deps.coversTools === true
+        ? (snapshot.enrollment?.tools ?? []).map(({ agentId, tools }) => [agentId, new Set(tools)])
+        : [],
+    );
     const grantedServers = [...granted.keys()];
     const serverAliases = buildServerNameAliases(grantedServers);
     const serverSpellings = [...grantedServers, ...serverAliases.keys()];
@@ -227,6 +248,15 @@ export function createScheduleMCPExecution<
         if (keys.size > 0) asking.set(agentId, keys);
       }
     }
+    /** Whether a run under the grant loads this key of the agent's. */
+    const loads = (agentId: string, toolKey: string): boolean => {
+      if (toolKey.includes(Constants.mcp_delimiter)) return isGrantedKey(agentId, toolKey);
+      return (
+        deps.coversTools !== true ||
+        !isScheduledToolItem(toolKey) ||
+        others.get(agentId)?.has(toolKey) === true
+      );
+    };
     let fenced = false;
     /** Asked at the first MCP call, so a run that uses none pays nothing. Kept for the run. */
     let required: Promise<boolean> | undefined;
@@ -266,11 +296,8 @@ export function createScheduleMCPExecution<
       grants: (agentId: string, serverName: string, selectionName: string) =>
         granted.get(serverName)?.get(agentId)?.has(selectionName) === true,
       narrow: (agentId: string, toolKeys: readonly string[]) =>
-        enrolled
-          ? toolKeys.filter(
-              (key) => !key.includes(Constants.mcp_delimiter) || isGrantedKey(agentId, key),
-            )
-          : [...toolKeys],
+        enrolled ? toolKeys.filter((key) => loads(agentId, key)) : [...toolKeys],
+      grantsTool: (agentId: string, toolKey: string) => others.get(agentId)?.has(toolKey) === true,
       mayAsk: asking.size > 0,
       asksAbout: (agentId: string, toolKey: string) => asking.get(agentId)?.has(toolKey) === true,
       asksAboutAny: (toolKeys: readonly string[]) =>

@@ -1,5 +1,6 @@
 import { Constants } from '@librechat/agents';
 import {
+  Tools,
   normalizeServerName,
   SCHEDULE_APPROVAL_REASON,
   Constants as ProviderConstants,
@@ -7,6 +8,7 @@ import {
 import type { HookCallback } from '@librechat/agents';
 import type { ScheduleMCPExecution } from './execution';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { isStatefulCodeEnvironmentToolName } from '~/agents/hitl/byom';
 import { ScheduledMCPPolicyError } from './policy';
 
 interface HandoffEdge {
@@ -39,7 +41,10 @@ export interface ScheduledMCPPolicyAgent {
 export const SCHEDULE_TOOL_NOT_ALLOWED =
   'The owner of this schedule has not allowed this tool. Continue without it.';
 
-/** No direct actions, arbitrary code or unlisted tools in an enrolled run. */
+/**
+ * An enrolled run uses what its owner allowed: the MCP tools and the other tools the grant
+ * lists, the SDK's own controls, and nothing else.
+ */
 export function createScheduledMCPRunPolicy(
   execution: ScheduleMCPExecution,
   agents: readonly ScheduledMCPPolicyAgent[],
@@ -143,6 +148,13 @@ export function createScheduledMCPRunPolicy(
     Constants.TOOL_SEARCH,
     ASK_USER_QUESTION_TOOL_NAME,
   ]);
+  /**
+   * Whether the grant lists this tool of the agent's, one that is not an MCP tool. The tools
+   * of the code environment go by several names and are all allowed by code execution.
+   */
+  const allowsTool = (agentId: string, name: string): boolean =>
+    execution.grantsTool(agentId, name) ||
+    (isStatefulCodeEnvironmentToolName(name) && execution.grantsTool(agentId, Tools.execute_code));
   const denied = (input: Parameters<HookCallback<'PreToolUse'>>[0]): boolean => {
     const agentId = input.executingAgentId;
     // Foreground delegation stays in this guarded run; detached continuations do not.
@@ -158,7 +170,8 @@ export function createScheduledMCPRunPolicy(
       mcpTools.has(agentId) &&
       (controls.has(input.toolName) ||
         handoffs.get(agentId)?.has(input.toolName) === true ||
-        mcpTools.get(agentId)!.has(input.toolName))
+        mcpTools.get(agentId)!.has(input.toolName) ||
+        allowsTool(agentId, input.toolName))
     );
   };
   const decisions = new WeakMap<object, Promise<ScheduledMCPPolicyError | undefined>>();

@@ -23,6 +23,15 @@ export function isScheduledMCPCandidate(name: string): boolean {
   );
 }
 
+/**
+ * A tool an agent carries that is neither an MCP tool nor one of the SDK's own controls:
+ * code execution, web search, file search, an action. Each is its own item for the owner to
+ * allow or leave out.
+ */
+export function isScheduledToolItem(name: string): boolean {
+  return !name.includes(Constants.mcp_delimiter) && !isScheduledMCPCandidate(name);
+}
+
 /** Stable across object insertion order. Arrays retain their semantic order. */
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);

@@ -289,6 +289,16 @@ it('rejects credential-bearing or mismatched records at the persistence boundary
   await expect(confirm(null, secret)).rejects.toThrow();
 });
 
+it('keeps the other tools the owner allowed on the grant, through revocation too', async () => {
+  const tools = [{ agentId: 'root', tools: ['execute_code', 'web_search'] }];
+  expect(await confirm(null, enrollment('grant-1', { tools }))).toBe(true);
+  expect((await storage.readScheduleMCPConsent(identity))?.enrollment?.tools).toEqual(tools);
+  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+  const revoked = await storage.readScheduleMCPConsent(identity);
+  expect(revoked?.compatible).toBe(true);
+  expect(revoked?.enrollment?.tools).toEqual(tools);
+});
+
 it('uses only classic update operators for confirmation, revocation and admission', async () => {
   const update = jest.spyOn(mongoose.models.Schedule, 'updateOne');
   await confirm();

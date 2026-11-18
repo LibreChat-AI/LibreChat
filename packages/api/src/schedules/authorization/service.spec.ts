@@ -45,6 +45,8 @@ function setup() {
     enrollment: null,
   };
   let targets = [structuredClone(target)];
+  /** The agents' tools that are not MCP tools. None unless a test offers some. */
+  let others: { agentId: string; tools: string[] }[] = [];
   let allowed = true;
   let pausable = true;
   const storage: ScheduleMCPConsentStorage = {
@@ -86,11 +88,13 @@ function setup() {
     canPause: async () => pausable,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     resolveEnrollment: async () => targets,
+    resolveTools: async () => others,
     now: () => time,
   });
   const enroll = async (
     allow: Record<string, string[]> = { warehouse: ['query'] },
     ask?: Record<string, string[]>,
+    tools?: string[],
   ) => {
     const view = await service.view(identity);
     return service.confirm(identity, {
@@ -99,6 +103,7 @@ function setup() {
       lifetimeHours: 1,
       allow,
       ...(ask && { ask }),
+      ...(tools && { tools }),
     });
   };
   return {
@@ -111,6 +116,9 @@ function setup() {
     },
     changeTarget: (...value: ScheduledMCPTarget[]) => {
       targets = value;
+    },
+    offerTools: (...value: { agentId: string; tools: string[] }[]) => {
+      others = value;
     },
     deny: () => {
       allowed = false;
@@ -406,6 +414,84 @@ it('offers no overwrite of an incompatible stored grant', async () => {
     state: 'unsupported',
     offer: null,
     revision: null,
+  });
+});
+
+describe("the agents' tools that are not MCP tools", () => {
+  const offered = [
+    { agentId: 'child', tools: ['web_search'] },
+    { agentId: 'root', tools: ['execute_code', 'send_action_mail.example', 'web_search'] },
+  ];
+
+  it('offers each of them once, and nothing has been allowed before the owner chooses', async () => {
+    const s = setup();
+    s.offerTools(...offered);
+    expect(await s.service.view(identity)).toMatchObject({
+      state: 'missing',
+      tools: { offered: ['execute_code', 'send_action_mail.example', 'web_search'], allowed: [] },
+    });
+  });
+
+  it('stores the ones the owner allows for every agent that has them, and no others', async () => {
+    const s = setup();
+    s.offerTools(...offered);
+    const view = await s.enroll(undefined, undefined, ['execute_code', 'web_search']);
+    expect(view).toMatchObject({
+      state: 'active',
+      tools: { allowed: ['execute_code', 'web_search'] },
+    });
+    expect(s.snapshot.enrollment!.tools).toEqual([
+      { agentId: 'child', tools: ['web_search'] },
+      { agentId: 'root', tools: ['execute_code', 'web_search'] },
+    ]);
+  });
+
+  it('stores nothing when the owner allows none, and still grants the MCP tools', async () => {
+    const s = setup();
+    s.offerTools(...offered);
+    expect(await s.enroll(undefined, undefined, [])).toMatchObject({
+      state: 'active',
+      tools: { allowed: [] },
+    });
+    expect(s.snapshot.enrollment).not.toHaveProperty('tools');
+  });
+
+  it('rejects a tool that is not on offer without writing', async () => {
+    const s = setup();
+    s.offerTools(...offered);
+    await expect(s.enroll(undefined, undefined, ['file_search'])).rejects.toMatchObject({
+      code: 'consent_invalid',
+    });
+    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+  });
+
+  it('keeps the stored choice when a confirmation does not say, for the tools still on offer', async () => {
+    const s = setup();
+    s.offerTools(...offered);
+    await s.enroll(undefined, undefined, ['execute_code', 'web_search']);
+    // The agent drops code execution; a client that does not send `tools` renews the grant.
+    s.offerTools({ agentId: 'root', tools: ['web_search'] });
+    expect(await s.enroll()).toMatchObject({ tools: { allowed: ['web_search'] } });
+    expect(s.snapshot.enrollment!.tools).toEqual([{ agentId: 'root', tools: ['web_search'] }]);
+  });
+
+  it('binds a confirmation to the tools the owner was shown', async () => {
+    const s = setup();
+    const before = await s.service.view(identity);
+    s.offerTools(...offered);
+    const shown = await s.service.view(identity);
+    // An offer with no such tools keeps the digest it had before they could be offered.
+    expect(shown.offer!.digest).not.toBe(before.offer!.digest);
+    s.offerTools({ agentId: 'root', tools: ['execute_code'] });
+    await expect(
+      s.service.confirm(identity, {
+        offerDigest: shown.offer!.digest,
+        expectedRevision: null,
+        lifetimeHours: 1,
+        allow: { warehouse: ['query'] },
+        tools: ['execute_code'],
+      }),
+    ).rejects.toMatchObject({ code: 'consent_changed' });
   });
 });
 

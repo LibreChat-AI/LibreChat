@@ -5,7 +5,7 @@ import type { IUser, AppConfig, AgentGraphAccessContext } from '@librechat/data-
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { ScheduleMCPEnrollmentDeps } from './enrollment';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { createScheduleMCPEnrollmentResolver } from './enrollment';
+import { createScheduleMCPEnrollmentResolver, createScheduleMCPOffer } from './enrollment';
 import { allowOffered, pinStorage } from './execution.helper';
 import { createScheduleMCPConsentService } from './service';
 import { createResolveAgentFireAccess } from '../access';
@@ -100,6 +100,41 @@ it('requires operator-declared recipient metadata, not a successful login or too
     interfaceConfig: { schedules: { mcpConsent: { enabled: true } } },
   } as AppConfig);
   expect(await resolve(identity, {})).toEqual([]);
+});
+it("offers the agents' other tools beside their MCP tools, from one walk of the agent graph", async () => {
+  const { deps } = setup();
+  jest.mocked(deps.getNodes).mockImplementation(async (ids) =>
+    ids.map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test',
+      tools:
+        id === 'root'
+          ? ['query_mcp_warehouse', 'web_search', 'execute_code', 'send_action_mail.example']
+          : ['query_mcp_warehouse', 'web_search', 'tool_search'],
+      agent_ids: id === 'root' ? ['child'] : [],
+    })),
+  );
+  const offer = createScheduleMCPOffer(deps);
+  const [targets, tools] = await Promise.all([
+    offer.targets(identity, {}),
+    offer.tools(identity, {}),
+  ]);
+  // An agent with other tools is offered a grant like any other: they no longer rule it out.
+  expect(targets[0].permittedTools).toEqual([
+    { agentId: 'child', tools: ['query'] },
+    { agentId: 'root', tools: ['query'] },
+  ]);
+  // Each is its own item, per agent. The SDK's own controls are not the owner's to allow.
+  expect(tools).toEqual([
+    { agentId: 'child', tools: ['web_search'] },
+    { agentId: 'root', tools: ['execute_code', 'send_action_mail.example', 'web_search'] },
+  ]);
+  expect(deps.findUser).toHaveBeenCalledTimes(1);
+  expect(deps.getServers).toHaveBeenCalledTimes(1);
+  // A grant that limits MCP tools only, as an API key's does, offers none of them.
+  const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
+  expect(await limited.tools(identity, {})).toEqual([]);
 });
 it('denies a changed resource URL even if the configured server name is unchanged', async () => {
   const { deps, resolve } = setup();

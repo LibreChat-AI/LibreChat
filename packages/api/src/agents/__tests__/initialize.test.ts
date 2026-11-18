@@ -7746,6 +7746,7 @@ describe("initializeAgent: under a schedule's grant", () => {
     'export_mcp_warehouse',
     'purge_mcp_archive',
     Tools.web_search,
+    Tools.execute_code,
   ];
   async function initialize(attach: boolean) {
     const { agent, req, res, loadTools, db } = createMocks();
@@ -7754,8 +7755,11 @@ describe("initializeAgent: under a schedule's grant", () => {
     loadTools.mockResolvedValue({ toolDefinitions: [] });
     if (attach) {
       // The agents select `query` and `export` on the warehouse; the owner allowed `query`.
+      // Of the agent's other tools the owner allowed web search and left code execution out.
       const fixture = await executionFixture('invoke', readTool, undefined, {
         offered: ['export'],
+        tools: [Tools.execute_code, Tools.web_search],
+        allowTools: [Tools.web_search],
       });
       await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
     }
@@ -7774,11 +7778,12 @@ describe("initializeAgent: under a schedule's grant", () => {
     return loadTools.mock.calls.map(([call]) => call.tools as string[]);
   }
 
-  it('loads only the MCP tools the owner allowed, and nothing from a server left out', async () => {
+  it('loads only the tools the owner allowed, MCP or not, and nothing from a server left out', async () => {
     const [tools, ...retries] = await initialize(true);
     expect(retries).toEqual([]);
     expect(tools).toContain('query_mcp_warehouse');
     expect(tools).toContain(Tools.web_search);
+    expect(tools).not.toContain(Tools.execute_code);
     expect(tools).not.toContain('export_mcp_warehouse');
     // The loader is never asked about the archive server, so it is never connected to.
     expect(tools).not.toContain('purge_mcp_archive');

@@ -1,8 +1,8 @@
 import { createRef } from 'react';
 import userEvent from '@testing-library/user-event';
 import { dataService } from 'librechat-data-provider';
-import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import type { ScheduleMCPConsentView } from 'librechat-data-provider';
 import Consent from '../Consent';
 
@@ -47,6 +47,7 @@ const view: ScheduleMCPConsentView = {
   allowed: {},
   changed: {},
   asking: {},
+  tools: { offered: [], allowed: [] },
   approval: false,
   required: false,
   requireAfterMs: null,
@@ -106,6 +107,7 @@ it('confirms the offer reference, lifetime and only the tools the owner ticked, 
       lifetimeHours: 1,
       allow: { warehouse: ['query'] },
       ask: {},
+      tools: [],
     }),
   );
   expect(await screen.findByText('com_ui_schedule_consent_active')).toBeVisible();
@@ -277,6 +279,76 @@ it('unticks a tool the owner accepted once it is marked again under a later gran
       }),
     ),
   );
+});
+it("lists each of the agent's other tools as its own item, and sends the ones the owner ticks", async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    tools: { offered: ['execute_code', 'send_action_mail.example', 'web_search'], allowed: [] },
+  });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  // Built-in tools go by name; anything else, such as an action, by its key.
+  const code = await screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_tool_code' });
+  const search = screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tool_web' });
+  const action = screen.getByRole('checkbox', { name: 'send_action_mail.example' });
+  for (const box of [code, search, action]) expect(box).not.toBeChecked();
+  await userEvent.click(screen.getByRole('checkbox', { name: 'query' }));
+  await userEvent.click(code);
+  await userEvent.click(action);
+  await userEvent.click(action);
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({ allow: { warehouse: ['query'] }, tools: ['execute_code'] }),
+    ),
+  );
+});
+it('allows every server, tool and other tool in one click', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    tools: { offered: ['execute_code', 'web_search'], allowed: [] },
+  });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'com_ui_schedule_consent_allow_all' }),
+  );
+  for (const box of screen.getAllByRole('checkbox')) expect(box).toBeChecked();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({
+        allow: { warehouse: ['export', 'query'] },
+        tools: ['execute_code', 'web_search'],
+      }),
+    ),
+  );
+});
+it('starts from the other tools the stored grant allows, and names them when there is nothing to confirm', async () => {
+  const granted = {
+    ...view,
+    state: 'active' as const,
+    revision: 'grant',
+    expiresAtMs: Date.now() + 60_000,
+    allowed: { warehouse: ['query'] },
+    tools: { offered: ['execute_code', 'web_search'], allowed: ['web_search'] },
+  };
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(granted);
+  const first = display();
+  expect(
+    await screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_tool_web' }),
+  ).toBeChecked();
+  expect(
+    screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tool_code' }),
+  ).not.toBeChecked();
+  first.clear();
+  cleanup();
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({ ...granted, offer: null });
+  display();
+  expect(await screen.findByText('com_ui_schedule_consent_other_allowed')).toBeVisible();
+  expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
 });
 it('names the changed tools when there is nothing to confirm', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({

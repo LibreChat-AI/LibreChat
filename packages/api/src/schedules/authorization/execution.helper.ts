@@ -99,13 +99,18 @@ export async function executionFixture(
   /**
    * `offered` adds tools the agents select; `allow` is what the owner picks (default: `tool`);
    * `ask` are the allowed tools the owner approves call by call; `approvedToolCalls` are the
-   * calls the owner approved in the request that resumed the run.
+   * calls the owner approved in the request that resumed the run. `tools` are the agents' tools
+   * that are not MCP tools, and `allowTools` the ones of those the owner picks (default: none).
+   * `coversTools: false` is a grant that limits MCP tools only, as an API key's does.
    */
   choice: {
     offered?: string[];
     allow?: string[];
     ask?: string[];
     approvedToolCalls?: string[];
+    tools?: string[];
+    allowTools?: string[];
+    coversTools?: boolean;
   } = {},
 ) {
   let time = 1000;
@@ -177,6 +182,10 @@ export async function executionFixture(
   const service = createScheduleMCPConsentService({
     storage,
     resolveEnrollment,
+    resolveTools: async () =>
+      choice.tools?.length
+        ? ['child', 'root'].map((agentId) => ({ agentId, tools: [...choice.tools!].sort() }))
+        : [],
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     canUse: async () => allowed,
     canPause: async () => true,
@@ -189,9 +198,14 @@ export async function executionFixture(
     lifetimeHours: 1,
     allow: { warehouse: choice.allow ?? [tool.name] },
     ...(choice.ask && { ask: { warehouse: choice.ask } }),
+    ...(choice.allowTools && { tools: choice.allowTools }),
   });
   const loadAuthorization = jest.fn(async () => ({ authority: service.authority }));
-  const factory = createScheduleMCPExecution({ storage, loadAuthorization });
+  const factory = createScheduleMCPExecution({
+    storage,
+    loadAuthorization,
+    coversTools: choice.coversTools ?? true,
+  });
   const execution = (await factory.resolve(identity, stage, {
     approvedToolCalls: choice.approvedToolCalls,
   }))!;

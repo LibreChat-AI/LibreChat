@@ -43,11 +43,11 @@ import {
   findShadowedServerNames,
   createDeadlineAbortSignal,
 } from '../mcp/utils';
-import { ScheduledMCPPolicyError, isScheduledMCPCandidate } from './authorization/policy';
 import { MCPConfigInitializationCanceledError } from '../mcp/registry/MCPServersRegistry';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '../mcp/request';
 import { attachScheduledMCPBearer, ScheduledMCPBearerError } from './bearer';
 import { toScheduledTokenContext } from '~/agents/authority/context';
+import { ScheduledMCPPolicyError } from './authorization/policy';
 import { resolveScheduledMCPRequirements } from './requirements';
 import { getAppConfigOptionsFromUser } from '../app/service';
 import { createConcurrencyLimiter } from '../utils/promise';
@@ -230,7 +230,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       });
       return appConfig;
     };
-    const { tools, serverHints, candidates } = await resolveScheduledMCPRequirements(
+    const { tools, serverHints } = await resolveScheduledMCPRequirements(
       agentId,
       user,
       deps,
@@ -242,17 +242,11 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         name.includes(Constants.mcp_delimiter) &&
         !name.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`),
     );
-    if (execution?.enrolled) {
-      const denied = candidates.find(({ name }) => !isScheduledMCPCandidate(name));
-      if (denied || selectedTools.length === 0) {
-        throw new ScheduleMCPError(
-          new ScheduledMCPPolicyError(
-            denied ? 'tool_policy_denied' : 'binding_mismatch',
-            '',
-            denied?.agentId ?? agentId,
-          ).outcomes,
-        );
-      }
+    // An agent's other tools do not stop the run: the ones the grant leaves out are not loaded.
+    if (execution?.enrolled && selectedTools.length === 0) {
+      throw new ScheduleMCPError(
+        new ScheduledMCPPolicyError('binding_mismatch', '', agentId).outcomes,
+      );
     }
     if (selectedTools.length === 0) return [];
 

@@ -167,6 +167,11 @@ function enrollmentSchema<Consent extends z.ZodTypeAny>(consent: Consent) {
       scheduleRevision: z.number().int().nonnegative(),
       revision: identifier,
       consents: z.array(consent).min(1).max(32),
+      /**
+       * The agents' tools that are not MCP tools (code execution, web search, an action) that
+       * the owner allowed, per agent. Absent: none of them is allowed.
+       */
+      tools: z.array(scheduledMCPToolSelectionSchema).max(MAX_SERVER_AGENTS).optional(),
     })
     .strict();
 }
@@ -214,6 +219,11 @@ export const confirmScheduleMCPConsentSchema = z
       .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
       .refine((value) => Object.keys(value).length <= 32)
       .optional(),
+    /**
+     * Of the offered tools that are not MCP tools, the ones the owner allows. Left out, the
+     * stored grant's choice is kept for the tools still on offer.
+     */
+    tools: z.array(identifier).max(MAX_AGENT_TOOLS).optional(),
   })
   .strict();
 export type ConfirmScheduleMCPConsent = z.infer<typeof confirmScheduleMCPConsentSchema>;
@@ -232,6 +242,11 @@ export interface ScheduleMCPConsentView {
   changed: Record<string, string[]>;
   /** Allowed tools the stored grant asks the owner about before each use, by server. */
   asking: Record<string, string[]>;
+  /**
+   * The agents' tools that are not MCP tools: every one the owner may choose from, and the
+   * ones the stored grant allows.
+   */
+  tools: { offered: string[]; allowed: string[] };
   /** Whether a scheduled run can pause for the owner's approval on this deployment. */
   approval: boolean;
   /** With no grant: whether the schedule's MCP tools are refused until the owner confirms. */
