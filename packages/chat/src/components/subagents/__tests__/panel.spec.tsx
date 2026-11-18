@@ -4707,6 +4707,10 @@ describe('SubagentThreadPanel', () => {
       isUnattached: false,
       isLoadError: false,
       retry: jest.fn(),
+      hasEarlier: false,
+      isLoadingEarlier: false,
+      isEarlierError: false,
+      loadEarlier: () => undefined,
       ...overrides,
     });
 

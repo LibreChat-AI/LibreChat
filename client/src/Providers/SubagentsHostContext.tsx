@@ -140,9 +140,10 @@ function useThreadChat(
     [transport, token],
   );
   const loadMessages = useCallback(
-    () =>
+    (cursor?: string) =>
       dataService.getSubagentThreadMessages(parentConversationId, threadId, {
         toolPreviews: true,
+        cursor,
       }),
     [parentConversationId, threadId],
   );

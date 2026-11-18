@@ -1905,6 +1905,8 @@
   "com_ui_tool_content_error": "Couldn't load the full tool call.",
   "com_ui_tool_content_loading": "Loading the full tool call…",
   "com_ui_during_run_actions": "More send options",
+  "com_ui_earlier_messages_error": "Earlier messages couldn't be loaded.",
+  "com_ui_earlier_messages_show": "Show earlier messages",
   "com_ui_edit": "Edit",
   "com_ui_edit_editing_image": "Editing image",
   "com_ui_edit_files_removed": "Rerun to send without the removed files. Your original message stays available as an earlier version.",

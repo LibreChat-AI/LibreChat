@@ -10,7 +10,9 @@ import { useMessagesHost, inertSeenSource, MessagesHostProvider } from '../../re
 import { ChatContext, useChatContext } from '../../react/chat/context';
 import { UserTurnAuthorContext } from '../../react/messages/author';
 import { useFollowedContract } from '../../react/chat/followed';
+import Thread from '../messages/thread/Thread';
 import ScreenMessages from './messages';
+import EarlierMessages from './Earlier';
 
 export type FollowedThreadProps = {
   /** The conversation followed. */
@@ -78,7 +80,23 @@ export default function FollowedThread({
   const contract = useFollowedContract({ id, followed, index, conversation });
   const { messages } = followed;
   const messagesTree = useMemo(() => buildTree({ messages }), [messages]);
-  const listSlots = useMemo(() => ({ ...followedSlots, ...slots }), [slots]);
+  const { hasEarlier, isLoadingEarlier, isEarlierError, loadEarlier } = followed;
+  /** The rows are the package's own, under whatever of the conversation is still to be read. */
+  const listSlots = useMemo<ChatScreenMessagesSlots>(
+    () => ({
+      ...followedSlots,
+      renderThread: (props) => (
+        <>
+          <EarlierMessages
+            followed={{ hasEarlier, isLoadingEarlier, isEarlierError, loadEarlier }}
+          />
+          <Thread {...props} />
+        </>
+      ),
+      ...slots,
+    }),
+    [slots, hasEarlier, isLoadingEarlier, isEarlierError, loadEarlier],
+  );
   const messagesHost = useFollowedMessagesHost();
   return (
     <ChatContext.Provider value={contract}>

@@ -640,4 +640,159 @@ describe('useFollowChat', () => {
     expect(result.current.error).toBeInstanceOf(Error);
     expect(result.current.isLoadError).toBe(false);
   });
+
+  describe('a conversation read a page at a time', () => {
+    const row = (index: number): TMessage => ({
+      messageId: `row-${index}`,
+      conversationId: 'thread-1',
+      parentMessageId: index === 0 ? (Constants.NO_PARENT as string) : `row-${index - 1}`,
+      isCreatedByUser: index % 2 === 0,
+      text: `Row ${index}`,
+    });
+    const rows = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, offset) => row(from + offset));
+    const ids = (messages: TMessage[]) => messages.map((message) => message.messageId);
+    /** A store of ten rows that serves the newest four, then four before a cursor, and so on. */
+    const paged = (stored: TMessage[] = rows(0, 9)) =>
+      jest.fn(async (cursor?: string) => {
+        const end = cursor == null ? stored.length : Number(cursor);
+        const start = Math.max(0, end - 4);
+        return { messages: stored.slice(start, end), earlier: start > 0 ? String(start) : null };
+      });
+
+    it('shows the newest page and says older rows exist', async () => {
+      const { transport } = createTransport(idle);
+      const loadMessages = paged();
+      const { result } = setup({ transport, loadMessages });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      expect(ids(result.current.messages)).toEqual(ids(rows(6, 9)));
+      expect(result.current.hasEarlier).toBe(true);
+      expect(loadMessages).toHaveBeenCalledWith();
+    });
+
+    it('puts each earlier page ahead of the list until the first row is in', async () => {
+      const { transport } = createTransport(idle);
+      const loadMessages = paged();
+      const { result } = setup({ transport, loadMessages });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      act(() => result.current.loadEarlier());
+      expect(result.current.isLoadingEarlier).toBe(true);
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(2, 9))));
+      expect(loadMessages).toHaveBeenLastCalledWith('6');
+      expect(result.current.isLoadingEarlier).toBe(false);
+      expect(result.current.hasEarlier).toBe(true);
+
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(0, 9))));
+      expect(result.current.hasEarlier).toBe(false);
+
+      /** Nothing is before the first row, so nothing more is read. */
+      act(() => result.current.loadEarlier());
+      await settle();
+      expect(loadMessages).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps the earlier rows it paged back to when the newest page is read again', async () => {
+      const { transport, streams, setStatus } = createTransport(idle);
+      const stored = rows(0, 9);
+      const loadMessages = paged(stored);
+      const { result, rerender } = setup({ transport, loadMessages });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(result.current.messages).toHaveLength(8));
+
+      /** A run adds a row and ends; the newest page now starts one row later. */
+      stored.push(row(10));
+      setStatus(running);
+      rerender({ id: 'thread-1', transport, loadMessages, live: true });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      setStatus(idle);
+      act(() =>
+        streams[0].push({
+          type: 'final',
+          data: {
+            final: true,
+            conversation: { conversationId: 'thread-1' },
+            requestMessage: row(9),
+            responseMessage: row(10),
+          },
+        } as ChatEvent),
+      );
+
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(2, 10))));
+      /** Still two rows short of the start, and the cursor for them still stands. */
+      expect(result.current.hasEarlier).toBe(true);
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(0, 10))));
+    });
+
+    it('starts over from a newest page that does not join the rows it holds', async () => {
+      const { transport } = createTransport(idle);
+      const stored = rows(0, 9);
+      const loadMessages = paged(stored);
+      const { result } = setup({ transport, loadMessages });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(result.current.messages).toHaveLength(8));
+
+      /** More than a page was written since: what is held ends before the new page begins. */
+      stored.push(...rows(10, 19));
+      act(() => result.current.retry());
+
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(16, 19))));
+      /** No silent gap: the rows between are older rows still to be read. */
+      expect(result.current.hasEarlier).toBe(true);
+    });
+
+    it('offers the earlier rows again to a follower that starts on rows another one left', async () => {
+      const { transport } = createTransport(idle);
+      const loadMessages = paged();
+      const { result } = setup({ transport, loadMessages });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(result.current.messages).toHaveLength(8));
+
+      /** A new follower of the same conversation: the cache still holds those eight rows. */
+      act(() => result.current.retry());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      /** It knows where its own page begins, not where the rows it inherited did. */
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(6, 9))));
+      expect(result.current.hasEarlier).toBe(true);
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(2, 9))));
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(0, 9))));
+      expect(result.current.hasEarlier).toBe(false);
+    });
+
+    it('says when an earlier page could not be read, and reads it when asked again', async () => {
+      const { transport } = createTransport(idle);
+      const loadMessages = paged();
+      const { result } = setup({ transport, loadMessages });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+      loadMessages.mockRejectedValueOnce(new Error('offline'));
+
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(result.current.isEarlierError).toBe(true));
+      expect(result.current.isLoadingEarlier).toBe(false);
+      expect(result.current.hasEarlier).toBe(true);
+      expect(ids(result.current.messages)).toEqual(ids(rows(6, 9)));
+
+      act(() => result.current.loadEarlier());
+      await waitFor(() => expect(ids(result.current.messages)).toEqual(ids(rows(2, 9))));
+      expect(result.current.isEarlierError).toBe(false);
+    });
+
+    it('takes a plain list as the whole conversation', async () => {
+      const { transport } = createTransport(idle);
+      const { result } = setup({ transport, loadMessages: jest.fn(async () => rows(0, 3)) });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      expect(ids(result.current.messages)).toEqual(ids(rows(0, 3)));
+      expect(result.current.hasEarlier).toBe(false);
+    });
+  });
 });

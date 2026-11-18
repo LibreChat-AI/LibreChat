@@ -1,7 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { renderHook, waitFor } from '@testing-library/react';
 import { TaskContentScopeContext } from '@librechat/chat/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage, ToolCallPartParams } from 'librechat-data-provider';
 
@@ -61,7 +61,7 @@ describe("the app's subagents host, following a child thread", () => {
 
   it("reads the thread's messages through its parent, with tool previews", async () => {
     mockStreamStatus.mockResolvedValue({ active: false });
-    mockThreadMessages.mockResolvedValue([brief]);
+    mockThreadMessages.mockResolvedValue({ messages: [brief], earlier: null });
 
     const { result } = renderHook(
       () =>
@@ -77,8 +77,40 @@ describe("the app's subagents host, following a child thread", () => {
     expect(mockStreamStatus).toHaveBeenCalledWith('child-thread');
     expect(mockThreadMessages).toHaveBeenCalledWith('parent-conversation', 'child-thread', {
       toolPreviews: true,
+      cursor: undefined,
     });
     expect(result.current.isLoading).toBe(false);
+    expect(result.current.hasEarlier).toBe(false);
+  });
+
+  it('reads a long thread a page at a time, each earlier page by the cursor before it', async () => {
+    mockStreamStatus.mockResolvedValue({ active: false });
+    const older = { ...brief, messageId: 'earlier:user' };
+    mockThreadMessages.mockImplementation(async (_parent, _thread, options) =>
+      options.cursor == null
+        ? { messages: [brief], earlier: 'cursor-1' }
+        : { messages: [older], earlier: null },
+    );
+
+    const { result } = renderHook(
+      () =>
+        appSubagentsHost.useThreadChat('parent-conversation', 'child-thread', {
+          live: false,
+          enabled: true,
+        }),
+      { wrapper: wrapper() },
+    );
+    await waitFor(() => expect(result.current.hasEarlier).toBe(true));
+    expect(result.current.messages).toEqual([brief]);
+
+    act(() => result.current.loadEarlier());
+
+    await waitFor(() => expect(result.current.messages).toEqual([older, brief]));
+    expect(mockThreadMessages).toHaveBeenLastCalledWith('parent-conversation', 'child-thread', {
+      toolPreviews: true,
+      cursor: 'cursor-1',
+    });
+    expect(result.current.hasEarlier).toBe(false);
   });
 
   it('reports messages it could not read instead of an empty thread', async () => {

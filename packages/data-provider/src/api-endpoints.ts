@@ -190,6 +190,19 @@ export const subagentThread = (
 export const subagentThreadMessages = (parentConversationId: string, threadId: string) =>
   `${parentSubagents(parentConversationId)}/${encodeURIComponent(threadId)}/messages`;
 
+/** One page of a child thread's messages: the newest, or the one before `cursor`. */
+export const subagentThreadMessagesPage = (
+  parentConversationId: string,
+  threadId: string,
+  page: { limit: number; cursor?: string },
+) => {
+  const query = new URLSearchParams({ limit: String(page.limit) });
+  if (page.cursor != null) {
+    query.set('cursor', page.cursor);
+  }
+  return `${subagentThreadMessages(parentConversationId, threadId)}?${query.toString()}`;
+};
+
 /** One full tool-call part of a child thread's message; `conversationId` is the thread. */
 export const subagentThreadToolCallPart = (
   parentConversationId: string,

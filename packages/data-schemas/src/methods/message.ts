@@ -965,6 +965,7 @@ export interface MessageMethods {
       limit?: number;
       cursor?: string | null;
       select?: string;
+      maxBytes?: number;
     },
   ): Promise<{ messages: IMessage[]; nextCursor: string | null }>;
   searchMessages(
@@ -4345,10 +4346,23 @@ export function createMessageMethods(
       cursor?: string | null;
       /** Projection for the page, e.g. `CLIENT_MESSAGE_SELECT` for client-facing reads. */
       select?: string;
+      /**
+       * The most stored bytes a page holds. Rows come off a database cursor in order and the
+       * read stops before the row that would pass it, so a heavy conversation is never
+       * materialized whole. A page always holds one row, however large that row is.
+       */
+      maxBytes?: number;
     } = {},
   ) {
     const Message = mongoose.models.Message as Model<IMessage>;
-    const { sortField = 'createdAt', sortOrder = -1, limit = 25, cursor, select } = options;
+    const {
+      sortField = 'createdAt',
+      sortOrder = -1,
+      limit = 25,
+      cursor,
+      select,
+      maxBytes,
+    } = options;
     const queryFilter: FilterQuery<IMessage> = { ...filter };
     const position = cursor ? parseMessageCursor(cursor) : null;
     if (position != null) {
@@ -4369,14 +4383,36 @@ export function createMessageMethods(
       query.select(tokens.filter((token) => token !== '-_id').join(' '));
     }
     /** `_id` makes the order total, so a page boundary inside a run of equal sort values is stable. */
-    const messages = await query
-      .sort({ [sortField]: sortOrder, _id: sortOrder })
-      .limit(limit + 1)
-      .lean<IMessage[]>();
+    const ordered = query.sort({ [sortField]: sortOrder, _id: sortOrder }).limit(limit + 1);
+    let messages: IMessage[];
+    let more = false;
+    if (maxBytes == null) {
+      messages = await ordered.lean<IMessage[]>();
+      if (messages.length > limit) {
+        messages.pop();
+        more = true;
+      }
+    } else {
+      messages = [];
+      let bytes = 0;
+      const rows = ordered.lean<IMessage[]>().cursor();
+      try {
+        for await (const row of rows) {
+          const size = mongoose.mongo.BSON.calculateObjectSize(row);
+          if (messages.length >= limit || (messages.length > 0 && bytes + size > maxBytes)) {
+            more = true;
+            break;
+          }
+          messages.push(row as IMessage);
+          bytes += size;
+        }
+      } finally {
+        await rows.close();
+      }
+    }
 
     let nextCursor: string | null = null;
-    if (messages.length > limit) {
-      messages.pop();
+    if (more) {
       const last = messages[messages.length - 1];
       nextCursor = formatMessageCursor(last[sortField as keyof IMessage], last._id);
     }
