@@ -717,9 +717,38 @@ describe('tools the owner approves call by call', () => {
     expect(await s.enroll({ warehouse: ['query'] })).toMatchObject({ state: 'active' });
   });
 
-  it('starts from nothing on each confirmation', async () => {
+  it('keeps what the grant asks about when a confirmation does not say, and clears it when told to', async () => {
     const s = setup();
-    await s.enroll({ warehouse: ['query'] }, { warehouse: ['query'] });
-    expect(await s.enroll({ warehouse: ['query'] })).toMatchObject({ asking: {} });
+    s.changeTarget(both);
+    await s.enroll({ warehouse: ['list', 'query'] }, { warehouse: ['list', 'query'] });
+    // A client that does not send `ask` renews the grant; a tool it drops is no longer asked about.
+    expect(await s.enroll({ warehouse: ['query'] })).toMatchObject({
+      asking: { warehouse: ['query'] },
+    });
+    expect(await s.enroll({ warehouse: ['query'] }, {})).toMatchObject({ asking: {} });
+    expect(s.snapshot.enrollment!.consents[0]).not.toHaveProperty('askTools');
+  });
+
+  it('keeps a stored question through a renewal where a run can no longer pause', async () => {
+    const s = setup();
+    s.changeTarget(both);
+    await s.enroll({ warehouse: ['list', 'query'] }, { warehouse: ['query'] });
+    s.cannotPause();
+    // Renewed as it is, `query` still waits for the owner: it does not start running unattended.
+    for (const ask of [undefined, { warehouse: ['query'] }]) {
+      expect(await s.enroll({ warehouse: ['list', 'query'] }, ask)).toMatchObject({
+        state: 'active',
+        asking: { warehouse: ['query'] },
+        approval: false,
+      });
+      expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+        approvalRequired: true,
+      });
+    }
+    // A new question cannot be added here, and the owner can still drop the stored one.
+    await expect(
+      s.enroll({ warehouse: ['list', 'query'] }, { warehouse: ['list', 'query'] }),
+    ).rejects.toMatchObject({ code: 'consent_invalid' });
+    expect(await s.enroll({ warehouse: ['list', 'query'] }, {})).toMatchObject({ asking: {} });
   });
 });

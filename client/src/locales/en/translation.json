@@ -3921,6 +3921,7 @@
   "com_ui_schedule_consent_ask_first": "Ask me first",
   "com_ui_schedule_consent_ask_tool": "Ask me before each use of {{tool}}",
   "com_ui_schedule_consent_asking": "Asks you before each use: {{tools}}",
+  "com_ui_schedule_consent_ask_unavailable": "Scheduled runs cannot pause for your approval here right now. A tool set to ask me first is refused until they can. Clear its box to let it run without asking.",
   "com_ui_schedule_consent_tool_changed": "Changed since you allowed it. Check it to allow the new version.",
   "com_ui_schedule_consent_changed_tools": "Changed since allowed, now refused: {{tools}}",
   "com_ui_code_checkout_mode": "Checkout mode",

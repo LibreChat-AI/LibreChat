@@ -135,7 +135,9 @@ export default function Consent({
   /** Null until the owner changes an "ask me first" box. Only ever holds allowed tools. */
   const [editedAsking, setEditedAsking] = useState<Record<string, string[]> | null>(null);
   const canAsk = data?.approval === true;
-  const asking = editedAsking ?? (data && canAsk ? initialAsking(data, choice) : {});
+  /** Starts from the stored grant even where a run cannot pause, so a renewal keeps it. */
+  const asking = editedAsking ?? (data ? initialAsking(data, choice) : {});
+  const noteId = useId();
   const setTools = (serverName: string, tools: string[]) => {
     setEdited({
       choice: { ...choice, [serverName]: tools },
@@ -168,7 +170,8 @@ export default function Consent({
         expectedRevision: data.revision,
         lifetimeHours: hours,
         allow: choice,
-        ...(Object.keys(ask).length > 0 && { ask }),
+        // Always sent: left out, the server keeps what the stored grant asks about.
+        ask,
       },
       {
         onSuccess: () => {
@@ -230,6 +233,11 @@ export default function Consent({
                     })}
                   </p>
                 )}
+                {choosing && !canAsk && Object.keys(ask).length > 0 && (
+                  <p id={noteId} className="text-status-warning text-sm">
+                    {localize('com_ui_schedule_consent_ask_unavailable')}
+                  </p>
+                )}
                 <ul className="space-y-2">
                   {data.targets.map((target) => (
                     <li key={target.resource.serverName}>
@@ -265,7 +273,13 @@ export default function Consent({
                           offered={offeredTools(target)}
                           chosen={choice[target.resource.serverName] ?? []}
                           changed={data.changed[target.resource.serverName] ?? []}
-                          asking={canAsk ? (asking[target.resource.serverName] ?? []) : null}
+                          asking={asking[target.resource.serverName] ?? []}
+                          askable={
+                            canAsk
+                              ? offeredTools(target)
+                              : (data.asking[target.resource.serverName] ?? [])
+                          }
+                          askNoteId={canAsk ? undefined : noteId}
                           disabled={busy}
                           onChange={(tools) => setTools(target.resource.serverName, tools)}
                           onAskingChange={(tools) => setAsking(target.resource.serverName, tools)}
@@ -353,6 +367,8 @@ function ToolChoice({
   chosen,
   changed,
   asking,
+  askable,
+  askNoteId,
   disabled,
   onChange,
   onAskingChange,
@@ -362,8 +378,15 @@ function ToolChoice({
   chosen: string[];
   /** Tools the server changed since they were allowed. Refused until confirmed again. */
   changed: string[];
-  /** Allowed tools the owner approves call by call. Null where a scheduled run cannot pause. */
-  asking: string[] | null;
+  /** Allowed tools the owner approves call by call. */
+  asking: string[];
+  /**
+   * Tools that get an "ask me first" box. Where a scheduled run cannot pause, only the ones
+   * the stored grant already asks about, so the owner can keep or drop them but add none.
+   */
+  askable: string[];
+  /** The note explaining that a run cannot pause here, when it is shown. */
+  askNoteId?: string;
   disabled: boolean;
   onChange: (tools: string[]) => void;
   onAskingChange: (tools: string[]) => void;
@@ -411,13 +434,14 @@ function ToolChoice({
               >
                 {tool}
               </Label>
-              {asking && chosen.includes(tool) && (
+              {askable.includes(tool) && chosen.includes(tool) && (
                 <span className="ml-auto flex shrink-0 items-center gap-2">
                   <Checkbox
                     id={`${groupId}-${tool}-ask`}
                     checked={asking.includes(tool)}
                     disabled={disabled}
                     aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
+                    aria-describedby={askNoteId}
                     onCheckedChange={(checked) =>
                       onAskingChange(
                         checked === true

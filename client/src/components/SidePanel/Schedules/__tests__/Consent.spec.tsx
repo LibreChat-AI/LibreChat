@@ -105,6 +105,7 @@ it('confirms the offer reference, lifetime and only the tools the owner ticked, 
       expectedRevision: null,
       lifetimeHours: 1,
       allow: { warehouse: ['query'] },
+      ask: {},
     }),
   );
   expect(await screen.findByText('com_ui_schedule_consent_active')).toBeVisible();
@@ -364,9 +365,46 @@ it('starts from what the stored grant asks about, and sends no question once cle
   await userEvent.click(queryAsk);
   await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
   await waitFor(() => expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalled());
-  expect(jest.mocked(dataService.confirmScheduleMCPConsent).mock.calls[0][1]).not.toHaveProperty(
-    'ask',
+  // Sent empty, not left out: the server keeps the stored questions when told nothing.
+  expect(jest.mocked(dataService.confirmScheduleMCPConsent).mock.calls[0][1]).toMatchObject({
+    ask: {},
+  });
+});
+it('keeps what the stored grant asks about where a run cannot pause, and offers no new question', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    state: 'active',
+    revision: 'grant',
+    expiresAtMs: Date.now() + 60_000,
+    approval: false,
+    allowed: { warehouse: ['export', 'query'] },
+    asking: { warehouse: ['query'] },
+  });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  await screen.findByRole('checkbox', { name: 'query' });
+  // Only the stored question has a box, and it says why the tool is refused for now.
+  const stored = screen.getByRole('checkbox', {
+    name: 'com_ui_schedule_consent_ask_tool',
+    description: 'com_ui_schedule_consent_ask_unavailable',
+  });
+  expect(stored).toBeChecked();
+  expect(screen.getAllByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' })).toEqual([
+    stored,
+  ]);
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({
+        allow: { warehouse: ['export', 'query'] },
+        ask: { warehouse: ['query'] },
+      }),
+    ),
   );
+  // Dropping it is the owner's to choose; the note goes with the last question.
+  await userEvent.click(stored);
+  expect(screen.queryByText('com_ui_schedule_consent_ask_unavailable')).not.toBeInTheDocument();
 });
 it('names the tools a stored grant asks about when there is nothing to confirm', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({

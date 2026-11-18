@@ -155,13 +155,25 @@ function selectAllowed(
 
 /**
  * Of the allowed tools, the ones the owner approves call by call. Each must be allowed on a
- * server that made it into the grant.
+ * server that made it into the grant. A confirmation that says nothing about asking keeps
+ * what the stored grant asks about, for the tools still allowed: only an explicit choice
+ * turns a tool the owner approves each time into one that runs unattended.
  */
 function selectAsking(
   chosen: readonly ScheduledMCPTarget[],
-  ask: ConfirmScheduleMCPConsent['ask'] = {},
+  ask: ConfirmScheduleMCPConsent['ask'],
+  stored: Record<string, string[]>,
 ): Record<string, string[]> {
   const allowed = allowedTools(chosen);
+  if (ask == null)
+    return Object.fromEntries(
+      Object.entries(stored)
+        .map(([serverName, tools]): [string, string[]] => [
+          serverName,
+          tools.filter((tool) => allowed[serverName]?.includes(tool)),
+        ])
+        .filter(([, tools]) => tools.length > 0),
+    );
   return Object.fromEntries(
     Object.entries(ask)
       .filter(([, tools]) => tools.length > 0)
@@ -422,9 +434,17 @@ export function createScheduleMCPConsentService(
     );
     if (digest !== input.offerDigest) throw new ScheduleMCPConsentError('consent_changed');
     const chosen = selectAllowed(current.targets, input.allow);
-    const asking = selectAsking(chosen, input.ask);
-    // A tool nobody can approve would only ever be refused. Say so now, not at 3 a.m.
-    if (Object.keys(asking).length > 0 && !current.approval)
+    const stored = askingTools(snapshot.enrollment?.consents ?? []);
+    const asking = selectAsking(chosen, input.ask, stored);
+    // A tool nobody can approve would only ever be refused. Say so now, not at 3 a.m. One the
+    // grant already asks about may stay: it is refused until pausing works again, and making
+    // it run unattended instead is for the owner to choose.
+    if (
+      !current.approval &&
+      Object.entries(asking).some(([serverName, tools]) =>
+        tools.some((tool) => !stored[serverName]?.includes(tool)),
+      )
+    )
       throw new ScheduleMCPConsentError('consent_invalid');
     options.signal?.throwIfAborted();
     const grantedAtMs = now();
