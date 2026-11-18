@@ -135,9 +135,12 @@ export function UnclassifiedError({ json, text, message }: UnclassifiedErrorProp
   const prose = stripLangChainTroubleshootingUrl(withoutPayload).trim() || payloadProse;
   if (
     prose != null &&
-    /^This turn exceeds the configured (attachment count|total attachment size|extracted document text) limit \(/.test(
+    (/^This turn exceeds the configured (attachment count|total attachment size|extracted document text) limit \(/.test(
       prose,
-    )
+    ) ||
+      /^The attached file ".*" is over the [\d.]+ MB limit for a file sent to this model\./.test(
+        prose,
+      ))
   ) {
     return (
       <ErrorWithDetail

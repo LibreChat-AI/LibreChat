@@ -11,6 +11,7 @@ import type { TokenCountFn } from '~/utils/text';
 import type { ServerRequest } from '~/types';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
 import { AGENT_ATTACHMENT_LIMIT_EXCEEDED } from './errors';
+import { AttachmentSizeError } from '~/files/encode/utils';
 import { countTokens } from '~/utils/tokenizer';
 import { extractFileContext } from '~/files';
 
@@ -235,8 +236,12 @@ export class AgentAttachmentPolicyError extends Error {
 
 export function isAgentAttachmentLimitError(
   error: unknown,
-): error is AgentAttachmentLimitError | AgentAttachmentPolicyError {
-  return error instanceof AgentAttachmentLimitError || error instanceof AgentAttachmentPolicyError;
+): error is AgentAttachmentLimitError | AgentAttachmentPolicyError | AttachmentSizeError {
+  return (
+    error instanceof AgentAttachmentLimitError ||
+    error instanceof AgentAttachmentPolicyError ||
+    error instanceof AttachmentSizeError
+  );
 }
 
 export function collectAgentAttachmentStats(
