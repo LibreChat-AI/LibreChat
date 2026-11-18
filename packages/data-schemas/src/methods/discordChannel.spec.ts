@@ -384,7 +384,7 @@ it.each(['execution', 'progress', 'delivery'] as const)(
   (effect) =>
     scope(async () => {
       await create();
-      expect(await identities.saveChannelIdentity(link(), null)).toBe(true);
+      expect(await identities.saveChannelIdentity(link(), null, applicationRevision)).toBe(true);
       const now = Date.now();
       const admitted = await runs.admit(event(), now);
       const claimed = await runs.claim(tenantId, channel.channelId, 'worker', now, 60000);

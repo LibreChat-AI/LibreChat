@@ -1874,7 +1874,25 @@ it(
       channelRevision: 'discord-revision',
     });
     if (!assigned.ok) throw new Error(assigned.error.code);
-    await link(externalUserId, users[0], 'discord-channel');
+    // Discord consent needs signed ingress, which a later slice adds; seed the active link directly.
+    const discordChannel = (await db.getAgentChannel('discord-channel'))!;
+    const linked = await createChannelIdentityStorage(mongoose).saveChannelIdentity(
+      {
+        tenantId,
+        linkId: 'discord-link',
+        ticketHash: 'd'.repeat(64),
+        revision: 'discord-link-revision',
+        identity: channelExternalIdentity(discordChannel, externalUserId),
+        state: 'active',
+        userId: users[0].id,
+        accountLabel: users[0].name!,
+        ticketExpiresAtMs: Date.now() + 60000,
+        expiresAtMs: Date.now() + 60000,
+      },
+      null,
+      configured.value.revision,
+    );
+    expect(linked).toBe(true);
     const call = (suffix: string, revision = configured.value.revision) =>
       request(app)
         .post(`/service/discord-channel/${suffix}`)
