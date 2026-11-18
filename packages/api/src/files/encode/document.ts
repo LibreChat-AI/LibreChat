@@ -22,8 +22,13 @@ import {
   CONTENT_TRAVERSAL_MAX_NODES,
   ContentTraversalLimitError,
 } from '~/protection/adapters/nested';
-import { getFileStream, getConfiguredFileSizeLimit, skipMissingAttachment } from './utils';
-import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import {
+  getFileStream,
+  AttachmentSizeError,
+  skipMissingAttachment,
+  getConfiguredFileSizeLimit,
+} from './utils';
+import { validatePdf, validateBedrockDocument, getBedrockDocumentLimit } from '~/files/validation';
 import { someReachableAgent } from '~/agents/traversal';
 import { runGuardedEncode } from './memoryGuard';
 
@@ -347,16 +352,37 @@ export async function encodeAndFormatDocuments(
 
   const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, { provider, endpoint });
 
+  /** Bedrock's limit per document, known before anything is read. Other providers read unbounded. */
+  const readLimits = processableFiles.map((file) =>
+    isBedrock ? getBedrockDocumentLimit(file.type, configuredFileSizeLimit, model) : undefined,
+  );
+  for (const [index, file] of processableFiles.entries()) {
+    const limit = readLimits[index];
+    if (limit != null && (file.bytes ?? 0) > limit) {
+      throw new AttachmentSizeError(file.file_id, file.filename, limit);
+    }
+  }
+
   const results = await Promise.allSettled(
-    processableFiles.map((file) =>
+    processableFiles.map((file, index) =>
       runGuardedEncode(file.bytes ?? 0, () =>
-        getFileStream(req, file, encodingMethods, getStrategyFunctions),
+        getFileStream(
+          req,
+          file,
+          encodingMethods,
+          getStrategyFunctions,
+          undefined,
+          readLimits[index],
+        ),
       ),
     ),
   );
 
   for (const [index, settledResult] of results.entries()) {
     if (settledResult.status === 'rejected') {
+      if (settledResult.reason instanceof AttachmentSizeError) {
+        throw settledResult.reason;
+      }
       if (skipMissingAttachment(settledResult.reason, processableFiles[index], onMissingFile)) {
         continue;
       }

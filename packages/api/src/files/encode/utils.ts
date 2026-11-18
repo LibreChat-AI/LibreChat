@@ -24,6 +24,25 @@ export class AttachmentObjectNotFoundError extends Error {
   }
 }
 
+/** One attachment is larger than the model it is going to accepts. */
+export class AttachmentSizeError extends Error {
+  readonly code = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
+  readonly status = 413;
+  readonly statusCode = 413;
+
+  constructor(
+    readonly fileId: string | undefined,
+    filename: string | undefined,
+    readonly limit: number,
+  ) {
+    const megabytes = Number((limit / (1024 * 1024)).toFixed(1));
+    super(
+      `The attached file "${filename ?? 'attachment'}" is over the ${megabytes} MB this model accepts for one file. Remove it or attach a smaller file, then try again.`,
+    );
+    this.name = 'AttachmentSizeError';
+  }
+}
+
 export function isAttachmentObjectNotFoundError(
   error: unknown,
 ): error is AttachmentObjectNotFoundError {
@@ -288,14 +307,37 @@ type ReadBudget = Pick<ReturnType<typeof outboundRequestBudget>, 'signal' | 'tim
  * @param budget - Wall-clock budget for the whole read. The strategy receives its signal, and a
  * stream still open when the signal aborts is destroyed, so a stalled read ends with an
  * `OutboundTimeoutError` instead of holding the caller. Without one the read is unbounded.
+ * @param maxBytes - The most the stored object may hold. The read stops and the stream is destroyed
+ * as soon as it yields more, so an object larger than its record never reaches memory in full.
  * @returns Processed file with content and metadata, or null if no download reference exists
  */
+/** Collects a stream, giving up at the first chunk that takes it past `maxBytes`. */
+async function readUpTo(
+  stream: AsyncIterable<unknown>,
+  maxBytes: number,
+  tooLarge: () => Error,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  // Leaving the loop by throwing destroys the stream, so the rest is never downloaded.
+  for await (const chunk of stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    size += bytes.length;
+    if (size > maxBytes) {
+      throw tooLarge();
+    }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks, size);
+}
+
 export async function getFileStream<T extends ProcessedFile['metadata'] & StoredFileRef>(
   req: ServerRequest,
   file: T,
   encodingMethods: Record<string, StrategyFunctions>,
   getStrategyFunctions: (source: string) => StrategyFunctions,
   budget?: ReadBudget,
+  maxBytes?: number,
 ): Promise<ProcessedFile<T> | null> {
   if (!file?.filepath && !file?.storageKey) {
     return null;
@@ -312,9 +354,13 @@ export async function getFileStream<T extends ProcessedFile['metadata'] & Stored
     const stream = budget
       ? await getDownloadStream(req, downloadPath, { signal: budget.signal })
       : await getDownloadStream(req, downloadPath);
-    let buffer: Buffer | null = await getStream.buffer(
-      budget ? addAbortSignal(budget.signal, stream) : stream,
-    );
+    const guarded = budget ? addAbortSignal(budget.signal, stream) : stream;
+    let buffer: Buffer | null =
+      maxBytes == null
+        ? await getStream.buffer(guarded)
+        : await readUpTo(guarded, maxBytes, () => {
+            return new AttachmentSizeError(file.file_id, file.filename, maxBytes);
+          });
     const content = buffer.toString('base64');
     buffer = null;
 

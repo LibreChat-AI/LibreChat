@@ -14,6 +14,7 @@ import { encodeAndFormatDocuments, dedupeDocumentNames } from './document';
 jest.mock('~/files/validation', () => ({
   validatePdf: jest.fn(),
   validateBedrockDocument: jest.fn(),
+  getBedrockDocumentLimit: jest.requireActual('~/files/validation').getBedrockDocumentLimit,
 }));
 
 /** Mock the utils module */
@@ -22,10 +23,16 @@ jest.mock('./utils', () => ({
   getConfiguredFileSizeLimit: jest.fn(),
   skipMissingAttachment: jest.requireActual('./utils').skipMissingAttachment,
   AttachmentObjectNotFoundError: jest.requireActual('./utils').AttachmentObjectNotFoundError,
+  AttachmentSizeError: jest.requireActual('./utils').AttachmentSizeError,
 }));
 
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
-import { getFileStream, getConfiguredFileSizeLimit, AttachmentObjectNotFoundError } from './utils';
+import {
+  getFileStream,
+  AttachmentSizeError,
+  getConfiguredFileSizeLimit,
+  AttachmentObjectNotFoundError,
+} from './utils';
 import { Types } from 'mongoose';
 
 const mockedValidatePdf = validatePdf as jest.MockedFunction<typeof validatePdf>;
@@ -574,6 +581,61 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       });
     });
 
+    it('refuses a Bedrock document over the limit from its recorded size, without reading it', async () => {
+      const req = createMockRequest(512, Providers.BEDROCK) as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+
+      await expect(
+        encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.BEDROCK },
+          mockStrategyFunctions,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentSizeError);
+      expect(mockedGetFileStream).not.toHaveBeenCalled();
+    });
+
+    it('bounds the Bedrock read at the limit and reports an object larger than its record', async () => {
+      const req = createMockRequest(512, Providers.BEDROCK) as ServerRequest;
+      const file = createMockFile(1);
+      file.type = 'text/csv';
+      const limit = mbToBytes(4.5);
+      mockedGetFileStream.mockRejectedValue(
+        new AttachmentSizeError(file.file_id, 'data.csv', limit),
+      );
+
+      await expect(
+        encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.BEDROCK },
+          mockStrategyFunctions,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentSizeError);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(limit);
+    });
+
+    it('leaves reads for other providers unbounded', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(3);
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('%PDF-1.4 test').toString('base64'),
+        metadata: file,
+      });
+      mockedValidatePdf.mockResolvedValue({ isValid: true });
+
+      await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.ANTHROPIC },
+        mockStrategyFunctions,
+      );
+      expect(mockedGetFileStream.mock.calls[0][5]).toBeUndefined();
+    });
+
     it('should format Bedrock CSV document', async () => {
       const req = createMockRequest() as ServerRequest;
       const file = createMockDocFile(1, 'text/csv', 'data.csv');
@@ -706,7 +768,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
     it('should reject Bedrock document when validation fails', async () => {
       const req = createMockRequest() as ServerRequest;
-      const file = createMockDocFile(5, 'text/csv', 'big.csv');
+      const file = createMockDocFile(3, 'text/csv', 'big.csv');
 
       const mockContent = Buffer.from('large-csv-content').toString('base64');
       mockedGetFileStream.mockResolvedValue({

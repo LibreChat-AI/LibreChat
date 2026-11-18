@@ -5,6 +5,7 @@ import { audioMimeTypes } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import {
   AttachmentObjectNotFoundError,
+  AttachmentSizeError,
   appendMissingAttachmentsNote,
   createMissingAttachmentCollector,
   replayMessageAttachments,
@@ -67,6 +68,41 @@ describe('getFileStream', () => {
     await expect(
       getFileStream({} as ServerRequest, file, {}, () => ({ getDownloadStream })),
     ).resolves.toMatchObject({ content: Buffer.from('data').toString('base64') });
+  });
+
+  it('reads an object that fits its byte limit', async () => {
+    const getDownloadStream = jest.fn().mockResolvedValue(Readable.from(Buffer.from('data')));
+
+    await expect(
+      getFileStream({} as ServerRequest, file, {}, () => ({ getDownloadStream }), undefined, 4),
+    ).resolves.toMatchObject({ content: Buffer.from('data').toString('base64') });
+  });
+
+  it('stops reading at the byte limit and never downloads the rest', async () => {
+    let produced = 0;
+    const stream = Readable.from(
+      (function* chunks() {
+        for (let i = 0; i < 1000; i++) {
+          produced++;
+          yield Buffer.alloc(1024);
+        }
+      })(),
+    );
+    const getDownloadStream = jest.fn().mockResolvedValue(stream);
+
+    const read = getFileStream(
+      {} as ServerRequest,
+      { ...file, filename: 'big.csv' },
+      {},
+      () => ({ getDownloadStream }),
+      undefined,
+      4096,
+    );
+
+    await expect(read).rejects.toBeInstanceOf(AttachmentSizeError);
+    await expect(read).rejects.toMatchObject({ status: 413, limit: 4096 });
+    expect(stream.destroyed).toBe(true);
+    expect(produced).toBeLessThan(40);
   });
 
   it.each([
