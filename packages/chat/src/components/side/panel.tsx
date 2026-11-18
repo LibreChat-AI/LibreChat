@@ -93,16 +93,19 @@ function SideChatComposer({
     onHandedTextTaken();
   }, [ask, conversationId, handedText, onHandedTextTaken, readiness, ready, setValue, value]);
 
-  /** Editing is a new intent: a delayed handoff must not send or restore older words. */
+  /** Editing or an accepted manual send supersedes automatic intent, including after rollback. */
+  const consume = useCallback(() => {
+    if (handedText && handed.current !== conversationId) {
+      handed.current = conversationId;
+      onHandedTextTaken();
+    }
+  }, [conversationId, handedText, onHandedTextTaken]);
   const change = useCallback(
     (text: string) => {
-      if (handedText && handed.current !== conversationId) {
-        handed.current = conversationId;
-        onHandedTextTaken();
-      }
+      consume();
       setValue(text);
     },
-    [conversationId, handedText, onHandedTextTaken, setValue],
+    [consume, setValue],
   );
 
   const submit = useCallback(() => {
@@ -110,8 +113,9 @@ function SideChatComposer({
     if (text === '' || ask({ text }) === false) {
       return;
     }
+    consume();
     setValue('');
-  }, [ask, setValue, value]);
+  }, [ask, consume, setValue, value]);
 
   /** The main chat form's own Enter decision table, so a rebound submit shortcut holds here. */
   const resolveKeyVerdict = useCallback(
@@ -231,6 +235,7 @@ export default function SideChatPanel({
     /** Words not sent yet go with the conversation, to the composer it opens under. */
     if (draft.trim() !== '') {
       handOffComposerText(conversationId, draft);
+      setDraft((current) => (current === draft ? '' : current));
     }
     openConversation(pane.conversation ?? opened);
     onClose();
@@ -242,6 +247,7 @@ export default function SideChatPanel({
     openConversation,
     opened,
     pane.conversation,
+    setDraft,
   ]);
 
   let body: ReactNode;

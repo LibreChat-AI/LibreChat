@@ -61,3 +61,44 @@ it('does not seed a shared empty-id draft for an invalid destination', () => {
   });
   expect(store.get(sideChatDraftFamily(''))).toBe('');
 });
+
+it.each(['Same words.', 'Different draft.'])(
+  'suppresses new handoff intent whenever an existing draft wins: %s',
+  (draft) => {
+    const store = createStore();
+    store.set(sideChatDraftFamily('destination'), draft);
+    store.set(sideChatAtom, { conversation, text: 'Same words.' });
+    expect(store.get(sideChatDraftFamily('destination'))).toBe(draft);
+    expect(store.get(sideChatAtom)?.text).toBeUndefined();
+  },
+);
+
+it('distinguishes same-ID/text functional refinement from a genuine new direct opening', () => {
+  const store = createStore();
+  store.set(sideChatAtom, { conversation, text: 'My question.' });
+  store.set(
+    sideChatAtom,
+    (current) =>
+      current && { ...current, conversation: { ...current.conversation, title: 'Loaded' } },
+  );
+  expect(store.get(sideChatAtom)?.text).toBe('My question.');
+  const current = store.get(sideChatAtom);
+  store.set(sideChatAtom, current);
+  expect(store.get(sideChatAtom)).toBe(current);
+  store.set(sideChatAtom, { conversation, text: 'My question.' });
+  expect(store.get(sideChatDraftFamily('destination'))).toBe('My question.');
+  expect(store.get(sideChatAtom)?.text).toBeUndefined();
+});
+
+it('normalizes a functional destination change while preserving both drafts', () => {
+  const store = createStore();
+  store.set(sideChatDraftFamily('other'), 'Owned draft.');
+  store.set(sideChatAtom, { conversation, text: 'Original.' });
+  store.set(sideChatAtom, () => ({
+    conversation: { ...conversation, conversationId: 'other' },
+    text: 'Owned draft.',
+  }));
+  expect(store.get(sideChatDraftFamily('destination'))).toBe('Original.');
+  expect(store.get(sideChatDraftFamily('other'))).toBe('Owned draft.');
+  expect(store.get(sideChatAtom)?.text).toBeUndefined();
+});

@@ -97,6 +97,40 @@ it.each(['success', 'denial'] as const)(
   },
 );
 
+it.each(['success', 'denial'] as const)(
+  'waits for the native mount refetch after cached success: %s',
+  async (outcome) => {
+    const { client, wrapper } = setupClient();
+    client.setQueryData([QueryKeys.agent, 'agent_1'], detail, { updatedAt: Date.now() - 10000 });
+    let release!: (value: Agent) => void;
+    let reject!: (reason: unknown) => void;
+    const request = getAgent.mockImplementation(
+      () =>
+        new Promise((resolve, fail) => {
+          release = resolve;
+          reject = fail;
+        }),
+    );
+    const seen: string[] = [];
+    const { result } = renderHook(
+      () => {
+        useGetAgentByIdQuery('agent_1');
+        const readiness = useTargetReadiness(selected());
+        seen.push(readiness);
+        return readiness;
+      },
+      { wrapper },
+    );
+    expect(seen).not.toContain('blocked');
+    expect(seen).not.toContain('ready');
+    expect(result.current).toBe('pending');
+    expect(request).toHaveBeenCalledTimes(1);
+    await act(async () => (outcome === 'success' ? release(detail) : reject(denied)));
+    await waitFor(() => expect(result.current).toBe(outcome === 'success' ? 'ready' : 'blocked'));
+    expect(request).toHaveBeenCalledTimes(1);
+  },
+);
+
 it('uses cached endpoint configuration after refetch fails while the agent still loads', async () => {
   const { client, wrapper } = setupClient();
   await client
@@ -134,7 +168,13 @@ it('adds no request for a fresh cached target or an inactive handoff', () => {
 
 it('fences a previous destination and ignores unrelated cache updates', async () => {
   const { wrapper, client } = setupClient();
-  getAgent.mockImplementation(() => new Promise(() => undefined));
+  const releases = new Map<string, (agent: Agent) => void>();
+  getAgent.mockImplementation(
+    ({ agent_id }) =>
+      new Promise((resolve) => {
+        releases.set(agent_id, resolve);
+      }),
+  );
   let renders = 0;
   const { result, rerender } = renderHook(
     ({ id }) => {
@@ -147,9 +187,9 @@ it('fences a previous destination and ignores unrelated cache updates', async ()
     },
   );
   rerender({ id: 'agent_2' });
-  act(() => client.setQueryData([QueryKeys.agent, 'agent_1'], detail));
+  await act(async () => releases.get('agent_1')?.(detail));
   expect(result.current).toBe('pending');
-  act(() => client.setQueryData([QueryKeys.agent, 'agent_2'], { id: 'agent_2' }));
+  await act(async () => releases.get('agent_2')?.({ id: 'agent_2' } as Agent));
   await waitFor(() => expect(result.current).toBe('ready'));
   const settledRenders = renders;
   act(() => {

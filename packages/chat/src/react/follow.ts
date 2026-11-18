@@ -583,7 +583,7 @@ export function useFollowChat({
           if (completed != null) {
             await chat.setMessages(completed);
           }
-          if (current.withdrawn === true) {
+          if (!stale && current.withdrawn === true) {
             host.current.onWithdrawn?.(turn);
           }
           /**

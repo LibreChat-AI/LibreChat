@@ -7,6 +7,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Constants,
+  QueryKeys,
   StepTypes,
   StepEvents,
   ContentTypes,
@@ -225,7 +226,7 @@ function setup({
     { wrapper, initialProps: { live: false } },
   );
   const ready = () => waitFor(() => expect(view.result.current.followed.isLoading).toBe(false));
-  return { ...view, ...harness, store, services, loadMessages, onWithdrawn, ready };
+  return { ...view, ...harness, queryClient, store, services, loadMessages, onWithdrawn, ready };
 }
 
 describe('useDrivenContract', () => {
@@ -672,6 +673,43 @@ describe('useDrivenContract', () => {
         },
       ],
     ]);
+  });
+
+  it('does not restore a withdrawn turn after cleanup during its real reconciliation write', async () => {
+    const view = setup();
+    await view.ready();
+    act(() => view.result.current.contract.ask({ text: 'Do not restore after leaving.' }));
+    await waitFor(() => expect(view.streams).toHaveLength(1));
+    let cleaned = false;
+    const unsubscribe = view.queryClient.getQueryCache().subscribe((event) => {
+      if (
+        event.type !== 'updated' ||
+        event.query.queryKey[0] !== QueryKeys.messages ||
+        event.query.queryKey[1] !== conversationId
+      )
+        return;
+      const messages = event.query.state.data as TMessage[] | undefined;
+      if (!cleaned && ids(messages).join(',') === 'user-1,response-1') {
+        cleaned = true;
+        view.unmount();
+      }
+    });
+    act(() =>
+      view.streams[0].push({
+        type: 'final',
+        data: {
+          final: true,
+          earlyAbort: true,
+          conversation: { conversationId },
+          requestMessage: null,
+          responseMessage: null,
+        },
+      } as unknown as ChatEvent),
+    );
+    await waitFor(() => expect(cleaned).toBe(true));
+    await settle();
+    unsubscribe();
+    expect(view.onWithdrawn).not.toHaveBeenCalled();
   });
 
   it('takes back a turn stopped before the server kept anything of it', async () => {

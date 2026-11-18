@@ -62,22 +62,30 @@ export const sideChatAtom: WritableAtom<SideChat | null, [SetStateAction<SideCha
     (get) => get(shownSideChatAtom),
     (get, set, next: SetStateAction<SideChat | null>) => {
       const current = get(shownSideChatAtom);
-      const value = typeof next === 'function' ? next(current) : next;
+      const refinement = typeof next === 'function';
+      let value = refinement ? next(current) : next;
       /** A change of what is shown, not a refinement of it, is the reader's newest choice. */
       if (value?.conversation.conversationId !== current?.conversation.conversationId) {
         set(sideChatRequestAtom, null);
       }
       const id = value?.conversation.conversationId;
       const text = value?.text;
-      /** Keep the words before a pane or its history loads. A refinement cannot resurrect
-       * an intent the reader has already edited or cleared. Existing drafts take precedence. */
+      /** Direct opens grant new intent; functional refinements preserve an existing one.
+       * Only a handoff that seeds an empty draft may automatically send it. */
       if (
+        value != null &&
         id &&
         text &&
-        (id !== current?.conversation.conversationId || text !== current?.text) &&
-        get(sideChatDraftFamily(id)) === ''
+        ((!refinement && value !== current) ||
+          id !== current?.conversation.conversationId ||
+          text !== current?.text)
       ) {
-        set(sideChatDraftFamily(id), text);
+        const draft = sideChatDraftFamily(id);
+        if (get(draft) === '') {
+          set(draft, text);
+        } else {
+          value = { conversation: value.conversation };
+        }
       }
       set(shownSideChatAtom, value);
     },

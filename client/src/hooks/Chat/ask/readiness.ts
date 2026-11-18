@@ -19,7 +19,7 @@ export function getTargetReadiness(
   conversation: TConversation | null,
 ): TurnReadiness {
   if (conversation == null) return 'pending';
-  if (isTargetReady(client, conversation)) return 'ready';
+  const ready = isTargetReady(client, conversation);
   const endpoint = conversation.endpoint;
   if (!endpoint) return 'blocked';
   const endpoints = client.getQueryState<TEndpointsConfig>([QueryKeys.endpoints]);
@@ -27,11 +27,13 @@ export function getTargetReadiness(
   if (!endpoints.data[endpoint]) return 'blocked';
   if (isAgentsEndpoint(endpoint)) {
     const id = conversation.agent_id;
-    if (!id || isEphemeralAgentId(id)) return 'blocked';
+    if (!id || isEphemeralAgentId(id)) return ready ? 'ready' : 'blocked';
     const target = client.getQueryState<Agent>([QueryKeys.agent, id]);
     if (target?.fetchStatus === 'fetching' || target?.fetchStatus === 'paused') return 'pending';
+    if (ready) return 'ready';
     return target?.status === 'success' || target?.status === 'error' ? 'blocked' : 'pending';
   }
+  if (ready) return 'ready';
   if (isAssistantsEndpoint(endpoint)) {
     if (!conversation.assistant_id) return 'blocked';
     const version = endpoints.data[endpoint].version ?? defaultAssistantsVersion[endpoint];
@@ -82,8 +84,8 @@ export default function useTargetReadiness(
     [client, conversation, enabled],
   );
   const readiness = useSyncExternalStore(subscribe, snapshot, snapshot);
-  /** An errored cached agent can be refetched on this mount before the cache reports fetching.
-   * Use the native observer's optimistic result, then let settled failures retain the draft. */
-  if (enabled && readiness !== 'ready' && (agent.isFetching || agent.isPaused)) return 'pending';
+  /** A stale success or cached error can refetch on mount before the cache reports fetching.
+   * Wait for that native attempt; only its settled result may consume the handoff. */
+  if (enabled && (agent.isFetching || agent.isPaused)) return 'pending';
   return readiness;
 }

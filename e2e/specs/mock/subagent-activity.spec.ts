@@ -341,12 +341,22 @@ test.describe('detached subagent activity', () => {
     }
   });
 
-  for (const action of ['send', 'promote', 'close', 'switch'] as const) {
+  for (const action of [
+    'send',
+    'promote',
+    'promote-clear',
+    'close',
+    'switch',
+    'refetch-success',
+    'refetch-denial',
+  ] as const) {
     test(`continues a finished child and preserves pending words on ${action} @scenario:subagent-continue-opens-side-chat-${action}`, async ({
       page,
     }) => {
       test.setTimeout(120_000);
       const label = `beside-${Date.now().toString(36)}`;
+      const refetch = action === 'refetch-success' || action === 'refetch-denial';
+      const promote = action === 'promote' || action === 'promote-clear';
       /** The fixture's parent dispatches exactly two children; the first is the one continued. */
       const childNames = [
         uniqueAgentName('E2E Side Chat Child A'),
@@ -390,11 +400,27 @@ test.describe('detached subagent activity', () => {
         });
         createdAgentIds.push(parent.id);
 
+        /** Warm the canonical query through its ordinary UI before testing stale success. */
+        if (refetch) {
+          const warm = page.waitForResponse(
+            (response) => new URL(response.url()).pathname === `/api/agents/${children[0].id}`,
+          );
+          await selectAgent(page, childNames[0]);
+          expect((await warm).ok()).toBeTruthy();
+        }
         /** The destination's history can load before its selected agent details. */
         await page.route(`**/api/agents/${children[0].id}`, async (route) => {
+          if (route.request().method() !== 'GET') {
+            await route.continue();
+            return;
+          }
           observedAgent();
           await agentReady;
-          await route.continue();
+          if (action === 'refetch-denial') {
+            await route.fulfill({ status: 403, json: { message: 'Agent access denied.' } });
+          } else {
+            await route.continue();
+          }
         });
 
         await selectAgent(page, parentName);
@@ -418,6 +444,7 @@ test.describe('detached subagent activity', () => {
         /** A finished child takes no more guidance: what the reader writes continues it as a
          *  chat of their own, which opens where the child's activity was. */
         const startsBefore = starts.length;
+        if (refetch) await page.clock.setFixedTime(new Date(Date.now() + 6000));
         await panel.getByRole('textbox', { name: 'Message input' }).fill('What did you find?');
         await panel.getByRole('button', { name: 'Continue in a new chat' }).click();
 
@@ -438,11 +465,24 @@ test.describe('detached subagent activity', () => {
         await expect(sideChat.getByRole('textbox', { name: 'Message input' })).toHaveValue(
           'What did you find?',
         );
-        if (action !== 'send') {
+        if (action === 'refetch-denial') {
+          const denied = page.waitForResponse(
+            (response) => new URL(response.url()).pathname === `/api/agents/${children[0].id}`,
+          );
+          releaseAgent();
+          expect((await denied).status()).toBe(403);
+          const draft = sideChat.getByRole('textbox', { name: 'Message input' });
+          await expect(draft).toHaveValue('What did you find?');
+          await sideChat.getByRole('button', { name: 'Send message' }).click();
+          await expect(draft).toHaveValue('What did you find?');
+          expect(starts.slice(startsBefore)).toEqual([]);
+          return;
+        }
+        if (action !== 'send' && !refetch) {
           const agentResponse = page.waitForResponse(
             (response) => new URL(response.url()).pathname === `/api/agents/${children[0].id}`,
           );
-          if (action === 'promote') {
+          if (promote) {
             await sideChat.getByRole('button', { name: 'Open as the main chat' }).click();
             await expect(page).toHaveURL(new RegExp(`/c/${sideConversationId}$`));
           } else if (action === 'close') {
@@ -466,7 +506,7 @@ test.describe('detached subagent activity', () => {
           releaseAgent();
           await agentResponse;
           expect(starts.slice(startsBefore)).not.toContain(sideConversationId);
-          if (action !== 'promote') {
+          if (!promote) {
             await openChatHistory(page);
             const row = conversationRow(
               page,
@@ -477,17 +517,36 @@ test.describe('detached subagent activity', () => {
             await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
             await expect(sideChat).toBeVisible();
           }
-          const destination = action === 'promote' ? page.getByRole('main') : sideChat;
+          const destination = promote ? page.getByRole('main') : sideChat;
           const draft = destination.getByRole('textbox', { name: 'Message input' });
           await expect(draft).toHaveValue('What did you find?');
           await expect(destination.getByRole('button', { name: 'Send message' })).toBeEnabled();
           expect(starts.slice(startsBefore)).not.toContain(sideConversationId);
-          await draft.press('Enter');
-          await expect(destination).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
-          expect(starts.slice(startsBefore).filter((id) => id === sideConversationId)).toEqual([
-            sideConversationId,
-          ]);
+          if (action === 'promote-clear') {
+            await draft.fill('');
+          } else {
+            await draft.press('Enter');
+            await expect(destination).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
+            expect(starts.slice(startsBefore).filter((id) => id === sideConversationId)).toEqual([
+              sideConversationId,
+            ]);
+          }
           await expect(draft).toHaveValue('');
+          if (promote) {
+            /** SPA navigation keeps the same draft store: a reload would conceal a stale copy. */
+            await openChatHistory(page);
+            await conversationRow(page, `${new URL(page.url()).origin}${parentPath}`).click();
+            await expect(page).toHaveURL(new RegExp(`${parentPath}$`));
+            const row = conversationRow(
+              page,
+              `${new URL(page.url()).origin}/c/${sideConversationId}`,
+            );
+            await row.hover();
+            await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+            await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
+            await expect(sideChat).toBeVisible();
+            await expect(sideChat.getByRole('textbox', { name: 'Message input' })).toHaveValue('');
+          }
           return;
         }
         releaseAgent();

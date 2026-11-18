@@ -182,7 +182,25 @@ function setup({
   const store = createStore();
   if (draft != null) store.set(sideChatDraftFamily(conversationId), draft);
   store.set(sideChatAtom, chat);
-  const tree = (current: SideChat) => (
+  /** The real owner renders normalized state and consumes intent/close in that same store. */
+  const Pane = () => {
+    const [current, setCurrent] = useAtom(sideChatAtom);
+    return current == null ? null : (
+      <SideChatPanel
+        key={current.conversation.conversationId}
+        chat={current}
+        onClose={() => {
+          onClose();
+          setCurrent(null);
+        }}
+        onHandedTextTaken={() => {
+          onHandedTextTaken();
+          setCurrent((value) => value && { conversation: value.conversation });
+        }}
+      />
+    );
+  };
+  const tree = () => (
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
         <ChatSurfaceProvider
@@ -203,11 +221,7 @@ function setup({
             <SideChatHostProvider host={sideChatHost}>
               <MessagesHostProvider host={messagesHost}>
                 <MessagePartsHostProvider host={partsHost}>
-                  <SideChatPanel
-                    chat={current}
-                    onClose={onClose}
-                    onHandedTextTaken={() => onHandedTextTaken()}
-                  />
+                  <Pane />
                 </MessagePartsHostProvider>
               </MessagesHostProvider>
             </SideChatHostProvider>
@@ -216,18 +230,16 @@ function setup({
       </Provider>
     </QueryClientProvider>
   );
-  const view = render(tree(chat));
+  const view = render(tree());
   return {
     ...view,
     store,
-    rerenderWith: (next: SideChat) => {
-      act(() => store.set(sideChatAtom, next));
-      view.rerender(tree(next));
-    },
+    open: (next: SideChat) => act(() => store.set(sideChatAtom, next)),
+    refresh: () => view.rerender(tree()),
     /** Draws the panel again from nothing, as the layout does when it moves it. */
     remount: () => {
       view.unmount();
-      return render(tree(chat));
+      return render(tree());
     },
     streams,
     sendMessages,
@@ -341,7 +353,7 @@ describe('SideChatPanel', () => {
   });
 
   it('sends the words handed over with the conversation once, as its next turn', async () => {
-    const { sendMessages, streams, onHandedTextTaken, rerenderWith } = setup({
+    const { sendMessages, streams, onHandedTextTaken, refresh } = setup({
       chat: { conversation, text: 'Carry on from here.' },
     });
 
@@ -353,8 +365,8 @@ describe('SideChatPanel', () => {
     expect(onHandedTextTaken).toHaveBeenCalledTimes(1);
     expect(field()).toHaveValue('');
 
-    /** The owner has not dropped the words yet; they are not a second turn. */
-    rerenderWith({ conversation, text: 'Carry on from here.' });
+    /** Rendering again cannot recreate consumed intent. */
+    refresh();
     await settle();
     expect(sendMessages).toHaveBeenCalledTimes(1);
     expect(onHandedTextTaken).toHaveBeenCalledTimes(1);
@@ -373,7 +385,7 @@ describe('SideChatPanel', () => {
 
     ready = true;
     services.readiness = 'ready';
-    view.rerenderWith(chat);
+    view.refresh();
     await waitFor(() => expect(view.streams).toHaveLength(1));
     expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
     expect(field()).toHaveValue('');
@@ -390,7 +402,7 @@ describe('SideChatPanel', () => {
       expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
       allowed = true;
       services.readiness = 'ready';
-      view.rerenderWith(chat);
+      view.refresh();
       expect(view.sendMessages).not.toHaveBeenCalled();
       expect(field()).toHaveValue(chat.text);
     },
@@ -402,7 +414,7 @@ describe('SideChatPanel', () => {
     const view = setup({ chat, services });
     await waitFor(() => expect(rows()).toHaveLength(2));
     services.readiness = 'blocked';
-    view.rerenderWith(chat);
+    view.refresh();
     await waitFor(() => expect(field()).toHaveValue(chat.text));
     expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
     expect(view.sendMessages).not.toHaveBeenCalled();
@@ -416,7 +428,7 @@ describe('SideChatPanel', () => {
       conversation: { ...conversation, conversationId: 'next-destination' },
       text: 'New destination.',
     };
-    view.rerenderWith(next);
+    view.open(next);
     await waitFor(() =>
       expect(screen.getByRole('region', { name: 'Side chat' })).toHaveAttribute(
         'data-side-chat',
@@ -424,7 +436,7 @@ describe('SideChatPanel', () => {
       ),
     );
     services.readiness = 'ready';
-    view.rerenderWith(next);
+    view.refresh();
     await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
     expect(view.sendMessages.mock.calls[0][0].payload).toMatchObject({
       text: 'New destination.',
@@ -445,7 +457,7 @@ describe('SideChatPanel', () => {
       fireEvent.change(field(), { target: { value: 'My revised question.' } });
       expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
       services.readiness = readiness;
-      view.rerenderWith(chat);
+      view.refresh();
       await settle();
       expect(field()).toHaveValue('My revised question.');
       expect(view.sendMessages).not.toHaveBeenCalled();
@@ -465,8 +477,7 @@ describe('SideChatPanel', () => {
       chat: { conversation, text: 'New handoff.' },
       draft: 'My existing draft.',
     });
-    await waitFor(() => expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1));
-    expect(field()).toHaveValue('My existing draft.');
+    await waitFor(() => expect(field()).toHaveValue('My existing draft.'));
     expect(view.sendMessages).not.toHaveBeenCalled();
   });
 
@@ -477,7 +488,7 @@ describe('SideChatPanel', () => {
     await waitFor(() => expect(field()).toHaveValue(chat.text));
     fireEvent.change(field(), { target: { value: '' } });
     services.readiness = 'ready';
-    view.rerenderWith(chat);
+    view.refresh();
     await settle();
     expect(field()).toHaveValue('');
     expect(view.sendMessages).not.toHaveBeenCalled();
@@ -485,11 +496,16 @@ describe('SideChatPanel', () => {
 
   it('keeps pending words when promoted before history has loaded', async () => {
     const chat = { conversation, text: 'Keep these words.' };
-    const view = setup({ chat, loadMessages: jest.fn(() => new Promise(() => undefined)) });
+    const loadMessages = jest.fn<Promise<TMessage[]>, []>(() => new Promise(() => undefined));
+    const view = setup({ chat, loadMessages });
     expect(view.store.get(sideChatDraftFamily(conversationId))).toBe(chat.text);
     fireEvent.click(screen.getByRole('button', { name: 'Open as the main chat' }));
     expect(view.handOffComposerText).toHaveBeenCalledWith(conversationId, chat.text);
     expect(view.onClose).toHaveBeenCalledTimes(1);
+    expect(view.store.get(sideChatDraftFamily(conversationId))).toBe('');
+    loadMessages.mockResolvedValue([user, reply('response-1', 'It shipped.')]);
+    view.open({ conversation });
+    await waitFor(() => expect(field()).toHaveValue(''));
     expect(view.sendMessages).not.toHaveBeenCalled();
   });
 
@@ -497,9 +513,9 @@ describe('SideChatPanel', () => {
     const services = createTurnServices({ readiness: 'pending' });
     const view = setup({ chat: { conversation, text: 'Keep these words.' }, services });
     await waitFor(() => expect(rows()).toHaveLength(2));
-    view.rerenderWith({ conversation: { ...conversation, conversationId: 'other' } });
+    view.open({ conversation: { ...conversation, conversationId: 'other' } });
     services.readiness = 'ready';
-    view.rerenderWith({ conversation });
+    view.open({ conversation });
     await waitFor(() => expect(field()).toHaveValue('Keep these words.'));
     expect(view.sendMessages).not.toHaveBeenCalled();
   });
@@ -512,10 +528,73 @@ describe('SideChatPanel', () => {
     fireEvent.click(screen.getByTestId('composer-send-button'));
     await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
     services.readiness = 'ready';
-    view.rerenderWith(chat);
+    view.refresh();
     await settle();
     expect(view.sendMessages).toHaveBeenCalledTimes(1);
     expect(field()).toHaveValue('');
+  });
+
+  it('does not re-arm an accepted manual handoff when its withdrawn turn restores identical words', async () => {
+    const services = createTurnServices({ readiness: 'pending' });
+    const view = setup({ chat: { conversation, text: 'Send now.' }, services });
+    await waitFor(() => expect(screen.getByTestId('composer-send-button')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('composer-send-button'));
+    await waitFor(() => expect(view.streams).toHaveLength(1));
+    act(() =>
+      view.streams[0].push({
+        type: 'final',
+        data: {
+          final: true,
+          earlyAbort: true,
+          conversation: { conversationId },
+          requestMessage: null,
+          responseMessage: null,
+        },
+      } as unknown as ChatEvent),
+    );
+    await waitFor(() => expect(field()).toHaveValue('Send now.'));
+    services.readiness = 'ready';
+    view.refresh();
+    await settle();
+    expect(view.store.get(sideChatAtom)?.text).toBeUndefined();
+    expect(view.sendMessages).toHaveBeenCalledTimes(1);
+    expect(field()).toHaveValue('Send now.');
+  });
+
+  it('leaves a rejected manual handoff armed until automatic admission becomes ready', async () => {
+    let allowed = false;
+    const services = createTurnServices({ readiness: 'pending', canSubmit: () => allowed });
+    const view = setup({ chat: { conversation, text: 'Wait for me.' }, services });
+    await waitFor(() => expect(screen.getByTestId('composer-send-button')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('composer-send-button'));
+    expect(view.store.get(sideChatAtom)?.text).toBe('Wait for me.');
+    expect(view.onHandedTextTaken).not.toHaveBeenCalled();
+    expect(view.sendMessages).not.toHaveBeenCalled();
+    allowed = true;
+    services.readiness = 'ready';
+    view.refresh();
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+    expect(view.store.get(sideChatAtom)?.text).toBeUndefined();
+    expect(field()).toHaveValue('');
+  });
+
+  it('does not automatically send an equal pre-existing draft', async () => {
+    const view = setup({ chat: { conversation, text: 'My question.' }, draft: 'My question.' });
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    expect(view.store.get(sideChatAtom)?.text).toBeUndefined();
+    expect(view.sendMessages).not.toHaveBeenCalled();
+    expect(field()).toHaveValue('My question.');
+  });
+
+  it('does not clear different side words written during the synchronous promotion handoff', async () => {
+    const view = setup({ draft: 'Transfer these words.' });
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    view.handOffComposerText.mockImplementation(() =>
+      view.store.set(sideChatDraftFamily(conversationId), 'New side words.'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Open as the main chat' }));
+    expect(view.handOffComposerText).toHaveBeenCalledWith(conversationId, 'Transfer these words.');
+    expect(view.store.get(sideChatDraftFamily(conversationId))).toBe('New side words.');
   });
 
   it('does not submit a pending handoff after the panel closes', async () => {
@@ -547,13 +626,15 @@ describe('SideChatPanel', () => {
   });
 
   it('moves the conversation into the main chat’s place, or closes', async () => {
-    const { openConversation, onClose } = setup();
+    const { openConversation, onClose, open } = setup();
     await waitFor(() => expect(rows()).toHaveLength(2));
 
     fireEvent.click(screen.getByRole('button', { name: 'Open as the main chat' }));
     expect(openConversation).toHaveBeenCalledWith(expect.objectContaining({ conversationId }));
     expect(onClose).toHaveBeenCalledTimes(1);
 
+    open({ conversation });
+    await waitFor(() => expect(rows()).toHaveLength(2));
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(onClose).toHaveBeenCalledTimes(2);
   });
