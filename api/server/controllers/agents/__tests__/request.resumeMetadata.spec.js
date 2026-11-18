@@ -305,6 +305,7 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
   getSafeErrorMetadata: jest.requireActual('@librechat/api').getSafeErrorMetadata,
   getSafeErrorText: jest.requireActual('@librechat/api').getSafeErrorText,
+  getScheduledRunError: jest.requireActual('@librechat/api').getScheduledRunError,
   resolveFailedTurnContent: jest.requireActual('@librechat/api').resolveFailedTurnContent,
   getFailedTurnTraceFields: (...args) => mockGetFailedTurnTraceFields(...args),
   startAgentProjectContextResolution:
@@ -6511,6 +6512,7 @@ describe('ResumableAgentController resume metadata', () => {
       addTitle: suppliedAddTitle,
       clientOverrides,
       databaseResult,
+      scheduled = false,
       responseContent = [{ type: 'text', text: 'Truncated answer' }],
     } = {}) => {
       let signalFinished;
@@ -6561,8 +6563,14 @@ describe('ResumableAgentController resume metadata', () => {
           parentMessageId: Constants.NO_PARENT,
           conversationId: 'new',
           endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+          ...(scheduled && {
+            scheduleId: 'schedule-1',
+            scheduledFor: '2026-08-17T12:00:00.000Z',
+            scheduleConfigRevision: 1,
+          }),
         },
         config: {},
+        ...(scheduled && { _isScheduledFire: true }),
       };
 
       await AgentController(
@@ -6648,6 +6656,27 @@ describe('ResumableAgentController resume metadata', () => {
       });
 
       expect(mockStampConvoLastResponse).not.toHaveBeenCalled();
+    });
+
+    it('records a scheduled provider error without an answer as a failed run', async () => {
+      mockSaveMessage.mockImplementation(async (_ctx, message) => message);
+      await runFirstTurn({
+        scheduled: true,
+        responseContent: [
+          { type: 'tool_call', tool_call: { name: 'search' } },
+          { type: 'error', error: 'provider payload must not be copied to the run' },
+        ],
+      });
+
+      expect(mockGenerationJobManager.createJob).toHaveBeenCalled();
+      expect(mockRecordScheduleOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scheduleId: 'schedule-1',
+          scheduledFor: '2026-08-17T12:00:00.000Z',
+          status: 'error',
+          error: 'Run ended with a model provider error',
+        }),
+      );
     });
 
     it('still generates a deferred title for a completed first turn', async () => {

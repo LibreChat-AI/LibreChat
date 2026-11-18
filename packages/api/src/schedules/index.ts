@@ -3,6 +3,7 @@ export * from './cadence';
 export * from './context';
 export * from './engine';
 export * from './erasure';
+export * from './errors';
 export * from './fire';
 export * from './handlers';
 export * from './readiness';

@@ -1317,6 +1317,28 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       );
     });
 
+    it('records a resumed provider error without an answer as a failed run', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeScheduledJob());
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({ contentParts: [{ type: 'error', error: 'provider failed' }] }),
+        userMCPAuthMap: {},
+      });
+
+      const res = await post(approveBody());
+      expect(res.status).toBe(200);
+      await settled;
+
+      expect(mockRecordScheduleOutcome).toHaveBeenCalledWith({
+        scheduleId: 'schedule-1',
+        scheduledFor,
+        streamId: CONVO_ID,
+        jobCreatedAt: 1000,
+        status: 'error',
+        conversationId: CONVO_ID,
+        error: 'Run ended with a model provider error',
+      });
+    });
+
     it('keeps the approval paused when global scheduled-run capacity is full', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(makeScheduledJob());
       mockClaimScheduleResume.mockResolvedValue({ conflict: 'capacity' });
