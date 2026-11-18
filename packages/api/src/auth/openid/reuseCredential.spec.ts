@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
-import { isOpenIDSessionRetired } from './reuseCredential';
+import { createHash } from 'node:crypto';
+import { isOpenIDSessionRetired, getReuseCredentialForMode } from './reuseCredential';
 
 const SECRET = 'refresh-secret';
 const resetAt = new Date('2026-01-01T00:00:00.000Z');
@@ -51,5 +52,29 @@ describe('isOpenIDSessionRetired', () => {
       ),
     };
     expect(retired({ parsedCookies, refreshToken: 'spent-refresh' })).toBe(true);
+  });
+});
+
+describe('getReuseCredentialForMode', () => {
+  const boundCookie = (refreshToken: string) => ({
+    openid_user_id: jwt.sign(
+      {
+        id: 'user-1',
+        refreshTokenHash: createHash('sha256').update(refreshToken).digest('base64url'),
+      },
+      SECRET,
+    ),
+  });
+
+  it("does not bind the refresh token in mode 'off', unlike outside it", () => {
+    const parsedCookies = boundCookie('refresh-a');
+
+    expect(getReuseCredentialForMode('off', parsedCookies, SECRET, 'refresh-b')).toMatchObject({
+      userId: 'user-1',
+    });
+    expect(getReuseCredentialForMode('record', parsedCookies, SECRET, 'refresh-b')).toBeNull();
+    expect(getReuseCredentialForMode('record', parsedCookies, SECRET, 'refresh-a')).toMatchObject({
+      userId: 'user-1',
+    });
   });
 });

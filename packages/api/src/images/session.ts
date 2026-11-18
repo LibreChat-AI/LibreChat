@@ -1,5 +1,6 @@
 import { DEFAULT_REFRESH_TOKEN_EXPIRY, runAsSystem } from '@librechat/data-schemas';
 import type { ISession, AuthMethod, DeleteSessionParams } from '@librechat/data-schemas';
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import { math } from '~/utils/math';
 
 export interface OpenIdSessionParams {
@@ -7,13 +8,20 @@ export interface OpenIdSessionParams {
   refreshToken?: string;
   tenantId?: string;
   previousRefreshToken?: string;
+  /** The provider session this credential is bound to; omitted stores no binding. */
+  providerSession?: ProviderSessionRef | null;
 }
 
 export interface OpenIdSessionDeps {
   upsertSession: (
     userId: string,
     refreshToken: string,
-    options: { expiration: Date; tenantId?: string; authMethod?: AuthMethod },
+    options: {
+      expiration: Date;
+      tenantId?: string;
+      providerSession?: ProviderSessionRef;
+      authMethod?: AuthMethod;
+    },
   ) => Promise<ISession>;
   deleteSession: (params: DeleteSessionParams) => Promise<{ deletedCount?: number }>;
 }
@@ -35,6 +43,7 @@ export async function storeOpenIdSession(
       expiration: new Date(Date.now() + expiresIn),
       tenantId: params.tenantId,
       authMethod: 'openid',
+      ...(params.providerSession ? { providerSession: params.providerSession } : {}),
     }),
   );
   const previousRefreshToken = params.previousRefreshToken;

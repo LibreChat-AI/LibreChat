@@ -240,6 +240,7 @@ describe('createOAuthHandler', () => {
       openidSubject: undefined,
       openidIssuer: 'https://issuer.example.com',
       discardSessionTokens: true,
+      providerSession: ref,
       req,
       res,
     });
