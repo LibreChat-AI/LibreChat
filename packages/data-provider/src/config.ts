@@ -1905,6 +1905,19 @@ export const agentsEndpointSchema = baseEndpointSchema
         })
         .strict()
         .optional(),
+      /** Native attachment reads; budgets are shared by every run in this server process. */
+      sdkHostFiles: z
+        .object({
+          maxConcurrentOperations: z.number().int().min(1).max(10000).default(32),
+          maxBufferedBytes: z.number().int().min(1024).max(1073741824).default(16777216),
+          maxSnapshotBytes: z.number().int().min(1024).max(10737418240).default(268435456),
+          maxSnapshotFiles: z.number().int().min(1).max(10000).default(128),
+          maxFileBytes: z.number().int().min(1).max(1073741824).default(20971520),
+          maxChunkBytes: z.number().int().min(1).max(1048576).default(262144),
+          timeoutMs: z.number().int().min(100).max(600000).default(60000),
+        })
+        .strict()
+        .optional(),
       /** Trusted server-side SDK modules. Unconfigured runtimes cannot execute. */
       sdkRuntimes: z
         .record(
@@ -1926,6 +1939,7 @@ export const agentsEndpointSchema = baseEndpointSchema
                       .regex(/^wss?:\/\//),
                     secret: z.string().min(1),
                     hostModel: z.boolean().optional(),
+                    hostFiles: z.boolean().optional(),
                     recovery: z
                       .object({
                         routes: z

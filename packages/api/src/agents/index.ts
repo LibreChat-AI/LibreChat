@@ -110,3 +110,6 @@ export { captureAuthoredSkills, restoreAuthoredSkills } from './authored';
 export { createSdkModelHost } from './remoteSdk/builder';
 export type { SdkModelHost } from './remoteSdk/builder';
 export * from './turn';
+
+export { createSdkFileHost, createChatSdkFileSession } from './remoteSdk/attachments';
+export type { SdkFileHost, SdkFileSession } from './remoteSdk/attachments';

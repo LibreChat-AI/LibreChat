@@ -3522,6 +3522,26 @@ describe('complete channel operator configuration', () => {
 });
 
 describe('remote SDK runtime configuration', () => {
+  it('keeps native file reads opt-in and bounds process budgets', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostFiles).toBeUndefined();
+    const parsed = agentsEndpointSchema.parse({
+      sdkHostFiles: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostFiles: true },
+        },
+      },
+    });
+    expect(parsed.sdkHostFiles?.maxChunkBytes).toBe(262144);
+    expect(parsed.sdkRuntimes?.runtime).toMatchObject({ remote: { hostFiles: true } });
+    for (const field of Object.keys(parsed.sdkHostFiles!)) {
+      for (const value of [0, -1, Number.MAX_SAFE_INTEGER])
+        expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { [field]: value } }).success).toBe(
+          false,
+        );
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { unknown: true } }).success).toBe(false);
+  });
   it('opts into builder models with bounded process-wide admission', () => {
     expect(agentsEndpointSchema.parse({}).sdkHostModels).toBeUndefined();
     const result = agentsEndpointSchema.parse({

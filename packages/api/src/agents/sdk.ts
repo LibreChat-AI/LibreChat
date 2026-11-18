@@ -6,6 +6,7 @@ import { extractEnvVariable } from 'librechat-data-provider';
 import type { Agent, SdkRuntimeBinding, TAgentsEndpoint } from 'librechat-data-provider';
 import type { RunConfig } from '@librechat/agents';
 import type { RemoteSdkOptions, RemoteSdkResumeState } from './remoteSdk/types';
+import type { SdkFileSession } from './remoteSdk/attachments';
 import type { SdkAgentIdentity } from './remoteSdk/identity';
 import type { SdkModelHost } from './remoteSdk/builder';
 import { createRemoteSdkRun } from './remoteSdk/client';
@@ -121,6 +122,7 @@ export async function createSdkAgentRun({
   signal,
   resumeState,
   modelHost,
+  files,
   loadModule = requireRuntime,
 }: {
   registration: SdkRegistration;
@@ -129,6 +131,7 @@ export async function createSdkAgentRun({
   signal?: AbortSignal;
   resumeState?: RemoteSdkResumeState;
   modelHost?: SdkModelHost;
+  files?: SdkFileSession;
   loadModule?: SdkAgentRuntimeLoader;
 }): ReturnType<typeof Run.create> {
   signal?.throwIfAborted();
@@ -141,16 +144,24 @@ export async function createSdkAgentRun({
     runtimeId: registration.binding.id,
   });
   if (registration.remote != null) {
-    if (registration.remote.hostModel && !modelHost) {
+    if (
+      (registration.remote.hostModel && !modelHost) ||
+      (registration.remote.hostFiles && !files)
+    ) {
       throw new SdkAgentRuntimeError('sdk_runtime_unavailable');
     }
     return createRemoteSdkRun({
       config,
       identity: boundIdentity,
       resumeState,
-      hostServices: registration.remote.hostModel
-        ? modelHost?.bind(config, boundIdentity, signal)
-        : undefined,
+      hostServices: {
+        ...(registration.remote.hostModel
+          ? modelHost?.bind(config, boundIdentity, signal)
+          : undefined),
+        ...(registration.remote.hostFiles
+          ? { files: files?.bind(boundIdentity, signal) }
+          : undefined),
+      },
       remote: { ...registration.remote, secret: extractEnvVariable(registration.remote.secret) },
     });
   }

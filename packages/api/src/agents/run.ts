@@ -65,6 +65,7 @@ import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { SubagentCodeHostArgSpecs } from '~/code/targets';
+import type { SdkFileSession } from './remoteSdk/attachments';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
@@ -2326,6 +2327,7 @@ export async function createRun({
   sessionStartSource,
   loadSdkRuntime,
   sdkModelHost,
+  sdkFiles,
   sdkResumeState,
   streaming = true,
   streamUsage = true,
@@ -2483,6 +2485,7 @@ export async function createRun({
   toolInputValidationErrors?: Map<string, ToolInputValidationError>;
   loadSdkRuntime?: SdkAgentRuntimeLoader;
   sdkModelHost?: SdkModelHost;
+  sdkFiles?: SdkFileSession;
   sdkResumeState?: import('./remoteSdk/types').RemoteSdkResumeState;
 } & Pick<
   RunConfig,
@@ -3343,6 +3346,7 @@ export async function createRun({
         config: runConfig,
         loadModule: loadSdkRuntime,
         modelHost: sdkModelHost,
+        files: sdkFiles,
         resumeState: sdkResumeState,
         signal,
         identity: {
