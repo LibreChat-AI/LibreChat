@@ -15,6 +15,19 @@ export interface DiscordApplication {
   authorityWrites: number;
 }
 
+/** An organization installation; the installer is not an execution principal. */
+export interface DiscordGuild {
+  tenantId?: string;
+  installationId: string;
+  applicationId: string;
+  guildId: string;
+  guildName: string;
+  createdBy: string;
+  status: 'active' | 'disconnected';
+  revision: string;
+  authorityWrites: number;
+}
+
 export const configureDiscordApplicationSchema = z
   .object({
     applicationId: channelSnowflakeSchema,

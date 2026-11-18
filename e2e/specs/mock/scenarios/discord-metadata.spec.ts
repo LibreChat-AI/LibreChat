@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
-import type { DiscordApplication } from 'librechat-data-provider';
-import { inOrg, ok, within } from '../discord-installations.helpers';
+import type { DiscordApplication, DiscordGuild } from 'librechat-data-provider';
+import { inOrg, ok, snowflake, within } from '../discord-installations.helpers';
 import { CHANNELS_ENABLED } from '../channels.helpers';
 import { inOneProject } from './lint.helpers';
 
@@ -31,6 +31,9 @@ const walk = async <T extends { next?: string }>(
   return pages;
 };
 
+const sizes = (total: number, limit: number) =>
+  Array.from({ length: Math.ceil(total / limit) }, (_, i) => Math.min(limit, total - i * limit));
+
 test.describe('Discord installation metadata', () => {
   test.skip(!CHANNELS_ENABLED, 'Run with E2E_CHANNELS=true and a transaction-capable MongoDB');
   test.setTimeout(120_000);
@@ -44,11 +47,6 @@ test.describe('Discord installation metadata', () => {
       const [org, apps] = [world.org(), Array.from({ length: 5 }, () => world.app())];
       const actorId = await world.member(org);
       const secrets = apps.flatMap((app) => [app.encryptedBotToken, app.encryptedClientSecret]);
-      const sizes = (total: number, limit: number) =>
-        Array.from({ length: Math.ceil(total / limit) }, (_, i) =>
-          Math.min(limit, total - i * limit),
-        );
-
       await inOrg(org, async () => {
         const saved: DiscordApplication[] = [];
         for (const app of apps)
@@ -86,6 +84,50 @@ test.describe('Discord installation metadata', () => {
         for (const limit of [0, -1, 101, 1.5, Number.NaN]) {
           const invalid = 'Invalid Discord metadata page size';
           await expect(store.listApplications(undefined, limit)).rejects.toThrow(invalid);
+        }
+      });
+    });
+  });
+
+  test('installation reads and pages carry no credentials and walk the set once @scenario:discord-installation-metadata-pagination-and-secret-redaction', async ({
+    baseURL,
+  }) => {
+    inOneProject();
+    await within(baseURL, [], async (world) => {
+      const { store } = world;
+      const [org, app] = [world.org(), world.app()];
+      const actorId = await world.member(org);
+      const secrets = [app.encryptedBotToken, app.encryptedClientSecret];
+
+      await inOrg(org, async () => {
+        const saved = ok(await store.configureApplication({ actorId, ...app }));
+        const guilds: DiscordGuild[] = [];
+        for (const guildId of [snowflake(), snowflake(), snowflake(), snowflake()]) {
+          const installed = await store.connectGuild({
+            actorId,
+            applicationId: app.applicationId,
+            applicationRevision: saved.revision,
+            guildId,
+            guildName: 'E2E guild',
+          });
+          guilds.push(ok(installed));
+        }
+        clean(secrets, ...guilds);
+
+        /** Cursors walk the set once, in key order; the page that exhausts it has no cursor. */
+        const installations = guilds.map((item) => item.installationId).sort();
+        for (const limit of [2, 3, 4, 100]) {
+          const pages = await walk((cursor, size) => store.listGuilds(cursor, size), limit);
+          const listed = pages.flatMap((page) => page.guilds);
+          expect(listed.map((item) => item.installationId)).toEqual(installations);
+          expect(pages.map((page) => page.guilds.length)).toEqual(sizes(4, limit));
+          clean(secrets, ...listed);
+        }
+        expect(await store.listGuilds(installations[3])).toEqual({ guilds: [] });
+
+        for (const limit of [0, -1, 101, 1.5, Number.NaN]) {
+          const invalid = 'Invalid Discord metadata page size';
+          await expect(store.listGuilds(undefined, limit)).rejects.toThrow(invalid);
         }
       });
     });
