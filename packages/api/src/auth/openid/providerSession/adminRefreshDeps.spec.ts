@@ -1,0 +1,715 @@
+import { logger } from '@librechat/data-schemas';
+import type { ProviderSessionAuthorizer } from './authorize';
+import type { RefreshTokenset } from '~/auth/refresh';
+import {
+  buildAdminRefreshProviderSessionDeps,
+  prepareAdminOpenIdRefresh,
+  runAdminOpenIdRefreshGrant,
+} from './adminRefreshDeps';
+import { createOpenIDRefreshOwnershipError } from '~/auth/openid/errors';
+
+function makeAuthorizer(
+  mode: 'off' | 'record' | 'enforce',
+): jest.Mocked<ProviderSessionAuthorizer> {
+  return {
+    establish: jest.fn(),
+    authorize: jest.fn(),
+    preCheck: jest.fn(),
+    getMode: jest.fn().mockResolvedValue(mode),
+  };
+}
+
+describe('buildAdminRefreshProviderSessionDeps', () => {
+  function makeBuildInput(authorizer: jest.Mocked<ProviderSessionAuthorizer>) {
+    return {
+      authorizer,
+      getProviderSessionClient: jest.fn(),
+      findProviderSessionBinding: jest.fn(),
+      getRefreshTokenBridge: jest.fn(),
+      storeRefreshTokenBridge: jest.fn(),
+      deleteRefreshTokenBridges: jest.fn(),
+      bridgeGraceMs: 60000,
+      upsertSession: jest.fn(),
+      deleteSession: jest.fn(),
+      getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
+    };
+  }
+
+  it('returns only the refresh-token-expiry getter, touching nothing else, when the mode is off', async () => {
+    const authorizer = makeAuthorizer('off');
+    const input = makeBuildInput(authorizer);
+
+    const deps = await buildAdminRefreshProviderSessionDeps(input);
+
+    expect(deps).toEqual({ getRefreshTokenExpiryMs: input.getRefreshTokenExpiryMs });
+    expect(input.findProviderSessionBinding).not.toHaveBeenCalled();
+    expect(input.getProviderSessionClient).not.toHaveBeenCalled();
+    expect(input.getRefreshTokenBridge).not.toHaveBeenCalled();
+    expect(input.storeRefreshTokenBridge).not.toHaveBeenCalled();
+  });
+
+  it('wires the full binding/check/persistence deps when the mode is record or enforce', async () => {
+    for (const mode of ['record', 'enforce'] as const) {
+      const authorizer = makeAuthorizer(mode);
+      const input = makeBuildInput(authorizer);
+
+      const deps = await buildAdminRefreshProviderSessionDeps(input);
+
+      expect(deps.findProviderSessionBinding).toBe(input.findProviderSessionBinding);
+      expect(deps.preCheckProviderSession).toBe(authorizer.preCheck);
+      expect(deps.authorizeProviderSession).toBe(authorizer.authorize);
+      expect(deps.getMode).toBe(authorizer.getMode);
+      expect(deps.getProviderSessionClient).toBe(input.getProviderSessionClient);
+      expect(deps.upsertSession).toBe(input.upsertSession);
+      expect(deps.deleteSession).toBe(input.deleteSession);
+      expect(deps.getRefreshTokenBridge).toBe(input.getRefreshTokenBridge);
+      expect(deps.storeRefreshTokenBridge).toBe(input.storeRefreshTokenBridge);
+      expect(deps.deleteRefreshTokenBridges).toBe(input.deleteRefreshTokenBridges);
+      expect(deps.bridgeGraceMs).toBe(input.bridgeGraceMs);
+      expect(deps.getRefreshTokenExpiryMs).toBe(input.getRefreshTokenExpiryMs);
+    }
+  });
+
+  it('propagates a config-load failure from getMode, mapping to ProviderSessionUnavailableError upstream', async () => {
+    const loadError = new Error('config unavailable');
+    const authorizer = makeAuthorizer('off');
+    authorizer.getMode.mockRejectedValue(loadError);
+
+    await expect(buildAdminRefreshProviderSessionDeps(makeBuildInput(authorizer))).rejects.toBe(
+      loadError,
+    );
+  });
+});
+
+describe('prepareAdminOpenIdRefresh', () => {
+  function makeBuildInput(mode: 'off' | 'record' | 'enforce') {
+    return {
+      authorizer: makeAuthorizer(mode),
+      getProviderSessionClient: jest.fn(),
+      findProviderSessionBinding: jest.fn().mockResolvedValue(null),
+      getRefreshTokenBridge: jest.fn(),
+      storeRefreshTokenBridge: jest.fn(),
+      deleteRefreshTokenBridges: jest.fn(),
+      bridgeGraceMs: 60000,
+      upsertSession: jest.fn(),
+      deleteSession: jest.fn(),
+      getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
+    };
+  }
+
+  it('returns the incoming token and a null ref when mode is off', async () => {
+    const input = makeBuildInput('off');
+
+    const result = await prepareAdminOpenIdRefresh('refresh-token', input);
+
+    expect(result.grantRefreshToken).toBe('refresh-token');
+    expect(result.binding).toEqual({ ref: null });
+    expect(result.bridged).toBe(false);
+    expect(result.providerSessionDeps).toEqual({
+      getRefreshTokenExpiryMs: input.getRefreshTokenExpiryMs,
+    });
+  });
+
+  it('carries the bound ref through to the returned binding under enforce', async () => {
+    const ref = { issuer: 'https://issuer.example.com', clientId: 'test-client', sid: 'sid-1' };
+    const input = makeBuildInput('enforce');
+    input.findProviderSessionBinding.mockResolvedValue({ providerSession: ref });
+    input.authorizer.preCheck.mockResolvedValue({ ok: true });
+
+    const result = await prepareAdminOpenIdRefresh('refresh-token', input);
+
+    expect(result.binding).toEqual({ ref });
+    expect(result.grantRefreshToken).toBe('refresh-token');
+  });
+
+  it('throws before building deps a second time when preCheck denies', async () => {
+    const input = makeBuildInput('enforce');
+    input.authorizer.preCheck.mockResolvedValue({ ok: false, code: 'OPENID_SESSION_ENDED' });
+
+    await expect(prepareAdminOpenIdRefresh('refresh-token', input)).rejects.toMatchObject({
+      name: 'AdminRefreshError',
+      code: 'OPENID_SESSION_ENDED',
+      status: 401,
+    });
+  });
+
+  it('swaps in a bridged token recovered from a prior attempt', async () => {
+    const input = makeBuildInput('enforce');
+    input.authorizer.preCheck.mockResolvedValue({ ok: true });
+    input.findProviderSessionBinding.mockResolvedValue({ userId: 'user-1' });
+    input.getRefreshTokenBridge.mockResolvedValue({ refreshToken: 'bridged-refresh' });
+
+    const result = await prepareAdminOpenIdRefresh('refresh-token', input, {
+      expectedIssuer: 'https://issuer.example.com',
+    });
+
+    expect(result.grantRefreshToken).toBe('bridged-refresh');
+    expect(result.bridged).toBe(true);
+    expect(result.identity).toEqual({
+      userId: 'user-1',
+      tenantId: undefined,
+      openidIssuer: 'https://issuer.example.com',
+    });
+  });
+
+  it('deletes a stale recovered bridge by its version on a confirmed OPENID_SESSION_ENDED denial', async () => {
+    const input = makeBuildInput('enforce');
+    // The Session row for the presented token is gone; only the bridge recovers the identity.
+    input.findProviderSessionBinding.mockResolvedValue(null);
+    input.getRefreshTokenBridge.mockResolvedValue({
+      refreshToken: 'bridged-refresh',
+      version: 'bridge-version-1',
+    });
+    input.authorizer.preCheck.mockResolvedValue({ ok: false, code: 'OPENID_SESSION_ENDED' });
+
+    await expect(
+      prepareAdminOpenIdRefresh('refresh-token', input, { userId: 'user-1' }),
+    ).rejects.toMatchObject({ code: 'OPENID_SESSION_ENDED' });
+
+    expect(input.deleteRefreshTokenBridges).toHaveBeenCalledWith({
+      refreshTokens: ['refresh-token'],
+      userId: 'user-1',
+      tenantId: undefined,
+      version: 'bridge-version-1',
+    });
+  });
+
+  it('does not pass a version to the stale-bridge delete when the recovered bridge read had none', async () => {
+    const input = makeBuildInput('enforce');
+    input.findProviderSessionBinding.mockResolvedValue(null);
+    input.getRefreshTokenBridge.mockResolvedValue({ refreshToken: 'bridged-refresh' });
+    input.authorizer.preCheck.mockResolvedValue({ ok: false, code: 'OPENID_SESSION_ENDED' });
+
+    await expect(
+      prepareAdminOpenIdRefresh('refresh-token', input, { userId: 'user-1' }),
+    ).rejects.toMatchObject({ code: 'OPENID_SESSION_ENDED' });
+
+    expect(input.deleteRefreshTokenBridges).toHaveBeenCalledWith({
+      refreshTokens: ['refresh-token'],
+      userId: 'user-1',
+      tenantId: undefined,
+      version: undefined,
+    });
+  });
+
+  it('reads the provider-session binding once, sharing it between the precheck and the bridge resolution', async () => {
+    const input = makeBuildInput('enforce');
+    input.authorizer.preCheck.mockResolvedValue({ ok: true });
+    input.findProviderSessionBinding.mockResolvedValue({ userId: 'user-1' });
+    input.getRefreshTokenBridge.mockResolvedValue(null);
+
+    await prepareAdminOpenIdRefresh('refresh-token', input);
+
+    expect(input.findProviderSessionBinding).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runAdminOpenIdRefreshGrant', () => {
+  function makeTokenset(overrides: Partial<RefreshTokenset> = {}): RefreshTokenset {
+    return {
+      access_token: 'access-token',
+      refresh_token: 'rotated-refresh',
+      claims: () => ({ sub: 'idp-sub' }),
+      ...overrides,
+    };
+  }
+
+  it('runs the grant directly when the resolved token was not bridged', async () => {
+    const grant = jest.fn().mockResolvedValue(makeTokenset());
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn(),
+      acquireOpenIDRefreshFlight: jest.fn(),
+      withOpenIDRefreshFlightLease: jest.fn(),
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: false },
+      deps,
+    );
+
+    expect(grant).toHaveBeenCalledTimes(1);
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(deps.createRefreshTokenBridgeFlightKey).not.toHaveBeenCalled();
+  });
+
+  it('runs the grant directly when bridged but the flight deps are not wired', async () => {
+    const grant = jest.fn().mockResolvedValue(makeTokenset());
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      {},
+    );
+
+    expect(grant).toHaveBeenCalledTimes(1);
+    expect(result.refresh_token).toBe('rotated-refresh');
+  });
+
+  it('runs the grant directly, without throwing, when bridged is true but the identity has no userId', async () => {
+    const grant = jest.fn().mockResolvedValue(makeTokenset());
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn(),
+      acquireOpenIDRefreshFlight: jest.fn(),
+      withOpenIDRefreshFlightLease: jest.fn(),
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: undefined },
+      deps,
+    );
+
+    expect(grant).toHaveBeenCalledTimes(1);
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(deps.createRefreshTokenBridgeFlightKey).not.toHaveBeenCalled();
+  });
+
+  it('runs the grant directly when a flight key is produced but acquireOpenIDRefreshFlight is not wired', async () => {
+    const grant = jest.fn().mockResolvedValue(makeTokenset());
+    const withOpenIDRefreshFlightLease = jest.fn();
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(grant).toHaveBeenCalledTimes(1);
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(withOpenIDRefreshFlightLease).not.toHaveBeenCalled();
+  });
+
+  it('runs the grant directly when a flight key is produced but withOpenIDRefreshFlightLease is not wired', async () => {
+    const grant = jest.fn().mockResolvedValue(makeTokenset());
+    const acquireOpenIDRefreshFlight = jest.fn();
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(grant).toHaveBeenCalledTimes(1);
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(acquireOpenIDRefreshFlight).not.toHaveBeenCalled();
+  });
+
+  it('runs the grant directly when createRefreshTokenBridgeFlightKey returns null, even though acquire/lease are wired', async () => {
+    const grant = jest.fn().mockResolvedValue(makeTokenset());
+    const acquireOpenIDRefreshFlight = jest.fn();
+    const withOpenIDRefreshFlightLease = jest.fn();
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue(null),
+      acquireOpenIDRefreshFlight,
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(grant).toHaveBeenCalledTimes(1);
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(acquireOpenIDRefreshFlight).not.toHaveBeenCalled();
+    expect(withOpenIDRefreshFlightLease).not.toHaveBeenCalled();
+  });
+
+  it('runs the winning grant inside the flight lease and publishes identity claims for a loser to reconstruct', async () => {
+    const tokenset = makeTokenset({
+      claims: () => ({ sub: 'idp-sub', iss: 'https://issuer.example.com' }),
+    });
+    const grant = jest.fn().mockResolvedValue(tokenset);
+    const completeOpenIDRefreshFlight = jest.fn().mockResolvedValue(undefined);
+    const withOpenIDRefreshFlightLease = jest
+      .fn()
+      .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() }));
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      completeOpenIDRefreshFlight,
+      waitForOpenIDRefreshFlight: jest.fn(),
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1', tenantId: 'tenant-a' } },
+      deps,
+    );
+
+    expect(grant).toHaveBeenCalledTimes(1);
+    expect(deps.createRefreshTokenBridgeFlightKey).toHaveBeenCalledWith({
+      oldRefreshToken: 'presented-token',
+      userId: 'user-1',
+      tenantId: 'tenant-a',
+      openidIssuer: undefined,
+    });
+    expect(deps.acquireOpenIDRefreshFlight).toHaveBeenCalledWith({ key: 'flight-key' });
+    expect(withOpenIDRefreshFlightLease).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'flight-key', ownerId: 'owner-1' }),
+    );
+    expect(completeOpenIDRefreshFlight).toHaveBeenCalledWith({
+      key: 'flight-key',
+      ownerId: 'owner-1',
+      tokens: {
+        access_token: 'access-token',
+        refresh_token: 'rotated-refresh',
+        __identityClaims: { sub: 'idp-sub', iss: 'https://issuer.example.com' },
+      },
+    });
+    expect(result.refresh_token).toBe('rotated-refresh');
+  });
+
+  it('completes the flight without throwing when completeOpenIDRefreshFlight is not wired', async () => {
+    const tokenset = makeTokenset();
+    const grant = jest.fn().mockResolvedValue(tokenset);
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      withOpenIDRefreshFlightLease: jest
+        .fn()
+        .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() })),
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(result.refresh_token).toBe('rotated-refresh');
+  });
+
+  it('coalesces two concurrent bridged retries into a single IdP grant: the loser waits and reconstructs the winner result', async () => {
+    const grant = jest.fn().mockResolvedValue(makeTokenset());
+    const resolvedClaims = { sub: 'idp-sub', iss: 'https://issuer.example.com' };
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: false, ownerId: 'owner-2' }),
+      withOpenIDRefreshFlightLease: jest.fn(),
+      waitForOpenIDRefreshFlight: jest.fn().mockResolvedValue({
+        access_token: 'winner-access',
+        refresh_token: 'winner-refresh',
+        __identityClaims: resolvedClaims,
+      }),
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(grant).not.toHaveBeenCalled();
+    expect(deps.withOpenIDRefreshFlightLease).not.toHaveBeenCalled();
+    expect(deps.waitForOpenIDRefreshFlight).toHaveBeenCalledWith({ key: 'flight-key' });
+    expect(result.access_token).toBe('winner-access');
+    expect(result.refresh_token).toBe('winner-refresh');
+    expect(result.claims()).toEqual(resolvedClaims);
+  });
+
+  it('treats a missing waitForOpenIDRefreshFlight as unresolved and throws ProviderSessionUnavailableError', async () => {
+    const grant = jest.fn();
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: false, ownerId: 'owner-2' }),
+      withOpenIDRefreshFlightLease: jest.fn(),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      name: 'ProviderSessionUnavailableError',
+      message: 'OpenID refresh coordination is temporarily unavailable',
+    });
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it('throws ProviderSessionUnavailableError when the loser waits and the flight never resolves', async () => {
+    const grant = jest.fn();
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: false, ownerId: 'owner-2' }),
+      withOpenIDRefreshFlightLease: jest.fn(),
+      waitForOpenIDRefreshFlight: jest.fn().mockResolvedValue(null),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      name: 'ProviderSessionUnavailableError',
+      message: 'OpenID refresh coordination is temporarily unavailable',
+    });
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it('throws ProviderSessionUnavailableError, not the raw error, when acquireOpenIDRefreshFlight itself throws', async () => {
+    const grant = jest.fn();
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest.fn().mockRejectedValue(new Error('flight store down')),
+      withOpenIDRefreshFlightLease: jest.fn(),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      name: 'ProviderSessionUnavailableError',
+      message: 'OpenID refresh coordination is temporarily unavailable',
+    });
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it('throws ProviderSessionUnavailableError, not the raw error, when the loser wait itself throws', async () => {
+    const grant = jest.fn();
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: false, ownerId: 'owner-2' }),
+      withOpenIDRefreshFlightLease: jest.fn(),
+      waitForOpenIDRefreshFlight: jest.fn().mockRejectedValue(new Error('flight store down')),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      name: 'ProviderSessionUnavailableError',
+      message: 'OpenID refresh coordination is temporarily unavailable',
+    });
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it('throws ProviderSessionUnavailableError when withOpenIDRefreshFlightLease itself fails before the grant starts', async () => {
+    const grant = jest.fn().mockResolvedValue(makeTokenset());
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      withOpenIDRefreshFlightLease: jest.fn().mockRejectedValue(new Error('lease store down')),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      name: 'ProviderSessionUnavailableError',
+      message: 'OpenID refresh coordination is temporarily unavailable',
+    });
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it('keeps the rotated tokenset when completeOpenIDRefreshFlight rejects after a successful grant', async () => {
+    const tokenset = makeTokenset({ claims: () => ({ sub: 'idp-sub' }) });
+    const grant = jest.fn().mockResolvedValue(tokenset);
+    const completeOpenIDRefreshFlight = jest.fn().mockRejectedValue(new Error('write failed'));
+    const assertOpenIDRefreshFlightAvailable = jest.fn().mockRejectedValue(new Error('unknown'));
+    const withOpenIDRefreshFlightLease = jest
+      .fn()
+      .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() }));
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      completeOpenIDRefreshFlight,
+      assertOpenIDRefreshFlightAvailable,
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    // The IdP already rotated the token; losing it here (unlike the main refresh path, nothing
+    // downstream recovers it) would force the admin panel to sign in again for no reason.
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(completeOpenIDRefreshFlight).toHaveBeenCalledTimes(1);
+    expect(assertOpenIDRefreshFlightAvailable).toHaveBeenCalledWith({
+      key: 'flight-key',
+      ownerId: 'owner-1',
+    });
+  });
+
+  it('keeps the rotated tokenset when completeOpenIDRefreshFlight rejects but ownership is confirmed', async () => {
+    const tokenset = makeTokenset();
+    const grant = jest.fn().mockResolvedValue(tokenset);
+    const completeOpenIDRefreshFlight = jest.fn().mockRejectedValue(new Error('write failed'));
+    const assertOpenIDRefreshFlightAvailable = jest.fn().mockResolvedValue({
+      key: 'flight-key',
+      ownerId: 'owner-1',
+      status: 'completed',
+    });
+    const withOpenIDRefreshFlightLease = jest
+      .fn()
+      .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() }));
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      completeOpenIDRefreshFlight,
+      assertOpenIDRefreshFlightAvailable,
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(result.refresh_token).toBe('rotated-refresh');
+  });
+
+  it('keeps the rotated tokenset when the flight lease itself fails after a successful grant (generic error)', async () => {
+    const tokenset = makeTokenset();
+    const grant = jest.fn().mockResolvedValue(tokenset);
+    const leaseError = new Error('lease renewal failed');
+    const withOpenIDRefreshFlightLease = jest.fn().mockImplementation(async ({ operation }) => {
+      await operation({ assertLeaseOwned: jest.fn() });
+      throw leaseError;
+    });
+    const loggerWarnSpy = jest.spyOn(logger, 'warn');
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      completeOpenIDRefreshFlight: jest.fn().mockResolvedValue(undefined),
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(loggerWarnSpy).toHaveBeenCalledWith(
+      '[runAdminOpenIdRefreshGrant] Refresh flight lease failed after a successful grant; keeping the rotated tokenset',
+      { error: leaseError },
+    );
+    loggerWarnSpy.mockRestore();
+  });
+
+  it('keeps the rotated tokenset when the flight lease fails with an ownership error after a successful grant', async () => {
+    const tokenset = makeTokenset();
+    const grant = jest.fn().mockResolvedValue(tokenset);
+    const ownershipError = createOpenIDRefreshOwnershipError(
+      'OpenID refresh coordination ownership was lost before completion',
+    );
+    const withOpenIDRefreshFlightLease = jest.fn().mockImplementation(async ({ operation }) => {
+      await operation({ assertLeaseOwned: jest.fn() });
+      throw ownershipError;
+    });
+    const loggerWarnSpy = jest.spyOn(logger, 'warn');
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      completeOpenIDRefreshFlight: jest.fn().mockResolvedValue(undefined),
+      withOpenIDRefreshFlightLease,
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(result.refresh_token).toBe('rotated-refresh');
+    expect(loggerWarnSpy).toHaveBeenCalledWith(
+      '[runAdminOpenIdRefreshGrant] Refresh flight lease failed after a successful grant; keeping the rotated tokenset',
+      { error: ownershipError },
+    );
+    loggerWarnSpy.mockRestore();
+  });
+
+  it('rethrows a grant failure unchanged (not as ProviderSessionUnavailableError) once the grant has started', async () => {
+    const grantError = new Error('IdP rejected the refresh token');
+    const grant = jest.fn().mockRejectedValue(grantError);
+    const withOpenIDRefreshFlightLease = jest
+      .fn()
+      .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() }));
+    const deps = {
+      createRefreshTokenBridgeFlightKey: jest.fn().mockReturnValue('flight-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      withOpenIDRefreshFlightLease,
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toBe(grantError);
+  });
+});
