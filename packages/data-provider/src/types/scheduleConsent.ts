@@ -2,6 +2,12 @@ import { z } from 'zod';
 
 export const DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS = 168;
 
+/**
+ * Sent as the description of an approval request that a schedule's owner asked for. It is a
+ * code, not a sentence: the approval card shows its own wording in the reader's language.
+ */
+export const SCHEDULE_APPROVAL_REASON = 'schedule_owner_approval';
+
 const identifier = z.string().trim().min(1).max(256);
 const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const safeUrl = z

@@ -1,5 +1,9 @@
 import { Constants } from '@librechat/agents';
-import { Constants as ProviderConstants, normalizeServerName } from 'librechat-data-provider';
+import {
+  normalizeServerName,
+  SCHEDULE_APPROVAL_REASON,
+  Constants as ProviderConstants,
+} from 'librechat-data-provider';
 import type { HookCallback } from '@librechat/agents';
 import type { ScheduleMCPExecution } from './execution';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
@@ -34,10 +38,6 @@ export interface ScheduledMCPPolicyAgent {
 /** What the model is told when it calls a tool the schedule's owner did not allow. */
 export const SCHEDULE_TOOL_NOT_ALLOWED =
   'The owner of this schedule has not allowed this tool. Continue without it.';
-
-/** Shown on the approval card. The owner chose this for the tool; no policy fired. */
-export const SCHEDULE_APPROVAL_REASON =
-  'You asked to approve each use of this tool when this schedule runs.';
 
 /** No direct actions, arbitrary code or unlisted tools in an enrolled run. */
 export function createScheduledMCPRunPolicy(
