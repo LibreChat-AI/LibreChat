@@ -5562,6 +5562,85 @@ describe('initializeAgent — authorized run file snapshots', () => {
     }
   });
 
+  it('inspects a hydrated initialized agent with a large tool catalog without extra file reads', async () => {
+    const { assertModelBoundContent } = jest.requireActual<
+      typeof import('../../middleware/modelBoundContent')
+    >('../../middleware/modelBoundContent');
+    const loadedToolDefinitions = Array.from({ length: 67 }, (_, index) => ({
+      name: `report_${index}`,
+      description: 'Query a report',
+      parameters: {
+        type: 'object',
+        properties: Object.fromEntries(
+          Array.from({ length: 64 }, (_, field) => [
+            `field_${field}`,
+            { type: 'string', description: 'A report dimension', enum: ['one', 'two'] },
+          ]),
+        ),
+      },
+    }));
+    const { agent, req, loadTools, db } = createMocks({ loadedToolDefinitions });
+    req.config = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: EImageOutputType.PNG,
+      fileConfig: {
+        endpoints: {
+          openAI: {
+            supportedMimeTypes: ['text/plain'],
+            defaultLLMDeliveryPath: { fallback: 'text' },
+          },
+        },
+      },
+      filters: {
+        files: {
+          pii: {
+            starterPatterns: [],
+            fields: ['content', 'extracted_text'],
+            uninspectable: 'block',
+          },
+        },
+      },
+    };
+    const file = Object.freeze(
+      inputFile({
+        type: 'text/plain',
+        filename: 'context.txt',
+        text: 'safe extracted text',
+        llmDeliveryPath: 'text',
+      }),
+    );
+    const result = await initializeAgent(
+      {
+        req,
+        agent,
+        loadTools,
+        authorizedRunFiles: [file],
+        allowedProviders: new Set([Providers.OPENAI]),
+      },
+      db,
+    );
+    expect(result.toolDefinitions).toHaveLength(67);
+    expect(result.requestAttachments).toHaveLength(1);
+    expect(() =>
+      assertModelBoundContent({ filters: req.config?.filters, agents: [result as never] }),
+    ).not.toThrow();
+    expect(db.getFiles).not.toHaveBeenCalled();
+    expect(db.getConvoFiles).not.toHaveBeenCalled();
+    expect(db.getToolFilesByIds).not.toHaveBeenCalled();
+    expect(file.filepath).toBe('/uploads/current.pdf');
+
+    // Responses callers can merge definitions after initialization; the final check must see them.
+    result.toolDefinitions?.push({
+      name: 'caller',
+      description: 'data:application/pdf;base64,c2VjcmV0',
+      parameters: { type: 'object' },
+    });
+    expect(() =>
+      assertModelBoundContent({ filters: req.config?.filters, agents: [result as never] }),
+    ).toThrow('Submitted file content could not be inspected before processing.');
+  });
+
   it.each([undefined, 'Extracted document contents'])(
     'advertises a queued file before tool execution with extracted text %p',
     async (text) => {

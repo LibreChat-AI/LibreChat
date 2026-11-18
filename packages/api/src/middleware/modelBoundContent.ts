@@ -66,11 +66,11 @@ import {
   getUserSubmittedMessageFieldPathState,
   getUserSubmittedPathState,
 } from '../protection/provenance';
+import { projectAgentFileInspection, visitAgentFileInspectionUnits } from '../protection/metadata';
 import { extractMessageContent, snapshotExternalMessages } from '../protection/adapters/messages';
 import { ContentTraversalLimitError } from '../protection/adapters/nested';
 import { ContentFilterError, isContentFilterError } from './contentFilter';
 import { createConfiguredContentInspector } from '../protection/runtime';
-import { projectAgentFileInspection } from '../protection/metadata';
 import { aggregateAuditFindingsSync } from '../protection/audit';
 
 export type ModelBoundProviderAttribution = 'user' | 'model' | 'tool' | 'synthetic';
@@ -3881,22 +3881,24 @@ function inspectModelBoundContent(
         agentFilesById.set(resolvedFile.file_id, resolvedFile);
       }
     }
-    const fileInspectionAgent =
-      agentFilesById.size > 0 ||
+    const inspectCatalogUnits =
       getBlockedUninspectableFileField(input.filters, [
         'content',
         'extracted_text',
         'transcript',
-      ]) != null
-        ? projectAgentFileInspection(agent)
-        : agent;
-    assertInspectableFileInput(
-      input.filters,
-      omitResolvedCanonicalFileLocators(fileInspectionAgent, agentFilesById, {
-        onTraversalFailure: input.onTraversalFailure,
-        messageCount: input.storedMessages?.length ?? 0,
-      }),
-    );
+      ]) != null;
+    const inspectAgentUnit = (unit: unknown): void => {
+      assertInspectableFileInput(
+        input.filters,
+        omitResolvedCanonicalFileLocators(unit, agentFilesById, {
+          onTraversalFailure: input.onTraversalFailure,
+          messageCount: input.storedMessages?.length ?? 0,
+        }),
+      );
+    };
+    if (inspectCatalogUnits) {
+      visitAgentFileInspectionUnits(projectAgentFileInspection(agent), inspectAgentUnit);
+    }
     appendExtractedContent(() => extractAgentContent(agent, inspector?.shouldInspect));
   }
   for (const assistant of input.assistants ?? []) {
