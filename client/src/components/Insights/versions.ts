@@ -4,7 +4,8 @@ export const versionMarkerLimit = 5;
 
 export type VersionDay = {
   inUse: number | null;
-  saved: number[];
+  lastSaved: number | null;
+  earlierSaved: number;
   marked: boolean;
   restored: boolean;
 };
@@ -47,9 +48,11 @@ export function getVersionDays(
   return days.map(({ date }) => {
     const restored = date === today && active != null && latest != null && active !== latest;
     const savedBy = dated.filter((version) => version.day <= date);
+    const savedThatDay = dated.filter((version) => version.day === date);
     return {
       inUse: restored ? active : (savedBy.at(-1)?.version ?? null),
-      saved: dated.filter((version) => version.day === date).map((version) => version.version),
+      lastSaved: savedThatDay.at(-1)?.version ?? null,
+      earlierSaved: Math.max(0, savedThatDay.length - 1),
       marked: marked.has(date),
       restored,
     };

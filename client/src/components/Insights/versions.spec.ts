@@ -22,17 +22,18 @@ describe('getVersionDays', () => {
       new Date('2026-12-01T00:00:00.000Z'),
     );
     expect(result).toEqual([
-      { inUse: 1, saved: [], marked: false, restored: false },
-      { inUse: 3, saved: [2, 3], marked: true, restored: false },
-      { inUse: 3, saved: [], marked: false, restored: false },
-      { inUse: 3, saved: [], marked: false, restored: false },
+      { inUse: 1, lastSaved: null, earlierSaved: 0, marked: false, restored: false },
+      { inUse: 3, lastSaved: 3, earlierSaved: 1, marked: true, restored: false },
+      { inUse: 3, lastSaved: null, earlierSaved: 0, marked: false, restored: false },
+      { inUse: 3, lastSaved: null, earlierSaved: 0, marked: false, restored: false },
     ]);
   });
 
   it('shows no version before the first save', () => {
     expect(getVersionDays(days, [version(1, '2026-10-03T10:00:00.000Z', true)], 'UTC')[0]).toEqual({
       inUse: null,
-      saved: [],
+      lastSaved: null,
+      earlierSaved: 0,
       marked: false,
       restored: false,
     });
@@ -66,7 +67,7 @@ describe('getVersionDays', () => {
       true,
       true,
     ]);
-    expect(result[0].saved).toEqual([1]);
+    expect(result[0].lastSaved).toBe(1);
   });
 
   it('places a save on the calendar day of the selected time zone', () => {

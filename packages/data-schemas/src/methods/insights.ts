@@ -344,15 +344,7 @@ type VersionSettings = {
   updatedAt?: Date | string | null;
 };
 
-const sameSortedList = (left?: unknown[], right?: unknown[]) => {
-  if (!left && !right) return true;
-  if (!left || !right || left.length !== right.length) return false;
-  const sortedRight = right.map(String).sort();
-  return left
-    .map(String)
-    .sort()
-    .every((value, index) => value === sortedRight[index]);
-};
+const sorted = (list?: unknown[]) => list && [...list].sort();
 
 /** Same rule as the agent builder's version panel (`isActiveVersion`). */
 const matchesCurrentSettings = (version: VersionSettings, current: VersionSettings) =>
@@ -362,19 +354,30 @@ const matchesCurrentSettings = (version: VersionSettings, current: VersionSettin
   version.artifacts === current.artifacts &&
   _.isEqual(version.instructionsPrompt ?? null, current.instructionsPrompt ?? null) &&
   _.isEqual(version.edges ?? [], current.edges ?? []) &&
-  sameSortedList(version.tools, current.tools) &&
-  sameSortedList(version.capabilities, current.capabilities);
+  _.isEqual(sorted(version.tools), sorted(current.tools)) &&
+  _.isEqual(sorted(version.capabilities), sorted(current.capabilities));
 
-const comparedSettings = [
-  'name',
-  'description',
-  'instructions',
-  'instructionsPrompt',
-  'artifacts',
-  'edges',
-  'tools',
-  'capabilities',
-] as const;
+const versionProjection = {
+  _id: 0,
+  id: 1,
+  name: 1,
+  description: 1,
+  instructions: 1,
+  instructionsPrompt: 1,
+  artifacts: 1,
+  edges: 1,
+  tools: 1,
+  capabilities: 1,
+  'versions.updatedAt': 1,
+  'versions.name': 1,
+  'versions.description': 1,
+  'versions.instructions': 1,
+  'versions.instructionsPrompt': 1,
+  'versions.artifacts': 1,
+  'versions.edges': 1,
+  'versions.tools': 1,
+  'versions.capabilities': 1,
+};
 
 async function getSavedVersions(
   mongoose: typeof import('mongoose'),
@@ -384,29 +387,15 @@ async function getSavedVersions(
   const Agent = mongoose.models.Agent as Model<IAgent>;
   const agents = await Agent.find(
     { id: { $in: agentIds }, ...tenantMatch(tenantId) },
-    {
-      id: 1,
-      _id: 0,
-      'versions.updatedAt': 1,
-      ...Object.fromEntries(
-        comparedSettings.flatMap((field) => [
-          [field, 1],
-          [`versions.${field}`, 1],
-        ]),
-      ),
-    },
+    versionProjection,
   )
     .sort({ id: 1 })
     .lean<Array<VersionSettings & { id: string; versions?: VersionSettings[] }>>();
   return agents.flatMap((agent) => {
     const versions = agent.versions ?? [];
-    let activeIndex = -1;
-    for (let index = versions.length - 1; index >= 0; index--) {
-      if (matchesCurrentSettings(versions[index] ?? {}, agent)) {
-        activeIndex = index;
-        break;
-      }
-    }
+    const activeIndex = _.findLastIndex(versions, (version) =>
+      matchesCurrentSettings(version, agent),
+    );
     return versions.map((snapshot, index) => {
       const date = snapshot?.updatedAt == null ? null : new Date(snapshot.updatedAt);
       return {

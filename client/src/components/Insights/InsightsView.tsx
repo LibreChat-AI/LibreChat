@@ -202,19 +202,18 @@ function Sparkline({
   });
   const markedVersions = points.flatMap((point, index) => {
     const mark = versionMarks?.[index];
-    return mark?.marked && mark.label
-      ? [
-          {
-            x: point.x,
-            tag: mark.tag,
-            description: `${formatter.format(new Date(point.date))}: ${mark.label}`,
-          },
-        ]
-      : [];
+    if (!mark?.marked || !mark.label) return [];
+    return [
+      {
+        x: point.x,
+        position: (point.x / 300) * 100,
+        tag: mark.tag,
+        description: `${formatter.format(new Date(point.date))}: ${mark.label}`,
+      },
+    ];
   });
-
   const shownTags = visibleTags(
-    markedVersions.map(({ x, tag }) => ({ position: (x / 300) * 100, text: tag ?? '' })),
+    markedVersions.map(({ position, tag }) => ({ position, text: tag ?? '' })),
     chartWidth,
   );
 
@@ -278,9 +277,8 @@ function Sparkline({
           />
         ))}
       </svg>
-      {markedVersions.map(({ x, tag }, index) => {
-        const position = (x / 300) * 100;
-        return tag && shownTags.has(index) ? (
+      {markedVersions.map(({ x, position, tag }, index) =>
+        tag && shownTags.has(index) ? (
           <span
             key={x}
             aria-hidden="true"
@@ -292,8 +290,8 @@ function Sparkline({
           >
             {tag}
           </span>
-        ) : null;
-      })}
+        ) : null,
+      )}
       {activePoint && (
         <>
           <span
@@ -829,19 +827,18 @@ export default function InsightsView() {
 
   const versionMarks = useMemo<VersionMark[] | undefined>(() => {
     if (!versionDays) return undefined;
-    return versionDays.map(({ inUse, saved, marked, restored }) => {
-      const last = saved.at(-1);
-      if (last != null) {
+    return versionDays.map(({ inUse, lastSaved, earlierSaved, marked, restored }) => {
+      if (lastSaved != null) {
         return {
           marked,
           label:
-            saved.length > 1
+            earlierSaved > 0
               ? localize('com_insights_version_saved_earlier', {
-                  versionNumber: last,
-                  earlier: saved.length - 1,
+                  versionNumber: lastSaved,
+                  earlier: earlierSaved,
                 })
-              : localize('com_insights_version_saved_marker', { versionNumber: last }),
-          tag: localize('com_insights_version_tag', { versionNumber: last }),
+              : localize('com_insights_version_saved_marker', { versionNumber: lastSaved }),
+          tag: localize('com_insights_version_tag', { versionNumber: lastSaved }),
         };
       }
       if (inUse == null) return { marked: false, label: null };
