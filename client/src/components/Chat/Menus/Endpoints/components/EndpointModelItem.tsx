@@ -6,9 +6,9 @@ import { CheckCircle2, EarthIcon } from 'lucide-react';
 import { isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { Endpoint } from '~/common';
 import { resolveProviderIcon } from '~/hooks/Endpoint/useProviderIcon';
+import OfficialAgentIcon from '~/components/Agents/OfficialAgentIcon';
 import { createEndpointIcon } from '~/hooks/Endpoint/useEndpoints';
 import { useModelSelectorContext } from '../ModelSelectorContext';
-import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import { CustomMenuItem as MenuItem } from '../CustomMenu';
 import useActiveItem from '../useActiveItem';
 import { useLocalize } from '~/hooks';
@@ -55,8 +55,8 @@ function EndpointModelItemComponent({
 
   let modelName = modelId;
   const avatarUrl = endpoint?.modelIcons?.[modelId ?? ''] || null;
-  const isCertifiedAgent =
-    isAgentsEndpoint(endpoint.value) && agentsMap?.[modelId ?? '']?.is_certified === true;
+  const isOfficialAgent =
+    isAgentsEndpoint(endpoint.value) && agentsMap?.[modelId ?? '']?.is_official === true;
 
   // Use custom names if available
   if (endpoint && modelId && isAgentsEndpoint(endpoint.value) && endpoint.agentNames?.[modelId]) {
@@ -128,10 +128,10 @@ function EndpointModelItemComponent({
     >
       <div className="flex w-full min-w-0 items-center gap-2 px-1 py-1">
         {renderAvatar()}
-        <span className={cn('min-w-0 truncate', !isCertifiedAgent && 'flex-1')}>{modelName}</span>
-        {isCertifiedAgent && (
+        <span className={cn('min-w-0 truncate', !isOfficialAgent && 'flex-1')}>{modelName}</span>
+        {isOfficialAgent && (
           <>
-            <CertifiedIcon />
+            <OfficialAgentIcon />
             <span className="flex-1" aria-hidden="true" />
           </>
         )}

@@ -305,8 +305,8 @@ describe('MessageRow', () => {
     render(
       <MessageRow
         id="message-1"
-        label="Certified Agent"
-        labelAdornment={<span role="img" aria-label="Certified" />}
+        label="Official Agent"
+        labelAdornment={<span role="img" aria-label="Official" />}
         icon={<span data-testid="message-icon" />}
         footer={<div data-testid="message-actions" />}
         ariaLabel="Assistant message"
@@ -317,8 +317,8 @@ describe('MessageRow', () => {
     );
 
     const heading = screen.getByRole('heading', { level: 2 });
-    const name = screen.getByText('Certified Agent');
-    const badge = screen.getByRole('img', { name: 'Certified' });
+    const name = screen.getByText('Official Agent');
+    const badge = screen.getByRole('img', { name: 'Official' });
     expect(heading).toContainElement(badge);
     expect(name.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(badge.parentElement?.previousElementSibling).toBe(name);

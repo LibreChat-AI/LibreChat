@@ -9,7 +9,7 @@ let mockSelectedValues: SelectedValues;
 const mockEndpointsConfig = {
   OpenRouter: { order: 1, providerId: ProviderId.openrouter },
 } as unknown as TEndpointsConfig;
-let mockAgentsMap: Record<string, { is_certified?: boolean }> | undefined;
+let mockAgentsMap: Record<string, { is_official?: boolean }> | undefined;
 
 jest.mock('~/components/Chat/Menus/Endpoints/ModelSelectorContext', () => ({
   useModelSelectorContext: () => ({
@@ -33,7 +33,7 @@ jest.mock('~/components/Chat/Menus/Endpoints/CustomMenu', () => {
 });
 
 jest.mock('~/hooks', () => ({
-  useAgentCertification: () => ({ enabled: true, description: 'Certified', canManage: false }),
+  useAgentOfficialStatus: () => ({ enabled: true, description: 'Official', canManage: false }),
   useLocalize: () => (key: string) => key,
 }));
 
@@ -147,14 +147,14 @@ describe('EndpointModelItem', () => {
     });
   });
 
-  it('shows the certification badge next to certified agent options', () => {
+  it('shows the official status badge next to official agent options', () => {
     mockSelectedValues = { endpoint: 'agents', model: 'agent-1', modelSpec: '' };
-    mockAgentsMap = { 'agent-1': { is_certified: true } };
+    mockAgentsMap = { 'agent-1': { is_official: true } };
     renderItem({
       modelId: 'agent-1',
       endpoint: { ...baseEndpoint, value: 'agents', label: 'Agents' },
     });
 
-    expect(screen.getByRole('img', { name: 'com_ui_certified_agent' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'com_ui_official_agent' })).toBeInTheDocument();
   });
 });

@@ -83,6 +83,7 @@ describe('Agent Management create handler', () => {
       name: 'Managed Agent',
       provider: 'openAI',
       model: 'gpt-5',
+      is_official: false,
       version: 1,
       createdAt: '2026-09-03T10:00:00.000Z',
       updatedAt: '2026-09-03T10:00:00.000Z',
@@ -103,6 +104,20 @@ describe('Agent Management create handler', () => {
       expect.objectContaining({ error: expect.objectContaining({ code: 'invalid_request' }) }),
     );
     expect(deps.createAgent).not.toHaveBeenCalled();
+  });
+
+  it('strips caller-supplied official state before creation', async () => {
+    const deps = makeDeps();
+    const request = makeRequest({
+      body: { ...validBody, is_official: true, is_certified: true },
+    });
+    const response = makeResponse();
+
+    await createAgentManagementCreateHandler(deps)(request, response);
+
+    expect(deps.createAgent).toHaveBeenCalledWith(request, expect.anything());
+    expect(request.body).not.toHaveProperty('is_official');
+    expect(request.body).not.toHaveProperty('is_certified');
   });
 
   it('rejects a null model as invalid input before persistence', async () => {

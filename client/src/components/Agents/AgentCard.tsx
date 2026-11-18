@@ -5,9 +5,9 @@ import type t from 'librechat-data-provider';
 import { agentMorphId, CARD_HANDOFF_VARIANTS, MORPH_CLOSE_TRANSITION } from './morph';
 import AgentContact, { resolveAgentContact } from './AgentContact';
 import { getPlainDescription } from '~/components/ui/Description';
+import OfficialAgentIcon from './OfficialAgentIcon';
 import { cn, renderAgentAvatar } from '~/utils';
 import AgentCategoryBadge from './Category';
-import CertifiedIcon from './CertifiedIcon';
 import { useLocalize } from '~/hooks';
 
 interface AgentCardProps {
@@ -161,7 +161,7 @@ const AgentCard = memo(
             {...shared}
           >
             <span className="line-clamp-2 min-w-0">{name}</span>
-            {agent.is_certified === true && <CertifiedIcon className="pointer-events-auto" />}
+            {agent.is_official === true && <OfficialAgentIcon className="pointer-events-auto" />}
           </motion.h2>
 
           {/* The blurb is the same copy the dialog shows in full, so it is

@@ -1,27 +1,27 @@
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import CertifiedIcon from '../CertifiedIcon';
+import OfficialAgentIcon from '../OfficialAgentIcon';
 
-let mockCertification = { enabled: true, description: 'Official agent', canManage: false };
+let mockOfficialStatus = { enabled: true, description: 'Official agent', canManage: false };
 
 jest.mock('~/hooks', () => ({
-  useAgentCertification: () => mockCertification,
-  useLocalize: () => (key: string) => (key === 'com_ui_certified_agent' ? 'Official agent' : key),
+  useAgentOfficialStatus: () => mockOfficialStatus,
+  useLocalize: () => (key: string) => (key === 'com_ui_official_agent' ? 'Official agent' : key),
 }));
 
-describe('CertifiedIcon', () => {
+describe('OfficialAgentIcon', () => {
   beforeEach(() => {
-    mockCertification = { enabled: true, description: 'Official agent', canManage: false };
+    mockOfficialStatus = { enabled: true, description: 'Official agent', canManage: false };
   });
 
   it('shows its localized tooltip when focused by keyboard', async () => {
     const user = userEvent.setup();
-    render(<CertifiedIcon />);
+    render(<OfficialAgentIcon />);
 
     const icon = screen.getByRole('img', { name: 'Official agent' });
     expect(icon).toHaveClass('text-status-info');
-    expect(icon.querySelector('svg')).toHaveClass('fill-current', 'stroke-surface-primary');
+    expect(icon.querySelector('svg')).toHaveClass('lucide-shield-check', 'size-full');
     await user.tab();
 
     expect(icon).toHaveFocus();
@@ -30,18 +30,18 @@ describe('CertifiedIcon', () => {
     );
   });
 
-  it('renders nothing while certification is disabled', () => {
-    mockCertification = { ...mockCertification, enabled: false };
-    const { container } = render(<CertifiedIcon />);
+  it('renders nothing while official status is disabled', () => {
+    mockOfficialStatus = { ...mockOfficialStatus, enabled: false };
+    const { container } = render(<OfficialAgentIcon />);
 
     expect(container).toBeEmptyDOMElement();
   });
 
   it('keeps a short name and exposes the configured explanation as its description', async () => {
     const explanation = 'Reviewed by the AI governance board for security and data handling.';
-    mockCertification = { ...mockCertification, description: explanation };
+    mockOfficialStatus = { ...mockOfficialStatus, description: explanation };
     const user = userEvent.setup();
-    render(<CertifiedIcon />);
+    render(<OfficialAgentIcon />);
 
     const icon = screen.getByRole('img', { name: 'Official agent' });
     expect(icon).toHaveAccessibleDescription(explanation);
@@ -53,7 +53,7 @@ describe('CertifiedIcon', () => {
   });
 
   it('adds no tab stop when static inside another control', () => {
-    render(<CertifiedIcon static />);
+    render(<OfficialAgentIcon static />);
 
     const icon = screen.getByRole('img', { name: 'Official agent' });
     expect(icon).not.toHaveAttribute('tabindex');

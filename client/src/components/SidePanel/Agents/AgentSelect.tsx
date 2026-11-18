@@ -14,9 +14,9 @@ import type { TAgentCapabilities, AgentForm } from '~/common';
 import { cn, createProviderOption, processAgentOption, getDefaultAgentFormValues } from '~/utils';
 import { useListAgentsQuery, useGetStartupConfig } from '~/data-provider';
 import { useLocalize, useAgentDefaultPermissionLevel } from '~/hooks';
+import OfficialAgentIcon from '~/components/Agents/OfficialAgentIcon';
 import MineFilterToggle from '~/components/Agents/MineFilterToggle';
 import { mergeDirtyToolsWithServerActions } from './agentTools';
-import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 
 const keys = new Set(Object.keys(defaultAgentFormValues));
 
@@ -94,8 +94,8 @@ function AgentSelect({
       }),
     ];
   }, [listedAgents, mine, agentQuery.data, selectedAgentId]);
-  const selectedCertifiedAgent =
-    agents?.find((agent) => agent.id === selectedAgentId)?.is_certified === true;
+  const selectedOfficialAgent =
+    agents?.find((agent) => agent.id === selectedAgentId)?.is_official === true;
 
   const resetAgentForm = useCallback(
     (fullAgent: Agent, preserveDirtyValues = false) => {
@@ -332,7 +332,7 @@ function AgentSelect({
           displayValue={field?.value?.label ?? ''}
           selectPlaceholder={field?.value?.value ?? createAgent}
           iconSide="right"
-          selectedRightAdornment={selectedCertifiedAgent ? <CertifiedIcon static /> : undefined}
+          selectedRightAdornment={selectedOfficialAgent ? <OfficialAgentIcon static /> : undefined}
           searchPlaceholder={localize('com_agents_search_name')}
           searchActions={<MineFilterToggle iconOnly checked={mine} onCheckedChange={setMine} />}
           popoverMaxHeight={SELECTOR_MAX_HEIGHT}
@@ -345,7 +345,7 @@ function AgentSelect({
               value: agent.id ?? '',
               icon: agent.icon,
               rightAdornment:
-                agent.is_certified === true ? <CertifiedIcon /> : undefined,
+                agent.is_official === true ? <OfficialAgentIcon /> : undefined,
             })) ?? [
               {
                 label: 'Loading...',

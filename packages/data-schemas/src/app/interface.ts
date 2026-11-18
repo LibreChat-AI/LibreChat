@@ -135,9 +135,9 @@ export async function loadDefaultInterface({
     defaultPinnedTools: interfaceConfig?.defaultPinnedTools,
     peoplePicker: interfaceConfig?.peoplePicker,
     marketplace: interfaceConfig?.marketplace,
-    agentCertification: {
-      ...defaults.agentCertification,
-      ...interfaceConfig?.agentCertification,
+    agentOfficialStatus: {
+      ...defaults.agentOfficialStatus,
+      ...interfaceConfig?.agentOfficialStatus,
     },
     remoteAgents: interfaceConfig?.remoteAgents,
     skills: interfaceConfig?.skills,

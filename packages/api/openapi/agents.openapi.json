@@ -173,8 +173,8 @@
           },
           {
             "in": "query",
-            "name": "is_certified",
-            "description": "When true, return only centrally certified agents.",
+            "name": "is_official",
+            "description": "When true, return only centrally official agents.",
             "schema": {
               "type": "boolean",
               "default": false
@@ -3842,9 +3842,9 @@
               "null"
             ]
           },
-          "is_certified": {
+          "is_official": {
             "type": "boolean",
-            "description": "Whether this agent is centrally certified."
+            "description": "Whether this agent is centrally official."
           },
           "id": {
             "type": "string",

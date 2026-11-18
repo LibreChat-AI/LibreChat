@@ -820,11 +820,11 @@ export const revertAgentVersion = ({
   version_index: number;
 }): Promise<ag.Agent> => request.post(endpoints.revertAgentVersion(agent_id), { version_index });
 
-export const setAgentCertification = ({
+export const setAgentOfficialStatus = ({
   agent_id,
-  is_certified,
-}: ag.AgentCertificationParams): Promise<ag.AgentCertificationResponse> =>
-  request.put(endpoints.agentCertification(agent_id), { is_certified });
+  is_official,
+}: ag.AgentOfficialStatusParams): Promise<ag.AgentOfficialStatusResponse> =>
+  request.put(endpoints.agentOfficialStatus(agent_id), { is_official });
 
 /* Marketplace */
 

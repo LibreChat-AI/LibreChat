@@ -160,23 +160,23 @@ export const useUpdateAgentMutation = (
 };
 
 /**
- * Certifies or uncertifies an agent. Certification is not part of the agent's versioned
+ * Marks or unmarks an agent as official. Official status is not part of the agent's versioned
  * configuration, so it patches the flag into every cached view of the agent instead of
  * replacing them with an update response.
  */
-export const useSetAgentCertificationMutation = (
-  options?: t.MutationOptions<t.AgentCertificationResponse, t.AgentCertificationParams>,
-): UseMutationResult<t.AgentCertificationResponse, Error, t.AgentCertificationParams> => {
+export const useSetAgentOfficialStatusMutation = (
+  options?: t.MutationOptions<t.AgentOfficialStatusResponse, t.AgentOfficialStatusParams>,
+): UseMutationResult<t.AgentOfficialStatusResponse, Error, t.AgentOfficialStatusParams> => {
   const queryClient = useQueryClient();
   return useMutation(
-    [MutationKeys.setAgentCertification],
-    (variables: t.AgentCertificationParams) => dataService.setAgentCertification(variables),
+    [MutationKeys.setAgentOfficialStatus],
+    (variables: t.AgentOfficialStatusParams) => dataService.setAgentOfficialStatus(variables),
     {
       onMutate: (variables) => options?.onMutate?.(variables),
       onError: (error, variables, context) => options?.onError?.(error, variables, context),
       onSuccess: (result, variables, context) => {
         const patch = (agent: t.Agent): t.Agent =>
-          agent.id === result.id ? { ...agent, is_certified: result.is_certified } : agent;
+          agent.id === result.id ? { ...agent, is_official: result.is_official } : agent;
 
         queryClient.setQueriesData<t.AgentListResponse>([QueryKeys.agents], (listRes) =>
           listRes?.data ? { ...listRes, data: listRes.data.map(patch) } : listRes,

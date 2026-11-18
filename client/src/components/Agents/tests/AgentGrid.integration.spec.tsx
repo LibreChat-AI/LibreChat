@@ -15,7 +15,7 @@ jest.mock('librechat-data-provider', () => {
   return { ...actual, dataService: { ...actual.dataService, getMarketplaceAgents: jest.fn() } };
 });
 jest.mock('~/hooks', () => ({
-  useAgentCertification: () => ({ enabled: true, description: 'Official agent', canManage: false }),
+  useAgentOfficialStatus: () => ({ enabled: true, description: 'Official agent', canManage: false }),
   useLocalize: () => (key: string) => key,
   useAgentCategories: () => ({ categories: [] }),
 }));
@@ -58,11 +58,11 @@ const page = (agents: t.Agent[], after?: string): t.AgentListResponse => ({
 function Harness({
   searchQuery = '',
   mine,
-  certified,
+  official,
 }: {
   searchQuery?: string;
   mine?: 0 | 1;
-  certified?: boolean;
+  official?: boolean;
 }) {
   const scrollElementRef = useRef<HTMLDivElement>(null);
   return (
@@ -71,7 +71,7 @@ function Harness({
         category="all"
         searchQuery={searchQuery}
         mine={mine}
-        certified={certified}
+        official={official}
         scrollElementRef={scrollElementRef}
       />
     </div>
@@ -133,17 +133,17 @@ describe('AgentGrid pagination', () => {
     expect(marketplace).toHaveBeenCalledTimes(2);
   });
 
-  it('includes certification in the marketplace query scope', async () => {
+  it('includes official status in the marketplace query scope', async () => {
     marketplace.mockResolvedValueOnce(page([]));
     render(
       <QueryClientProvider client={client}>
-        <Harness certified searchQuery="invoice" />
+        <Harness official searchQuery="invoice" />
       </QueryClientProvider>,
     );
 
     await waitFor(() =>
       expect(marketplace).toHaveBeenCalledWith(
-        expect.objectContaining({ is_certified: true, search: 'invoice' }),
+        expect.objectContaining({ is_official: true, search: 'invoice' }),
       ),
     );
   });

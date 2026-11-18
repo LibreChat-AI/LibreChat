@@ -11,11 +11,11 @@ jest.mock('~/utils', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
-  useAgentCertification: () => ({ enabled: true, description: 'Official agent', canManage: false }),
+  useAgentOfficialStatus: () => ({ enabled: true, description: 'Official agent', canManage: false }),
   useLocalize: () => (key: string) => {
     const labels: Record<string, string> = {
       com_ui_agent: 'Agent',
-      com_ui_certified_agent: 'Official agent',
+      com_ui_official_agent: 'Official agent',
       com_agents_category_general: 'General',
       com_agents_description_empty: 'No description provided.',
       com_agents_view_details: 'View details',
@@ -97,21 +97,21 @@ describe('AgentCard', () => {
     expect(onSelect).toHaveBeenCalledWith(agent);
   });
 
-  it('shows an accessible certification badge only for certified agents', () => {
+  it('shows an accessible official status badge only for official agents', () => {
     const { rerender } = render(
-      <AgentCard agent={{ ...agent, is_certified: true }} onSelect={jest.fn()} />,
+      <AgentCard agent={{ ...agent, is_official: true }} onSelect={jest.fn()} />,
     );
     const badge = screen.getByRole('img', { name: 'Official agent' });
     expect(badge).toBeInTheDocument();
     expect(badge).toHaveClass('text-status-info');
     expect(screen.getByRole('heading', { name: agent.name as string })).toHaveClass('items-center');
-    expect(badge.querySelector('svg')).toHaveClass('fill-current', 'stroke-surface-primary');
+    expect(badge.querySelector('svg')).toHaveClass('lucide-landmark', 'size-full');
 
-    rerender(<AgentCard agent={{ ...agent, is_certified: false }} onSelect={jest.fn()} />);
+    rerender(<AgentCard agent={{ ...agent, is_official: false }} onSelect={jest.fn()} />);
     expect(screen.queryByRole('img', { name: 'Official agent' })).not.toBeInTheDocument();
   });
 
-  it('does not show a certification badge when the field is absent', () => {
+  it('does not show an official badge when the field is absent', () => {
     render(<AgentCard agent={agent} onSelect={jest.fn()} />);
 
     expect(screen.queryByRole('img', { name: 'Official agent' })).not.toBeInTheDocument();

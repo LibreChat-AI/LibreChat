@@ -1,5 +1,10 @@
 const mongoose = require('mongoose');
-const { logger, runAsSystem, warnOnMissingSearchTokens } = require('@librechat/data-schemas');
+const {
+  logger,
+  runAsSystem,
+  warnOnMissingSearchTokens,
+  migrateLegacyAgentOfficialStatus,
+} = require('@librechat/data-schemas');
 const {
   logAgentMigrationWarning,
   logPromptMigrationWarning,
@@ -15,6 +20,10 @@ const { findRoleByIdentifier } = require('~/models');
 async function checkMigrations() {
   /** Started first so it overlaps the permission checks; it logs its own failures. */
   const searchTokens = warnOnMissingSearchTokens(mongoose.connection);
+  const migratedOfficialAgents = await migrateLegacyAgentOfficialStatus(mongoose.connection);
+  if (migratedOfficialAgents > 0) {
+    logger.info(`[AgentOfficialStatusMigration] Updated ${migratedOfficialAgents} agents`);
+  }
   try {
     const agentMigrationResult = await checkAgentPermissionsMigration({
       mongoose,

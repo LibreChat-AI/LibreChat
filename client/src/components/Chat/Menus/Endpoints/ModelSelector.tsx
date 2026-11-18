@@ -11,7 +11,7 @@ import {
 import { ModelSelectorProvider, useModelSelectorContext } from './ModelSelectorContext';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
 import { ModelSelectorChatProvider } from './ModelSelectorChatContext';
-import CertifiedIcon from '~/components/Agents/CertifiedIcon';
+import OfficialAgentIcon from '~/components/Agents/OfficialAgentIcon';
 import { getSelectedIcon, getDisplayValue } from './utils';
 import { CustomMenu as Menu } from './CustomMenu';
 import DialogManager from './DialogManager';
@@ -42,11 +42,11 @@ function ModelSelectorContent() {
     onOpenChange,
     keyDialogEndpoint,
   } = useModelSelectorContext();
-  const selectedIsCertifiedAgent =
+  const selectedIsOfficialAgent =
     !selectedValues.modelSpec &&
     selectedValues.endpoint === EModelEndpoint.agents &&
     selectedValues.model != null &&
-    agentsMap?.[selectedValues.model]?.is_certified === true;
+    agentsMap?.[selectedValues.model]?.is_official === true;
 
   const selectedIcon = useMemo(
     () =>
@@ -88,7 +88,7 @@ function ModelSelectorContent() {
             </div>
           )}
           <span className="truncate text-start">{selectedDisplayValue}</span>
-          {selectedIsCertifiedAgent && <CertifiedIcon static />}
+          {selectedIsOfficialAgent && <OfficialAgentIcon static />}
         </button>
       }
     />

@@ -50,7 +50,7 @@ export type AgentManagementResponse = Omit<
   id: string;
   provider: string;
   model: string | null;
-  is_certified: boolean;
+  is_official: boolean;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -61,6 +61,8 @@ export type AgentManagementProjectionSource = Partial<
     'id' | 'provider' | 'model' | 'version' | 'createdAt' | 'updatedAt' | 'avatar'
   >
 > & {
+  /** @deprecated Legacy field retained while existing records are migrated. */
+  is_certified?: boolean;
   id?: string;
   provider?: string;
   model?: string | null;
@@ -101,12 +103,13 @@ export type AgentManagementError = {
   };
 };
 
-export function stripAgentCertificationFromPayload(body: unknown): unknown {
+export function stripAgentOfficialStatusFromPayload(body: unknown): unknown {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return body;
   }
 
   const payload: Record<string, unknown> = { ...body };
+  delete payload.is_official;
   delete payload.is_certified;
   return payload;
 }
@@ -200,7 +203,7 @@ export const agentManagementResponseSchema: z.ZodType<AgentManagementResponse> =
     id: z.string().min(1),
     provider: z.string(),
     model: z.string().nullable(),
-    is_certified: z.boolean(),
+    is_official: z.boolean(),
     version: z.number().int().nonnegative(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
@@ -290,7 +293,7 @@ export function projectAgentManagementResponse(
     id: source.id,
     provider: source.provider,
     model: source.model,
-    is_certified: source.is_certified === true,
+    is_official: source.is_official === true || source.is_certified === true,
     version: getVersion(source),
     createdAt: toTimestamp(source.createdAt),
     updatedAt: toTimestamp(source.updatedAt),

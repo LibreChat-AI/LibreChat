@@ -20,7 +20,7 @@ const mockLocalize = jest.fn((key: string, options?: { count?: number; category?
     com_nav_toggle_nav: 'Open sidebar',
     com_agents_marketplace: 'Agent Marketplace',
     com_agents_filter_mine: 'Only Agents I created',
-    com_agents_filter_certified: 'Official agents',
+    com_agents_filter_official_agents: 'Official agents',
     com_agents_my_agents: 'My agents',
     com_agents_sort_label: 'Sort by',
     com_agents_sort_newest: 'Newest first',
@@ -50,11 +50,11 @@ const mockLocalize = jest.fn((key: string, options?: { count?: number; category?
 
 let mockHasAccess = true;
 
-let mockCertificationEnabled = true;
+let mockOfficialStatusEnabled = true;
 
 jest.mock('~/hooks', () => ({
-  useAgentCertification: () => ({
-    enabled: mockCertificationEnabled,
+  useAgentOfficialStatus: () => ({
+    enabled: mockOfficialStatusEnabled,
     description: 'Official agent',
     canManage: false,
   }),
@@ -273,28 +273,28 @@ describe('Marketplace controls and agent results', () => {
     });
   });
 
-  it('filters certified agents without dropping category or search', async () => {
+  it('filters official agents without dropping category or search', async () => {
     renderMarketplace('/agents/productivity?q=invoice');
     await screen.findByRole('list');
 
-    const certifiedFilter = screen.getByRole('button', { name: 'Official agents' });
-    expect(certifiedFilter).toHaveClass('h-8', 'rounded-full');
+    const officialFilter = screen.getByRole('button', { name: 'Official agents' });
+    expect(officialFilter).toHaveClass('h-8', 'rounded-full');
     expect(
-      certifiedFilter.compareDocumentPosition(screen.getByRole('tab', { name: /Productivity/ })),
+      officialFilter.compareDocumentPosition(screen.getByRole('tab', { name: /Productivity/ })),
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(certifiedFilter.parentElement).toBe(
+    expect(officialFilter.parentElement).toBe(
       screen.getByRole('tablist').parentElement?.parentElement,
     );
 
-    fireEvent.click(certifiedFilter);
+    fireEvent.click(officialFilter);
 
     await waitFor(() => {
-      expect(currentUrl()).toBe('/agents/productivity?q=invoice&is_certified=true');
+      expect(currentUrl()).toBe('/agents/productivity?q=invoice&is_official=true');
       expect(marketplace).toHaveBeenLastCalledWith(
         expect.objectContaining({
           category: 'productivity',
           search: 'invoice',
-          is_certified: true,
+          is_official: true,
         }),
       );
     });
@@ -309,19 +309,19 @@ describe('Marketplace controls and agent results', () => {
         search: 'invoice',
       }),
     );
-    expect(marketplace.mock.calls[0][0]).not.toHaveProperty('is_certified');
+    expect(marketplace.mock.calls[0][0]).not.toHaveProperty('is_official');
   });
 
-  it('hides the certified filter and ignores a shared filter link while certification is off', async () => {
-    mockCertificationEnabled = false;
+  it('hides the official filter and ignores a shared filter link while official status is off', async () => {
+    mockOfficialStatusEnabled = false;
     try {
-      renderMarketplace('/agents/productivity?is_certified=true');
+      renderMarketplace('/agents/productivity?is_official=true');
       await screen.findByRole('list');
 
       expect(screen.queryByRole('button', { name: 'Official agents' })).not.toBeInTheDocument();
-      expect(marketplace.mock.calls[0][0]).not.toHaveProperty('is_certified');
+      expect(marketplace.mock.calls[0][0]).not.toHaveProperty('is_official');
     } finally {
-      mockCertificationEnabled = true;
+      mockOfficialStatusEnabled = true;
     }
   });
 

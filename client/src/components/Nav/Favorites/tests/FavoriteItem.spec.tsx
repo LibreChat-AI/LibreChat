@@ -8,7 +8,7 @@ const mockRemoveFavoriteModel = jest.fn();
 const mockRemoveFavoriteSpec = jest.fn();
 
 jest.mock('~/hooks', () => ({
-  useAgentCertification: () => ({ enabled: true, description: 'Official agent', canManage: false }),
+  useAgentOfficialStatus: () => ({ enabled: true, description: 'Official agent', canManage: false }),
   useLocalize: () => (key: string) => key,
   useFavorites: () => ({
     removeFavoriteAgent: mockRemoveFavoriteAgent,
@@ -69,16 +69,16 @@ describe('FavoriteItem', () => {
       expect(screen.getByTestId('agent-avatar')).toBeInTheDocument();
     });
 
-    it('shows the certification badge for a pinned certified agent', () => {
+    it('shows the official status badge for a pinned official agent', () => {
       render(
         <FavoriteItem
           type="agent"
-          item={{ ...baseAgent, is_certified: true }}
+          item={{ ...baseAgent, is_official: true }}
           onSelectEndpoint={jest.fn()}
         />,
       );
 
-      expect(screen.getByRole('img', { name: 'com_ui_certified_agent' })).toBeInTheDocument();
+      expect(screen.getByRole('img', { name: 'com_ui_official_agent' })).toBeInTheDocument();
     });
 
     it('has aria-label formatted as "<name> (com_ui_agent)"', () => {

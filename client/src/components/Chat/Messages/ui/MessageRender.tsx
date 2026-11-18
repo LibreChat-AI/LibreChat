@@ -15,13 +15,13 @@ import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
 import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
+import OfficialAgentIcon from '~/components/Agents/OfficialAgentIcon';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
-import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import SubRow from '~/components/Chat/Messages/SubRow';
 import { MessageContext } from '~/Providers';
 import WakeupRow from './WakeupRow';
@@ -174,8 +174,8 @@ const MessageRender = memo(function MessageRender({
       icon={<MessageIcon iconData={iconData} assistant={assistant} agent={agent} />}
       label={messageLabel ?? ''}
       labelAdornment={
-        !msg.isCreatedByUser && agent?.is_certified === true && !hasConfiguredSender ? (
-          <CertifiedIcon />
+        !msg.isCreatedByUser && agent?.is_official === true && !hasConfiguredSender ? (
+          <OfficialAgentIcon />
         ) : undefined
       }
       hoverLabel={getHeaderHoverLabel(

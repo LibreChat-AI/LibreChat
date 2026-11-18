@@ -7,7 +7,7 @@ import {
   agentManagementCreateSchema,
   mapAgentManagementError,
   projectAgentManagementResponse,
-  stripAgentCertificationFromPayload,
+  stripAgentOfficialStatusFromPayload,
 } from './management';
 import { checkAccessWithRequestCache } from '../middleware/access';
 
@@ -90,7 +90,7 @@ export function createAgentManagementCreateHandler(
       }
 
       const parsedBody = agentManagementCreateSchema.safeParse(
-        stripAgentCertificationFromPayload(req.body),
+        stripAgentOfficialStatusFromPayload(req.body),
       );
       if (!parsedBody.success) {
         return sendError(res, 'invalid_request', parsedBody.error);

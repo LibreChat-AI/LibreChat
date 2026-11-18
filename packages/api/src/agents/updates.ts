@@ -13,7 +13,7 @@ import {
   agentManagementUpdateSchema,
   mapAgentManagementError,
   projectAgentManagementResponse,
-  stripAgentCertificationFromPayload,
+  stripAgentOfficialStatusFromPayload,
 } from './management';
 import { checkAccessWithRequestCache } from '../middleware/access';
 
@@ -144,7 +144,7 @@ export function createAgentManagementUpdateHandler(
       }
 
       const parsedBody = agentManagementUpdateSchema.safeParse(
-        stripAgentCertificationFromPayload(req.body),
+        stripAgentOfficialStatusFromPayload(req.body),
       );
       if (!parsedBody.success) {
         return sendError(res, 'invalid_request', parsedBody.error);

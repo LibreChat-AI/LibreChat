@@ -162,7 +162,7 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
       default: false,
       index: true,
     },
-    is_certified: {
+    is_official: {
       type: Boolean,
       default: false,
       index: true,

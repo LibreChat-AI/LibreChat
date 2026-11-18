@@ -27,11 +27,11 @@ import Description, { getPlainDescription, isHtmlDescription } from '~/component
 import AgentContact, { resolveAgentContact } from './AgentContact';
 import { useMarketplaceHost } from './MarketplaceContext';
 import { useFavorites, useLocalize } from '~/hooks';
+import OfficialAgentIcon from './OfficialAgentIcon';
 import DescriptionWords from './DescriptionWords';
 import { cn, renderAgentAvatar } from '~/utils';
 import ResetApprovals from './ResetApprovals';
 import AgentCategoryBadge from './Category';
-import CertifiedIcon from './CertifiedIcon';
 import CopyLink from './CopyLink';
 
 interface AgentDetailContentProps {
@@ -320,7 +320,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                     <span className="min-w-0 truncate">
                       {agent.name?.trim() || localize('com_ui_agent')}
                     </span>
-                    {agent.is_certified === true && <CertifiedIcon />}
+                    {agent.is_official === true && <OfficialAgentIcon />}
                   </OGDialogTitle>
                 </motion.div>
                 {/* Sanitized markup can carry blocks of its own, so the rich branch is a

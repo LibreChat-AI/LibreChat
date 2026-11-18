@@ -3,8 +3,8 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import type { Agent, TModelSpec, TEndpointsConfig } from 'librechat-data-provider';
 import type { FavoriteModel } from '~/store/favorites';
 import SpecIcon from '~/components/Chat/Menus/Endpoints/components/SpecIcon';
+import OfficialAgentIcon from '~/components/Agents/OfficialAgentIcon';
 import UnpinButton from '~/components/Conversations/UnpinButton';
-import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import MinimalIcon from '~/components/Endpoints/MinimalIcon';
 import { useFavorites, useLocalize } from '~/hooks';
 import { renderAgentAvatar } from '~/utils';
@@ -145,10 +145,10 @@ export default function FavoriteItem(props: FavoriteItemProps) {
     >
       <div className="flex min-w-0 flex-1 items-center pe-6">
         {renderIcon()}
-        {props.type === 'agent' && props.item.is_certified === true ? (
+        {props.type === 'agent' && props.item.is_official === true ? (
           <>
             <span className="ms-0 min-w-0 truncate">{name}</span>
-            <CertifiedIcon className="ms-1.5" />
+            <OfficialAgentIcon className="ms-1.5" />
             <span className="flex-1" aria-hidden="true" />
           </>
         ) : (

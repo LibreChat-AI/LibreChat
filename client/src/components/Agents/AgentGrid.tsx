@@ -19,8 +19,8 @@ interface AgentGridProps {
   sort?: t.AgentSortOption;
   /** When 1, restrict the list to agents authored by the current user. */
   mine?: 0 | 1;
-  /** When true, restrict the list to centrally certified agents. */
-  certified?: boolean;
+  /** When true, restrict the list to centrally official agents. */
+  official?: boolean;
 }
 
 /**
@@ -33,7 +33,7 @@ const AgentGrid: React.FC<AgentGridProps> = ({
   scrollElementRef,
   sort,
   mine,
-  certified = false,
+  official = false,
 }) => {
   const localize = useLocalize();
 
@@ -47,8 +47,8 @@ const AgentGrid: React.FC<AgentGridProps> = ({
       requiredPermission: PermissionBits.VIEW,
       limit: 32,
     };
-    if (certified) {
-      params.is_certified = true;
+    if (official) {
+      params.is_official = true;
     }
 
     if (searchQuery) {
@@ -71,7 +71,7 @@ const AgentGrid: React.FC<AgentGridProps> = ({
     }
 
     return params;
-  }, [category, searchQuery, sort, mine, certified]);
+  }, [category, searchQuery, sort, mine, official]);
 
   // Use infinite query for marketplace agents
   const {

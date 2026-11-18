@@ -1099,10 +1099,10 @@ export function createAgentMethods(
     searchParameter: FilterQuery<IAgent>,
     versionIndex: number,
   ) => Promise<IAgent>;
-  setAgentCertification: (
+  setAgentOfficialStatus: (
     id: string,
-    isCertified: boolean,
-  ) => Promise<{ id: string; is_certified: boolean } | null>;
+    isOfficial: boolean,
+  ) => Promise<{ id: string; is_official: boolean } | null>;
   countPromotedAgents: () => Promise<number>;
   addAgentResourceFile: ({
     agent_id,
@@ -1245,7 +1245,12 @@ export function createAgentMethods(
         agentData.skills_enabled = false;
       }
     }
-    const { author: _author, is_certified: _isCertified, ...versionData } = agentData;
+    const {
+      author: _author,
+      is_official: _isOfficial,
+      is_certified: _isCertified,
+      ...versionData
+    } = agentData;
     const timestamp = new Date();
     const initialAgentData = {
       ...agentData,
@@ -1477,6 +1482,7 @@ export function createAgentMethods(
     if (currentAgent) {
       const currentObject = currentAgent.toObject() as unknown as Record<string, unknown>;
       const { __v, _id, id: __id, versions, author: _author, ...versionData } = currentObject;
+      delete versionData.is_official;
       delete versionData.is_certified;
       const { $push, $pull, $addToSet, $unset, ...directUpdates } = updateData;
 
@@ -2061,6 +2067,11 @@ export function createAgentMethods(
         ? { tenantId: tenantId ?? null }
         : { _id: { $in: accessibleIds } }),
     };
+    if (baseQuery.is_official === true) {
+      delete baseQuery.is_official;
+      const existingAnd = Array.isArray(baseQuery.$and) ? baseQuery.$and : [];
+      baseQuery.$and = [...existingAnd, { $or: [{ is_official: true }, { is_certified: true }] }];
+    }
 
     // `.find()` casts query values against the schema automatically; the aggregate
     // branch below builds a raw `$match` stage, which does not. Cast unconditionally
@@ -2082,6 +2093,7 @@ export function createAgentMethods(
       category: 1,
       support_contact: 1,
       is_promoted: 1,
+      is_official: 1,
       is_certified: 1,
     };
 
@@ -2107,6 +2119,8 @@ export function createAgentMethods(
     }
 
     const finalizeAgent = (agent: Record<string, unknown>): Record<string, unknown> => {
+      agent.is_official = agent.is_official === true || agent.is_certified === true;
+      delete agent.is_certified;
       if (includeExecutionConfig) {
         agent.tools =
           Array.isArray(agent.tools) && agent.tools.includes(EToolResources.execute_code)
@@ -2670,6 +2684,7 @@ export function createAgentMethods(
     delete revertToVersion.versions;
     delete revertToVersion.author;
     delete revertToVersion.updatedBy;
+    delete revertToVersion.is_official;
     delete revertToVersion.is_certified;
 
     /** Version snapshots can predate skill deletions; restoring one verbatim
@@ -2738,23 +2753,23 @@ export function createAgentMethods(
   }
 
   /**
-   * Sets central certification without creating a version, so history never carries it and a
+   * Sets central official status without creating a version, so history never carries it and a
    * revert cannot restore it. Returns `null` when no agent matches the id in the current tenant.
    */
-  async function setAgentCertification(
+  async function setAgentOfficialStatus(
     id: string,
-    isCertified: boolean,
-  ): Promise<{ id: string; is_certified: boolean } | null> {
+    isOfficial: boolean,
+  ): Promise<{ id: string; is_official: boolean } | null> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
     const updated = await Agent.findOneAndUpdate(
       { id },
-      { $set: { is_certified: isCertified } },
-      { new: true, projection: { id: 1, is_certified: 1 } },
+      { $set: { is_official: isOfficial, is_certified: isOfficial } },
+      { new: true, projection: { id: 1, is_official: 1 } },
     ).lean<IAgent>();
     if (!updated) {
       return null;
     }
-    return { id: updated.id, is_certified: updated.is_certified === true };
+    return { id: updated.id, is_official: updated.is_official === true };
   }
 
   /**
@@ -2805,7 +2820,7 @@ export function createAgentMethods(
     deleteAgent,
     deleteUserAgents,
     revertAgentVersion,
-    setAgentCertification,
+    setAgentOfficialStatus,
     countPromotedAgents,
     addAgentResourceFile,
     getListAgentsByAccess,

@@ -136,7 +136,7 @@ export const DynamicQueryKeys = {
 } as const;
 
 export enum MutationKeys {
-  setAgentCertification = 'setAgentCertification',
+  setAgentOfficialStatus = 'setAgentOfficialStatus',
   approveCodeSetup = 'approveCodeSetup',
   denyCodeSetup = 'denyCodeSetup',
   resetToolApprovalGrants = 'resetToolApprovalGrants',

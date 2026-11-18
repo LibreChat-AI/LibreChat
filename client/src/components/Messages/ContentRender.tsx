@@ -19,12 +19,12 @@ import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source'
 import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
 import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
+import OfficialAgentIcon from '~/components/Agents/OfficialAgentIcon';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
-import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import { showThinkingAtom } from '~/store/showThinking';
 import SubRow from '~/components/Chat/Messages/SubRow';
 import { AuthorContext } from '~/Providers';
@@ -174,8 +174,8 @@ const ContentRender = memo(function ContentRender({
       icon={author.icon}
       label={author.label}
       labelAdornment={
-        !msg.isCreatedByUser && agent?.is_certified === true && !hasConfiguredSender ? (
-          <CertifiedIcon />
+        !msg.isCreatedByUser && agent?.is_official === true && !hasConfiguredSender ? (
+          <OfficialAgentIcon />
         ) : undefined
       }
       hoverLabel={getHeaderHoverLabel(

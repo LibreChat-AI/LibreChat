@@ -6,10 +6,10 @@ import { BirthdayIcon, TooltipAnchor, SplitText, useRemScale } from '@librechat/
 import { useChatContext, useAgentsMapContext, useAssistantsMapContext } from '~/Providers';
 import Description, { isHtmlDescription } from '~/components/ui/Description';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import OfficialAgentIcon from '~/components/Agents/OfficialAgentIcon';
 import { getIconEndpoint, getEntity, getModelSpec } from '~/utils';
 import { useLocalize, useAuthContext, useGreeting } from '~/hooks';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import CertifiedIcon from '~/components/Agents/CertifiedIcon';
 import AgentContact from '~/components/Agents/AgentContact';
 import ConvoIcon from '~/components/Endpoints/ConvoIcon';
 
@@ -177,7 +177,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
           </div>
           {name ? (
             <div
-              className={`flex items-center p-2 ${getTextSizeClass(name)} ${selectedAgent?.is_certified === true ? 'flex-row gap-2' : 'flex-col gap-0'}`}
+              className={`flex items-center p-2 ${getTextSizeClass(name)} ${selectedAgent?.is_official === true ? 'flex-row gap-2' : 'flex-col gap-0'}`}
             >
               <SplitText
                 key={`split-text-${name}`}
@@ -192,7 +192,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
                 rootMargin="0px"
                 onLineCountChange={handleLineCountChange}
               />
-              {selectedAgent?.is_certified === true && <CertifiedIcon />}
+              {selectedAgent?.is_official === true && <OfficialAgentIcon />}
             </div>
           ) : (
             <SplitText

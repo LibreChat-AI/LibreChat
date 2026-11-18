@@ -764,11 +764,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           model: 'gpt-4',
           avatar: { filepath: 'avatars/managed.png', source: 'local' },
           conversation_starters: ['Help me get started'],
-          is_certified: true,
+          is_official: true,
         });
 
       expect(createdResponse.status).toBe(201);
-      expect(createdResponse.body.is_certified).toBe(false);
+      expect(createdResponse.body.is_official).toBe(false);
       expect(createdResponse.body).toEqual(
         expect.objectContaining({
           id: expect.stringMatching(/^agent_/),
@@ -843,7 +843,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         () =>
           Agent.updateOne(
             { id: createdResponse.body.id, tenantId },
-            { $set: { is_certified: true } },
+            { $set: { is_official: true } },
           ),
       );
       const updatedResponse = await request(app)
@@ -853,7 +853,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           name: 'Updated Managed Agent',
           avatar: null,
           conversation_starters: [],
-          is_certified: false,
+          is_official: false,
         });
 
       expect(updatedResponse.status).toBe(200);
@@ -862,7 +862,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           id: createdResponse.body.id,
           name: 'Updated Managed Agent',
           description: 'Description that remains unchanged',
-          is_certified: true,
+          is_official: true,
           avatar: null,
           conversation_starters: [],
           version: 2,
@@ -889,7 +889,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(created.tenantId).toBe(tenantId);
       expect(created.author.toString()).toBe(userId);
       expect(created.name).toBe('Updated Managed Agent');
-      expect(created.is_certified).toBe(true);
+      expect(created.is_official).toBe(true);
       expect(created.description).toBe('Description that remains unchanged');
       expect(created.avatar).toBeNull();
       expect(created.conversation_starters).toEqual([]);
@@ -1492,7 +1492,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         provider: 'azureOpenAI',
         model: 'gpt-5.5',
         author: mockReq.user.id,
-        is_certified: true,
+        is_official: true,
         model_parameters: {
           useResponsesApi: true,
           temperature: 0.7,
@@ -1507,7 +1507,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.status).toHaveBeenCalledWith(200);
       const response = mockRes.json.mock.calls[0][0];
       expect(response.model_parameters).toEqual({ useResponsesApi: true });
-      expect(response.is_certified).toBe(true);
+      expect(response.is_official).toBe(true);
       expect(response.model_parameters.temperature).toBeUndefined();
       expect(response.model_parameters.apiKey).toBeUndefined();
     });
@@ -3598,7 +3598,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       listSpy.mockRestore();
     });
 
-    test('filters the list to certified agents alongside category and search', async () => {
+    test('filters the list to official agents alongside category and search', async () => {
       const listSpy = jest.spyOn(db, 'getListAgentsByAccess').mockResolvedValue({
         object: 'list',
         data: [],
@@ -3610,7 +3610,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       mockReq.query = {
         category: 'productivity',
         search: 'support',
-        is_certified: 'true',
+        is_official: 'true',
       };
 
       try {
@@ -3620,7 +3620,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           expect.objectContaining({
             otherParams: expect.objectContaining({
               category: 'productivity',
-              is_certified: true,
+              is_official: true,
               $or: expect.any(Array),
             }),
           }),
@@ -3928,7 +3928,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           'description',
           'edges',
           'id',
-          'is_certified',
+          'is_official',
           'isEditable',
           'is_promoted',
           'name',
@@ -3946,7 +3946,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           author: userA.toString(),
           category: 'general',
           is_promoted: true,
-          is_certified: false,
+          is_official: false,
           tools: ['execute_code'],
           edges: [{ from: agentA1.id, to: agentA2.id }],
           subagents: { enabled: true, agent_ids: [agentA2.id] },
@@ -6363,14 +6363,14 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
     });
 
     describe('duplicateAgentHandler', () => {
-      test('does not copy certification to the duplicate', async () => {
+      test('does not copy official status to the duplicate', async () => {
         const source = await Agent.create({
           id: `agent_${nanoid()}`,
           author: mockReq.user.id,
-          name: 'Certified source',
+          name: 'Official source',
           provider: 'openai',
           model: 'gpt-4',
-          is_certified: true,
+          is_official: true,
         });
 
         mockReq.params = { id: source.id };
@@ -6382,8 +6382,8 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           Agent.findOne({ id: source.id }).lean(),
           Agent.findOne({ id: duplicateId }).lean(),
         ]);
-        expect(original.is_certified).toBe(true);
-        expect(duplicate.is_certified).toBe(false);
+        expect(original.is_official).toBe(true);
+        expect(duplicate.is_official).toBe(false);
       });
 
       test('copies the link verbatim, with no extra ACL check on the write', async () => {

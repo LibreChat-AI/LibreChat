@@ -16,9 +16,9 @@ jest.mock('~/server/middleware', () => ({
   },
 }));
 
-const enabledConfig = { interfaceConfig: { agentCertification: { enabled: true } } };
+const enabledConfig = { interfaceConfig: { agentOfficialStatus: { enabled: true } } };
 
-describe('PUT /agents/:id/certification', () => {
+describe('PUT /agents/:id/official-status', () => {
   let mongoServer;
   let db;
   let Agent;
@@ -80,54 +80,54 @@ describe('PUT /agents/:id/certification', () => {
     const agent = await createAgent();
 
     const response = await request(app)
-      .put(`/agents/${agent.id}/certification`)
-      .send({ is_certified: true });
+      .put(`/agents/${agent.id}/official-status`)
+      .send({ is_official: true });
 
     expect(response.status).toBe(403);
-    expect((await Agent.findOne({ id: agent.id }).lean()).is_certified).toBe(false);
+    expect((await Agent.findOne({ id: agent.id }).lean()).is_official).toBe(false);
   });
 
-  it('lets a manage:agents holder certify and uncertify without writing a version', async () => {
+  it('lets a manage:agents holder mark official and unmark official without writing a version', async () => {
     await grantManageAgents();
     const agent = await createAgent();
 
-    const certified = await request(app)
-      .put(`/agents/${agent.id}/certification`)
-      .send({ is_certified: true });
-    expect(certified.status).toBe(200);
-    expect(certified.body).toEqual({ id: agent.id, is_certified: true });
+    const official = await request(app)
+      .put(`/agents/${agent.id}/official-status`)
+      .send({ is_official: true });
+    expect(official.status).toBe(200);
+    expect(official.body).toEqual({ id: agent.id, is_official: true });
 
-    const uncertified = await request(app)
-      .put(`/agents/${agent.id}/certification`)
-      .send({ is_certified: false });
-    expect(uncertified.body).toEqual({ id: agent.id, is_certified: false });
+    const notOfficial = await request(app)
+      .put(`/agents/${agent.id}/official-status`)
+      .send({ is_official: false });
+    expect(notOfficial.body).toEqual({ id: agent.id, is_official: false });
 
-    /** Seeded with `Agent.create`, so it starts with no history; certifying must add none. */
+    /** Seeded with `Agent.create`, so it starts with no history; markingOfficial must add none. */
     const stored = await Agent.findOne({ id: agent.id }).lean();
-    expect(stored.is_certified).toBe(false);
+    expect(stored.is_official).toBe(false);
     expect(stored.versions ?? []).toHaveLength(0);
   });
 
-  it('is unavailable while certification is disabled, even to a manager', async () => {
+  it('is unavailable while official status is disabled, even to a manager', async () => {
     await grantManageAgents();
     mockConfig = { interfaceConfig: {} };
     const agent = await createAgent();
 
     const response = await request(app)
-      .put(`/agents/${agent.id}/certification`)
-      .send({ is_certified: true });
+      .put(`/agents/${agent.id}/official-status`)
+      .send({ is_official: true });
 
     expect(response.status).toBe(404);
-    expect(response.body).toEqual({ error: 'agent_certification_disabled' });
-    expect((await Agent.findOne({ id: agent.id }).lean()).is_certified).toBe(false);
+    expect(response.body).toEqual({ error: 'agent_official_status_disabled' });
+    expect((await Agent.findOne({ id: agent.id }).lean()).is_official).toBe(false);
   });
 
   it('reports an unknown agent as not found', async () => {
     await grantManageAgents();
 
     const response = await request(app)
-      .put('/agents/agent_missing/certification')
-      .send({ is_certified: true });
+      .put('/agents/agent_missing/official-status')
+      .send({ is_official: true });
 
     expect(response.status).toBe(404);
     expect(response.body).toEqual({ error: 'agent_not_found' });

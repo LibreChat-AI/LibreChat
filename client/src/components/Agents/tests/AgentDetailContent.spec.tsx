@@ -23,7 +23,7 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
-  useAgentCertification: () => ({ enabled: true, description: 'Official agent', canManage: false }),
+  useAgentOfficialStatus: () => ({ enabled: true, description: 'Official agent', canManage: false }),
   useFavorites: () => ({
     isFavoriteAgent: () => mockIsFavorite,
     toggleFavoriteAgent: mockToggleFavoriteAgent,
@@ -44,7 +44,7 @@ jest.mock('~/hooks', () => ({
         'Choose a prompt to open a new chat. You can edit it before sending.',
       com_agents_start_chat: 'Start chat',
       com_ui_agent: 'Agent',
-      com_ui_certified_agent: 'Official agent',
+      com_ui_official_agent: 'Official agent',
       com_ui_close: 'Close',
       com_ui_pin: 'Pin',
       com_ui_unpin: 'Unpin',
@@ -220,8 +220,8 @@ describe('AgentDetailContent', () => {
     expect(screen.queryByText('Contact:')).not.toBeInTheDocument();
   });
 
-  it('shows the certification badge in the detail title', () => {
-    renderDetail({ ...baseAgent, is_certified: true });
+  it('shows the official status badge in the detail title', () => {
+    renderDetail({ ...baseAgent, is_official: true });
 
     expect(screen.getByRole('img', { name: 'Official agent' })).toBeInTheDocument();
   });

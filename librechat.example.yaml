@@ -342,11 +342,11 @@ interface:
     roles: true
   marketplace:
     use: false
-  # Central agent certification (default: off). When enabled, certified agents show a badge
-  # and the marketplace gains a Certified filter; users with the `manage:agents` capability
-  # can certify or uncertify an agent from the agent builder. `description` replaces the
-  # badge's "Certified" tooltip, e.g. to say what certification means in your organization.
-  # agentCertification:
+  # Central agent official status (default: off). When enabled, official agents show a badge
+  # and the marketplace gains an Official filter; users with the `manage:agents` capability
+  # can mark or unmark an agent as official from the agent builder. `description` replaces the
+  # badge's "Official" tooltip, e.g. to say what official status means in your organization.
+  # agentOfficialStatus:
   #   enabled: true
   #   description: 'Reviewed by the AI governance board for security and data handling.'
   fileCitations: true

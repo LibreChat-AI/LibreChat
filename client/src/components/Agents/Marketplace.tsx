@@ -2,13 +2,13 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { useSearchParams, useParams, useNavigate } from 'react-router-dom';
 import type t from 'librechat-data-provider';
-import { useAgentCertification, useDocumentTitle, useHasAccess, useLocalize } from '~/hooks';
+import { useAgentOfficialStatus, useDocumentTitle, useHasAccess, useLocalize } from '~/hooks';
 import { useGetEndpointsQuery, useGetAgentCategoriesQuery } from '~/data-provider';
 import SortDropdown, { SORT_OPTIONS, DEFAULT_SORT_OPTION } from './SortDropdown';
 import MarketplaceAdminSettings from './MarketplaceAdminSettings';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
-import CertifiedFilterToggle from './CertifiedFilterToggle';
+import OfficialAgentsFilter from './OfficialAgentsFilter';
 import { SidePanelGroup } from '~/components/SidePanel';
 import MineFilterToggle from './MineFilterToggle';
 import CategoryTabs from './CategoryTabs';
@@ -34,9 +34,9 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
       : DEFAULT_SORT_OPTION;
   }, [searchParams]);
   const mine: 0 | 1 = searchParams.get('mine') === '1' ? 1 : 0;
-  const { enabled: certificationEnabled } = useAgentCertification();
-  /** A shared `?is_certified=true` link keeps nothing filtered once the feature is off. */
-  const certified = certificationEnabled && searchParams.get('is_certified') === 'true';
+  const { enabled: officialStatusEnabled } = useAgentOfficialStatus();
+  /** A shared `?is_official=true` link keeps nothing filtered once the feature is off. */
+  const official = officialStatusEnabled && searchParams.get('is_official') === 'true';
 
   useDocumentTitle(`${localize('com_agents_marketplace')} | LibreChat`);
   useGetEndpointsQuery();
@@ -112,12 +112,12 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
     setSearchParams(params);
   };
 
-  const handleCertifiedChange = (checked: boolean) => {
+  const handleOfficialChange = (checked: boolean) => {
     const params = new URLSearchParams(searchParams);
     if (checked) {
-      params.set('is_certified', 'true');
+      params.set('is_official', 'true');
     } else {
-      params.delete('is_certified');
+      params.delete('is_official');
     }
     setSearchParams(params);
   };
@@ -166,10 +166,10 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
                 isLoading={categoriesQuery.isLoading}
                 onChange={handleTabChange}
                 leadingContent={
-                  certificationEnabled && (
-                    <CertifiedFilterToggle
-                      checked={certified}
-                      onCheckedChange={handleCertifiedChange}
+                  officialStatusEnabled && (
+                    <OfficialAgentsFilter
+                      checked={official}
+                      onCheckedChange={handleOfficialChange}
                     />
                   )
                 }
@@ -196,7 +196,7 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
               scrollElementRef={scrollContainerRef}
               sort={sort}
               mine={mine}
-              certified={certified}
+              official={official}
             />
           </div>
         </main>

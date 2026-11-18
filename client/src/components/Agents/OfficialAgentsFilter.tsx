@@ -1,15 +1,15 @@
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
-interface CertifiedFilterToggleProps {
+interface OfficialAgentsFilterProps {
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
 }
 
 /** Styled as a sibling of the category pills so the filter row reads as one set. */
-function CertifiedFilterToggle({ checked, onCheckedChange }: CertifiedFilterToggleProps) {
+function OfficialAgentsFilter({ checked, onCheckedChange }: OfficialAgentsFilterProps) {
   const localize = useLocalize();
-  const label = localize('com_agents_filter_certified');
+  const label = localize('com_agents_filter_official_agents');
 
   return (
     <button
@@ -29,4 +29,4 @@ function CertifiedFilterToggle({ checked, onCheckedChange }: CertifiedFilterTogg
   );
 }
 
-export default CertifiedFilterToggle;
+export default OfficialAgentsFilter;

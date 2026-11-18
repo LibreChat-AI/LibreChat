@@ -64,7 +64,7 @@ let updateAgentAvatar: AgentMethods['updateAgentAvatar'];
 let deleteAgent: AgentMethods['deleteAgent'];
 let deleteUserAgents: AgentMethods['deleteUserAgents'];
 let revertAgentVersion: AgentMethods['revertAgentVersion'];
-let setAgentCertification: AgentMethods['setAgentCertification'];
+let setAgentOfficialStatus: AgentMethods['setAgentOfficialStatus'];
 let addAgentResourceFile: AgentMethods['addAgentResourceFile'];
 let removeAgentResourceFiles: AgentMethods['removeAgentResourceFiles'];
 let removeAgentResourceFilesFromAllAgents: AgentMethods['removeAgentResourceFilesFromAllAgents'];
@@ -119,7 +119,7 @@ beforeAll(async () => {
   deleteAgent = methods.deleteAgent;
   deleteUserAgents = methods.deleteUserAgents;
   revertAgentVersion = methods.revertAgentVersion;
-  setAgentCertification = methods.setAgentCertification;
+  setAgentOfficialStatus = methods.setAgentOfficialStatus;
   addAgentResourceFile = methods.addAgentResourceFile;
   removeAgentResourceFiles = methods.removeAgentResourceFiles;
   removeAgentResourceFilesFromAllAgents = methods.removeAgentResourceFilesFromAllAgents;
@@ -4927,25 +4927,25 @@ describe('Agent Methods', () => {
       expect(revertedAgent.author.toString()).toBe(authorId.toString());
     });
 
-    test('reverting a version does not change certification', async () => {
+    test('reverting a version does not change official status', async () => {
       const agentId = `agent_${uuidv4()}`;
       const agent = await createAgent({
         id: agentId,
-        name: 'Certified agent',
+        name: 'Official agent',
         provider: 'test',
         model: 'test-model',
         author: new mongoose.Types.ObjectId(),
       });
-      await Agent.updateOne({ _id: agent._id }, { $set: { is_certified: true } });
+      await Agent.updateOne({ _id: agent._id }, { $set: { is_official: true } });
 
       const updated = await updateAgent({ id: agentId }, { name: 'Updated name' });
-      expect(updated?.versions?.[1]).not.toHaveProperty('is_certified');
+      expect(updated?.versions?.[1]).not.toHaveProperty('is_official');
 
       const revertedAgent = await revertAgentVersion({ id: agentId }, 0);
-      expect(revertedAgent.is_certified).toBe(true);
+      expect(revertedAgent.is_official).toBe(true);
     });
 
-    test('uncertifying then restoring a version saved while certified keeps it uncertified', async () => {
+    test('unmarking an agent then restoring a version saved while official keeps it not official', async () => {
       const agentId = `agent_${uuidv4()}`;
       await createAgent({
         id: agentId,
@@ -4953,29 +4953,30 @@ describe('Agent Methods', () => {
         provider: 'test',
         model: 'test-model',
         author: new mongoose.Types.ObjectId(),
-        is_certified: true,
+        is_official: true,
       });
-      await updateAgent({ id: agentId }, { name: 'Edited while certified' });
+      await updateAgent({ id: agentId }, { name: 'Edited while official' });
       await updateAgent({ id: agentId }, { name: 'Edited again' });
 
-      const uncertified = await setAgentCertification(agentId, false);
-      expect(uncertified).toEqual({ id: agentId, is_certified: false });
+      const unmarked = await setAgentOfficialStatus(agentId, false);
+      expect(unmarked).toEqual({ id: agentId, is_official: false });
 
       const history = await getAgentVersions({ id: agentId });
       expect(history).toHaveLength(3);
       for (const version of history ?? []) {
-        expect(version).not.toHaveProperty('is_certified');
+        expect(version).not.toHaveProperty('is_official');
       }
 
       const restored = await revertAgentVersion({ id: agentId }, 1);
-      expect(restored.name).toBe('Edited while certified');
-      expect(restored.is_certified).toBe(false);
+      expect(restored.name).toBe('Edited while official');
+      expect(restored.is_official).toBe(false);
 
       const stored = await Agent.findOne({ id: agentId }).lean();
+      expect(stored?.is_official).toBe(false);
       expect(stored?.is_certified).toBe(false);
     });
 
-    test('setAgentCertification writes no version and reports a missing agent as null', async () => {
+    test('setAgentOfficialStatus writes no version and reports a missing agent as null', async () => {
       const agentId = `agent_${uuidv4()}`;
       await createAgent({
         id: agentId,
@@ -4985,12 +4986,12 @@ describe('Agent Methods', () => {
         author: new mongoose.Types.ObjectId(),
       });
 
-      await expect(setAgentCertification(agentId, true)).resolves.toEqual({
+      await expect(setAgentOfficialStatus(agentId, true)).resolves.toEqual({
         id: agentId,
-        is_certified: true,
+        is_official: true,
       });
       expect(await getAgentVersions({ id: agentId })).toHaveLength(1);
-      await expect(setAgentCertification(`agent_${uuidv4()}`, true)).resolves.toBeNull();
+      await expect(setAgentOfficialStatus(`agent_${uuidv4()}`, true)).resolves.toBeNull();
     });
 
     test('should handle action-related updates with getActions error', async () => {
@@ -5477,16 +5478,17 @@ describe('Support Contact Field', () => {
       ).toEqual([agentA1.id, agentA2.id, agentA3.id].sort());
     });
 
-    test('returns and filters the certified flag in the list projection', async () => {
+    test('returns and filters the official flag in the list projection', async () => {
       await Agent.collection.updateOne({ _id: agentA2._id }, { $set: { is_certified: true } });
 
       const result = await getListAgentsByAccess({
         accessibleIds: null,
-        otherParams: { is_certified: true },
+        otherParams: { is_official: true },
       });
 
       expect(result.data.map((agent) => agent.id)).toEqual([agentA2.id]);
-      expect(result.data[0].is_certified).toBe(true);
+      expect(result.data[0].is_official).toBe(true);
+      expect(result.data[0]).not.toHaveProperty('is_certified');
     });
 
     test('should return empty list when user has no accessible agents (empty accessibleIds)', async () => {

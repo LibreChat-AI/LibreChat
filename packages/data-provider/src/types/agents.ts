@@ -1162,7 +1162,7 @@ export type Agent = {
   category?: string;
   support_contact?: SupportContact;
   owner_contact?: AgentOwnerContact;
-  is_certified?: boolean;
+  is_official?: boolean;
   /** Per-tool configuration options (deferred loading, allowed callers, etc.) */
   tool_options?: AgentToolOptions;
   /** Attached action registrations, each `${encodedDomain}${actionDelimiter}${action_id}` */
@@ -1271,14 +1271,14 @@ export type AgentUpdateParams = {
  */
 export type AgentSortOption = 'newest' | 'oldest' | 'popular' | 'author';
 
-export type AgentCertificationParams = {
+export type AgentOfficialStatusParams = {
   agent_id: string;
-  is_certified: boolean;
+  is_official: boolean;
 };
 
-export type AgentCertificationResponse = {
+export type AgentOfficialStatusResponse = {
   id: string;
-  is_certified: boolean;
+  is_official: boolean;
 };
 
 export type AgentListParams = {
@@ -1288,7 +1288,7 @@ export type AgentListParams = {
   search?: string;
   cursor?: string;
   promoted?: 0 | 1;
-  is_certified?: true;
+  is_official?: true;
   sort?: AgentSortOption;
   /** When 1, restrict results to agents authored by the requesting user. */
   mine?: 0 | 1;

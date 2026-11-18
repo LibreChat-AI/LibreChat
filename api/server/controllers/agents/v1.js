@@ -977,7 +977,7 @@ const getAgentHandler = async (req, res, expandProperties = false) => {
         provider: agent.provider,
         model: agent.model,
         model_parameters: getSafeModelParameters(agent.model_parameters),
-        is_certified: agent.is_certified === true,
+        is_official: agent.is_official === true,
         isPublic: agent.isPublic,
         version: agent.version,
         // Safe metadata
@@ -1453,6 +1453,7 @@ const duplicateAgentHandler = async (req, res) => {
       updatedAt: _updatedAt,
       tool_resources: _tool_resources = {},
       versions: _versions,
+      is_official: _is_official,
       is_certified: _is_certified,
       __v: _v,
       ...cloneData
@@ -1749,13 +1750,21 @@ const deleteAgentHandler = async (req, res) => {
  *   serving its most-recently-edited order; the marketplace asks for 'newest' explicitly.
  * @param {string} [req.query.mine] - '1' to restrict results to agents authored by the
  *   caller; any other value is ignored.
- * @param {string} [req.query.is_certified] - 'true' to restrict results to certified agents.
+ * @param {string} [req.query.is_official] - 'true' to restrict results to official agents.
  * @returns {Promise<AgentListResponse>} 200 - success response - application/json
  */
 const getListAgentsHandler = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { category, search, limit = 100, cursor, promoted, is_certified } = req.query;
+    const {
+      category,
+      search,
+      limit = 100,
+      cursor,
+      promoted,
+      is_official,
+      is_certified,
+    } = req.query;
     const listQuery = resolveMarketplaceListQuery(req.query);
     const sortMode = listQuery.sort;
     let requiredPermission = req.query.requiredPermission;
@@ -1783,8 +1792,8 @@ const getListAgentsHandler = async (req, res) => {
       filter.is_promoted = { $ne: true };
     }
 
-    if (is_certified === 'true') {
-      filter.is_certified = true;
+    if (is_official === 'true') {
+      filter.is_official = true;
     }
 
     // "Only my agents": the contribution comes from `marketplaceMineFilter`, which owns

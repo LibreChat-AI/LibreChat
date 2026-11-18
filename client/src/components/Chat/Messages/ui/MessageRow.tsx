@@ -13,7 +13,7 @@ type MessageRowProps = {
   message?: TMessage;
   label: string;
   hoverLabel?: string | null;
-  /** Rendered right after the author name, e.g. a certified agent's badge. */
+  /** Rendered right after the author name, e.g. a official agent's badge. */
   labelAdornment?: ReactNode;
   icon: ReactNode;
   children: ReactNode;
