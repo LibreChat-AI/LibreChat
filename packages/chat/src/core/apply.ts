@@ -4,11 +4,13 @@ import type {
   TMessage,
   ChatEvent,
   ChatFrame,
+  TAttachment,
   ChatSyncFrame,
   ChatFinalFrame,
   EventSubmission,
   ChatCreatedFrame,
 } from 'librechat-data-provider';
+import type { ResumableUsage, ResumableSteers, ResumableEvents } from './resumable/host';
 import type { StepEvent, StepEffect, StepContext } from './reducer';
 import type { Placement, PlacementContext } from './parts/place';
 import type { ChatEventContext } from './chat';
@@ -46,6 +48,20 @@ export type EventApplierInit = {
   schedule?: (flush: () => void) => () => void;
   /** Live status a step reports beside the list: sandbox start, nested subagents, announcements. */
   onEffect?: (effect: EventApplierEffect) => void;
+  /**
+   * What a stream changes beside the message list, in the hands main chat's own stream session
+   * puts it in: its usage handlers, its attachment collector, its title handler and its steer
+   * chips. Each is called for the frames, live or carried by a snapshot, that main chat calls it
+   * for, so a `Chat` given main chat's handlers keeps the state main chat keeps. One left out is
+   * simply not kept; the frame still reaches `onEvent`.
+   */
+  usage?: ResumableUsage;
+  onAttachment?: ResumableEvents['attachmentHandler'];
+  onTitle?: ResumableEvents['titleHandler'];
+  steers?: Pick<
+    ResumableSteers,
+    'resolve' | 'markLiveApplied' | 'update' | 'seed' | 'settleApplied'
+  >;
 };
 
 export type EventApplier = {
@@ -77,6 +93,25 @@ const sideTypes = new Set<ChatEvent['type']>([
 ]);
 
 const isSideFrame = (event: ChatEvent): event is SideFrame => sideTypes.has(event.type);
+
+/** A frame that changes state kept beside the message list, and writes no message. */
+type BesideFrame = Extract<
+  ChatEvent,
+  { type: 'attachment' | 'title' | 'context_usage' | 'token_usage' | 'steer_updated' }
+>;
+
+const besideTypes = new Set<ChatEvent['type']>([
+  'attachment',
+  'title',
+  'context_usage',
+  'token_usage',
+  'steer_updated',
+]);
+
+const isBesideFrame = (event: ChatEvent): event is BesideFrame => besideTypes.has(event.type);
+
+const isOutputDelta = (event: StepEvent): boolean =>
+  event.event === StepEvents.ON_MESSAGE_DELTA || event.event === StepEvents.ON_REASONING_DELTA;
 
 /** How the turn's list differs from the index space the server claims; see `PlacementContext`. */
 const placementContext = (submission: EventSubmission): PlacementContext => {
@@ -203,7 +238,8 @@ function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventS
  *
  * Stateful, one per `Chat`: it keeps the streaming copy of each response between events. Frames
  * that describe something beside the message list (usage, titles, attachments, the composer's
- * steer chips) are left to `onEvent`.
+ * steer chips) go to the handlers the caller supplies for them, at the points main chat's
+ * stream session calls its own.
  */
 export function createEventApplier(init: EventApplierInit = {}): EventApplier {
   const stream = createStreamState();
@@ -213,6 +249,10 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
   let early: StepEvent[] = [];
   /** Side frames whose target has not been drawn yet, oldest first. */
   let waiting: SideFrame[] = [];
+  /** Frames for the state beside the list that arrived before a frame named their turn. */
+  let aside: BesideFrame[] = [];
+  /** The chip ids a steer's applied frame settled for the first time, until its part is drawn. */
+  const settled = new WeakMap<SideFrame, string[]>();
   let held: HeldFlush | undefined;
   let cancel: (() => void) | undefined;
 
@@ -241,6 +281,7 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     submission = undefined;
     early = [];
     waiting = [];
+    aside = [];
   };
 
   const settle = (effects: StepEffect[]): void => {
@@ -269,6 +310,13 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
       return false;
     }
     if (placement.changed) {
+      if (frame.type === 'steer_applied') {
+        /** Marked as its part is drawn, so the part plays its draw-in once. */
+        const drawn = frame.data.part?.steerId ?? frame.data.steerId;
+        if (settled.get(frame)?.includes(drawn) === true) {
+          init.steers?.markLiveApplied(drawn);
+        }
+      }
       const next = [...messages];
       next[placement.index] = placement.message;
       context.write(next);
@@ -302,9 +350,50 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
    * placing ahead of them would lose them.
    */
   const side = (frame: SideFrame): void => {
+    if (frame.type === 'steer_applied' && init.steers != null) {
+      /** The server's word that the steer was taken settles its chip at once; drawing the part
+       *  can wait for its target, and a chip left pending meanwhile could be sent again. */
+      const { conversationId, steerId, clientSteerId, part } = frame.data;
+      settled.set(
+        frame,
+        init.steers.resolve(
+          conversationId ?? submission?.conversation?.conversationId ?? '',
+          steerId,
+          clientSteerId,
+          part?.quotes,
+        ) ?? [],
+      );
+    }
     land();
     if (!place(frame)) {
       waiting.push(frame);
+    }
+  };
+
+  /** Applies a frame for the state beside the list, or holds it until its turn is named. */
+  const beside = (frame: BesideFrame): void => {
+    if (frame.type === 'title') {
+      init.onTitle?.(frame.data);
+    } else if (frame.type === 'steer_updated') {
+      init.steers?.update(frame.data);
+    } else if (submission == null) {
+      aside.push(frame);
+    } else if (frame.type === 'attachment') {
+      init.onAttachment?.({ data: frame.data as TAttachment, submission });
+    } else if (frame.type === 'context_usage') {
+      init.usage?.contextHandler(frame.data, submission);
+    } else {
+      init.usage?.usageHandler(frame.data, submission);
+    }
+  };
+
+  /** A turn was just named: its usage is bound to it, and what waited on it is applied. */
+  const named = (next: EventSubmission): void => {
+    init.usage?.bindResponse(next);
+    const queued = aside;
+    aside = [];
+    for (const frame of queued) {
+      beside(frame);
     }
   };
 
@@ -312,6 +401,10 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     if (submission == null || context == null) {
       early.push(event);
       return;
+    }
+    /** Streamed output feeds the live usage estimate, as main chat's dispatch feeds it. */
+    if (isOutputDelta(event)) {
+      init.usage?.tapStream(event.data as { delta?: { content?: unknown } }, submission);
     }
     settle(reduceStep(stream, event, stepContext(submission, context)));
   };
@@ -333,6 +426,10 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
         side(event);
         continue;
       }
+      if (isBesideFrame(event)) {
+        beside(event);
+        continue;
+      }
       if (event.type !== 'step') {
         continue;
       }
@@ -350,6 +447,7 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     }
     const steps = early;
     const sides = waiting;
+    const asides = aside;
     reset();
     const next = createdSubmission(data, ctx.messages);
     /** The list with the turn's message in it, which a regeneration's steps build on. */
@@ -358,6 +456,8 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     }
     submission = next;
     waiting = sides;
+    aside = asides;
+    named(next);
     for (const event of steps) {
       step(event);
     }
@@ -389,6 +489,14 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
       ) as EventSubmission);
     const next = buildResumeEventSubmission(previous, previous.userMessage, resumeState);
     submission = next;
+    named(next);
+    /** The run's usage so far, which a chat that joins late did not watch arrive: its totals,
+     *  its latest context reading, and an estimate of the output the snapshot already holds. */
+    init.usage?.backfillUsage(resumeState.collectedUsage ?? [], next);
+    if (resumeState.contextUsage != null) {
+      init.usage?.contextHandler(resumeState.contextUsage, next);
+    }
+    init.usage?.seedLiveFromContent(resumeState.aggregatedContent, next);
 
     for (const runStep of resumeState.runSteps ?? []) {
       step({ event: StepEvents.ON_RUN_STEP, data: runStep });
@@ -426,6 +534,15 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
       side({ type: 'pending_action', data: resumeState.pendingAction as Agents.PendingAction });
     }
 
+    /** The chips are the server's still-queued steers, less the ones the content already holds:
+     *  an empty list clears chips a steer applied while this chat was away would strand. */
+    const steerConversationId = next.conversation?.conversationId ?? conversationId;
+    init.steers?.seed(steerConversationId, resumeState.pendingSteers ?? []);
+    init.steers?.settleApplied(steerConversationId, resumeState.aggregatedContent);
+    if (resumeState.titleEvent != null) {
+      init.onTitle?.(resumeState.titleEvent);
+    }
+
     replay(resumeState.replayEvents, prompted);
     replay(data.pendingEvents);
   };
@@ -442,9 +559,14 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
       /** The final frame is authoritative; a held copy of the stream must not land on top of it. */
       drop();
       mergeFinalFrame(settledFinal(event.data, submission, ctx.messages), ctx);
+      if (submission != null) {
+        init.usage?.finalizeUsage(event.data, submission);
+      }
       reset();
     } else if (isSideFrame(event)) {
       side(event);
+    } else if (isBesideFrame(event)) {
+      beside(event);
     } else if (event.type === 'abort' || event.type === 'error') {
       /** A turn that stops here keeps every token it streamed. */
       land();
