@@ -3,6 +3,7 @@ import {
   PermissionTypes,
   PermissionBits,
   channelConfigSchema,
+  channelActorMatchesChannel,
 } from 'librechat-data-provider';
 import type {
   ChannelExternalIdentity,
@@ -63,6 +64,7 @@ export interface ChannelAuthority {
 export function createChannelAuthority(deps: ChannelAuthorityDependencies): ChannelAuthority {
   const defaults = channelConfigSchema.parse({});
   async function current(identity: ChannelExternalIdentity) {
+    if (identity.provider !== undefined) return null;
     const channel = await deps.channels.getAgentChannelMetadata(identity.channelId);
     return channel &&
       channel.type === 'slack' &&
@@ -114,12 +116,7 @@ export function createChannelAuthority(deps: ChannelAuthorityDependencies): Chan
     channel: AgentChannelRecord,
     actor: ChannelRunAdmission['actor'],
   ): Promise<ChannelRunPrincipal | null> {
-    if (
-      channel.type !== 'slack' ||
-      actor.teamId !== channel.slack?.teamId ||
-      actor.appId !== channel.slack?.appId
-    )
-      return null;
+    if (channel.type !== 'slack' || !channelActorMatchesChannel(channel, actor)) return null;
     const linked = await identity.resolve(channelExternalIdentity(channel, actor.externalUserId));
     if (!linked.ok) return null;
     return {

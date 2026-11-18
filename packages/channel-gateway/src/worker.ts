@@ -242,6 +242,7 @@ export class ChannelWorker {
     const bundle = await this.client.channel(signal);
     if (
       initial.revision !== bundle.channel.revision ||
+      initial.admission.actor.provider !== undefined ||
       initial.admission.actor.teamId !== bundle.channel.slack.teamId ||
       initial.admission.actor.appId !== bundle.channel.slack.appId
     )

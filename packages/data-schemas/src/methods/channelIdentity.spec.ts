@@ -69,6 +69,59 @@ afterAll(async () => {
   await mongo?.stop();
 });
 
+it('does not match a different provider through retained Slack identity fields', () =>
+  scope(async () => {
+    const record = identity();
+    await mongoose.models.ChannelIdentity.collection.insertOne({
+      ...record,
+      identity: {
+        ...record.identity,
+        provider: 'discord',
+        applicationId: '123456789012345678',
+        guildId: '234567890123456789',
+      },
+    });
+    expect(await storage.readChannelIdentity(record.identity)).toBeNull();
+  }));
+
+it('keeps Discord consent writes closed until Discord installation authority exists', () =>
+  scope(async () => {
+    const record: ChannelIdentityRecord = {
+      ...identity(),
+      identity: {
+        tenantId,
+        channelId: 'channel',
+        channelRevision: 'channel-one',
+        agentId: 'agent',
+        provider: 'discord',
+        applicationId: '123456789012345678',
+        guildId: '234567890123456789',
+        externalUserId: '345678901234567890',
+      },
+    };
+    expect(await storage.saveChannelIdentity(record, null)).toBe(false);
+    expect(await storage.readChannelIdentity(record.identity)).toBeNull();
+    const reply = { encryptedUrl: 'secret', expiresAtMs: 1000, attempt: record.ticketHash };
+    expect(await storage.saveChannelIdentityReply(record, reply)).toBe(false);
+    expect(await storage.claimChannelIdentityReply(record, reply)).toBe(false);
+    expect(await mongoose.models.ChannelIdentity.countDocuments({})).toBe(0);
+  }));
+
+it('rejects a persisted identity with mixed provider scope', () =>
+  scope(async () => {
+    const record = identity();
+    const model = new mongoose.models.ChannelIdentity({
+      ...record,
+      identity: {
+        ...record.identity,
+        provider: 'discord',
+        applicationId: '123456789012345678',
+        guildId: '234567890123456789',
+      },
+    });
+    await expect(model.validate()).rejects.toThrow('provider');
+  }));
+
 it('builds unique identity and ticket indexes before concurrent creation', () =>
   scope(async () => {
     const attempts = await Promise.all(

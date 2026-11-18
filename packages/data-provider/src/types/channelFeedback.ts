@@ -1,4 +1,4 @@
-import type { ChannelExternalIdentity } from './channelIdentity';
+import type { SlackChannelExternalIdentity } from './channelIdentity';
 
 export type ChannelRating = 'thumbsUp' | 'thumbsDown';
 
@@ -49,7 +49,7 @@ export interface ChannelFeedbackView {
   ignored: boolean;
 }
 
-export type ChannelFeedbackActor = Omit<ChannelExternalIdentity, 'externalUserId'>;
+export type ChannelFeedbackActor = Omit<SlackChannelExternalIdentity, 'externalUserId'>;
 
 export type ChannelFeedbackError =
   | 'invalid_reaction'

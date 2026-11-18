@@ -5,12 +5,13 @@ import { runAsSystem, tenantStorage } from '~/config/tenantContext';
 import { createModels } from '~/models';
 import { createMethods } from './index';
 
-createModels(mongoose);
-
 describe('conversation import cleanup methods', () => {
   let mongoServer: MongoMemoryServer;
 
   beforeAll(async () => {
+    // Created in the hook so that a failing model factory fails these tests instead of the whole
+    // suite at import, which mutation testing reports as a runtime error.
+    createModels(mongoose);
     mongoServer = await MongoMemoryServer.create();
     await mongoose.connect(mongoServer.getUri());
   });
