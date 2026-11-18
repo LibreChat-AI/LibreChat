@@ -50,7 +50,7 @@ const {
   assertModelBoundContent,
   reportLocatorTraversalFailure,
   hasModelBoundContentProtection,
-  createModelBoundChatModelCallback,
+  createApiModelCallbacks,
   isContentFilterError,
   getSafeErrorMetadata,
   getUserFacingProviderError,
@@ -1217,16 +1217,13 @@ const executeResponse = async (envelope, { req, res }) => {
           traceContext: { endpoint: EModelEndpoint.agents },
           tenantId: principal.tenantId,
           isTemporary: isTemporaryTurn(req),
-          modelCallbacks: [
-            createModelBoundChatModelCallback({
-              onTraversalFailure: reportLocatorTraversalFailure,
-              filters: appConfig?.filters,
-              legacyPii: appConfig?.messageFilter?.pii,
-              storedMessages: previousMessages,
-              resolvedFiles: modelBoundFiles,
-            }),
-            terminalRunError.modelCallback,
-          ],
+          modelCallbacks: createApiModelCallbacks({
+            appConfig,
+            terminalRunError,
+            onTraversalFailure: reportLocatorTraversalFailure,
+            storedMessages: previousMessages,
+            resolvedFiles: modelBoundFiles,
+          }),
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */
@@ -1457,16 +1454,13 @@ const executeResponse = async (envelope, { req, res }) => {
           traceContext: { endpoint: EModelEndpoint.agents },
           tenantId: principal.tenantId,
           isTemporary: isTemporaryTurn(req),
-          modelCallbacks: [
-            createModelBoundChatModelCallback({
-              onTraversalFailure: reportLocatorTraversalFailure,
-              filters: appConfig?.filters,
-              legacyPii: appConfig?.messageFilter?.pii,
-              storedMessages: previousMessages,
-              resolvedFiles: modelBoundFiles,
-            }),
-            terminalRunError.modelCallback,
-          ],
+          modelCallbacks: createApiModelCallbacks({
+            appConfig,
+            terminalRunError,
+            onTraversalFailure: reportLocatorTraversalFailure,
+            storedMessages: previousMessages,
+            resolvedFiles: modelBoundFiles,
+          }),
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */

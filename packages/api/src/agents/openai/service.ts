@@ -72,7 +72,6 @@ import {
 import {
   assertModelBoundContent,
   hasModelBoundContentProtection,
-  createModelBoundChatModelCallback,
 } from '~/middleware/modelBoundContent';
 import { contentFilterBlockResponse, isContentFilterError } from '~/middleware/contentFilter';
 import { contentFilterUninspectableResponse } from '~/protection/files';
@@ -83,6 +82,7 @@ import { collectReachableAgents } from '../traversal';
 import { resolveRecursionLimit } from '../config';
 import { getDynamicToolContexts } from '../hitl';
 import { createSafeUser } from '~/utils';
+import { createApiModelCallbacks } from '../policy';
 
 /**
  * Dependencies for the chat completion service
@@ -301,7 +301,7 @@ type CreateRunAppConfig = Pick<
 
 type CreateRunFn = (params: {
   sdkModelHost?: SdkModelHost;
-  modelCallbacks?: ReturnType<typeof createModelBoundChatModelCallback>[];
+  modelCallbacks?: ReturnType<typeof createApiModelCallbacks>;
   agents: unknown[];
   messages: unknown[];
   runId: string;
@@ -904,14 +904,11 @@ export async function createAgentChatCompletion(
       const safeUser: Record<string, unknown> = { ...createSafeUser(reqUser), id: userId };
       const run = await deps.createRun({
         sdkModelHost: deps.sdkModelHost,
-        modelCallbacks: [
-          createModelBoundChatModelCallback({
-            onTraversalFailure: deps.onTraversalFailure,
-            filters,
-            legacyPii,
-            resolvedFiles: modelBoundFiles,
-          }),
-        ],
+        modelCallbacks: createApiModelCallbacks({
+          appConfig: deps.appConfig,
+          onTraversalFailure: deps.onTraversalFailure,
+          resolvedFiles: modelBoundFiles,
+        }),
         agents: [initializedAgent],
         messages,
         runId: requestId,

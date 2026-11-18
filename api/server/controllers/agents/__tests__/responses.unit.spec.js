@@ -207,8 +207,8 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
-  createModelBoundChatModelCallback: (...args) =>
-    jest.requireActual('@librechat/api').createModelBoundChatModelCallback(...args),
+  createApiModelCallbacks: (...args) =>
+    jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
   captureResponseAccountingUsage: (...args) =>
     jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
   resolveResponseContinuation: (...args) =>
@@ -3177,7 +3177,7 @@ describe('createResponse controller', () => {
     ])(
       'enforces native input policy through the remote bridge: stream=%s blocked=%s continuation=%s',
       async (stream, blocked, continuation) => {
-        const { createRemotePolicyFixture } = require('./remotePolicy.helper');
+        const { createRemotePolicyFixture } = require('~/test/helpers/remotePolicy');
         const fixture = await createRemotePolicyFixture({ blocked });
         const api = require('@librechat/api');
         const actual = jest.requireActual('@librechat/api');
@@ -3252,7 +3252,7 @@ describe('createResponse controller', () => {
         const pending = new Promise((resolve) => {
           release = resolve;
         });
-        const { createRemotePolicyFixture } = require('./remotePolicy.helper');
+        const { createRemotePolicyFixture } = require('~/test/helpers/remotePolicy');
         const fixture = await createRemotePolicyFixture({
           beforeProvider: async () => {
             started();

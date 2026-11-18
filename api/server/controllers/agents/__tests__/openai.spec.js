@@ -176,8 +176,8 @@ jest.mock('@librechat/agents', () => ({
 
 jest.mock('@librechat/api', () => ({
   getModelEndUsage: (...args) => jest.requireActual('@librechat/api').getModelEndUsage(...args),
-  createModelBoundChatModelCallback: (...args) =>
-    jest.requireActual('@librechat/api').createModelBoundChatModelCallback(...args),
+  createApiModelCallbacks: (...args) =>
+    jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
   createFileProvisionRecovery: () =>
     jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
@@ -538,7 +538,7 @@ describe('OpenAIChatCompletionController', () => {
   ])(
     'enforces native input policy through the remote bridge: stream=%s blocked=%s',
     async (stream, blocked) => {
-      const { createRemotePolicyFixture } = require('./remotePolicy.helper');
+      const { createRemotePolicyFixture } = require('~/test/helpers/remotePolicy');
       const fixture = await createRemotePolicyFixture({ blocked });
       const api = require('@librechat/api');
       const actual = jest.requireActual('@librechat/api');
