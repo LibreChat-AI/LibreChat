@@ -122,3 +122,5 @@ export * from './types/channelFeedback';
 export * from './types/channelRuns';
 
 export * from './codeSetup';
+
+export * from './types/discord';

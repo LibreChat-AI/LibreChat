@@ -214,3 +214,12 @@ export * from './postgres/mongo';
 export { migrateMCPReservationIndex } from './migrations/mcpReservations';
 
 export { repairAuthorizationDuplicates } from './migrations/authorization';
+
+export { createDiscordInstallationStorage } from './methods/discord';
+export type {
+  DiscordInstallationStorage,
+  DiscordStorageResult,
+  DiscordStorageError,
+  ConfigureDiscordApplicationRecord,
+} from './methods/discord';
+export type { DiscordApplicationRecord } from './models/discord';
