@@ -370,6 +370,81 @@ it('starts from what the stored grant asks about, and sends no question once cle
     ask: {},
   });
 });
+it('keeps a changed tool asking first when the owner allows its new definition', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    state: 'changed',
+    revision: 'grant',
+    expiresAtMs: Date.now() + 60_000,
+    approval: true,
+    allowed: { warehouse: ['export', 'query'] },
+    asking: { warehouse: ['query'] },
+    changed: { warehouse: ['query'] },
+  });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  // Changed, so it starts unticked, and an unticked tool shows no question.
+  const query = await screen.findByRole('checkbox', { name: 'query' });
+  expect(query).not.toBeChecked();
+  expect(
+    screen.getAllByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' }),
+  ).toHaveLength(1);
+  await userEvent.click(query);
+  // Allowed again, it still asks: accepting the new definition is not dropping the question.
+  const [, queryAsk] = screen.getAllByRole('checkbox', {
+    name: 'com_ui_schedule_consent_ask_tool',
+  });
+  expect(queryAsk).toBeChecked();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({
+        allow: { warehouse: ['export', 'query'] },
+        ask: { warehouse: ['query'] },
+      }),
+    ),
+  );
+});
+it('takes up a question added to a grant confirmed elsewhere, over an earlier edit of its own', async () => {
+  const granted = {
+    ...view,
+    state: 'active' as const,
+    revision: 'grant-1',
+    expiresAtMs: Date.now() + 60_000,
+    approval: true,
+    allowed: { warehouse: ['export', 'query'] },
+    asking: { warehouse: ['query'] },
+  };
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(granted);
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  const client = display();
+  await screen.findByRole('checkbox', { name: 'query' });
+  const asks = () => screen.getAllByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' });
+  // The owner clears the question on `query` here, then the grant is replaced in another tab
+  // by one that also asks about `export`.
+  await userEvent.click(asks()[1]);
+  expect(asks()[1]).not.toBeChecked();
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...granted,
+    revision: 'grant-2',
+    asking: { warehouse: ['export', 'query'] },
+    offer: { digest: 'e'.repeat(64), maxLifetimeHours: 24 },
+  });
+  await client.invalidateQueries();
+  await waitFor(() => expect(asks()[0]).toBeChecked());
+  expect(asks()[1]).toBeChecked();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({
+        expectedRevision: 'grant-2',
+        ask: { warehouse: ['export', 'query'] },
+      }),
+    ),
+  );
+});
 it('keeps what the stored grant asks about where a run cannot pause, and offers no new question', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,

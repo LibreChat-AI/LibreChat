@@ -93,19 +93,6 @@ function currentChoice(
   );
 }
 
-/** Of the tools ticked to start with, the ones the stored grant asks about before each use. */
-function initialAsking(
-  data: ScheduleMCPConsentView,
-  choice: Record<string, string[]>,
-): Record<string, string[]> {
-  return Object.fromEntries(
-    Object.entries(choice).map(([serverName, tools]) => [
-      serverName,
-      tools.filter((tool) => (data.asking[serverName] ?? []).includes(tool)),
-    ]),
-  );
-}
-
 export default function Consent({
   canConfirm = true,
   id,
@@ -132,27 +119,36 @@ export default function Consent({
   const choosing = canConfirm && data?.offer != null;
   const choice = data ? currentChoice(data, edited) : {};
   const chosenCount = Object.values(choice).reduce((count, tools) => count + tools.length, 0);
-  /** Null until the owner changes an "ask me first" box. Only ever holds allowed tools. */
-  const [editedAsking, setEditedAsking] = useState<Record<string, string[]> | null>(null);
+  /** Null until the owner changes an "ask me first" box, with the grant it was changed against. */
+  const [editedAsking, setEditedAsking] = useState<{
+    revision: string | null;
+    tools: Record<string, string[]>;
+  } | null>(null);
   const canAsk = data?.approval === true;
-  /** Starts from the stored grant even where a run cannot pause, so a renewal keeps it. */
-  const asking = editedAsking ?? (data ? initialAsking(data, choice) : {});
+  /**
+   * Kept apart from the ticks. Starts from the stored grant, even where a run cannot pause
+   * and for a tool that is not ticked right now: one that changed starts unticked, and
+   * ticking it again must not turn a tool the owner approves each time into an unattended one.
+   * The owner's edits hold only for the grant they were made against: a question added to a
+   * grant confirmed elsewhere is not theirs to drop unseen.
+   */
+  const asking =
+    (editedAsking?.revision === data?.revision ? editedAsking?.tools : undefined) ??
+    data?.asking ??
+    {};
   const noteId = useId();
-  const setTools = (serverName: string, tools: string[]) => {
+  const setTools = (serverName: string, tools: string[]) =>
     setEdited({
       choice: { ...choice, [serverName]: tools },
       revision: data?.revision ?? null,
       changed: data?.changed ?? {},
     });
-    // A tool that is no longer allowed has nothing left to ask about.
-    setEditedAsking({
-      ...asking,
-      [serverName]: (asking[serverName] ?? []).filter((tool) => tools.includes(tool)),
-    });
-  };
   const setAsking = (serverName: string, tools: string[]) =>
-    setEditedAsking({ ...asking, [serverName]: tools });
-  /** Sent with the confirmation: only tools still ticked, since a tick can be dropped by a refetch. */
+    setEditedAsking({
+      revision: data?.revision ?? null,
+      tools: { ...asking, [serverName]: tools },
+    });
+  /** Sent with the confirmation: of the tools ticked now, the ones the owner asks about. */
   const ask = Object.fromEntries(
     Object.entries(asking)
       .map(([serverName, tools]): [string, string[]] => [
