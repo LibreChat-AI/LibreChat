@@ -1,10 +1,12 @@
 import { useCallback, useMemo } from 'react';
 import { dataService } from 'librechat-data-provider';
 import { useFollowChat } from '@librechat/chat/react';
+import { useQueryClient } from '@tanstack/react-query';
 import { createGenerationTransport } from '@librechat/chat';
 import type { FollowedChat, SideChatHost, FollowChatOptions } from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
 import useNavigateToConvo from '~/hooks/Conversations/useNavigateToConvo';
+import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
@@ -35,12 +37,20 @@ function useChat(
     [transport, token],
   );
   const loadMessages = useCallback(() => dataService.getMessagesByConvoId(id), [id]);
+  /**
+   * What a tool hands back while it runs (search sources, a generated file) arrives beside the
+   * message it belongs to. It goes where main chat's goes: onto the rows that show it, and into
+   * the app's file, memory and preview caches.
+   */
+  const onAttachment = useAttachmentHandler(useQueryClient());
+  const beside = useMemo(() => ({ onAttachment }), [onAttachment]);
   return useFollowChat({
     id,
     transport: generation,
     loadMessages,
     endpoint,
     enabled: id !== '',
+    beside,
     onWithdrawn: options?.onWithdrawn,
   });
 }
