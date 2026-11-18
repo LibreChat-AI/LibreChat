@@ -36,6 +36,22 @@ it('takes the deadline for never-authorized schedules as an instant with an offs
   expect(parse(1798761600000)).toBe(false);
 });
 
+it('takes the tools to ask about as an optional choice beside the allowed ones', () => {
+  const parse = (ask?: unknown) =>
+    confirmScheduleMCPConsentSchema.safeParse({
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
+      ...(ask !== undefined && { ask }),
+    }).success;
+  expect(parse()).toBe(true);
+  expect(parse({ warehouse: ['query'] })).toBe(true);
+  expect(parse({ warehouse: [] })).toBe(true);
+  expect(parse(['query'])).toBe(false);
+  expect(parse({ warehouse: 'query' })).toBe(false);
+});
+
 it('requires an explicit tenant binding and delegated mode', () => {
   const identity = { scheduleId: 's', ownerId: 'u', agentId: 'a', invocationMode: 'delegated' };
   expect(scheduledMCPIdentitySchema.safeParse(identity).success).toBe(false);
@@ -162,6 +178,21 @@ it('lets the owner allow every tool a server can be offered with, across its age
   // Two agents with 150 tools each: valid as an offer, so it must be confirmable whole.
   expect(parse(300)).toBe(true);
   expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS)).toBe(true);
+  expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS + 1)).toBe(false);
+});
+
+it('lets the owner ask first about as many tools as they can allow', () => {
+  const parse = (count: number) => {
+    const tools = Array.from({ length: count }, (_, index) => `tool-${index}`);
+    return confirmScheduleMCPConsentSchema.safeParse({
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow: { warehouse: tools },
+      ask: { warehouse: tools },
+    }).success;
+  };
+  expect(parse(300)).toBe(true);
   expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS + 1)).toBe(false);
 });
 

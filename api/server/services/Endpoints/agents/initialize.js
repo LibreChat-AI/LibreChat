@@ -2172,6 +2172,7 @@ function createInitializeClient(dependencies = {}) {
         ),
         executionContext: params.executionContext,
         restoredJob: params.scheduleJobIdentity,
+        approvedToolCalls: params.approvedToolCalls,
       },
       () => require('~/server/services/Schedules/consent'),
       () =>

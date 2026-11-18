@@ -119,12 +119,44 @@ export default function Consent({
   const choosing = canConfirm && data?.offer != null;
   const choice = data ? currentChoice(data, edited) : {};
   const chosenCount = Object.values(choice).reduce((count, tools) => count + tools.length, 0);
+  /** Null until the owner changes an "ask me first" box, with the grant it was changed against. */
+  const [editedAsking, setEditedAsking] = useState<{
+    revision: string | null;
+    tools: Record<string, string[]>;
+  } | null>(null);
+  const canAsk = data?.approval === true;
+  /**
+   * Kept apart from the ticks. Starts from the stored grant, even where a run cannot pause
+   * and for a tool that is not ticked right now: one that changed starts unticked, and
+   * ticking it again must not turn a tool the owner approves each time into an unattended one.
+   * The owner's edits hold only for the grant they were made against: a question added to a
+   * grant confirmed elsewhere is not theirs to drop unseen.
+   */
+  const asking =
+    (editedAsking?.revision === data?.revision ? editedAsking?.tools : undefined) ??
+    data?.asking ??
+    {};
+  const noteId = useId();
   const setTools = (serverName: string, tools: string[]) =>
     setEdited({
       choice: { ...choice, [serverName]: tools },
       revision: data?.revision ?? null,
       changed: data?.changed ?? {},
     });
+  const setAsking = (serverName: string, tools: string[]) =>
+    setEditedAsking({
+      revision: data?.revision ?? null,
+      tools: { ...asking, [serverName]: tools },
+    });
+  /** Sent with the confirmation: of the tools ticked now, the ones the owner asks about. */
+  const ask = Object.fromEntries(
+    Object.entries(asking)
+      .map(([serverName, tools]): [string, string[]] => [
+        serverName,
+        tools.filter((tool) => (choice[serverName] ?? []).includes(tool)),
+      ])
+      .filter(([, tools]) => tools.length > 0),
+  );
   const commit = () => {
     if (!data?.offer || chosenCount === 0) return;
     setMessage(null);
@@ -134,10 +166,13 @@ export default function Consent({
         expectedRevision: data.revision,
         lifetimeHours: hours,
         allow: choice,
+        // Always sent: left out, the server keeps what the stored grant asks about.
+        ask,
       },
       {
         onSuccess: () => {
           setEdited(null);
+          setEditedAsking(null);
           setMessage('success');
         },
         onError: () => setMessage('error'),
@@ -194,6 +229,11 @@ export default function Consent({
                     })}
                   </p>
                 )}
+                {choosing && !canAsk && Object.keys(ask).length > 0 && (
+                  <p id={noteId} className="text-status-warning text-sm">
+                    {localize('com_ui_schedule_consent_ask_unavailable')}
+                  </p>
+                )}
                 <ul className="space-y-2">
                   {data.targets.map((target) => (
                     <li key={target.resource.serverName}>
@@ -229,8 +269,16 @@ export default function Consent({
                           offered={offeredTools(target)}
                           chosen={choice[target.resource.serverName] ?? []}
                           changed={data.changed[target.resource.serverName] ?? []}
+                          asking={asking[target.resource.serverName] ?? []}
+                          askable={
+                            canAsk
+                              ? offeredTools(target)
+                              : (data.asking[target.resource.serverName] ?? [])
+                          }
+                          askNoteId={canAsk ? undefined : noteId}
                           disabled={busy}
                           onChange={(tools) => setTools(target.resource.serverName, tools)}
+                          onAskingChange={(tools) => setAsking(target.resource.serverName, tools)}
                         />
                       ) : (
                         <>
@@ -239,6 +287,13 @@ export default function Consent({
                               tools: (data.allowed[target.resource.serverName] ?? []).join(', '),
                             })}
                           </p>
+                          {(data.asking[target.resource.serverName] ?? []).length > 0 && (
+                            <p className="text-text-secondary text-xs">
+                              {localize('com_ui_schedule_consent_asking', {
+                                tools: data.asking[target.resource.serverName].join(', '),
+                              })}
+                            </p>
+                          )}
                           {(data.changed[target.resource.serverName] ?? []).length > 0 && (
                             <p className="text-status-warning text-xs">
                               {localize('com_ui_schedule_consent_changed_tools', {
@@ -307,16 +362,30 @@ function ToolChoice({
   offered,
   chosen,
   changed,
+  asking,
+  askable,
+  askNoteId,
   disabled,
   onChange,
+  onAskingChange,
 }: {
   serverName: string;
   offered: string[];
   chosen: string[];
   /** Tools the server changed since they were allowed. Refused until confirmed again. */
   changed: string[];
+  /** Allowed tools the owner approves call by call. */
+  asking: string[];
+  /**
+   * Tools that get an "ask me first" box. Where a scheduled run cannot pause, only the ones
+   * the stored grant already asks about, so the owner can keep or drop them but add none.
+   */
+  askable: string[];
+  /** The note explaining that a run cannot pause here, when it is shown. */
+  askNoteId?: string;
   disabled: boolean;
   onChange: (tools: string[]) => void;
+  onAskingChange: (tools: string[]) => void;
 }) {
   const localize = useLocalize();
   const groupId = useId();
@@ -361,6 +430,27 @@ function ToolChoice({
               >
                 {tool}
               </Label>
+              {askable.includes(tool) && chosen.includes(tool) && (
+                <span className="ml-auto flex shrink-0 items-center gap-2">
+                  <Checkbox
+                    id={`${groupId}-${tool}-ask`}
+                    checked={asking.includes(tool)}
+                    disabled={disabled}
+                    aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
+                    aria-describedby={askNoteId}
+                    onCheckedChange={(checked) =>
+                      onAskingChange(
+                        checked === true
+                          ? [...asking, tool]
+                          : asking.filter((name) => name !== tool),
+                      )
+                    }
+                  />
+                  <Label htmlFor={`${groupId}-${tool}-ask`} variant="secondary" className="text-xs">
+                    {localize('com_ui_schedule_consent_ask_first')}
+                  </Label>
+                </span>
+              )}
             </div>
             {changed.includes(tool) && (
               <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
