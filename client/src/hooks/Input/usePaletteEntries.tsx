@@ -25,7 +25,7 @@ import {
   defaultAgentCapabilities,
   resolveAgentSkillsScope,
 } from 'librechat-data-provider';
-import type { TSkillSummary, TToolFavoriteType } from 'librechat-data-provider';
+import type { TSkillSummary, TEphemeralAgent, TToolFavoriteType } from 'librechat-data-provider';
 import type { ItemStatus } from '~/components/SidePanel/Agents/Tools/items/types';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import {
@@ -278,6 +278,7 @@ export default function usePaletteEntries({
       artifacts,
       mcpServerManager,
       searchApiKeyForm,
+      lockedToggles,
     } = context;
 
     const pushTool = (
@@ -290,6 +291,9 @@ export default function usePaletteEntries({
       onUnpin: () => void,
       modes?: PaletteMode[],
     ) => {
+      if (lockedToggles.has(itemId as keyof TEphemeralAgent)) {
+        return;
+      }
       entries.push({
         key: `builtin:${itemId}`,
         itemType: 'builtin',
@@ -502,7 +506,7 @@ export default function usePaletteEntries({
         tone: getStatusColor(serverName, connectionStatus, isInitializing),
       };
     };
-    if (toolsEnabled && canUseMcp && selectableServers) {
+    if (toolsEnabled && canUseMcp && selectableServers && !lockedToggles.has('mcp')) {
       const selected = new Set(mcpValues ?? []);
       const syntheticClick = {
         stopPropagation: () => {},
