@@ -1,5 +1,9 @@
 import type {
   AgentInputs,
+  createHostFileService,
+  HostFileBindings,
+  HostFileDescriptor,
+  HostFileServiceDescriptor,
   createHostProviderTextService,
   createHostModelService,
   HostModelDescriptor,
@@ -69,6 +73,8 @@ export interface RemoteSdkModelProfile {
 
 /** Explicit host-owned capabilities; never reconstructed from worker claims or YAML. */
 export interface RemoteSdkHostServices {
+  /** Already authorized host binding; storage credentials and policy stay with the host. */
+  files?: ReturnType<typeof createHostFileService> & { sources: readonly HostFileDescriptor[] };
   modelLifecycle?: HostModelLifecycle;
   modelProfile?: RemoteSdkModelProfile;
   model?: ReturnType<typeof createHostModelService>;
@@ -77,6 +83,12 @@ export interface RemoteSdkHostServices {
 
 export interface RemoteSdkStart {
   transportVersion: 2;
+  files?: {
+    version: 1;
+    publicKey: string;
+    descriptor: HostFileServiceDescriptor;
+    sources: HostFileDescriptor[];
+  };
   modelAdmission?: { version: 1; maxEntries: number };
   model?: { version: 1; publicKey: string; descriptor: HostModelDescriptor };
   providerText?: { version: 1; publicKey: string; limits: HostProviderTextDescriptor };
@@ -113,6 +125,7 @@ export interface RemoteSdkSnapshot {
   runSteps?: ReturnType<NonNullable<SdkRun['Graph']>['createRunStepResumeState']>;
 }
 export interface RemoteSdkFactoryInput {
+  hostFiles?: HostFileBindings & { readonly sources: readonly HostFileDescriptor[] };
   /** Retain this model as Graph.overrideModel when supplied by the authenticated host. */
   hostModel?: ReturnType<HostChatModel['bindTools']>;
   hostTools?: HostToolBindings;

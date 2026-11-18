@@ -70,9 +70,9 @@ Its test attachment also records send-to-approval and approval-to-visible-output
 
 This example validates the initial transport. It does **not** establish all main-chat features.
 Read the [parity matrix and rollout gates](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
-before enabling a product workflow. In particular, host model/PII protection blocks remote
-execution, and model/tool builder settings, files/artifacts, steering, nested usage/billing, and
-host tracing policies are not automatically inherited by the worker.
+before enabling a product workflow. Protected execution requires the opt-in host model and policy
+adapters. File transport is programmatic; native file/artifact activation, steering, nested
+usage/billing, and host tracing policies are not automatically inherited by the worker.
 
 ## Recovering a dropped host-worker connection
 
@@ -177,3 +177,18 @@ remain gated. Combining initial admission with explicit provider-text output pro
 only with SDK 4.2.9 invocation-context support. Upgrade separately deployed workers to SDK 4.2.9
 and this bridge version; older workers stay gated. See [the parity matrix](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
 and [configuration](../../docs/sdk/agents.md#saved-agent-builder-models) before enabling it.
+
+## File transport example
+
+After building `@librechat/api`, run `node examples/sdk-runtime/files.cjs`. It launches its own
+separate worker process and runs a custom graph that reads an authorized host file, streams an
+uppercase transform into private staging, publishes it, and produces a normal SDK chat reply.
+The script verifies the digest and single publication, reports elapsed loopback time and SDK
+message events, then removes its temporary files. No model credentials are needed.
+
+The example explicitly supplies `createRemoteSdkRun({ hostServices: { files } })` with an SDK
+`createHostFileService` binding and authorized source descriptors. It does not activate files for
+stock Console/chat callers. Its temporary filesystem and in-memory receipts are test fixtures;
+production adapters still need native ACL/policy checks, durable retry reconciliation, attachment
+events, previews, retention, and authorized browser downloads. See the
+[host file transport contract](../../docs/sdk/agents.md#host-file-transport-sdk-4210).

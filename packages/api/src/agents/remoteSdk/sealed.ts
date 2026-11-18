@@ -10,7 +10,7 @@ import {
 } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
 
-type Purpose = 'provider-text' | 'model';
+type Purpose = 'provider-text' | 'model' | 'files';
 const base64 = z.string().regex(/^[A-Za-z0-9+/]*={0,2}$/);
 const publicKeySchema = base64.length(60);
 const envelopeSchema = z
