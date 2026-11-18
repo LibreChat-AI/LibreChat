@@ -435,6 +435,14 @@ export default function SubagentThreadPanel({
       const draft = stillItsOwnComposer
         ? controlMessageRef.current.trim()
         : (continuation?.text ?? '');
+      if (result.conversation != null && navigation.openBeside != null) {
+        /** The continuation takes this panel's place beside the conversation, and the words
+         *  the reader sent to get here are its next turn. */
+        if (stillItsOwnComposer) setControlMessage('');
+        resetSelection();
+        navigation.openBeside(result.conversation, draft === '' ? undefined : draft);
+        return;
+      }
       if (continuedConversationId != null && draft !== '') {
         handOffComposerText(continuedConversationId, draft);
       }

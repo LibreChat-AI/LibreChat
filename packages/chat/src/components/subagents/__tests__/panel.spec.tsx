@@ -54,6 +54,8 @@ const mockForkMutate = jest.fn();
 const mockControlMutate = jest.fn();
 const mockNavigateToConvo = jest.fn();
 const mockNavigate = jest.fn();
+/** Set by a test whose app offers a place beside the conversation. */
+let mockOpenBeside: jest.Mock | undefined;
 const mockShowToast = jest.fn();
 const mockGetSubagentThread = jest.fn();
 const mockApprovalProviderMounted = jest.fn();
@@ -190,6 +192,7 @@ const subagentsHost: SubagentsHost = createSubagentsHost({
   useNavigation: () => ({
     openConversation: (conversation) => mockNavigateToConvo(conversation),
     openConversationId: (conversationId) => mockNavigate(conversationId),
+    ...(mockOpenBeside != null && { openBeside: mockOpenBeside }),
   }),
   /** The app scales the sheet breakpoint by the reader's text size before it asks. */
   useSheetLayout: () =>
@@ -665,6 +668,7 @@ describe('SubagentThreadPanel', () => {
     mockViewportWidth = null;
     mockRemScale = 1;
     mockEnterToSend = true;
+    mockOpenBeside = undefined;
     mockClaimForeground.mockClear();
     mockHandOffComposerText.mockClear();
     mockApprovalProviderMounted.mockClear();
@@ -2851,6 +2855,56 @@ describe('SubagentThreadPanel', () => {
         Object.keys(storage).filter((key) => key.includes('continued-chat')),
       ),
     ).toEqual([]);
+  });
+
+  it('opens the continued conversation beside this one where the app has a place for it', () => {
+    mockOpenBeside = jest.fn();
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: completedView,
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={selection} />
+      </Root>,
+    );
+
+    fireEvent.change(screen.getByLabelText('com_ui_message_input'), {
+      target: { value: 'Take this further.' },
+    });
+    fireEvent.keyDown(screen.getByLabelText('com_ui_message_input'), { key: 'Enter' });
+    const mutationOptions = mockForkMutate.mock.calls[0][1];
+    const conversation = { conversationId: 'continued-chat', agent_id: 'agent-1' };
+    act(() => mutationOptions.onSuccess({ conversation, messages: [] }));
+
+    /** The reader stays where they are: the words go with the conversation, as its next turn. */
+    expect(mockOpenBeside).toHaveBeenCalledWith(conversation, 'Take this further.');
+    expect(mockNavigateToConvo).not.toHaveBeenCalled();
+    expect(mockHandOffComposerText).not.toHaveBeenCalled();
+  });
+
+  it('opens the continued conversation beside this one with no words when none were written', () => {
+    mockOpenBeside = jest.fn();
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: completedView,
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={selection} />
+      </Root>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_continue_new_chat' }));
+    const mutationOptions = mockForkMutate.mock.calls[0][1];
+    const conversation = { conversationId: 'continued-chat', agent_id: 'agent-1' };
+    act(() => mutationOptions.onSuccess({ conversation, messages: [] }));
+
+    expect(mockOpenBeside).toHaveBeenCalledWith(conversation, undefined);
   });
 
   /** The composer is shared across selections, so a continuation that lands

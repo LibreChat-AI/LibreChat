@@ -309,6 +309,9 @@ interface:
   # Allow the artifacts pane to be moved into its own browser window
   # (desktop only; the mobile sheet is unaffected). Default: true.
   artifactUndocking: true
+  # Continue a subagent's thread as a chat in the side panel, beside the conversation,
+  # instead of navigating to the new chat. Default: true.
+  sideChat: true
   # Ask each viewer before loading Google Tag Manager (ANALYTICS_GTM_ID).
   # Set false when the deployment settles consent itself, e.g. internal use. Default: true.
   # analyticsConsent: true

@@ -72,6 +72,8 @@ export type ChatConfig = {
   loaded?: boolean;
   /** Whether the deployment tracks token balances, refreshed after each turn. */
   balanceEnabled?: boolean;
+  /** Whether a conversation may open beside the main one; off until the deployment has answered. */
+  sideChat?: boolean;
 };
 
 /** The signed-in account, as far as the chat reads it. */
