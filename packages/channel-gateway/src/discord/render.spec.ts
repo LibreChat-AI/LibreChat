@@ -34,6 +34,14 @@ describe('Discord answer rendering', () => {
       '@\u200beveryone @\u200bhere <@\u200b123> <@!\u200b123> <@&\u200b123> <#\u200b123>',
     );
   });
+  test.each([1990, 1992])(
+    'keeps a complete fenced block in one message with %i body characters',
+    (length) => {
+      const source = '```\n' + 'x'.repeat(length) + '\n```';
+      const plan = renderDiscordPlan({ runId: 'run', text: source }, 1);
+      expect(plan.parts.map((part) => part.text)).toEqual([source]);
+    },
+  );
   test('fails closed when the delivery budget cannot fit the answer', () => {
     expect(() => renderDiscordPlan({ runId: 'run', text: 'x'.repeat(2001) }, 1)).toThrow(
       'delivery budget',

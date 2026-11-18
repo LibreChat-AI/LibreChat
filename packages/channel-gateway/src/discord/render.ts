@@ -29,12 +29,24 @@ export function renderDiscordPlan(input: DiscordRenderInput, maxParts: number): 
     chunks.push(chunk + (fence !== undefined ? '\n```' : ''));
     chunk = fence !== undefined ? `\`\`\`${fence}\n` : '';
   };
-  for (const line of source.split(/(?<=\n)/)) {
-    const match = /^```([^\r\n`]*)\r?\n?$/.exec(line);
+  const fencePattern = /^```([^\r\n`]*)\r?\n?$/;
+  const lines = source.split(/(?<=\n)/);
+  for (const [index, line] of lines.entries()) {
+    const match = fencePattern.exec(line);
     if (match && match[1].length <= 100) {
-      if (chunk.length + line.length + 4 > 2000) flush();
+      const closingFenceLength = fence === undefined ? 4 : 0;
+      if (chunk.length + line.length + closingFenceLength > 2000) flush();
       chunk += line;
       fence = fence === undefined ? match[1] : undefined;
+      continue;
+    }
+    // A closing fence on the next line can fit without the synthetic newline.
+    if (
+      fence !== undefined &&
+      lines[index + 1] === '```' &&
+      chunk.length + line.length + 3 <= 2000
+    ) {
+      chunk += line;
       continue;
     }
     for (const point of line) {
