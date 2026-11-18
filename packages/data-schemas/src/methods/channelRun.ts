@@ -89,6 +89,7 @@ export interface ChannelRunStorage {
     tenantId: string,
     fence: ChannelRunFence,
     now: number,
+    applicationRevision?: string,
   ): Promise<ChannelRunRecord>;
   bindResponse(
     tenantId: string,
@@ -137,6 +138,7 @@ export interface ChannelRunStorage {
     fence: ChannelRunFence,
     revision: number,
     now: number,
+    applicationRevision?: string,
   ): Promise<ChannelRunRecord>;
   settleProgress(
     tenantId: string,
@@ -155,6 +157,7 @@ export interface ChannelRunStorage {
     fence: ChannelRunFence,
     operationId: string,
     now: number,
+    applicationRevision?: string,
   ): Promise<ChannelRunRecord>;
   settleDelivery(
     tenantId: string,
@@ -270,6 +273,39 @@ export function createChannelRunStorage(
       return result;
     });
   }
+  /** New effects linearize here; settlements remain available after authority is revoked. */
+  async function authorizeEffect(
+    run: ChannelRunRecord,
+    session: ClientSession,
+    now: number,
+    applicationRevision?: string,
+  ): Promise<void> {
+    const actor = run.admission.actor;
+    if (actor.provider !== 'discord') return;
+    if (
+      !applicationRevision ||
+      !(await touchChannelAuthority(
+        mongoose,
+        {
+          tenantId: run.tenantId,
+          channelId: run.channelId,
+          agentId: run.agentId,
+          channelRevision: run.principal.channelRevision,
+          principal: run.principal,
+          provider: actor.provider,
+          applicationId: actor.applicationId,
+          guildId: actor.guildId,
+          externalUserId: actor.externalUserId,
+          externalChannelId: run.admission.externalChannelId,
+          applicationRevision,
+          now,
+        },
+        session,
+      ))
+    )
+      throw new ChannelRunConflict('invalid_transition');
+  }
+
   async function responseBinding(
     run: ChannelRunRecord,
     session: ClientSession,
@@ -635,8 +671,9 @@ export function createChannelRunStorage(
     async read(tenantId, channelId, runId) {
       return runs().findOne({ tenantId, channelId, runId }).lean();
     },
-    async prepareExecution(tenantId, fence, now) {
+    async prepareExecution(tenantId, fence, now, applicationRevision) {
       return mutate(tenantId, fence, now, async (run, session) => {
+        await authorizeEffect(run, session, now, applicationRevision);
         if (run.execution) return {};
         if (run.state !== 'queued') throw new ChannelRunConflict('invalid_transition');
         const lane = await lanes()
@@ -801,8 +838,9 @@ export function createChannelRunStorage(
         };
       });
     },
-    async beginProgress(tenantId, fence, revision, now) {
-      return mutate(tenantId, fence, now, async (run) => {
+    async beginProgress(tenantId, fence, revision, now, applicationRevision) {
+      return mutate(tenantId, fence, now, async (run, session) => {
+        await authorizeEffect(run, session, now, applicationRevision);
         const progress = run.progress;
         const writable =
           ['queued', 'executing', 'requires_action'].includes(run.state) ||
@@ -847,8 +885,9 @@ export function createChannelRunStorage(
         return { progress: { ...previous, ...receipt } };
       });
     },
-    async beginDelivery(tenantId, fence, operationId, now) {
-      return mutate(tenantId, fence, now, async (run) => {
+    async beginDelivery(tenantId, fence, operationId, now, applicationRevision) {
+      return mutate(tenantId, fence, now, async (run, session) => {
+        await authorizeEffect(run, session, now, applicationRevision);
         if (!run.plan) throw new ChannelRunConflict('invalid_transition');
         assertPlan(run, run.plan, CHANNEL_DELIVERY_PARTS_HARD_MAX);
         if (hasPermanentDeliveryFailure(run)) throw new ChannelRunConflict('invalid_transition');

@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import {
   channelGatewayWirePolicySchema,
   channelStorageConfigSchema,
+  channelRunActorSchema,
+  channelSnowflakeSchema,
+  discordChannelConfigSchema,
 } from 'librechat-data-provider';
 import type {
   ChannelRunActor,
@@ -48,35 +51,63 @@ function validFence(
 
 export class ChannelClient extends ServiceClient {
   readonly root: string;
+  private readonly bundlePath: string;
+  private applicationRevision?: string;
   constructor(
     readonly config: GatewayConfig,
     transport: typeof fetch = fetch,
+    private readonly provider: { type: 'slack' | 'discord'; applicationRevision?: string } = {
+      type: 'slack',
+    },
   ) {
     super(config, transport);
+    this.provider = { ...provider };
+    this.applicationRevision = provider.applicationRevision;
+    this.bundlePath = `/api/channels/service/${provider.type}/${encodeURIComponent(config.CHANNEL_TENANT_ID)}/${encodeURIComponent(config.CHANNEL_ID)}`;
     this.root = `/api/channels/service/${encodeURIComponent(config.CHANNEL_ID)}`;
   }
 
+  protected serviceHeaders(path: string): Record<string, string> {
+    if (path === this.bundlePath && this.provider.applicationRevision === undefined) return {};
+    return this.applicationRevision
+      ? { 'X-Discord-Application-Revision': this.applicationRevision }
+      : {};
+  }
+
   async channel(signal?: AbortSignal): Promise<ChannelBundle> {
-    const value = await this.request<ChannelBundle>(
-      `/api/channels/service/slack/${encodeURIComponent(this.config.CHANNEL_TENANT_ID)}/${encodeURIComponent(this.config.CHANNEL_ID)}`,
-      undefined,
-      signal,
-    );
+    const value = await this.request<ChannelBundle>(this.bundlePath, undefined, signal);
     const { channel, agent, credentials } = value;
     if (
       channel?.channelId !== this.config.CHANNEL_ID ||
       (channel.tenantId ?? '_') !== this.config.CHANNEL_TENANT_ID ||
-      channel.type !== 'slack' ||
+      channel.type !== this.provider.type ||
       channel.status !== 'active' ||
       !channel.revision ||
-      !channel.slack?.teamId ||
-      !channel.slack.appId ||
-      !channel.slack.botUserId ||
       !credentials?.botToken ||
       !agent?.id ||
       channel.agentId !== agent.id
     )
       throw new Error('Invalid active channel binding');
+    if (
+      channel.type === 'slack' &&
+      (!channel.slack?.teamId || !channel.slack.appId || !channel.slack.botUserId)
+    )
+      throw new Error('Invalid active channel binding');
+    if (
+      channel.type === 'discord' &&
+      (channel.credentialMode !== 'per_user' ||
+        !channel.installationId ||
+        !channel.installationRevision ||
+        !channelSnowflakeSchema.safeParse(channel.discord?.applicationId).success ||
+        !channelSnowflakeSchema.safeParse(channel.discord?.guildId).success ||
+        !channelSnowflakeSchema.safeParse(channel.discord?.botUserId).success ||
+        !channelSnowflakeSchema.safeParse(channel.discord?.externalChannelId).success ||
+        !('applicationRevision' in value) ||
+        !validId(value.applicationRevision) ||
+        (this.provider.applicationRevision !== undefined &&
+          this.provider.applicationRevision !== value.applicationRevision))
+    )
+      throw new Error('Invalid Discord channel binding');
     const policy = channelGatewayWirePolicySchema.safeParse(value.gateway);
     if (!policy.success) throw new Error('Unsupported channel gateway policy');
     const delivery = channelStorageConfigSchema
@@ -86,6 +117,20 @@ export class ChannelClient extends ServiceClient {
       })
       .safeParse(value.delivery);
     if (!delivery.success) throw new Error('Invalid channel delivery policy');
+    if ('discord' in value) {
+      const discord = discordChannelConfigSchema.safeParse(value.discord);
+      if (
+        channel.type !== 'discord' ||
+        !discord.success ||
+        !discord.data.enabled ||
+        policy.data.nativeSessions ||
+        policy.data.lifecycleReactions
+      )
+        throw new Error('Invalid Discord channel policy');
+      this.applicationRevision = value.applicationRevision;
+      return { ...value, discord: discord.data, gateway: policy.data, delivery: delivery.data };
+    }
+    if (channel.type !== 'slack') throw new Error('Missing Discord channel policy');
     return { ...value, gateway: policy.data, delivery: delivery.data };
   }
   async runs<T>(suffix: string, body: object, signal?: AbortSignal, empty?: T): Promise<T> {
@@ -115,10 +160,8 @@ export class ChannelClient extends ServiceClient {
       !validId(run.admission?.externalChannelId) ||
       typeof run.admission?.externalThreadKey !== 'string' ||
       !run.admission.externalThreadKey.startsWith(run.admission.externalChannelId + ':') ||
-      run.admission.actor?.provider !== undefined ||
-      !validId(run.admission.actor?.teamId) ||
-      !validId(run.admission.actor?.appId) ||
-      !validId(run.admission.actor?.externalUserId)
+      !channelRunActorSchema.safeParse(run.admission.actor).success ||
+      (run.admission.actor.provider ?? 'slack') !== this.provider.type
     )
       throw new Error('Channel run identity changed');
   }

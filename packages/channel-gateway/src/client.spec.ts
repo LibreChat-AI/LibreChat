@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   CHANNEL_RUN_MAX_JSON_BYTES,
+  discordChannelConfigSchema,
   DEFAULT_CHANNEL_GATEWAY_POLICY,
   CHANNEL_DELIVERY_TEXT_MAX_CHARS,
   CHANNEL_DELIVERY_PARTS_HARD_MAX,
@@ -587,4 +588,123 @@ test('exposes only the approved trace-unavailable code for a409; other diagnosti
     code: 'trace_unavailable',
   });
   await expect(client.claim('worker')).rejects.toMatchObject({ status: 409, code: '' });
+});
+
+describe('Discord channel service authority', () => {
+  const discord = {
+    channel: {
+      ...bundle.channel,
+      type: 'discord',
+      credentialMode: 'per_user',
+      slack: undefined,
+      installationId: 'installation',
+      installationRevision: 'installed',
+      discord: {
+        applicationId: '123456789012345678',
+        guildId: '234567890123456789',
+        botUserId: '345678901234567890',
+        externalChannelId: '456789012345678901',
+      },
+    },
+    applicationRevision: 'app-revision',
+    agent: bundle.agent,
+    credentials: { botToken: 'discord-token' },
+    delivery: bundle.delivery,
+    gateway: {
+      ...bundle.gateway,
+      transport: 'webhook',
+      nativeSessions: false,
+      lifecycleReactions: false,
+    },
+    discord: discordChannelConfigSchema.parse({ enabled: true }),
+  };
+  test('requires explicit provider selection and carries verified application authority', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(async (url) =>
+        json(String(url).endsWith('/runs') ? { runId: 'run', duplicate: false } : discord),
+      );
+    await expect(new ChannelClient(config, transport).channel()).rejects.toThrow(
+      'Invalid active channel binding',
+    );
+    const client = new ChannelClient(config, transport, {
+      type: 'discord',
+      applicationRevision: 'app-revision',
+    });
+    expect(await client.channel()).toMatchObject({ applicationRevision: 'app-revision' });
+    await client.admit(run.admission);
+    expect(transport.mock.calls.at(-2)?.[0]).toContain('/service/discord/tenant-1/channel-1');
+    expect(transport.mock.calls.at(-1)?.[1]?.headers).toMatchObject({
+      'X-Discord-Application-Revision': 'app-revision',
+    });
+  });
+  test('refreshes worker credentials without upgrading pinned ingress or leaking authority to Responses', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValueOnce(json(discord))
+      .mockResolvedValueOnce(json({ ...discord, applicationRevision: 'rotated' }))
+      .mockResolvedValueOnce(json(response));
+    const client = new ChannelClient(config, transport, { type: 'discord' });
+    await client.channel();
+    expect(await client.channel()).toMatchObject({ applicationRevision: 'rotated' });
+    expect(transport.mock.calls[1][1]?.headers).not.toHaveProperty(
+      'X-Discord-Application-Revision',
+    );
+    await client.response(grant, 'create');
+    expect(transport.mock.calls[2][1]?.headers).not.toHaveProperty(
+      'X-Discord-Application-Revision',
+    );
+  });
+  test('does not refresh a signature-verified event onto a rotated application', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValue(json(discord));
+    await expect(
+      new ChannelClient(config, transport, {
+        type: 'discord',
+        applicationRevision: 'old',
+      }).channel(),
+    ).rejects.toThrow('Invalid Discord channel binding');
+  });
+  test.each([
+    { ...discord, applicationRevision: undefined },
+    { ...discord, discord: undefined },
+    { ...discord, discord: { ...discord.discord, enabled: false } },
+    { ...discord, gateway: { ...discord.gateway, nativeSessions: true } },
+    { ...discord, channel: { ...discord.channel, credentialMode: 'shared' } },
+    {
+      ...discord,
+      channel: { ...discord.channel, discord: { ...discord.channel.discord, guildId: 123 } },
+    },
+  ])('rejects incomplete or unsafe Discord bundles %#', async (value) => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValue(json(value));
+    await expect(
+      new ChannelClient(config, transport, { type: 'discord' }).channel(),
+    ).rejects.toThrow();
+  });
+  test('keeps returned run actors scoped to the selected provider', async () => {
+    const current = {
+      ...run,
+      admission: {
+        ...run.admission,
+        actor: {
+          provider: 'discord',
+          applicationId: discord.channel.discord.applicationId,
+          guildId: discord.channel.discord.guildId,
+          externalUserId: '567890123456789012',
+        },
+      },
+    };
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(async () => json(current));
+    expect(
+      await new ChannelClient(config, transport, { type: 'discord' }).mutate(fence, 'begin'),
+    ).toMatchObject({ runId: run.runId });
+    await expect(new ChannelClient(config, transport).mutate(fence, 'begin')).rejects.toThrow(
+      'Channel run identity changed',
+    );
+  });
 });

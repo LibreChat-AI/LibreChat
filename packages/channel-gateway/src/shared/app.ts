@@ -6,6 +6,7 @@ import type { Logger } from '../types';
 import { parseSignedWebhook, normalizeEvent } from '../events';
 import { SlackClient, SlackWriteError } from '../slack';
 import { resolveGatewayConfig } from '../config';
+import { assertSlackBundle } from '../types';
 import { ServiceError } from '../transport';
 import { WorkspaceClient } from './client';
 import { slackRouteLookup } from './route';
@@ -117,6 +118,7 @@ export class SharedGatewayApp {
         );
         const channel = new ChannelClient(scoped, transport);
         const bundle = await channel.channel(signal);
+        assertSlackBundle(bundle);
         if (
           bundle.channel.workspaceId !== route.workspaceId ||
           bundle.channel.slack.appId !== appId ||

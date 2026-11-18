@@ -6,6 +6,8 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import {
   createModels,
+  createDiscordInstallationStorage,
+  createDiscordRouteStorage,
   createMethods,
   createChannelIdentityStorage,
   createChannelRunStorage,
@@ -96,6 +98,8 @@ beforeEach(async () => {
       models.ChannelLane.deleteMany({}),
       models.AgentChannel.deleteMany({}),
       models.User.deleteMany({}),
+      models.DiscordApplication.deleteMany({}),
+      models.DiscordGuild.deleteMany({}),
       models.Role.deleteMany({}),
       models.File.deleteMany({}),
       models.Message.deleteMany({}),
@@ -160,7 +164,7 @@ beforeEach(async () => {
   const handlers = createChannelHandlers({
     db,
     serviceToken: () => token,
-    config: async () => ({ enabled: true }),
+    config: async () => channelConfigSchema.parse({ enabled: true, discord: { enabled: true } }),
     getAgent: async (id) => ({ id }),
     verifySlackToken: async () => null,
     logError: jest.fn(),
@@ -963,8 +967,8 @@ it(
     expect(lane?.activeRunId).toBe(run.runId);
   }),
 );
-async function link(actor: string, user: IUser) {
-  const channel = (await db.getAgentChannel('channel'))!;
+async function link(actor: string, user: IUser, channelId = 'channel') {
+  const channel = (await db.getAgentChannel(channelId))!;
   const identity = channelExternalIdentity(channel, actor);
   const issued = value(await authority.identity.issue(identity));
   const ticket = new URL(issued.url).hash.slice(1);
@@ -1818,4 +1822,129 @@ it.each(['discord', 'future'])('does not resolve Slack consent through a raw %s 
     await models.AgentChannel.collection.updateOne({ channelId: 'channel' }, { $set: { type } });
     expect((await authority.identity.resolve(identity)).ok).toBe(false);
   })(),
+);
+
+it(
+  'rejects stale Discord effect authority while accepting the receipt of an already-started write',
+  scoped(async () => {
+    const installations = createDiscordInstallationStorage(mongoose);
+    const applicationId = '123456789012345678';
+    const guildId = '234567890123456789';
+    const botUserId = '345678901234567890';
+    const externalChannelId = '456789012345678901';
+    const externalUserId = '567890123456789012';
+    const configured = await installations.configureApplication({
+      actorId: users[0].id,
+      applicationId,
+      botUserId,
+      publicKey: 'a'.repeat(64),
+      encryptedBotToken: 'encrypted',
+      encryptedClientSecret: 'encrypted-secret',
+    });
+    if (!configured.ok) throw new Error(configured.error.code);
+    const guild = await installations.connectGuild({
+      actorId: users[0].id,
+      applicationId,
+      applicationRevision: configured.value.revision,
+      guildId,
+      guildName: 'Guild',
+    });
+    if (!guild.ok) throw new Error(guild.error.code);
+    await db.createAgentChannel({
+      channelId: 'discord-channel',
+      tenantId,
+      agentId: 'agent',
+      createdBy: users[0].id,
+      type: 'discord',
+      credentialMode: 'per_user',
+      status: 'pending_install',
+      revision: 'discord-revision',
+      installationId: guild.value.installationId,
+      installationRevision: guild.value.revision,
+      applicationRevision: configured.value.revision,
+      discord: { applicationId, guildId, botUserId, externalChannelId },
+    });
+    const assigned = await createDiscordRouteStorage(mongoose).assign({
+      actorId: users[0].id,
+      installationId: guild.value.installationId,
+      installationRevision: guild.value.revision,
+      applicationRevision: configured.value.revision,
+      externalChannelId,
+      channelId: 'discord-channel',
+      channelRevision: 'discord-revision',
+    });
+    if (!assigned.ok) throw new Error(assigned.error.code);
+    // Discord consent needs signed ingress, which a later slice adds; seed the active link directly.
+    const discordChannel = (await db.getAgentChannel('discord-channel'))!;
+    const linked = await createChannelIdentityStorage(mongoose).saveChannelIdentity(
+      {
+        tenantId,
+        linkId: 'discord-link',
+        ticketHash: 'd'.repeat(64),
+        revision: 'discord-link-revision',
+        identity: channelExternalIdentity(discordChannel, externalUserId),
+        state: 'active',
+        userId: users[0].id,
+        accountLabel: users[0].name!,
+        ticketExpiresAtMs: Date.now() + 60000,
+        expiresAtMs: Date.now() + 60000,
+      },
+      null,
+      configured.value.revision,
+    );
+    expect(linked).toBe(true);
+    const call = (suffix: string, revision = configured.value.revision) =>
+      request(app)
+        .post(`/service/discord-channel/${suffix}`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-Tenant-Id', tenantId)
+        .set('X-Discord-Application-Revision', revision);
+    const admitted = await call('runs')
+      .send({
+        actor: { provider: 'discord', applicationId, guildId, externalUserId },
+        eventId: '678901234567890123',
+        externalChannelId,
+        externalThreadKey: `${externalChannelId}:678901234567890123`,
+        externalMessageKey: `${externalChannelId}:678901234567890123`,
+        input: 'hello',
+      })
+      .expect(201);
+    const claimed = await call('runs/claim').send({ owner: 'worker' }).expect(200);
+    const fence = claimed.body.fence;
+    const route = `runs/${admitted.body.runId}/progress`;
+    await call(`${route}/plan`)
+      .send({ fence, revision: 1, rendererVersion: 'discord-progress-v1', text: 'Working' })
+      .expect(200);
+    const rotated = await installations.configureApplication({
+      actorId: users[0].id,
+      applicationId,
+      botUserId,
+      publicKey: 'b'.repeat(64),
+      encryptedBotToken: 'rotated',
+      expectedRevision: configured.value.revision,
+    });
+    if (!rotated.ok) throw new Error(rotated.error.code);
+    await call(`${route}/begin`).send({ fence, revision: 1 }).expect(409);
+    await call(`${route}/begin`, rotated.value.revision).send({ fence, revision: 1 }).expect(200);
+    const again = await installations.configureApplication({
+      actorId: users[0].id,
+      applicationId,
+      botUserId,
+      publicKey: 'c'.repeat(64),
+      encryptedBotToken: 'rotated-again',
+      expectedRevision: rotated.value.revision,
+    });
+    expect(again.ok).toBe(true);
+    await call(`${route}/settle`, rotated.value.revision)
+      .send({
+        fence,
+        revision: 1,
+        receipt: {
+          outcome: 'confirmed',
+          attempts: 1,
+          externalMessageKey: `${externalChannelId}:789012345678901234`,
+        },
+      })
+      .expect(200);
+  }),
 );

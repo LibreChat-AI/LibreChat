@@ -4,6 +4,7 @@ import type { SlackClient } from '../slack';
 import type { Logger } from '../types';
 import { durableSlackMessage, makeSlackPlan, supportedRenderer } from '../render';
 import { failedWrite, pendingReview, terminalSnapshot } from '../provider';
+import { assertSlackBundle } from '../types';
 import { SlackWriteError } from '../slack';
 
 export function progressText(run: ChannelRunView): string {
@@ -70,6 +71,7 @@ export function createSlackWorkerProvider(slack: SlackClient, log: Logger): Work
       address(run);
     },
     assertBinding(run, bundle) {
+      assertSlackBundle(bundle);
       if (
         run.admission.actor.provider !== undefined ||
         run.admission.actor.teamId !== bundle.channel.slack.teamId ||
@@ -79,12 +81,14 @@ export function createSlackWorkerProvider(slack: SlackClient, log: Logger): Work
     },
     progressText,
     makePlan(run, bundle) {
+      assertSlackBundle(bundle);
       return makeSlackPlan(run, bundle.gateway.nativeSessions, bundle.delivery.maxDeliveryParts);
     },
     supportsRenderer: supportedRenderer,
     classifyError: slackWriteFailure,
     recoveryEvent: slackRecoveryEvent,
     preparePart(part, renderer, bundle) {
+      assertSlackBundle(bundle);
       const message = durableSlackMessage(part, renderer);
       return async (run, signal) => {
         const result = await slack.deliverPart(
@@ -96,6 +100,7 @@ export function createSlackWorkerProvider(slack: SlackClient, log: Logger): Work
       };
     },
     async writeProgress(run, bundle, signal) {
+      assertSlackBundle(bundle);
       const progress = run.progress;
       if (!progress) throw new Error('Missing progress state');
       const target = address(run);
@@ -135,9 +140,11 @@ export function createSlackWorkerProvider(slack: SlackClient, log: Logger): Work
       return { externalMessageKey: `${posted.channel}:${posted.ts}` };
     },
     async deleteProgress(run, bundle, signal) {
+      assertSlackBundle(bundle);
       await slack.deleteMessage(bundle.credentials.botToken, progressAddress(run), signal);
     },
     async setSessionStatus(run, bundle, status, signal) {
+      assertSlackBundle(bundle);
       const target = address(run);
       await slack.setSessionStatus(
         bundle.credentials.botToken,
@@ -151,6 +158,7 @@ export function createSlackWorkerProvider(slack: SlackClient, log: Logger): Work
       );
     },
     async deliverArtifact({ run, artifact, bytes, bundle, attempts, signal, checkpoint, check }) {
+      assertSlackBundle(bundle);
       let allocation: { fileId: string; uploadUrl: string };
       try {
         allocation = await slack.allocateArtifact(
@@ -194,6 +202,7 @@ export function createSlackWorkerProvider(slack: SlackClient, log: Logger): Work
       return { outcome: 'confirmed', externalFileId: allocation.fileId };
     },
     async lifecycle(run, bundle, phase, signal) {
+      assertSlackBundle(bundle);
       if (!bundle.gateway.lifecycleReactions) return;
       const prefix = run.admission.externalChannelId + ':';
       const ts = run.admission.externalMessageKey.slice(prefix.length);

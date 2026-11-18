@@ -39,6 +39,7 @@ const CREDENTIAL_ROUTES = [
   /\/api\/channels\/workspaces\/(?:apps|oauth)(?:\/|$)/i,
   /\/api\/channels\/workspaces\/connect\/?$/i,
   /\/api\/channels\/links\/(?:preview|accept)\/?$/i,
+  /\/api\/channels\/service\/(?:slack|discord)\/[^/]+\/[^/]+\/?$/i,
   /\/api\/agents\/[^/]+\/channels\/[^/]+\/?$/i,
 ];
 
