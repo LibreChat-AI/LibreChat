@@ -1,5 +1,6 @@
 import express from 'express';
 import request from 'supertest';
+import { EventEmitter } from 'events';
 import type { MCPReinitializeDependencies } from './connect';
 import { createMCPReinitializeHandler } from './connect';
 
@@ -141,4 +142,149 @@ it('reports the recovered configuration revision actually used by Connect', asyn
   expect(fixture.reinitialize).toHaveBeenCalledWith(
     expect.objectContaining({ serverConfig: recovered }),
   );
+});
+
+function ownedResponse() {
+  return Object.assign(new EventEmitter(), {
+    destroyed: false,
+    writableEnded: false,
+    json: jest.fn(),
+    status: jest.fn().mockReturnThis(),
+  });
+}
+
+async function invokeHandler(
+  dependencies: MCPReinitializeDependencies,
+  res: ReturnType<typeof ownedResponse>,
+) {
+  const handler = createMCPReinitializeHandler(dependencies);
+  await handler(
+    {
+      params: { serverName: 'server' },
+      user: { id: 'user', role: 'USER' },
+    } as unknown as Parameters<typeof handler>[0],
+    res as unknown as Parameters<typeof handler>[1],
+    jest.fn(),
+  );
+}
+
+it.each(['destroyed', 'writableEnded'] as const)(
+  'does not start work for an already %s response',
+  async (state) => {
+    const fixture = setup();
+    const res = ownedResponse();
+    res[state] = true;
+    await invokeHandler(fixture.dependencies, res);
+    expect(fixture.invalidate).not.toHaveBeenCalled();
+    expect(fixture.reinitialize).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
+    expect(res.listenerCount('close')).toBe(0);
+  },
+);
+
+it.each(['configuration', 'recovery', 'credentials'] as const)(
+  'does not initialize after the owner disconnects during %s lookup',
+  async (stage) => {
+    const fixture = setup();
+    const res = ownedResponse();
+    const closeOwner = () => {
+      res.destroyed = true;
+      res.emit('close');
+    };
+    if (stage === 'configuration') {
+      fixture.dependencies.resolveConfigServers = async () => {
+        closeOwner();
+        return undefined;
+      };
+    } else if (stage === 'recovery') {
+      fixture.dependencies.getMCPServersRegistry = () => ({
+        getServerConfig: jest.fn().mockResolvedValue({
+          type: 'streamable-http',
+          url: 'https://mcp.example.test',
+          inspectionFailed: true,
+        }),
+        recoverServerConfig: jest.fn().mockImplementation(async () => {
+          closeOwner();
+          return { type: 'streamable-http', url: 'https://mcp.example.test' };
+        }),
+      });
+    } else {
+      fixture.dependencies.getMCPServersRegistry = () => ({
+        recoverServerConfig: jest.fn(),
+        getServerConfig: jest.fn().mockResolvedValue({
+          type: 'streamable-http',
+          url: 'https://mcp.example.test',
+          customUserVars: { API_KEY: { title: 'Key' } },
+        }),
+      });
+      fixture.dependencies.db.findPluginAuthsByKeys = jest.fn().mockImplementation(async () => {
+        closeOwner();
+        return [];
+      });
+    }
+    await invokeHandler(fixture.dependencies, res);
+    expect(fixture.reinitialize).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
+    expect(res.listenerCount('close')).toBe(0);
+  },
+);
+
+it('aborts initialization on owner close and removes its listener', async () => {
+  const fixture = setup();
+  const res = ownedResponse();
+  fixture.reinitialize.mockImplementationOnce(async ({ signal }) => {
+    expect(signal.aborted).toBe(false);
+    res.destroyed = true;
+    res.emit('close');
+    expect(signal.aborted).toBe(true);
+    return { success: true, serverName: 'server' };
+  });
+  await invokeHandler(fixture.dependencies, res);
+  expect(fixture.reinitialize).toHaveBeenCalledTimes(1);
+  expect(res.json).not.toHaveBeenCalled();
+  expect(res.listenerCount('close')).toBe(0);
+});
+
+it('does not initialize with credentials whose storage lookup failed', async () => {
+  const fixture = setup();
+  const res = ownedResponse();
+  fixture.dependencies.getMCPServersRegistry = () => ({
+    recoverServerConfig: jest.fn(),
+    getServerConfig: jest.fn().mockResolvedValue({
+      type: 'streamable-http',
+      url: 'https://mcp.example.test',
+      customUserVars: { API_KEY: { title: 'Key' } },
+    }),
+  });
+  fixture.dependencies.db.findPluginAuthsByKeys = jest
+    .fn()
+    .mockRejectedValue(new Error('synthetic storage failure'));
+  await invokeHandler(fixture.dependencies, res);
+  expect(fixture.reinitialize).not.toHaveBeenCalled();
+  expect(res.status).toHaveBeenCalledWith(500);
+  expect(res.json).toHaveBeenCalledWith({ error: 'Internal server error' });
+  expect(res.listenerCount('close')).toBe(0);
+});
+
+it('does not write an error after the response owner disconnects', async () => {
+  const fixture = setup();
+  const res = ownedResponse();
+  fixture.dependencies.resolveConfigServers = async () => {
+    res.destroyed = true;
+    res.emit('close');
+    throw new Error('synthetic storage failure');
+  };
+  await invokeHandler(fixture.dependencies, res);
+  expect(fixture.reinitialize).not.toHaveBeenCalled();
+  expect(res.status).not.toHaveBeenCalled();
+  expect(res.json).not.toHaveBeenCalled();
+  expect(res.listenerCount('close')).toBe(0);
+});
+
+it('removes the response listener after a normal successful operation', async () => {
+  const fixture = setup();
+  const res = ownedResponse();
+  await invokeHandler(fixture.dependencies, res);
+  expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  expect(res.listenerCount('close')).toBe(0);
 });

@@ -85,7 +85,12 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
   const OAUTH_CSRF_COOKIE_PATH = '/api/mcp';
   return async (request, res, next) => {
     const req = request as ReinitializeRequest;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const isClosed = () => controller.signal.aborted || res.destroyed || res.writableEnded;
+    res.once('close', abort);
     try {
+      if (isClosed()) return;
       const { serverName } = req.params;
       const user = createSafeUser(req.user);
 
@@ -98,6 +103,7 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
 
       const mcpManager = getMCPManager();
       const configServers = await resolveConfigServers(req);
+      if (isClosed()) return;
       const registry = getMCPServersRegistry();
       let serverConfig = await registry.getServerConfig(
         serverName,
@@ -106,6 +112,7 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
         req.user.role,
         { idOnTheSource: req.user.idOnTheSource },
       );
+      if (isClosed()) return;
       if (!serverConfig) {
         res.status(404).json({
           error: `MCP server '${serverName}' not found in configuration`,
@@ -119,6 +126,7 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
       } finally {
         await mcpManager.disconnectUserConnection(user.id, serverName);
       }
+      if (isClosed()) return;
       logger.info(
         `[MCP Reinitialize] Disconnected existing user connection for server: ${serverName}`,
       );
@@ -129,6 +137,7 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
         serverConfig,
         user.id,
       );
+      if (isClosed()) return;
       serverConfig = resolution.serverConfig ?? serverConfig;
 
       /** @type {Record<string, Record<string, string>> | undefined} */
@@ -138,54 +147,49 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
           userId: user.id,
           servers: [serverName],
           findPluginAuthsByKeys: db.findPluginAuthsByKeys,
+          throwOnError: true,
         });
       }
+      if (isClosed()) return;
       const oboIdentityContext = createAuthIdentityContext({
         user: req.user,
         tenantId: getTenantId(),
       });
 
-      const controller = new AbortController();
-      const abort = () => controller.abort();
-      res.once('close', abort);
       let result: Awaited<ReturnType<MCPReinitializeDependencies['reinitMCPServer']>> =
         resolution.result;
-      try {
-        if (!result) {
-          result = await reinitMCPServer({
-            signal: controller.signal,
-            forceNew: true,
-            user,
-            serverName,
-            serverConfig,
-            configServers,
-            userMCPAuthMap,
-            upstreamTokenProvider: createOpenIDSessionTokenProvider({
-              req,
-              res,
-              user: req.user,
-              identityContext: oboIdentityContext,
-              tokenPreference: 'access_token',
-            }),
-            oboIdentityContext,
-            recoveryPolicy: req.config?.mcpSettings?.catalogRecovery,
-            mcpApps: resolveMCPAppsPolicy(
-              req.config?.mcpSettings?.apps,
-              undefined,
-              req.config?.mcpAppSandbox?.maxPersistedAppBytes,
-              req.config?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
-              req.config?.mcpAppSandbox?.url,
-              req.config?.mcpAppSandbox?.maxActiveViews,
-              req.config?.mcpAppSandbox?.maxActionPreviewChars,
-              req.config?.mcpAppSandbox?.operationLimits,
-            ),
-          });
-        }
-      } finally {
-        res.off('close', abort);
+      if (!result) {
+        result = await reinitMCPServer({
+          signal: controller.signal,
+          forceNew: true,
+          user,
+          serverName,
+          serverConfig,
+          configServers,
+          userMCPAuthMap,
+          upstreamTokenProvider: createOpenIDSessionTokenProvider({
+            req,
+            res,
+            user: req.user,
+            identityContext: oboIdentityContext,
+            tokenPreference: 'access_token',
+          }),
+          oboIdentityContext,
+          recoveryPolicy: req.config?.mcpSettings?.catalogRecovery,
+          mcpApps: resolveMCPAppsPolicy(
+            req.config?.mcpSettings?.apps,
+            undefined,
+            req.config?.mcpAppSandbox?.maxPersistedAppBytes,
+            req.config?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+            req.config?.mcpAppSandbox?.url,
+            req.config?.mcpAppSandbox?.maxActiveViews,
+            req.config?.mcpAppSandbox?.maxActionPreviewChars,
+            req.config?.mcpAppSandbox?.operationLimits,
+          ),
+        });
       }
 
-      if (res.destroyed) return;
+      if (isClosed()) return;
       if (!result) {
         res.status(500).json({ error: 'Failed to reinitialize MCP server for user' });
         return;
@@ -225,6 +229,7 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
         connectionDeferred,
       });
     } catch (error) {
+      if (isClosed()) return;
       if (
         error instanceof MCPAuthenticationRejectedError ||
         error instanceof MCPAuthenticationRefreshError ||
@@ -234,6 +239,8 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
       }
       logger.error('[MCP Reinitialize] Unexpected error', getSafeErrorMetadata(error));
       res.status(500).json({ error: 'Internal server error' });
+    } finally {
+      res.off('close', abort);
     }
   };
 }

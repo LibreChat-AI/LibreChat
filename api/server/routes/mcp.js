@@ -899,6 +899,7 @@ function createMCPStatusRuntimeContext(user, mcpConfig, serverNames) {
       userId: user.id,
       servers: customUserVarServers,
       findPluginAuthsByKeys: db.findPluginAuthsByKeys,
+      throwOnError: true,
     });
     return userMCPAuthMapPromise;
   };

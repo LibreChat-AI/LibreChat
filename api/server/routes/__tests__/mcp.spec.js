@@ -3577,6 +3577,7 @@ describe('MCP Routes', () => {
         userId: 'test-user-id',
         servers: ['server1'],
         findPluginAuthsByKeys: require('~/models').findPluginAuthsByKeys,
+        throwOnError: true,
       });
       expect(require('@librechat/api').getUserMCPAuthMap).toHaveBeenCalledTimes(1);
       expect(mockRegistryInstance.resolveAllowlists).toHaveBeenCalledTimes(1);
@@ -3630,6 +3631,50 @@ describe('MCP Routes', () => {
         expect.objectContaining({ servers: ['server1', 'server2'] }),
       );
     });
+
+    it.each(['/connection/status', '/connection/status/server1'])(
+      'propagates credential lookup failure in %s and keeps one batched read',
+      async (endpoint) => {
+        getMCPSetupData.mockResolvedValue({
+          mcpConfig: {
+            server1: { customUserVars: { API_KEY: { title: 'Key' } } },
+            server2: { customUserVars: { API_KEY: { title: 'Key' } } },
+          },
+          appConnections: new Map(),
+          userConnections: new Map(),
+          oauthServers: new Set(),
+        });
+        const load = require('@librechat/api').getUserMCPAuthMap;
+        load.mockImplementation(async ({ throwOnError }) => {
+          if (throwOnError) throw new Error('synthetic credential storage failure');
+          return {};
+        });
+        getServerConnectionStatus.mockImplementation(
+          async (_user, _name, _config, _app, _connections, _oauth, context) => {
+            await context.loadUserMCPAuthMap();
+            return { connectionState: 'disconnected', configurationState: 'needs_configuration' };
+          },
+        );
+        const singleServer = endpoint.endsWith('server1');
+        const response = await request(app)
+          .get(`/api/mcp${endpoint}`)
+          .expect(singleServer ? 500 : 200);
+        if (singleServer) {
+          expect(response.body).toEqual({ error: 'Failed to get connection status' });
+        }
+        const statuses = singleServer ? [] : Object.values(response.body.connectionStatus);
+        for (const status of statuses) {
+          expect(status).toEqual({
+            connectionState: 'error',
+            connectionStateSource: 'unavailable',
+            requiresOAuth: false,
+          });
+        }
+        expect(load).toHaveBeenCalledTimes(1);
+        expect(load).toHaveBeenCalledWith(expect.objectContaining({ throwOnError: true }));
+        expect(JSON.stringify(response.body)).not.toContain('synthetic credential storage failure');
+      },
+    );
 
     it('should resolve independent server statuses concurrently', async () => {
       let releaseFirst;
