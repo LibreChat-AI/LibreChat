@@ -6,6 +6,7 @@ import type {
   ScheduledMCPFailureReason,
   ScheduleMCPOutcome,
 } from 'librechat-data-provider';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ScheduledMCPFailure } from './contract';
 import { failureFixtures } from './failures';
 
@@ -34,6 +35,13 @@ function canonical(value: unknown): unknown {
     );
   }
   return value;
+}
+
+/** Covers the whole upstream definition: name, description, schemas and annotations. */
+export function getScheduledMCPToolDefinitionDigest(tool: Tool): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonical(tool)))
+    .digest('hex');
 }
 
 /** Identifies one set of permitted selections; a grant and its bearer cache entries bind to it. */

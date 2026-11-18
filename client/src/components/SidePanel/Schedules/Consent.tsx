@@ -36,24 +36,44 @@ function offeredTools(target: ScheduledMCPTarget): string[] {
   return [...new Set(target.permittedTools.flatMap((selection) => selection.tools))].sort();
 }
 
-/** The owner's starting point: what the stored grant already allows and is still on offer. */
+/**
+ * The owner's starting point: what the stored grant already allows and is still on offer.
+ * A tool whose definition changed starts unticked, so allowing the new one is a decision.
+ */
 function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
   return Object.fromEntries(
     data.targets.map((target) => {
       const offered = offeredTools(target);
       const allowed = data.allowed[target.resource.serverName] ?? [];
-      return [target.resource.serverName, offered.filter((tool) => allowed.includes(tool))];
+      const changed = data.changed[target.resource.serverName] ?? [];
+      return [
+        target.resource.serverName,
+        offered.filter((tool) => allowed.includes(tool) && !changed.includes(tool)),
+      ];
     }),
   );
 }
 
 /**
+ * The owner's ticks, with the grant they were made against and the tools it marked as
+ * changed at the time. A mark belongs to one grant: the same tool marked again under a later
+ * grant is a different change, which the owner has not looked at.
+ */
+interface Edited {
+  choice: Record<string, string[]>;
+  revision: string | null;
+  changed: Record<string, string[]>;
+}
+
+/**
  * The owner's ticks, kept to what is on offer now. The offer is read again while the dialog
- * is open, and a server or tool the agents dropped has no box left to untick.
+ * is open: a server or tool the agents dropped has no box left to untick, and a tool marked
+ * as changed since the owner last ticked anything, or marked under another grant, loses its
+ * tick, so allowing the new definition is something the owner does with the warning in view.
  */
 function currentChoice(
   data: ScheduleMCPConsentView,
-  edited: Record<string, string[]> | null,
+  edited: Edited | null,
 ): Record<string, string[]> {
   const initial = initialChoice(data);
   if (!edited) return initial;
@@ -61,9 +81,13 @@ function currentChoice(
     data.targets.map((target) => {
       const { serverName } = target.resource;
       const offered = offeredTools(target);
+      const marked = data.changed[serverName] ?? [];
+      const seen = edited.revision === data.revision ? (edited.changed[serverName] ?? []) : [];
       return [
         serverName,
-        (edited[serverName] ?? initial[serverName]).filter((tool) => offered.includes(tool)),
+        (edited.choice[serverName] ?? initial[serverName]).filter(
+          (tool) => offered.includes(tool) && (!marked.includes(tool) || seen.includes(tool)),
+        ),
       ];
     }),
   );
@@ -89,14 +113,18 @@ export default function Consent({
   const [hours, setHours] = useState(1);
   const [message, setMessage] = useState<'success' | 'revoked' | 'error' | null>(null);
   /** Null until the owner changes a box, so a refetch cannot overwrite a choice in progress. */
-  const [edited, setEdited] = useState<Record<string, string[]> | null>(null);
+  const [edited, setEdited] = useState<Edited | null>(null);
   const busy = confirm.isLoading || revoke.isLoading || query.isFetching;
   const data: ScheduleMCPConsentView | undefined = query.data;
   const choosing = canConfirm && data?.offer != null;
   const choice = data ? currentChoice(data, edited) : {};
   const chosenCount = Object.values(choice).reduce((count, tools) => count + tools.length, 0);
   const setTools = (serverName: string, tools: string[]) =>
-    setEdited({ ...choice, [serverName]: tools });
+    setEdited({
+      choice: { ...choice, [serverName]: tools },
+      revision: data?.revision ?? null,
+      changed: data?.changed ?? {},
+    });
   const commit = () => {
     if (!data?.offer || chosenCount === 0) return;
     setMessage(null);
@@ -188,15 +216,25 @@ export default function Consent({
                           serverName={target.resource.serverName}
                           offered={offeredTools(target)}
                           chosen={choice[target.resource.serverName] ?? []}
+                          changed={data.changed[target.resource.serverName] ?? []}
                           disabled={busy}
                           onChange={(tools) => setTools(target.resource.serverName, tools)}
                         />
                       ) : (
-                        <p className="text-text-secondary text-xs">
-                          {localize('com_ui_schedule_consent_allowed', {
-                            tools: (data.allowed[target.resource.serverName] ?? []).join(', '),
-                          })}
-                        </p>
+                        <>
+                          <p className="text-text-secondary text-xs">
+                            {localize('com_ui_schedule_consent_allowed', {
+                              tools: (data.allowed[target.resource.serverName] ?? []).join(', '),
+                            })}
+                          </p>
+                          {(data.changed[target.resource.serverName] ?? []).length > 0 && (
+                            <p className="text-status-warning text-xs">
+                              {localize('com_ui_schedule_consent_changed_tools', {
+                                tools: data.changed[target.resource.serverName].join(', '),
+                              })}
+                            </p>
+                          )}
+                        </>
                       )}
                     </li>
                   ))}
@@ -256,12 +294,15 @@ function ToolChoice({
   serverName,
   offered,
   chosen,
+  changed,
   disabled,
   onChange,
 }: {
   serverName: string;
   offered: string[];
   chosen: string[];
+  /** Tools the server changed since they were allowed. Refused until confirmed again. */
+  changed: string[];
   disabled: boolean;
   onChange: (tools: string[]) => void;
 }) {
@@ -285,27 +326,35 @@ function ToolChoice({
       </div>
       <ul className="space-y-1 pl-6">
         {offered.map((tool) => (
-          <li key={tool} className="flex items-center gap-2">
-            <Checkbox
-              id={`${groupId}-${tool}`}
-              checked={chosen.includes(tool)}
-              disabled={disabled}
-              aria-labelledby={`${groupId}-${tool}-label`}
-              onCheckedChange={(checked) =>
-                onChange(
-                  checked === true
-                    ? offered.filter((name) => name === tool || chosen.includes(name))
-                    : chosen.filter((name) => name !== tool),
-                )
-              }
-            />
-            <Label
-              id={`${groupId}-${tool}-label`}
-              htmlFor={`${groupId}-${tool}`}
-              className="text-xs break-all"
-            >
-              {tool}
-            </Label>
+          <li key={tool}>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id={`${groupId}-${tool}`}
+                checked={chosen.includes(tool)}
+                disabled={disabled}
+                aria-labelledby={`${groupId}-${tool}-label`}
+                aria-describedby={changed.includes(tool) ? `${groupId}-${tool}-changed` : undefined}
+                onCheckedChange={(checked) =>
+                  onChange(
+                    checked === true
+                      ? offered.filter((name) => name === tool || chosen.includes(name))
+                      : chosen.filter((name) => name !== tool),
+                  )
+                }
+              />
+              <Label
+                id={`${groupId}-${tool}-label`}
+                htmlFor={`${groupId}-${tool}`}
+                className="text-xs break-all"
+              >
+                {tool}
+              </Label>
+            </div>
+            {changed.includes(tool) && (
+              <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
+                {localize('com_ui_schedule_consent_tool_changed')}
+              </p>
+            )}
           </li>
         ))}
       </ul>

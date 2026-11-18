@@ -75,6 +75,50 @@ it('does not accept an unknown persisted consent version', () => {
   ).toBe(false);
 });
 
+it('reads a grant with or without definition pins, and nothing but a digest as a pin', () => {
+  const identity = {
+    scheduleId: 'schedule',
+    ownerId: 'owner',
+    tenantId: 'tenant',
+    agentId: 'root',
+    invocationMode: 'delegated' as const,
+  };
+  const consent = {
+    id: 'consent',
+    revision: 'grant',
+    identity,
+    resource: {
+      serverName: 'warehouse',
+      url: 'https://warehouse.example/mcp',
+      configurationRevision: 'v1',
+      credentialMode: 'anonymous' as const,
+      issuer: null,
+      audience: null,
+      scopes: [],
+    },
+    permittedTools: [{ agentId: 'root', tools: ['query'] }],
+    policyRevision: 'p1',
+    grantedAtMs: 1,
+    absoluteExpiresAtMs: 2,
+    revokedAtMs: null,
+  };
+  const parse = (extra: object) =>
+    scheduledMCPEnrollmentSchema.safeParse({
+      version: 1,
+      scheduleRevision: 0,
+      revision: 'grant',
+      consents: [{ ...consent, ...extra }],
+    }).success;
+  expect(parse({})).toBe(true);
+  expect(
+    parse({ definitions: [{ tool: 'query', digest: 'a'.repeat(64) }], changedTools: ['query'] }),
+  ).toBe(true);
+  expect(parse({ definitions: [{ tool: 'query', digest: 'short' }] })).toBe(false);
+  expect(
+    parse({ definitions: [{ tool: 'query', digest: 'a'.repeat(64), description: 'text' }] }),
+  ).toBe(false);
+});
+
 it.each([
   ['no choice at all', undefined],
   ['no servers', {}],

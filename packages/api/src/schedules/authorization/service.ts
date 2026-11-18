@@ -4,6 +4,7 @@ import type {
   ScheduledMCPIdentity,
   ScheduledMCPResource,
   ScheduledMCPTarget,
+  ScheduledMCPConsent,
   ScheduleMCPConsentView,
   ConfirmScheduleMCPConsent,
   ScheduledMCPEnrollment,
@@ -150,6 +151,57 @@ function coversGrant(
   });
 }
 
+/** Allowed tools a run saw with a definition other than their pin, by server. */
+function changedTools(consents: readonly ScheduledMCPConsent[]): Record<string, string[]> {
+  return Object.fromEntries(
+    consents
+      .filter((consent) => consent.changedTools?.length)
+      .map((consent) => [consent.resource.serverName, [...consent.changedTools!].sort()]),
+  );
+}
+
+/**
+ * Pins survive a renewal so confirming again cannot quietly accept a definition nobody has
+ * looked at. A tool marked as changed loses its pin: confirming it is the owner's decision
+ * to accept what the server offers now, and its next use is pinned afresh.
+ */
+function carriedPins(
+  target: ScheduledMCPTarget,
+  prior?: ScheduledMCPConsent,
+): Pick<ScheduledMCPConsent, 'definitions'> {
+  if (!prior?.definitions || !sameResource(prior.resource, target.resource)) return {};
+  const allowed = new Set(target.permittedTools.flatMap((selection) => selection.tools));
+  const marked = new Set(prior.changedTools);
+  const definitions = prior.definitions.filter(
+    (pin) => allowed.has(pin.tool) && !marked.has(pin.tool),
+  );
+  return definitions.length ? { definitions } : {};
+}
+
+/**
+ * Names what the owner was shown: the subject, its configuration, what is on offer, and which
+ * allowed tools were marked as changed. A dialog opened before a tool was marked cannot
+ * confirm past the mark; it is told the offer changed and reads it again.
+ */
+function offerDigest(
+  identity: ScheduledMCPIdentity,
+  configRevision: number,
+  targets: readonly ScheduledMCPTarget[],
+  changed: Record<string, string[]>,
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        identity,
+        configRevision,
+        targets,
+        // Left out while nothing is marked, so an offer made before marks existed still holds.
+        ...(Object.keys(changed).length > 0 && { changed }),
+      }),
+    )
+    .digest('hex');
+}
+
 export interface ScheduleMCPConsentService {
   view: (
     identity: ScheduledMCPIdentity,
@@ -212,6 +264,8 @@ export function createScheduleMCPConsentService(
         policyRevision,
       })) ?? [];
     const allowedByServer = allowedTools(granted);
+    const changedByServer = changedTools(enrollment?.consents ?? []);
+    if (state === 'active' && Object.keys(changedByServer).length > 0) state = 'changed';
     let targets = granted;
     let offer: ScheduleMCPConsentView['offer'] = null;
     if (snapshot.compatible === false) {
@@ -221,6 +275,7 @@ export function createScheduleMCPConsentService(
         expiresAtMs: null,
         targets: [],
         allowed: {},
+        changed: {},
         offer: null,
       };
     }
@@ -236,6 +291,7 @@ export function createScheduleMCPConsentService(
           expiresAtMs,
           targets,
           allowed: allowedByServer,
+          changed: changedByServer,
           offer: null,
         };
       }
@@ -246,12 +302,11 @@ export function createScheduleMCPConsentService(
           expiresAtMs,
           targets,
           allowed: allowedByServer,
+          changed: changedByServer,
           offer: null,
         };
       targets = canonicalTargets(resolved);
-      const digest = createHash('sha256')
-        .update(JSON.stringify({ identity, configRevision: snapshot.configRevision, targets }))
-        .digest('hex');
+      const digest = offerDigest(identity, snapshot.configRevision, targets, changedByServer);
       offer = { digest, maxLifetimeHours: limits.maxLifetimeHours };
       if (state === 'active' && !coversGrant(targets, granted)) state = 'changed';
     } else if (!enrollment) state = 'unsupported';
@@ -262,6 +317,7 @@ export function createScheduleMCPConsentService(
       expiresAtMs,
       targets,
       allowed: allowedByServer,
+      changed: changedByServer,
       offer,
     };
   }
@@ -286,15 +342,12 @@ export function createScheduleMCPConsentService(
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (!snapshot) throw new ScheduleMCPConsentError('consent_not_found');
     // Recompute the digest with the final observed row so an edit cannot reuse an old offer.
-    const digest = createHash('sha256')
-      .update(
-        JSON.stringify({
-          identity,
-          configRevision: snapshot.configRevision,
-          targets: current.targets,
-        }),
-      )
-      .digest('hex');
+    const digest = offerDigest(
+      identity,
+      snapshot.configRevision,
+      current.targets,
+      changedTools(snapshot.enrollment?.consents ?? []),
+    );
     if (digest !== input.offerDigest) throw new ScheduleMCPConsentError('consent_changed');
     const chosen = selectAllowed(current.targets, input.allow);
     options.signal?.throwIfAborted();
@@ -306,6 +359,12 @@ export function createScheduleMCPConsentService(
       scheduleRevision: snapshot.configRevision,
       consents: chosen.map((target) => ({
         ...target,
+        ...carriedPins(
+          target,
+          snapshot.enrollment?.consents.find(
+            (prior) => prior.resource.serverName === target.resource.serverName,
+          ),
+        ),
         identity,
         id: randomUUID(),
         revision,
@@ -319,6 +378,8 @@ export function createScheduleMCPConsentService(
       expectedRevision: input.expectedRevision,
       expectedConfigRevision: snapshot.configRevision,
       enrollment,
+      // A pin or mark a run adds after this read is neither carried nor shown to the owner.
+      basis: snapshot.enrollment,
     });
     if (!committed) throw new ScheduleMCPConsentError('consent_changed');
     return view(identity, options);
@@ -389,20 +450,73 @@ export function createScheduleMCPConsentService(
         )
       )
         return denial('tool_policy_denied');
+      const live = Object.entries(request.definitions ?? {}).filter(([tool]) =>
+        request.selection.tools.includes(tool),
+      );
+      const pinned = (source: ScheduledMCPConsent, tool: string, digest: string) =>
+        !source.changedTools?.includes(tool) &&
+        source.definitions?.find((pin) => pin.tool === tool)?.digest === digest;
+      const grant = { identity: request.identity, revision: enrollment!.revision };
+      /** Marks every tool `source` pins to a definition other than the one this request saw. */
+      const markDisagreements = async (source: ScheduledMCPConsent): Promise<boolean> => {
+        const tools = live
+          .filter(([tool, digest]) =>
+            source.definitions?.some((pin) => pin.tool === tool && pin.digest !== digest),
+          )
+          .map(([tool]) => tool);
+        await Promise.all(
+          tools.map((tool) =>
+            deps.storage.flagScheduleMCPToolChange({ ...grant, consentId: consent.id, tool }),
+          ),
+        );
+        return tools.length > 0;
+      };
+      if (live.some(([tool]) => consent.changedTools?.includes(tool)))
+        return denial('binding_mismatch');
+      if (await markDisagreements(consent)) return denial('binding_mismatch');
       if (options.signal?.aborted) return { state: 'cancelled' };
+      // The grant was read a moment ago. Admission checks the marks and pins again in the same
+      // write, so a mark or a first pin stored since then refuses this use as well.
       const admitted = await deps.storage.admitScheduleMCPConsent({
         identity: request.identity,
         expectedConfigRevision: snapshot!.configRevision,
         revision: enrollment!.revision,
         consentId: consent.id,
         requireEnabled: request.stage !== 'activation' && request.manual !== true,
+        ...(live.length > 0 && { definitions: Object.fromEntries(live) }),
       });
       if (!admitted) {
         const latest = await authority.lookupConsent(request.identity, request.resource, options);
         if (latest.state !== 'found') return denial('consent_missing');
         if (latest.consent.revokedAtMs != null) return denial('consent_revoked');
         if (now() >= latest.consent.absoluteExpiresAtMs) return denial('consent_expired');
+        if (latest.consent.id === consent.id) await markDisagreements(latest.consent);
         return denial('binding_mismatch');
+      }
+      // First use: remember what the tool looked like. Another replica may have got there first.
+      const unpinned = live.filter(
+        ([tool]) => !consent.definitions?.some((pin) => pin.tool === tool),
+      );
+      const stored = await Promise.all(
+        unpinned.map(([tool, digest]) =>
+          deps.storage.pinScheduleMCPToolDefinition({
+            ...grant,
+            consentId: consent.id,
+            tool,
+            digest,
+          }),
+        ),
+      );
+      if (stored.includes(false)) {
+        const latest = await authority.lookupConsent(request.identity, request.resource, options);
+        const current =
+          latest.state === 'found' && latest.consent.id === consent.id ? latest.consent : undefined;
+        if (!current || unpinned.some(([tool, digest]) => !pinned(current, tool, digest))) {
+          // Two first uses saw two definitions. The one that lost leaves the same mark a later
+          // mismatch would, so the tool is refused and the owner is told, whichever won.
+          if (current) await markDisagreements(current);
+          return denial('binding_mismatch');
+        }
       }
       if (options.signal?.aborted) return { state: 'cancelled' };
       if (now() >= consent.absoluteExpiresAtMs) return denial('consent_expired');
