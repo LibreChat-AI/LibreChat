@@ -1,30 +1,31 @@
 import { Providers } from '@librechat/agents';
 import { mbToBytes, isOpenAILikeProvider } from 'librechat-data-provider';
+import type { ValidationFailureReason } from '~/types';
 
 export interface ValidationResult {
   isValid: boolean;
   error?: string;
+  reason?: ValidationFailureReason;
 }
 
-export interface PDFValidationResult {
-  isValid: boolean;
-  error?: string;
+export type PDFValidationResult = ValidationResult;
+
+export type VideoValidationResult = ValidationResult;
+
+export type AudioValidationResult = ValidationResult;
+
+export type ImageValidationResult = ValidationResult;
+
+export interface NativeDocumentSizeLimitParams {
+  provider: Providers | string;
+  mimeType: string;
+  model?: string;
+  /** Configured endpoint `fileSizeLimit` in bytes */
+  configuredFileSizeLimit?: number;
 }
 
-export interface VideoValidationResult {
-  isValid: boolean;
-  error?: string;
-}
-
-export interface AudioValidationResult {
-  isValid: boolean;
-  error?: string;
-}
-
-export interface ImageValidationResult {
-  isValid: boolean;
-  error?: string;
-}
+const pdfMimeType = 'application/pdf';
+const docxMimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 export async function validatePdf(
   pdfBuffer: Buffer,
@@ -40,19 +41,38 @@ export async function validatePdf(
   if (provider === Providers.BEDROCK) {
     return validateBedrockDocument(
       fileSize,
-      'application/pdf',
+      pdfMimeType,
       pdfBuffer,
       configuredFileSizeLimit,
       model,
     );
   }
 
-  if (isOpenAILikeProvider(provider)) {
-    return validateOpenAIPdf(fileSize, configuredFileSizeLimit);
-  }
+  return validatePdfSize(fileSize, provider, configuredFileSizeLimit);
+}
 
-  if (provider === Providers.GOOGLE || provider === Providers.VERTEXAI) {
-    return validateGooglePdf(fileSize, configuredFileSizeLimit);
+/**
+ * Validates a PDF's size against the limit the provider's native document path enforces.
+ * Providers without a PDF limit (anything but Anthropic, OpenAI-like and Google/Vertex) pass.
+ */
+function validatePdfSize(
+  fileSize: number,
+  provider: Providers,
+  configuredFileSizeLimit?: number,
+): PDFValidationResult {
+  const effectiveLimit = getNativeDocumentSizeLimit({
+    provider,
+    mimeType: pdfMimeType,
+    configuredFileSizeLimit,
+  });
+
+  if (effectiveLimit !== undefined && fileSize > effectiveLimit) {
+    const limitMB = Math.round(effectiveLimit / (1024 * 1024));
+    return {
+      isValid: false,
+      reason: 'capacity',
+      error: `PDF file size (${Math.round(fileSize / (1024 * 1024))}MB) exceeds the ${limitMB}MB limit`,
+    };
   }
 
   return { isValid: true };
@@ -71,20 +91,15 @@ async function validateAnthropicPdf(
   configuredFileSizeLimit?: number,
 ): Promise<PDFValidationResult> {
   try {
-    const providerLimit = mbToBytes(32);
-    const effectiveLimit = configuredFileSizeLimit ?? providerLimit;
-
-    if (fileSize > effectiveLimit) {
-      const limitMB = Math.round(effectiveLimit / (1024 * 1024));
-      return {
-        isValid: false,
-        error: `PDF file size (${Math.round(fileSize / (1024 * 1024))}MB) exceeds the ${limitMB}MB limit`,
-      };
+    const sizeValidation = validatePdfSize(fileSize, Providers.ANTHROPIC, configuredFileSizeLimit);
+    if (!sizeValidation.isValid) {
+      return sizeValidation;
     }
 
     if (!pdfBuffer || pdfBuffer.length < 5) {
       return {
         isValid: false,
+        reason: 'integrity',
         error: 'Invalid PDF file: too small or corrupted',
       };
     }
@@ -93,6 +108,7 @@ async function validateAnthropicPdf(
     if (!pdfHeader.startsWith('%PDF-')) {
       return {
         isValid: false,
+        reason: 'integrity',
         error: 'Invalid PDF file: missing PDF header',
       };
     }
@@ -105,6 +121,7 @@ async function validateAnthropicPdf(
     ) {
       return {
         isValid: false,
+        reason: 'integrity',
         error: 'PDF is password-protected or encrypted. Anthropic requires unencrypted PDFs.',
       };
     }
@@ -115,6 +132,7 @@ async function validateAnthropicPdf(
     if (estimatedPages > 100) {
       return {
         isValid: false,
+        reason: 'capacity',
         error: `PDF has approximately ${estimatedPages} pages, exceeding Anthropic's 100-page limit`,
       };
     }
@@ -124,6 +142,7 @@ async function validateAnthropicPdf(
     console.error('PDF validation error:', error);
     return {
       isValid: false,
+      reason: 'integrity',
       error: 'Failed to validate PDF file',
     };
   }
@@ -160,9 +179,6 @@ const isBedrockClaude4Plus = (model?: string): boolean =>
 const isBedrockNova = (model?: string): boolean =>
   model != null && /(?:^|\.)amazon\.nova-/.test(model);
 
-const pdfMimeType = 'application/pdf';
-const docxMimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-
 /**
  * Returns true when the given model + MIME type combination is exempt from
  * Bedrock's default 4.5 MB per-document limit.
@@ -180,6 +196,51 @@ const isExemptFromBedrockDocLimit = (model?: string, mimeType?: string): boolean
   }
   return false;
 };
+
+/** Provider fallback for a PDF sent as a native document, or undefined when it has none. */
+const getPdfProviderLimit = (provider: Providers | string): number | undefined => {
+  if (provider === Providers.ANTHROPIC) {
+    return mbToBytes(32);
+  }
+  if (isOpenAILikeProvider(provider)) {
+    return mbToBytes(10);
+  }
+  if (provider === Providers.GOOGLE || provider === Providers.VERTEXAI) {
+    return mbToBytes(20);
+  }
+  return undefined;
+};
+
+/**
+ * The per-file byte limit the document encoder enforces before sending a file natively,
+ * resolved from metadata alone. A configured limit replaces the provider fallback rather
+ * than capping it, so a configured 0 rejects every Bedrock document and every PDF with a
+ * provider limit. Outside those, only a truthy configured limit applies.
+ * @returns The limit in bytes, or undefined when no size limit applies
+ */
+export function getNativeDocumentSizeLimit({
+  provider,
+  mimeType,
+  model,
+  configuredFileSizeLimit,
+}: NativeDocumentSizeLimitParams): number | undefined {
+  if (provider === Providers.BEDROCK) {
+    const providerLimit = isExemptFromBedrockDocLimit(model, mimeType)
+      ? mbToBytes(32)
+      : mbToBytes(4.5);
+    return configuredFileSizeLimit ?? providerLimit;
+  }
+
+  if (mimeType !== pdfMimeType) {
+    return configuredFileSizeLimit || undefined;
+  }
+
+  const providerLimit = getPdfProviderLimit(provider);
+  if (providerLimit === undefined) {
+    return undefined;
+  }
+  return configuredFileSizeLimit ?? providerLimit;
+}
 
 /**
  * Validates a document against Bedrock size limits. The default limit is 4.5 MB,
@@ -200,15 +261,18 @@ export async function validateBedrockDocument(
   model?: string,
 ): Promise<ValidationResult> {
   try {
-    const exempt = isExemptFromBedrockDocLimit(model, mimeType);
-    /** Default 4.5 MB; exempt models (Claude 4+ PDF, Nova PDF/DOCX) default to 32 MB when unconfigured */
-    const providerLimit = exempt ? mbToBytes(32) : mbToBytes(4.5);
-    const effectiveLimit = configuredFileSizeLimit ?? providerLimit;
+    const effectiveLimit = getNativeDocumentSizeLimit({
+      provider: Providers.BEDROCK,
+      mimeType,
+      model,
+      configuredFileSizeLimit,
+    });
 
-    if (fileSize > effectiveLimit) {
+    if (effectiveLimit !== undefined && fileSize > effectiveLimit) {
       const limitMB = (effectiveLimit / (1024 * 1024)).toFixed(1);
       return {
         isValid: false,
+        reason: 'capacity',
         error: `File size (${(fileSize / (1024 * 1024)).toFixed(1)}MB) exceeds the ${limitMB}MB limit for Bedrock`,
       };
     }
@@ -217,6 +281,7 @@ export async function validateBedrockDocument(
       if (fileBuffer.length < 5) {
         return {
           isValid: false,
+          reason: 'integrity',
           error: 'Invalid PDF file: too small or corrupted',
         };
       }
@@ -225,6 +290,7 @@ export async function validateBedrockDocument(
       if (!pdfHeader.startsWith('%PDF-')) {
         return {
           isValid: false,
+          reason: 'integrity',
           error: 'Invalid PDF file: missing PDF header',
         };
       }
@@ -235,57 +301,10 @@ export async function validateBedrockDocument(
     console.error('Bedrock document validation error:', error);
     return {
       isValid: false,
+      reason: 'integrity',
       error: 'Failed to validate document file',
     };
   }
-}
-
-/**
- * Validates if a PDF meets OpenAI's requirements
- * @param fileSize - The file size in bytes
- * @param configuredFileSizeLimit - Optional configured file size limit from fileConfig (in bytes)
- * @returns Promise that resolves to validation result
- */
-async function validateOpenAIPdf(
-  fileSize: number,
-  configuredFileSizeLimit?: number,
-): Promise<PDFValidationResult> {
-  const providerLimit = mbToBytes(10);
-  const effectiveLimit = configuredFileSizeLimit ?? providerLimit;
-
-  if (fileSize > effectiveLimit) {
-    const limitMB = Math.round(effectiveLimit / (1024 * 1024));
-    return {
-      isValid: false,
-      error: `PDF file size (${Math.round(fileSize / (1024 * 1024))}MB) exceeds the ${limitMB}MB limit`,
-    };
-  }
-
-  return { isValid: true };
-}
-
-/**
- * Validates if a PDF meets Google's requirements
- * @param fileSize - The file size in bytes
- * @param configuredFileSizeLimit - Optional configured file size limit from fileConfig (in bytes)
- * @returns Promise that resolves to validation result
- */
-async function validateGooglePdf(
-  fileSize: number,
-  configuredFileSizeLimit?: number,
-): Promise<PDFValidationResult> {
-  const providerLimit = mbToBytes(20);
-  const effectiveLimit = configuredFileSizeLimit ?? providerLimit;
-
-  if (fileSize > effectiveLimit) {
-    const limitMB = Math.round(effectiveLimit / (1024 * 1024));
-    return {
-      isValid: false,
-      error: `PDF file size (${Math.round(fileSize / (1024 * 1024))}MB) exceeds the ${limitMB}MB limit`,
-    };
-  }
-
-  return { isValid: true };
 }
 
 /**
@@ -310,6 +329,7 @@ export async function validateVideo(
       const limitMB = Math.round(effectiveLimit / (1024 * 1024));
       return {
         isValid: false,
+        reason: 'capacity',
         error: `Video file size (${Math.round(fileSize / (1024 * 1024))}MB) exceeds the ${limitMB}MB limit`,
       };
     }
@@ -318,6 +338,7 @@ export async function validateVideo(
   if (!videoBuffer || videoBuffer.length < 10) {
     return {
       isValid: false,
+      reason: 'integrity',
       error: 'Invalid video file: too small or corrupted',
     };
   }
@@ -347,6 +368,7 @@ export async function validateAudio(
       const limitMB = Math.round(effectiveLimit / (1024 * 1024));
       return {
         isValid: false,
+        reason: 'capacity',
         error: `Audio file size (${Math.round(fileSize / (1024 * 1024))}MB) exceeds the ${limitMB}MB limit`,
       };
     }
@@ -355,6 +377,7 @@ export async function validateAudio(
   if (!audioBuffer || audioBuffer.length < 10) {
     return {
       isValid: false,
+      reason: 'integrity',
       error: 'Invalid audio file: too small or corrupted',
     };
   }
@@ -384,6 +407,7 @@ export async function validateImage(
       const limitMB = Math.round(effectiveLimit / (1024 * 1024));
       return {
         isValid: false,
+        reason: 'capacity',
         error: `Image file size (${Math.round(fileSize / (1024 * 1024))}MB) exceeds the ${limitMB}MB limit`,
       };
     }
@@ -397,6 +421,7 @@ export async function validateImage(
       const limitMB = Math.round(effectiveLimit / (1024 * 1024));
       return {
         isValid: false,
+        reason: 'capacity',
         error: `Image file size (${Math.round(fileSize / (1024 * 1024))}MB) exceeds the ${limitMB}MB limit`,
       };
     }
@@ -405,6 +430,7 @@ export async function validateImage(
   if (!imageBuffer || imageBuffer.length < 10) {
     return {
       isValid: false,
+      reason: 'integrity',
       error: 'Invalid image file: too small or corrupted',
     };
   }

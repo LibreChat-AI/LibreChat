@@ -1,6 +1,14 @@
 import { Providers } from '@librechat/agents';
 import { mbToBytes } from 'librechat-data-provider';
-import { validatePdf, validateBedrockDocument, validateVideo, validateAudio } from './validation';
+import type { NativeDocumentSizeLimitParams } from './validation';
+import {
+  validatePdf,
+  validateAudio,
+  validateImage,
+  validateVideo,
+  validateBedrockDocument,
+  getNativeDocumentSizeLimit,
+} from './validation';
 
 describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
   /** Helper to create a PDF buffer with valid header */
@@ -879,6 +887,360 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
 
         expect(result.isValid).toBe(true);
       });
+    });
+  });
+});
+
+describe('getNativeDocumentSizeLimit', () => {
+  const pdf = 'application/pdf';
+  const docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const claude4 = 'anthropic.claude-sonnet-4-20250514-v1:0';
+  const nova = 'amazon.nova-pro-v1:0';
+
+  it.each<[string, NativeDocumentSizeLimitParams, number | undefined]>([
+    [
+      'Anthropic PDF, unconfigured',
+      { provider: Providers.ANTHROPIC, mimeType: pdf },
+      mbToBytes(32),
+    ],
+    [
+      'Anthropic PDF, configured lower',
+      { provider: Providers.ANTHROPIC, mimeType: pdf, configuredFileSizeLimit: mbToBytes(5) },
+      mbToBytes(5),
+    ],
+    [
+      'Anthropic PDF, configured higher',
+      { provider: Providers.ANTHROPIC, mimeType: pdf, configuredFileSizeLimit: mbToBytes(50) },
+      mbToBytes(50),
+    ],
+    [
+      'Anthropic PDF, configured 0',
+      { provider: Providers.ANTHROPIC, mimeType: pdf, configuredFileSizeLimit: 0 },
+      0,
+    ],
+    ['OpenAI PDF, unconfigured', { provider: Providers.OPENAI, mimeType: pdf }, mbToBytes(10)],
+    ['Azure PDF, unconfigured', { provider: Providers.AZURE, mimeType: pdf }, mbToBytes(10)],
+    [
+      'OpenRouter PDF, unconfigured',
+      { provider: Providers.OPENROUTER, mimeType: pdf },
+      mbToBytes(10),
+    ],
+    [
+      'OpenAI PDF, configured 0',
+      { provider: Providers.OPENAI, mimeType: pdf, configuredFileSizeLimit: 0 },
+      0,
+    ],
+    ['Google PDF, unconfigured', { provider: Providers.GOOGLE, mimeType: pdf }, mbToBytes(20)],
+    ['VertexAI PDF, unconfigured', { provider: Providers.VERTEXAI, mimeType: pdf }, mbToBytes(20)],
+    [
+      'Google PDF, configured',
+      { provider: Providers.GOOGLE, mimeType: pdf, configuredFileSizeLimit: mbToBytes(25) },
+      mbToBytes(25),
+    ],
+    [
+      'PDF on a provider without a PDF limit',
+      { provider: 'unsupported', mimeType: pdf },
+      undefined,
+    ],
+    [
+      'PDF on a provider without a PDF limit, configured',
+      { provider: 'unsupported', mimeType: pdf, configuredFileSizeLimit: mbToBytes(5) },
+      undefined,
+    ],
+    ['Bedrock PDF, default model', { provider: Providers.BEDROCK, mimeType: pdf }, mbToBytes(4.5)],
+    [
+      'Bedrock PDF, Claude 4',
+      { provider: Providers.BEDROCK, mimeType: pdf, model: claude4 },
+      mbToBytes(32),
+    ],
+    [
+      'Bedrock PDF, Nova',
+      { provider: Providers.BEDROCK, mimeType: pdf, model: nova },
+      mbToBytes(32),
+    ],
+    [
+      'Bedrock DOCX, Nova',
+      { provider: Providers.BEDROCK, mimeType: docx, model: nova },
+      mbToBytes(32),
+    ],
+    [
+      'Bedrock DOCX, Claude 4',
+      { provider: Providers.BEDROCK, mimeType: docx, model: claude4 },
+      mbToBytes(4.5),
+    ],
+    [
+      'Bedrock CSV, Nova',
+      { provider: Providers.BEDROCK, mimeType: 'text/csv', model: nova },
+      mbToBytes(4.5),
+    ],
+    [
+      'Bedrock PDF, Claude 4, configured lower than the exemption',
+      {
+        provider: Providers.BEDROCK,
+        mimeType: pdf,
+        model: claude4,
+        configuredFileSizeLimit: mbToBytes(10),
+      },
+      mbToBytes(10),
+    ],
+    [
+      'Bedrock CSV, configured 0',
+      { provider: Providers.BEDROCK, mimeType: 'text/csv', configuredFileSizeLimit: 0 },
+      0,
+    ],
+    [
+      'generic text, unconfigured',
+      { provider: Providers.ANTHROPIC, mimeType: 'text/plain' },
+      undefined,
+    ],
+    [
+      'generic text, configured',
+      {
+        provider: Providers.ANTHROPIC,
+        mimeType: 'text/plain',
+        configuredFileSizeLimit: mbToBytes(1),
+      },
+      mbToBytes(1),
+    ],
+    [
+      'generic text, configured 0',
+      { provider: Providers.OPENAI, mimeType: 'text/plain', configuredFileSizeLimit: 0 },
+      undefined,
+    ],
+    [
+      'generic spreadsheet on Google, configured',
+      {
+        provider: Providers.GOOGLE,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        configuredFileSizeLimit: mbToBytes(25),
+      },
+      mbToBytes(25),
+    ],
+  ])('%s', (_label, params, expected) => {
+    expect(getNativeDocumentSizeLimit(params)).toBe(expected);
+  });
+});
+
+describe('validator parity with getNativeDocumentSizeLimit', () => {
+  const pdfBuffer = Buffer.alloc(1024);
+  pdfBuffer.write('%PDF-1.4\n', 0);
+
+  const pdfCases: Array<{
+    name: string;
+    provider: Providers;
+    model?: string;
+    configured?: number;
+    limit: number;
+  }> = [
+    { name: 'Anthropic, unconfigured', provider: Providers.ANTHROPIC, limit: mbToBytes(32) },
+    {
+      name: 'Anthropic, configured',
+      provider: Providers.ANTHROPIC,
+      configured: mbToBytes(3),
+      limit: mbToBytes(3),
+    },
+    { name: 'OpenAI, unconfigured', provider: Providers.OPENAI, limit: mbToBytes(10) },
+    {
+      name: 'OpenAI, configured',
+      provider: Providers.OPENAI,
+      configured: mbToBytes(15),
+      limit: mbToBytes(15),
+    },
+    { name: 'Google, unconfigured', provider: Providers.GOOGLE, limit: mbToBytes(20) },
+    {
+      name: 'VertexAI, configured',
+      provider: Providers.VERTEXAI,
+      configured: mbToBytes(8),
+      limit: mbToBytes(8),
+    },
+    { name: 'Bedrock, default model', provider: Providers.BEDROCK, limit: mbToBytes(4.5) },
+    {
+      name: 'Bedrock, Claude 4',
+      provider: Providers.BEDROCK,
+      model: 'anthropic.claude-sonnet-4-20250514-v1:0',
+      limit: mbToBytes(32),
+    },
+    {
+      name: 'Bedrock, Nova, configured',
+      provider: Providers.BEDROCK,
+      model: 'amazon.nova-pro-v1:0',
+      configured: mbToBytes(8),
+      limit: mbToBytes(8),
+    },
+  ];
+
+  describe.each(pdfCases)('validatePdf on $name', ({ provider, model, configured, limit }) => {
+    it('accepts a PDF exactly at the limit', async () => {
+      const result = await validatePdf(pdfBuffer, limit, provider, configured, model);
+      expect(result).toEqual({ isValid: true });
+    });
+
+    it('rejects a PDF one byte above the limit as a capacity failure', async () => {
+      const result = await validatePdf(pdfBuffer, limit + 1, provider, configured, model);
+      expect(result).toMatchObject({ isValid: false, reason: 'capacity' });
+    });
+  });
+
+  const bedrockCases: Array<{ name: string; mimeType: string; model?: string; limit: number }> = [
+    { name: 'CSV', mimeType: 'text/csv', limit: mbToBytes(4.5) },
+    {
+      name: 'Nova DOCX',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      model: 'amazon.nova-pro-v1:0',
+      limit: mbToBytes(32),
+    },
+    {
+      name: 'Claude 4 DOCX',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      model: 'anthropic.claude-sonnet-4-20250514-v1:0',
+      limit: mbToBytes(4.5),
+    },
+  ];
+
+  describe.each(bedrockCases)('validateBedrockDocument on $name', ({ mimeType, model, limit }) => {
+    it('accepts a document exactly at the limit', async () => {
+      const result = await validateBedrockDocument(limit, mimeType, undefined, undefined, model);
+      expect(result).toEqual({ isValid: true });
+    });
+
+    it('rejects a document one byte above the limit as a capacity failure', async () => {
+      const result = await validateBedrockDocument(
+        limit + 1,
+        mimeType,
+        undefined,
+        undefined,
+        model,
+      );
+      expect(result).toMatchObject({ isValid: false, reason: 'capacity' });
+    });
+  });
+
+  it.each([
+    Providers.ANTHROPIC,
+    Providers.OPENAI,
+    Providers.GOOGLE,
+    Providers.VERTEXAI,
+    Providers.BEDROCK,
+  ])('rejects a 1-byte PDF on %s when the configured limit is 0', async (provider) => {
+    const result = await validatePdf(pdfBuffer, 1, provider, 0);
+    expect(result).toMatchObject({ isValid: false, reason: 'capacity' });
+  });
+
+  it('accepts any PDF size on a provider without a PDF limit, configured or not', async () => {
+    const provider = 'unsupported' as Providers;
+    await expect(validatePdf(pdfBuffer, mbToBytes(100), provider)).resolves.toEqual({
+      isValid: true,
+    });
+    await expect(validatePdf(pdfBuffer, mbToBytes(100), provider, 0)).resolves.toEqual({
+      isValid: true,
+    });
+  });
+});
+
+describe('validation failure reasons', () => {
+  const validPdf = (): Buffer => {
+    const buffer = Buffer.alloc(1024);
+    buffer.write('%PDF-1.4\n', 0);
+    return buffer;
+  };
+
+  it.each([
+    [Providers.ANTHROPIC, 35, 'PDF file size (35MB) exceeds the 32MB limit'],
+    [Providers.OPENAI, 12, 'PDF file size (12MB) exceeds the 10MB limit'],
+    [Providers.GOOGLE, 25, 'PDF file size (25MB) exceeds the 20MB limit'],
+  ])(
+    'reports an oversized %s PDF as capacity with the unchanged message',
+    async (provider, sizeMB, error) => {
+      const result = await validatePdf(validPdf(), mbToBytes(sizeMB), provider);
+      expect(result).toEqual({ isValid: false, reason: 'capacity', error });
+    },
+  );
+
+  it('reports an Anthropic page estimate over 100 as capacity', async () => {
+    const pages = '/Type /Page\n'.repeat(101);
+    const result = await validatePdf(Buffer.from(`%PDF-1.4\n${pages}`), 1024, Providers.ANTHROPIC);
+    expect(result).toEqual({
+      isValid: false,
+      reason: 'capacity',
+      error: "PDF has approximately 101 pages, exceeding Anthropic's 100-page limit",
+    });
+  });
+
+  const tooSmall = Buffer.alloc(3);
+  const headerless = Buffer.alloc(1024);
+  headerless.write('INVALID', 0);
+
+  it.each([
+    [
+      'a too-small Anthropic PDF',
+      () => validatePdf(tooSmall, tooSmall.length, Providers.ANTHROPIC),
+      'Invalid PDF file: too small or corrupted',
+    ],
+    [
+      'a missing Anthropic PDF header',
+      () => validatePdf(headerless, headerless.length, Providers.ANTHROPIC),
+      'Invalid PDF file: missing PDF header',
+    ],
+    [
+      'a too-small Bedrock PDF',
+      () => validateBedrockDocument(tooSmall.length, 'application/pdf', tooSmall),
+      'Invalid PDF file: too small or corrupted',
+    ],
+    [
+      'a missing Bedrock PDF header',
+      () => validateBedrockDocument(headerless.length, 'application/pdf', headerless),
+      'Invalid PDF file: missing PDF header',
+    ],
+  ])('reports %s as integrity with the unchanged message', async (_label, validate, error) => {
+    await expect(validate()).resolves.toEqual({ isValid: false, reason: 'integrity', error });
+  });
+
+  it('reports an encrypted Anthropic PDF as integrity', async () => {
+    const buffer = validPdf();
+    buffer.write('/Encrypt ', 100);
+    const result = await validatePdf(buffer, buffer.length, Providers.ANTHROPIC);
+    expect(result).toEqual({
+      isValid: false,
+      reason: 'integrity',
+      error: 'PDF is password-protected or encrypted. Anthropic requires unencrypted PDFs.',
+    });
+  });
+
+  it('reports an oversized Bedrock document as capacity with the unchanged message', async () => {
+    const result = await validateBedrockDocument(mbToBytes(5), 'text/csv');
+    expect(result).toEqual({
+      isValid: false,
+      reason: 'capacity',
+      error: 'File size (5.0MB) exceeds the 4.5MB limit for Bedrock',
+    });
+  });
+
+  it('reports oversized media as capacity and truncated media as integrity', async () => {
+    const media = Buffer.alloc(1024);
+    const tiny = Buffer.alloc(5);
+    await expect(validateVideo(media, mbToBytes(25), Providers.GOOGLE)).resolves.toMatchObject({
+      isValid: false,
+      reason: 'capacity',
+    });
+    await expect(validateAudio(media, mbToBytes(25), Providers.GOOGLE)).resolves.toMatchObject({
+      isValid: false,
+      reason: 'capacity',
+    });
+    await expect(validateImage(media, mbToBytes(6), Providers.ANTHROPIC)).resolves.toMatchObject({
+      isValid: false,
+      reason: 'capacity',
+    });
+    await expect(validateVideo(tiny, tiny.length, Providers.GOOGLE)).resolves.toMatchObject({
+      isValid: false,
+      reason: 'integrity',
+    });
+    await expect(validateAudio(tiny, tiny.length, Providers.GOOGLE)).resolves.toMatchObject({
+      isValid: false,
+      reason: 'integrity',
+    });
+    await expect(validateImage(tiny, tiny.length, Providers.OPENAI)).resolves.toMatchObject({
+      isValid: false,
+      reason: 'integrity',
     });
   });
 });

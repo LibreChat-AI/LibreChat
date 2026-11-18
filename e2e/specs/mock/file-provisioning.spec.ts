@@ -155,19 +155,28 @@ test.describe('file provisioning — lazy (unified upload, at tool-execute)', ()
     ).toBeVisible({ timeout: 15000 });
 
     // The first tool call lazily embeds the attachment and searches it.
-    await sendMessageAndWaitForCompletion(page, `E2E_FILE_SEARCH:${uniqueName('first')}`);
+    const firstSearch = uniqueName('first');
+    await sendMessageAndWaitForCompletion(page, `E2E_FILE_SEARCH:${firstSearch}`);
     await expect
       .poll(async () => (await getRagEmbedded(page)).map((e) => e.file_id), { timeout: 30000 })
       .toContain(fileId);
     await expect
-      .poll(async () => (await getRagQueries(page)).filter((q) => q.file_id === fileId).length)
-      .toBe(1);
+      .poll(async () =>
+        (await getRagQueries(page)).filter((q) => q.file_id === fileId).map((q) => q.query),
+      )
+      .toEqual([`e2e ${firstSearch}`]);
 
     // A completed, persisted turn must still expose the embedded file to the next call.
-    await sendMessageAndWaitForCompletion(page, `E2E_FILE_SEARCH:${uniqueName('second')}`);
+    const secondSearch = uniqueName('second');
+    const secondMessage = `E2E_FILE_SEARCH:${secondSearch}`;
+    await sendMessageAndWaitForCompletion(page, secondMessage);
+    // Classic mode adds context from the now-embedded file before invoking the model;
+    // the fresh tool call must then perform its own search, without another embedding.
     await expect
-      .poll(async () => (await getRagQueries(page)).filter((q) => q.file_id === fileId).length)
-      .toBe(2);
+      .poll(async () =>
+        (await getRagQueries(page)).filter((q) => q.file_id === fileId).map((q) => q.query),
+      )
+      .toEqual([`e2e ${firstSearch}`, secondMessage, `e2e ${secondSearch}`]);
     expect((await getRagEmbedded(page)).filter((e) => e.file_id === fileId)).toHaveLength(1);
   });
 });

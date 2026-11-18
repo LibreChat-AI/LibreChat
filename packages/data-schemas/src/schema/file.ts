@@ -1,6 +1,10 @@
 import mongoose, { Schema } from 'mongoose';
 import { FileContext, FileSources } from 'librechat-data-provider';
-import type { RunFileProvenance, CodeOutputProvenance } from 'librechat-data-provider';
+import type {
+  TextDerivation,
+  RunFileProvenance,
+  CodeOutputProvenance,
+} from 'librechat-data-provider';
 import type { IMongoFile } from '~/types';
 import { codeEnvRefMapSchema, codeEnvRefSchema } from './codeEnvRef';
 
@@ -15,6 +19,16 @@ const runFileProvenanceSchema = new Schema<RunFileProvenance>(
     sourceFileId: { type: String, required: true },
     publishedAt: { type: String, required: true },
     inputFileIds: { type: [String], required: true },
+  },
+  { _id: false },
+);
+
+const textDerivationSchema = new Schema<TextDerivation>(
+  {
+    outcome: { type: String, enum: ['deferred', 'complete', 'failed'], required: true },
+    extractor: { type: String },
+    reason: { type: String },
+    at: { type: Number },
   },
   { _id: false },
 );
@@ -212,6 +226,13 @@ const file: Schema<IMongoFile> = new Schema(
        *  the stored type so a later resolution asks the same question. */
       routingMimeType: {
         type: String,
+        default: undefined,
+      },
+      /** How the text a reader may need was obtained, under the automatic reading policy.
+       *  A `deferred` or unmarked record without text accepts text derived at turn
+       *  time; a failed marker is kept only by a deferred record. */
+      textDerivation: {
+        type: textDerivationSchema,
         default: undefined,
       },
       /** Copies placed in attached workspaces, keyed by opaque target digests; written only

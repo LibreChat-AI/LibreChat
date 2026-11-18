@@ -17,6 +17,7 @@ import type {
 } from 'librechat-data-provider';
 import type { IMongoFile, AppConfig, IUser } from '@librechat/data-schemas';
 import type { FilterQuery, QueryOptions, ProjectionType } from 'mongoose';
+import type { SearchPreparationState } from '~/files/reading/turn';
 import type { CodeExecutionContext } from './execution';
 import type { ServerRequest } from '~/types';
 import {
@@ -127,6 +128,8 @@ export type ProvisionState = {
   codeEnvDestinations?: Map<string, string>;
   /** Files that need embedding into the vector DB for file_search */
   vectorDBFiles: TFile[];
+  /** Request-scoped indexing outcomes, shared with the turn's reading notices. */
+  searchPreparation?: Map<string, SearchPreparationState>;
   /** Set of file_ids confirmed alive in code env (from staleness check) */
   aliveFileIds: Set<string>;
   /** The active agent's own resource files, which are the only ones provisioned under its

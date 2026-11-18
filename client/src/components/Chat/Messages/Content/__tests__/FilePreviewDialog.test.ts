@@ -22,6 +22,15 @@ describe('FilePreviewDialog text-source behavior', () => {
     expect(getDownloadFilename('report.pdf', 'file-3', FileSources.local)).toBe('report.pdf');
   });
 
+  it('does not decode an Office Open XML package as text', () => {
+    const xlsx = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    expect(getPreviewKind('quarterly.xlsx', xlsx, FileSources.local)).toBe(false);
+    expect(getPreviewKind('brief.docx', docx, FileSources.local)).toBe(false);
+    expect(getPreviewKind('feed.xml', 'application/xml', FileSources.local)).toBe('text');
+    expect(getPreviewKind('logo.svg', 'image/svg+xml', FileSources.local)).toBe('text');
+  });
+
   it('uses stored extracted text when the delivery path is text', () => {
     expect(shouldUseExtractedTextPreview('text')).toBe(true);
     expect(shouldUseExtractedTextPreview('provider')).toBe(false);

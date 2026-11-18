@@ -9,6 +9,8 @@ const {
   loadSkillStates,
   resolveInitializationProjectContext,
   initializeAgent,
+  createFileTextDeriver,
+  createDerivationPersister,
   primeInvokedSkillsForProfiles,
   createWorkspaceAttachmentPrimer,
   validateAgentModel,
@@ -71,6 +73,7 @@ const {
   MAX_SUBAGENT_GRAPH_NODES,
   MAX_SUBAGENT_RUN_CONFIGS,
   isEphemeralAgentId,
+  mergeFileConfig,
   resolveSpecUserToggle,
   resolveSpecSkillsEnabled,
   resolveAllowedStatefulCodeEnvironments,
@@ -100,6 +103,7 @@ const {
 } = require('./skillDeps');
 const {
   loadCodeApiKey,
+  openStoredFile,
   provisionToCodeEnv,
   provisionToVectorDB,
   checkSessionsAlive,
@@ -790,6 +794,16 @@ const initializeClientWithProvider = async ({
     skillsCapabilityEnabled,
     ephemeralSkillsToggle,
   });
+  const deriveText = createFileTextDeriver({
+    req,
+    openStoredFile,
+    filters: appConfig?.filters,
+    textMimeTypes: mergeFileConfig(appConfig?.fileConfig).text?.supportedMimeTypes,
+  });
+  const persistDerivation = createDerivationPersister(db.saveFileTextDerivation, {
+    user: req.user.id,
+    tenantId: req.user.tenantId,
+  });
   const primaryConfig = await initializeAgent(
     {
       useChatProjectContext: true,
@@ -818,6 +832,8 @@ const initializeClientWithProvider = async ({
       skillStates,
       defaultActiveOnShare,
       manualSkills,
+      deriveText,
+      persistDerivation,
       signal,
     },
     {
@@ -828,6 +844,7 @@ const initializeClientWithProvider = async ({
       getConvoFiles: db.getConvoFiles,
       getAccessibleMcpServerNames,
       updateFilesUsage: db.updateFilesUsage,
+      saveFileTextDerivation: db.saveFileTextDerivation,
       getUserKeyValues: db.getUserKeyValues,
       getUserCodeFiles: db.getUserCodeFiles,
       getDeferredProvisionFiles: db.getDeferredProvisionFiles,
@@ -912,6 +929,8 @@ const initializeClientWithProvider = async ({
       statefulSessionsAvailable,
       allowedStatefulCodeEnvironments,
       memoryAvailable,
+      deriveText,
+      persistDerivation,
     },
     {
       getAgent: db.getAgent,
@@ -925,6 +944,7 @@ const initializeClientWithProvider = async ({
         getConvoFiles: db.getConvoFiles,
         getAccessibleMcpServerNames,
         updateFilesUsage: db.updateFilesUsage,
+        saveFileTextDerivation: db.saveFileTextDerivation,
         getUserKeyValues: db.getUserKeyValues,
         getUserCodeFiles: db.getUserCodeFiles,
         getDeferredProvisionFiles: db.getDeferredProvisionFiles,
@@ -1002,6 +1022,8 @@ const initializeClientWithProvider = async ({
     toolIntentsAvailable,
     statefulSessionsAvailable,
     memoryAvailable,
+    deriveText,
+    persistDerivation,
     signal,
   });
 
@@ -1460,6 +1482,8 @@ const initializeClientWithProvider = async ({
             memoryAvailable,
             skillStates,
             defaultActiveOnShare,
+            deriveText,
+            persistDerivation,
             signal: context.signal,
           },
           {
@@ -1470,6 +1494,7 @@ const initializeClientWithProvider = async ({
             getConvoFiles: db.getConvoFiles,
             getAccessibleMcpServerNames,
             updateFilesUsage: db.updateFilesUsage,
+            saveFileTextDerivation: db.saveFileTextDerivation,
             getUserKeyValues: db.getUserKeyValues,
             getUserCodeFiles: db.getUserCodeFiles,
             getDeferredProvisionFiles: db.getDeferredProvisionFiles,

@@ -1,3 +1,4 @@
+import { FileContext } from 'librechat-data-provider';
 import type {
   AssertResumeRuntimeContentAllowedInput,
   ResumeContentProtectionDependencies,
@@ -9,6 +10,7 @@ import {
   isModelBoundAttachmentFile,
 } from '../attachments';
 import { assertResumeContentAllowed, assertResumeRuntimeContentAllowed } from './protection';
+import { resolveTurnDeliveryRouting } from '../files/delivery';
 
 const user = {
   id: 'user-1',
@@ -144,6 +146,111 @@ describe('assertResumeRuntimeContentAllowed', () => {
       }),
     ).toThrow(AgentAttachmentLimitError);
     expect(dependencies.getFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('charges checkpoint files by the resuming agent automatic decisions', async () => {
+    /* The automatic policy withheld this file's text for Run Code, so the checkpoint never
+     * carried it and the resumed turn must not spend its text budget on it. */
+    const dependencies = createDependencies();
+    dependencies.getAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: {
+          channel_values: {
+            messages: [{ role: 'human', additional_kwargs: { sourceMessageId: 'source-message' } }],
+          },
+        },
+      }),
+    });
+    dependencies.getMessages.mockResolvedValue([
+      { messageId: 'source-message', files: [{ file_id: 'code-file' }] },
+    ]);
+    const storedFile = {
+      file_id: 'code-file',
+      filename: 'sales.csv',
+      type: 'text/csv',
+      source: 'local',
+      context: FileContext.message_attachment,
+      bytes: 20,
+      text: 'region,total',
+      llmDeliveryPath: 'none',
+      metadata: { destinationChosen: false },
+    };
+    dependencies.getFiles.mockResolvedValue([storedFile]);
+    const routing = resolveTurnDeliveryRouting({
+      agent: { provider: 'openAI' },
+      config: { fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } } },
+    });
+    const input = { ...createInput({}), isTemporary: false };
+
+    const [runsCode, noReader] = await Promise.all([
+      assertResumeRuntimeContentAllowed(
+        { ...input, delivery: { routing, consumers: { executeCode: true, fileSearch: false } } },
+        dependencies,
+      ),
+      assertResumeRuntimeContentAllowed(
+        { ...input, delivery: { routing, consumers: { executeCode: false, fileSearch: false } } },
+        dependencies,
+      ),
+    ]);
+
+    expect(runsCode.checkpointFiles).toEqual([storedFile]);
+    expect(noReader.checkpointFiles).toEqual([{ ...storedFile, llmDeliveryPath: 'text' }]);
+    expect(storedFile.llmDeliveryPath).toBe('none');
+  });
+
+  it('charges checkpoint files by the primary agent when the host passes only its agents', async () => {
+    /* AgentClient lists its own agent first and passes no delivery; the resume budget must
+     * still follow that agent's automatic decision, not charge the withheld text. */
+    const dependencies = createDependencies();
+    dependencies.getAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: {
+          channel_values: {
+            messages: [{ role: 'human', additional_kwargs: { sourceMessageId: 'source-message' } }],
+          },
+        },
+      }),
+    });
+    dependencies.getMessages.mockResolvedValue([
+      { messageId: 'source-message', files: [{ file_id: 'workbook' }] },
+    ]);
+    const storedFile = {
+      file_id: 'workbook',
+      filename: 'quarterly.xlsx',
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      source: 'local',
+      context: FileContext.message_attachment,
+      bytes: 2048,
+      text: 'quarter,total\nQ1,42',
+      llmDeliveryPath: 'none',
+      metadata: { destinationChosen: false },
+    };
+    dependencies.getFiles.mockResolvedValue([storedFile]);
+    const deliveryRouting = resolveTurnDeliveryRouting({
+      agent: { provider: 'openAI' },
+      config: { fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } } },
+    });
+    const primary = {
+      name: 'primary',
+      deliveryRouting,
+      fileConsumers: { executeCode: true, fileSearch: false },
+    };
+    const handoff = { name: 'handoff', fileConsumers: { executeCode: false, fileSearch: false } };
+
+    const projection = await assertResumeRuntimeContentAllowed(
+      { ...createInput({}), isTemporary: false, agents: [primary, handoff] },
+      dependencies,
+    );
+
+    expect(projection.checkpointFiles).toEqual([storedFile]);
+    expect(projection.checkpointFiles.filter(isModelBoundAttachmentFile)).toEqual([]);
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: projection.checkpointFiles.filter(isModelBoundAttachmentFile),
+        fileConfig: { fileContextCharLimit: 3 },
+        endpoint: 'openAI',
+      }),
+    ).not.toThrow();
   });
 
   it('hydrates checkpoint-bound files when content filters are inactive', async () => {

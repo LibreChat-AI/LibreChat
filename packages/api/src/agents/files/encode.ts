@@ -13,15 +13,32 @@ import type {
   TurnFileConsumers,
 } from 'librechat-data-provider';
 import type { BaseMessage } from '@librechat/agents/langchain';
-import type { ServerRequest, StrategyFunctions } from '~/types';
+import type {
+  ServerRequest,
+  StrategyFunctions,
+  DocumentRejection,
+  NativeValidationMode,
+} from '~/types';
+import type { TurnTextOptions } from '~/files/reading';
 import type { TokenCountFn } from '~/utils/text';
 import {
   isToolOwnedAttachment,
   isModelBoundAttachmentFile,
+  measureModelBoundAttachment,
   assertAgentAttachmentLimits,
+  resolveAgentAttachmentLimits,
   AgentAttachmentPolicyError,
 } from '../attachments';
+import {
+  prepareTurnFiles,
+  settleTurnFiles,
+  renderLeftOutFiles,
+  getTurnTextOptions,
+  encodeNativeDocuments,
+  recordNativeRejections,
+} from '~/files/reading';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
+import { toClassicInspectionView, applyTurnDelivery } from './delivery';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
 import { countTokens } from '~/utils/tokenizer';
 
@@ -47,10 +64,15 @@ export interface RunFileEncodingParams {
   imageDetail?: ImageDetail;
 }
 
-type MediaEncoder<T> = (
+/** The document encoder also learns whether to leave out a file it cannot send. */
+export interface RunFileDocumentEncodingParams extends RunFileEncodingParams {
+  onValidationFailure?: NativeValidationMode;
+}
+
+type MediaEncoder<T, P extends RunFileEncodingParams = RunFileEncodingParams> = (
   req: ServerRequest,
   files: TFile[],
-  params: RunFileEncodingParams,
+  params: P,
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ) => Promise<T>;
 
@@ -59,15 +81,20 @@ export interface RunFileMessageEncoderDeps {
   req: ServerRequest;
   getAgent: (agentId: string) => RunFileEncodingAgent | undefined;
   encodeImages: MediaEncoder<{ image_urls: ContentBlock[] }>;
-  encodeDocuments: MediaEncoder<{ documents: ContentBlock[] }>;
+  encodeDocuments: MediaEncoder<
+    { documents: ContentBlock[]; rejected?: readonly DocumentRejection[] },
+    RunFileDocumentEncodingParams
+  >;
   encodeAudios: MediaEncoder<{ audios: ContentBlock[] }>;
   encodeVideos: MediaEncoder<{ videos: ContentBlock[] }>;
   getStrategyFunctions: (source: string) => StrategyFunctions;
-  extractText: (params: {
-    attachments: TFile[];
-    req: ServerRequest;
-    tokenCountFn: TokenCountFn;
-  }) => Promise<string | undefined>;
+  extractText: (
+    params: {
+      attachments: TFile[];
+      req: ServerRequest;
+      tokenCountFn: TokenCountFn;
+    } & TurnTextOptions,
+  ) => Promise<string | undefined>;
 }
 
 export interface RunFileMessageEncoder {
@@ -79,11 +106,15 @@ export interface RunFileMessageEncoder {
 export function createRunFileMessageEncoder(
   deps: RunFileMessageEncoderDeps,
 ): RunFileMessageEncoder {
-  function prepare(files: TFile[], agentId: string) {
+  function resolveAgent(agentId: string): RunFileEncodingAgent {
     const agent = deps.getAgent(agentId);
     if (!agent) {
       throw new Error('The target agent is not available for shared file delivery.');
     }
+    return agent;
+  }
+
+  function prepare(files: TFile[], agent: RunFileEncodingAgent) {
     const { deliveryRouting } = agent;
     const { endpoint, fileConfig, endpointConfig } = deliveryRouting;
     const params: RunFileEncodingParams = {
@@ -111,6 +142,7 @@ export function createRunFileMessageEncoder(
       endpoint,
       skipTotalSizeLimit: true,
       preserveTextSources: true,
+      consumers: agent.fileConsumers,
     });
     if (compatibleFiles.length !== sharedFiles.length) {
       throw new AgentAttachmentPolicyError();
@@ -127,17 +159,26 @@ export function createRunFileMessageEncoder(
       req: deps.req,
       endpoint,
     });
-    assertModelBoundContent({ filters: deps.req.config?.filters, files: sharedFiles });
+    assertModelBoundContent({
+      filters: deps.req.config?.filters,
+      files: toClassicInspectionView(sharedFiles, deliveryRouting, agent.fileConsumers),
+    });
     return { agent, params, sharedFiles, fileConfig, endpointConfig };
   }
 
   function validate(files: TFile[], agentId: string): void {
-    if (files.length > 0) prepare(files, agentId);
+    if (files.length > 0) prepare(files, resolveAgent(agentId));
   }
 
   async function encode(files: TFile[], agentId: string): Promise<BaseMessage[]> {
     if (files.length === 0) return [];
-    const { agent, params, sharedFiles, fileConfig, endpointConfig } = prepare(files, agentId);
+    const target = resolveAgent(agentId);
+    const turnFiles = await prepareTurnFiles({
+      routing: target.deliveryRouting,
+      files,
+      consumers: target.fileConsumers,
+    });
+    const { agent, params, sharedFiles, fileConfig, endpointConfig } = prepare(turnFiles, target);
     const images: TFile[] = [];
     const documents: TFile[] = [];
     const audios: TFile[] = [];
@@ -183,21 +224,88 @@ export function createRunFileMessageEncoder(
       }
     }
 
-    const encodeMedia = <T>(encoder: MediaEncoder<T>, inputs: TFile[], empty: T): Promise<T> =>
+    const encodeMedia = <T, P extends RunFileEncodingParams>(
+      encoder: MediaEncoder<T, P>,
+      inputs: TFile[],
+      empty: T,
+      encoderParams: P,
+    ): Promise<T> =>
       inputs.length > 0
-        ? encoder(deps.req, inputs, params, deps.getStrategyFunctions)
+        ? encoder(deps.req, inputs, encoderParams, deps.getStrategyFunctions)
         : Promise.resolve(empty);
+    const encodeDocuments = (inputs: TFile[], onValidationFailure: NativeValidationMode) =>
+      encodeMedia(
+        deps.encodeDocuments,
+        inputs,
+        { documents: [] },
+        { ...params, onValidationFailure },
+      );
     const [imageResult, documentResult, audioResult, videoResult, text] = await Promise.all([
-      encodeMedia(deps.encodeImages, images, { image_urls: [] }),
-      encodeMedia(deps.encodeDocuments, documents, { documents: [] }),
-      encodeMedia(deps.encodeAudios, audios, { audios: [] }),
-      encodeMedia(deps.encodeVideos, videos, { videos: [] }),
+      encodeMedia(deps.encodeImages, images, { image_urls: [] }, params),
+      encodeNativeDocuments(documents, agent, encodeDocuments),
+      encodeMedia(deps.encodeAudios, audios, { audios: [] }, params),
+      encodeMedia(deps.encodeVideos, videos, { videos: [] }, params),
       textFiles.length > 0
-        ? deps.extractText({ attachments: textFiles, req: deps.req, tokenCountFn: countTokens })
+        ? deps.extractText({
+            attachments: textFiles,
+            req: deps.req,
+            tokenCountFn: countTokens,
+            ...getTurnTextOptions(agent.deliveryRouting),
+          })
         : Promise.resolve(undefined),
     ]);
+    recordNativeRejections([agent], documentResult.rejected);
+    const rejectedIds = new Set((documentResult.rejected ?? []).map(({ file_id }) => file_id));
+    let fallbackText: string | undefined;
+    let fallbackFiles: TFile[] = [];
+    if (rejectedIds.size > 0) {
+      const sharedIds = new Set(sharedFiles.map((file) => file.file_id));
+      const settled = await settleTurnFiles({
+        routing: agent.deliveryRouting,
+        files: sharedFiles,
+        consumers: agent.fileConsumers,
+        allocation: {
+          requestFileIds: sharedFiles
+            .filter((file) => rejectedIds.has(file.file_id))
+            .map((file) => file.file_id),
+          limits: resolveAgentAttachmentLimits({ req: deps.req, endpoint: params.endpoint }),
+          measure: measureModelBoundAttachment,
+          committedExtra: applyTurnDelivery(
+            (agent.agentContextAttachments ?? []).filter((file) => !sharedIds.has(file.file_id)),
+            { routing: agent.deliveryRouting, consumers: agent.fileConsumers },
+          ),
+          committedEntries: sharedFiles
+            .filter((file) => !rejectedIds.has(file.file_id))
+            .map(measureModelBoundAttachment),
+          scope: 'request',
+        },
+        flush: true,
+      });
+      const prepared = prepare(settled, agent).sharedFiles;
+      fallbackFiles = prepared.filter(
+        (file) => rejectedIds.has(file.file_id) && file.llmDeliveryPath === 'text',
+      );
+      assertModelBoundContent({
+        filters: deps.req.config?.filters,
+        files: fallbackFiles,
+      });
+      if (fallbackFiles.length > 0) {
+        fallbackText = await deps.extractText({
+          attachments: fallbackFiles,
+          req: deps.req,
+          tokenCountFn: countTokens,
+          ...getTurnTextOptions(agent.deliveryRouting),
+        });
+      }
+    }
+    const deliveredIds = new Set(fallbackFiles.map(({ file_id }) => file_id));
+    const leftOut = renderLeftOutFiles(
+      agent,
+      documents.filter((file) => rejectedIds.has(file.file_id) && !deliveredIds.has(file.file_id)),
+    );
+    const body = [text, fallbackText, leftOut].filter(Boolean).join('\n\n');
     if (
-      !text &&
+      !body &&
       imageResult.image_urls.length === 0 &&
       documentResult.documents.length === 0 &&
       audioResult.audios.length === 0 &&
@@ -208,7 +316,7 @@ export function createRunFileMessageEncoder(
     const formatted = formatMessage({
       message: {
         role: 'user',
-        content: text ?? 'Read-only files shared for this task.',
+        content: body || 'Read-only files shared for this task.',
         image_urls: imageResult.image_urls,
         documents: documentResult.documents,
         audios: audioResult.audios,

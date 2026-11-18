@@ -29,6 +29,20 @@ export function getAttachmentTitleText(files?: TFile[] | null): string {
   return filenames.length > 0 ? `Attached file(s): ${filenames.join(', ')}` : '';
 }
 
+/** The per-file token limit for attachment text: the request's override, else the merged config's. */
+export function resolveFileTokenLimit(req?: ServerRequest): number | undefined {
+  return req?.body?.fileTokenLimit ?? mergeFileConfig(req?.config?.fileConfig).fileTokenLimit;
+}
+
+type FileContextAttachment = Pick<TFile, 'text' | 'filename'> & {
+  file_id?: string;
+  source?: string;
+  llmDeliveryPath?: string;
+};
+
+const truncationNotice = (filename: string): string =>
+  `[Truncated: only the beginning of "${filename}" fits; the rest is omitted.]`;
+
 /**
  * Extracts text context from attachments and returns formatted text.
  * This handles text that was already extracted from files (OCR, transcriptions, document text, etc.)
@@ -36,26 +50,28 @@ export function getAttachmentTitleText(files?: TFile[] | null): string {
  * @param params.attachments - Array of file attachments
  * @param params.req - Express request object for config access
  * @param params.tokenCountFn - Function to count tokens in text
+ * @param params.knownTokenCount - A file's already-measured text token count, so it is not recounted
+ * @param params.markTruncation - Follow truncated text with a line saying the rest was omitted
  * @returns The formatted file context text, or undefined if no text found
  */
-export async function extractFileContext({
+export async function extractFileContext<T extends FileContextAttachment>({
   attachments,
   req,
   tokenCountFn,
+  knownTokenCount,
+  markTruncation = false,
 }: {
-  attachments: readonly (Pick<TFile, 'text' | 'filename'> & {
-    source?: string;
-    llmDeliveryPath?: string;
-  })[];
+  attachments: readonly T[];
   req?: ServerRequest;
   tokenCountFn: TokenCountFn;
+  knownTokenCount?: (file: T) => number | undefined;
+  markTruncation?: boolean;
 }): Promise<string | undefined> {
   if (!attachments || attachments.length === 0) {
     return undefined;
   }
 
-  const fileConfig = mergeFileConfig(req?.config?.fileConfig);
-  const fileTokenLimit = req?.body?.fileTokenLimit ?? fileConfig.fileTokenLimit;
+  const fileTokenLimit = resolveFileTokenLimit(req);
 
   if (!fileTokenLimit) {
     // If no token limit, return undefined (no processing)
@@ -71,21 +87,23 @@ export async function extractFileContext({
     }
 
     const hasTextDelivery = file.llmDeliveryPath === 'text' || source === FileSources.text;
-    if (hasTextDelivery && file.text) {
-      const { text: limitedText, wasTruncated } = await processTextWithTokenLimit({
-        text: file.text,
-        tokenLimit: fileTokenLimit,
-        tokenCountFn,
-      });
-
-      if (wasTruncated) {
-        logger.debug(
-          `[extractFileContext] Text content truncated for file: ${file.filename} due to token limits`,
-        );
-      }
-
-      resultText += `${!resultText ? 'Attached document(s):\n```md' : '\n\n---\n\n'}# "${file.filename}"\n${limitedText}\n`;
+    if (!hasTextDelivery || !file.text) {
+      continue;
     }
+
+    const { text: limitedText, wasTruncated } = await processTextWithTokenLimit({
+      text: file.text,
+      tokenLimit: fileTokenLimit,
+      tokenCountFn,
+      knownTokenCount: knownTokenCount?.(file),
+    });
+
+    if (wasTruncated) {
+      logger.debug(`[extractFileContext] text truncated file_id=${file.file_id ?? 'unknown'}`);
+    }
+
+    const notice = markTruncation && wasTruncated ? `\n${truncationNotice(file.filename)}` : '';
+    resultText += `${!resultText ? 'Attached document(s):\n```md' : '\n\n---\n\n'}# "${file.filename}"\n${limitedText}${notice}\n`;
   }
 
   if (resultText) {

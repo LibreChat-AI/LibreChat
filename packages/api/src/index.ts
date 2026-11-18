@@ -110,6 +110,7 @@ export * from './plugins';
 export * from './endpoints';
 /* Files */
 export * from './files';
+export * from './files/reading/history';
 /* Images */
 export * from './images';
 /* Storage */

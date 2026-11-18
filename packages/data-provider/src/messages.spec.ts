@@ -157,6 +157,28 @@ describe('buildTree', () => {
     expect(tree?.[0].files?.[0]).toBe(file);
   });
 
+  it('restores separate code and text delivery paths when the same workbook is reused', () => {
+    const refreshed = {
+      file_id: 'workbook',
+      filename: 'sales.xlsx',
+      llmDeliveryPath: 'text',
+      preview: 'fresh-preview',
+    } as TFile;
+    const codeFile = { file_id: refreshed.file_id, llmDeliveryPath: 'none' as const };
+    const textFile = { file_id: refreshed.file_id, llmDeliveryPath: 'text' as const };
+    const messages = [
+      msg('code-turn', '', { files: [codeFile] }),
+      msg('text-turn', 'code-turn', { files: [textFile] }),
+    ];
+
+    const restored = buildTree({ messages, fileMap: { workbook: refreshed } });
+
+    expect(restored?.[0].files?.[0]).toEqual({ ...refreshed, ...codeFile });
+    expect(asParent(restored?.[0]).children[0].files?.[0]).toBe(refreshed);
+    expect(refreshed.llmDeliveryPath).toBe('text');
+    expect(messages[0].files?.[0]).toBe(codeFile);
+  });
+
   describe('memoization', () => {
     const chain = () => [
       msg('u1', '00000000-0000-0000-0000-000000000000', { isCreatedByUser: true }),
@@ -206,6 +228,35 @@ describe('buildTree', () => {
       expect(buildTree({ messages, fileMap: fileMapA })).not.toBe(treeA);
       expect(buildTree({ messages })).toBe(bare);
     });
+  });
+});
+
+describe('mergeMessageFile delivery path', () => {
+  const stored = { file_id: 'file', filename: 'report.pdf', llmDeliveryPath: 'provider' } as TFile;
+
+  it('returns the stored record when the message copy names no path or the same path', () => {
+    expect(mergeMessageFile({ file_id: stored.file_id }, stored)).toBe(stored);
+    expect(mergeMessageFile({ file_id: stored.file_id, llmDeliveryPath: 'provider' }, stored)).toBe(
+      stored,
+    );
+  });
+
+  it("carries the message copy's differing delivery path onto the stored record", () => {
+    const copy = {
+      file_id: stored.file_id,
+      filename: 'stub.pdf',
+      llmDeliveryPath: 'text' as const,
+    };
+    expect(mergeMessageFile(copy, stored)).toEqual({
+      ...stored,
+      llmDeliveryPath: 'text',
+    });
+    expect(stored.llmDeliveryPath).toBe('provider');
+  });
+
+  it('returns the message copy itself when no stored record backs it', () => {
+    const copy = { file_id: 'missing', llmDeliveryPath: 'text' as const };
+    expect(mergeMessageFile(copy, undefined)).toBe(copy);
   });
 });
 

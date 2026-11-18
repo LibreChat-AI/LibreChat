@@ -54,7 +54,7 @@ export function getPreliminaryResponseMessageId({
 }
 
 /** Minimal shape for request file entries (from `req.body.files`) */
-type RequestFile = { file_id?: string };
+export type RequestFile = { file_id?: string };
 
 type GetMessagesByParentId = (
   filter: { user: string; messageId: string; conversationId?: string },
@@ -70,6 +70,9 @@ type FilePreviewSource = Partial<
 
 type SanitizedFile<T extends FilePreviewSource> = Omit<T, (typeof FILE_STRIP_FIELDS)[number]> &
   Pick<TFile, 'textPreview'>;
+
+/** A file as sent to the client: without its extracted text or database ids. */
+export type TransmittedFile<T> = Omit<T, (typeof FILE_STRIP_FIELDS)[number]>;
 
 /** Fields to strip from messages before client transmission.
  * These are prompt-building inputs: extracted text and provider-encoded

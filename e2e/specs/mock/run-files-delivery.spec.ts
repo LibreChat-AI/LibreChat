@@ -7,9 +7,9 @@ import type { AgentDetail } from './agents.helpers';
 import {
   fetchJson,
   uniqueName,
-  RAG_API_BASE,
   messagesView,
   requestJson,
+  getRagQueries,
   getAccessToken,
   getRagEmbedded,
   resetProvisioning,
@@ -352,12 +352,9 @@ test.describe('run-file delivery and authorization', () => {
       ).toEqual([input.file_id, file.file_id].sort());
       expect(output(messages, label, 'reader_search')).toContain('No content found in the files.');
       expect((await getRagEmbedded(page)).map((entry) => entry.file_id)).toContain(file.file_id);
-      const queryResponse = await page.request.get(`${RAG_API_BASE}/__debug/embedded`);
-      expect(queryResponse.ok()).toBeTruthy();
-      const { queries } = (await queryResponse.json()) as {
-        queries: Array<{ file_id: string; query: string }>;
-      };
-      expect(queries).toContainEqual({ file_id: file.file_id, query: file.filename });
+      expect(await getRagQueries(page)).toContainEqual(
+        expect.objectContaining({ file_id: file.file_id, query: file.filename }),
+      );
       expect(
         messages.some((message) =>
           message.attachments?.some((attachment) =>
