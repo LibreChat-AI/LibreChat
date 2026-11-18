@@ -31,7 +31,10 @@ import { checkAccess } from '~/middleware/access';
 type RemoteAgentAccessParams = Parameters<typeof checkRemoteAgentAccess>[0];
 
 export interface RemoteIntegrations {
-  /** `owner`: every server the key's owner can use. `delegated`: only what a grant covers. */
+  /**
+   * `delegated`, the default: only what the key's owner granted it. `owner`: every server the
+   * owner can use, which is how key runs behaved before grants existed.
+   */
   mode: 'owner' | 'delegated';
   maxLifetimeHours: number;
   resources?: Record<string, ScheduledMCPResourceBinding>;
@@ -41,7 +44,7 @@ export interface RemoteIntegrations {
 export function resolveRemoteIntegrations(appConfig?: AppConfig): RemoteIntegrations {
   const integrations = appConfig?.endpoints?.[EModelEndpoint.agents]?.remoteApi?.integrations;
   return {
-    mode: integrations?.mode ?? 'owner',
+    mode: integrations?.mode ?? 'delegated',
     maxLifetimeHours: integrations?.maxLifetimeHours ?? DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
     ...(integrations?.resources && { resources: integrations.resources }),
   };
