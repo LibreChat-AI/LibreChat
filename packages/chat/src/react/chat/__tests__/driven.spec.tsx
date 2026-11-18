@@ -280,6 +280,55 @@ describe('useDrivenContract', () => {
     expect(result.current.contract.readOnly).toBeUndefined();
   });
 
+  it('keeps one row for a message the server stores under an id of its own', async () => {
+    const { result, streams, loadMessages, ready } = setup();
+    await ready();
+
+    act(() => {
+      result.current.contract.ask({ text: 'Next question' });
+    });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    const [, , sent, placeholder] = result.current.contract.getMessages() ?? [];
+
+    /** What the server sends: the message under the id it saved it with, not the one drawn. */
+    const stored = {
+      messageId: 'user-2-stored',
+      parentMessageId: sent.parentMessageId,
+      conversationId,
+      sender: 'User',
+      text: 'Next question',
+      isCreatedByUser: true,
+    } as TMessage;
+    act(() => {
+      streams[0].push(created(stored, 'response-2'));
+      streams[0].push(opened('response-2'));
+      streams[0].push(token('Answer'));
+    });
+    await settle();
+
+    /** The row drawn for the message is the turn's message: no second one beside it. */
+    const streaming = result.current.contract.getMessages() ?? [];
+    expect(ids(streaming)).toEqual(['user-1', 'response-1', sent.messageId, 'response-2']);
+    /** And the reply drawn under it is the one that fills, as the turn drew it. */
+    expect(streaming[3]).toMatchObject({
+      parentMessageId: sent.messageId,
+      sender: placeholder.sender,
+    });
+    expect(textOf(streaming, 'response-2')).toEqual(['Answer']);
+
+    act(() => streams[0].push(final(stored, reply('response-2', 'Answer', stored.messageId))));
+    await waitFor(() => expect(result.current.contract.isSubmitting).toBe(false));
+
+    /** The stored message takes the drawn row's place, and the list is not read again. */
+    expect(ids(result.current.contract.getMessages())).toEqual([
+      'user-1',
+      'response-1',
+      'user-2-stored',
+      'response-2',
+    ]);
+    expect(loadMessages).toHaveBeenCalledTimes(1);
+  });
+
   it('regenerates and continues a reply as main chat does', async () => {
     const { result, sendMessages, streams, ready } = setup();
     await ready();

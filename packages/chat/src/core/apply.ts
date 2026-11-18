@@ -5,6 +5,7 @@ import type {
   ChatEvent,
   ChatFrame,
   TAttachment,
+  TSubmission,
   ChatSyncFrame,
   ChatFinalFrame,
   EventSubmission,
@@ -63,6 +64,14 @@ export type EventApplierInit = {
     ResumableSteers,
     'resolve' | 'markLiveApplied' | 'update' | 'seed' | 'settleApplied'
   >;
+  /**
+   * The turn this chat sent and drew rows for, while the stream it opened for it runs. The
+   * server stores the turn's message under an id of its own and names that in its `created`
+   * frame. With the turn known, the frame is read as naming the row already drawn, which stays
+   * until the final frame brings the stored one, as main chat's handlers keep it. Without it
+   * the frame's message is a row the list does not hold, and is added.
+   */
+  turn?: () => TSubmission | undefined;
 };
 
 export type EventApplier = {
@@ -178,6 +187,36 @@ function settledFinal(
 }
 
 /**
+ * The row a turn drew for its message, when the frame names that message under another id. Only
+ * a turn that makes a message draws one: a rerun, a continued reply and an edited one name rows
+ * the list already held. The frame's message answers the row the drawn one answers.
+ */
+function drawnMessage(
+  turn: TSubmission | undefined,
+  data: ChatCreatedFrame,
+  messages: TMessage[],
+): TMessage | undefined {
+  if (
+    turn == null ||
+    turn.isRegenerate === true ||
+    turn.isContinued === true ||
+    turn.isEdited === true
+  ) {
+    return undefined;
+  }
+  const { messageId } = turn.userMessage;
+  if (messageId === data.message.messageId) {
+    return undefined;
+  }
+  const drawn = messages.find((message) => message.messageId === messageId);
+  if (drawn == null || drawn.isCreatedByUser !== true) {
+    return undefined;
+  }
+  const parent = data.message.parentMessageId;
+  return parent == null || parent === drawn.parentMessageId ? drawn : undefined;
+}
+
+/**
  * The turn a `created` frame names: its user message and the reply the turn starts from.
  *
  * A row the list already holds is never rewritten from the frame. A regeneration reuses a saved
@@ -196,8 +235,12 @@ function settledFinal(
  * read by what the list implies, which cannot tell a continued or edited reply from a
  * regeneration.
  */
-function createdSubmission(data: ChatCreatedFrame, messages: TMessage[]): EventSubmission {
-  const loaded = messages.find((message) => message.messageId === data.message.messageId);
+function createdSubmission(
+  data: ChatCreatedFrame,
+  messages: TMessage[],
+  drawn?: TMessage,
+): EventSubmission {
+  const loaded = messages.find((message) => message.messageId === data.message.messageId) ?? drawn;
   const { turn } = data;
   /** What the list implies when the server does not say: a named leaf that is no user turn. */
   const impliedAnchor =
@@ -321,6 +364,8 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
   let aside: BesideFrame[] = [];
   /** The chip ids a steer's applied frame settled for the first time, until its part is drawn. */
   const settled = new WeakMap<SideFrame, string[]>();
+  /** The id the turn drew its message under, while the server stores it under another. */
+  let asked: string | undefined;
   let held: HeldFlush | undefined;
   let cancel: (() => void) | undefined;
 
@@ -347,6 +392,7 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     drop();
     resetStreamState(stream);
     submission = undefined;
+    asked = undefined;
     early = [];
     waiting = [];
     aside = [];
@@ -517,7 +563,9 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     const sides = waiting;
     const asides = aside;
     reset();
-    const next = createdSubmission(data, ctx.messages);
+    const drawn = drawnMessage(init.turn?.(), data, ctx.messages);
+    const next = createdSubmission(data, ctx.messages, drawn);
+    asked = drawn?.messageId;
     /** The list with the turn's message in it, which a regeneration's steps build on. */
     if (next.messages !== ctx.messages) {
       ctx.write(next.messages);
@@ -638,6 +686,25 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
         if (kept.length !== ctx.messages.length) {
           ctx.write(kept);
         }
+      }
+      /**
+       * The row the turn drew for its message is the one the server stored, under the id the
+       * frame's request names. It takes that id here, so the stored message lands on it
+       * instead of beside it.
+       */
+      const stored = event.data.requestMessage?.messageId;
+      const drew = asked;
+      if (
+        drew != null &&
+        stored != null &&
+        drew !== stored &&
+        !ctx.messages.some((message) => message.messageId === stored)
+      ) {
+        ctx.write(
+          ctx.messages.map((message) =>
+            message.messageId === drew ? { ...message, messageId: stored } : message,
+          ),
+        );
       }
       mergeFinalFrame(settledFinal(event.data, submission, ctx.messages), ctx);
       if (submission != null) {

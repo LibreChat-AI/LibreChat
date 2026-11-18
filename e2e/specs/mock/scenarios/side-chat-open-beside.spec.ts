@@ -83,6 +83,59 @@ test('an earlier conversation opens beside the one on screen and takes a turn th
   await expect(page.getByRole('menuitem', { name: 'Open beside chat' })).toHaveCount(0);
 });
 
+test('a turn in a side chat shows its message once while the reply streams @scenario:side-chat-turn-shows-one-message', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const earlier = uniqueLabel('earlier-run');
+  const slow = uniqueLabel('slow');
+
+  const earlierUrl = await startChat(page, earlier);
+  await startChat(page, uniqueLabel('current-run'));
+  const besideId = new URL(earlierUrl).pathname.split('/').pop() ?? '';
+
+  await openChatHistory(page);
+  const row = conversationRow(page, earlierUrl);
+  await row.hover();
+  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+  await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
+  const sideChat = page.getByRole('region', { name: 'Side chat' });
+  await expect(sideChat).toContainText(replyText(earlier), { timeout: 30_000 });
+
+  /** Reads of the side conversation's stored messages from here on. */
+  const reads: string[] = [];
+  page.on('request', (request) => {
+    const { pathname } = new URL(request.url());
+    if (request.method() === 'GET' && pathname === `/api/messages/${besideId}`) {
+      reads.push(pathname);
+    }
+  });
+
+  const composer = sideChat.getByRole('textbox', { name: 'Message input' });
+  await composer.click();
+  await page.keyboard.type(`E2E_SLOW_REPLY:${slow}`);
+  await page.keyboard.press('Enter');
+
+  /**
+   * The server stores the message under an id of its own. While the reply streams, the message
+   * the reader sent is still the one row for it: no second copy to switch between, and the
+   * reply filling under it is the one drawn for the conversation's model.
+   */
+  await expect(sideChat).toContainText('chunk-005', { timeout: 30_000 });
+  const turns = sideChat.locator('.message-render');
+  await expect(turns).toHaveCount(4);
+  await expect(turns.nth(2)).toContainText(`E2E_SLOW_REPLY:${slow}`);
+  await expect(turns.nth(2)).not.toContainText(/\d+\s*\/\s*\d+/);
+  await expect(turns.nth(3)).toContainText(MOCK_ENDPOINTS[0].label);
+
+  /** Its own final frame is the turn's result: the conversation is not read back over it. */
+  await expect(sideChat).toContainText('chunk-159', { timeout: 90_000 });
+  await expect(sideChat.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+  await expect(turns).toHaveCount(4);
+  await expect(turns.nth(2)).not.toContainText(/\d+\s*\/\s*\d+/);
+  expect(reads).toEqual([]);
+});
+
 test.describe('on a small screen', () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 

@@ -285,6 +285,8 @@ export function useFollowChat({
     let wake: (() => void) | undefined;
     /** The turn being handed to the chat, which asks for it back inside the same call. */
     let handed: SubmittedTurn | undefined;
+    /** The turn sent from here that is in flight, whose rows the chat drew. */
+    let sent: SubmittedTurn | undefined;
     /** Whether a turn sent from here is in flight, which is not an attachment to follow or read over. */
     let driving = false;
     /** Reads of the stored rows in flight, each of which replaces the list when it lands. */
@@ -295,6 +297,8 @@ export function useFollowChat({
       schedule: perFrame,
       onEffect: (effect) => host.current.onEffect?.(effect),
       ...forwardBeside(() => host.current.beside),
+      /** Not when the server answered the start with a generation that is not this turn. */
+      turn: () => (attachment?.foreign === true ? undefined : sent?.submission),
     });
     const chat = new Chat({
       id,
@@ -563,6 +567,9 @@ export function useFollowChat({
     const conclude = async (turn: SubmittedTurn, current: Attachment): Promise<void> => {
       const { finished } = current;
       const stopped = stopping;
+      if (sent === turn) {
+        sent = undefined;
+      }
       const dropped = finished?.isDisconnect === true && stopped == null;
       /** Whether the list is this turn's to complete: it ran, as itself, to an end of its own. */
       let own =
@@ -668,6 +675,7 @@ export function useFollowChat({
         return false;
       }
       driving = true;
+      sent = turn;
       attachment = current;
       void sending.then(
         () => conclude(turn, current),

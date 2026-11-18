@@ -3,6 +3,7 @@ import type {
   Agents,
   TMessage,
   ChatEvent,
+  TSubmission,
   ChatStreamRequest,
   ChatTransportOptions,
   ChatTransport as WireTransport,
@@ -946,6 +947,58 @@ describe('a turn whose shape the server states', () => {
 
     expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
     expect(texts(read(), 'resp-1')).toEqual(['Done at once']);
+  });
+
+  describe('for a turn the chat sent and drew rows for', () => {
+    /** As `ask` draws a turn: the message under an id of the client's, and its empty reply. */
+    const asked: TMessage = { ...user, messageId: 'drawn-1' };
+    const placeholder: TMessage = {
+      ...reply('drawn-1_', []),
+      parentMessageId: 'drawn-1',
+      sender: 'The agent',
+    };
+    const turn = (extra: object = {}) =>
+      ({ userMessage: asked, initialResponse: placeholder, ...extra }) as TSubmission;
+
+    it('reads the frame as naming the drawn message, which takes the stored id at the end', () => {
+      const { applyEvent } = createEventApplier({ turn: () => turn() });
+      const { context, read } = createList([asked, placeholder]);
+
+      /** The server names the message under the id it stored it with: `user-1`. */
+      applyEvent(createdAs({ responseMessageId: 'resp-1' }), context);
+      applyEvent(opened('s0', 0), context);
+      applyEvent(token('s0', 'Working'), context);
+
+      expect(read().map((message) => message.messageId)).toEqual(['drawn-1', 'resp-1']);
+      expect(read()[1]).toMatchObject({ parentMessageId: 'drawn-1', sender: 'The agent' });
+      expect(texts(read(), 'resp-1')).toEqual(['Working']);
+
+      applyEvent(final('Done'), context);
+
+      expect(read().map((message) => message.messageId)).toEqual(['user-1', 'resp-1']);
+      expect(read()[1].parentMessageId).toBe('user-1');
+    });
+
+    it('adds the message a frame names when it answers something else', () => {
+      const elsewhere: TMessage = { ...asked, parentMessageId: 'resp-0' };
+      const { applyEvent } = createEventApplier({
+        turn: () => turn({ userMessage: elsewhere }),
+      });
+      const { context, read } = createList([elsewhere, placeholder]);
+
+      applyEvent(createdAs({ responseMessageId: 'resp-1' }), context);
+
+      expect(read().map((message) => message.messageId)).toContain('user-1');
+    });
+
+    it('does not take a rerun for a message it drew', () => {
+      const { applyEvent } = createEventApplier({ turn: () => turn({ isRegenerate: true }) });
+      const { context, read } = createList([asked, placeholder]);
+
+      applyEvent(createdAs({ responseMessageId: 'resp-1' }), context);
+
+      expect(read().map((message) => message.messageId)).toContain('user-1');
+    });
   });
 
   it('leaves a reply the final frame does not replace where it is', () => {
