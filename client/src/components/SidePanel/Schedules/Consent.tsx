@@ -54,17 +54,22 @@ function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
   );
 }
 
-/** The owner's ticks, and the tools that were marked as changed when they were last made. */
+/**
+ * The owner's ticks, with the grant they were made against and the tools it marked as
+ * changed at the time. A mark belongs to one grant: the same tool marked again under a later
+ * grant is a different change, which the owner has not looked at.
+ */
 interface Edited {
   choice: Record<string, string[]>;
+  revision: string | null;
   changed: Record<string, string[]>;
 }
 
 /**
  * The owner's ticks, kept to what is on offer now. The offer is read again while the dialog
  * is open: a server or tool the agents dropped has no box left to untick, and a tool marked
- * as changed since the owner last ticked anything loses its tick, so allowing the new
- * definition is something the owner does with the warning in view.
+ * as changed since the owner last ticked anything, or marked under another grant, loses its
+ * tick, so allowing the new definition is something the owner does with the warning in view.
  */
 function currentChoice(
   data: ScheduleMCPConsentView,
@@ -77,7 +82,7 @@ function currentChoice(
       const { serverName } = target.resource;
       const offered = offeredTools(target);
       const marked = data.changed[serverName] ?? [];
-      const seen = edited.changed[serverName] ?? [];
+      const seen = edited.revision === data.revision ? (edited.changed[serverName] ?? []) : [];
       return [
         serverName,
         (edited.choice[serverName] ?? initial[serverName]).filter(
@@ -115,7 +120,11 @@ export default function Consent({
   const choice = data ? currentChoice(data, edited) : {};
   const chosenCount = Object.values(choice).reduce((count, tools) => count + tools.length, 0);
   const setTools = (serverName: string, tools: string[]) =>
-    setEdited({ choice: { ...choice, [serverName]: tools }, changed: data?.changed ?? {} });
+    setEdited({
+      choice: { ...choice, [serverName]: tools },
+      revision: data?.revision ?? null,
+      changed: data?.changed ?? {},
+    });
   const commit = () => {
     if (!data?.offer || chosenCount === 0) return;
     setMessage(null);

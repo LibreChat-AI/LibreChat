@@ -237,6 +237,42 @@ it('unticks a tool that is marked as changed while the owner is choosing, until 
     ),
   );
 });
+it('unticks a tool the owner accepted once it is marked again under a later grant', async () => {
+  const marked = {
+    ...view,
+    state: 'changed' as const,
+    revision: 'grant-1',
+    expiresAtMs: Date.now() + 60_000,
+    allowed: { warehouse: ['query'] },
+    changed: { warehouse: ['query'] },
+  };
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(marked);
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  const client = display();
+  await userEvent.click(await screen.findByRole('checkbox', { name: 'query' }));
+  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+  // Confirmed elsewhere, then a run marks the tool again: the same name, another change.
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...marked,
+    revision: 'grant-2',
+    offer: { digest: 'd'.repeat(64), maxLifetimeHours: 24 },
+  });
+  await client.invalidateQueries();
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: 'query' })).not.toBeChecked());
+  expect(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' })).toBeDisabled();
+  await userEvent.click(screen.getByRole('checkbox', { name: 'query' }));
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({
+        offerDigest: 'd'.repeat(64),
+        expectedRevision: 'grant-2',
+        allow: { warehouse: ['query'] },
+      }),
+    ),
+  );
+});
 it('names the changed tools when there is nothing to confirm', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,
