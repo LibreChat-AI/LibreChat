@@ -1,9 +1,9 @@
 import { Constants } from '@librechat/agents';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { bindScheduledMCPInvocation, narrowScheduledMCPTools } from './execution';
 import { createScheduledMCPRunPolicy, SCHEDULE_TOOL_NOT_ALLOWED } from './run';
+import { createMCPRequestContext, getMCPRequestContext } from '~/mcp/request';
 import { executionFixture, readTool } from './execution.helper';
-import { bindScheduledMCPInvocation } from './execution';
-import { createMCPRequestContext } from '~/mcp/request';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { ScheduledMCPPolicyError } from './policy';
 
@@ -429,3 +429,43 @@ it.each(['consent_revoked', 'rbac_denied', 'binding_mismatch'] as const)(
     ).rejects.toBe(error);
   },
 );
+
+describe('the tools a run loads under a grant', () => {
+  it('keeps what the owner allowed and every tool that is not an MCP tool', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+    const keys = [
+      'query_mcp_warehouse',
+      'export_mcp_warehouse',
+      'purge_mcp_archive',
+      'web_search',
+      'execute_code',
+    ];
+    expect(fixture.execution.narrow('root', keys)).toEqual([
+      'query_mcp_warehouse',
+      'web_search',
+      'execute_code',
+    ]);
+    // A grant is per agent: one it does not list keeps no MCP tool.
+    expect(fixture.execution.narrow('stranger', keys)).toEqual(['web_search', 'execute_code']);
+  });
+
+  it('leaves the tools of a schedule nobody authorized as they are', async () => {
+    const fixture = await executionFixture();
+    fixture.snapshot.enrollment = null;
+    const legacy = (await fixture.factory.resolve(fixture.identity, 'invoke'))!;
+    const keys = ['query_mcp_warehouse', 'purge_mcp_archive'];
+    expect(legacy.narrow('root', keys)).toEqual(keys);
+  });
+
+  it('narrows through the request the execution is attached to, and no other', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+    const req = {};
+    const keys = ['query_mcp_warehouse', 'export_mcp_warehouse'];
+    // No context was ever opened for this request: nothing is narrowed and none is opened.
+    expect(narrowScheduledMCPTools(req, 'root', keys)).toBe(keys);
+    expect(narrowScheduledMCPTools(undefined, 'root', keys)).toBe(keys);
+    await fixture.factory.attach(getMCPRequestContext(req)!, fixture.identity, 'invoke');
+    expect(narrowScheduledMCPTools(req, 'root', keys)).toEqual(['query_mcp_warehouse']);
+    expect(narrowScheduledMCPTools({}, 'root', keys)).toBe(keys);
+  });
+});

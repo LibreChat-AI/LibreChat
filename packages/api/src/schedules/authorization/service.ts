@@ -111,7 +111,9 @@ function selectAllowed(
   for (const [serverName, tools] of Object.entries(allow)) {
     const target = offered.find((item) => item.resource.serverName === serverName);
     const selected = new Set(tools);
-    if (!target || tools.some((tool) => !allowedTools([target])[serverName].includes(tool)))
+    // Built once per server: a selection can run to thousands of tools across many agents.
+    const onOffer = new Set(target?.permittedTools.flatMap((selection) => selection.tools));
+    if (!target || tools.some((tool) => !onOffer.has(tool)))
       throw new ScheduleMCPConsentError('consent_invalid');
     const permittedTools = target.permittedTools
       .map(({ agentId, tools: offeredTools }) => ({

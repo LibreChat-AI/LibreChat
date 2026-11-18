@@ -54,11 +54,13 @@ agent still selects it. Anything else is refused with `tool_policy_denied`.
 
 - A tool the agent selects later is not allowed until the owner confirms again. It does not
   invalidate the tools already allowed.
-- A tool the owner left out does not keep the schedule from running. The readiness check looks
-  only at what the grant lists, and a server with nothing allowed is not connected to. If the
-  model calls such a tool, the run's hook turns it away with a plain message and the run goes
-  on; nothing is recorded against the run. The check at the MCP call still refuses it should
-  the hook be skipped.
+- A tool the owner left out does not keep the schedule from running, and the run never loads
+  it. The readiness check looks only at what the grant lists. When the run initializes an
+  agent, only the MCP tools the grant lists for that agent are asked for
+  (`narrowScheduledMCPTools`), so a left-out tool is not defined for the model and a server
+  with nothing allowed is not connected to. Should a call to such a tool be made anyway, the
+  run's hook turns it away with a plain message and records nothing, and the check at the MCP
+  call still refuses it.
 - A tool the agent stops selecting is refused, and the consent view reports `changed`.
 - A server the owner leaves with no tools is left out of the grant: its calls are refused with
   `consent_missing`.

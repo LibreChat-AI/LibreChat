@@ -227,6 +227,27 @@ it('grants only the tools the owner chose from the offer', async () => {
   ).toMatchObject({ state: 'denied', failure: { reason: 'tool_policy_denied' } });
 });
 
+it('confirms a selection as large as many agents can offer without stalling the process', async () => {
+  const s = setup();
+  // 20 agents with 256 tools each, all distinct: 5,120 tools on one server.
+  const permittedTools = Array.from({ length: 20 }, (_, agent) => ({
+    agentId: agent === 0 ? 'root' : `agent-${agent}`,
+    tools: Array.from({ length: 256 }, (_, tool) => `tool-${agent}-${tool}`),
+  }));
+  s.changeTarget({ ...target, permittedTools });
+  const every = permittedTools.flatMap((selection) => selection.tools);
+  const started = performance.now();
+  const view = await s.enroll({ warehouse: every });
+  const elapsed = performance.now() - started;
+  expect(view.allowed.warehouse).toHaveLength(every.length);
+  // The quadratic check took over two seconds for this input; the linear one takes a few
+  // dozen milliseconds. The bound is loose enough for a loaded machine.
+  expect(elapsed).toBeLessThan(1000);
+  await expect(s.enroll({ warehouse: [...every, 'not-on-offer'] })).rejects.toMatchObject({
+    code: 'consent_invalid',
+  });
+});
+
 it('leaves a server out of the grant when the owner chose nothing on it', async () => {
   const s = setup();
   s.changeTarget(offering(['query']), offering(['read'], 'archive'));

@@ -1,5 +1,11 @@
 import { DEFAULT_HOOK_TIMEOUT_MS } from '@librechat/agents';
-import { normalizeServerName, stripServerNamePrefix } from 'librechat-data-provider';
+import {
+  Constants,
+  splitMCPToolKey,
+  normalizeServerName,
+  stripServerNamePrefix,
+  buildServerNameAliases,
+} from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -9,6 +15,7 @@ import type { ScheduledMCPAuthority } from './contract';
 import type { ScheduledTokenContext } from '../context';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
+import { findMCPRequestContext } from '~/mcp/request';
 import { ScheduleMCPConsentError } from './service';
 import { ScheduledMCPPolicyError } from './policy';
 import { isOwnedAbortError } from '~/utils/errors';
@@ -42,6 +49,11 @@ export interface ScheduleMCPExecution {
    * For a readiness check, which looks only at what the owner allowed; a call is checked live.
    */
   readonly grants: (agentId: string, serverName: string, selectionName: string) => boolean;
+  /**
+   * The agent's tool keys the run may load: every key that is not an MCP tool, and the MCP
+   * tools the grant lists for the agent. A run that has no grant keeps them all.
+   */
+  readonly narrow: (agentId: string, toolKeys: readonly string[]) => string[];
   readonly bind: (agentId: string | undefined, selectionName: string) => ScheduledMCPInvocation;
 }
 
@@ -54,6 +66,29 @@ export function bindScheduledMCPInvocation(
   selectionName: string,
 ): ScheduledMCPInvocation | undefined {
   return context && executions.get(context)?.bind(agentId, selectionName);
+}
+
+/** A key that names one tool on one MCP server, as an agent's tool list carries it. */
+function isMCPToolSelection(toolKey: string): boolean {
+  return (
+    toolKey.includes(Constants.mcp_delimiter) &&
+    !toolKey.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`) &&
+    !toolKey.startsWith(`${Constants.mcp_all}${Constants.mcp_delimiter}`)
+  );
+}
+
+/**
+ * What a run loads for an agent. Under a schedule's grant that is only what the owner
+ * allowed: a tool left out is never defined for the model, and a server with nothing allowed
+ * is never connected to. Any other request loads the agent's tools as they are.
+ */
+export function narrowScheduledMCPTools(
+  req: object | undefined,
+  agentId: string,
+  toolKeys: string[],
+): string[] {
+  const context = findMCPRequestContext(req);
+  return (context && executions.get(context)?.narrow(agentId, toolKeys)) ?? toolKeys;
 }
 
 export function getScheduleMCPExecution(
@@ -109,6 +144,17 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
         new Map(permittedTools.map(({ agentId, tools }) => [agentId, new Set(tools)])),
       ]),
     );
+    const grantedServers = [...granted.keys()];
+    const serverAliases = buildServerNameAliases(grantedServers);
+    const serverSpellings = [...grantedServers, ...serverAliases.keys()];
+    const isGrantedKey = (agentId: string, toolKey: string): boolean => {
+      const [selectionName, spelling] = splitMCPToolKey(toolKey, serverSpellings);
+      const serverName =
+        spelling != null && granted.has(spelling) ? spelling : serverAliases.get(spelling ?? '');
+      return (
+        serverName != null && granted.get(serverName)?.get(agentId)?.has(selectionName) === true
+      );
+    };
     let fenced = false;
     const checkEnrollment = async (): Promise<void> => {
       if (enrolled) return;
@@ -136,6 +182,10 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
       checkEnrollment,
       grants: (agentId: string, serverName: string, selectionName: string) =>
         granted.get(serverName)?.get(agentId)?.has(selectionName) === true,
+      narrow: (agentId: string, toolKeys: readonly string[]) =>
+        enrolled
+          ? toolKeys.filter((key) => !isMCPToolSelection(key) || isGrantedKey(agentId, key))
+          : [...toolKeys],
       bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation {
         return Object.freeze({
           identity: capturedIdentity,
