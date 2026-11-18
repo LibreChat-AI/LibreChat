@@ -8,6 +8,7 @@ import {
   prefersResponsesApiByModel,
   supportsAdaptiveThinking,
   gpt6Tier,
+  gpt6Release,
 } from 'librechat-data-provider';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
 import type { AzureOpenAIInput } from '@librechat/agents/langchain/openai';
@@ -1052,6 +1053,7 @@ export function getOpenAILLMConfig({
   const tier = gpt6Tier(llmConfig.model);
   const solLunaRulesApply =
     firstPartyEndpoint && (tier === 'sol' || tier === 'terra' || tier === 'luna');
+  const sol62 = firstPartyEndpoint && gpt6Release(llmConfig.model)?.toLowerCase() === 'gpt-6.2-sol';
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({
@@ -1140,10 +1142,16 @@ export function getOpenAILLMConfig({
    * it came from saved settings, flat params, or a nested configured object.
    * Copy nested objects so administrator defaults are never mutated. */
   if (solLunaRulesApply) {
-    if (llmConfig.reasoning?.effort === ReasoningEffort.minimal) {
+    if (
+      llmConfig.reasoning?.effort === ReasoningEffort.minimal ||
+      (sol62 && llmConfig.reasoning?.effort === ReasoningEffort.none)
+    ) {
       llmConfig.reasoning = { ...llmConfig.reasoning, effort: ReasoningEffort.low };
     }
-    if (modelKwargs.reasoning_effort === ReasoningEffort.minimal) {
+    if (
+      modelKwargs.reasoning_effort === ReasoningEffort.minimal ||
+      (sol62 && modelKwargs.reasoning_effort === ReasoningEffort.none)
+    ) {
       modelKwargs.reasoning_effort = ReasoningEffort.low;
     }
   }
@@ -1151,12 +1159,13 @@ export function getOpenAILLMConfig({
   /** Sol/Luna/Terra reject sampling controls when Responses uses reasoning. The
    * provider default is medium, so an unset effort is reasoning-enabled too.
    * Strip only the request copy; saved settings remain available when the user
-   * switches models or explicitly selects `none`. */
+   * switches models or explicitly selects `none`. GPT-6.2 Sol rejects these
+   * controls on both APIs and cannot disable reasoning. */
   const solLunaResponsesReasoning =
     solLunaRulesApply &&
     llmConfig.useResponsesApi === true &&
     llmConfig.reasoning?.effort !== ReasoningEffort.none;
-  if (solLunaResponsesReasoning) {
+  if (sol62 || solLunaResponsesReasoning) {
     for (const param of [
       'temperature',
       'topP',

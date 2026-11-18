@@ -33,9 +33,9 @@ import {
   ReasoningParameterFormat,
 } from './schemas';
 import { resolveEffectiveUseResponsesApi } from './file-config';
+import { gpt6Tier, gpt6Release } from './families';
 import { clampSettingRange } from './generate';
 import { isGeminiHydrogen } from './gemini';
-import { gpt6Tier } from './families';
 
 // Base definitions
 const baseDefinitions: Record<string, SettingDefinition> = {
@@ -1799,11 +1799,23 @@ function applyModelFamilyDefaults(
   }
   const tier = gpt6Tier(model);
   if (tier === 'sol' || tier === 'terra' || tier === 'luna') {
-    return settings.map((setting) => {
+    const sol62 =
+      gpt6Release(model)?.toLowerCase() === 'gpt-6.2-sol' &&
+      (endpoint === EModelEndpoint.openAI || endpoint === EModelEndpoint.azureOpenAI);
+    const supportedSettings = sol62
+      ? settings.filter((setting) => !['temperature', 'top_p'].includes(setting.key))
+      : settings;
+    return supportedSettings.map((setting) => {
+      if (sol62 && setting.key === 'max_tokens') {
+        return { ...setting, range: { min: 1, max: 128000, step: 1 } };
+      }
       if (setting.key === 'reasoning_effort') {
         return {
           ...setting,
-          options: setting.options?.filter((effort) => effort !== ReasoningEffort.minimal),
+          options: setting.options?.filter(
+            (effort) =>
+              effort !== ReasoningEffort.minimal && (!sol62 || effort !== ReasoningEffort.none),
+          ),
         };
       }
       /** Match the native backend's unset default without writing into stored
