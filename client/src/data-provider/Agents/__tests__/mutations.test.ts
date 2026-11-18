@@ -54,14 +54,14 @@ const createWrapper = (queryClient: QueryClient) =>
   };
 
 describe('useDeleteAgentMutation', () => {
-  it.each(['direct', 'team'] as const)(
+  it.each(['legacy', 'direct', 'team'] as const)(
     'prunes deleted %s targets from list and detail caches before refetch completes',
     async (kind) => {
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       const targetId = 'deleted';
       const parent = {
         ...createAgent('parent'),
-        agent_ids: [targetId, 'kept'],
+        ...(kind === 'legacy' && { agent_ids: [targetId, 'kept'] }),
         subagents: {
           enabled: true,
           allowSelf: false,
@@ -85,7 +85,7 @@ describe('useDeleteAgentMutation', () => {
       };
       const expected = {
         ...parent,
-        agent_ids: ['kept'],
+        ...(kind === 'legacy' && { agent_ids: ['kept'] }),
         subagents: { ...parent.subagents, agent_ids: ['kept'], graphs: [] },
       };
       const unrelated = {

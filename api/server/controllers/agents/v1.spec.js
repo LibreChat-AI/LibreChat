@@ -4987,11 +4987,20 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         await db.deleteAgent({ id: targetAgent.id });
         const parent = await Agent.findOne({ id: parentId }).lean();
         mockReq.config = { endpoints: { agents: { capabilities: ['subagents'] } } };
-        mockReq.params = { id: parentId };
-        mockReq.body = { name: 'Renamed parent', subagents: parent.subagents };
-        await updateAgentHandler(mockReq, mockRes);
+        const app = express();
+        app.use(express.json());
+        app.use((req, _res, next) => {
+          req.user = mockReq.user;
+          req.config = mockReq.config;
+          next();
+        });
+        app.patch('/api/agents/:id', updateAgentHandler);
+        const response = await request(app)
+          .patch(`/api/agents/${parentId}`)
+          .send({ name: 'Renamed parent', subagents: parent.subagents });
 
-        expect(mockRes.status).toHaveBeenCalledWith(200);
+        expect(response.status).toBe(200);
+        expect(response.body.name).toBe('Renamed parent');
         const saved = await Agent.findOne({ id: parentId }).lean();
         expect(saved.name).toBe('Renamed parent');
         expect(saved.subagents).toEqual({
