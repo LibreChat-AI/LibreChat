@@ -33,6 +33,7 @@ export interface ChannelIdentityStorage {
   saveChannelIdentity(
     record: ChannelIdentityRecord,
     expectedRevision: string | null,
+    applicationRevision?: string,
   ): Promise<boolean>;
   /** Owner-only authority reduction remains available after the channel closes. */
   revokeChannelIdentity(
@@ -118,13 +119,21 @@ export function createChannelIdentityStorage(
         { $unset: { slackReply: '' } },
       );
     },
-    async saveChannelIdentity(record, expectedRevision) {
+    async saveChannelIdentity(record, expectedRevision, applicationRevision) {
       assertChannelTenant(record.tenantId);
       channelExternalIdentitySchema.parse(record.identity);
       if (record.tenantId !== record.identity.tenantId)
         throw new TypeError('Channel identity tenant mismatch');
       if (typeof record.identity.channelRevision !== 'string' || !record.identity.channelRevision)
         throw new TypeError('Channel revision required');
+      // Browser consent can advance an existing pending ticket without provider ingress.
+      const browserConsent =
+        record.identity.provider === 'discord' &&
+        applicationRevision === undefined &&
+        record.state === 'accepted' &&
+        Boolean(expectedRevision);
+      if (record.identity.provider === 'discord' && !applicationRevision && !browserConsent)
+        return false;
       await ensureIndexes();
       if (
         (!record.userId && record.accountLabel != null) ||
@@ -159,6 +168,7 @@ export function createChannelIdentityStorage(
             tenantId: record.tenantId,
             linkId: record.linkId,
             revision: expectedRevision,
+            ...(browserConsent ? { state: 'pending' } : {}),
             'identity.tenantId': record.identity.tenantId,
             'identity.channelId': record.identity.channelId,
             ...channelIdentityScope(record.identity),
@@ -197,6 +207,7 @@ export function createChannelIdentityStorage(
                   channelRevision: record.identity.channelRevision,
                   provider: record.identity.provider,
                   applicationId: record.identity.applicationId,
+                  applicationRevision,
                   guildId: record.identity.guildId,
                   teamId: record.identity.teamId,
                 },

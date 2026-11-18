@@ -4,6 +4,7 @@ import {
   PermissionBits,
   channelConfigSchema,
   channelActorMatchesChannel,
+  sameChannelExternalIdentity,
 } from 'librechat-data-provider';
 import type {
   ChannelExternalIdentity,
@@ -41,6 +42,17 @@ export function channelExternalIdentity(
   channel: AgentChannelRecord,
   externalUserId: string,
 ): ChannelExternalIdentity {
+  if (channel.type === 'discord')
+    return {
+      tenantId: channel.tenantId || '_',
+      channelId: channel.channelId,
+      channelRevision: channel.revision,
+      agentId: channel.agentId,
+      provider: 'discord',
+      applicationId: channel.discord.applicationId,
+      guildId: channel.discord.guildId,
+      externalUserId,
+    };
   if (channel.type !== 'slack') throw new TypeError('Unsupported channel identity provider');
   return {
     tenantId: channel.tenantId || '_',
@@ -52,7 +64,7 @@ export function channelExternalIdentity(
   };
 }
 
-/** A Slack actor is never mapped from thread history or from an activator's exported API key. */
+/** An external actor is never mapped from thread history or from an activator's exported API key. */
 export interface ChannelAuthority {
   identity: ReturnType<typeof createChannelIdentityService>;
   resolvePrincipal(
@@ -64,15 +76,16 @@ export interface ChannelAuthority {
 export function createChannelAuthority(deps: ChannelAuthorityDependencies): ChannelAuthority {
   const defaults = channelConfigSchema.parse({});
   async function current(identity: ChannelExternalIdentity) {
-    if (identity.provider !== undefined) return null;
     const channel = await deps.channels.getAgentChannelMetadata(identity.channelId);
     return channel &&
-      channel.type === 'slack' &&
+      (channel.type === 'slack' || channel.type === 'discord') &&
       channel.status === 'active' &&
       (channel.tenantId || '_') === identity.tenantId &&
       channel.agentId === identity.agentId &&
-      channel.slack?.teamId === identity.teamId &&
-      channel.revision === identity.channelRevision
+      sameChannelExternalIdentity(
+        channelExternalIdentity(channel, identity.externalUserId),
+        identity,
+      )
       ? channel
       : null;
   }
@@ -116,7 +129,7 @@ export function createChannelAuthority(deps: ChannelAuthorityDependencies): Chan
     channel: AgentChannelRecord,
     actor: ChannelRunAdmission['actor'],
   ): Promise<ChannelRunPrincipal | null> {
-    if (channel.type !== 'slack' || !channelActorMatchesChannel(channel, actor)) return null;
+    if (!channelActorMatchesChannel(channel, actor)) return null;
     const linked = await identity.resolve(channelExternalIdentity(channel, actor.externalUserId));
     if (!linked.ok) return null;
     return {

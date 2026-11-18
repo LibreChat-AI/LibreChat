@@ -1,7 +1,7 @@
 import { useId, useRef, useState, useEffect, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
-import { X, Info, Plus, Power, User, Users, Pencil, Settings } from 'lucide-react';
+import { X, Info, Plus, Power, User, Users, Pencil, Link2Off, Settings } from 'lucide-react';
 import {
   Alert,
   Button,
@@ -15,7 +15,7 @@ import {
   ChoiceCards,
   TooltipAnchor,
 } from '@librechat/client';
-import type { AgentChannel } from 'librechat-data-provider';
+import type { AgentChannel, ListedAgentChannel } from 'librechat-data-provider';
 import type { SetupStep } from './ChannelSetup';
 import type { TranslationKeys } from '~/hooks';
 import { useSlackWorkspaces } from '~/components/Channels/useSlackWorkspaces';
@@ -42,6 +42,13 @@ const modeLabels: Record<AgentChannel['credentialMode'], TranslationKeys> = {
   per_user: 'com_ui_channel_link_per_user',
   shared: 'com_ui_channel_link_shared',
 };
+
+function RowIcon({ type }: { type: ListedAgentChannel['type'] }) {
+  if (type !== 'slack') {
+    return <Link2Off className="text-text-secondary size-4" aria-hidden="true" />;
+  }
+  return <img src="assets/slack.svg" alt="" className="size-4" />;
+}
 
 function modeOptions(localize: (key: TranslationKeys) => string) {
   return [
@@ -509,7 +516,9 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
       refetchIntervalInBackground: false,
     },
   );
-  const [rowDelete, setRowDelete] = useState<AgentChannel | null>(null);
+  const [rowDelete, setRowDelete] = useState<ListedAgentChannel | null>(null);
+  /** Kept after the dialog closes, so the wording does not change while it fades out. */
+  const [rowDeleteCopy, setRowDeleteCopy] = useState<TranslationKeys | undefined>();
   const rowDeleteRef = useRef<HTMLButtonElement | null>(null);
   const removeRow = useMutation({
     mutationKey: [MutationKeys.agentChannels, userId, tenantId, agentId, 'delete'],
@@ -532,7 +541,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
       return dataService.createAgentChannel(agentId, credentialMode);
     },
     onSuccess: async (channel) => {
-      queryClient.setQueryData<AgentChannel[]>(
+      queryClient.setQueryData<ListedAgentChannel[]>(
         [QueryKeys.agentChannels, userId, tenantId, agentId],
         (current) => [
           ...(current ?? []).filter((entry) => entry.channelId !== channel.channelId),
@@ -545,6 +554,8 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
     },
   });
   const selected = channels.data?.find((channel) => channel.channelId === dialog);
+  // Only a Slack connection has a dialog here; a row of any other provider can only be deleted.
+  const managed = selected?.type === 'slack' ? selected : undefined;
   const connectionTitle =
     selected?.status === 'pending_install' &&
     (!selected.workspaceId || newWorkspaceConnection === selected.channelId)
@@ -602,8 +613,15 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
               className="group hover:bg-surface-secondary flex items-center gap-2.5 rounded-lg px-2 py-1.5"
             >
               <span className="relative shrink-0" aria-hidden="true">
-                <span className="bg-surface-fixed flex size-7 items-center justify-center overflow-hidden rounded-md">
-                  <img src="assets/slack.svg" alt="" className="size-4" />
+                <span
+                  className={cn(
+                    'flex size-7 items-center justify-center overflow-hidden rounded-md',
+                    // The fixed surface is white in every theme, which suits a brand mark but not a
+                    // glyph drawn in a theme text color.
+                    channel.type !== 'slack' ? 'bg-surface-tertiary' : 'bg-surface-fixed',
+                  )}
+                >
+                  <RowIcon type={channel.type} />
                 </span>
                 <span
                   className={cn(
@@ -614,8 +632,17 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
               </span>
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="text-text-primary truncate text-sm font-medium">
-                  {localize('com_ui_channels_slack')}
+                  {localize(
+                    channel.type !== 'slack'
+                      ? 'com_ui_channels_unavailable'
+                      : 'com_ui_channels_slack',
+                  )}
                 </span>
+                {channel.type !== 'slack' && (
+                  <span className="text-text-secondary text-xs">
+                    {localize('com_ui_channels_unavailable_description')}
+                  </span>
+                )}
                 <ChannelStatus
                   status={channel.status}
                   pendingLabel={
@@ -628,21 +655,23 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                 />
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
-                <div className="no-touch:opacity-0 grouped-focus-visible:opacity-100 flex items-center group-hover:opacity-100">
-                  <RowAction
-                    label={channelActionLabel(channel, userId)}
-                    disabled={
-                      channels.isError ||
-                      channel.status === 'deleting' ||
-                      channel.createdBy !== userId
-                    }
-                    onOpen={(button) => {
-                      triggerRef.current = button;
-                      setNewWorkspaceConnection(null);
-                      setDialog(channel.channelId);
-                    }}
-                  />
-                </div>
+                {channel.type === 'slack' && (
+                  <div className="no-touch:opacity-0 grouped-focus-visible:opacity-100 flex items-center group-hover:opacity-100">
+                    <RowAction
+                      label={channelActionLabel(channel, userId)}
+                      disabled={
+                        channels.isError ||
+                        channel.status === 'deleting' ||
+                        channel.createdBy !== userId
+                      }
+                      onOpen={(button) => {
+                        triggerRef.current = button;
+                        setNewWorkspaceConnection(null);
+                        setDialog(channel.channelId);
+                      }}
+                    />
+                  </div>
+                )}
                 {channel.createdBy === userId && channel.status !== 'deleting' && (
                   <div className="no-touch:opacity-0 grouped-focus-visible:opacity-100 shrink-0 group-hover:opacity-100">
                     <TooltipAnchor
@@ -657,6 +686,11 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                             rowDeleteRef.current = event.currentTarget;
                             removeRow.reset();
                             setRowDelete(channel);
+                            setRowDeleteCopy(
+                              channel.type !== 'slack'
+                                ? 'com_ui_channels_unavailable_delete_confirm'
+                                : undefined,
+                            );
                           }}
                         >
                           <X className="size-3.5" aria-hidden="true" />
@@ -679,6 +713,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
         loading={removeRow.isLoading}
         error={removeRow.isError ? localize(channelErrorLabel(removeRow.error)) : undefined}
         triggerRef={rowDeleteRef}
+        description={rowDeleteCopy}
       />
       <ChannelsDialog
         open={libraryOpen}
@@ -722,7 +757,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                 dialog === 'add' ? 'pt-6' : 'pt-4',
               )}
             >
-              {dialog !== 'add' && selected && <ChannelHeaderIcon channel={selected} />}
+              {dialog !== 'add' && managed && <ChannelHeaderIcon channel={managed} />}
               <div className="min-w-0 space-y-1">
                 <OGDialogTitle>
                   {localize(dialog === 'add' ? 'com_ui_channels_add_slack' : connectionTitle)}
@@ -860,33 +895,33 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                   </div>
                 </div>
               )}
-              {selected &&
-                selected.createdBy === userId &&
+              {managed &&
+                managed.createdBy === userId &&
                 agentId &&
-                (selected.workspaceId ? (
+                (managed.workspaceId ? (
                   <WorkspaceChannel
-                    key={selected.channelId}
+                    key={managed.channelId}
                     agentId={agentId}
-                    initialSetup={newWorkspaceConnection === selected.channelId}
-                    channel={selected}
+                    initialSetup={newWorkspaceConnection === managed.channelId}
+                    channel={managed}
                     userId={userId}
                     tenantId={tenantId}
                     enabled={channels.isSuccess && !channels.isFetching}
                     onClose={() =>
-                      setDialog((current) => (current === selected.channelId ? null : current))
+                      setDialog((current) => (current === managed.channelId ? null : current))
                     }
                   />
                 ) : (
                   <Channel
-                    key={selected.channelId}
+                    key={managed.channelId}
                     agentId={agentId}
-                    channel={selected}
+                    channel={managed}
                     userId={userId}
                     tenantId={tenantId}
                     isAdmin={isAdmin}
                     enabled={channels.isSuccess && !channels.isFetching}
                     onClose={() =>
-                      setDialog((current) => (current === selected.channelId ? null : current))
+                      setDialog((current) => (current === managed.channelId ? null : current))
                     }
                   />
                 ))}

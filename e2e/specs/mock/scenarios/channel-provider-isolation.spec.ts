@@ -174,7 +174,16 @@ test.describe('Slack channel provider isolation', () => {
         }
 
         const listed = await ownerList(serving);
+        expect(listed.status, listed.text).toBe(200);
         expect(listed.body.map((row) => row.channelId)).toEqual([serving.channelId]);
+        expect(listed.body[0]).toEqual({
+          type: 'unavailable',
+          status: 'disabled',
+          channelId: serving.channelId,
+          agentId: serving.agentId,
+          createdBy: owner.userId,
+          revision: serving.revision,
+        });
         for (const secret of [serving.slack.botToken, serving.slack.signingSecret, 'encrypted']) {
           expect(listed.text).not.toContain(secret);
         }
@@ -437,6 +446,7 @@ test.describe('Slack channel provider isolation', () => {
         const resolved = await resolve();
         expect([resolved.body.kind, resolved.body.channelId]).toEqual(['unmapped', undefined]);
         const listed = await ownerList(channel);
+        expect(listed.status, listed.text).toBe(200);
         expect(listed.body.find((row) => row.channelId === channelId)?.status).toBe('disabled');
 
         /** Generic deletion still works and takes the route with it. */

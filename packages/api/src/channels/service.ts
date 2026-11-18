@@ -4,11 +4,17 @@ import { timingSafeEqual } from 'node:crypto';
 import { runAsSystem, tenantStorage, TransactionUnavailableError } from '@librechat/data-schemas';
 import {
   channelConfigSchema,
+  channelSnowflakeSchema,
   channelGatewayWirePolicySchema,
   CHANNEL_GATEWAY_POLICY_VERSION,
 } from 'librechat-data-provider';
+import type {
+  AgentChannel,
+  ChannelConfig,
+  ListedAgentChannel,
+  ChannelServiceBundle,
+} from 'librechat-data-provider';
 import type { AgentChannelMethods, AgentChannelRecord } from '@librechat/data-schemas';
-import type { ChannelConfig, ChannelServiceBundle } from 'librechat-data-provider';
 import type { Request, Response, RequestHandler } from 'express';
 import type { ChannelServiceGuard } from './types';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
@@ -70,32 +76,64 @@ const modeInput = z
   .object({ credentialMode: z.enum(['shared', 'per_user']), revision: identifier })
   .strict();
 
-export function publicChannel(
-  channel: AgentChannelRecord,
-): Pick<
-  AgentChannelRecord,
-  | 'channelId'
-  | 'tenantId'
-  | 'agentId'
-  | 'createdBy'
-  | 'type'
-  | 'status'
-  | 'credentialMode'
-  | 'revision'
-  | 'workspaceId'
-  | 'slack'
-> {
+export function publicChannel(channel: AgentChannelRecord): AgentChannel {
+  const common = {
+    channelId: channel.channelId,
+    tenantId: channel.tenantId,
+    agentId: channel.agentId,
+    createdBy: channel.createdBy,
+    status: channel.status,
+    revision: channel.revision,
+  };
+  if (channel.type === 'discord')
+    return {
+      ...common,
+      type: 'discord',
+      credentialMode: 'per_user',
+      installationId: channel.installationId,
+      installationRevision: channel.installationRevision,
+      discord: channel.discord,
+    };
+  if (channel.type !== 'slack') throw new TypeError('Unsupported channel provider');
+  return {
+    ...common,
+    type: 'slack',
+    credentialMode: channel.credentialMode,
+    workspaceId: channel.workspaceId,
+    slack: channel.slack,
+  };
+}
+
+/**
+ * What an owner sees of any stored row. A row no provider serves, such as one restored from another
+ * build or written before rows carried a provider, is listed as unavailable: it keeps its identity
+ * and a disabled (or deleting) status and nothing else, so its owner can still delete it and one
+ * such row cannot fail the whole list. A Discord row restored without the installation and guild
+ * binding its response promises is listed the same way, judged by the rule the stored model enforces.
+ */
+export function listedChannel(channel: AgentChannelRecord): ListedAgentChannel {
+  // Stored data can carry a tag the type no longer lists, so it is read as plain data here.
+  const provider: string | undefined = channel.type;
+  const { discord } = channel;
+  const served =
+    provider === 'slack' ||
+    (provider === 'discord' &&
+      Boolean(channel.installationId && channel.installationRevision) &&
+      [
+        discord?.applicationId,
+        discord?.guildId,
+        discord?.botUserId,
+        discord?.externalChannelId,
+      ].every((id) => channelSnowflakeSchema.safeParse(id).success));
+  if (served) return publicChannel(channel);
   return {
     channelId: channel.channelId,
     tenantId: channel.tenantId,
     agentId: channel.agentId,
     createdBy: channel.createdBy,
-    type: channel.type,
-    status: channel.status,
-    credentialMode: channel.credentialMode,
+    type: 'unavailable',
+    status: channel.status === 'deleting' ? 'deleting' : 'disabled',
     revision: channel.revision,
-    workspaceId: channel.workspaceId,
-    slack: channel.slack,
   };
 }
 
@@ -195,7 +233,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
 
   const list = protect(async (req, res) => {
     const channels = await deps.db.listAgentChannels(req.params.agentId);
-    res.json(channels.map(publicChannel));
+    res.json(channels.map(listedChannel));
   });
 
   const create = protect(async (req, res) => {
@@ -323,7 +361,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     if (!deleting) return void res.status(204).end();
     const result = await deps.db.deleteAgentChannel(channel.channelId, channel.createdBy);
     if (result.status === 'pending_drain') {
-      res.status(202).json(publicChannel(deleting));
+      res.status(202).json(listedChannel(deleting));
       return;
     }
     res.status(204).end();
@@ -408,6 +446,11 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     serviceWithConfig((req, res, channel, config) => handler(req, res, channel, config));
 
   const bundle = serviceWithConfig(async (_req, res, channel, config) => {
+    const metadata = publicChannel(channel);
+    if (metadata.type !== 'slack') {
+      res.status(404).json({ error: 'channel_not_found' });
+      return;
+    }
     const agent = await deps.getAgent(channel.agentId);
     const slack = channel.slack;
     if (
@@ -434,7 +477,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     }
     res.json({
       channel: {
-        ...publicChannel(channel),
+        ...metadata,
         revision: channel.revision,
         slack,
       },

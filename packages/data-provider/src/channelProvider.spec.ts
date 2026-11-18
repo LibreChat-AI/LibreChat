@@ -107,15 +107,19 @@ it('matches a Discord actor only to its canonical application and guild', () => 
     revision: 'revision',
     status: 'active',
     type: 'discord',
+    installationId: 'installation',
+    installationRevision: 'installed',
     credentialMode: 'per_user',
     discord: {
       applicationId: discord.applicationId,
       guildId: discord.guildId,
       botUserId: '456789012345678901',
+      externalChannelId: '678901234567890123',
     },
   };
   expect(channelActorMatchesChannel(channel, discord)).toBe(true);
   expect(channelActorMatchesChannel(channel, slack)).toBe(false);
+  // @ts-expect-error Raw persisted data can violate the provider contract.
   expect(channelActorMatchesChannel({ ...channel, discord: undefined }, discord)).toBe(false);
   expect(channelActorMatchesChannel(channel, { ...discord, guildId: '567890123456789012' })).toBe(
     false,

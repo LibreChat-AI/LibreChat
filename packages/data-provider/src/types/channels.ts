@@ -205,25 +205,46 @@ export interface SlackAgentChannel extends AgentChannelBase {
   type: 'slack';
   discord?: never;
   installationId?: never;
+  installationRevision?: never;
   /** Shared app installation; credentials remain owned by the workspace. */
   workspaceId?: string;
   slack?: { teamId: string; appId: string; botUserId: string };
 }
 
-/** Guild-installed Discord contract; not yet accepted by channel creation or storage. */
+/** Guild installation identity is immutable for the lifetime of a channel. */
 export interface DiscordAgentChannel extends AgentChannelBase {
   type: 'discord';
   credentialMode: 'per_user';
-  installationId?: string;
-  discord?: { applicationId: string; guildId: string; botUserId: string };
+  installationId: string;
+  installationRevision: string;
+  discord: { applicationId: string; guildId: string; botUserId: string; externalChannelId: string };
   workspaceId?: never;
   slack?: never;
 }
 
 export type ProviderAgentChannel = SlackAgentChannel | DiscordAgentChannel;
 
-/** Existing runtime and wire contracts remain Slack-only until provider dispatch is installed. */
-export type AgentChannel = SlackAgentChannel;
+export type AgentChannel = ProviderAgentChannel;
+
+/**
+ * A stored row no provider of this build serves, such as one restored from another build or written
+ * before rows carried a provider. Its owner can still see and delete it, and nothing else is offered
+ * or exposed. It is never stored as this type: only the list and deletion responses produce it.
+ */
+export interface UnavailableAgentChannel
+  extends Omit<AgentChannelBase, 'credentialMode' | 'status'> {
+  type: 'unavailable';
+  status: 'disabled' | 'deleting';
+  credentialMode?: never;
+  discord?: never;
+  installationId?: never;
+  installationRevision?: never;
+  workspaceId?: never;
+  slack?: never;
+}
+
+/** One row of an owner's channel list: a channel a provider serves, or one only deletion can act on. */
+export type ListedAgentChannel = AgentChannel | UnavailableAgentChannel;
 
 export interface ActivateAgentChannel {
   slack: {

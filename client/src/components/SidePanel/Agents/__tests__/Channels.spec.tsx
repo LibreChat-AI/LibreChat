@@ -4,7 +4,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { dataService, request, QueryKeys, MutationKeys } from 'librechat-data-provider';
 import { SLACK_CHANNEL_BOT_SCOPES, SLACK_CHANNEL_BOT_EVENTS } from 'librechat-data-provider';
-import type { AgentChannel, SlackChannelManifest, SlackWorkspace } from 'librechat-data-provider';
+import type {
+  AgentChannel,
+  SlackWorkspace,
+  SlackChannelManifest,
+  UnavailableAgentChannel,
+} from 'librechat-data-provider';
 import Channels from '../Channels';
 
 jest.mock('~/hooks', () => ({
@@ -39,6 +44,33 @@ const pending: AgentChannel = {
   type: 'slack',
   status: 'pending_install',
   credentialMode: 'per_user',
+};
+/** A stored row no provider serves, as the list endpoint reports it. */
+const unavailable: UnavailableAgentChannel = {
+  revision: 'revision-3',
+  channelId: 'channel-3',
+  agentId: 'agent-1',
+  createdBy: 'admin-1',
+  type: 'unavailable',
+  status: 'disabled',
+};
+/** A valid Discord row, as the list returns it while this panel has no Discord UI. */
+const discord: AgentChannel = {
+  revision: 'revision-4',
+  channelId: 'channel-5',
+  agentId: 'agent-1',
+  createdBy: 'admin-1',
+  type: 'discord',
+  status: 'active',
+  credentialMode: 'per_user',
+  installationId: 'installation-1',
+  installationRevision: 'guild-r1',
+  discord: {
+    applicationId: '123456789012345678',
+    guildId: '223456789012345678',
+    botUserId: '423456789012345678',
+    externalChannelId: '323456789012345678',
+  },
 };
 const manifest: SlackChannelManifest = {
   display_information: { name: 'Test agent' },
@@ -213,6 +245,155 @@ test('the row X deletes a connection only after a confirmation dialog', async ()
     expect(dataService.deleteAgentChannel).toHaveBeenCalledWith('agent-1', 'channel-1'),
   );
   await waitFor(() => expect(screen.queryAllByRole('listitem')).toHaveLength(0));
+});
+test('a connection no provider serves sits beside working ones and offers deletion only', async () => {
+  const user = userEvent.setup();
+  const active: AgentChannel = { ...pending, channelId: 'channel-2', status: 'active' };
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([active, unavailable]);
+  renderChannels();
+  const rows = await screen.findAllByRole('listitem');
+  expect(rows).toHaveLength(2);
+
+  // The working connection is untouched: the Slack mark, its name and its Manage action.
+  expect(rows[0].querySelector('img')).toHaveAttribute('src', 'assets/slack.svg');
+  expect(within(rows[0]).getByText('com_ui_channels_slack')).toBeInTheDocument();
+  expect(
+    within(rows[0]).getByRole('button', { name: 'com_ui_channels_manage' }),
+  ).toBeInTheDocument();
+
+  // The other is not shown as Slack, says why nothing runs, and can only be deleted.
+  const row = rows[1];
+  expect(within(row).getByText('com_ui_channels_unavailable')).toBeInTheDocument();
+  expect(within(row).getByText('com_ui_channels_unavailable_description')).toBeInTheDocument();
+  expect(within(row).getByText('com_ui_channels_disabled')).toBeInTheDocument();
+  expect(within(row).queryByText('com_ui_channels_slack')).not.toBeInTheDocument();
+  expect(row.querySelector('img')).not.toBeInTheDocument();
+  const actions = within(row).getAllByRole('button');
+  expect(actions).toHaveLength(1);
+  expect(actions[0]).toHaveAccessibleName('com_ui_channels_delete_connection');
+
+  // Its neighbour still opens its dialog.
+  await user.click(within(rows[0]).getByRole('button', { name: 'com_ui_channels_manage' }));
+  expect(await screen.findByRole('dialog', { name: 'com_ui_channels_manage' })).toBeInTheDocument();
+});
+test('deleting an unavailable connection confirms in its own words, and a Slack one keeps the Slack words', async () => {
+  const user = userEvent.setup();
+  const active: AgentChannel = { ...pending, channelId: 'channel-2', status: 'active' };
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([active, unavailable]);
+  renderChannels();
+  const rows = await screen.findAllByRole('listitem');
+  const remove = (row: HTMLElement) =>
+    user.click(within(row).getByRole('button', { name: 'com_ui_channels_delete_connection' }));
+
+  await remove(rows[0]);
+  const slack = await screen.findByRole('dialog', { name: 'com_ui_channels_delete_title' });
+  expect(within(slack).getByText('com_ui_channels_delete_confirm')).toBeInTheDocument();
+  await user.click(within(slack).getByRole('button', { name: 'com_ui_cancel' }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('dialog', { name: 'com_ui_channels_delete_title' }),
+    ).not.toBeInTheDocument(),
+  );
+
+  await remove(rows[1]);
+  const confirm = await screen.findByRole('dialog', { name: 'com_ui_channels_delete_title' });
+  expect(
+    within(confirm).getByText('com_ui_channels_unavailable_delete_confirm'),
+  ).toBeInTheDocument();
+  expect(within(confirm).queryByText('com_ui_channels_delete_confirm')).not.toBeInTheDocument();
+  expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
+
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([active]);
+  await user.click(within(confirm).getByRole('button', { name: 'com_ui_delete' }));
+  await waitFor(() =>
+    expect(dataService.deleteAgentChannel).toHaveBeenCalledWith('agent-1', 'channel-3'),
+  );
+  await waitFor(() => expect(screen.queryAllByRole('listitem')).toHaveLength(1));
+  expect(screen.queryByText('com_ui_channels_unavailable')).not.toBeInTheDocument();
+});
+test('an unavailable connection owned by someone else, or already being deleted, offers no action', async () => {
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([
+    { ...unavailable, createdBy: 'other-1' },
+    { ...unavailable, channelId: 'channel-4', status: 'deleting' },
+  ]);
+  renderChannels();
+  const rows = await screen.findAllByRole('listitem');
+  expect(rows).toHaveLength(2);
+  rows.forEach((row) => expect(within(row).queryAllByRole('button')).toHaveLength(0));
+  expect(within(rows[1]).getByText('com_ui_channels_deleting')).toBeInTheDocument();
+});
+test('a valid Discord connection is not drawn or named as Slack and offers deletion only', async () => {
+  const active: AgentChannel = { ...pending, channelId: 'channel-2', status: 'active' };
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([active, discord]);
+  renderChannels();
+  const rows = await screen.findAllByRole('listitem');
+  expect(rows).toHaveLength(2);
+
+  // The Slack connection beside it is untouched.
+  expect(rows[0].querySelector('img')).toHaveAttribute('src', 'assets/slack.svg');
+  expect(within(rows[0]).getByText('com_ui_channels_slack')).toBeInTheDocument();
+  expect(
+    within(rows[0]).getByRole('button', { name: 'com_ui_channels_manage' }),
+  ).toBeInTheDocument();
+
+  // Until Discord has its own UI here, its row is neutral and deleting it is the only action.
+  const row = rows[1];
+  expect(row.querySelector('img')).not.toBeInTheDocument();
+  expect(within(row).queryByText('com_ui_channels_slack')).not.toBeInTheDocument();
+  expect(within(row).getByText('com_ui_channels_unavailable')).toBeInTheDocument();
+  expect(within(row).getByText('com_ui_channels_unavailable_description')).toBeInTheDocument();
+  const actions = within(row).getAllByRole('button');
+  expect(actions).toHaveLength(1);
+  expect(actions[0]).toHaveAccessibleName('com_ui_channels_delete_connection');
+});
+test('deleting a valid Discord connection confirms in the unavailable wording', async () => {
+  const user = userEvent.setup();
+  const active: AgentChannel = { ...pending, channelId: 'channel-2', status: 'active' };
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([active, discord]);
+  renderChannels();
+  const rows = await screen.findAllByRole('listitem');
+
+  await user.click(
+    within(rows[1]).getByRole('button', { name: 'com_ui_channels_delete_connection' }),
+  );
+  const confirm = await screen.findByRole('dialog', { name: 'com_ui_channels_delete_title' });
+  expect(
+    within(confirm).getByText('com_ui_channels_unavailable_delete_confirm'),
+  ).toBeInTheDocument();
+  expect(within(confirm).queryByText('com_ui_channels_delete_confirm')).not.toBeInTheDocument();
+  expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
+
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([active]);
+  await user.click(within(confirm).getByRole('button', { name: 'com_ui_delete' }));
+  await waitFor(() =>
+    expect(dataService.deleteAgentChannel).toHaveBeenCalledWith('agent-1', 'channel-5'),
+  );
+  await waitFor(() => expect(screen.queryAllByRole('listitem')).toHaveLength(1));
+});
+test('a valid Discord connection owned by someone else, or already being deleted, offers no action', async () => {
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([
+    { ...discord, createdBy: 'other-1' },
+    { ...discord, channelId: 'channel-6', status: 'deleting' },
+  ]);
+  renderChannels();
+  const rows = await screen.findAllByRole('listitem');
+  expect(rows).toHaveLength(2);
+  rows.forEach((row) => expect(within(row).queryAllByRole('button')).toHaveLength(0));
+  expect(within(rows[1]).getByText('com_ui_channels_deleting')).toBeInTheDocument();
+});
+test('a created connection of another provider never opens the Slack editor', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.createAgentChannel).mockResolvedValue(discord);
+  jest.mocked(dataService.listAgentChannels).mockResolvedValueOnce([]).mockResolvedValue([discord]);
+  renderChannels();
+  await openAdd(user);
+  await next(user);
+  await waitFor(() =>
+    expect(dataService.createAgentChannel).toHaveBeenCalledWith('agent-1', 'per_user'),
+  );
+  await screen.findByRole('dialog', { name: 'com_ui_channels_manage' });
+  expect(screen.queryByRole('button', { name: 'com_ui_channels_disable' })).not.toBeInTheDocument();
+  expect(dataService.getAgentChannelManifest).not.toHaveBeenCalled();
 });
 test('the add step is a clean choice: cards, one way out, no intro text and no corner close', async () => {
   const user = userEvent.setup();

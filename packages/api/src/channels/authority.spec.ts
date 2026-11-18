@@ -1808,3 +1808,14 @@ it.each([0, 1])('keeps Stop retries bound across relinking to account %i', (targ
     ).toBe(false);
   })(),
 );
+
+it.each(['discord', 'future'])('does not resolve Slack consent through a raw %s parent', (type) =>
+  scoped(async () => {
+    await link('U1', users[0]);
+    const parent = await db.getAgentChannel('channel');
+    if (!parent) throw new Error('Missing channel fixture');
+    const identity = channelExternalIdentity(parent, 'U1');
+    await models.AgentChannel.collection.updateOne({ channelId: 'channel' }, { $set: { type } });
+    expect((await authority.identity.resolve(identity)).ok).toBe(false);
+  })(),
+);
