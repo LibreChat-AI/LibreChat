@@ -62,6 +62,41 @@ export type ContentRowProps = {
   notice?: ReactNode;
 };
 
+/** Whether a response came from the conversation's own selection: the saved agent the selector
+ *  shows, or, with no saved agent, the spec or endpoint and model it runs. A turn by another agent,
+ *  a subagent's read-only thread (whose header has no selector), side-by-side agent columns and
+ *  an added conversation (index > 0) all keep their author. */
+function isSelectedAuthor({
+  agent,
+  index,
+  message,
+  assistant,
+  conversation,
+  hasParallelContent,
+}: Pick<
+  ContentRowProps,
+  'agent' | 'index' | 'message' | 'assistant' | 'conversation' | 'hasParallelContent'
+>): boolean {
+  if (message.isCreatedByUser === true || conversation == null) {
+    return false;
+  }
+  if (conversation.subagentThread != null) {
+    return false;
+  }
+  if (agent != null) {
+    return agent.id === conversation.agent_id;
+  }
+  if (assistant != null || conversation.agent_id != null) {
+    return false;
+  }
+  return (
+    index === 0 &&
+    !hasParallelContent &&
+    (message.endpoint ?? conversation.endpoint) === conversation.endpoint &&
+    (message.model ?? conversation.model) === conversation.model
+  );
+}
+
 /**
  * The row of a message rendered from content parts: header, parts and footer (elapsed time,
  * sibling navigation and the caller's toolbar, through `MessageFooter`). The parts render through the host's content-parts
@@ -101,14 +136,9 @@ export default function ContentRow({
   const showThinking = host.useShowThinking();
   const autoExpandTools = host.useAutoExpandTools();
   const isCreatedByUser = message.isCreatedByUser === true;
-  /** A turn by another agent keeps its author, and so does a subagent's read-only thread, whose
-   *  header has no selector. */
   const authorHidden =
     hideSelectedAuthor &&
-    !isCreatedByUser &&
-    agent != null &&
-    agent.id === conversation?.agent_id &&
-    conversation.subagentThread == null;
+    isSelectedAuthor({ agent, index, message, assistant, conversation, hasParallelContent });
 
   const author = useMemo(
     () => ({

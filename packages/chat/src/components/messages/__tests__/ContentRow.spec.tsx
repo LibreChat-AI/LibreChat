@@ -141,6 +141,83 @@ describe('ContentRow', () => {
     });
   });
 
+  describe('a model spec or plain endpoint conversation with no saved agent', () => {
+    const spec = {
+      conversationId: 'convo-1',
+      endpoint: 'Claude' as EModelEndpoint,
+      model: 'claude-sonnet-5',
+      spec: 'ClickHouse Agent Claude',
+    } as TConversation;
+    const specReply = { ...reply, endpoint: 'Claude', model: 'claude-sonnet-5' } as TMessage;
+    const nameIsHidden = () => screen.getByText('Research Agent').closest('.sr-only') != null;
+
+    it('keeps only the assistive technology text for its own response', () => {
+      const parts = renderRow({
+        message: specReply,
+        conversation: spec,
+        hideSelectedAuthor: true,
+        authorHeader: <span>Resume header</span>,
+      });
+      expect(screen.getByRole('heading', { name: /Research Agent/ })).toHaveClass('sr-only');
+      expect(nameIsHidden()).toBe(true);
+      expect(screen.queryByTestId('icon')).not.toBeInTheDocument();
+      expect(parts.mock.calls[0][0].authorHeader).toBeUndefined();
+    });
+
+    it('hides the author while the response has no model yet', () => {
+      renderRow({
+        message: { ...specReply, endpoint: undefined, model: undefined } as TMessage,
+        conversation: spec,
+        hideSelectedAuthor: true,
+      });
+      expect(nameIsHidden()).toBe(true);
+    });
+
+    it.each([
+      ['the deployment has not opted in', { message: specReply, conversation: spec }],
+      [
+        'a different model wrote the turn',
+        {
+          message: { ...specReply, model: 'other-model' } as TMessage,
+          conversation: spec,
+          hideSelectedAuthor: true,
+        },
+      ],
+      [
+        'the response is in an added conversation pane',
+        { message: specReply, conversation: spec, index: 1, hideSelectedAuthor: true },
+      ],
+      [
+        'the thread is a read-only subagent thread',
+        {
+          message: specReply,
+          conversation: { ...spec, subagentThread: { parentConversationId: 'p' } } as TConversation,
+          hideSelectedAuthor: true,
+        },
+      ],
+    ])('shows the author when %s', (_case, props) => {
+      renderRow(props);
+      expect(nameIsHidden()).toBe(false);
+      expect(screen.getByTestId('icon')).toBeInTheDocument();
+    });
+  });
+
+  it('keeps the part headers for parallel agent content in a spec conversation', () => {
+    const header = <span>Resume header</span>;
+    const parts = renderRow({
+      message: { ...reply, endpoint: 'Claude', model: 'claude-sonnet-5' } as TMessage,
+      conversation: {
+        ...conversation,
+        endpoint: 'Claude' as EModelEndpoint,
+        model: 'claude-sonnet-5',
+      } as TConversation,
+      hasParallelContent: true,
+      hideSelectedAuthor: true,
+      authorHeader: header,
+    });
+    expect(parts.mock.calls[0][0].authorHeader).toBe(header);
+  });
+
   it('labels the row and draws its author icon through the messages host', () => {
     renderRow();
 
