@@ -143,7 +143,16 @@ jobs:
         run: |
           for port in 6380 6381 6382; do
             redis-server --daemonize yes --port "$port" --save '' --appendonly no
-            redis-cli -p "$port" ping
+            if ! timeout --kill-after=1s 10s bash -c '
+              until response=$(redis-cli --raw -p "$1" ping 2>&1) &&
+                [[ "$response" == PONG ]]; do
+                printf "%s\n" "$response" >&2
+                sleep 0.1
+              done
+            ' _ "$port"; then
+              echo "::error::Redis on port $port did not become ready within 10 seconds"
+              exit 1
+            fi
           done
 
       - name: Provision MongoDB memory-server binary
