@@ -1013,24 +1013,6 @@ export interface ScheduleCleanupScope {
   userId?: string;
 }
 
-export interface ContentPartsReadOptions {
-  durableOnly?: boolean;
-  /** Return a copy of this replica's own run content instead of the live array. */
-  copyLocal?: boolean;
-  /**
-   * Called synchronously, at the instant of the read, when the content is the run's own
-   * array on this replica rather than a rebuild of the durable log. With `copyLocal`, the
-   * caller can record here what the run had emitted when the copy was taken.
-   */
-  onLocal?: () => void;
-}
-
-export interface ContentPartsSnapshot {
-  content: Agents.MessageContentComplex[];
-  reconstructedEventCount?: number;
-  durableEventCount?: number;
-}
-
 export interface IJobStore {
   readonly detachedAgentEventActionStoreMode?: DetachedAgentEventActionStoreMode;
   /** Receipt evidence survives loss of the generation worker; absent is volatile. */
@@ -1128,11 +1110,24 @@ export interface IJobStore {
     contentParts: Agents.MessageContentComplex[],
     expectedCreatedAt?: number,
   ): void;
+  /**
+   * A synchronous copy of the content array `setContentParts` registered on this replica, or
+   * null when this replica does not host the run. A store that only ever returns copies from
+   * `getContentParts` has no need for it.
+   */
+  copyHostContent?(
+    streamId: string,
+    expectedCreatedAt?: number,
+  ): Agents.MessageContentComplex[] | null;
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
-    options?: ContentPartsReadOptions,
-  ): Promise<ContentPartsSnapshot | null>;
+    options?: { durableOnly?: boolean },
+  ): Promise<{
+    content: Agents.MessageContentComplex[];
+    reconstructedEventCount?: number;
+    durableEventCount?: number;
+  } | null>;
 
   getRunSteps(streamId: string, expectedCreatedAt?: number): Promise<Agents.RunStep[]>;
 
@@ -1463,8 +1458,12 @@ export interface IJobStoreV2 extends IJobStore {
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
-    options?: ContentPartsReadOptions,
-  ): Promise<ContentPartsSnapshot | null>;
+    options?: { durableOnly?: boolean },
+  ): Promise<{
+    content: Agents.MessageContentComplex[];
+    reconstructedEventCount?: number;
+    durableEventCount?: number;
+  } | null>;
 
   /** Atomically records the only recovery outcome for one overflow identity. */
   settleEarlyBufferRecovery(

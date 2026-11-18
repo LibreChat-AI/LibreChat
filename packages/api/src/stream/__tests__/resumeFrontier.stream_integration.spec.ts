@@ -2,6 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import { createContentAggregator } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';
 import type { Redis, Cluster } from 'ioredis';
+import type { IJobStore } from '~/stream/interfaces/IJobStore';
 import type * as t from '~/types';
 import {
   ioredisClient as staticRedisClient,
@@ -16,6 +17,8 @@ logger.silent = true;
 type AggregatedEvent = Parameters<
   ReturnType<typeof createContentAggregator>['aggregateContent']
 >[0];
+
+type HostContentStore = IJobStore & Required<Pick<IJobStore, 'copyHostContent'>>;
 
 /** Where in the attachment the run produces its next delta. */
 type Window = 'before-subscribe' | 'after-subscribe' | 'after-snapshot';
@@ -139,14 +142,9 @@ describe('Resume snapshot frontier on the hosting replica (real Redis)', () => {
       }
     };
     const getResumeState = manager.getResumeState.bind(manager);
-    let snapshots = 0;
-    jest.spyOn(manager, 'getResumeState').mockImplementation(async (...args) => {
+    const stateReads = jest.spyOn(manager, 'getResumeState').mockImplementation(async (...args) => {
       const state = await getResumeState(...args);
-      snapshots++;
-      if (
-        (window === 'before-subscribe' && snapshots === 1) ||
-        (window === 'after-snapshot' && snapshots === 2)
-      ) {
+      if (window === 'before-subscribe') {
         await produce();
       }
       return state;
@@ -159,6 +157,16 @@ describe('Resume snapshot frontier on the hosting replica (real Redis)', () => {
         await produce();
       }
     });
+    const store = services.jobStore as HostContentStore;
+    const copyHostContent = store.copyHostContent.bind(store);
+    jest.spyOn(store, 'copyHostContent').mockImplementation((...args) => {
+      const content = copyHostContent(...args);
+      if (window === 'after-snapshot') {
+        /** As soon as the manager's synchronous step around the copy has finished. */
+        queueMicrotask(() => void produce());
+      }
+      return content;
+    });
 
     const live: t.ServerSentEvent[] = [];
     const { subscription, resumeState, pendingEvents } = await manager.subscribeWithResume(
@@ -167,6 +175,8 @@ describe('Resume snapshot frontier on the hosting replica (real Redis)', () => {
     );
     expect(fired).toBe(true);
     expect(subscription).not.toBeNull();
+    /** The copy is local: a hosted resume reads the resume state from Redis once. */
+    expect(stateReads).toHaveBeenCalledTimes(1);
     /** The route serializes the frame here, and only then lets live delivery start. */
     const frame = JSON.parse(JSON.stringify({ resumeState, pendingEvents })) as {
       resumeState: t.ResumeState;

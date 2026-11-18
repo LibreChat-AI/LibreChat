@@ -6462,9 +6462,7 @@ class GenerationJobManagerClass {
       sequence: number;
     }> = [];
     let snapshotFrontier = 0;
-    /** The Redis snapshot is the live content of a run this replica hosts. */
-    let hostsRun = false;
-    /** This manager's emission count when that content was copied for the client. */
+    /** This manager's emission count when a hosted run's content was copied for a Redis client. */
     let localFrontier: number | undefined;
     let snapshotClassified = this._isRedis;
     const classifyEmission = (event: t.ServerSentEvent, sequence: number): void => {
@@ -6595,9 +6593,6 @@ class GenerationJobManagerClass {
             onCreatedSnapshot: recordCreatedSnapshot,
             onContentSnapshot: (snapshot) => {
               recoveryContentSnapshot = snapshot;
-            },
-            onLocalContent: () => {
-              hostsRun = true;
             },
           }),
           this.jobStore.getJob(streamId),
@@ -6771,32 +6766,6 @@ class GenerationJobManagerClass {
         return cancelResumeSubscription();
       }
 
-      /**
-       * A snapshot of this replica's own run is the run's live content array. It was read
-       * before the subscription existed and is serialized after it, so every delta in between
-       * reached the client twice: once in the snapshot and once from Pub/Sub. Take it again
-       * now that Pub/Sub is attached, as a copy at a known emission count, and let delivery
-       * skip this manager's text and reasoning deltas up to that count. Everything else is
-       * still delivered: the client applies those events idempotently, and only the content
-       * is exact at the count.
-       */
-      if (hostsRun && resumeState != null) {
-        let copiedAt: number | undefined;
-        const anchored = await this.getResumeState(streamId, runtime.createdAt, {
-          copyLocalContent: true,
-          onLocalContent: () => {
-            copiedAt = this.emissionOrdinal;
-          },
-        });
-        if (options?.signal?.aborted || this.detachSubscriptionDuringShutdown(subscription)) {
-          return cancelResumeSubscription();
-        }
-        if (anchored != null && copiedAt != null) {
-          resumeState = anchored;
-          localFrontier = copiedAt;
-        }
-      }
-
       // Close the snapshot→subscribe race: getResumeState() snapshots BEFORE we attach the
       // subscription, so a pause that becomes durable in that window is in neither
       // resumeState.pendingAction nor (Redis mode) pendingEvents — and trackReplayEvent does
@@ -6834,6 +6803,34 @@ class GenerationJobManagerClass {
            * through the durable-only recovery path now reflected in `runtime`. */
           cancelResumeSubscription();
           return this.subscribeWithResume(streamId, onChunk, onDone, onError, options);
+        }
+      }
+
+      /**
+       * On the replica that hosts the run, the snapshot's content is the run's live array.
+       * It was read before the subscription existed and is serialized after it, so every
+       * delta in between reached the client twice: once in the snapshot and once from
+       * Pub/Sub. Replace it with a copy taken now, at a known emission count, and let
+       * delivery skip this manager's text and reasoning deltas up to that count. Everything
+       * else is still delivered: the client applies those events idempotently, and only the
+       * content is exact at the count. The copy, the count and the run steps are all local,
+       * so the sync frame waits on no further read.
+       */
+      if (this._isRedis && resumeState != null && pendingOverflow == null && liveOverflow == null) {
+        const frontier = this.emissionOrdinal;
+        const content = this.jobStore.copyHostContent?.(streamId, runtime.createdAt);
+        if (content != null) {
+          localFrontier = frontier;
+          resumeState.aggregatedContent = attachAskUserQuestionAnswers(
+            content,
+            liveJob.resolvedAskUserQuestions ?? [],
+          );
+          resumeState.runSteps = this.withBufferedRunSteps(
+            streamId,
+            runtime.createdAt,
+            resumeState.runSteps,
+            content,
+          );
         }
       }
       if (!resumeState?.pendingAction) {
@@ -9164,6 +9161,22 @@ class GenerationJobManagerClass {
     this.clearPreemptIds(runtime, runtime.createdAt, steerIds);
   }
 
+  /** Stored run steps under the ones this replica has seen since, indexed against `content`. */
+  private withBufferedRunSteps(
+    streamId: string,
+    createdAt: number,
+    runSteps: Agents.RunStep[],
+    content: Agents.MessageContentComplex[],
+  ): Agents.RunStep[] {
+    const bufferState = this.runStepBuffers?.get(streamId);
+    const bufferedRunSteps = bufferState?.createdAt === createdAt ? bufferState.steps : [];
+    const runStepsById = new Map(runSteps.map((runStep) => [runStep.id, runStep]));
+    for (const runStep of bufferedRunSteps) {
+      runStepsById.set(runStep.id, runStep);
+    }
+    return normalizeResumeRunStepIndices([...runStepsById.values()], content);
+  }
+
   /**
    * Get resume state for reconnecting clients.
    */
@@ -9177,9 +9190,6 @@ class GenerationJobManagerClass {
       readIf?: (job: Readonly<SerializableJobData>) => boolean;
       onContentSnapshot?: (snapshot: Awaited<ReturnType<IJobStore['getContentParts']>>) => void;
       onCreatedSnapshot?: (createdEventEmitted: boolean) => void;
-      /** Passed to the content read: see {@link ContentPartsReadOptions}. */
-      copyLocalContent?: boolean;
-      onLocalContent?: () => void;
     },
   ): Promise<t.ResumeState | null> {
     const recoveryStartedAt =
@@ -9239,8 +9249,6 @@ class GenerationJobManagerClass {
     const [result, runSteps, queuedSteers, claimedSteers] = await Promise.all([
       this.jobStore.getContentParts(streamId, jobData.createdAt, {
         durableOnly: options?.durableOnly === true || unresolvedOverflowValidation,
-        ...(options?.copyLocalContent === true && { copyLocal: true }),
-        ...(options?.onLocalContent != null && { onLocal: options.onLocalContent }),
       }),
       this.jobStore.getRunSteps(streamId, jobData.createdAt),
       this.jobStore.peekSteers(streamId, jobData.createdAt),
@@ -9295,14 +9303,10 @@ class GenerationJobManagerClass {
       }
     }
     const reconstructedContent = result?.content ?? [];
-    const bufferState = this.runStepBuffers?.get(streamId);
-    const bufferedRunSteps = bufferState?.createdAt === jobData.createdAt ? bufferState.steps : [];
-    const runStepsById = new Map(runSteps.map((runStep) => [runStep.id, runStep]));
-    for (const runStep of bufferedRunSteps) {
-      runStepsById.set(runStep.id, runStep);
-    }
-    const effectiveRunSteps = normalizeResumeRunStepIndices(
-      [...runStepsById.values()],
+    const effectiveRunSteps = this.withBufferedRunSteps(
+      streamId,
+      jobData.createdAt,
+      runSteps,
       reconstructedContent,
     );
     let titleEvent: t.ResumeState['titleEvent'];

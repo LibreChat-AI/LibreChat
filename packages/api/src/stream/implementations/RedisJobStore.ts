@@ -36,8 +36,6 @@ import type {
   ScheduleCleanupScope,
   ScheduleProviderOwner,
   ActiveJobFilter,
-  ContentPartsSnapshot,
-  ContentPartsReadOptions,
 } from '~/stream/interfaces/IJobStore';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
@@ -4410,6 +4408,23 @@ export class RedisJobStore implements IJobStoreV2 {
   }
 
   /**
+   * A copy of the content of a run this replica hosts, taken synchronously. The run folds an
+   * event into that array and emits it in one synchronous step, so the copy holds exactly
+   * what the run had emitted at the instant of the call.
+   */
+  copyHostContent(
+    streamId: string,
+    expectedCreatedAt?: number,
+  ): Agents.MessageContentComplex[] | null {
+    const hostParts = this.getLocalEntry(
+      this.localContentParts,
+      streamId,
+      expectedCreatedAt,
+    )?.value.deref();
+    return hostParts != null && hostParts.length > 0 ? structuredClone(hostParts) : null;
+  }
+
+  /**
    * Store collectedUsage reference in local cache.
    * This is used for abort handling to spend tokens for all models.
    * Note: Only available on the generating instance; cross-replica abort uses fallback.
@@ -4478,8 +4493,12 @@ export class RedisJobStore implements IJobStoreV2 {
   async getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
-    options?: ContentPartsReadOptions,
-  ): Promise<ContentPartsSnapshot | null> {
+    options?: { durableOnly?: boolean },
+  ): Promise<{
+    content: Agents.MessageContentComplex[];
+    reconstructedEventCount?: number;
+    durableEventCount?: number;
+  } | null> {
     // 1. Prefer the HOST content array (same-instance fast path): it already
     // contains host-authored steer parts the SDK graph never sees.
     const hostEntry = options?.durableOnly
@@ -4488,11 +4507,7 @@ export class RedisJobStore implements IJobStoreV2 {
     if (hostEntry) {
       const hostParts = hostEntry.value.deref();
       if (hostParts && hostParts.length > 0) {
-        /** The run folds an event into this array and emits it in one synchronous step, so
-         *  a copy taken here holds exactly what the run had emitted when the caller is told. */
-        const content = options?.copyLocal === true ? structuredClone(hostParts) : hostParts;
-        options?.onLocal?.();
-        return { content };
+        return { content: hostParts };
       }
       if (!hostParts) {
         this.deleteLocalEntry(this.localContentParts, streamId, undefined, hostEntry);
