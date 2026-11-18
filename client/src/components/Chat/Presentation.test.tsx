@@ -2,7 +2,7 @@ import React from 'react';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   sideChatAtom,
   activeSubagentPanel,
@@ -11,7 +11,7 @@ import {
   sideChatRequestAtom,
   sideChatAvailableAtom,
 } from '@librechat/chat/react';
-import type { TConversation } from 'librechat-data-provider';
+import type { TConversation, TStartupConfig } from 'librechat-data-provider';
 import type { JotaiStore } from 'test/harness';
 import type { Artifact } from '~/common';
 import { prepareUndockedDocument } from '~/components/Artifacts/undockedWindow';
@@ -41,10 +41,22 @@ const mockOpenSideChatLabel = 'Open Side Chat';
 const mockAskSideChatLabel = 'Ask for a side chat';
 const mockSelectAgentConversationLabel = 'Select Agent Conversation';
 const mockStartAgentRunLabel = 'Start Agent Run';
-/** What the deployment has answered with; nothing until a test says otherwise. */
-let mockStartupConfig: { data?: { interface?: { sideChat?: boolean } }; isSuccess?: boolean } = {
-  data: undefined,
-};
+/**
+ * The deployment's config, as the server would answer the app's own config query. It does not
+ * answer until a test makes it, so the config is unknown, as it is while the page loads.
+ */
+const mockGetStartupConfig = jest.fn<Promise<Partial<TStartupConfig>>, []>();
+const unanswered = () => new Promise<Partial<TStartupConfig>>(() => undefined);
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return {
+    ...actual,
+    dataService: {
+      ...actual.dataService,
+      getStartupConfig: () => mockGetStartupConfig(),
+    },
+  };
+});
 const mockUseParentSubagentsQuery = jest.fn(
   (_conversationId?: string, _config?: unknown, _isSubmitting?: boolean) => ({
     data: undefined,
@@ -129,7 +141,9 @@ jest.mock('~/hooks/Artifacts/useArtifactsRegistryLifetime', () => ({
 
 jest.mock('~/data-provider', () => ({
   useDeleteFilesMutation: () => ({ mutateAsync: jest.fn() }),
-  useGetStartupConfig: () => mockStartupConfig,
+  /** The app's real config query; what it is answered with is set at the data service. */
+  useGetStartupConfig: (...args: unknown[]) =>
+    jest.requireActual('~/data-provider').useGetStartupConfig(...args),
   useParentSubagentsQuery: (conversationId: string, config?: unknown, isSubmitting?: boolean) =>
     mockUseParentSubagentsQuery(conversationId, config, isSubmitting),
 }));
@@ -239,6 +253,11 @@ const StartAgentRun = () => {
 };
 
 describe('Presentation Artifact loading', () => {
+  beforeEach(() => {
+    mockGetStartupConfig.mockReset();
+    mockGetStartupConfig.mockImplementation(unanswered);
+  });
+
   it('loads the Artifact panel bundle only when the panel is opened', async () => {
     const testGlobal = globalThis as typeof globalThis & {
       presentationArtifactModuleEvaluations?: number;
@@ -480,26 +499,29 @@ describe('Presentation Artifact loading', () => {
       );
     const available = () => screen.getByTestId('side-chat-available').textContent;
 
-    afterEach(() => {
-      mockStartupConfig = { data: undefined };
-    });
-
-    it('is not, until the deployment has answered', () => {
+    it('is not, until the deployment has answered, and is once it has', async () => {
+      let answer: (config: Partial<TStartupConfig>) => void = () => undefined;
+      mockGetStartupConfig.mockReturnValue(
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      );
       mount();
       expect(available()).toBe('false');
+
+      await act(async () => answer({ interface: {} } as Partial<TStartupConfig>));
+
+      await waitFor(() => expect(available()).toBe('true'));
     });
 
-    it('is, beside a chat on screen, once the deployment has answered', () => {
-      mockStartupConfig = { data: { interface: {} }, isSuccess: true };
+    it('names the chat it would sit beside, and names another once the reader moves', async () => {
+      mockGetStartupConfig.mockResolvedValue({ interface: {} } as Partial<TStartupConfig>);
       mount();
-      expect(available()).toBe('true');
-    });
-
-    it('names the chat it would sit beside, and names another once the reader moves', () => {
-      mockStartupConfig = { data: { interface: {} }, isSuccess: true };
-      mount();
-      const first = screen.getByTestId('side-chat-beside').textContent;
-      expect(first).toBe(JSON.stringify({ conversationId: null }));
+      await waitFor(() =>
+        expect(screen.getByTestId('side-chat-beside')).toHaveTextContent(
+          JSON.stringify({ conversationId: null }),
+        ),
+      );
 
       fireEvent.click(screen.getByRole('button', { name: mockSelectAgentConversationLabel }));
 
@@ -508,10 +530,17 @@ describe('Presentation Artifact loading', () => {
       );
     });
 
-    it('is not where the deployment turned side chats off', () => {
-      mockStartupConfig = { data: { interface: { sideChat: false } }, isSuccess: true };
+    it('is not where the deployment turned side chats off', async () => {
+      mockGetStartupConfig.mockResolvedValue({
+        interface: { sideChat: false },
+      } as Partial<TStartupConfig>);
       mount();
+      /** The config is in: the answer is no, not merely not yet. */
+      await waitFor(() => expect(mockGetStartupConfig).toHaveBeenCalled());
+      await act(async () => undefined);
+
       expect(available()).toBe('false');
+      expect(screen.getByTestId('side-chat-beside')).toHaveTextContent('null');
     });
   });
 
