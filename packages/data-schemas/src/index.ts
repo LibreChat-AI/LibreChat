@@ -225,3 +225,12 @@ export type {
   ConnectDiscordGuild,
 } from './methods/discord';
 export type { DiscordApplicationRecord } from './models/discord';
+export { createDiscordRouteStorage } from './methods/discordRoute';
+export { touchDiscordRoute } from './methods/discordRouteScope';
+export type {
+  AssignDiscordRoute,
+  DiscordRouteStorage,
+  DiscordRouteResult,
+  DiscordRouteError,
+} from './methods/discordRoute';
+export type { DiscordRouteRecord } from './models/discordRoute';
