@@ -41,7 +41,7 @@ const {
   requireJwtAuth,
   requireTermsAcceptance,
   messageIpLimiter,
-  configMiddleware,
+  strictConfigMiddleware,
   messageUserLimiter,
   loadStreamKeepaliveMs,
 } = require('~/server/middleware');
@@ -175,10 +175,10 @@ const privateTextIngress = createPrivateTextIngress({
   getLegacyPii: (req) => req.config?.messageFilter?.pii,
   getKey: () => process.env.CREDS_KEY ?? '',
 });
-const chatConfigMiddleware = unless((req) => req.config != null, configMiddleware);
+const chatConfigMiddleware = strictConfigMiddleware;
 router.use(
   '/chat',
-  unless((req) => !isPreDenialTextSubmission(req), configMiddleware),
+  unless((req) => !isPreDenialTextSubmission(req), strictConfigMiddleware),
   unless((req) => !isPrivateTextChatSubmission(req), privateTextIngress),
 );
 router.use(checkBan);
