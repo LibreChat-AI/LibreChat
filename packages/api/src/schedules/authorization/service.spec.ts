@@ -1064,7 +1064,9 @@ describe('a grant made again with an edit of the schedule', () => {
       allow: { warehouse: ['query'] },
     };
     jest.mocked(s.storage.confirmScheduleMCPConsent).mockClear();
-    const renewed = await s.service.renew(identity, choice, 1);
+    const { enrollment: renewed, basis } = await s.service.renew(identity, choice, 1);
+    // What it was decided against goes with it, so the write can refuse anything newer.
+    expect(basis).toEqual(before);
     expect(renewed).toMatchObject({
       scheduleRevision: 1,
       absoluteExpiresAtMs: 1000 + 2 * 3_600_000,

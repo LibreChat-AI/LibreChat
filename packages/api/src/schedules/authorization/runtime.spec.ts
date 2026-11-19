@@ -955,7 +955,7 @@ describe('a schedule being edited with a new grant', () => {
     f.setCandidates(['web_search', 'query_mcp_warehouse']);
     const view = await f.host.consent.service.view(f.identity);
     // The stored grant allows the MCP tool. The edit comes with one that allows only the other.
-    const grant = await f.host.consent.service.renew(
+    const { enrollment: grant } = await f.host.consent.service.renew(
       f.identity,
       {
         offerDigest: view.offer!.digest,

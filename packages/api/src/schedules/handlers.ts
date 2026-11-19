@@ -62,7 +62,7 @@ export interface SchedulesHandlersDeps {
     choice: ConfirmScheduleMCPConsent,
     revision: number,
     options: { signal?: AbortSignal },
-  ) => Promise<ScheduledMCPEnrollment>;
+  ) => Promise<{ enrollment: ScheduledMCPEnrollment; basis: ScheduledMCPEnrollment | null }>;
   /** Whether the requesting user owns this chat project. Projects are user-owned,
    *  so existence and authorization are the same question. */
   canUseProject: (projectId: string, userId: string) => Promise<boolean>;
@@ -1062,6 +1062,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
      * makes, so the schedule is never left waiting for a second step.
      */
     let regrant: ISchedule['mcpConsent'];
+    /** The stored grant `regrant` was decided against: what the write is allowed to replace. */
+    let basis: ISchedule['mcpConsent'] | null = existing.mcpConsent ?? null;
     if (
       limits.mcpConsent?.enabled === true &&
       authorization != null &&
@@ -1081,15 +1083,16 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       try {
         // Another agent: there is no stored grant for it, so the choice is made from that
         // agent's offer, as for a new schedule. The same agent: from the schedule's own.
-        regrant =
-          agentId === existing.agent_id
-            ? await deps.renew(
-                identity,
-                { ...choice, expectedRevision: expectedRevision ?? null },
-                revision,
-                { signal: mcpSignal },
-              )
-            : await deps.grant(identity, choice, { signal: mcpSignal, revision });
+        if (agentId === existing.agent_id) {
+          const renewed = await deps.renew(
+            identity,
+            { ...choice, expectedRevision: expectedRevision ?? null },
+            revision,
+            { signal: mcpSignal },
+          );
+          regrant = renewed.enrollment;
+          basis = renewed.basis;
+        } else regrant = await deps.grant(identity, choice, { signal: mcpSignal, revision });
       } catch (error) {
         if (mcpSignal.aborted) return;
         if (!(error instanceof ScheduleMCPConsentError)) throw error;
@@ -1243,6 +1246,9 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // loser simply retries against fresh state.
     const schedule = await deps.methods.updateScheduleById(existing.id, user.id, update, unset, {
       expectedConfigRevision: existing.configRevision,
+      // Consent writes do not move the edit generation: the new grant replaces the stored
+      // one only if that is still the grant it was decided against, untouched since.
+      ...(regrant && { replacesMCPConsent: basis }),
       ...(!regrant &&
         existing.mcpConsent &&
         existing.mcpConsent.scheduleRevision === existing.configRevision &&
@@ -1257,6 +1263,12 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       // them so the owner sees a retryable conflict rather than a phantom 404.
       const stillThere = await deps.methods.getScheduleById(existing.id, user.id);
       if (stillThere != null) {
+        // Same edit generation, so it was the grant that moved: revoked, confirmed again, or
+        // marked by a run. The owner's choice was made from what is no longer stored.
+        if (regrant && stillThere.configRevision === existing.configRevision) {
+          refuseAuthorization(res, new ScheduleMCPConsentError('consent_changed'));
+          return;
+        }
         res.status(409).json({ error: 'Schedule was modified concurrently. Please retry.' });
         return;
       }

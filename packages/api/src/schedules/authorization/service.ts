@@ -403,7 +403,15 @@ export interface ScheduleMCPConsentService<
     input: ConfirmScheduleMCPConsent,
     revision: number,
     options?: { signal?: AbortSignal },
-  ) => Promise<MCPGrantEnrollment<Identity>>;
+  ) => Promise<{
+    enrollment: MCPGrantEnrollment<Identity>;
+    /**
+     * The stored grant the new one was decided against, `null` where there was none. The
+     * caller's write must be refused unless that is still what is stored, untouched: a
+     * revocation, another confirmation, or a pin or mark a run added since would be lost.
+     */
+    basis: MCPGrantEnrollment<Identity> | null;
+  }>;
   confirm: (
     identity: Identity,
     input: ConfirmScheduleMCPConsent,
@@ -835,9 +843,15 @@ export function createScheduleMCPConsentService<
     input: ConfirmScheduleMCPConsent,
     revision: number,
     options: { signal?: AbortSignal } = {},
-  ): Promise<MCPGrantEnrollment<Identity>> {
-    const { enrollment } = await decide(identity, input, options);
-    return { ...enrollment, scheduleRevision: revision };
+  ): Promise<{
+    enrollment: MCPGrantEnrollment<Identity>;
+    basis: MCPGrantEnrollment<Identity> | null;
+  }> {
+    const { enrollment, snapshot } = await decide(identity, input, options);
+    return {
+      enrollment: { ...enrollment, scheduleRevision: revision },
+      basis: snapshot.enrollment ?? null,
+    };
   }
 
   async function revoke(identity: Identity, revision: string): Promise<void> {

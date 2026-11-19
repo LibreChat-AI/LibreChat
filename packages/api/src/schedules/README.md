@@ -199,7 +199,10 @@ confirmation by `service.renew`, which keeps what the stored grant asks about an
 When the edit moves the schedule to another agent, the choice is made from that agent's offer,
 as for a new schedule (`service.grant`). Readiness is checked against the grant the edit
 carries, not the one it replaces. A choice that no longer fits is refused and nothing is
-edited. An edit that carries none behaves as before, and `authorization` alone is not an edit.
+edited. The write names the stored grant the new one was decided against
+(`replacesMCPConsent`) and matches only while that is still what is stored, untouched: a
+revocation or another confirmation since, or a pin or mark a run added, refuses the edit
+with `consent_changed`, since consent writes do not move the schedule's edit generation. An edit that carries none behaves as before, and `authorization` alone is not an edit.
 
 ### A tool that changes after it was allowed
 

@@ -1664,8 +1664,9 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
   const stored = { version: 1 as const, revision: 'grant-0', scheduleRevision: 7, consents: [] };
   const patch = async (
     body: Record<string, unknown>,
-    over: Partial<SchedulesHandlersDeps> = {},
+    { methods: _methods, ...over }: Partial<SchedulesHandlersDeps> = {},
     consent = true,
+    update?: jest.Mock,
   ) => {
     const deps = makeCreateDeps({
       isUserDeleting: jest.fn(async () => false),
@@ -1673,6 +1674,7 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
       canViewAgent: jest.fn(async () => true),
       ...over,
     });
+    if (update) deps.methods.updateScheduleById = update;
     (deps.methods.getScheduleById as jest.Mock).mockResolvedValue({
       id: 'sched-1',
       enabled: true,
@@ -1706,7 +1708,10 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
   });
 
   it('writes the new grant with the edit, made from the offer of the schedule for the revision the edit makes', async () => {
-    const renew = jest.fn(async () => made);
+    // What the service decided against: read after the handler read the row, so it may
+    // hold a pin the row the handler has does not.
+    const decided = { ...stored, grantedAtMs: 1 };
+    const renew = jest.fn(async () => ({ enrollment: made, basis: decided }));
     const grant = jest.fn();
     const preflightMCP = jest.fn(async () => []);
     const { captured, write } = await patch(
@@ -1722,8 +1727,9 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
     // The owner's choice is not a field of the schedule, and the schedule waits for nothing.
     expect(write![2]).not.toHaveProperty('authorization');
     expect(write![3]).toMatchObject({ mcpConsentRequired: 1 });
-    // The grant the edit replaces is not carried over beside the new one.
-    expect(write![4]).toEqual({ expectedConfigRevision: 7 });
+    // The grant the edit replaces is named, so the write is refused if it is no longer the
+    // stored one, and it is not carried over beside the new one.
+    expect(write![4]).toEqual({ expectedConfigRevision: 7, replacesMCPConsent: decided });
     // Readiness is about the grant the schedule will have.
     expect(preflightMCP).toHaveBeenCalledWith(
       'agent-1',
@@ -1733,13 +1739,13 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
   });
 
   it('replaces the stored grant even on a pause, which alone would have kept it', async () => {
-    const renew = jest.fn(async () => made);
+    const renew = jest.fn(async () => ({ enrollment: made, basis: stored }));
     const kept = await patch({ enabled: false }, { renew, grant: jest.fn() });
     expect(kept.write![4]).toMatchObject({ preserveMCPConsentRevision: 'grant-0' });
     const { write } = await patch({ enabled: false, authorization }, { renew, grant: jest.fn() });
     expect(write![2]).toMatchObject({ mcpConsent: made });
     // One write cannot both replace the grant and move the old one forward.
-    expect(write![4]).toEqual({ expectedConfigRevision: 7 });
+    expect(write![4]).toEqual({ expectedConfigRevision: 7, replacesMCPConsent: stored });
   });
 
   it('makes it from the offer of the agent the edit moves the schedule to', async () => {
@@ -1753,6 +1759,8 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
     });
     expect(renew).not.toHaveBeenCalled();
     expect(write![2]).toMatchObject({ agent_id: 'agent-2', mcpConsent: made });
+    // There is no stored grant for that agent to decide against: the one on the row is named.
+    expect(write![4]).toEqual({ expectedConfigRevision: 7, replacesMCPConsent: stored });
   });
 
   it('changes nothing when the choice does not fit what can be offered', async () => {
@@ -1777,8 +1785,23 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
     }
   });
 
+  it('answers that the authorization changed when the grant moved under the edit', async () => {
+    const renew = jest.fn(async () => ({ enrollment: made, basis: stored }));
+    // The write matched nothing, and the schedule is still at the revision the edit read:
+    // it was the grant that moved (revoked, confirmed again, or marked by a run).
+    const refused = jest.fn(async () => null);
+    const { captured } = await patch(
+      { name: 'renamed', authorization },
+      { renew, grant: jest.fn(), methods: undefined },
+      true,
+      refused,
+    );
+    expect(captured.status).toBe(409);
+    expect(captured.body).toMatchObject({ code: 'consent_changed' });
+  });
+
   it('is not an edit by itself, and is ignored where consent is off', async () => {
-    const renew = jest.fn(async () => made);
+    const renew = jest.fn(async () => ({ enrollment: made, basis: stored }));
     const alone = await patch({ authorization }, { renew, grant: jest.fn() });
     expect(alone.captured.status).toBe(400);
     expect(alone.write).toBeUndefined();

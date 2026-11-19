@@ -16,6 +16,7 @@ import type {
   IScheduleRunDocument,
 } from '~/types/schedule';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { unchangedScheduleGrant } from './scheduleConsent';
 import { createIndexesWithRetry } from '~/utils/retry';
 
 const DUPLICATE_KEY = 11000;
@@ -182,6 +183,17 @@ export type ResumedRunReservation =
   | { capacitySlot: number }
   | { conflict: 'not-paused' | 'overlap' | 'slot-taken' };
 
+export interface UpdateScheduleOptions {
+  expectedConfigRevision?: number;
+  preserveMCPConsentRevision?: string;
+  /**
+   * Required with `update.mcpConsent`: the stored grant the new one was decided against,
+   * `null` where there was none. The edit is refused unless the schedule still holds exactly
+   * that grant, with no pin or mark added to it since.
+   */
+  replacesMCPConsent?: ISchedule['mcpConsent'] | null;
+}
+
 export type ScheduleMethods = {
   /** Resolves live state only for a task's captured schedule identity. */
   getScheduleMCPCompletionState: (
@@ -198,7 +210,7 @@ export type ScheduleMethods = {
     userId: string | Types.ObjectId,
     update: Partial<ISchedule>,
     unset?: Record<string, 1>,
-    options?: { expectedConfigRevision?: number; preserveMCPConsentRevision?: string },
+    options?: UpdateScheduleOptions,
   ) => Promise<ISchedule | null>;
   deleteUnarmedSchedule: (
     id: string,
@@ -437,9 +449,14 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     unset?: Record<string, 1>,
     /** Optional edit-generation fence, so two overlapping owner edits cannot each
      *  persist state derived from a row the other has already replaced. */
-    options?: { expectedConfigRevision?: number; preserveMCPConsentRevision?: string },
+    options?: UpdateScheduleOptions,
   ): Promise<ISchedule | null> {
     const preserveConsent = options?.preserveMCPConsentRevision != null;
+    // A grant written with an edit replaces the stored one whole. Consent writes do not move
+    // the edit generation, so without naming what it replaces the edit would undo a
+    // revocation, or drop a pin or mark, made since the new grant was decided.
+    if (update.mcpConsent != null && options?.replacesMCPConsent === undefined)
+      throw new Error('A grant written with an edit must name the grant it replaces');
     if (
       preserveConsent &&
       (options?.expectedConfigRevision == null ||
@@ -466,6 +483,9 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       ...(options?.expectedConfigRevision !== undefined
         ? { configRevision: options.expectedConfigRevision }
         : {}),
+      ...(update.mcpConsent != null &&
+        options?.replacesMCPConsent !== undefined &&
+        unchangedScheduleGrant(options.replacesMCPConsent)),
     };
     const mutation = {
       $set: {
