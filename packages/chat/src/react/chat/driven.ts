@@ -117,16 +117,9 @@ export function useDrivenContract({
       if (submission == null) {
         return;
       }
-      if (messages == null || !send({ submission, messages })) {
-        /** The chat took nothing, so the flags `ask` raised for the turn come back down. */
-        setIsSubmitting(false);
-        setShowStopButton(false);
-      } else {
-        accepted.current = true;
-        onAccepted?.();
-      }
+      if (messages != null && send({ submission, messages })) accepted.current = true;
     },
-    [send, setIsSubmitting, setShowStopButton, onAccepted],
+    [send],
   );
 
   const turnsParams: ChatTurnsParams = {
@@ -150,12 +143,11 @@ export function useDrivenContract({
   };
   const useReadiness = host.useTurnReadiness ?? useReady;
   const readiness = useReadiness(conversation, handoff);
-  const turns = useTurns(
-    turnsParams,
-    services,
-    () => (!canSend() ? 'pending' : readiness),
-    () => accepted.current,
-  );
+  const turns = useTurns(turnsParams, services, {
+    readiness: () => (!canSend() ? 'pending' : readiness),
+    accepted: () => accepted.current,
+    committed: onAccepted,
+  });
   const attempt = turns.attempt;
   const { ask, regenerate, handleRegenerate, handleContinue } = useTurnHandlers({
     ask: turns.ask,

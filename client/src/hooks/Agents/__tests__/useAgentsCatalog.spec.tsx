@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { QueryKeys, EModelEndpoint, dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query';
+import { QueryKeys, EModelEndpoint, PermissionBits, dataService } from 'librechat-data-provider';
 import type { AgentListResponse } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { activateCatalog, resetCatalogWarmup } from '~/hooks/useCatalogWarmup';
@@ -28,11 +28,14 @@ function setup({
   enabled,
   available = true,
   authenticated = true,
-}: { enabled?: boolean; available?: boolean; authenticated?: boolean } = {}) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-    logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
-  });
+  client: supplied,
+}: { enabled?: boolean; available?: boolean; authenticated?: boolean; client?: QueryClient } = {}) {
+  const client =
+    supplied ??
+    new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+      logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
+    });
   client.setQueryData([QueryKeys.endpoints], available ? { [EModelEndpoint.agents]: {} } : {});
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -125,3 +128,30 @@ it('retains a warmup wait without starting an eager request', async () => {
   await waitFor(() => expect(result.current.catalog.pending).toBe(false));
   expect(list).toHaveBeenCalledTimes(1);
 });
+
+it.each(['complete', 'error'] as const)(
+  'keeps unreleased warmup pending with stale cached %s data',
+  async (cached) => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+      logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
+    });
+    const key = [QueryKeys.agents, { requiredPermission: PermissionBits.VIEW }];
+    client.setQueryData(
+      key,
+      { pages: [page('old-root')], pageParams: [undefined] },
+      { updatedAt: Date.now() - 10000 },
+    );
+    if (cached === 'error')
+      await client.fetchInfiniteQuery(key, () => Promise.reject(denied)).catch(() => undefined);
+    resetCatalogWarmup();
+    list.mockResolvedValue(page('new-child'));
+    const { result } = setup({ client });
+    expect(result.current.catalog.pending).toBe(true);
+    expect(list).not.toHaveBeenCalled();
+    act(() => activateCatalog('agents'));
+    await waitFor(() => expect(result.current.catalog.pending).toBe(false));
+    expect(result.current.catalog.agentsMap?.['new-child']).toBeDefined();
+    expect(list).toHaveBeenCalledTimes(1);
+  },
+);

@@ -550,6 +550,7 @@ export function useFollowChat({
       !attaching &&
       !driving &&
       reads === 0 &&
+      chat.canRequest &&
       (chat.status === 'ready' || chat.status === 'error');
 
     /** A refused eligibility check opts into one wake; read-only followers and accepted
@@ -736,6 +737,8 @@ export function useFollowChat({
   const status = useSnapshot(subscribe, () => chat?.status ?? 'ready');
   const connection = useSnapshot(subscribe, () => chat?.connection ?? 'idle');
   const error = useSnapshot(subscribe, () => chat?.error);
+  /** Core pause/answer ownership can change without messages or status changing. */
+  useSnapshot(subscribe, () => chat?.canRequest ?? false);
   const retry = useCallback(() => setAttempt((count) => count + 1), []);
   const pageBack = current?.loadEarlier;
   const loadEarlier = useCallback(() => void pageBack?.(), [pageBack]);

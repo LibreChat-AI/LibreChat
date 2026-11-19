@@ -4,6 +4,7 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import { useRecoilValue, useSetRecoilState, useResetRecoilState } from 'recoil';
 import {
   sideChatAtom,
+  sideChatDraftSubmittedAtom,
   SIDE_CHAT_PANE,
   sideChatBesideAtom,
   sideChatRequestAtom,
@@ -71,6 +72,7 @@ export default function Presentation({
   const sideChat = useAtomValue(sideChatAtom);
   const isSideChatSubmitting = useIsSubmitting(SIDE_CHAT_PANE);
   const setSideChat = useSetAtom(sideChatAtom);
+  const submitSideChatDraft = useSetAtom(sideChatDraftSubmittedAtom);
   const closeSideChat = useCallback(() => setSideChat(null), [setSideChat]);
   const takeSideChatText = useCallback(
     (expected: SideChat) =>
@@ -231,12 +233,13 @@ export default function Presentation({
               chat={sideChat}
               onClose={closeSideChat}
               onHandedTextTaken={takeSideChatText}
+              onDraftSubmitted={submitSideChatDraft}
             />
           </Suspense>
         </ParentSubagentsProvider>
       </SideChatHostProvider>
     );
-  }, [closeSideChat, isSideChatSubmitting, sideChat, takeSideChatText]);
+  }, [closeSideChat, isSideChatSubmitting, sideChat, submitSideChatDraft, takeSideChatText]);
 
   /* Undocked, the pane renders into its own window: the side panel gives its
    * width back to the conversation instead of holding an empty column. */

@@ -996,6 +996,17 @@ export class Chat {
     return this.action;
   }
 
+  /** Pure projection of request ownership. Expired pauses still undergo request's
+   * notifying cleanup and reentrant checks before a turn is actually taken. */
+  get canRequest(): boolean {
+    return (
+      !this.disposed &&
+      !this.active &&
+      (!this.action || (isExpired(this.action) && this.resuming !== this.action.actionId)) &&
+      (!this.answering || this.answering.ended)
+    );
+  }
+
   /** Submits a user turn. Rejects while another turn of this chat is in flight. */
   sendMessage(input: SendMessageInput, options?: ChatRequestOptions): Promise<void> {
     return this.request({ trigger: 'submit-message', input }, options);
@@ -2959,6 +2970,8 @@ export class Chat {
       }
       throw error;
     } finally {
+      const available = this.canRequest;
+      const revision = this.revision;
       if (this.answering === claim) {
         this.answering = undefined;
       }
@@ -2973,6 +2986,9 @@ export class Chat {
           this.clearAction();
         }
       }
+      /** A visible pause may clear before its answer claim; publish only the coherent
+       * final availability if no existing transition already announced it. */
+      if (!available && this.canRequest && revision === this.revision) this.notify();
     }
   }
 

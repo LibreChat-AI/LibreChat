@@ -16,7 +16,11 @@ const mockGetLatestConversation = jest.fn<TConversation | null, []>(() => null);
 const mockComparisons: { workspace?: unknown; approval?: unknown } = {};
 
 jest.mock('react-router-dom', () => ({ useNavigate: () => jest.fn() }));
-jest.mock('~/hooks/Files/useSetFilesToDelete', () => () => jest.fn());
+jest.mock('~/hooks/Files/useSetFilesToDelete', () => ({
+  __esModule: true,
+  ...jest.requireActual('~/hooks/Files/useSetFilesToDelete'),
+  default: () => jest.fn(),
+}));
 jest.mock('~/hooks/Input/useUserKey', () => () => ({ getExpiry: jest.fn() }));
 jest.mock('~/Providers/AgentsMapContext', () => ({ useAgentsMapContext: () => ({}) }));
 jest.mock('~/hooks/Conversations/useGetConversation', () => () => mockGetLatestConversation);
@@ -195,5 +199,22 @@ describe('useTurnServices readCodeInputs', () => {
     const latest = conversation({ conversationId: 'later', codeApprovalMode: 'acceptEdits' });
     mockGetLatestConversation.mockReturnValue(latest);
     expect(result.current.readCodeInputs().latest).toBe(latest);
+  });
+
+  it('keeps a storage-denied captured cleanup safe without using the legacy clear', () => {
+    const getItem = jest.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('Storage denied');
+    });
+    const submitted = conversation({ endpoint: EModelEndpoint.openAI, model: 'gpt-5' });
+    const { result } = renderHook(() => useTurnServices({ index: 3, conversation: submitted }), {
+      wrapper,
+    });
+    const legacy = jest.spyOn(result.current, 'clearFilesToDelete');
+    const cleanup =
+      result.current.captureFilesToDelete?.(['file-1']) ?? result.current.clearFilesToDelete;
+    expect(cleanup).toBeDefined();
+    expect(() => cleanup?.()).not.toThrow();
+    expect(legacy).not.toHaveBeenCalled();
+    getItem.mockRestore();
   });
 });

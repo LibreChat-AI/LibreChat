@@ -139,6 +139,109 @@ const setup = (
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe('Chat', () => {
+  it('publishes availability after the hidden answer claim releases', async () => {
+    let refuse!: (error: Error) => void;
+    const { chat, state } = setup(
+      {},
+      {
+        resume: () =>
+          new Promise((_, reject) => {
+            refuse = reject;
+          }),
+      },
+    );
+    const pause = {
+      actionId: 'question',
+      streamId: 'convo-1',
+      conversationId: 'convo-1',
+      createdAt: 1,
+      expiresAt: Date.now() + 60000,
+      payload: {
+        type: 'ask_user_question',
+        tool_call_id: 'question',
+        question: { question: 'Which?' },
+      },
+    } as Agents.PendingAction;
+    state.status = 'error';
+    chat.restorePendingAction(pause, 100);
+    const answered = chat
+      .addToolOutput({ toolCallId: 'question', output: 'This one.' })
+      .catch((error: Error) => error);
+    chat.restorePendingAction({ ...pause, expiresAt: Date.now() - 1 }, 100);
+    expect(chat.pendingAction).toBeUndefined();
+    expect(chat.canRequest).toBe(false);
+    const availability: boolean[] = [];
+    chat.subscribe(() => availability.push(chat.canRequest));
+    const rows = chat.messages;
+    refuse(Object.assign(new Error('Answer refused'), { status: 400 }));
+    const result = await answered;
+    expect(result).toBeInstanceOf(Error);
+    expect(chat.canRequest).toBe(true);
+    expect(chat.status).toBe('error');
+    expect(chat.messages).toBe(rows);
+    expect(availability).toEqual([true]);
+    chat.dispose();
+  });
+
+  it('projects expiry without housekeeping and preserves request reentrancy checks', async () => {
+    const { chat, transport } = setup();
+    const now = Date.now();
+    const pause = {
+      actionId: 'expiring',
+      streamId: 'convo-1',
+      conversationId: 'convo-1',
+      createdAt: 1,
+      expiresAt: now + 60000,
+      payload: {
+        type: 'ask_user_question',
+        tool_call_id: 'question',
+        question: { question: 'Which?' },
+      },
+    } as Agents.PendingAction;
+    chat.restorePendingAction(pause, 100);
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 60001);
+    try {
+      expect(chat.canRequest).toBe(true);
+      expect(chat.pendingAction).toBe(pause);
+      chat.subscribe(() => {
+        if (!chat.pendingAction) chat.dispose();
+      });
+      await expect(chat.sendMessage({ parts: [{ type: 'text', text: 'Next.' }] })).rejects.toThrow(
+        'disposed',
+      );
+      expect(transport.sendMessages).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+      chat.dispose();
+    }
+  });
+
+  it('projects live pause ownership even when public status is error', async () => {
+    const { chat, state } = setup();
+    const pause = {
+      actionId: 'paused',
+      streamId: 'convo-1',
+      conversationId: 'convo-1',
+      createdAt: 1,
+      expiresAt: Date.now() + 60000,
+      payload: {
+        type: 'ask_user_question',
+        tool_call_id: 'question',
+        question: { question: 'Which?' },
+      },
+    } as Agents.PendingAction;
+    chat.restorePendingAction(pause, 100);
+    state.status = 'error';
+    try {
+      expect(chat.canRequest).toBe(false);
+      await expect(chat.sendMessage({ parts: [{ type: 'text', text: 'Wait.' }] })).rejects.toThrow(
+        'paused generation',
+      );
+    } finally {
+      chat.dispose();
+    }
+  });
+
   it('walks submitted, streaming and ready, merging the final messages', async () => {
     const { chat, stream, transport, state, onFinish, onEvent } = setup();
 

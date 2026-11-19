@@ -134,6 +134,7 @@ export { useDrivenContract } from './react/chat/driven';
 export type { DrivenContractOptions } from './react/chat/driven';
 export {
   sideChatAtom,
+  sideChatDraftSubmittedAtom,
   SIDE_CHAT_PANE,
   sideChatBesideAtom,
   sideChatRequestAtom,

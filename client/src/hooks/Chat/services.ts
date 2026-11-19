@@ -13,10 +13,10 @@ import {
   bindComposerLaunch,
   getRouteChatProjectId,
 } from '~/utils';
+import useSetFilesToDelete, { captureFilesToDelete } from '~/hooks/Files/useSetFilesToDelete';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
-import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
@@ -107,5 +107,6 @@ export default function useTurnServices({
     discardFiles,
     releaseFiles: (fileIds) => markPasteSubmitted(...fileIds),
     clearFilesToDelete: () => setFilesToDelete({}),
+    captureFilesToDelete,
   };
 }

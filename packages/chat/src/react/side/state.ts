@@ -90,3 +90,20 @@ export const sideChatAtom: WritableAtom<SideChat | null, [SetStateAction<SideCha
       set(shownSideChatAtom, value);
     },
   );
+
+/** Consume only the composer draft and intent captured by this accepted send. */
+export const sideChatDraftSubmittedAtom: WritableAtom<null, [SideChat, string], void> = atom(
+  null,
+  (get, set, expected: SideChat, submitted: string) => {
+    if (get(shownSideChatAtom) !== expected) return;
+    const id = expected.conversation.conversationId;
+    if (!id) return;
+    const draft = sideChatDraftFamily(id);
+    if (get(draft) === submitted) set(draft, '');
+    if (expected.text) {
+      set(sideChatAtom, (current) =>
+        current === expected ? { conversation: current.conversation } : current,
+      );
+    }
+  },
+);

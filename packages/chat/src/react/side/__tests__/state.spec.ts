@@ -1,6 +1,11 @@
 import { createStore } from 'jotai';
 import type { TConversation } from 'librechat-data-provider';
-import { sideChatAtom, sideChatDraftFamily, sideChatRequestAtom } from '../state';
+import {
+  sideChatAtom,
+  sideChatDraftFamily,
+  sideChatRequestAtom,
+  sideChatDraftSubmittedAtom,
+} from '../state';
 
 const conversation = { conversationId: 'destination' } as TConversation;
 
@@ -101,4 +106,40 @@ it('normalizes a functional destination change while preserving both drafts', ()
   expect(store.get(sideChatDraftFamily('destination'))).toBe('Original.');
   expect(store.get(sideChatDraftFamily('other'))).toBe('Owned draft.');
   expect(store.get(sideChatAtom)?.text).toBeUndefined();
+});
+
+it.each([undefined, 'My question.'])(
+  'retires only the accepted current composer draft with intent %s',
+  (text) => {
+    const store = createStore();
+    store.set(sideChatAtom, { conversation, text });
+    store.set(sideChatDraftFamily('destination'), 'My question.');
+    const expected = store.get(sideChatAtom)!;
+    store.set(sideChatDraftSubmittedAtom, expected, 'My question.');
+    expect(store.get(sideChatDraftFamily('destination'))).toBe('');
+    expect(store.get(sideChatAtom)?.text).toBeUndefined();
+    if (!text) expect(store.get(sideChatAtom)).toBe(expected);
+  },
+);
+
+it('preserves a newer edit while retiring the accepted old intent', () => {
+  const store = createStore();
+  store.set(sideChatAtom, { conversation, text: 'Sent.' });
+  const expected = store.get(sideChatAtom)!;
+  store.set(sideChatDraftFamily('destination'), 'New edit.');
+  store.set(sideChatDraftSubmittedAtom, expected, 'Sent.');
+  expect(store.get(sideChatDraftFamily('destination'))).toBe('New edit.');
+  expect(store.get(sideChatAtom)?.text).toBeUndefined();
+});
+
+it('does not retire a replacement same-ID same-text owner', () => {
+  const store = createStore();
+  store.set(sideChatAtom, { conversation, text: 'Same words.' });
+  const expected = store.get(sideChatAtom)!;
+  store.set(sideChatDraftFamily('destination'), '');
+  store.set(sideChatAtom, { conversation, text: 'Same words.' });
+  const replacement = store.get(sideChatAtom);
+  store.set(sideChatDraftSubmittedAtom, expected, 'Same words.');
+  expect(store.get(sideChatAtom)).toBe(replacement);
+  expect(store.get(sideChatDraftFamily('destination'))).toBe('Same words.');
 });

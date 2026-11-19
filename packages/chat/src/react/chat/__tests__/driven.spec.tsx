@@ -12,11 +12,17 @@ import {
   StepEvents,
   ContentTypes,
   EModelEndpoint,
+  ReasoningEffort,
 } from 'librechat-data-provider';
 import type { TMessage, ChatEvent, TConversation } from 'librechat-data-provider';
 import type { ChatStream, ChatTransport, ChatSendRequest, ChatStreamStatus } from '../../../core';
 import type { ChatHost, TurnServices } from '../host';
 import type { ExtendedFile } from '../../../core';
+import {
+  pendingManualSkillsByConvoId,
+  pendingQuotesByConvoId,
+  pendingReasoningOverrideFamily,
+} from '../../composer';
 import { createTurnServices, createTurnCodeInputs } from '../__fixtures__/services';
 import { showStopButtonByIndex } from '../../generation';
 import { isSubmittingFamily } from '../../submission';
@@ -239,6 +245,97 @@ function setup({
 }
 
 describe('useDrivenContract', () => {
+  it('commits only captured inputs before notifying acceptance', async () => {
+    const order: string[] = [];
+    const cleanup = jest.fn(() => order.push('markers'));
+    const services = createTurnServices({
+      captureFilesToDelete: jest.fn(() => cleanup),
+      releaseFiles: jest.fn(() => order.push('files')),
+    });
+    const onAccepted = jest.fn(() => order.push('accepted'));
+    const view = setup({ services, onAccepted });
+    await view.ready();
+    const original = { file_id: 'original-file', progress: 1, size: 1 };
+    const replacement = { file_id: 'replacement-file', progress: 1, size: 1 };
+    const added = { file_id: 'later-file', progress: 1, size: 1 };
+    const reasoning = { key: 'reasoning_effort', value: ReasoningEffort.high } as const;
+    const laterReasoning = { key: 'reasoning_effort', value: ReasoningEffort.low } as const;
+    act(() => {
+      view.store.set(filesFamily(SIDE_PANE), new Map([['upload', original]]));
+      view.store.set(pendingManualSkillsByConvoId(conversationId), ['skill-original']);
+      view.store.set(pendingQuotesByConvoId(conversationId), ['quoted-original']);
+      view.store.set(pendingReasoningOverrideFamily(conversationId), reasoning);
+    });
+    let staged = false;
+    const unsubscribe = view.result.current.followed.chat!.subscribe(() => {
+      if (staged || view.result.current.followed.chat!.status !== 'submitted') return;
+      staged = true;
+      view.store.set(
+        filesFamily(SIDE_PANE),
+        new Map([
+          ['upload', replacement],
+          ['added', added],
+        ]),
+      );
+      view.store.set(pendingManualSkillsByConvoId(conversationId), [
+        'skill-original',
+        'skill-later',
+      ]);
+      view.store.set(pendingQuotesByConvoId(conversationId), ['quoted-original', 'quoted-later']);
+      view.store.set(pendingReasoningOverrideFamily(conversationId), laterReasoning);
+    });
+    act(() => view.result.current.contract.ask({ text: 'Capture these inputs.' }));
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+    expect(staged).toBe(true);
+    expect(view.store.get(pendingManualSkillsByConvoId(conversationId))).toEqual(['skill-later']);
+    expect(view.store.get(pendingQuotesByConvoId(conversationId))).toEqual(['quoted-later']);
+    expect(view.store.get(pendingReasoningOverrideFamily(conversationId))).toBe(laterReasoning);
+    expect(view.store.get(filesFamily(SIDE_PANE))).toEqual(
+      new Map([
+        ['upload', replacement],
+        ['added', added],
+      ]),
+    );
+    expect(services.releaseFiles).toHaveBeenCalledWith(expect.arrayContaining(['original-file']));
+    expect(services.captureFilesToDelete).toHaveBeenCalledWith(['upload']);
+    expect(services.clearFilesToDelete).not.toHaveBeenCalled();
+    expect(order).toEqual(['files', 'markers', 'accepted']);
+    expect(onAccepted).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('keeps every captured composer input when actual publication is declined', async () => {
+    const view = setup();
+    await view.ready();
+    const file = { file_id: 'staged-file', progress: 1, size: 1 };
+    const reasoning = { key: 'reasoning_effort', value: ReasoningEffort.high } as const;
+    act(() => {
+      view.store.set(filesFamily(SIDE_PANE), new Map([[file.file_id, file]]));
+      view.store.set(pendingManualSkillsByConvoId(conversationId), ['skill-original']);
+      view.store.set(pendingQuotesByConvoId(conversationId), ['quoted-original']);
+      view.store.set(pendingReasoningOverrideFamily(conversationId), reasoning);
+    });
+    const decline = jest
+      .spyOn(view.result.current.followed.chat!, 'sendMessage')
+      .mockResolvedValueOnce(undefined);
+    act(() => view.result.current.contract.ask({ text: 'Keep all inputs.' }));
+    expect(view.store.get(pendingManualSkillsByConvoId(conversationId))).toEqual([
+      'skill-original',
+    ]);
+    expect(view.store.get(pendingQuotesByConvoId(conversationId))).toEqual(['quoted-original']);
+    expect(view.store.get(pendingReasoningOverrideFamily(conversationId))).toBe(reasoning);
+    expect(view.store.get(filesFamily(SIDE_PANE)).get(file.file_id)).toBe(file);
+    expect(view.services.releaseFiles).not.toHaveBeenCalled();
+    expect(view.services.clearFilesToDelete).not.toHaveBeenCalled();
+    decline.mockRestore();
+    act(() => view.result.current.contract.ask({ text: 'Keep all inputs.' }));
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+    expect(view.sendMessages.mock.calls[0][0].payload).toMatchObject({
+      manualSkills: ['skill-original'],
+      quotes: ['quoted-original'],
+    });
+  });
+
   it.each(['edit', 'regenerate', 'continue', 'preview'] as const)(
     'announces actual acceptance for %s',
     async (action) => {

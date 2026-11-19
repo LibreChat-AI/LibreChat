@@ -28,7 +28,9 @@ export function useAgentsCatalog({ isAuthenticated, enabled }: Options) {
     isAuthenticated &&
     enabled !== false &&
     !unavailable &&
-    (query.fetchStatus !== 'idle' || (!query.isComplete && !query.isError));
+    ((enabled == null && !ready) ||
+      query.fetchStatus !== 'idle' ||
+      (!query.isComplete && !query.isError));
   return { agentsMap, pending };
 }
 

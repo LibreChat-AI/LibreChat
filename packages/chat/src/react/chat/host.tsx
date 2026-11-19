@@ -111,6 +111,8 @@ export type TurnServices = {
   discardFiles?: (fileIds: string[]) => void;
   /** Forgets the files queued for deletion once the composer is cleared. */
   clearFilesToDelete: () => void;
+  /** Captures app-owned file-marker cleanup before a driven publication can stage new files. */
+  captureFilesToDelete?: (keys: readonly string[]) => () => void;
 };
 
 /** The conversation a pane shows, and the setter that replaces or updates it. */

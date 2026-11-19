@@ -4,7 +4,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, StepTypes, StepEvents, ContentTypes, QueryKeys } from 'librechat-data-provider';
-import type { TMessage, ChatEvent } from 'librechat-data-provider';
+import type { TMessage, ChatEvent, Agents } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { ChatStream, ChatTransport, ChatStreamStatus } from '../../core';
 import type { FollowChatOptions } from '../follow';
@@ -160,6 +160,56 @@ const setup = (initial: Partial<FollowChatOptions> & Pick<FollowChatOptions, 'tr
 };
 
 describe('useFollowChat', () => {
+  it('wakes once when pause ownership retires without messages or status changing', async () => {
+    const { transport } = createTransport(idle);
+    const client = new QueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    let renders = 0;
+    const view = renderHook(
+      () => {
+        renders++;
+        const followed = useFollowChat({
+          id: 'thread-1',
+          transport,
+          loadMessages: async () => [brief],
+        });
+        return { followed, free: followed.canSend() };
+      },
+      { wrapper },
+    );
+    await waitFor(() => expect(view.result.current.free).toBe(true));
+    const chat = view.result.current.followed.chat!;
+    const pause = {
+      actionId: 'question',
+      streamId: 'thread-1',
+      conversationId: 'thread-1',
+      createdAt: 1,
+      expiresAt: Date.now() + 60000,
+      payload: {
+        type: 'ask_user_question',
+        tool_call_id: 'question',
+        question: { question: 'Which?' },
+      },
+    } as Agents.PendingAction;
+    act(() => chat.restorePendingAction(pause, 2000));
+    await waitFor(() => expect(view.result.current.free).toBe(false));
+    const messages = chat.messages;
+    const status = chat.status;
+    const before = renders;
+    // Ownership snapshots stay primitive: repeated native notifications add no renders.
+    act(() => {
+      for (let index = 0; index < 20; index++) chat.restorePendingAction(pause, 2000);
+    });
+    expect(renders).toBe(before);
+    act(() => chat.restorePendingAction({ ...pause, expiresAt: Date.now() - 1 }, 2000));
+    await waitFor(() => expect(view.result.current.free).toBe(true));
+    expect(chat.messages).toBe(messages);
+    expect(chat.status).toBe(status);
+    expect(renders).toBe(before + 1);
+    view.unmount();
+  });
   it.each([
     { outcome: 'joined', observed: true },
     { outcome: 'failed', observed: true },

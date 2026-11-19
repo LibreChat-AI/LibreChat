@@ -18,6 +18,7 @@ import DrivenThread from '../pane/Driven';
 
 type SideChatComposerProps = {
   contract: ChatContract;
+  ask: (text: string) => false | void;
   attempt: ReturnType<typeof useDrivenContract>['attempt'];
   readiness: TurnReadiness;
   /** The reader's unsent words, which the panel holds so they outlive the composer. */
@@ -44,6 +45,7 @@ type SideChatComposerProps = {
  */
 function SideChatComposer({
   contract,
+  ask,
   attempt,
   readiness,
   value,
@@ -60,7 +62,7 @@ function SideChatComposer({
     enterToSend,
     composerBindings: { shortcutsEnabled, submitOverride, yieldedChords },
   } = useChatSurface();
-  const { ask, isSubmitting, stopGenerating } = contract;
+  const { isSubmitting, stopGenerating } = contract;
 
   const field = useRef<HTMLTextAreaElement>(null);
   const focused = useRef(false);
@@ -91,8 +93,7 @@ function SideChatComposer({
     const outcome = value === handedText && readiness === 'ready' ? attempt(handedText) : 'blocked';
     if (outcome === 'pending') return;
     handed.current = handoff;
-    if (outcome === 'accepted') setValue('');
-    else onHandedTextTaken();
+    if (outcome === 'blocked') onHandedTextTaken();
   }, [attempt, handoff, handedText, onHandedTextTaken, readiness, ready, setValue, value]);
 
   /** Editing supersedes automatic intent; accepted sends consume it at the driven owner. */
@@ -112,12 +113,11 @@ function SideChatComposer({
 
   const submit = useCallback(() => {
     const text = value.trim();
-    if (text === '' || ask({ text }) === false) {
+    if (text === '' || ask(text) === false) {
       return;
     }
     handed.current = handoff;
-    setValue('');
-  }, [ask, handoff, setValue, value]);
+  }, [ask, handoff, value]);
 
   /** The main chat form's own Enter decision table, so a rebound submit shortcut holds here. */
   const resolveKeyVerdict = useCallback(
@@ -172,11 +172,14 @@ export default function SideChatPanel({
   chat,
   onClose,
   onHandedTextTaken,
+  onDraftSubmitted,
 }: {
   chat: SideChat;
   onClose: () => void;
   /** The words handed over with the conversation were sent, or put in the field. */
   onHandedTextTaken: (expected: SideChat) => void;
+  /** Atomically retire the captured composer draft and intent after actual acceptance. */
+  onDraftSubmitted?: (expected: SideChat, submitted: string) => void;
 }): ReactNode {
   const localize = useLocalize();
   const host = useSideChatHost();
@@ -186,6 +189,30 @@ export default function SideChatPanel({
   const { handOffComposerText } = useChatSurface();
   const conversationId = chat.conversation.conversationId ?? '';
   const [draft, setDraft] = useAtom(sideChatDraftFamily(conversationId));
+  // Only composer calls own its draft; transcript actions consume intent without clearing it.
+  const composerCall = useRef<{ chat: SideChat; draft: string }>();
+  const withDraft = <T,>(send: () => T): T => {
+    const previous = composerCall.current;
+    composerCall.current = { chat, draft };
+    try {
+      return send();
+    } finally {
+      composerCall.current = previous;
+    }
+  };
+  const accepted = useCallback(() => {
+    const captured = composerCall.current;
+    if (captured?.chat === chat) {
+      if (onDraftSubmitted) {
+        onDraftSubmitted(chat, captured.draft);
+      } else {
+        setDraft((current) => (current === captured.draft ? '' : current));
+        if (chat.text) onHandedTextTaken(chat);
+      }
+    } else if (chat.text) {
+      onHandedTextTaken(chat);
+    }
+  }, [chat, onDraftSubmitted, onHandedTextTaken, setDraft]);
   const takeText = useCallback(() => onHandedTextTaken(chat), [chat, onHandedTextTaken]);
   /**
    * A turn stopped before the server kept it is gone from the list. Its words go back in the
@@ -283,12 +310,13 @@ export default function SideChatPanel({
         index={SIDE_CHAT_PANE}
         followed={followed}
         handoff={!!chat.text}
-        onAccepted={chat.text ? takeText : undefined}
+        onAccepted={accepted}
       >
         {(contract) => (
           <SideChatComposer
             contract={contract}
-            attempt={contract.attempt}
+            ask={(text) => withDraft(() => contract.ask({ text }))}
+            attempt={(text) => withDraft(() => contract.attempt(text))}
             readiness={contract.readiness}
             value={draft}
             onChange={setDraft}

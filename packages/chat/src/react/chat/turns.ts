@@ -35,6 +35,11 @@ import { isHistoryRevalidating } from './guards';
 
 type Attempt = 'accepted' | 'pending' | 'blocked';
 type Submit = (props: TAskProps, options?: TOptions, automatic?: boolean) => Attempt;
+type Admission = {
+  readiness: () => TurnReadiness;
+  accepted: () => boolean;
+  committed?: () => void;
+};
 
 /**
  * Submits and regenerates turns for one pane: refuses a send the chat cannot take yet, drains
@@ -56,9 +61,7 @@ export function useTurns(
     conversation: immutableConversation,
   }: ChatTurnsParams,
   services: TurnServices,
-  admission?: () => TurnReadiness,
-  /** Optional synchronous confirmation from the driven publication owner. */
-  accepted?: () => boolean,
+  admission?: Admission,
 ): { ask: TAskFunction; attempt: (text: string) => Attempt; regenerate: TRegenerateFunction } {
   const store = useStore();
   const queryClient = useQueryClient();
@@ -66,6 +69,7 @@ export function useTurns(
   const setSubmissionStart = useSetAtom(submissionStartFamily(index));
   const setShowStopButton = useSetAtom(showStopButtonByIndex(index));
   const { logger } = services;
+  const deferred = admission != null;
 
   /**
    * `ask` refuses while `isSubmitting`, but that value only reads true from the next commit
@@ -156,8 +160,12 @@ export function useTurns(
     const regenerateShaped = isRegenerate || compact;
     /** An accepted or revealed local turn is newer explicit intent; it must not arm an
      * automatic retry. Temporary transport/workspace phases below keep their pending intent. */
+    if (askInFlightRef.current) {
+      if (!automatic) return 'blocked';
+      const readiness = admission?.readiness() ?? 'pending';
+      if (readiness !== 'ready') return readiness;
+    }
     if (
-      askInFlightRef.current ||
       store.get(revealedQueuedTurnFamily(immutableConversation?.conversationId ?? '')) != null ||
       (!regenerateShaped && !isSubmittableMessage(text, availableFileCount))
     ) {
@@ -176,7 +184,7 @@ export function useTurns(
     /** The builder resolves `promptPrefix` on its copy; the pane's conversation stays as is. */
     const conversation = immutableConversation == null ? null : { ...immutableConversation };
     if (services.canSubmit?.(conversation) === false) {
-      return admission?.() === 'pending' ? 'pending' : 'blocked';
+      return admission?.readiness() === 'pending' ? 'pending' : 'blocked';
     }
     const codeResult = resolveTurnCodeResult(services.readCodeInputs(), conversation);
     if (codeResult.state !== 'ready') {
@@ -236,7 +244,7 @@ export function useTurns(
       return 'pending';
     }
 
-    setShowStopButton(false);
+    if (!deferred) setShowStopButton(false);
 
     const convoKey = conversationId ?? Constants.NEW_CONVO;
     const endpointsConfig = services.getEndpointsConfig();
@@ -246,8 +254,10 @@ export function useTurns(
      * leaves the compose-time queue alone; a fresh submit drains the queue into the message.
      */
     const replaysTurn = regenerateShaped || isContinued || isEdited;
+    const take = (family: typeof pendingQuotesByConvoId): string[] =>
+      deferred ? store.get(family(convoKey)) : drain(family, convoKey);
     const manualSkills =
-      overrideManualSkills ?? (replaysTurn ? [] : drain(pendingManualSkillsByConvoId, convoKey));
+      overrideManualSkills ?? (replaysTurn ? [] : take(pendingManualSkillsByConvoId));
     /**
      * Quoted excerpts resolve like manual skills, but are skipped entirely for Assistants
      * endpoints: those bypass the server's quote merge, so the quote UI is hidden there and a
@@ -256,15 +266,18 @@ export function useTurns(
      */
     let quotes: string[] = [];
     if (!isAssistantsEndpoint(endpoint)) {
-      quotes = overrideQuotes ?? (replaysTurn ? [] : drain(pendingQuotesByConvoId, convoKey));
+      quotes = overrideQuotes ?? (replaysTurn ? [] : take(pendingQuotesByConvoId));
     }
     let reasoningOverride = overrideReasoning ?? undefined;
     const reasoningStateKey = getReasoningStateKey(conversationId, index);
     const drainedReasoning = overrideReasoning === undefined && !replaysTurn;
     if (drainedReasoning) {
-      reasoningOverride = drainPendingReasoning(reasoningStateKey);
+      reasoningOverride = deferred
+        ? store.get(pendingReasoningOverrideFamily(reasoningStateKey))
+        : drainPendingReasoning(reasoningStateKey);
     }
     const stagedReasoning = reasoningOverride;
+    let keepReasoning = false;
     if (reasoningOverride != null) {
       const resolved = resolveSubmittedReasoning({
         queryClient,
@@ -278,7 +291,8 @@ export function useTurns(
       });
       reasoningOverride = resolved.reasoningOverride;
       /** Refused only because the catalog is not loaded yet: put a drained choice back. */
-      if (resolved.restoreStaged && drainedReasoning && stagedReasoning != null) {
+      keepReasoning = resolved.restoreStaged;
+      if (!deferred && resolved.restoreStaged && drainedReasoning && stagedReasoning != null) {
         store.set(pendingReasoningOverrideFamily(reasoningStateKey), stagedReasoning);
       }
     }
@@ -326,41 +340,61 @@ export function useTurns(
     conversationId = turn.conversationId;
     logger.log('message_state', initialResponse);
 
-    if (turn.newChatPath != null) {
-      services.openNewChat(turn.newChatPath);
-    }
-    if (fileEffects != null && setFiles) {
-      markComposerFilesTaken([
-        ...(fileEffects.canceledUploadIds ?? []),
-        ...(fileEffects.replacedFileIds ?? []),
-      ]);
-      services.releaseFiles(fileEffects.submittedFileIds);
-      if (fileEffects.canceledUploadIds?.length) {
-        services.cancelUploads?.(fileEffects.canceledUploadIds);
+    const capturedFiles =
+      deferred && fileEffects?.clearComposer && files ? new Map(files) : undefined;
+    const clearFilesToDelete =
+      deferred && fileEffects?.clearComposer
+        ? (services.captureFilesToDelete?.(Array.from(capturedFiles?.keys() ?? [])) ??
+          services.clearFilesToDelete)
+        : services.clearFilesToDelete;
+    const commitComposer = (): void => {
+      if (turn.newChatPath != null) {
+        services.openNewChat(turn.newChatPath);
       }
-      if (fileEffects.replacedFileIds?.length) {
-        services.discardFiles?.(fileEffects.replacedFileIds);
+      if (fileEffects != null && setFiles) {
+        markComposerFilesTaken([
+          ...(fileEffects.canceledUploadIds ?? []),
+          ...(fileEffects.replacedFileIds ?? []),
+        ]);
+        services.releaseFiles(fileEffects.submittedFileIds);
+        if (fileEffects.canceledUploadIds?.length) {
+          services.cancelUploads?.(fileEffects.canceledUploadIds);
+        }
+        if (fileEffects.replacedFileIds?.length) {
+          services.discardFiles?.(fileEffects.replacedFileIds);
+        }
+        if (fileEffects.clearComposer) {
+          if (!deferred) setFiles(new Map());
+          else
+            setFiles((current) => {
+              let next = current;
+              for (const [key, file] of capturedFiles ?? []) {
+                if (current.get(key) !== file) continue;
+                if (next === current) next = new Map(current);
+                next.delete(key);
+              }
+              return next;
+            });
+          clearFilesToDelete();
+        }
       }
-      if (fileEffects.clearComposer) {
-        setFiles(new Map());
-        services.clearFilesToDelete();
+      if (turn.startsSubmitting) {
+        setIsSubmitting(true);
+        setShowStopButton(true);
       }
-    }
-    if (turn.startsSubmitting) {
-      setIsSubmitting(true);
-      setShowStopButton(true);
-    }
 
-    /** Bound before the optimistic tail is published, not after the first provider event: a
-     *  waiting request already owns a turn even when no usage exists. */
-    store.set(
-      activeUsageResponseIdFamily(conversationId ?? Constants.NEW_CONVO),
-      initialResponse.messageId,
-    );
+      /** Bound before the optimistic tail is published, not after the first provider event: a
+       *  waiting request already owns a turn even when no usage exists. */
+      store.set(
+        activeUsageResponseIdFamily(conversationId ?? Constants.NEW_CONVO),
+        initialResponse.messageId,
+      );
+    };
+    if (!deferred) commitComposer();
 
     if (turn.regenerateShaped) {
       setMessages([...submissionMessages, initialResponse]);
-      if (initialResponse.parentMessageId != null) {
+      if (!deferred && initialResponse.parentMessageId != null) {
         store.set(siblingIdxFamily(siblingKey(initialResponse.parentMessageId)), 0);
       }
     } else {
@@ -370,20 +404,54 @@ export function useTurns(
     /** Carries the submitted choice through the first saved-chat event instead of re-deriving
      *  it from agent defaults. Optimistic: the stream's error path reconciles an existing chat
      *  with its authoritative server decision if admission fails. */
-    setConversation((current) =>
-      current == null || current.conversationId !== conversation?.conversationId
-        ? current
-        : codeDecision.apply(current),
-    );
+    const commitConversation = (): void => {
+      setConversation((current) =>
+        current == null || current.conversationId !== conversation?.conversationId
+          ? current
+          : codeDecision.apply(current),
+      );
+    };
+    if (!deferred) commitConversation();
     /** Close the synchronous double-submit window before publication. A driven owner that
      * declines after preflight releases this attempt's lock below. */
     askInFlightRef.current = true;
-    setSubmissionStart(Date.now());
-    store.set(launchedConversationFamily(index), submission.conversation);
+    const commitLaunch = (): void => {
+      setSubmissionStart(Date.now());
+      store.set(launchedConversationFamily(index), submission.conversation);
+    };
+    if (!deferred) commitLaunch();
     setSubmission(submission);
-    if (accepted?.() === false) {
+    if (admission?.accepted() === false) {
       askInFlightRef.current = false;
-      return admission?.() === 'pending' ? 'pending' : 'blocked';
+      return admission.readiness() === 'pending' ? 'pending' : 'blocked';
+    }
+    if (deferred) {
+      /** Remove only what this accepted turn captured; publication can stage newer inputs. */
+      const consume = (family: typeof pendingQuotesByConvoId, captured: string[]): void => {
+        if (captured.length === 0) return;
+        store.set(family(convoKey), (current) => {
+          if (current === captured) return [];
+          const sent = new Set(captured);
+          const remaining = current.filter((value) => !sent.has(value));
+          return remaining.length === current.length ? current : remaining;
+        });
+      };
+      if (!replaysTurn && overrideManualSkills == null)
+        consume(pendingManualSkillsByConvoId, manualSkills);
+      if (!replaysTurn && overrideQuotes == null && !isAssistantsEndpoint(endpoint))
+        consume(pendingQuotesByConvoId, quotes);
+      if (drainedReasoning && !keepReasoning && stagedReasoning != null) {
+        store.set(pendingReasoningOverrideFamily(reasoningStateKey), (current) =>
+          current === stagedReasoning ? undefined : current,
+        );
+      }
+      setShowStopButton(false);
+      commitComposer();
+      if (turn.regenerateShaped && initialResponse.parentMessageId != null)
+        store.set(siblingIdxFamily(siblingKey(initialResponse.parentMessageId)), 0);
+      commitConversation();
+      commitLaunch();
+      admission.committed?.();
     }
     logger.dir('message_stream', {
       conversationId,

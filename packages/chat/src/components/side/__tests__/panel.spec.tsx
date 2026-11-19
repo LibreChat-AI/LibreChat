@@ -10,17 +10,23 @@ import type { ChatStream, ChatTransport, ChatSendRequest } from '../../../core';
 import type { ChatHost, TurnServices } from '../../../react/chat/host';
 import type { SideChatHost } from '../../../react/side/host';
 import type { SideChat } from '../../../react/side/state';
+import {
+  sideChatAtom,
+  sideChatDraftFamily,
+  sideChatDraftSubmittedAtom,
+} from '../../../react/side/state';
 import { createTurnServices as createBaseTurnServices } from '../../../react/chat/__fixtures__/services';
 import { MessagesHostProvider, useMessagesHost } from '../../../react/messages/host';
-import { sideChatAtom, sideChatDraftFamily } from '../../../react/side/state';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { turnInputs } from '../../../core/code/__fixtures__/turn';
 import { SideChatHostProvider } from '../../../react/side/host';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { isSubmittingFamily } from '../../../react/submission';
 import { useChatContext } from '../../../react/chat/context';
 import { ChatHostProvider } from '../../../react/chat/host';
+import { SIDE_CHAT_PANE } from '../../../react/side/state';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import { useFollowChat } from '../../../react/follow';
 import SideChatPanel from '../panel';
@@ -140,12 +146,14 @@ function setup({
   stored = [user, reply('response-1', 'It shipped.')],
   loadMessages = jest.fn(async () => stored),
   services = createTurnServices(),
+  ownedDrafts = true,
 }: {
   chat?: SideChat;
   draft?: string;
   stored?: TMessage[];
   loadMessages?: jest.Mock<Promise<TMessage[]>>;
   services?: TestServices;
+  ownedDrafts?: boolean;
 } = {}) {
   const streams: TestStream[] = [];
   const sendMessages = jest.fn(
@@ -215,6 +223,15 @@ function setup({
           onClose();
           setCurrent(null);
         }}
+        onDraftSubmitted={
+          ownedDrafts
+            ? (expected, submitted) => {
+                if (store.get(sideChatAtom) === expected && expected.text)
+                  onHandedTextTaken(expected);
+                store.set(sideChatDraftSubmittedAtom, expected, submitted);
+              }
+            : undefined
+        }
         onHandedTextTaken={(expected) => {
           onHandedTextTaken(expected);
           setCurrent((value) =>
@@ -286,6 +303,67 @@ const settle = () =>
   });
 
 describe('SideChatPanel', () => {
+  it('preserves the optional draft callback contract for ordinary manual submissions', async () => {
+    const view = setup({ ownedDrafts: false });
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    fireEvent.change(field(), { target: { value: '  Manual question.  ' } });
+    fireEvent.click(screen.getByTestId('composer-send-button'));
+    await waitFor(() => expect(view.streams).toHaveLength(1));
+    expect(field()).toHaveValue('');
+    expect(view.store.get(sideChatAtom)?.text).toBeUndefined();
+  });
+
+  it.each([true, false])(
+    'preserves a new same-ID handoff introduced by accepted commit (automatic=%s)',
+    async (automatic) => {
+      const services = createTurnServices({ readiness: automatic ? 'pending' : 'ready' });
+      const view = setup({
+        chat: { conversation, text: automatic ? 'Same words.' : undefined },
+        services,
+      });
+      await waitFor(() => expect(rows()).toHaveLength(2));
+      if (!automatic) fireEvent.change(field(), { target: { value: 'Same words.' } });
+      expect(field()).toHaveValue('Same words.');
+      let replaced = false;
+      const unsubscribe = view.store.sub(isSubmittingFamily(SIDE_CHAT_PANE), () => {
+        if (replaced || !view.store.get(isSubmittingFamily(SIDE_CHAT_PANE))) return;
+        replaced = true;
+        view.store.set(sideChatDraftFamily(conversationId), '');
+        view.store.set(sideChatAtom, { conversation, text: 'Same words.' });
+      });
+      services.readiness = 'ready';
+      if (automatic) view.refresh();
+      else fireEvent.click(screen.getByTestId('composer-send-button'));
+      await waitFor(() => expect(view.streams).toHaveLength(1));
+      expect(replaced).toBe(true);
+      expect(view.store.get(sideChatDraftFamily(conversationId))).toBe('Same words.');
+      expect(view.store.get(sideChatAtom)?.text).toBe('Same words.');
+      unsubscribe();
+    },
+  );
+
+  it('waits for an old turn before sending a new handoff to the same mounted conversation', async () => {
+    const view = setup();
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    fireEvent.change(field(), { target: { value: 'First question.' } });
+    fireEvent.click(screen.getByTestId('composer-send-button'));
+    await waitFor(() => expect(view.streams).toHaveLength(1));
+    const asked = view.sendMessages.mock.calls[0][0].payload as unknown as TMessage;
+    view.open({ conversation, text: 'Question after this turn.' });
+    await settle();
+    expect(view.store.get(sideChatAtom)?.text).toBe('Question after this turn.');
+    expect(field()).toHaveValue('Question after this turn.');
+    expect(view.sendMessages).toHaveBeenCalledTimes(1);
+    act(() =>
+      view.streams[0].push(final(asked, reply('answer-first', 'First answer.', asked.messageId))),
+    );
+    await waitFor(() => expect(view.streams).toHaveLength(2));
+    expect(view.sendMessages.mock.calls[1][0].payload).toMatchObject({
+      text: 'Question after this turn.',
+    });
+    expect(view.onHandedTextTaken).toHaveBeenCalledTimes(1);
+  });
+
   it('does not clear a newer same-destination draft published during actual send acceptance', async () => {
     const services = createTurnServices({ readiness: 'pending' });
     const view = setup({ chat: { conversation, text: 'Old question.' }, services });
