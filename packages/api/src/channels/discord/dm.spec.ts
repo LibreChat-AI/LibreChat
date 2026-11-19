@@ -18,8 +18,17 @@ import {
   tenantStorage,
   runAsSystem,
   hashDiscordDmCode,
+  createChannelRunStorage,
+  createDiscordMessageStorage,
+  createDiscordGatewayStorage,
 } from '@librechat/data-schemas';
-import type { DiscordAgentChannel } from 'librechat-data-provider';
+import type {
+  DiscordAgentChannel,
+  DiscordDmMessagePrepared,
+  DiscordGatewayMessage,
+} from 'librechat-data-provider';
+import { createDiscordDmMessageHandlers } from './dmMessageHttp';
+import { createDiscordDmMessageService } from './dmMessages';
 import { createChannelAuthority } from '../authority';
 import { createDiscordDmHandlers } from './dmHttp';
 import { createDiscordDmService } from './dm';
@@ -342,4 +351,304 @@ it('returns only safe operational errors', async () => {
   });
   const response = await request(app).get('/selections').set('x-user', userId).expect(503);
   expect(response.body).toEqual({ ok: false, error: { code: 'unavailable' } });
+});
+
+const snowflake = (at: number) => String((BigInt(at - 1420070400000) << BigInt(22)) + BigInt(1));
+const gateway = createDiscordGatewayStorage(db, async () => ({
+  ownershipLeaseMs: 30000,
+  shardCount: 1,
+}));
+const dmMessages = createDiscordDmMessageService({
+  selections: storage,
+  gateway,
+  installations,
+  channels,
+  messages: createDiscordMessageStorage(db),
+  runs: createChannelRunStorage(db),
+  authority,
+  settings: async () =>
+    discordChannelConfigSchema.parse({
+      enabled: true,
+      gateway: { enabled: true },
+      dm: { enabled },
+    }),
+  now: () => now,
+});
+function messageServer(value = dmMessages) {
+  const app = express();
+  app.use(express.json());
+  const handlers = createDiscordDmMessageHandlers({ service: value, serviceToken: () => token });
+  app.post('/prepare', handlers.prepare);
+  app.post('/message', handlers.submit);
+  return app;
+}
+async function messageFixture() {
+  const app = server();
+  const issued = await browser(app).expect(200);
+  await request(app)
+    .post('/select')
+    .auth(token, { type: 'bearer' })
+    .send({ ...select(issued.body.value.code), confirmationEventId: snowflake(now) })
+    .expect(200);
+  const nativeOwner = { applicationId, applicationRevision, ownerId: 'a'.repeat(32) };
+  await scope(async () => {
+    await models.ChannelIdentity.collection.updateOne(
+      { linkId: 'link' },
+      { $set: { discordActivatedAtMs: now - 1000 } },
+    );
+    expect(await gateway.acquire(nativeOwner, 30000)).toBe(true);
+  });
+  const event: DiscordGatewayMessage = {
+    ...nativeOwner,
+    kind: 'message',
+    shardId: 0,
+    sequence: 1,
+    messageId: snowflake(now + 1),
+    channelId: dmChannelId,
+    authorId: externalUserId,
+    content: 'A private prompt without a mention',
+    mentionsBot: false,
+    channelType: 1,
+  };
+  const source = {
+    kind: 'guild_text',
+    applicationId,
+    botUserId: channel.discord.botUserId,
+    guildId,
+    channelId: channel.discord.externalChannelId,
+    permissions: '68608',
+    authorId: externalUserId,
+    authorMember: true,
+    authorPermissions: '1024',
+  };
+  const http = messageServer();
+  const prepared = await request(http)
+    .post('/prepare')
+    .auth(token, { type: 'bearer' })
+    .send({ owner: nativeOwner, event })
+    .expect(200);
+  const selection: DiscordDmMessagePrepared = prepared.body;
+  return {
+    app: http,
+    event,
+    nativeOwner,
+    source,
+    selection,
+    input: {
+      owner: nativeOwner,
+      event,
+      source,
+      selectionId: selection.selectionId,
+      selectionRevision: selection.selectionRevision,
+    },
+  };
+}
+it('prepares only exact owned DM selection hints without private credentials, source principals or execution', async () => {
+  const f = await messageFixture();
+  expect(f.selection).toEqual({
+    applicationId,
+    externalUserId,
+    dmChannelId,
+    guildId,
+    parentChannelId: channel.discord.externalChannelId,
+    botUserId: channel.discord.botUserId,
+    selectionId: expect.any(String),
+    selectionRevision: expect.any(String),
+  });
+  expect(JSON.stringify(f.selection)).not.toMatch(/encrypted|userId|linkId|codeHash|private/);
+  await scope(async () => {
+    expect(await models.ChannelRun.countDocuments()).toBe(0);
+    const before = await models.DiscordDmSelection.findOne().lean();
+    await request(f.app)
+      .post('/prepare')
+      .auth(token, { type: 'bearer' })
+      .send({ owner: f.nativeOwner, event: f.event })
+      .expect(200);
+    const after = await models.DiscordDmSelection.findOne().lean();
+    expect(after).toMatchObject({
+      selectionId: before?.selectionId,
+      revision: before?.revision,
+      expiresAtMs: before?.expiresAtMs,
+    });
+  });
+  enabled = false;
+  expect(
+    (
+      await request(f.app)
+        .post('/prepare')
+        .auth(token, { type: 'bearer' })
+        .send({ owner: f.nativeOwner, event: f.event })
+        .expect(200)
+    ).body,
+  ).toBeNull();
+});
+it('authenticates private DM endpoints and rejects guild, group, mixed owner and tenant overrides', async () => {
+  const f = await messageFixture();
+  await request(f.app).post('/prepare').send({ owner: f.nativeOwner, event: f.event }).expect(401);
+  for (const changed of [
+    { event: { ...f.event, guildId } },
+    { event: { ...f.event, channelType: 3 } },
+    { event: { ...f.event, ownerId: 'b'.repeat(32) } },
+    { tenantId: 'other' },
+  ])
+    await request(f.app)
+      .post('/prepare')
+      .auth(token, { type: 'bearer' })
+      .send({ owner: f.nativeOwner, event: f.event, ...changed })
+      .expect(400);
+  expect(
+    (
+      await request(f.app)
+        .post('/prepare')
+        .auth(token, { type: 'bearer' })
+        .send({
+          owner: { ...f.nativeOwner, ownerId: 'b'.repeat(32) },
+          event: { ...f.event, ownerId: 'b'.repeat(32) },
+        })
+        .expect(200)
+    ).body,
+  ).toBeNull();
+});
+it('admits the exact physical DM prompt under its selected source and consumes a replay once', async () => {
+  const f = await messageFixture();
+  expect(
+    (
+      await request(f.app)
+        .post('/message')
+        .auth(token, { type: 'bearer' })
+        .send(f.input)
+        .expect(200)
+    ).body,
+  ).toEqual({ outcome: 'admitted' });
+  expect(
+    (
+      await request(f.app)
+        .post('/message')
+        .auth(token, { type: 'bearer' })
+        .send(f.input)
+        .expect(200)
+    ).body,
+  ).toEqual({ outcome: 'duplicate' });
+  await scope(async () => {
+    const run = await models.ChannelRun.findOne().lean();
+    expect(run?.principal).toMatchObject({ userId, linkId: 'link', linkRevision: 'link-rev' });
+    expect(run?.admission).toMatchObject({
+      eventId: f.event.messageId,
+      externalChannelId: dmChannelId,
+      externalThreadKey: `${dmChannelId}:${snowflake(now)}`,
+      externalMessageKey: `${dmChannelId}:${f.event.messageId}`,
+      input: f.event.content,
+      actor: {
+        provider: 'discord',
+        scope: 'dm',
+        applicationId,
+        externalUserId,
+        selectionId: f.selection.selectionId,
+        selectionRevision: f.selection.selectionRevision,
+      },
+      discordDestination: { kind: 'dm', parentChannelId: channel.discord.externalChannelId },
+    });
+    expect(run?.admission.actor).not.toHaveProperty('guildId');
+    expect(await models.ChannelRun.countDocuments()).toBe(1);
+    expect(await models.DiscordMessageReceipt.countDocuments()).toBe(1);
+  });
+});
+it.each(['selection', 'visibility', 'source', 'permission', 'link', 'old-event', 'old-consent'])(
+  'durably ignores a DM prompt after %s changes',
+  async (changed) => {
+    const f = await messageFixture();
+    if (changed === 'selection') {
+      const issued = await browser(server()).expect(200);
+      await request(server())
+        .post('/select')
+        .auth(token, { type: 'bearer' })
+        .send(select(issued.body.value.code))
+        .expect(200);
+    }
+    if (changed === 'visibility') f.source.authorPermissions = '0';
+    if (changed === 'source') f.source.channelId = '999';
+    if (changed === 'permission') permission = 0;
+    if (changed === 'link')
+      await scope(async () => {
+        await models.ChannelIdentity.updateOne({ linkId: 'link' }, { state: 'revoked' });
+      });
+    if (changed === 'old-event') {
+      f.event.messageId = snowflake(now);
+    }
+    if (changed === 'old-consent')
+      await scope(async () => {
+        await models.ChannelIdentity.collection.updateOne(
+          { linkId: 'link' },
+          { $set: { discordActivatedAtMs: now + 1 } },
+        );
+      });
+    expect(
+      (
+        await request(f.app)
+          .post('/message')
+          .auth(token, { type: 'bearer' })
+          .send(f.input)
+          .expect(200)
+      ).body,
+    ).toEqual({ outcome: 'ignored', reason: 'unavailable' });
+    expect(
+      (
+        await request(f.app)
+          .post('/message')
+          .auth(token, { type: 'bearer' })
+          .send(f.input)
+          .expect(200)
+      ).body,
+    ).toEqual({ outcome: 'duplicate' });
+    await scope(async () => expect(await models.ChannelRun.countDocuments()).toBe(0));
+  },
+);
+it('retains provider denial and sanitizes operational preparation errors', async () => {
+  const f = await messageFixture();
+  expect(
+    (
+      await request(f.app)
+        .post('/message')
+        .auth(token, { type: 'bearer' })
+        .send({ ...f.input, source: null })
+        .expect(200)
+    ).body,
+  ).toEqual({ outcome: 'ignored', reason: 'unavailable' });
+  const app = messageServer({
+    ...dmMessages,
+    prepare: async () => {
+      throw new Error('private bot token');
+    },
+  });
+  expect(
+    (
+      await request(app)
+        .post('/prepare')
+        .auth(token, { type: 'bearer' })
+        .send({ owner: f.nativeOwner, event: f.event })
+        .expect(503)
+    ).body,
+  ).toEqual({ error: 'discord_dm_message_unavailable' });
+});
+it('rejects future physical timestamps and never admits prompts older than receipt retention', async () => {
+  const f = await messageFixture();
+  expect(
+    (
+      await request(f.app)
+        .post('/message')
+        .auth(token, { type: 'bearer' })
+        .send({ ...f.input, event: { ...f.event, messageId: snowflake(now + 300001) } })
+        .expect(400)
+    ).body,
+  ).toEqual({ error: 'invalid_input' });
+  expect(
+    (
+      await request(f.app)
+        .post('/message')
+        .auth(token, { type: 'bearer' })
+        .send({ ...f.input, event: { ...f.event, messageId: snowflake(now - 900000) } })
+        .expect(200)
+    ).body,
+  ).toEqual({ outcome: 'ignored', reason: 'expired' });
+  await scope(async () => expect(await models.ChannelRun.countDocuments()).toBe(0));
 });

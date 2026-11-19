@@ -118,6 +118,7 @@ export * from './types/responseReview';
 export * from './types/channelIdentity';
 export * from './channelProvider';
 export * from './channelDestination';
+export * from './types/discordDmMessage';
 export * from './channelLink';
 export * from './types/channelFeedback';
 export * from './types/channelRuns';
