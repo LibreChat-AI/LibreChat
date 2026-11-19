@@ -2,9 +2,14 @@
  * @jest-environment jsdom
  */
 import React from 'react';
-import { act, renderHook } from '@testing-library/react';
+import { act, render, renderHook } from '@testing-library/react';
 import type { RowMountWindow } from '../useProgressiveRowMount';
-import { useProgressiveRowMount, completeProgressiveRowMounts } from '../useProgressiveRowMount';
+import {
+  useWidenedRow,
+  RowMountProvider,
+  useProgressiveRowMount,
+  completeProgressiveRowMounts,
+} from '../useProgressiveRowMount';
 
 type HookProps = {
   tailDepth: number | undefined;
@@ -147,5 +152,44 @@ describe('useProgressiveRowMount', () => {
       conversationId: 'convo-b',
     });
     expect(result.current).toEqual({ start: 0, end: 15 });
+  });
+});
+
+describe('useWidenedRow', () => {
+  function Row({ id }: { id: string }) {
+    return <div data-testid={id} data-widened={useWidenedRow()} />;
+  }
+
+  const thread = (mountWindow: RowMountWindow, ids: string[]) => (
+    <RowMountProvider mountWindow={mountWindow}>
+      {ids.map((id) => (
+        <Row key={id} id={id} />
+      ))}
+    </RowMountProvider>
+  );
+
+  it('tells the rows a widening step adds from the ones the thread opened on', () => {
+    const opened: RowMountWindow = { start: 252, end: Number.POSITIVE_INFINITY };
+    const { getByTestId, rerender } = render(thread(opened, ['tail']));
+    expect(getByTestId('tail').dataset.widened).toBe('false');
+
+    rerender(thread({ start: 220, end: Number.POSITIVE_INFINITY }, ['tail', 'earlier']));
+    expect(getByTestId('earlier').dataset.widened).toBe('true');
+    /** Fixed for the row's life: the rows it opened on do not change sides. */
+    expect(getByTestId('tail').dataset.widened).toBe('false');
+
+    /** The whole thread mounted: a turn arriving now arrives where the reader is. */
+    rerender(thread(null, ['tail', 'earlier', 'arrived']));
+    expect(getByTestId('arrived').dataset.widened).toBe('false');
+    expect(getByTestId('earlier').dataset.widened).toBe('true');
+  });
+
+  it('is false in a thread mounted whole and outside any thread', () => {
+    const whole = render(thread(null, ['row']));
+    expect(whole.getByTestId('row').dataset.widened).toBe('false');
+    whole.unmount();
+
+    const { getByTestId } = render(<Row id="lone" />);
+    expect(getByTestId('lone').dataset.widened).toBe('false');
   });
 });

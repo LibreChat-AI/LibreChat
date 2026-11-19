@@ -24,6 +24,7 @@ import store from '~/store';
 
 /** `copy-to-clipboard` exports a single callable: `copy(text, options?)`. */
 const mockCopy = jest.fn((_text: string, _options?: { format?: string }) => true);
+const mockReachRow = jest.fn((_row?: Element | null) => undefined);
 
 jest.mock('~/components/Chat/Input/Reasoning', () => ({
   __esModule: true,
@@ -57,6 +58,7 @@ jest.mock('~/Providers', () => ({
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   useReducedMotion: () => true,
+  reachRow: (row?: Element | null) => mockReachRow(row),
 }));
 
 jest.mock('copy-to-clipboard', () => ({
@@ -128,6 +130,7 @@ beforeEach(() => {
   queryClient = new QueryClient();
   window.localStorage.clear();
   mockCopy.mockClear();
+  mockReachRow.mockReset();
 });
 
 afterEach(() => {
@@ -581,6 +584,32 @@ describe('clipboard shortcuts', () => {
     expect(secondCopy).toHaveBeenCalledTimes(1);
     expect(mockCopy).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('copies the last response from a row that had not mounted its toolbar yet', () => {
+    const earlierCopy = jest.fn();
+    const lastCopy = jest.fn();
+    renderHarness();
+    appendResponseCopyButton(earlierCopy);
+    /** A long thread leaves the toolbar out of a row the reader has not been near. */
+    const row = document.createElement('div');
+    row.className = 'message-render';
+    const turn = document.createElement('div');
+    turn.className = 'agent-turn';
+    row.appendChild(turn);
+    document.body.appendChild(row);
+    mockReachRow.mockImplementation((reached) => {
+      const button = document.createElement('button');
+      button.dataset.testid = 'copy-response-button';
+      button.addEventListener('click', lastCopy);
+      reached?.appendChild(button);
+    });
+
+    dispatchKey({ key: ';', ctrlKey: true, shiftKey: true });
+
+    expect(mockReachRow).toHaveBeenCalledWith(row);
+    expect(earlierCopy).not.toHaveBeenCalled();
+    expect(lastCopy).toHaveBeenCalledTimes(1);
   });
 
   it('copies the last code block through the clipboard fallback helper', () => {

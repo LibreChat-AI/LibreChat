@@ -20,6 +20,9 @@ export type RowMountWindow = { start: number; end: number } | null;
 
 const RowMountContext = createContext<RowMountWindow>(null);
 
+/** Whether the rows mounting now are ones a widening step adds; read once, as a row mounts. */
+const RowWideningContext = createContext<{ readonly current: boolean } | null>(null);
+
 export function RowMountProvider({
   mountWindow,
   children,
@@ -27,11 +30,31 @@ export function RowMountProvider({
   mountWindow: RowMountWindow;
   children: ReactNode;
 }): ReactNode {
-  return <RowMountContext.Provider value={mountWindow}>{children}</RowMountContext.Provider>;
+  /** The thread remounts per conversation, so the first window seen here is the one it opened
+   *  on: the rows around the scroll anchor. Every later one adds rows beyond them. Kept in a ref
+   *  the rows read as they mount, not in the context value, because a value that flipped would
+   *  re-render every row of the thread to tell the few that are mounting. */
+  const opened = useRef(mountWindow);
+  const widening = useRef(false);
+  widening.current = mountWindow != null && mountWindow !== opened.current;
+  return (
+    <RowMountContext.Provider value={mountWindow}>
+      <RowWideningContext.Provider value={widening}>{children}</RowWideningContext.Provider>
+    </RowMountContext.Provider>
+  );
 }
 
 export function useRowMountWindow(): RowMountWindow {
   return useContext(RowMountContext);
+}
+
+/**
+ * Whether this row mounted in a widening step: one of the rows a long thread adds after its
+ * first commit, away from where the reader is. Fixed for the row's life.
+ */
+export function useWidenedRow(): boolean {
+  const widening = useContext(RowWideningContext);
+  return useState(() => widening?.current === true)[0];
 }
 
 /** Below this path length every row mounts in one commit, exactly as before. */
