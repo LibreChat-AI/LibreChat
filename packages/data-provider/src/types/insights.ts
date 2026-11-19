@@ -112,8 +112,6 @@ export type TInsightsModel = TInsightsResponseOutcomes & {
 };
 
 export type TInsightsAggregateResponse = {
-  /** False when the viewer must choose agents before statistics load. */
-  autoSelectAllAgents?: boolean;
   selectionRequired?: boolean;
   agents: TInsightsAgent[];
   summary: TInsightsSummary;

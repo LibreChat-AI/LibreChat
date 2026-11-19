@@ -77,7 +77,6 @@ function selectionResponse(agents: TInsightsAgent[]): TInsightsAggregateResponse
   return {
     agents: agents.map(({ id, name }) => ({ id, name })),
     selectionRequired: true,
-    autoSelectAllAgents: false,
     summary: {
       totalUsers: 0,
       totalConversations: 0,
@@ -200,11 +199,7 @@ export function createInsightsHandler({
         toTimestamp: stringValue(req.query.toTimestamp),
         timeZone: timeZoneValue(req.query.timeZone),
       });
-      const response = {
-        ...insights,
-        ...(requiresSelection && { autoSelectAllAgents: false }),
-      };
-      res.json(showDetails ? response : toAggregateInsightsResponse(response));
+      res.json(showDetails ? insights : toAggregateInsightsResponse(insights));
     } catch (error) {
       logger.error('[Insights] Failed to load dashboard', getSafeErrorMetadata(error));
       res.status(500).json({ message: 'Failed to load insights' });

@@ -94,9 +94,7 @@ describe('Insights handlers', () => {
     const { response, json } = createResponse();
     await handler(req, response);
     expect(getInsights).not.toHaveBeenCalled();
-    expect(json).toHaveBeenCalledWith(
-      expect.objectContaining({ agents, selectionRequired: true, autoSelectAllAgents: false }),
-    );
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ agents, selectionRequired: true }));
   });
 
   it('loads an individually selected agent when automatic all-agents selection is off', async () => {
@@ -111,7 +109,7 @@ describe('Insights handlers', () => {
     const { response, json } = createResponse();
     await handler(req, response);
     expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ agentIds: ['agent-a'] }));
-    expect(json).toHaveBeenCalledWith(expect.objectContaining({ autoSelectAllAgents: false }));
+    expect(json).toHaveBeenCalledWith(expect.not.objectContaining({ selectionRequired: true }));
   });
 
   it.each([
@@ -213,9 +211,7 @@ describe('Insights handlers', () => {
     const { response, json } = createResponse();
     await handler(createRequest(), response);
     expect(getInsights).not.toHaveBeenCalled();
-    expect(json).toHaveBeenCalledWith(
-      expect.objectContaining({ selectionRequired: true, autoSelectAllAgents: false }),
-    );
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ selectionRequired: true }));
   });
 
   it("keeps loading all of a non-admin viewer's agents when admins must choose", async () => {

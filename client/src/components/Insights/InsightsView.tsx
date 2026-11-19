@@ -781,9 +781,9 @@ export default function InsightsView() {
   }, [data]);
   const effectiveAgentIds = useMemo(() => {
     if (selectedAgentIds.length > 0) return selectedAgentIds;
-    if (data?.autoSelectAllAgents === false && !allAgentsChosen) return [];
+    if (data?.selectionRequired) return [];
     return agentItems.map((agent) => agent.value);
-  }, [agentItems, allAgentsChosen, selectedAgentIds, data?.autoSelectAllAgents]);
+  }, [agentItems, selectedAgentIds, data?.selectionRequired]);
   const displayedAgentIds = pendingAgentIds ?? effectiveAgentIds;
 
   useDocumentTitle(`${localize('com_insights_title')} | LibreChat`);
@@ -977,12 +977,12 @@ export default function InsightsView() {
       allAgentIds.length > 1 &&
       normalizedIds.length === allAgentIds.length &&
       normalizedIds.every((agentId, index) => agentId === allAgentIds[index]);
-    if (!everyAgent) {
+    if (everyAgent) {
+      nextParams.set('allAgents', 'true');
+    } else {
       for (const agentId of normalizedIds) {
         nextParams.append('agentIds', agentId);
       }
-    } else if (data.autoSelectAllAgents === false) {
-      nextParams.set('allAgents', 'true');
     }
     setUrlSearchParams(nextParams, { replace: true });
     setPage(1);

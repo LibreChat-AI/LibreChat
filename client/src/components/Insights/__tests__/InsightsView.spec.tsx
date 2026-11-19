@@ -155,7 +155,6 @@ describe('InsightsView agent selection', () => {
     mockUseInsightsQuery.mockImplementation((params) => ({
       data: {
         ...insightsData,
-        autoSelectAllAgents: false,
         selectionRequired: !params.agentIds?.length && !params.allAgents,
       },
       isLoading: false,
@@ -184,7 +183,6 @@ describe('InsightsView agent selection', () => {
     mockUseInsightsQuery.mockImplementation((params) => ({
       data: {
         ...insightsData,
-        autoSelectAllAgents: false,
         selectionRequired: !params.agentIds?.length && !params.allAgents,
       },
       isLoading: false,
@@ -207,7 +205,6 @@ describe('InsightsView agent selection', () => {
       data: {
         ...insightsData,
         agents: [insightsData.agents[0]],
-        autoSelectAllAgents: false,
         selectionRequired: !params.agentIds?.length && !params.allAgents,
       },
       isLoading: false,
@@ -236,7 +233,7 @@ describe('InsightsView agent selection', () => {
         };
       }
       return {
-        data: { ...insightsData, autoSelectAllAgents: false, selectionRequired: true },
+        data: { ...insightsData, selectionRequired: true },
         isLoading: false,
         isFetching: false,
         error: null,
