@@ -1,3 +1,4 @@
+import type { DiscordRateObservation } from './rates';
 import { DEFAULT_DISCORD_RATE_POLICY, DiscordRateCoordinator } from './rates';
 
 const route = (major = 'channels:123', method = 'POST') => ({
@@ -278,5 +279,130 @@ describe('Discord per-bot REST coordination', () => {
     expect(() => new DiscordRateCoordinator({ ...policy, maxQueued })).toThrow(
       'Invalid Discord rate policy',
     );
+  });
+});
+
+describe('Discord REST observation', () => {
+  beforeEach(() => jest.useFakeTimers({ now: 1_700_000_000_000 }));
+  afterEach(() => jest.useRealTimers());
+  const observed = () => {
+    const events: DiscordRateObservation[] = [];
+    return { events, observer: (event: DiscordRateObservation) => events.push(event) };
+  };
+
+  test('reports each request once on release with its first observed status', async () => {
+    const { events, observer } = observed();
+    const rates = new DiscordRateCoordinator(policy, observer);
+    const permit = await rates.acquire(route());
+    permit.observe(limited({}, 200));
+    permit.observe(limited({}, 200), { id: '1' });
+    expect(events).toEqual([]);
+    permit.release();
+    permit.release();
+    expect(events).toEqual([{ type: 'rest', route: 'POST /channels/:id/messages', status: 200 }]);
+  });
+
+  test('reports a request that never received a response with no status', async () => {
+    const { events, observer } = observed();
+    const permit = await new DiscordRateCoordinator(policy, observer).acquire(route());
+    permit.release();
+    expect(events).toEqual([
+      { type: 'rest', route: 'POST /channels/:id/messages', status: undefined },
+    ]);
+  });
+
+  test('ignores a response observed after release', async () => {
+    const { events, observer } = observed();
+    const permit = await new DiscordRateCoordinator(policy, observer).acquire(route());
+    permit.release();
+    permit.observe(limited({}, 500));
+    expect(events).toEqual([
+      { type: 'rest', route: 'POST /channels/:id/messages', status: undefined },
+    ]);
+  });
+
+  test('never reports the major key, which can derive from an interaction token', async () => {
+    const { events, observer } = observed();
+    const rates = new DiscordRateCoordinator(policy, observer);
+    const permit = await rates.acquire({
+      route: 'PATCH /webhooks/:id/:token/messages/@original',
+      major: '123:interaction-token-sentinel',
+    });
+    permit.observe(limited({}, 401));
+    permit.release();
+    expect(JSON.stringify(events)).not.toContain('interaction-token-sentinel');
+    expect(events).toEqual([
+      { type: 'rest', route: 'PATCH /webhooks/:id/:token/messages/@original', status: 401 },
+    ]);
+  });
+
+  test('reports a rate limited response as the status Discord returned', async () => {
+    const { events, observer } = observed();
+    const permit = await new DiscordRateCoordinator(policy, observer).acquire(route());
+    permit.observe(limited({ 'retry-after': '1' }, 429), { retry_after: 1 });
+    permit.release();
+    expect(events).toEqual([{ type: 'rest', route: 'POST /channels/:id/messages', status: 429 }]);
+  });
+
+  test('reports each local refusal once and never a caller abort', async () => {
+    const { events, observer } = observed();
+    const rates = new DiscordRateCoordinator(
+      { ...policy, maxQueued: 1, maxQueueWaitMs: 100 },
+      observer,
+    );
+    const active = await rates.acquire(route());
+    const waiting = rates.acquire(route()).catch((error: unknown) => error);
+    await expect(rates.acquire(route())).rejects.toMatchObject({ code: 'queue_full' });
+    await jest.advanceTimersByTimeAsync(100);
+    await expect(waiting).resolves.toMatchObject({ code: 'queue_timeout' });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(rates.acquire(route(), controller.signal)).rejects.toMatchObject({
+      code: 'aborted',
+    });
+    active.release();
+    const capped = new DiscordRateCoordinator({ ...policy, maxTrackedRoutes: 1 }, observer);
+    const held = await capped.acquire(route());
+    await expect(capped.acquire(route('channels:456'))).rejects.toMatchObject({ code: 'capacity' });
+    held.release();
+    expect(events.filter((event) => event.type === 'rejected')).toEqual([
+      { type: 'rejected', reason: 'queue_full' },
+      { type: 'rejected', reason: 'queue_timeout' },
+      { type: 'rejected', reason: 'capacity' },
+    ]);
+    expect(events.filter((event) => event.type === 'rest')).toHaveLength(2);
+  });
+
+  test('an invalid route is not a refusal and is not reported', async () => {
+    const { events, observer } = observed();
+    await expect(
+      new DiscordRateCoordinator(policy, observer).acquire({ route: '', major: 'x' }),
+    ).rejects.toThrow('Invalid Discord rate route');
+    expect(events).toEqual([]);
+  });
+
+  test('a throwing observer cannot disturb permits, queueing or rate limits', async () => {
+    const rates = new DiscordRateCoordinator({ ...policy, maxQueued: 1 }, () => {
+      throw new Error('observer unavailable');
+    });
+    const first = await rates.acquire(route());
+    first.observe(limited({ 'x-ratelimit-bucket': 'b', 'x-ratelimit-remaining': '5' }, 200));
+    const admitted = jest.fn();
+    const waiting = rates.acquire(route()).then((permit) => {
+      admitted();
+      return permit;
+    });
+    await expect(rates.acquire(route())).rejects.toMatchObject({ code: 'queue_full' });
+    expect(admitted).not.toHaveBeenCalled();
+    expect(() => first.release()).not.toThrow();
+    (await waiting).release();
+    expect(admitted).toHaveBeenCalledTimes(1);
+    (await rates.acquire(route())).release();
+  });
+
+  test('behaves exactly as before when no observer is supplied', async () => {
+    const permit = await new DiscordRateCoordinator(policy).acquire(route());
+    permit.observe(limited({}, 200));
+    expect(() => permit.release()).not.toThrow();
   });
 });
