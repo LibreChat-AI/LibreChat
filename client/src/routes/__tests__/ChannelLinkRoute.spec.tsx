@@ -42,13 +42,11 @@ jest.mock('qrcode.react', () => ({
 jest.mock('~/hooks', () => ({
   useAuthContext: jest.fn(),
   useLocalize: () => (key: string) => key,
-  useCopyToClipboard:
-    ({ text }: { text: string }) =>
-    (setCopied: React.Dispatch<React.SetStateAction<boolean>>) => {
-      const copied = mockClipboard(text);
-      if (copied) setCopied(true);
-      return copied;
-    },
+  useCopyToClipboard: jest.requireActual('~/hooks/Messages/useCopyToClipboard').default,
+}));
+jest.mock('copy-to-clipboard', () => ({
+  __esModule: true,
+  default: (...args: unknown[]) => mockClipboard(...args),
 }));
 jest.mock('~/hooks/AuthContext', () => ({
   AuthContextProvider: ({
@@ -463,7 +461,10 @@ test('offers private phone handoff before login without reading account data', a
   expect(screen.getByText('com_ui_channel_handoff_confirmation')).toBeVisible();
   expect(screen.getByText('com_ui_channel_handoff_localhost')).toBeVisible();
   await userEvent.click(screen.getByRole('button', { name: 'com_ui_copy_link' }));
-  expect(mockClipboard).toHaveBeenCalledWith(url);
+  expect(mockClipboard).toHaveBeenCalledWith(
+    url,
+    expect.objectContaining({ format: 'text/plain' }),
+  );
   expect(screen.getByRole('status')).toHaveTextContent('com_ui_copied');
   expect(window.location.href).not.toContain(ticket);
   expect(mockAuthUrls.every((authUrl) => !authUrl.includes(ticket))).toBe(true);
