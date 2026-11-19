@@ -18,13 +18,12 @@ import type {
   DiscordCommandStorage,
   DiscordInboxRecord,
 } from '@librechat/data-schemas';
+import type { DiscordObserver, DiscordCommandOutcome } from './observe';
 import type { ChannelAuthority } from '../authority';
 import { channelExternalIdentity } from '../authority';
+import { safeDiscordObserver } from './observe';
 import { slackPublicURL } from '../workspaces';
 
-const unavailable = (): DiscordPrivateReply => ({
-  content: 'This interaction is no longer available. Run the command again.',
-});
 const disclosure = 'Agent replies are visible to members of this Discord channel.';
 export function createDiscordCommandExecutor(deps: {
   channels: Pick<AgentChannelMethods, 'getAgentChannelMetadata'>;
@@ -40,12 +39,26 @@ export function createDiscordCommandExecutor(deps: {
     principal: ChannelRunPrincipal,
   ) => Promise<DiscordPrivateReply>;
   now?: () => number;
+  observe?: DiscordObserver;
 }): (
   record: DiscordInboxRecord,
   fence: DiscordInboxFence,
   native?: DiscordNativeAuthority,
 ) => Promise<DiscordPrivateReply> {
   const now = deps.now ?? Date.now;
+  const observe = safeDiscordObserver(deps.observe);
+  function reply(
+    record: DiscordInboxRecord,
+    outcome: DiscordCommandOutcome,
+    value: DiscordPrivateReply,
+  ) {
+    observe({ type: 'command', action: record.action?.kind ?? 'other', outcome });
+    return value;
+  }
+  const unavailable = (record: DiscordInboxRecord) =>
+    reply(record, 'unavailable', {
+      content: 'This interaction is no longer available. Run the command again.',
+    });
   const base = deps.publicBaseUrl
     ? slackPublicURL(deps.publicBaseUrl).href.replace(/\/+$/, '') + '/'
     : undefined;
@@ -55,15 +68,15 @@ export function createDiscordCommandExecutor(deps: {
     fence: DiscordInboxFence,
   ): Promise<DiscordPrivateReply> {
     const inspected = await deps.authority.identity.inspectActor(identity);
-    if (!inspected.ok || inspected.value?.state === 'unavailable') return unavailable();
+    if (!inspected.ok || inspected.value?.state === 'unavailable') return unavailable(record);
     if (inspected.value?.state === 'active')
-      return {
+      return reply(record, 'already_linked', {
         content: `Your account is linked. Use /librechat ask to send a new prompt. ${disclosure}`,
-      };
+      });
     if (inspected.value?.state === 'accepted') {
       const view = inspected.value;
       const label = (view.accountLabel || 'Linked account').replace(/[`\\\r\n]/g, ' ');
-      return {
+      return reply(record, 'confirm_required', {
         content: `Confirm that you want to link the LibreChat account \`${label}\`. ${disclosure} After confirmation, send your prompt again.`,
         actions: [
           {
@@ -72,20 +85,24 @@ export function createDiscordCommandExecutor(deps: {
             reference: discordConfirmationControl(view.linkId, view.revision),
           },
         ],
-      };
+      });
     }
     const issued = await deps.authority.identity.issue(identity, {
       applicationRevision: record.applicationRevision,
       fence,
     });
-    if (!issued.ok) return unavailable();
-    return {
+    if (!issued.ok) return unavailable(record);
+    return reply(record, 'link_required', {
       content: `Open LibreChat to choose your account, then run /librechat link here to confirm it. ${disclosure} Your prompt will not run automatically.`,
       actions: [{ label: 'Link LibreChat account', url: issued.value.url }],
-    };
+    });
   }
-  return async (record, fence, native) => {
-    if (!record.action || !(await deps.enabled())) return unavailable();
+  async function execute(
+    record: DiscordInboxRecord,
+    fence: DiscordInboxFence,
+    native?: DiscordNativeAuthority,
+  ): Promise<DiscordPrivateReply> {
+    if (!record.action || !(await deps.enabled())) return unavailable(record);
     const channel = await deps.channels.getAgentChannelMetadata(record.channelId);
     if (
       !channel ||
@@ -99,15 +116,15 @@ export function createDiscordCommandExecutor(deps: {
       channel.discord.externalChannelId !==
         (record.dm?.parentChannelId ?? record.thread?.parentChannelId ?? record.externalChannelId)
     )
-      return unavailable();
+      return unavailable(record);
     const identity = channelExternalIdentity(channel, record.externalUserId);
-    if (identity.provider !== 'discord') return unavailable();
+    if (identity.provider !== 'discord') return unavailable(record);
     const action = record.action;
-    if (record.dm && ['link', 'confirm'].includes(action.kind)) return unavailable();
+    if (record.dm && ['link', 'confirm'].includes(action.kind)) return unavailable(record);
     if (action.kind === 'link') return link(identity, record, fence);
     if (action.kind === 'confirm') {
       const reference = discordConfirmationParts(action.reference);
-      if (!reference) return unavailable();
+      if (!reference) return unavailable(record);
       const confirmed = await deps.authority.identity.confirm(
         identity,
         reference.linkId,
@@ -121,26 +138,26 @@ export function createDiscordCommandExecutor(deps: {
           current.value?.state !== 'active' ||
           current.value.linkId !== reference.linkId
         )
-          return unavailable();
+          return unavailable(record);
       }
-      return {
+      return reply(record, 'linked', {
         content: `Your account is linked. Send your prompt again with /librechat ask. ${disclosure}`,
-      };
+      });
     }
     const admission = discordCommandAdmission(
       record,
       action.kind === 'ask' ? action.prompt : 'control',
     );
-    if (!admission) return unavailable();
+    if (!admission) return unavailable(record);
     const principal = await deps.authority.resolvePrincipal(
       channel,
       admission.actor,
       record.dm ? admission : undefined,
     );
-    if (!principal) return record.dm ? unavailable() : link(identity, record, fence);
-    if (!(await deps.enabled())) return unavailable();
+    if (!principal) return record.dm ? unavailable(record) : link(identity, record, fence);
+    if (!(await deps.enabled())) return unavailable(record);
     if (action.kind === 'ask') {
-      if (record.dm && !(await deps.dmEnabled?.())) return unavailable();
+      if (record.dm && !(await deps.dmEnabled?.())) return unavailable(record);
       let usable = false;
       if (native?.kind === 'dm')
         usable = Boolean(
@@ -171,7 +188,7 @@ export function createDiscordCommandExecutor(deps: {
         native.source.guildId !== (record.dm?.source.guildId ?? record.guildId) ||
         native.source.authorId !== record.externalUserId
       )
-        return unavailable();
+        return unavailable(record);
       try {
         await deps.runs.admit(
           {
@@ -188,32 +205,37 @@ export function createDiscordCommandExecutor(deps: {
         );
       } catch (error) {
         if (error instanceof ChannelRunConflict && error.code === 'invalid_transition')
-          return {
+          return reply(record, 'conflict', {
             content: record.dm
               ? 'This prompt is no longer authorized. Confirm your source guild account link and choose this agent in LibreChat again, then send a new /librechat ask.'
               : 'This prompt is no longer authorized. Run /librechat link to confirm your account, then send a new /librechat ask.',
-          };
+          });
         throw error;
       }
-      return {
+      return reply(record, 'queued', {
         content: `Your prompt is queued. ${record.dm ? 'Replies are sent to this private DM.' : disclosure} Use /librechat status to check progress or /librechat cancel to stop the current run.`,
-      };
+      });
     }
     const scope = { record, fence, principal };
     if (action.kind === 'cancel') {
       const result = await deps.commands.cancel(scope, now());
-      if (!result.ok) return unavailable();
-      return {
+      if (!result.ok) return unavailable(record);
+      return reply(record, result.value.cancelled ? 'cancelled' : 'no_active_run', {
         content: result.value.cancelled
           ? 'Cancellation requested for your run.'
           : 'There is no active run to cancel in this channel.',
-      };
+      });
     }
     if (action.kind === 'feedback')
-      return deps.feedback ? deps.feedback(record, fence, principal) : unavailable();
+      return deps.feedback
+        ? reply(record, 'feedback_reply', await deps.feedback(record, fence, principal))
+        : unavailable(record);
     const latest = await deps.commands.latest(scope, now());
-    if (!latest.ok) return unavailable();
-    if (!latest.value) return { content: 'You have no retained run in this channel.' };
+    if (!latest.ok) return unavailable(record);
+    if (!latest.value)
+      return reply(record, 'no_retained_run', {
+        content: 'You have no retained run in this channel.',
+      });
     const run = latest.value;
     const labels = {
       queued: 'queued',
@@ -229,7 +251,7 @@ export function createDiscordCommandExecutor(deps: {
     if (run.state === 'requires_action' && run.responseId)
       path = `responses/${encodeURIComponent(run.responseId)}/review`;
     else if (run.conversationId) path = `c/${encodeURIComponent(run.conversationId)}`;
-    return {
+    return reply(record, 'reported', {
       content: run.cancellationRequested
         ? 'Cancellation has been requested for your run.'
         : `Your latest run is ${labels[run.state]}.`,
@@ -244,6 +266,18 @@ export function createDiscordCommandExecutor(deps: {
             ],
           }
         : {}),
-    };
+    });
+  }
+  return async (record, fence, native) => {
+    try {
+      return await execute(record, fence, native);
+    } catch (error) {
+      observe({
+        type: 'command',
+        action: record.action?.kind ?? 'other',
+        outcome: error instanceof ChannelRunConflict ? 'conflict' : 'unavailable',
+      });
+      throw error;
+    }
   };
 }

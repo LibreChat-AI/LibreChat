@@ -112,3 +112,26 @@ it('accepts explicit HTTPS ingress and loopback fixtures without inheriting a Sl
   ])
     expect(discordChannelConfigSchema.safeParse({ publicUrl }).success).toBe(false);
 });
+
+it('bounds Discord fatal and transient recovery independently without changing Slack defaults', () => {
+  expect(discordChannelConfigSchema.parse({}).gateway.recovery).toEqual({
+    retryMaxMs: 60000,
+    resetAfterMs: 120000,
+    fatalRetryMinMs: 30000,
+    fatalRetryMaxMs: 900000,
+    maxTrackedApplications: 4096,
+  });
+  for (const recovery of [
+    { retryMaxMs: 999 },
+    { resetAfterMs: 0 },
+    { fatalRetryMinMs: 0 },
+    { fatalRetryMinMs: 60000, fatalRetryMaxMs: 30000 },
+    { fatalRetryMaxMs: 86400001 },
+    { maxTrackedApplications: 0 },
+    { maxTrackedApplications: 100001 },
+  ])
+    expect(discordChannelConfigSchema.safeParse({ gateway: { recovery } }).success).toBe(false);
+  expect(channelConfigSchema.parse({ slackApp: {} }).slackApp?.gateway).not.toHaveProperty(
+    'recovery',
+  );
+});

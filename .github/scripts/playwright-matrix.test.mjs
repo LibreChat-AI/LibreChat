@@ -113,6 +113,7 @@ function resolve(github, { inputs = {}, select = {} } = {}) {
       shards: runs('e2e_shards'),
       mcp: runs('mcp_tool_list_changed'),
       apps: runs('mcp_apps'),
+      discord: runs('discord_channels'),
       gate: runs('e2e'),
     },
     matrix: interpolate(shards.strategy.matrix, context, functions),
@@ -121,7 +122,7 @@ function resolve(github, { inputs = {}, select = {} } = {}) {
   };
 }
 
-const everyLane = { select: true, shards: true, mcp: true, apps: true, gate: true };
+const everyLane = { select: true, shards: true, mcp: true, apps: true, discord: true, gate: true };
 
 /** True when the gate's only step runs, which is the step that fails the required check. */
 function gateFails(results, mcpRun = '') {
@@ -130,6 +131,7 @@ function gateFails(results, mcpRun = '') {
       shard_timings: { result: results.timings ?? 'success' },
       e2e_shards: { result: results.shards ?? 'success' },
       mcp_apps: { result: results.apps ?? 'success' },
+      discord_channels: { result: results.discord ?? 'success' },
       mcp_tool_list_changed: { result: results.mcp ?? 'success' },
       codegraph_select: { outputs: { mcp_run: mcpRun } },
     },
@@ -323,6 +325,7 @@ test('the required gate still waits for all shards and rejects failures without 
     'e2e_shards',
     'mcp_tool_list_changed',
     'mcp_apps',
+    'discord_channels',
   ]);
   assert.equal(shards.strategy['fail-fast'], false);
   assert.match(gate.if, /!cancelled\(\)/);
@@ -345,6 +348,8 @@ test('a push to dev runs every lane on the pull request matrix with nothing narr
   assert.equal(gateFails({ shards: 'failure' }), true);
   assert.equal(gateFails({ timings: 'failure' }), true);
   assert.equal(gateFails({ apps: 'failure' }), true);
+  assert.equal(gateFails({ discord: 'failure' }), true);
+  assert.equal(gateFails({ discord: 'skipped' }), true);
   assert.equal(gateFails({ mcp: 'failure' }), true);
   /** No selector ran on a push, so a skipped MCP lane is a fault there, not a decision. */
   assert.equal(gateFails({ mcp: 'skipped' }), true);
@@ -388,6 +393,7 @@ test('pull request, nightly and manual runs resolve as they did without the push
     shards: false,
     mcp: false,
     apps: false,
+    discord: false,
     gate: false,
   });
   const sameRepositoryBot = resolve(pullRequest('opened', 'NONE'));
@@ -397,5 +403,19 @@ test('pull request, nightly and manual runs resolve as they did without the push
     const run = resolve(github);
     assert.deepEqual(run.jobs, { ...everyLane, select: false });
     assert.deepEqual(run.matrix, defaults[1]);
+  }
+});
+
+test('Discord acceptance is mandatory, isolated and independent of codegraph narrowing', () => {
+  const job = workflow.jobs.discord_channels;
+  assert.equal(job.needs, undefined);
+  assert.equal(job.services.redis.image, 'redis:7-alpine');
+  const run = job.steps.find((step) => step.run === 'node e2e/discord/run.mjs');
+  assert.ok(run);
+  assert.equal(run.if, undefined);
+  assert.equal(run['continue-on-error'], undefined);
+  assert.ok(job.steps.find((step) => step.run === 'npm run e2e:prepare'));
+  for (const result of ['failure', 'skipped', 'cancelled']) {
+    assert.equal(gateFails({ discord: result }, 'false'), true);
   }
 });

@@ -8,13 +8,34 @@ import {
 } from 'librechat-data-provider';
 import type { RequestHandler, Response } from 'express';
 import type { DiscordInboxService } from './inbox';
+import type { DiscordObserver } from './observe';
 import { acceptsChannelServiceToken } from '../service';
+import { safeDiscordObserver } from './observe';
 
 /** Every endpoint is internal and includes bearer-token protection, including receipt settlement. */
 export function createDiscordInboxHandlers(deps: {
   service: DiscordInboxService;
+  observe?: DiscordObserver;
   serviceToken: () => string | undefined;
 }): Record<'submitDm' | 'submit' | 'claim' | 'resolve' | 'finish' | 'defer', RequestHandler> {
+  const observe = safeDiscordObserver(deps.observe);
+  function submission(
+    kind: 'interaction' | 'dm',
+    result: Awaited<ReturnType<DiscordInboxService['submit']>>,
+  ) {
+    if (result.ok)
+      observe({
+        type: 'submission',
+        kind,
+        result: result.value.duplicate ? 'duplicate' : 'accepted',
+      });
+    else
+      observe({
+        type: 'submission',
+        kind,
+        result: result.error.code === 'capacity' ? 'capacity' : 'conflict',
+      });
+  }
   function handle<T>(
     schema: z.ZodType<T>,
     work: (input: T, res: Response) => Promise<void>,
@@ -36,11 +57,13 @@ export function createDiscordInboxHandlers(deps: {
   return {
     submit: handle(discordInboxSubmissionSchema, async (input, res) => {
       const result = await deps.service.submit(input);
+      submission('interaction', result);
       if (result.ok) res.status(result.value.duplicate ? 200 : 201).json(result);
       else res.status(result.error.code === 'capacity' ? 429 : 409).json(result);
     }),
     submitDm: handle(discordDmInboxSubmissionSchema, async (input, res) => {
       const result = await deps.service.submitDm(input);
+      submission('dm', result);
       if (result.ok) res.status(result.value.duplicate ? 200 : 201).json(result);
       else res.status(result.error.code === 'capacity' ? 429 : 409).json(result);
     }),

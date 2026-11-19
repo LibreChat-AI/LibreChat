@@ -28,11 +28,13 @@ import type {
   DiscordMessageSubmission,
   DiscordChannelConfig,
 } from 'librechat-data-provider';
+import type { DiscordObservation } from './observe';
 import { createDiscordMessageHandlers } from './messageHttp';
 import { createDiscordMessageService } from './messages';
 import { createDiscordRouteResolver } from './routes';
 import { createChannelAuthority } from '../authority';
 
+const observations: DiscordObservation[] = [];
 const db = new mongoose.Mongoose();
 const models = createModels(db);
 const channels = createMethods(db);
@@ -205,7 +207,11 @@ function server(value = service) {
   app.use(express.json());
   app.post(
     '/messages',
-    createDiscordMessageHandlers({ service: value, serviceToken: () => token }).submit,
+    createDiscordMessageHandlers({
+      service: value,
+      serviceToken: () => token,
+      observe: (event) => observations.push(event),
+    }).submit,
   );
   return app;
 }
@@ -218,6 +224,7 @@ afterAll(async () => {
   await mongo?.stop();
 });
 beforeEach(async () => {
+  observations.length = 0;
   await runAsSystem(async () => {
     for (const collection of Object.values(db.connection.collections))
       await collection.deleteMany({});
@@ -830,4 +837,16 @@ it('requires fresh actor visibility proof instead of legacy bot-only source obse
   await scoped(async () => {
     expect(await models.ChannelRun.countDocuments()).toBe(0);
   });
+});
+
+it('observes actual Gateway mention admission and replay without identity labels', async () => {
+  await scoped(linked);
+  const app = server();
+  const input = submission();
+  for (let attempt = 0; attempt < 2; attempt++)
+    await request(app).post('/messages').auth(token, { type: 'bearer' }).send(input).expect(200);
+  expect(observations).toEqual([
+    { type: 'message', kind: 'guild', result: 'admitted' },
+    { type: 'message', kind: 'guild', result: 'duplicate' },
+  ]);
 });
