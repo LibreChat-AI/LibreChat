@@ -16,6 +16,7 @@ import {
   placePendingAction,
   placeReasoningLabel,
 } from '../parts/place';
+import { nameStepResponse } from './events';
 
 /**
  * Keep retrying across frames (not just once): message updates from the preceding created/step
@@ -45,6 +46,7 @@ export class ResponsePatcher {
 
     const submission = sub.liveSubmission() as EventSubmission;
     for (const event of sub.preCreatedStepEvents.splice(0)) {
+      nameStepResponse(this.host.usage, event, submission);
       this.host.events.stepHandler(event, submission);
     }
   }
