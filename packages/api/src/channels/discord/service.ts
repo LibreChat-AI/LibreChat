@@ -131,6 +131,7 @@ export function createDiscordManagementService(deps: {
           data.clientSecret ? deps.encrypt(data.clientSecret) : undefined,
         ]);
         if (!(await authorized(principal))) return failure('forbidden');
+        if (!(await settings()).enabled) return failure('not_configured');
         return deps.installations.configureApplication({
           actorId: principal.id,
           applicationId: verified.value.applicationId,

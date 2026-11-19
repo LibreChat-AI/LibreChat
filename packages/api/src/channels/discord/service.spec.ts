@@ -38,6 +38,7 @@ let service: DiscordManagementService;
 let fetchProvider: jest.Mock<Promise<Response>, [string, RequestInit]>;
 let payloads: Record<string, unknown>;
 let onRequest: ((path: string) => Promise<void>) | undefined;
+let onEncrypt: (() => void) | undefined;
 let now: number;
 let enabled: boolean;
 let logged: object[];
@@ -91,6 +92,7 @@ beforeEach(async () => {
   enabled = true;
   logged = [];
   onRequest = undefined;
+  onEncrypt = undefined;
   payloads = {
     '/users/@me': { id: applicationId, bot: true },
     '/applications/@me': {
@@ -142,7 +144,10 @@ beforeEach(async () => {
       },
     }),
     settings: async () => ({ enabled, flowLifetimeMs: 60000 }),
-    encrypt: encryptCredential,
+    encrypt: async (value) => {
+      onEncrypt?.();
+      return encryptCredential(value);
+    },
     decrypt: decryptCredential,
     now: () => now,
     logError: (metadata) => {
@@ -190,6 +195,15 @@ it.each(['demoted', 'deleted', 'disabled'])(
       expect(await installations.readApplication(applicationId)).toBeNull();
     }),
 );
+
+it('rejects configuration when disabled during credential encryption', async () =>
+  scope(async () => {
+    onEncrypt = () => {
+      enabled = false;
+    };
+    expect(await register()).toMatchObject({ ok: false, error: { code: 'not_configured' } });
+    expect(await installations.readApplication(applicationId)).toBeNull();
+  }));
 
 it('persists only hashed state/session bindings and consumes before any code exchange', async () =>
   scope(async () => {
