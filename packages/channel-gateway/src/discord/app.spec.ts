@@ -1,5 +1,9 @@
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import { discordChannelConfigSchema } from 'librechat-data-provider';
 import { ApplicationFlags, GatewayDispatchEvents } from 'discord-api-types/v10';
+import type { AddressInfo } from 'node:net';
 import type { DiscordGatewayDriverOptions } from './socket';
 import { DiscordGatewayApp } from './app';
 import { loadBootstrap } from '../config';
@@ -417,3 +421,126 @@ it.each(['visible', 'denied', 'outage', 'thread'] as const)(
     if (outage) expect(observed).toHaveLength(4);
   },
 );
+
+it('routes verified DM commands through the production app while Gateway message ingestion is off', async () => {
+  const keys = generateKeyPairSync('ed25519');
+  const publicKey = keys.publicKey
+    .export({ type: 'spki', format: 'der' })
+    .subarray(-32)
+    .toString('hex');
+  const dmPolicy = {
+    ...policy,
+    dm: { ...policy.dm, enabled: true },
+    gateway: { ...policy.gateway, enabled: false },
+  };
+  let ready!: () => void;
+  const healthy = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const submissions: object[] = [];
+  const transport: typeof fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    expect(url.origin).toBe('http://localhost:3080');
+    expect(new Headers(init?.headers).get('authorization')).toBe('Bearer private-service-token');
+    expect(new Headers(init?.headers).has('x-tenant-id')).toBe(false);
+    if (url.pathname.endsWith('/runtime/applications')) return Response.json({ applications: [] });
+    if (url.pathname.endsWith('/runtime/channels')) return Response.json({ channels: [] });
+    if (url.pathname.endsWith(`/security/${applicationId}`))
+      return Response.json({
+        applicationId,
+        applicationRevision,
+        publicKey,
+        tenantId: '_',
+        botUserId: '789012345678901234',
+      });
+    expect(url.pathname).toBe('/api/channels/discord/service/inbox/dm');
+    const body = JSON.parse(String(init?.body));
+    submissions.push(body);
+    return Response.json(
+      { ok: true, value: { eventId: body.eventId, state: 'queued', duplicate: false } },
+      { status: 201 },
+    );
+  };
+  const app = new DiscordGatewayApp(
+    config,
+    dmPolicy,
+    {
+      ...log,
+      info: (message) => {
+        if (message === 'discord_gateway_ready') ready();
+      },
+    },
+    transport,
+  );
+  app.ready = true;
+  const running = app.run(controller.signal);
+  const server = createServer((req, res) => {
+    void app.http(req, res);
+  });
+  try {
+    await healthy;
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const body = JSON.stringify({
+      type: 2,
+      id: eventId,
+      application_id: applicationId,
+      token: 'signed-dm-token',
+      version: 1,
+      context: 1,
+      user: { id: '456789012345678901' },
+      authorizing_integration_owners: { '0': '0' },
+      channel_id: '345678901234567890',
+      channel: { id: '345678901234567890', type: 1 },
+      data: {
+        id: '678901234567890123',
+        name: 'librechat',
+        type: 1,
+        options: [
+          {
+            name: 'ask',
+            type: 1,
+            options: [{ name: 'prompt', type: 3, value: 'Private question' }],
+          },
+        ],
+      },
+    });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/discord/${applicationId}/interactions`;
+    const send = (signature: string) =>
+      fetch(url, {
+        method: 'POST',
+        body,
+        headers: {
+          'content-type': 'application/json',
+          'x-signature-timestamp': timestamp,
+          'x-signature-ed25519': signature,
+        },
+      });
+    expect((await send('0'.repeat(128))).status).toBe(401);
+    expect(submissions).toEqual([]);
+    const response = await send(
+      sign(null, Buffer.from(timestamp + body), keys.privateKey).toString('hex'),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ type: 5, data: { flags: 64 } });
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0]).toMatchObject({
+      scope: 'dm',
+      applicationId,
+      eventId,
+      externalChannelId: '345678901234567890',
+      externalUserId: '456789012345678901',
+      action: { kind: 'ask', prompt: 'Private question' },
+    });
+    expect(submissions[0]).not.toHaveProperty('guildId');
+  } finally {
+    controller.abort();
+    await running;
+    server.closeAllConnections();
+    if (server.listening)
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+  }
+});
