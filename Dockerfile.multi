@@ -13,15 +13,14 @@ ARG BUILD_DATE=
 FROM docker.io/library/node:24.22.3-alpine AS base-min
 ARG NPM_CI_TIMEOUT_SECONDS=1500
 ARG NPM_CI_ATTEMPTS=2
-RUN apk upgrade --no-cache
-RUN apk add --no-cache bash jemalloc
+RUN apk upgrade --no-cache && \
+    apk add --no-cache bash jemalloc curl
 # Set environment variable to use jemalloc
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
 # Disable dependency installation analytics before any npm lifecycle scripts run.
 ENV SCARF_ANALYTICS=false
 
 WORKDIR /app
-RUN apk --no-cache add curl
 RUN npm config set fetch-retry-maxtimeout 600000 && \
     npm config set fetch-retries 5 && \
     npm config set fetch-retry-mintimeout 15000
@@ -32,6 +31,7 @@ COPY vendor/code ./vendor/code
 COPY packages/data-schemas/package*.json ./packages/data-schemas/
 COPY packages/client/package*.json ./packages/client/
 COPY packages/chat/package*.json ./packages/chat/
+COPY packages/channel-gateway/package*.json ./packages/channel-gateway/
 COPY client/package*.json ./client/
 COPY api/package*.json ./api/
 
@@ -41,16 +41,17 @@ ARG NPM_CI_TIMEOUT_SECONDS=1500
 ARG NPM_CI_ATTEMPTS=2
 WORKDIR /app
 RUN attempt=1; \
-    until timeout "$NPM_CI_TIMEOUT_SECONDS" npm ci --no-audit; do \
+    until timeout "$NPM_CI_TIMEOUT_SECONDS" npm ci --no-audit --no-fund; do \
       status=$?; \
       if [ "$attempt" -ge "$NPM_CI_ATTEMPTS" ]; then \
         exit "$status"; \
       fi; \
-      echo "npm ci --no-audit failed with exit code $status; retrying attempt $((attempt + 1))/$NPM_CI_ATTEMPTS"; \
+      echo "npm ci --no-audit --no-fund failed with exit code $status; retrying attempt $((attempt + 1))/$NPM_CI_ATTEMPTS"; \
       attempt=$((attempt + 1)); \
       npm cache clean --force || true; \
       sleep 10; \
-    done
+    done && \
+    npm cache clean --force
 
 # Build `data-provider` package
 FROM base AS data-provider-build
@@ -113,18 +114,32 @@ RUN mkdir -p /app/data && chmod 1777 /app/data
 COPY --from=ghcr.io/astral-sh/uv:0.6.13 /uv /uvx /bin/
 RUN uv --version
 WORKDIR /app
-# Install only production deps
+# Install only backend production deps (client is prebuilt into ./client/dist).
+# Clear npm's tarball cache and strip node_modules maps/declarations/docs in the
+# same layer so overlayfs does not retain them. Workspace dist *.map files stay
+# intact for --enable-source-maps debugging.
 RUN attempt=1; \
-    until timeout "$NPM_CI_TIMEOUT_SECONDS" npm ci --omit=dev --no-audit; do \
+    until timeout "$NPM_CI_TIMEOUT_SECONDS" npm ci --omit=dev --no-audit --no-fund \
+      --workspace @librechat/backend \
+      --workspace @librechat/api \
+      --workspace @librechat/data-schemas \
+      --workspace librechat-data-provider \
+      --include-workspace-root=false; do \
       status=$?; \
       if [ "$attempt" -ge "$NPM_CI_ATTEMPTS" ]; then \
         exit "$status"; \
       fi; \
-      echo "npm ci --omit=dev --no-audit failed with exit code $status; retrying attempt $((attempt + 1))/$NPM_CI_ATTEMPTS"; \
+      echo "npm ci --omit=dev --no-audit --no-fund failed with exit code $status; retrying attempt $((attempt + 1))/$NPM_CI_ATTEMPTS"; \
       attempt=$((attempt + 1)); \
       npm cache clean --force || true; \
       sleep 10; \
-    done
+    done && \
+    npm cache clean --force && \
+    find /app -path '*/node_modules/*' -type f \( \
+      -name '*.map' -o \
+      -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o \
+      \( -iname '*.md' ! -iname 'licen[cs]e*' \) \
+    \) -delete
 COPY api ./api
 COPY config ./config
 COPY skill ./skill
