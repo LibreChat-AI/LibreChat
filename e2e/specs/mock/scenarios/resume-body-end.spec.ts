@@ -1,10 +1,13 @@
 import { expect, test } from '@playwright/test';
 import {
-  MOCK_ENDPOINTS,
-  NEW_CHAT_PATH,
-  messagesView,
-  selectMockEndpoint,
+  replyText,
+  replyPrompt,
   sendMessage,
+  messagesView,
+  NEW_CHAT_PATH,
+  MOCK_ENDPOINTS,
+  selectMockEndpoint,
+  sendMessageAndWaitForCompletion,
 } from '../helpers';
 
 /** Last chunk streamed by the fake model's slow replies (160 chunks, 0-indexed). */
@@ -67,5 +70,49 @@ test.describe('resume stream body end', () => {
       timeout: 90_000,
     });
     await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden();
+  });
+
+  test('waits longer before each attempt while a gateway answers for the stream, then settles the reply from what the server kept @scenario:resume-stream-backs-off-while-a-gateway-answers', async ({
+    page,
+  }) => {
+    test.setTimeout(150_000);
+    const label = `gateway-${Date.now()}`;
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const earlier = await sendMessageAndWaitForCompletion(page, replyPrompt(label));
+    expect(earlier.ok()).toBeTruthy();
+    await expect(messagesView(page).getByText(replyText(label))).toBeVisible();
+
+    /** The server takes the next turn and runs it; every request for its stream is answered by
+     *  a gateway instead, with headers and a body of its own, as one in front of a server that
+     *  is restarting does. */
+    const asked: number[] = [];
+    await page.route(STREAM_ROUTE, async (route) => {
+      asked.push(Date.now());
+      await route.fulfill({ status: 502, contentType: 'text/html', body: '<h1>Bad Gateway</h1>' });
+    });
+
+    const response = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
+    expect(response.ok()).toBeTruthy();
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    /** After the last retry the server is asked what became of the run. It ended meanwhile, so
+     *  the reply is read from what was stored and the chat stops waiting for a stream. */
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+      timeout: 90_000,
+    });
+    const assistantMessage = messagesView(page).locator('.message-render').last();
+    await expect(assistantMessage).toContainText(SLOW_REPLY_LAST_CHUNK);
+
+    /** The first attempt and five retries, each after twice the wait of the one before: an
+     *  answer that is not the stream is a failed attempt, not a connection made and lost. */
+    expect(asked).toHaveLength(6);
+    const waits = asked.slice(1).map((at, index) => at - asked[index]);
+    expect(waits[2]).toBeGreaterThan(3_000);
+    expect(waits[3]).toBeGreaterThan(6_500);
+    expect(waits[4]).toBeGreaterThan(13_000);
   });
 });
