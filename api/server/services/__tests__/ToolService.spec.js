@@ -4806,6 +4806,31 @@ describe('ToolService - Action Capability Gating', () => {
       expectBothActionsResolved(mockCreateActionTool.mock.calls);
     });
 
+    it.each([
+      ['a run nobody can sign in for', true],
+      ['a run somebody can sign in for', false],
+      ['a run that does not say', undefined],
+    ])(
+      'passes on to action tools what the run says about attendance: %s',
+      async (_label, unattended) => {
+        mockLoadActionSets.mockResolvedValue([actionA]);
+        const req = createMockReq([AgentCapabilities.actions]);
+        req.config = {};
+
+        await loadToolsForExecution({
+          req,
+          res: {},
+          agent: { id: 'agent_collision' },
+          toolNames: [toolNameA],
+          actionsEnabled: true,
+          unattended,
+        });
+
+        expect(mockCreateActionTool).toHaveBeenCalledTimes(1);
+        expect(mockCreateActionTool.mock.calls[0][0].unattended).toBe(unattended);
+      },
+    );
+
     it('processRequiredActions resolves both actions when they share a hostname', async () => {
       // The assistants/threads path received the same structural rewrite
       // as the agent paths. Cover it directly so future regressions in the
