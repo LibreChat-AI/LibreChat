@@ -205,6 +205,16 @@ it('still offers the rest when one server the agents use cannot be offered', asy
   expect(targets.map((target) => target.resource.serverName)).toEqual(['warehouse']);
   expect(targets[0].permittedTools).toEqual([{ agentId: 'root', tools: ['query'] }]);
   expect(await offer.tools(identity, {})).toEqual([{ agentId: 'root', tools: ['web_search'] }]);
+  // Every server in use is reported by name, offered or not, so a grant can tell a server
+  // that lost its declaration from one the agents dropped.
+  expect(await offer.servers(identity, {})).toEqual(['archive', 'notes', 'warehouse']);
+  jest.mocked(deps.getAppConfig).mockResolvedValue({
+    interfaceConfig: { schedules: { mcpConsent: { enabled: true } } },
+    mcpConfig: { warehouse: { type: 'streamable-http', url: 'https://warehouse.example/mcp' } },
+  } as unknown as AppConfig);
+  const undeclared = createScheduleMCPOffer(deps);
+  expect(await undeclared.targets(identity, {})).toEqual([]);
+  expect(await undeclared.servers(identity, {})).toEqual(['archive', 'notes', 'warehouse']);
 });
 it('denies an owner/tenant mismatch and cancellation before resolving resources', async () => {
   const { deps, resolve } = setup();

@@ -18,7 +18,11 @@ import type {
   IUser,
   AppConfig,
 } from '@librechat/data-schemas';
-import type { ScheduleMCPEnrollmentResolver, ScheduleToolsResolver } from './service';
+import type {
+  ScheduleToolsResolver,
+  ScheduleServersResolver,
+  ScheduleMCPEnrollmentResolver,
+} from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ParsedServerConfig } from '~/mcp/types';
 import { getScheduledMCPPolicyRevision, isScheduledToolItem } from './policy';
@@ -57,6 +61,8 @@ interface OfferOptions {
 interface Offer {
   targets: ScheduledMCPTarget[];
   tools: ScheduledMCPToolSelection[];
+  /** Every MCP server the agents select a tool on, offered or not. */
+  servers: string[];
 }
 
 /**
@@ -85,7 +91,11 @@ export function createScheduleMCPEnrollmentResolver<
 export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = ScheduledMCPIdentity>(
   deps: ScheduleMCPEnrollmentDeps,
   options: OfferOptions = {},
-): { targets: ScheduleMCPEnrollmentResolver<Identity>; tools: ScheduleToolsResolver<Identity> } {
+): {
+  targets: ScheduleMCPEnrollmentResolver<Identity>;
+  tools: ScheduleToolsResolver<Identity>;
+  servers: ScheduleServersResolver<Identity>;
+} {
   const pending = new Map<string, { signal?: AbortSignal; offer: Promise<Offer> }>();
   const resolve = (identity: Identity, signal?: AbortSignal): Promise<Offer> => {
     const key = JSON.stringify(identity);
@@ -121,7 +131,8 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
      * one. The agents' other tools still can, where the grant covers them.
      */
     const undeclared = !mcp || Object.keys(bindings).length === 0;
-    if (undeclared && options.otherTools === 'ignore') return { targets: [], tools: [] };
+    if (undeclared && options.otherTools === 'ignore')
+      return { targets: [], tools: [], servers: [] };
     const [servers, { tools, candidates: candidateTools }] = await Promise.all([
       deps.getServers(user, (appConfig?.mcpConfig ?? {}) as Record<string, ParsedServerConfig>),
       resolveScheduledMCPRequirements(
@@ -149,7 +160,13 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
       }
     }
     const selected = new Map<string, Map<string, Set<string>>>();
-    for (const { name: key, agentId } of undeclared ? [] : tools) {
+    /**
+     * In use, whether or not it can be offered. A server a grant holds a consent for and the
+     * agents still use, but which is no longer among the targets, has lost its declaration:
+     * the grant is stale there, where a server the agents dropped is simply gone.
+     */
+    const used = new Set<string>();
+    for (const { name: key, agentId } of tools) {
       if (
         !key.includes(Constants.mcp_delimiter) ||
         key.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`)
@@ -161,6 +178,8 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
       if (!alias) continue;
       const name = servers[alias] ? alias : aliases.get(alias);
       if (!name || !tool) continue;
+      used.add(name);
+      if (undeclared) continue;
       const agents = selected.get(name) ?? new Map<string, Set<string>>();
       const names_ = agents.get(agentId) ?? new Set<string>();
       names_.add(tool);
@@ -211,10 +230,12 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
       tools: [...others]
         .map(([agentId, selected]) => ({ agentId, tools: [...selected].sort() }))
         .sort((a, b) => a.agentId.localeCompare(b.agentId)),
+      servers: [...used].sort(),
     };
   };
   return {
     targets: async (identity, { signal }) => (await resolve(identity, signal)).targets,
     tools: async (identity, { signal }) => (await resolve(identity, signal)).tools,
+    servers: async (identity, { signal }) => (await resolve(identity, signal)).servers,
   };
 }

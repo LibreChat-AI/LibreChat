@@ -30,7 +30,7 @@ type RuntimeRequest = Parameters<typeof readScheduleFireContext>[0] & {
 export function createScheduleMCPRuntimeHost(
   deps: Omit<
     Parameters<typeof createScheduleMCPConsentHost>[0],
-    'resolveEnrollment' | 'resolveTools' | 'getLimits'
+    'resolveEnrollment' | 'resolveTools' | 'resolveServers' | 'getLimits'
   > & {
     enrollment: ScheduleMCPEnrollmentDeps;
     getScheduleMCPCompletionState?: ScheduleMCPCompletionLookup;
@@ -63,6 +63,7 @@ export function createScheduleMCPRuntimeHost(
       getLimits: createScheduleLimitsResolver((options = {}) => enrollment.getAppConfig(options)),
       resolveEnrollment: offer.targets,
       resolveTools: offer.tools,
+      resolveServers: offer.servers,
     });
     return { consent };
   }

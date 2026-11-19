@@ -9,6 +9,7 @@ import type { ScheduleMCPConsentStorage, AppConfig, IUser } from '@librechat/dat
 import type { ScheduledMCPIdentity, TCheckpointerConfig } from 'librechat-data-provider';
 import type {
   ScheduleToolsResolver,
+  ScheduleServersResolver,
   ScheduleMCPConsentService,
   ScheduleMCPEnrollmentResolver,
 } from './service';
@@ -61,6 +62,7 @@ export function createScheduleMCPConsentHost(deps: {
   canViewAgent: (agentId: string, user: IUser) => Promise<boolean>;
   resolveEnrollment?: ScheduleMCPEnrollmentResolver;
   resolveTools?: ScheduleToolsResolver;
+  resolveServers?: ScheduleServersResolver;
   /** Whether a scheduled run of this owner can pause for approval. Absent, it cannot. */
   canPauseRuns?: (user: IUser) => Promise<boolean>;
 }): { service: ScheduleMCPConsentService; handlers: ScheduleMCPConsentHandlers } {
@@ -118,6 +120,7 @@ export function createScheduleMCPConsentHost(deps: {
     },
     resolveEnrollment: deps.resolveEnrollment,
     resolveTools: deps.resolveTools,
+    resolveServers: deps.resolveServers,
     canPause: async (identity) => {
       const user = await loadPrincipal(identity);
       return user != null && (await deps.canPauseRuns?.(user)) === true;

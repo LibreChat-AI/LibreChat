@@ -49,6 +49,8 @@ function setup() {
   let others: { agentId: string; tools: string[] }[] = [];
   let allowed = true;
   let pausable = true;
+  /** The servers the agents use. Those on offer, unless a test says one lost its declaration. */
+  let used: string[] | undefined;
   const storage: ScheduleMCPConsentStorage = {
     readScheduleMCPConsent: jest.fn(async () => structuredClone(snapshot)),
     confirmScheduleMCPConsent: jest.fn(async (input) => {
@@ -90,6 +92,7 @@ function setup() {
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     resolveEnrollment: async () => targets,
     resolveTools: async () => others,
+    resolveServers: async () => used ?? targets.map((item) => item.resource.serverName),
     now: () => time,
   });
   const enroll = async (
@@ -120,6 +123,9 @@ function setup() {
     },
     offerTools: (...value: { agentId: string; tools: string[] }[]) => {
       others = value;
+    },
+    useServers: (...value: string[]) => {
+      used = value;
     },
     deny: () => {
       allowed = false;
@@ -704,7 +710,15 @@ describe('a grant of the whole agent', () => {
     // The agents dropping a server does not make the grant stale either.
     s.changeTarget();
     expect(await s.service.view(identity)).toMatchObject({ state: 'active', everything: true });
+    // A server they still use that can no longer be offered does: its calls are refused.
+    s.useServers('warehouse');
+    expect(await s.service.view(identity)).toMatchObject({ state: 'changed', everything: true });
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'binding_mismatch' },
+    });
     s.changeTarget(wider);
+    expect(await s.service.view(identity)).toMatchObject({ state: 'active', everything: true });
     // A grant that lists its tools still refuses what it does not list.
     await s.enroll({ warehouse: ['query'] });
     expect(await s.service.authority.authorize(call('export'), {})).toMatchObject({

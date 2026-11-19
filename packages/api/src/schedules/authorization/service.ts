@@ -52,6 +52,12 @@ export type ScheduleToolsResolver<Identity extends MCPGrantIdentity = ScheduledM
   options: { signal?: AbortSignal },
 ) => Promise<readonly ScheduledMCPToolSelection[]>;
 
+/** The name of every MCP server the agents select a tool on, whether or not it can be offered. */
+export type ScheduleServersResolver<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> = (
+  identity: Identity,
+  options: { signal?: AbortSignal },
+) => Promise<readonly string[]>;
+
 /** The grant's subject is a schedule unless said otherwise: an API key and agent is the other. */
 export interface ScheduleMCPConsentDeps<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
   storage: MCPConsentStorage<Identity>;
@@ -67,6 +73,8 @@ export interface ScheduleMCPConsentDeps<Identity extends MCPGrantIdentity = Sche
   resolveEnrollment?: ScheduleMCPEnrollmentResolver<Identity>;
   /** The agents' other tools on offer. Absent, a grant covers MCP tools only. */
   resolveTools?: ScheduleToolsResolver<Identity>;
+  /** The servers in use, for telling a server that lost its declaration from one that is gone. */
+  resolveServers?: ScheduleServersResolver<Identity>;
   /** Whether a run of this subject can pause for the owner's approval here. Absent, it cannot. */
   canPause?: (identity: Identity) => Promise<boolean>;
   now?: () => number;
@@ -257,15 +265,19 @@ function listable(targets: readonly ScheduledMCPTarget[]): ScheduledMCPTarget[] 
 
 /**
  * For a grant of the whole agent: its servers still on offer are the ones it was made for.
- * What the agents select there may have changed since, and a server may be gone.
+ * What the agents select there may have changed since, and a server may be gone. One that
+ * is still `used` but no longer on offer has lost its declaration, or is declared for another
+ * URL: its calls are refused, so the grant no longer fits.
  */
 function keepsResources(
   offered: readonly ScheduledMCPTarget[],
   granted: readonly ScheduledMCPTarget[],
+  used: readonly string[] = [],
 ): boolean {
   return granted.every((grant) => {
-    const target = offered.find((item) => item.resource.serverName === grant.resource.serverName);
-    return target == null || sameResource(target.resource, grant.resource);
+    const { serverName } = grant.resource;
+    const target = offered.find((item) => item.resource.serverName === serverName);
+    return target ? sameResource(target.resource, grant.resource) : !used.includes(serverName);
   });
 }
 
@@ -456,6 +468,7 @@ export function createScheduleMCPConsentService<
     const allowedOther = toolNames(enrollment?.tools ?? []);
     let offeredOther: readonly ScheduledMCPToolSelection[] = [];
     let servers: readonly ScheduledMCPTarget[] = [];
+    let used: readonly string[] = [];
     const required = !enrollment && requiresGrant(limits, snapshot, now());
     const requireAfterMs =
       !enrollment && limits.enabled && !required ? (limits.requireAfterMs ?? null) : null;
@@ -483,9 +496,10 @@ export function createScheduleMCPConsentService<
     if (allowed && limits.enabled && deps.resolveEnrollment) {
       let resolved: readonly ScheduledMCPTarget[];
       try {
-        [servers, offeredOther] = await Promise.all([
+        [servers, offeredOther, used] = await Promise.all([
           deps.resolveEnrollment(identity, options),
           deps.resolveTools?.(identity, options) ?? [],
+          deps.resolveServers?.(identity, options) ?? [],
         ]);
         resolved = listable(servers);
       } catch (error) {
@@ -540,7 +554,7 @@ export function createScheduleMCPConsentService<
       // A whole-agent grant holds consents for servers that are not listed to tick, so its
       // recipients are compared with every server in use, not only the listed ones.
       const covered = whole
-        ? keepsResources(canonicalTargets(servers, { empty: true }), granted)
+        ? keepsResources(canonicalTargets(servers, { empty: true }), granted, used)
         : coversGrant(targets, granted);
       if (state === 'active' && !covered) state = 'changed';
     } else if (!enrollment) state = 'unsupported';

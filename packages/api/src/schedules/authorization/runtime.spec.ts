@@ -915,6 +915,14 @@ describe('a schedule authorized for the whole agent', () => {
     expect(f.connect).not.toHaveBeenCalled();
   });
 
+  it('reports the grant as changed once a server it was made for is at another address', async () => {
+    const f = await whole();
+    expect((await f.host.consent.service.view(f.identity)).state).toBe('active');
+    // The server moved and the operator's declaration did not follow.
+    f.servers.warehouse = { ...f.servers.warehouse, url: 'https://moved.example/mcp' } as never;
+    expect((await f.host.consent.service.view(f.identity)).state).toBe('changed');
+  });
+
   it('runs with every tool, and calls both servers', async () => {
     const f = await whole();
     await f.host.prepare({ req: f.req, context: f.context });
