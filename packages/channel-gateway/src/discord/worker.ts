@@ -1,4 +1,4 @@
-import { ButtonStyle, ComponentType } from 'discord-api-types/v10';
+import { ButtonStyle, ComponentType, PermissionFlagsBits } from 'discord-api-types/v10';
 import {
   channelSnowflakeSchema,
   channelRunActorSchema,
@@ -32,7 +32,14 @@ export interface DiscordWorkerDependencies {
   createClient: (
     bundle: DiscordChannelServiceBundle,
     rates: DiscordRateCoordinator,
-  ) => Pick<DiscordClient, 'createMessage' | 'editMessage' | 'deleteMessage'>;
+  ) => Pick<
+    DiscordClient,
+    | 'createMessage'
+    | 'editMessage'
+    | 'deleteMessage'
+    | 'inspectGuildTextSource'
+    | 'getChannelMemberPermissions'
+  >;
 }
 
 function discordBundle(bundle: ChannelBundle): asserts bundle is DiscordChannelServiceBundle {
@@ -139,6 +146,53 @@ export function discordProgressText(run: ChannelRunView): string {
 
 export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): WorkerProvider {
   const client = (bundle: DiscordChannelServiceBundle) => deps.createClient(bundle, deps.rates);
+  async function writableClient(
+    run: ChannelRunView,
+    bundle: DiscordChannelServiceBundle,
+    signal: AbortSignal,
+  ) {
+    const actor = run.admission.actor;
+    if (actor.provider !== 'discord') throw new Error('Unsupported Discord actor');
+    const current = client(bundle);
+    const inspection = new AbortController();
+    const inspectionSignal = AbortSignal.any([signal, inspection.signal]);
+    try {
+      const [source, permissions] = await Promise.all([
+        current.inspectGuildTextSource(
+          {
+            applicationId: actor.applicationId,
+            botUserId: bundle.channel.discord.botUserId,
+            guildId: actor.guildId,
+            channelId: run.admission.externalChannelId,
+          },
+          inspectionSignal,
+        ),
+        current.getChannelMemberPermissions(
+          run.admission.externalChannelId,
+          actor.externalUserId,
+          inspectionSignal,
+        ),
+      ]);
+      if (
+        !source ||
+        permissions === null ||
+        (BigInt(permissions) &
+          (PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Administrator)) ===
+          0n
+      )
+        throw new DiscordWriteError('permanent', 0, 403);
+      signal.throwIfAborted();
+      return current;
+    } catch (error) {
+      signal.throwIfAborted();
+      // Permission reads have no message side effect, so a failed read can safely retry.
+      if (error instanceof DiscordWriteError && error.outcome === 'unknown')
+        throw new DiscordWriteError('retryable', error.retryAfterMs, error.status);
+      throw error;
+    } finally {
+      inspection.abort();
+    }
+  }
   return {
     progressRenderer: 'discord-progress-v1',
     maxProgressLength: 2000,
@@ -239,7 +293,8 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
                 },
               ]
             : undefined;
-        return client(bundle).createMessage(
+        const currentClient = await writableClient(run, bundle, signal);
+        return currentClient.createMessage(
           run.admission.externalChannelId,
           { content: part.text, ...(components ? { components } : {}) },
           part.operationId,
@@ -276,14 +331,12 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
             ]
           : [];
       const message = { content: progress.text, components };
-      if (progress.externalMessageKey)
-        return client(bundle).editMessage(
-          channel,
-          addressKey(progress.externalMessageKey, channel),
-          message,
-          signal,
-        );
-      return client(bundle).createMessage(
+      const messageId = progress.externalMessageKey
+        ? addressKey(progress.externalMessageKey, channel)
+        : undefined;
+      const currentClient = await writableClient(run, bundle, signal);
+      if (messageId) return currentClient.editMessage(channel, messageId, message, signal);
+      return currentClient.createMessage(
         channel,
         message,
         `${run.runId}:progress:${progress.revision}`,

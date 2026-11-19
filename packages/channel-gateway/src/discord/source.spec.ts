@@ -9,6 +9,28 @@ const input = {
 const channel = { id: input.channelId, guild_id: input.guildId, type: 0, flags: 0 };
 const permissions = String(1024 | 2048 | 65536);
 const options = { botToken: 'private-bot-token', timeoutMs: 1000, maxResponseBytes: 2048 };
+it('reads effective permissions for the requested actor without coercing lossless bitfields', async () => {
+  const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () =>
+    Response.json({ permissions: '9007199254742016' }),
+  );
+  const client = new DiscordClient(options, transport);
+  await expect(client.getChannelMemberPermissions(input.channelId, input.botUserId)).resolves.toBe(
+    '9007199254742016',
+  );
+  expect(transport).toHaveBeenCalledWith(
+    `https://discord.com/api/v10/channels/${input.channelId}/permissions/member/${input.botUserId}`,
+    expect.objectContaining({ method: 'GET', body: undefined }),
+  );
+});
+it.each([{}, { permissions: 1024 }, { permissions: '-1' }, { permissions: 'invalid' }])(
+  'refuses malformed member permissions',
+  async (body) => {
+    const client = new DiscordClient(options, async () => Response.json(body));
+    await expect(
+      client.getChannelMemberPermissions(input.channelId, input.botUserId),
+    ).rejects.toMatchObject({ outcome: 'unknown' });
+  },
+);
 function fixture(value = channel, bits = permissions) {
   const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async (url) =>
     Response.json(
