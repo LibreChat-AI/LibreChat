@@ -14,47 +14,89 @@ export function sanitizeDiscordMentions(text: string): string {
     .replace(/@(everyone|here)\b/gi, '@\u200b$1');
 }
 
-/** Discord counts UTF-16 units; iteration by code point avoids splitting surrogate pairs. */
-export function renderDiscordPlan(input: DiscordRenderInput, maxParts: number): DiscordTextPlan {
-  if (!input.runId || !Number.isSafeInteger(maxParts) || maxParts < 1 || maxParts > 100)
-    throw new TypeError('Invalid Discord delivery budget');
-  const source = sanitizeDiscordMentions(input.text);
-  if (!source.trim() || source.length > maxParts * 2000)
-    throw new Error('Discord answer exceeds delivery budget');
+const shorteningNotice =
+  '\n\nReply shortened to fit this channel’s delivery limit. The full answer remains in the saved execution.';
+class DiscordRenderLimitError extends Error {
+  constructor() {
+    super('Discord answer exceeds delivery budget');
+  }
+}
+
+function splitText(source: string, maxParts: number, shorten: boolean): string[] {
   const chunks: string[] = [];
   let chunk = '';
   let fence: string | undefined;
-  const flush = () => {
-    if (chunks.length >= maxParts) throw new Error('Discord answer exceeds delivery budget');
-    chunks.push(chunk + (fence !== undefined ? '\n```' : ''));
+  const close = () => (fence !== undefined ? '\n```' : '');
+  const limit = () =>
+    2000 - (shorten && chunks.length === maxParts - 1 ? shorteningNotice.length : 0);
+  const next = () => {
+    if (chunks.length === maxParts - 1) {
+      if (!shorten) throw new DiscordRenderLimitError();
+      chunks.push(chunk + close() + shorteningNotice);
+      return false;
+    }
+    chunks.push(chunk + close());
     chunk = fence !== undefined ? `\`\`\`${fence}\n` : '';
+    return true;
   };
   const fencePattern = /^```([^\r\n`]*)\r?\n?$/;
   const lines = source.split(/(?<=\n)/);
   for (const [index, line] of lines.entries()) {
     const match = fencePattern.exec(line);
-    if (match && match[1].length <= 100) {
-      const closingFenceLength = fence === undefined ? 4 : 0;
-      if (chunk.length + line.length + closingFenceLength > 2000) flush();
+    if (match && match[1].length <= 100 && (fence === undefined || !match[1].trim())) {
+      const nextFence = fence === undefined ? match[1] : undefined;
+      if (chunk.length + line.length + (nextFence !== undefined ? 4 : 0) > limit() && !next())
+        return chunks;
       chunk += line;
-      fence = fence === undefined ? match[1] : undefined;
+      fence = nextFence;
       continue;
     }
     // A closing fence on the next line can fit without the synthetic newline.
     if (
       fence !== undefined &&
       lines[index + 1] === '```' &&
-      chunk.length + line.length + 3 <= 2000
+      chunk.length + line.length + 3 <= limit()
     ) {
       chunk += line;
       continue;
     }
     for (const point of line) {
-      if (chunk.length + point.length + (fence !== undefined ? 4 : 0) > 2000) flush();
+      if (chunk.length + point.length + close().length > limit() && !next()) return chunks;
       chunk += point;
     }
   }
-  if (chunk) flush();
+  if (chunk) chunks.push(chunk + close());
+  return chunks;
+}
+
+export function discordPlanRevision(
+  plan: Pick<ChannelDeliveryPlan, 'rendererVersion' | 'parts'>,
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({ revision: '', rendererVersion: plan.rendererVersion, parts: plan.parts }),
+    )
+    .digest('hex');
+}
+
+/** Discord counts UTF-16 units; iteration by code point avoids splitting surrogate pairs. */
+export function renderDiscordPlan(
+  input: DiscordRenderInput,
+  maxParts: number,
+  options: { shorten?: boolean } = {},
+): DiscordTextPlan {
+  if (!input.runId || !Number.isSafeInteger(maxParts) || maxParts < 1 || maxParts > 100)
+    throw new TypeError('Invalid Discord delivery budget');
+  const source = sanitizeDiscordMentions(input.text);
+  if (!source.trim()) throw new DiscordRenderLimitError();
+  let chunks: string[];
+  try {
+    if (source.length > maxParts * 2000) throw new DiscordRenderLimitError();
+    chunks = splitText(source, maxParts, false);
+  } catch (error) {
+    if (!(error instanceof DiscordRenderLimitError) || !options.shorten) throw error;
+    chunks = splitText(source, maxParts, true);
+  }
   const plan: ChannelDeliveryPlan = {
     revision: '',
     rendererVersion: discordRendererVersion,
@@ -65,6 +107,6 @@ export function renderDiscordPlan(input: DiscordRenderInput, maxParts: number): 
       text,
     })),
   };
-  plan.revision = createHash('sha256').update(JSON.stringify(plan)).digest('hex');
+  plan.revision = discordPlanRevision(plan);
   return plan;
 }
