@@ -7,6 +7,21 @@ version: 1.3.19
 # Cache settings: Set to true to enable caching
 cache: true
 
+# Upgrade every replica before enabling regional role caching, then restart all
+# replicas together with the same setting. Mixed settings use different cache keys.
+# To disable it again, stop all replicas, clear the ROLES namespace in each backing
+# Redis store, then restart with roleCache.enabled set to false.
+# Enable change streams on the roles collection before starting watchers; cold role
+# reads and watchers use the primary database. Cached entries expire even if events
+# are missed. Set changeStreamsEnabled: false to retain TTL-only caching during a
+# source outage. These settings take effect on restart.
+# roleCache:
+#   enabled: true
+#   changeStreamsEnabled: true
+#   ttlMs: 60000
+#   retryDelayMs: 1000
+#   maxAwaitTimeMs: 1000
+
 # Browser telemetry and session recording are independent opt-ins. Collector URL,
 # authentication and service settings remain in .env. YAML flags override .env;
 # omitting them preserves the corresponding environment settings.
