@@ -57,6 +57,11 @@ export interface ScheduleMCPConsentDeps<Identity extends MCPGrantIdentity = Sche
   getLimits: (identity: Identity) => Promise<ScheduleMCPConsentLimits>;
   /** Loads current user/tenant/role and schedule/agent/resource access; no role snapshot. */
   canUse: (identity: Identity, options: { signal?: AbortSignal }) => Promise<boolean>;
+  /**
+   * Whether the owner may use MCP servers now, asked before an MCP call is let through.
+   * Absent, `canUse` answers for it. Authorizing the other tools does not depend on it.
+   */
+  canUseMCP?: (identity: Identity, options: { signal?: AbortSignal }) => Promise<boolean>;
   /** What the owner can be offered now: reachable agents' selected tools, per declared server. */
   resolveEnrollment?: ScheduleMCPEnrollmentResolver<Identity>;
   /** The agents' other tools on offer. Absent, a grant covers MCP tools only. */
@@ -586,14 +591,15 @@ export function createScheduleMCPConsentService<
     },
     async authorize(request, options) {
       if (options.signal?.aborted) return { state: 'cancelled' };
-      const [snapshot, allowed, limits] = await Promise.all([
+      const [snapshot, allowed, mcp, limits] = await Promise.all([
         deps.storage.readScheduleMCPConsent(request.identity),
         deps.canUse(request.identity, options),
+        deps.canUseMCP?.(request.identity, options) ?? true,
         deps.getLimits(request.identity),
       ]);
       if (options.signal?.aborted) return { state: 'cancelled' };
       if (!limits.enabled || !deps.resolveEnrollment) return denial('provider_missing');
-      if (!allowed) return denial('rbac_denied');
+      if (!allowed || !mcp) return denial('rbac_denied');
       const enrollment = snapshot?.enrollment;
       const consent = enrollment?.consents.find(
         (c) => c.resource.serverName === request.resource.serverName,

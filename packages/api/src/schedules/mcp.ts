@@ -382,11 +382,9 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
           new Set([...serverTools.values()].flatMap((owners) => [...owners])),
         );
       }
-      if (selected.size === 0) {
-        throw new ScheduleMCPError(
-          new ScheduledMCPPolicyError('tool_policy_denied', '', agentId).outcomes,
-        );
-      }
+      // The owner allowed none of the MCP tools selected: the other tools, or none still
+      // selected. Nothing to connect to, and the run is not held back for it.
+      if (selected.size === 0) return [];
     }
     const selectedRawConfig = Object.fromEntries(
       Object.entries(rawConfig).filter(([serverName]) => selected.has(serverName)),
