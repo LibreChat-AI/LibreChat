@@ -29,6 +29,7 @@ import type { ChannelFeedbackRuntime } from '../feedbackRuntime';
 import type { DiscordManagementPrincipal } from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { SafeErrorMetadata } from '~/utils/errors';
+import type { DiscordObserver } from './observe';
 import { createDiscordBindingHandlers, createDiscordRouteHandlers } from './bindingHttp';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceAdminGuard } from '../workspaceRuntime';
@@ -106,6 +107,7 @@ export function createDiscordPolicyReader(
 /** Compose existing services around the same authority used by channel workers and account links. */
 export function createDiscordChannelRuntime(
   deps: SlackWorkspaceAdminDependencies & {
+    observe?: DiscordObserver;
     channels: AgentChannelMethods;
     installations: DiscordInstallationStorage;
     routes: DiscordRouteStorage;
@@ -186,6 +188,7 @@ export function createDiscordChannelRuntime(
   });
   const inbox = createDiscordInboxService({
     storage: deps.inbox,
+    observe: deps.observe,
     dm: { selections: deps.dm, enabled: async () => (await deps.policy.read()).dm.enabled },
     inspection: { storage: deps.inboxResolution, threads: deps.threads, execute },
     resolver,
@@ -196,6 +199,7 @@ export function createDiscordChannelRuntime(
   });
   return {
     dmMessages: createDiscordDmMessageHandlers({
+      observe: deps.observe,
       serviceToken: deps.serviceToken,
       service: createDiscordDmMessageService({
         ...deps,
@@ -222,6 +226,7 @@ export function createDiscordChannelRuntime(
       }),
     }),
     messages: createDiscordMessageHandlers({
+      observe: deps.observe,
       serviceToken: deps.serviceToken,
       service: createDiscordMessageService({
         ...deps,
@@ -250,6 +255,10 @@ export function createDiscordChannelRuntime(
     }),
     bindings: createDiscordBindingHandlers(binding),
     routes: createDiscordRouteHandlers({ resolver, serviceToken: deps.serviceToken }),
-    inbox: createDiscordInboxHandlers({ service: inbox, serviceToken: deps.serviceToken }),
+    inbox: createDiscordInboxHandlers({
+      service: inbox,
+      serviceToken: deps.serviceToken,
+      observe: deps.observe,
+    }),
   };
 }

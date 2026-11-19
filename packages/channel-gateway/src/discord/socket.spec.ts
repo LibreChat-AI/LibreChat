@@ -28,7 +28,7 @@ describe('published Discord SDK binding', () => {
       Response.json({ code: 50014, message: 'Authentication rejected' }, { status: 401 }),
     );
     const driver = createDiscordGatewayDriver(config, transport);
-    await expect(driver.connect()).rejects.toMatchObject({ status: 401 });
+    await expect(driver.connect()).rejects.toMatchObject({ reason: 'credentials', fatal: true });
     expect(transport).toHaveBeenCalledTimes(1);
     const [url, init] = transport.mock.calls[0];
     expect(String(url)).toBe('https://discord.com/api/v10/gateway/bot');

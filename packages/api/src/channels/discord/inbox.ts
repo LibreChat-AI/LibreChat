@@ -26,6 +26,8 @@ import type {
   DiscordThreadStorage,
 } from '@librechat/data-schemas';
 import type { DiscordRouteResolver } from './routes';
+import type { DiscordObserver } from './observe';
+import { safeDiscordObserver } from './observe';
 
 /** Discord timestamps are encoded in globally unique snowflakes, not supplied by a client clock. */
 export function discordInteractionExpiry(eventId: string): number {
@@ -34,6 +36,7 @@ export function discordInteractionExpiry(eventId: string): number {
 
 export interface DiscordInboxServiceDependencies {
   storage: DiscordInboxStorage;
+  observe?: DiscordObserver;
   resolver: DiscordRouteResolver;
   encrypt: (value: string) => Promise<string>;
   decrypt: (value: string) => Promise<string>;
@@ -55,6 +58,17 @@ export interface DiscordInboxServiceDependencies {
 /** Internal control plane: resolve the tenant from canonical application ownership every time. */
 export function createDiscordInboxService(deps: DiscordInboxServiceDependencies) {
   const now = deps.now ?? Date.now;
+  const observe = safeDiscordObserver(deps.observe);
+  async function finish(fence: DiscordInboxFence, result: 'completed' | 'expired' | 'unavailable') {
+    const changed = await deps.storage.finish(fence, result, now());
+    if (changed && result === 'expired') observe({ type: 'inbox', event: 'expired' });
+    return changed;
+  }
+  async function defer(fence: DiscordInboxFence, retryAt: number) {
+    const changed = await deps.storage.defer(fence, retryAt, now());
+    if (changed) observe({ type: 'inbox', event: 'deferred' });
+    return changed;
+  }
   async function scope<T>(applicationId: string, run: () => Promise<T>, absent: T): Promise<T> {
     const app = await deps.resolver.security(applicationId);
     if (!app) return absent;
@@ -71,7 +85,7 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
       deps.decrypt(record.encryptedReply),
     ]);
     if (record.expiresAt <= now()) {
-      await deps.storage.finish(fence, 'expired', now());
+      await finish(fence, 'expired');
       return null;
     }
     return {
@@ -83,12 +97,12 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
     };
   }
   async function deferFailure(fence: DiscordInboxFence, expiresAt: number): Promise<void> {
-    if (expiresAt <= now()) await deps.storage.finish(fence, 'expired', now());
+    if (expiresAt <= now()) await finish(fence, 'expired');
     else {
       const delay = await deps.retryDelayMs();
       if (!Number.isSafeInteger(delay) || delay <= 0)
         throw new TypeError('Invalid inbox retry delay');
-      await deps.storage.defer(fence, now() + delay, now());
+      await defer(fence, now() + delay);
     }
   }
   return {
@@ -195,6 +209,7 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
         async () => {
           let record = await deps.storage.claim(applicationId, owner, now());
           if (!record) return null;
+          observe({ type: 'queue', seconds: Math.max(0, now() - record.receivedAt) / 1000 });
           const fence = { applicationId, eventId: record.eventId, owner, epoch: record.leaseEpoch };
           try {
             if (
@@ -226,11 +241,7 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
                 now(),
               );
               if (!prepared.ok) {
-                await deps.storage.finish(
-                  fence,
-                  record.expiresAt <= now() ? 'expired' : 'unavailable',
-                  now(),
-                );
+                await finish(fence, record.expiresAt <= now() ? 'expired' : 'unavailable');
                 return null;
               }
               record = prepared.value;
@@ -352,10 +363,10 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
       fence: DiscordInboxFence,
       result: 'completed' | 'expired' | 'unavailable',
     ): Promise<boolean> {
-      return scope(fence.applicationId, () => deps.storage.finish(fence, result, now()), false);
+      return scope(fence.applicationId, () => finish(fence, result), false);
     },
     async defer(fence: DiscordInboxFence, retryAt: number): Promise<boolean> {
-      return scope(fence.applicationId, () => deps.storage.defer(fence, retryAt, now()), false);
+      return scope(fence.applicationId, () => defer(fence, retryAt), false);
     },
   };
 }

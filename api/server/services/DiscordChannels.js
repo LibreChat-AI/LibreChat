@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const {
   createDiscordChannelRuntime,
   createDiscordPolicyReader,
+  recordDiscordObservation,
   createProxyAwareFetch,
 } = require('@librechat/api');
 const {
@@ -28,6 +29,7 @@ const db = require('~/models');
 const policy = createDiscordPolicyReader(getAppConfig);
 module.exports = createDiscordChannelRuntime({
   channels: db,
+  observe: recordDiscordObservation,
   installations: createDiscordInstallationStorage(mongoose),
   routes: createDiscordRouteStorage(mongoose),
   inbox: createDiscordInboxStorage(mongoose, policy.inbox),

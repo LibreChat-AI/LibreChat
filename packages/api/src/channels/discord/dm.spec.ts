@@ -27,12 +27,14 @@ import type {
   DiscordDmMessagePrepared,
   DiscordGatewayMessage,
 } from 'librechat-data-provider';
+import type { DiscordObservation } from './observe';
 import { createDiscordDmMessageHandlers } from './dmMessageHttp';
 import { createDiscordDmMessageService } from './dmMessages';
 import { createChannelAuthority } from '../authority';
 import { createDiscordDmHandlers } from './dmHttp';
 import { createDiscordDmService } from './dm';
 
+const observations: DiscordObservation[] = [];
 const db = new mongoose.Mongoose();
 const models = createModels(db);
 const owner = '000000000000000000000001';
@@ -127,6 +129,7 @@ afterAll(async () => {
   await mongo?.stop();
 });
 beforeEach(async () => {
+  observations.length = 0;
   await runAsSystem(async () => {
     for (const collection of Object.values(db.connection.collections))
       await collection.deleteMany({});
@@ -390,7 +393,11 @@ const dmMessages = createDiscordDmMessageService({
 function messageServer(value = dmMessages) {
   const app = express();
   app.use(express.json());
-  const handlers = createDiscordDmMessageHandlers({ service: value, serviceToken: () => token });
+  const handlers = createDiscordDmMessageHandlers({
+    service: value,
+    serviceToken: () => token,
+    observe: (event) => observations.push(event),
+  });
   app.post('/prepare', handlers.prepare);
   app.post('/message', handlers.submit);
   return app;
@@ -693,4 +700,15 @@ it('resolves the real source-guild identity for an exact DM run while execution 
       await authority.resolvePrincipal(channel, run.admission.actor, run.admission),
     ).toBeNull();
   });
+});
+
+it('observes DM admission and replay while prepare remains a read-only hint', async () => {
+  const f = await messageFixture();
+  expect(observations).toEqual([]);
+  for (let attempt = 0; attempt < 2; attempt++)
+    await request(f.app).post('/message').auth(token, { type: 'bearer' }).send(f.input).expect(200);
+  expect(observations).toEqual([
+    { type: 'message', kind: 'dm', result: 'admitted' },
+    { type: 'message', kind: 'dm', result: 'duplicate' },
+  ]);
 });
