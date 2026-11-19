@@ -1240,7 +1240,19 @@ export async function initializeAgent(
     useChatProjectContext ?? params.req?.chatProjectContextEnabled === true;
   assertToolOptionsWithinLimits(suppliedAgent.tool_options);
   const inputAgent = restoreAgentInferenceInput(suppliedAgent);
-  const agent = shouldUseChatProjectContext ? { ...inputAgent } : inputAgent;
+  /**
+   * Under a schedule's grant an agent has only the tools its owner allowed. Narrowed here, at
+   * the one list everything below reads: the loader, and the markers that set up code
+   * execution and memory, so a tool the owner left out is not defined for the model at all.
+   */
+  const grantedTools =
+    inputAgent.tools == null
+      ? inputAgent.tools
+      : narrowScheduledMCPTools(params.req, inputAgent.id, inputAgent.tools);
+  const agent =
+    shouldUseChatProjectContext || grantedTools !== inputAgent.tools
+      ? { ...inputAgent, tools: grantedTools }
+      : inputAgent;
   const { user, appConfig } = runtime;
   const requestFileOwnerId = user?.id;
   const requestFileOwnerScope: FileOwnerScope | undefined = requestFileOwnerId

@@ -8,8 +8,11 @@ import {
 import type { HookCallback } from '@librechat/agents';
 import type { ScheduleMCPExecution } from './execution';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME } from '~/agents/memory';
 import { isStatefulCodeEnvironmentToolName } from '~/agents/hitl/byom';
 import { ScheduledMCPPolicyError } from './policy';
+
+const MEMORY_TOOL_NAMES = new Set<string>([SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME]);
 
 interface HandoffEdge {
   from: string | string[];
@@ -149,12 +152,15 @@ export function createScheduledMCPRunPolicy(
     ASK_USER_QUESTION_TOOL_NAME,
   ]);
   /**
-   * Whether the grant lists this tool of the agent's, one that is not an MCP tool. The tools
-   * of the code environment go by several names and are all allowed by code execution.
+   * Whether the grant lists this tool of the agent's, one that is not an MCP tool. Some items
+   * the owner allows run as tools of other names: the code environment's tools are all allowed
+   * by code execution, and the two memory tools by memory.
    */
   const allowsTool = (agentId: string, name: string): boolean =>
     execution.grantsTool(agentId, name) ||
-    (isStatefulCodeEnvironmentToolName(name) && execution.grantsTool(agentId, Tools.execute_code));
+    (isStatefulCodeEnvironmentToolName(name) &&
+      execution.grantsTool(agentId, Tools.execute_code)) ||
+    (MEMORY_TOOL_NAMES.has(name) && execution.grantsTool(agentId, Tools.memory));
   const denied = (input: Parameters<HookCallback<'PreToolUse'>>[0]): boolean => {
     const agentId = input.executingAgentId;
     // Foreground delegation stays in this guarded run; detached continuations do not.

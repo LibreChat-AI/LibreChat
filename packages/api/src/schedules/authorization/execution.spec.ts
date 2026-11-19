@@ -372,6 +372,15 @@ it('lets a run use the other tools its owner allowed, and code tools only with c
   expect(await decide(f.execution, 'send_action_mail.example')).toEqual(refused);
   expect(await decide(f.execution, 'memory')).toEqual(refused);
 
+  // Memory runs as two tools of other names, both allowed by the one item.
+  const remembers = await executionFixture('invoke', readTool, undefined, {
+    tools: ['memory', 'web_search'],
+    allowTools: ['memory'],
+  });
+  expect(await decide(remembers.execution, 'set_memory')).toEqual({});
+  expect(await decide(remembers.execution, 'delete_memory')).toEqual({});
+  expect(await decide(f.execution, 'set_memory')).toEqual(refused);
+
   const without = await executionFixture('invoke', readTool, undefined, {
     tools: ['execute_code', 'web_search'],
     allowTools: ['web_search'],
