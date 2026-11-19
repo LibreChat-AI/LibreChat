@@ -211,6 +211,7 @@ const {
 const { verifyEmail, resendVerificationEmail } = require('~/server/services/AuthService');
 const { updateUserPluginAuth, deleteUserPluginAuth } = require('~/server/services/PluginService');
 const { webSearchSelectionFields } = require('@librechat/data-schemas');
+const { PUBLIC_USER_RESPONSE_FIELDS } = require('@librechat/api');
 
 describe('updateUserPluginsController', () => {
   const mockRes = {
@@ -525,6 +526,7 @@ describe('getUserController', () => {
     expect(sentUser).not.toHaveProperty('openidTokens');
     expect(sentUser).not.toHaveProperty('tokenset');
     expect(sentUser).not.toHaveProperty('safeLookingRuntimeField');
+    expect(Object.keys(sentUser).sort()).toEqual([...PUBLIC_USER_RESPONSE_FIELDS].sort());
   });
 });
 
