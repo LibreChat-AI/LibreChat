@@ -303,6 +303,8 @@ export interface ResumableEvents {
 /** The run's token usage: the live estimate while it streams and the totals it settles to. */
 export interface ResumableUsage {
   bindResponse: (submission: TSubmission) => void;
+  /** A run step named the id the turn's reply row takes; see `nameStepResponse`. */
+  nameResponse?: (responseId: string, submission: TSubmission) => void;
   contextHandler: (data: TContextUsageEvent, submission: TSubmission) => void;
   usageHandler: (data: TTokenUsageEvent, submission: TSubmission) => void;
   tapStream: (data: { delta?: { content?: unknown } }, submission: TSubmission) => void;

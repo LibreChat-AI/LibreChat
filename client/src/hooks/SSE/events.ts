@@ -95,6 +95,7 @@ export default function useResumableEvents({
 
   const {
     bindResponse,
+    nameResponse,
     contextHandler,
     usageHandler,
     tapStream,
@@ -161,6 +162,7 @@ export default function useResumableEvents({
   const usage = useMemo<ResumableUsage>(
     () => ({
       bindResponse,
+      nameResponse,
       contextHandler,
       usageHandler,
       tapStream,
@@ -172,6 +174,7 @@ export default function useResumableEvents({
     }),
     [
       bindResponse,
+      nameResponse,
       contextHandler,
       usageHandler,
       tapStream,
