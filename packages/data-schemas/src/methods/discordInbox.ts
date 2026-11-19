@@ -286,8 +286,18 @@ export function createDiscordInboxStorage(
               { $set: { state: 'failed', result: 'expired', leaseExpiresAt: 0 }, $unset: erase },
               { session },
             );
-          const skipped: string[] = [];
-          for (let scanned = 0; scanned < limits.scanLimit; scanned++) {
+          // A blocked actor scope is excluded whole and, up to scanLimit scopes, not charged to the
+          // scan budget, so one queue cannot hide independent work while each claim stays bounded.
+          const blocked: Array<{
+            guildId: string;
+            externalChannelId: string;
+            externalUserId: string;
+          }> = [];
+          for (
+            let scanned = 0;
+            scanned < limits.scanLimit + Math.min(blocked.length, limits.scanLimit);
+            scanned++
+          ) {
             const filter = {
               tenantId: tenant() ?? null,
               applicationId,
@@ -295,30 +305,24 @@ export function createDiscordInboxStorage(
               expiresAt: { $gt: now },
               nextAttemptAt: { $lte: now },
               leaseExpiresAt: { $lte: now },
-              eventId: { $nin: skipped },
+              ...(blocked.length
+                ? { $nor: blocked.map((scope) => ({ ...scope, state: { $ne: 'reply' } })) }
+                : {}),
             };
-            // Reclaim unfinished effects before starting later events after a worker crash.
-            const reclaimed = await inbox
-              .findOne({ ...filter, state: 'processing' })
+            // Due effects retain receive order, including recovery of unfinished processing.
+            const candidate = await inbox
+              .findOne(filter)
               .sort({ receivedAt: 1, eventId: 1 })
               .select(privateFields)
               .session(session)
               .lean();
-            const candidate =
-              reclaimed ??
-              (await inbox
-                .findOne(filter)
-                .sort({ receivedAt: 1, eventId: 1 })
-                .select(privateFields)
-                .session(session)
-                .lean());
             if (!candidate) return null;
             if (!(await current(candidate, session))) {
               await expire(candidate, 'authority_changed', session);
               continue;
             }
-            // current() joins the application fence before reading another worker's lease.
-            // A prepared reply has committed its effects and does not serialize later commands.
+            // current() joins the application fence before checking earlier unfinished effects.
+            // Retry backoff keeps its FIFO position; prepared replies have committed their effects.
             if (
               candidate.state !== 'reply' &&
               (await inbox
@@ -329,13 +333,21 @@ export function createDiscordInboxStorage(
                   externalChannelId: candidate.externalChannelId,
                   externalUserId: candidate.externalUserId,
                   eventId: { $ne: candidate.eventId },
-                  state: 'processing',
-                  leaseExpiresAt: { $gt: now },
+                  state: { $in: ['queued', 'processing'] },
                   expiresAt: { $gt: now },
+                  $or: [
+                    { state: 'processing', leaseExpiresAt: { $gt: now } },
+                    { receivedAt: { $lt: candidate.receivedAt } },
+                    { receivedAt: candidate.receivedAt, eventId: { $lt: candidate.eventId } },
+                  ],
                 })
                 .session(session))
             ) {
-              skipped.push(candidate.eventId);
+              blocked.push({
+                guildId: candidate.guildId,
+                externalChannelId: candidate.externalChannelId,
+                externalUserId: candidate.externalUserId,
+              });
               continue;
             }
             const claimed = await inbox
