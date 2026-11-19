@@ -75,7 +75,7 @@ describe('startGeneration', () => {
     (host.start as jest.Mock).mockRejectedValue(httpError(403, body));
     await expect(startGeneration(run, host, submission)).resolves.toBeNull();
     expect(host.steers.restoreQueued).toHaveBeenCalledWith(submission);
-    expect(host.events.showStartFailure).toHaveBeenCalledWith(submission, body);
+    expect(host.events.showStartFailure).toHaveBeenCalledWith(submission, body, 'rejected');
     expect(host.pane.setIsSubmitting).toHaveBeenCalledWith(false);
     expect(host.pane.setSubmission).toHaveBeenCalledWith(null);
   });
@@ -108,4 +108,22 @@ describe('startGeneration', () => {
     await expect(startGeneration(run, host, submission, controller.signal)).resolves.toBeNull();
     expect(host.events.showStartFailure).not.toHaveBeenCalled();
   });
+});
+
+it('carries the captured correlation context into generation starts', async () => {
+  const { host, run } = setup();
+  (host.start as jest.Mock).mockResolvedValue({
+    streamId: 's-1',
+    generationCreatedAt: 1000,
+    generationProtocolVersion: 2,
+  });
+  const productTrackingContext = {
+    sessionId: 'd79706cc-4ddf-4cf7-b99a-333755af9be8',
+    submissionId: '1b7ff690-8b9b-4af6-b68d-9cab4a5f2f21',
+  };
+  await startGeneration(run, host, { ...submission, productTrackingContext });
+  expect(host.start).toHaveBeenCalledWith(
+    expect.objectContaining({ productTrackingContext }),
+    expect.anything(),
+  );
 });

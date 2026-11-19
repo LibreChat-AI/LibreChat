@@ -12,6 +12,7 @@ import type { ResumableRun, ResumableEvents, ResumableUsage } from '@librechat/c
 import type { EventHandlerParams } from '@librechat/chat/react';
 import type { EventSubmission } from 'librechat-data-provider';
 import type { TResData, TFinalResData } from '~/common';
+import { useProductSubmissionFailure } from '~/hooks/Chat/tracking';
 import { markStreamStartFailedMetadata } from '~/utils';
 import { reopenTermsOnRefusal } from '~/utils/terms';
 import useLocalize from '~/hooks/useLocalize';
@@ -41,6 +42,7 @@ export default function useResumableEvents({
   >;
 }): { events: ResumableEvents; usage: ResumableUsage } {
   const localize = useLocalize();
+  const onSubmissionFailure = useProductSubmissionFailure();
   const queryClient = useQueryClient();
   const [_completed, setCompleted] = useState(new Set());
   const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
@@ -105,6 +107,8 @@ export default function useResumableEvents({
     () => ({
       stepHandler,
       showStartFailure: (failedSubmission, errorData, reason) => {
+        if (reason !== 'recovery_held')
+          onSubmissionFailure(failedSubmission, reason ?? 'unconfirmed');
         let text: string | undefined;
         if (reason === 'recovery_held') {
           text = localize('com_ui_steer_recovery_held');
@@ -136,6 +140,7 @@ export default function useResumableEvents({
     }),
     [
       localize,
+      onSubmissionFailure,
       queryClient,
       stepHandler,
       finalHandler,

@@ -1147,6 +1147,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const run = await createRun({
         ...projection.runOptions,
         sdkModelHost: req?.app?.locals?.sdkModelHost,
+        productTrackingRequest: req,
         agents: runAgents,
         messages: formattedMessages,
         indexTokenCountMap,
