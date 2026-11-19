@@ -10,6 +10,7 @@ import { createDiscordReservationModel } from '~/models/discordReservation';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { reserveDiscordApplication } from './discordReservation';
 import { withRequiredTransaction } from '~/utils/transactions';
+import { createAgentChannelModel } from '~/models/channel';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseScopeKeys } from './responseScope';
 import { createUserModel } from '~/models/user';
@@ -425,6 +426,18 @@ export function createDiscordInstallationStorage(
             ? { ok: true, value: guildMetadata(saved) }
             : failure('installation_changed');
         }
+        // A deleted installer must not revive routes while old runs still drain.
+        if (
+          await createAgentChannelModel(mongoose)
+            .exists({
+              tenantId: tenantId || { $in: [null, ''] },
+              type: 'discord',
+              'discord.applicationId': input.applicationId,
+              'discord.guildId': input.guildId,
+            })
+            .session(session)
+        )
+          return failure('installation_changed');
         const [saved] = await guilds.create(
           [
             {
