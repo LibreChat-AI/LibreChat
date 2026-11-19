@@ -232,6 +232,18 @@ it('consumes once and preserves first event, generation and expiry on replay bey
     expect(await current(selected.expiresAtMs)).toBeNull();
     expect(await consume(issued.code, {}, selected.expiresAtMs)).toMatchObject({ ok: false });
   }));
+it('reads the active selection once per current lookup', () =>
+  scope(async () => {
+    const issued = await issue();
+    value(await consume(issued.code));
+    const reads = jest.spyOn(selections, 'findOne');
+    try {
+      expect(await current()).not.toBeNull();
+      expect(reads).toHaveBeenCalledTimes(1);
+    } finally {
+      reads.mockRestore();
+    }
+  }));
 it('acknowledges concurrent identical selections with one immutable generation and no runs', () =>
   scope(async () => {
     const issued = await issue();

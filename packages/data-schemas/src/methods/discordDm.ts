@@ -154,6 +154,29 @@ async function sourceAuthority(
     .lean();
   return linked && Number.isSafeInteger(linked.expiresAtMs) ? linked.expiresAtMs : null;
 }
+/** Joins the original real guild authority for an already loaded, validated active selection. */
+async function touchLoadedSelection(
+  mongoose: typeof import('mongoose'),
+  record: DiscordDmSelectionRecord,
+  applicationRevision: string | undefined,
+  now: number,
+  session: ClientSession,
+): Promise<boolean> {
+  if (!(await sourceAuthority(mongoose, record.source, applicationRevision, now, session)))
+    return false;
+  const touched = await createDiscordDmSelectionModel(mongoose).updateOne(
+    {
+      ...slot(record),
+      selectionId: record.selectionId,
+      revision: record.revision,
+      state: 'active',
+      expiresAtMs: { $gt: now },
+    },
+    { $inc: { authorityWrites: 1 } },
+    { session },
+  );
+  return touched.matchedCount === 1;
+}
 /** Future run transactions must join this current generation and the original real guild authority. */
 export async function touchDiscordDmSelection(
   mongoose: typeof import('mongoose'),
@@ -163,23 +186,18 @@ export async function touchDiscordDmSelection(
 ): Promise<boolean> {
   const parsed = discordDmFenceSchema.parse(input);
   clock(now);
-  const selections = createDiscordDmSelectionModel(mongoose);
-  const filter = {
-    ...slot(parsed),
-    selectionId: parsed.selectionId,
-    revision: parsed.revision,
-    state: 'active',
-    expiresAtMs: { $gt: now },
-  };
-  const record = await selections.findOne(filter).session(session).lean();
-  if (
-    !record ||
-    !view(record) ||
-    !(await sourceAuthority(mongoose, record.source, parsed.applicationRevision, now, session))
-  )
-    return false;
-  const touched = await selections.updateOne(filter, { $inc: { authorityWrites: 1 } }, { session });
-  return touched.matchedCount === 1;
+  const record = await createDiscordDmSelectionModel(mongoose)
+    .findOne({
+      ...slot(parsed),
+      selectionId: parsed.selectionId,
+      revision: parsed.revision,
+      state: 'active',
+      expiresAtMs: { $gt: now },
+    })
+    .session(session)
+    .lean();
+  if (!record || !view(record)) return false;
+  return touchLoadedSelection(mongoose, record, parsed.applicationRevision, now, session);
 }
 /** Inactive until the authenticated browser and signed BOT_DM adapters are composed. */
 export function createDiscordDmStorage(
@@ -449,12 +467,8 @@ export function createDiscordDmStorage(
           .lean();
         const selected = record && view(record);
         return selected &&
-          (await touchDiscordDmSelection(
-            mongoose,
-            { ...parsed, selectionId: selected.selectionId, revision: selected.revision },
-            now,
-            session,
-          ))
+          record &&
+          (await touchLoadedSelection(mongoose, record, parsed.applicationRevision, now, session))
           ? selected
           : null;
       });
