@@ -223,3 +223,5 @@ export type {
   ConversationMetadataMethods,
   ConversationMetadataScope,
 } from './methods/conversationMetadata';
+
+export type { AgentBindingState, AgentBindingObserver } from './methods/agent';

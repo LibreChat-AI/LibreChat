@@ -1662,6 +1662,102 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       existingAgentId = agent.id;
     });
 
+    describe('agent saved product facts', () => {
+      beforeEach(() => {
+        mockReq.user.id = existingAgentAuthorId.toString();
+        mockReq.params.id = existingAgentId;
+        mockReq.productTracking = { enabled: true };
+        mockReq.productTracker = jest.fn();
+      });
+
+      test('records stored binding IDs without copying request content', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const skillId = new mongoose.Types.ObjectId().toString();
+        await Agent.updateOne(
+          { id: existingAgentId },
+          {
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+            skills: [skillId],
+          },
+        );
+        mockReq.body = { name: 'PRIVATE-AGENT-NAME', description: 'PRIVATE-AGENT-DESCRIPTION' };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalled();
+        expect(mockReq.productTracker.mock.calls).toEqual([
+          [
+            {
+              name: 'librechat.agents.saved',
+              feature: 'agents',
+              agentId: existingAgentId,
+              promptGroupId: groupId,
+              skillIds: [skillId],
+            },
+          ],
+        ]);
+        const stored = await Agent.findOne({ id: existingAgentId }).lean();
+        expect(stored.name).toBe('PRIVATE-AGENT-NAME');
+        expect(stored.instructionsPrompt.groupId).toBe(groupId);
+        expect(JSON.stringify(mockReq.productTracker.mock.calls)).not.toContain('PRIVATE-');
+      });
+
+      test('keeps a successful save unchanged when tracking is disabled', async () => {
+        mockReq.productTracking.enabled = false;
+        mockReq.body = { name: 'Saved without analytics' };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect((await Agent.findOne({ id: existingAgentId }).lean()).name).toBe(
+          'Saved without analytics',
+        );
+        expect(mockReq.productTracker).not.toHaveBeenCalled();
+      });
+
+      test('does not record rejected input or a request with no write', async () => {
+        mockReq.body = { model_parameters: { configuration: { apiKey: 'private-key' } } };
+        await updateAgentHandler(mockReq, mockRes);
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(mockReq.productTracker).not.toHaveBeenCalled();
+
+        mockRes.status.mockClear();
+        mockRes.json.mockClear();
+        mockReq.body = {};
+        const update = jest.spyOn(db, 'updateAgent');
+        try {
+          await updateAgentHandler(mockReq, mockRes);
+          expect(mockRes.status).not.toHaveBeenCalled();
+          expect(update).not.toHaveBeenCalled();
+          expect(mockReq.productTracker).not.toHaveBeenCalled();
+        } finally {
+          update.mockRestore();
+        }
+      });
+
+      test.each(['rejected write', 'missing saved document'])(
+        'does not record a successful save for %s',
+        async (failure) => {
+          mockReq.body = { name: 'Not persisted' };
+          const update = jest.spyOn(db, 'updateAgent');
+          if (failure === 'rejected write') {
+            update.mockRejectedValueOnce(new Error('storage unavailable'));
+          } else {
+            update.mockResolvedValueOnce(null);
+          }
+          try {
+            await updateAgentHandler(mockReq, mockRes);
+            expect(mockRes.status).toHaveBeenCalledWith(500);
+            expect(mockReq.productTracker).not.toHaveBeenCalled();
+            expect((await Agent.findOne({ id: existingAgentId }).lean()).name).toBe(
+              'Original Agent',
+            );
+          } finally {
+            update.mockRestore();
+          }
+        },
+      );
+    });
+
     test('should update agent with allowed fields only', async () => {
       mockReq.user.id = existingAgentAuthorId.toString(); // Set as author
       mockReq.params.id = existingAgentId;
@@ -5594,6 +5690,46 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
     afterEach(() => {
       getResourcePermissionsMap.mockReset().mockResolvedValue(new Map());
+    });
+
+    test('records two agent saved product facts for two prompt selections', async () => {
+      const { groupId: firstGroupId } = await createPromptGroupFixture('Prompt B');
+      const { groupId: secondGroupId } = await createPromptGroupFixture('Prompt C');
+      mockGroupVisibility(new Set([firstGroupId, secondGroupId]));
+      const agent = await Agent.create({
+        id: `agent_${nanoid()}`,
+        author: mockReq.user.id,
+        name: 'Saved twice',
+        provider: 'openai',
+        model: 'gpt-4',
+        tools: [],
+      });
+      mockReq.params = { id: agent.id };
+      mockReq.productTracking = { enabled: true };
+      mockReq.productTracker = jest.fn();
+
+      for (const groupId of [firstGroupId, secondGroupId]) {
+        mockReq.body = {
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        };
+        await updateAgentHandler(mockReq, mockRes);
+        expect(mockRes.status).not.toHaveBeenCalled();
+        expect((await Agent.findOne({ id: agent.id }).lean()).instructionsPrompt.groupId).toBe(
+          groupId,
+        );
+      }
+
+      expect(mockReq.productTracker.mock.calls).toEqual(
+        [firstGroupId, secondGroupId].map((promptGroupId) => [
+          {
+            name: 'librechat.agents.saved',
+            feature: 'agents',
+            agentId: agent.id,
+            promptGroupId,
+            skillIds: [],
+          },
+        ]),
+      );
     });
 
     describe('prompt-management capability', () => {

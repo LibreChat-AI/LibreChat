@@ -81,6 +81,7 @@ describe('duplicateAgent', () => {
         tools: ['file_search'],
         actions: [],
       }),
+      { onChanged: expect.any(Function) },
     );
 
     expect(createAgent).toHaveBeenCalledWith(
@@ -88,6 +89,7 @@ describe('duplicateAgent', () => {
         versions: expect.anything(),
         __v: expect.anything(),
       }),
+      { onChanged: expect.any(Function) },
     );
 
     expect(res.status).toHaveBeenCalledWith(201);
@@ -182,6 +184,7 @@ describe('duplicateAgent', () => {
           ],
         }),
       }),
+      { onChanged: expect.any(Function) },
     );
   });
 
@@ -220,6 +223,7 @@ describe('duplicateAgent', () => {
           context: { enabled: true, config: 'test' },
         },
       }),
+      { onChanged: expect.any(Function) },
     );
   });
 

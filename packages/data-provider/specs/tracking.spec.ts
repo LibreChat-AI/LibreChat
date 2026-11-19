@@ -121,3 +121,32 @@ it.each([0, 999, 2147483648])('rejects an invalid activity interval %s', (activi
     false,
   );
 });
+
+describe('agent save facts', () => {
+  const saved = {
+    ...event,
+    producer: 'server',
+    fact: {
+      name: 'librechat.agents.saved',
+      feature: 'agents',
+      agentId: 'agent-1',
+      promptGroupId: 'prompt-b',
+      skillIds: ['skill-1'],
+    },
+  };
+  it('accepts attached IDs and explicitly empty attachments', () => {
+    expect(productEventSchema.parse(saved)).toEqual(saved);
+    expect(
+      productEventSchema.safeParse({
+        ...saved,
+        fact: { ...saved.fact, promptGroupId: null, skillIds: [] },
+      }).success,
+    ).toBe(true);
+  });
+  it('rejects browser claims and content in a save fact', () => {
+    expect(productEventSchema.safeParse({ ...saved, producer: 'browser' }).success).toBe(false);
+    expect(
+      productEventSchema.safeParse({ ...saved, fact: { ...saved.fact, text: 'private' } }).success,
+    ).toBe(false);
+  });
+});
