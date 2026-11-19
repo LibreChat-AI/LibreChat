@@ -286,14 +286,18 @@ export function createDiscordInboxStorage(
               { $set: { state: 'failed', result: 'expired', leaseExpiresAt: 0 }, $unset: erase },
               { session },
             );
-          // A blocked actor scope is excluded whole and not charged to the scan budget, so its queue
-          // cannot hide independent work. Scopes are bounded by the application pending cap.
+          // A blocked actor scope is excluded whole and, up to scanLimit scopes, not charged to the
+          // scan budget, so one queue cannot hide independent work while each claim stays bounded.
           const blocked: Array<{
             guildId: string;
             externalChannelId: string;
             externalUserId: string;
           }> = [];
-          for (let scanned = 0; scanned < limits.scanLimit + blocked.length; scanned++) {
+          for (
+            let scanned = 0;
+            scanned < limits.scanLimit + Math.min(blocked.length, limits.scanLimit);
+            scanned++
+          ) {
             const filter = {
               tenantId: tenant() ?? null,
               applicationId,
