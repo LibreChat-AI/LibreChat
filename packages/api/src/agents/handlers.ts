@@ -294,7 +294,8 @@ export interface ToolExecuteOptions {
   /** Host observer, called only after authoring has bound an authorized identity. */
   onSkillAuthored?: (binding: Pick<AuthoredSkillBinding, 'name' | 'id' | 'primed'>) => void;
   /** Host-captured authority ceiling, never runnable/model metadata. */
-  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'>;
+  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'> &
+    Partial<Pick<ScheduleMCPExecution, 'detaches'>>;
   /**
    * Host-owned signal for the foreground run. This is authoritative across
    * graph reconstruction (including approval resume); the SDK event signal is
@@ -7343,7 +7344,12 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                 }
 
                 if (
-                  scheduledMCPExecution?.enrolled !== true &&
+                  // A run under a grant goes to the background only where its completion
+                  // turn can resolve that grant again: a schedule's can.
+                  !(
+                    scheduledMCPExecution?.enrolled === true &&
+                    scheduledMCPExecution.detaches !== true
+                  ) &&
                   backgroundToolSet.has(tc.name) &&
                   isBackgroundRequested(tc.args) &&
                   !toolRequiresEphemeralConnection(toolMap.get(tc.name)) &&

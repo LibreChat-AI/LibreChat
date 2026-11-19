@@ -12,8 +12,12 @@ import {
   createScheduledMCPPolicyRecorder,
   recordScheduledMCPToolAuthFailure,
 } from '../service';
+import {
+  createScheduleMCPExecution,
+  getScheduleMCPExecution,
+  bindScheduledMCPInvocation,
+} from './execution';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
-import { createScheduleMCPExecution, getScheduleMCPExecution } from './execution';
 import { executionFixture, allowOffered, readTool } from './execution.helper';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createScheduleExecutionContext } from '~/agents/authority/context';
@@ -57,7 +61,11 @@ afterEach(async () => {
   await store.destroy();
 });
 
-async function setup(legacy = false) {
+/**
+ * `detaches`: the grant is one a background task's completion turn can find again, as a
+ * schedule's is. False models a grant that cannot, which keeps the run in the foreground.
+ */
+async function setup(legacy = false, detaches = true) {
   const methods = createMethods(mongoose);
   const owner = new mongoose.Types.ObjectId();
   const fixture = await executionFixture();
@@ -90,7 +98,7 @@ async function setup(legacy = false) {
   };
   if (!legacy) await enroll();
   const loadAuthorization = jest.fn(async () => ({ authority: consent.authority }));
-  const factory = createScheduleMCPExecution({ storage: methods, loadAuthorization });
+  const factory = createScheduleMCPExecution({ storage: methods, loadAuthorization, detaches });
   const execution = (await factory.resolve(identity, 'invoke'))!;
   const scheduledFor = new Date('2026-10-02T12:00:00Z');
   await methods.insertScheduleRun({
@@ -563,9 +571,9 @@ it.each(['success', 'error', 'skipped_balance'] as const)(
 );
 
 it.each(['root', 'child'])(
-  'blocks enrolled background delegation from %s before a completion can be registered',
+  'blocks background delegation from %s under a grant its completion turn could not find again',
   async (agentId) => {
-    const f = await setup();
+    const f = await setup(false, false);
     const policy = createScheduledMCPRunPolicy(
       f.execution,
       [{ id: 'root' }, { id: 'child' }],
@@ -622,7 +630,63 @@ it.each(['root', 'child'])(
   },
 );
 
-it('fences both newly prepared and already serialized legacy completion turns after enrollment', async () => {
+it.each(['root', 'child'])(
+  'lets %s delegate in the background under a grant, and records nothing against the schedule',
+  async (agentId) => {
+    const f = await setup();
+    const policy = createScheduledMCPRunPolicy(
+      f.execution,
+      [{ id: 'root' }, { id: 'child' }],
+      [],
+      f.record,
+    );
+    const registry = new HookRegistry();
+    registry.register('PreToolUse', { hooks: [policy.hook, policy.receipt] });
+    const start = jest.fn(async () => 'background handle');
+    const delegate = new DynamicStructuredTool({
+      name: Constants.SUBAGENT,
+      description: 'SDK delegation surface',
+      schema: z.object({
+        run_in_background: z.boolean().optional(),
+        subagent_thread_id: z.string().optional(),
+      }),
+      func: start,
+    });
+    const node = new ToolNode({ agentId, tools: [delegate], hookRegistry: registry });
+    const call = (args: Record<string, unknown>, id: string) =>
+      node.invoke(
+        {
+          messages: [
+            new AIMessage({ content: '', tool_calls: [{ id, name: delegate.name, args }] }),
+          ],
+        },
+        { configurable: { run_id: 'scheduled', thread_id: 'thread' } },
+      );
+    // The detached child runs with this run's hooks and tools, and what it finishes with
+    // is picked up in a turn that resolves the schedule's grant again.
+    for (const args of [
+      { run_in_background: true },
+      { run_in_background: true, subagent_thread_id: 'saved-thread' },
+      { run_in_background: false },
+    ])
+      expect(JSON.stringify(await call(args, 'delegated'))).not.toContain('Blocked:');
+    expect(start).toHaveBeenCalledTimes(3);
+    await f.service.recordScheduleOutcome({
+      scheduleId: f.schedule.id,
+      scheduledFor: f.scheduledFor,
+      status: 'success',
+      conversationId: 'stream',
+      streamId: 'stream',
+      jobCreatedAt: f.job.createdAt,
+    });
+    const after = await f.methods.getScheduleById(f.schedule.id);
+    expect(after).toMatchObject({ enabled: true, lastRun: { status: 'success' } });
+    expect(after!.lastRun).not.toHaveProperty('mcp');
+    expect(agentId).toBeDefined();
+  },
+);
+
+it('runs a completion turn under the grant the schedule holds when the turn starts', async () => {
   const f = await setup(true);
   const scope = {
     ownerId: f.execution.identity.ownerId,
@@ -634,10 +698,12 @@ it('fences both newly prepared and already serialized legacy completion turns af
     f.methods.getScheduleMCPCompletionState,
   );
   expect(identity).toEqual(f.execution.identity);
+  // The task began before the owner authorized the schedule. Its completion turn still acts
+  // for the schedule, and for nothing the schedule's owner has not allowed by then.
   await f.enroll();
-  await expect(
-    resolveScheduleMCPCompletion(scope, f.methods.getScheduleMCPCompletionState),
-  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  expect(
+    await resolveScheduleMCPCompletion(scope, f.methods.getScheduleMCPCompletionState),
+  ).toEqual(identity);
   const host = createScheduleMCPRuntimeHost({
     methods: f.methods,
     getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
@@ -656,21 +722,23 @@ it('fences both newly prepared and already serialized legacy completion turns af
   });
   for (const sourceId of ['subagent-completion', 'background-tool-completion']) {
     for (const marker of [{ version: 1, sourceId, scheduleMCPIdentity: identity }]) {
-      const initialize = jest.fn(async () => 'mutation would execute');
+      const context = createMCPRequestContext();
+      const initialize = jest.fn(async () => getScheduleMCPExecution(context));
       const req = {
         user: { id: f.execution.identity.ownerId, tenantId: 'tenant' },
         _isAgentTrigger: true,
         _isScheduledFire: false,
         body: { conversationId: 'stream', agent_id: 'root', agentCompletion: marker },
       };
-      await expect(
-        initializeWithScheduleMCPExecution(
-          { req, context: createMCPRequestContext() },
-          () => host,
-          initialize,
-        ),
-      ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
-      expect(initialize).not.toHaveBeenCalled();
+      // The turn is given the schedule's grant, resolved now: not the unrestricted run the
+      // task began under, and not a refusal.
+      const attached = await initializeWithScheduleMCPExecution(
+        { req, context },
+        () => host,
+        initialize,
+      );
+      expect(attached).toMatchObject({ enrolled: true, identity });
+      expect(attached!.narrow('root', ['web_search', 'tool_search'])).toEqual(['tool_search']);
     }
   }
 });
@@ -886,7 +954,7 @@ it('scopes captured completion lineage to its owner, tenant and root, and reject
   });
 });
 
-it('refuses an authenticated completion approval after its original schedule was enrolled and revoked', async () => {
+it('gives a resumed completion turn nothing to act with once the schedule was authorized and that was revoked', async () => {
   const f = await setup(true);
   const identity = f.execution.identity;
   const host = createScheduleMCPRuntimeHost({
@@ -908,7 +976,8 @@ it('refuses an authenticated completion approval after its original schedule was
   await f.enroll();
   const snapshot = await f.methods.readScheduleMCPConsent(identity);
   await f.methods.revokeScheduleMCPConsent(identity, snapshot!.enrollment!.revision);
-  const provider = jest.fn(async () => 'approved read would execute');
+  const context = createMCPRequestContext();
+  const provider = jest.fn(async () => getScheduleMCPExecution(context));
   const req = {
     user: { id: identity.ownerId, tenantId: 'tenant' },
     _isAgentTrigger: false,
@@ -923,18 +992,25 @@ it('refuses an authenticated completion approval after its original schedule was
       },
     },
   };
+  // The turn runs, under the grant as it stands: revoked. It loads none of the agent's
+  // other tools, and the read the owner approved earlier is refused where it is made.
+  const attached = await initializeWithScheduleMCPExecution(
+    { req, context, restoredJob: { scheduleMCPCompletion: identity } as never },
+    () => host,
+    provider,
+  );
+  expect(attached).toMatchObject({ enrolled: true, stage: 'resume', identity });
+  expect(attached!.narrow('child', ['web_search', 'execute_code'])).toEqual([]);
+  expect(attached!.grantsTool('child', 'web_search')).toBe(false);
   await expect(
-    initializeWithScheduleMCPExecution(
-      {
-        req,
-        context: createMCPRequestContext(),
-        restoredJob: { scheduleMCPCompletion: identity } as never,
-      },
-      () => host,
-      provider,
-    ),
-  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
-  expect(provider).not.toHaveBeenCalled();
+    bindScheduledMCPInvocation(context, 'child', 'query')!.authorize({
+      user: { id: identity.ownerId, tenantId: 'tenant' } as never,
+      serverName: 'warehouse',
+      serverConfig: { type: 'streamable-http', url: 'https://warehouse.example/mcp' } as never,
+      toolName: 'query',
+      loadTools: async () => ({ tools: [], complete: true }),
+    }),
+  ).rejects.toBeInstanceOf(ScheduledMCPPolicyError);
 });
 
 it('persists completion identity before tool construction and restores its monitor across repeated approvals', async () => {
@@ -999,20 +1075,25 @@ it('persists completion identity before tool construction and restores its monit
       },
     );
   }
+  // The owner authorizes the schedule while the turn is paused: its next resume runs under
+  // that grant, with the same lineage.
   await f.enroll();
   const context = createMCPRequestContext();
-  await expect(
-    initializeWithScheduleMCPExecution(
-      {
-        req: { ...req, _isAgentTrigger: false },
-        context,
-        restoredJob: { scheduleMCPCompletion: lineage },
-      },
-      () => host,
-      provider,
-    ),
-  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
-  expect(provider).toHaveBeenCalledTimes(1);
+  await initializeWithScheduleMCPExecution(
+    {
+      req: { ...req, _isAgentTrigger: false },
+      context,
+      restoredJob: { scheduleMCPCompletion: lineage },
+    },
+    () => host,
+    provider,
+  );
+  expect(provider).toHaveBeenCalledTimes(2);
+  expect(getScheduleMCPExecution(context)).toMatchObject({
+    enrolled: true,
+    stage: 'resume',
+    identity: lineage,
+  });
 });
 
 it('cannot launch a completion when its lineage cannot be durably retained', async () => {

@@ -196,6 +196,11 @@ export interface UpdateScheduleOptions {
 
 export type ScheduleMethods = {
   /** Resolves live state only for a task's captured schedule identity. */
+  /**
+   * What a background task's completion turn may still act for. `null` when the schedule is
+   * gone, being deleted, erased, or now runs another agent: there is nothing left to act for.
+   * Otherwise whether it holds a grant, which the turn then runs under.
+   */
   getScheduleMCPCompletionState: (
     identity: ScheduledMCPIdentity,
   ) => Promise<{ identity: ScheduledMCPIdentity; enrolled: boolean } | null>;
@@ -1091,15 +1096,14 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       .select('agent_id mcpConsent deleting erased')
       .read('primary')
       .lean<ISchedule>();
-    return {
-      identity,
-      enrolled:
-        !schedule ||
-        schedule.agent_id !== identity.agentId ||
-        schedule.deleting === true ||
-        schedule.erased === true ||
-        schedule.mcpConsent !== undefined,
-    };
+    if (
+      !schedule ||
+      schedule.agent_id !== identity.agentId ||
+      schedule.deleting === true ||
+      schedule.erased === true
+    )
+      return null;
+    return { identity, enrolled: schedule.mcpConsent !== undefined };
   }
 
   /** The generation owner's abort-coordination view (see abortPersistedAt). */

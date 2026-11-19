@@ -172,6 +172,31 @@ it('replaces the grant with an edit only while it is the grant the new one was d
   expect(await edit(next('grant-3', 2), 1, null)).toBeNull();
 });
 
+it('tells a completion turn whether its schedule is still there to act for, and whether it holds a grant', async () => {
+  const methods = createScheduleMethods(mongoose);
+  const state = () => methods.getScheduleMCPCompletionState(identity);
+  // No grant, then one: either way there is a schedule for the turn to act for.
+  expect(await state()).toEqual({ identity, enrolled: false });
+  await confirm();
+  expect(await state()).toEqual({ identity, enrolled: true });
+  // Revoked is still a grant: the turn runs under it, and is refused its tools by it.
+  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+  expect(await state()).toEqual({ identity, enrolled: true });
+  // Moved to another agent, being deleted, or gone: nothing left to act for.
+  expect(
+    await methods.getScheduleMCPCompletionState({ ...identity, agentId: 'another' }),
+  ).toBeNull();
+  await mongoose.models.Schedule.updateOne({ id: identity.scheduleId }, { deleting: true });
+  expect(await state()).toBeNull();
+  await mongoose.models.Schedule.updateOne(
+    { id: identity.scheduleId },
+    { $unset: { deleting: 1 }, $set: { erased: true } },
+  );
+  expect(await state()).toBeNull();
+  await mongoose.models.Schedule.deleteMany({});
+  expect(await state()).toBeNull();
+});
+
 it('does not revive stale enrollment through a later enabled-state edit', async () => {
   await confirm();
   const methods = createScheduleMethods(mongoose);

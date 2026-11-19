@@ -162,6 +162,32 @@ server is one such key (`sys__all__sys_mcp_notes`), which stands for every tool 
 - A grant that limits MCP tools only, as an API key's does, has no other tools to list them
   among, so it does not cover them.
 
+### Work a run sends to the background
+
+A scheduled run under a grant may send a tool call to the background and start detached
+subagent tasks, as the same agent does in chat.
+
+- The call or the child runs in the process that started it, with that run's hooks and the
+  tool lists already narrowed to the grant: each MCP call is still authorized where it is
+  made, and the run's hook still sees each tool of a detached child (the SDK gives the child
+  a fork of the parent's hook registry).
+- What it finishes with is picked up in a completion turn: a new request that acts for the
+  schedule by the identity captured when the work began. That turn resolves the schedule's
+  grant again and runs under it as any run does, so it has what the owner allows then. A
+  grant made, narrowed or revoked while the work ran applies; nothing is inherited from the
+  run that started the work. A turn resumed after pausing for the owner carries the
+  approvals they gave.
+- The host addresses that turn to the agent that started the work. Where the root handed off
+  to it, the turn's graph does not contain the root, and the run's hook does not ask for it
+  there (`execution.completion`): each tool is still checked against what the grant holds
+  for the agent that calls it.
+- The background poll (`check_background_task`) is a tool the host adds, like the SDK's own
+  controls. No owner selects it, so it is not something a grant lists, and it is not refused.
+- A schedule that is gone, being deleted, or now runs another agent has no completion turn.
+- A schedule held without a grant still starts nothing in the background.
+- A grant held by an API key keeps its runs in the foreground (`detaches` is false): a
+  completion turn has no way to find that grant again.
+
 ### A tool the owner approves call by call
 
 Beside allowing a tool, the owner can set it to "ask me first". The grant stores those tools

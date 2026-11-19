@@ -1352,6 +1352,46 @@ describe('a tool the owner approves call by call', () => {
     await expect(f.use(resumed, 'call-2')).rejects.toMatchObject(refused);
   });
 
+  it('carries them into a resumed completion turn of a background task, and into no fresh one', async () => {
+    const f = await asking();
+    const marker = { version: 1, sourceId: 'background-tool-completion' };
+    const completion = (resumed: boolean) => {
+      const context = createMCPRequestContext();
+      return f.host
+        .prepare({
+          req: {
+            user: f.user,
+            _isAgentTrigger: !resumed,
+            body: {
+              conversationId: 'completion',
+              agent_id: 'root',
+              agentCompletion: { ...marker, scheduleMCPIdentity: f.identity },
+            },
+          },
+          context,
+          ...(resumed && { restoredJob: { scheduleMCPCompletion: f.identity } }),
+          approvedToolCalls: ['call-1'],
+        })
+        .then(() => context);
+    };
+    // The turn that picks the result up runs under the schedule's grant: it asks like any run.
+    const fresh = await completion(false);
+    expect(getScheduleMCPExecution(fresh)).toMatchObject({
+      enrolled: true,
+      stage: 'invoke',
+      // A schedule is found again by its identity, so its runs may send work off.
+      detaches: true,
+      // And the turn may be rooted at the agent that started the work.
+      completion: true,
+    });
+    await expect(f.use(fresh, 'call-1')).rejects.toMatchObject(refused);
+    // Paused for the owner and resumed: the call they approved goes through, and only that one.
+    const resumed = await completion(true);
+    expect(getScheduleMCPExecution(resumed)).toMatchObject({ enrolled: true, stage: 'resume' });
+    await expect(f.use(resumed, 'call-1')).resolves.toBeUndefined();
+    await expect(f.use(resumed, 'call-2')).rejects.toMatchObject(refused);
+  });
+
   it('does not fail the readiness check of a schedule that will ask', async () => {
     const f = await asking();
     await expect(f.check()).resolves.toBeDefined();

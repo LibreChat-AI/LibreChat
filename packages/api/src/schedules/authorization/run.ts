@@ -11,6 +11,7 @@ import type { ScheduleMCPExecution } from './execution';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME } from '~/agents/memory';
 import { isStatefulCodeEnvironmentToolName } from '~/agents/hitl/byom';
+import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
 import { ScheduledMCPPolicyError } from './policy';
 
 const MEMORY_TOOL_NAMES = new Set<string>([SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME]);
@@ -149,10 +150,16 @@ export function createScheduledMCPRunPolicy(
   };
   agents.forEach(registerAgent);
   registerGraph(agents, edges);
+  /**
+   * Tools the host or the SDK adds to a run, which no owner selects and no grant lists. The
+   * background poll is one: a run that may send work to the background must be able to ask
+   * what became of it.
+   */
   const controls = new Set<string>([
     Constants.SUBAGENT,
     Constants.TOOL_SEARCH,
     ASK_USER_QUESTION_TOOL_NAME,
+    CHECK_BACKGROUND_TASK_NAME,
   ]);
   /**
    * Whether the grant lists this tool of the agent's, one that is not an MCP tool. Some items
@@ -168,21 +175,29 @@ export function createScheduledMCPRunPolicy(
     (SKILL_TOOL_NAMES.has(name) && execution.grantsTool(agentId, AgentCapabilities.skills));
   const denied = (input: Parameters<HookCallback<'PreToolUse'>>[0]): boolean => {
     const agentId = input.executingAgentId;
-    // Foreground delegation stays in this guarded run; detached continuations do not.
+    // A run held without a grant starts nothing in the background: what it started would
+    // finish in a turn of its own, after this hook. Under a grant whose subject that turn can
+    // find again (`detaches`), the turn resolves the grant itself, so background work is
+    // allowed like any other use of the tool. Under any other grant it stays refused.
     if (
+      !(execution.enrolled && execution.detaches) &&
       input.toolInput.run_in_background === true &&
       (input.toolName === Constants.SUBAGENT ||
         (agentId != null && backgroundTools.get(agentId)?.has(input.toolName)))
     )
       return true;
     return !(
-      mcpTools.has(execution.identity.agentId) &&
-      agentId != null &&
-      mcpTools.has(agentId) &&
-      (controls.has(input.toolName) ||
-        handoffs.get(agentId)?.has(input.toolName) === true ||
-        mcpTools.get(agentId)!.has(input.toolName) ||
-        allowsTool(agentId, input.toolName))
+      // An ordinary run is the schedule's graph, root included. A completion turn is addressed
+      // to the agent that started the work, which the root may only have handed off to.
+      (
+        (execution.completion || mcpTools.has(execution.identity.agentId)) &&
+        agentId != null &&
+        mcpTools.has(agentId) &&
+        (controls.has(input.toolName) ||
+          handoffs.get(agentId)?.has(input.toolName) === true ||
+          mcpTools.get(agentId)!.has(input.toolName) ||
+          allowsTool(agentId, input.toolName))
+      )
     );
   };
   const decisions = new WeakMap<object, Promise<ScheduledMCPPolicyError | undefined>>();

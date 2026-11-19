@@ -5645,10 +5645,17 @@ describe('HITL wiring is gated on hitlCapable', () => {
     },
   );
 
-  it.each([true, false])(
-    'withholds detached task/wakeup capabilities only for enrolled=%s',
-    async (enrolled) => {
-      const f = await executionFixture();
+  // A schedule's completion turn finds its grant again, so its runs keep these capabilities
+  // with or without a grant. A grant that cannot be found again keeps its runs foreground.
+  it.each([
+    ['a schedule grant', true, true],
+    ['no grant', false, true],
+    ['a grant its completion turn could not find again', true, false],
+  ] as const)(
+    'withholds detached task/wakeup capabilities only under such a grant: %s',
+    async (_name, enrolled, detaches) => {
+      const withheld = enrolled && !detaches;
+      const f = await executionFixture('invoke', undefined, undefined, { detaches });
       if (!enrolled) f.snapshot.enrollment = null;
       const execution = (await f.factory.resolve(f.identity, 'invoke'))!;
       const tasks = {
@@ -5672,23 +5679,23 @@ describe('HITL wiring is gated on hitlCapable', () => {
         } as unknown as AppConfig,
       });
       const config = (Run.create as jest.Mock).mock.calls[0][0];
-      expect(config.subagentTasks).toBe(enrolled ? undefined : tasks);
+      expect(config.subagentTasks).toBe(withheld ? undefined : tasks);
       const params = buildSubagentToolParams(config.graphConfig.agents[0].subagentConfigs, {
         background: config.subagentTasks != null,
         threadContinuation: true,
       });
       expect(
         Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'run_in_background'),
-      ).toBe(!enrolled);
+      ).toBe(!withheld);
       expect(
         Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'subagent_thread_id'),
-      ).toBe(!enrolled);
+      ).toBe(!withheld);
       const agent = config.graphConfig.agents[0];
       expect(agent.subagentConfigs).toEqual([
         expect.objectContaining({ type: 'child', allowNested: true }),
       ]);
       const names = (agent.toolDefinitions ?? []).map((tool: { name: string }) => tool.name);
-      expect(names.includes('check_background_task')).toBe(!enrolled);
+      expect(names.includes('check_background_task')).toBe(!withheld);
     },
   );
 
