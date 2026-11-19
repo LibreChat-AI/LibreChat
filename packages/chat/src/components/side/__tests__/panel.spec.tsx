@@ -632,6 +632,45 @@ describe('SideChatPanel', () => {
       expect(sendMessages).toHaveBeenCalledTimes(2);
     });
 
+    it('sends the queue when a reply it had been closed on is lost after it was opened again, and its stored reply is whole', async () => {
+      const view = setup({ steers: true });
+      const { store, streams, sendMessages, setRunning } = view;
+      const asked = await start(view);
+      act(() => {
+        streams[0].push({
+          type: 'created',
+          data: { created: true, message: asked, turn: { responseMessageId: 'response-2' } },
+        } as ChatEvent);
+      });
+      await settle();
+      act(() => store.set(queuedMessagesByConvoId(conversationId), [queued]));
+      view.unmount();
+      setRunning({ active: true, streamId: conversationId, createdAt: 3000 });
+      view.remount();
+      await waitFor(() => expect(streams).toHaveLength(2));
+
+      /** Its stream drops, and by the time it is looked for again it has finished. */
+      setRunning({ active: false });
+      view.loadMessages.mockResolvedValue([
+        user,
+        reply('response-1', 'It shipped.'),
+        asked,
+        {
+          ...reply('response-2', 'Two fixes.', asked.messageId),
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+      act(() => streams[1].push({ type: 'error', status: 0 }));
+
+      /** Lost, so its end was not heard; but it was remembered, and the stored reply tells it. */
+      await waitFor(() => expect(sendMessages).toHaveBeenCalledTimes(2), { timeout: 5000 });
+      expect(sendMessages.mock.calls[1][0].payload).toMatchObject({
+        text: 'And then?',
+        parentMessageId: 'response-2',
+      });
+      expect(store.get(detachedRunByConvoId(conversationId))).toBeNull();
+    });
+
     it('lets go of an earlier run’s markers when another generation is followed', async () => {
       const view = setup({ steers: true });
       const { store } = view;

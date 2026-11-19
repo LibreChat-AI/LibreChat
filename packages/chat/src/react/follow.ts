@@ -31,6 +31,7 @@ import {
   getRecoverySteerId,
   settleStoredSteers,
   settleFinishedSteers,
+  resolveLostRunOutcome,
   restoreRefusedStart,
   toStartGenerationError,
   restoreReleasedSource,
@@ -104,8 +105,9 @@ export type FollowChatOptions = {
    */
   onDetached?: (run: DetachedRun) => void;
   /**
-   * The conversation was opened with nothing running under it. `messages` are its stored rows
-   * as just read, which hold whatever an earlier run left.
+   * The conversation was found with nothing running under it: as it opened, or after the stream
+   * of a run it was following was gone. `messages` are its stored rows as just read, which hold
+   * whatever an earlier run left.
    */
   onIdle?: (messages: TMessage[]) => void;
 };
@@ -541,13 +543,25 @@ export function useFollowChat({
      */
     const settleSteers = async (current: Attachment, turn?: SubmittedTurn): Promise<void> => {
       const steers = host.current.beside?.steers;
-      if (steers == null) {
+      /** A stream that was gone leaves no frame: whether anything runs now is the status's to say. */
+      const lost = current.terminal == null && current.finished?.isSettled === true && turn == null;
+      if (steers == null && !lost) {
         return;
       }
       const status = await Promise.resolve(host.current.transport.getStatus?.(id)).catch(
         () => undefined,
       );
       if (stale || status?.active === true) {
+        return;
+      }
+      /**
+       * Nothing is running, and the rows just read are what the lost run left. A caller that
+       * remembered this run when it stopped watching it earlier can read its end from them.
+       */
+      if (lost && status != null) {
+        host.current.onIdle?.(chat.messages);
+      }
+      if (steers == null) {
         return;
       }
       settleStoredSteers(steers, id, {
@@ -835,6 +849,63 @@ export function useFollowChat({
      * stored ones that may not hold them yet, and the attachment is made again. An attachment
      * that delivered something starts the count of failed ones over.
      */
+    /**
+     * The connection to a generation failed past its last retry. That is the transport giving
+     * up, not the generation ending, so the server's status decides, as it does for main chat's
+     * session. Still running, or not known: nothing is settled, and it is looked for again
+     * after a wait. Over: the stored rows are read, its steers are settled against them, and
+     * its end is said with the outcome the status gives. Returns whether its end was said.
+     */
+    const settleUnreachable = async (): Promise<boolean> => {
+      const known = generation;
+      const turn = answering;
+      if (known == null) {
+        return false;
+      }
+      const status = await Promise.resolve(host.current.transport.getStatus?.(id)).catch(
+        () => undefined,
+      );
+      if (stale) {
+        return false;
+      }
+      if (status == null || status.active === true) {
+        await pause(getReconnectDelay(MAX_RETRIES));
+        owed = !stale;
+        return false;
+      }
+      reading = true;
+      const rows = await read().then(
+        () => true,
+        () => false,
+      );
+      if (stale) {
+        return false;
+      }
+      const steers = host.current.beside?.steers;
+      if (steers != null) {
+        settleStoredSteers(steers, id, {
+          messages: rows ? chat.messages : undefined,
+          status,
+          generationProtocolVersion: known.protocolVersion,
+        });
+      }
+      const outcome = resolveLostRunOutcome(status, known.createdAt, rows);
+      forget();
+      host.current.onRunEnd?.({
+        outcome,
+        generationCreatedAt: known.createdAt,
+        responseMessageId:
+          outcome === 'completed'
+            ? completedResponseMessageId(
+                chat.messages,
+                turn?.userMessageId,
+                status.resumeState?.responseMessageId ?? turn?.responseMessageId,
+              )
+            : undefined,
+      });
+      return true;
+    };
+
     const attach = async (): Promise<void> => {
       if (stale || !loaded) {
         return;
@@ -855,6 +926,8 @@ export function useFollowChat({
       let reached = false;
       /** The last attachment, whose end is the generation's unless it dropped. */
       let last: Attachment | undefined;
+      /** Whether attaching failed past its last retry. */
+      let unreachable = false;
       try {
         for (let failures = 0, absences = 0; !stale; ) {
           last = await follow();
@@ -875,23 +948,28 @@ export function useFollowChat({
           }
           failures = received ? 1 : failures + 1;
           if (failures > MAX_RETRIES) {
-            reached = false;
-            return;
+            unreachable = true;
+            break;
           }
           await pause(getReconnectDelay(failures));
         }
         if (stale) {
           return;
         }
-        reading = true;
-        await read();
-        if (last != null && unsettled(last)) {
-          await settleSteers(last);
+        if (unreachable) {
+          /** The connection gave up, which is not the generation ending: its status says. */
+          reached = await settleUnreachable();
+        } else {
+          reading = true;
+          await read();
+          if (last != null && unsettled(last)) {
+            await settleSteers(last);
+          }
+          if (stale) {
+            return;
+          }
+          runEnded(last, true);
         }
-        if (stale) {
-          return;
-        }
-        runEnded(last, true);
       } catch {
         /** The chat reports a stream failure itself; a failed re-read leaves what it streamed. */
       } finally {
