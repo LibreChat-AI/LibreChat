@@ -72,7 +72,7 @@ function page() {
 async function openCode(user: ReturnType<typeof userEvent.setup>) {
   await user.click(
     await screen.findByRole('button', {
-      name: /^Use in Direct Messages: agent agent, Discord user 789/,
+      name: /^Use for DMs: agent agent, Discord user 789/,
     }),
   );
   await user.click(screen.getByRole('button', { name: 'Generate Code' }));
@@ -118,7 +118,7 @@ test('issues only an owned active link revision, keeps code out of query and mut
   await f.user.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument();
   await f.user.click(
-    screen.getByRole('button', { name: /^Use in Direct Messages: agent agent, Discord user 789/ }),
+    screen.getByRole('button', { name: /^Use for DMs: agent agent, Discord user 789/ }),
   );
   expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Generate Code' })).toBeVisible();
@@ -140,7 +140,7 @@ test('ignores a code that resolves after dialog cancellation or an account switc
   expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument();
   await f.user.click(
     await screen.findByRole('button', {
-      name: /^Use in Direct Messages: agent agent, Discord user 789/,
+      name: /^Use for DMs: agent agent, Discord user 789/,
     }),
   );
   expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument();
@@ -192,7 +192,7 @@ test.each(['pending', 'accepted', 'expired', 'revoked', 'unavailable'] as const)
     );
     expect(
       screen.queryByRole('button', {
-        name: /^Use in Direct Messages: agent agent, Discord user 789/,
+        name: /^Use for DMs: agent agent, Discord user 789/,
       }),
     ).not.toBeInTheDocument();
   },
@@ -218,7 +218,7 @@ test('does not offer Slack links for Discord selection', async () => {
   );
   expect(
     screen.queryByRole('button', {
-      name: /^Use in Direct Messages: agent agent, Discord user 789/,
+      name: /^Use for DMs: agent agent, Discord user 789/,
     }),
   ).not.toBeInTheDocument();
 });
@@ -233,7 +233,7 @@ test('disabled deployments still allow revision-fenced cleanup of unavailable se
   );
   expect(
     screen.queryByRole('button', {
-      name: /^Use in Direct Messages: agent agent, Discord user 789/,
+      name: /^Use for DMs: agent agent, Discord user 789/,
     }),
   ).not.toBeInTheDocument();
   const trigger = await screen.findByRole('button', {
@@ -371,9 +371,7 @@ test('copies the temporary selection code explicitly and offers manual copy on f
   expect(screen.getByRole('button', { name: 'Copied' })).toBeVisible();
   mockClipboard.mockReturnValue(false);
   await f.user.click(screen.getByRole('button', { name: 'Copied' }));
-  expect(
-    await screen.findByText('Select the link below to copy it manually.'),
-  ).toBeVisible();
+  expect(await screen.findByText('Select the link below to copy it manually.')).toBeVisible();
   expect(screen.getByLabelText('Selection code')).toHaveValue(secret);
   await f.user.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
