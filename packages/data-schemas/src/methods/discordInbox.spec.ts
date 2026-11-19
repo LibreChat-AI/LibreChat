@@ -5,12 +5,14 @@ import type { SubmitDiscordInteraction } from './discordInbox';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { withRequiredTransaction } from '~/utils/transactions';
+import { createDiscordInboxErasure } from './discordReceipt';
 import { createDiscordInstallationStorage } from './discord';
 import { createDiscordInboxStorage } from './discordInbox';
 import { createDiscordRouteStorage } from './discordRoute';
 import { touchDiscordInbox } from './discordInboxScope';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
+import { lockChannelScope } from './channelScope';
 import { createModels } from '~/models';
 
 const db = new mongoose.Mongoose();
@@ -85,6 +87,8 @@ beforeEach(async () => {
       'DiscordGuild',
       'DiscordRoute',
       'DiscordInbox',
+      'DiscordReceipt',
+      'DiscordReservation',
       'ChannelScope',
       'ChannelIdentity',
       'ChannelRun',
@@ -495,4 +499,154 @@ it('fences consent replacement and run admission against inbox lease reclamation
     await expect(
       runs.admit({ ...enrollment, discordInbox: second }, now + 30001),
     ).rejects.toMatchObject({ code: 'stale_fence' });
+  }));
+
+it('erases private inbox rows atomically while retaining opaque replay receipts', () =>
+  scope(async () => {
+    await storage.submit(input(), now);
+    const fence = await claim();
+    await storage.prepareReply(fence, 'private-reply', now);
+    const erasure = createDiscordInboxErasure(db, async (scope, session) => {
+      await lockChannelScope(db, scope.tenantId, scope.channelId, session);
+    });
+    await erasure.erase({ kind: 'channel', tenantId, channelId: channel.channelId }, 1);
+    expect(await db.models.DiscordInbox.countDocuments()).toBe(0);
+    const receipt = await db.models.DiscordReceipt.findOne({ applicationId, eventId }).lean();
+    expect(receipt).toMatchObject({
+      applicationId,
+      eventId,
+      fingerprint: expect.any(String),
+      purgeAt: expect.any(Date),
+    });
+    for (const field of [
+      'tenantId',
+      'channelId',
+      'externalUserId',
+      'guildId',
+      'action',
+      'encryptedToken',
+      'encryptedReply',
+    ])
+      expect(receipt).not.toHaveProperty(field);
+    expect(await storage.renew(fence, now)).toBe(false);
+    expect(await storage.prepareReply(fence, 'late', now)).toMatchObject({
+      ok: false,
+      error: { code: 'stale_fence' },
+    });
+    expect(await storage.submit(input(), now)).toMatchObject({
+      ok: false,
+      error: { code: 'expired' },
+    });
+    expect(
+      await storage.submit(input({ action: { kind: 'ask', prompt: 'changed' } }), now),
+    ).toMatchObject({ ok: false, error: { code: 'event_conflict' } });
+    await erasure.erase({ kind: 'channel', tenantId, channelId: channel.channelId });
+    expect(await db.models.DiscordReceipt.countDocuments()).toBe(1);
+  }));
+
+it('rolls back the replay receipt when inbox erasure fails', () =>
+  scope(async () => {
+    await storage.submit(input(), now);
+    const erasure = createDiscordInboxErasure(db, async (scope, session) => {
+      await lockChannelScope(db, scope.tenantId, scope.channelId, session);
+    });
+    const spy = jest
+      .spyOn(db.models.DiscordInbox.collection, 'deleteMany')
+      .mockRejectedValueOnce(new Error('erasure failed'));
+    await expect(
+      erasure.erase({ kind: 'channel', tenantId, channelId: channel.channelId }),
+    ).rejects.toThrow('erasure failed');
+    spy.mockRestore();
+    expect(await db.models.DiscordReceipt.countDocuments()).toBe(0);
+    expect(
+      await db.models.DiscordInbox.findOne({ eventId }).select('+encryptedToken').lean(),
+    ).toHaveProperty('encryptedToken');
+  }));
+
+it('bounds pending work by physical Discord destination across different actors', () =>
+  scope(async () => {
+    storage = createDiscordInboxStorage(db, async () => ({ maxPendingPerChannel: 1 }));
+    expect(await storage.submit(input(), now)).toMatchObject({ ok: true });
+    expect(
+      await storage.submit(
+        input({ eventId: '567890123456789013', externalUserId: '456789012345678902' }),
+        now,
+      ),
+    ).toMatchObject({ ok: false, error: { code: 'capacity' } });
+    const channels = createAgentChannelMethods(db);
+    await channels.createAgentChannel({
+      ...channel,
+      channelId: 'replacement',
+      status: 'pending_install',
+      revision: 'replacement-revision',
+      applicationRevision,
+    });
+    const routes = createDiscordRouteStorage(db);
+    const previous = await routes.read(channel.installationId, externalChannelId);
+    if (!previous) throw new Error('Missing route');
+    const assigned = await routes.assign({
+      actorId: owner,
+      installationId: channel.installationId,
+      installationRevision: channel.installationRevision,
+      applicationRevision,
+      externalChannelId,
+      channelId: 'replacement',
+      channelRevision: 'replacement-revision',
+      expectedRevision: previous.revision,
+    });
+    if (!assigned.ok) throw new Error(assigned.error.code);
+    const replacement = await channels.getAgentChannelMetadata('replacement');
+    if (!replacement) throw new Error('Missing replacement');
+    expect(
+      await storage.submit(
+        input({
+          eventId: '567890123456789014',
+          externalUserId: '456789012345678902',
+          channelId: replacement.channelId,
+          channelRevision: replacement.revision,
+        }),
+        now,
+      ),
+    ).toMatchObject({ ok: false, error: { code: 'capacity' } });
+  }));
+
+it('serializes processing effects per actor and destination while other actors progress', () =>
+  scope(async () => {
+    const second = '567890123456789013';
+    const other = '567890123456789014';
+    await storage.submit(input(), now);
+    await storage.submit(input({ eventId: second }), now + 1);
+    await storage.submit(input({ eventId: other, externalUserId: '456789012345678902' }), now + 2);
+    const claims = await Promise.all([
+      storage.claim(applicationId, 'worker1', now + 2),
+      storage.claim(applicationId, 'worker2', now + 2),
+    ]);
+    expect(claims.map((row) => row?.eventId).sort()).toEqual([eventId, other]);
+    expect(await storage.claim(applicationId, 'worker3', now + 3)).toBeNull();
+    const first = claims.find((row) => row?.eventId === eventId)!;
+    expect(
+      await storage.prepareReply(
+        { applicationId, eventId, owner: first.leaseOwner!, epoch: first.leaseEpoch },
+        'reply',
+        now + 3,
+      ),
+    ).toMatchObject({ ok: true });
+    expect(await storage.claim(applicationId, 'worker3', now + 3)).toMatchObject({
+      eventId: second,
+    });
+  }));
+
+it('reclaims expired processing before starting a later event for that actor', () =>
+  scope(async () => {
+    await storage.submit(input(), now);
+    const first = await storage.claim(applicationId, 'lost-worker', now);
+    if (!first) throw new Error('Missing first claim');
+    await storage.submit(input({ eventId: '567890123456789013' }), now + 1);
+    const recovered = await storage.claim(
+      applicationId,
+      'replacement-worker',
+      first.leaseExpiresAt,
+    );
+    expect(recovered).toMatchObject({ eventId, leaseEpoch: first.leaseEpoch + 1 });
+    expect(await storage.claim(applicationId, 'later-worker', first.leaseExpiresAt)).toBeNull();
   }));

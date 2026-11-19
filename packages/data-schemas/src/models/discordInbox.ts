@@ -85,6 +85,15 @@ export function createDiscordInboxModel(
     receivedAt: 1,
   });
   schema.index({ tenantId: 1, channelId: 1, externalUserId: 1, state: 1 });
+  schema.index({
+    tenantId: 1,
+    applicationId: 1,
+    guildId: 1,
+    externalChannelId: 1,
+    externalUserId: 1,
+    state: 1,
+    leaseExpiresAt: 1,
+  });
   schema.index({ purgeAt: 1 }, { expireAfterSeconds: 0 });
   applyTenantIsolation(schema);
   return mongoose.model<DiscordInboxRecord>('DiscordInbox', schema);

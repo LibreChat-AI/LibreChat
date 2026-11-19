@@ -13,6 +13,7 @@ import type {
 import type { ClientSession } from 'mongoose';
 import type { DiscordInboxRecord } from '~/models/discordInbox';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { createDiscordReceiptModel } from '~/models/discordReceipt';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createChannelIndexGate } from './channelIndexes';
@@ -109,7 +110,8 @@ export function createDiscordInboxStorage(
   getPolicy: () => Promise<Partial<DiscordChannelConfig['inbox']>> = async () => ({}),
 ): DiscordInboxStorage {
   const inbox = createDiscordInboxModel(mongoose);
-  const ensureIndexes = createChannelIndexGate(() => [inbox]);
+  const receipts = createDiscordReceiptModel(mongoose);
+  const ensureIndexes = createChannelIndexGate(() => [inbox, receipts]);
   const policy = async () => discordChannelConfigSchema.shape.inbox.parse(await getPolicy());
   const tenant = () => {
     const value = getTenantId();
@@ -198,6 +200,12 @@ export function createDiscordInboxStorage(
               : failure('event_conflict');
           if (!(await current({ ...parsed, tenantId }, session)))
             return failure('authority_changed');
+          const erased = await receipts
+            .findOne({ applicationId: parsed.applicationId, eventId: parsed.eventId })
+            .session(session)
+            .lean();
+          if (erased)
+            return failure(erased.fingerprint === fingerprint ? 'expired' : 'event_conflict');
           const filter = {
             tenantId: tenantId ?? null,
             applicationId: parsed.applicationId,
@@ -208,9 +216,17 @@ export function createDiscordInboxStorage(
           const actorCount = await inbox
             .countDocuments({ ...filter, externalUserId: parsed.externalUserId })
             .session(session);
+          const channelCount = await inbox
+            .countDocuments({
+              ...filter,
+              guildId: parsed.guildId,
+              externalChannelId: parsed.externalChannelId,
+            })
+            .session(session);
           if (
             applicationCount >= limits.maxPendingPerApplication ||
-            actorCount >= limits.maxPendingPerActor
+            actorCount >= limits.maxPendingPerActor ||
+            channelCount >= limits.maxPendingPerChannel
           )
             return failure('capacity');
           await inbox.create(
@@ -270,23 +286,56 @@ export function createDiscordInboxStorage(
               { $set: { state: 'failed', result: 'expired', leaseExpiresAt: 0 }, $unset: erase },
               { session },
             );
+          const skipped: string[] = [];
           for (let scanned = 0; scanned < limits.scanLimit; scanned++) {
-            const candidate = await inbox
-              .findOne({
-                tenantId: tenant() ?? null,
-                applicationId,
-                state: { $in: pending },
-                expiresAt: { $gt: now },
-                nextAttemptAt: { $lte: now },
-                leaseExpiresAt: { $lte: now },
-              })
+            const filter = {
+              tenantId: tenant() ?? null,
+              applicationId,
+              state: { $in: pending },
+              expiresAt: { $gt: now },
+              nextAttemptAt: { $lte: now },
+              leaseExpiresAt: { $lte: now },
+              eventId: { $nin: skipped },
+            };
+            // Reclaim unfinished effects before starting later events after a worker crash.
+            const reclaimed = await inbox
+              .findOne({ ...filter, state: 'processing' })
               .sort({ receivedAt: 1, eventId: 1 })
               .select(privateFields)
               .session(session)
               .lean();
+            const candidate =
+              reclaimed ??
+              (await inbox
+                .findOne(filter)
+                .sort({ receivedAt: 1, eventId: 1 })
+                .select(privateFields)
+                .session(session)
+                .lean());
             if (!candidate) return null;
             if (!(await current(candidate, session))) {
               await expire(candidate, 'authority_changed', session);
+              continue;
+            }
+            // current() joins the application fence before reading another worker's lease.
+            // A prepared reply has committed its effects and does not serialize later commands.
+            if (
+              candidate.state !== 'reply' &&
+              (await inbox
+                .exists({
+                  tenantId: tenant() ?? null,
+                  applicationId,
+                  guildId: candidate.guildId,
+                  externalChannelId: candidate.externalChannelId,
+                  externalUserId: candidate.externalUserId,
+                  eventId: { $ne: candidate.eventId },
+                  state: 'processing',
+                  leaseExpiresAt: { $gt: now },
+                  expiresAt: { $gt: now },
+                })
+                .session(session))
+            ) {
+              skipped.push(candidate.eventId);
               continue;
             }
             const claimed = await inbox

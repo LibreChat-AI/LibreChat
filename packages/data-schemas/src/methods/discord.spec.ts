@@ -4,6 +4,8 @@ import type { DiscordStorageResult, DiscordInstallationStorage } from './discord
 import { createDiscordApplicationModel, createDiscordGuildModel } from '~/models/discord';
 import { createDiscordInstallationStorage, touchDiscordInstallation } from './discord';
 import { tenantStorage, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { createDiscordReservationModel } from '~/models/discordReservation';
+import { retireDiscordReservation } from './discordReservation';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { closeResponseScopes } from './responseScope';
 import { createUserModel } from '~/models/user';
@@ -489,3 +491,45 @@ it.each(['credentials', 'public_key'])(
       });
     }),
 );
+
+it('retains only organization reservation metadata and permits fresh same-tenant recovery', async () => {
+  await scoped(async () => {
+    const guild = await connect();
+    await withRequiredTransaction(db, async (session) => {
+      await retireDiscordReservation(db, applicationId, session);
+      await createDiscordApplicationModel(db).deleteOne({ applicationId }, { session });
+      return true;
+    });
+    const reservation = await createDiscordReservationModel(db).findOne({ applicationId }).lean();
+    expect(reservation).toMatchObject({ tenantId, applicationId, retiring: true });
+    expect(reservation).not.toHaveProperty('createdBy');
+    expect(JSON.stringify(reservation)).not.toContain('encrypted');
+    expect(
+      await store.configureApplication({ ...configuration(), actorId: adminId }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'application_unavailable' },
+    });
+    await createDiscordGuildModel(db).deleteOne({ installationId: guild.installationId });
+  });
+  await scoped(async () => {
+    await createUserModel(db).create({
+      _id: '000000000000000000000003',
+      provider: 'local',
+      email: 'foreign@example.test',
+      tenantId: 'other-org',
+    });
+    expect(
+      await store.configureApplication({ ...configuration(), actorId: '000000000000000000000003' }),
+    ).toMatchObject({ ok: false, error: { code: 'application_in_use' } });
+  }, 'other-org');
+  await scoped(async () => {
+    const recovered = value(
+      await store.configureApplication({ ...configuration(), actorId: adminId }),
+    );
+    expect(recovered.createdBy).toBe(adminId);
+    expect(
+      (await createDiscordReservationModel(db).findOne({ applicationId }).lean())?.retiring,
+    ).toBe(false);
+  });
+});
