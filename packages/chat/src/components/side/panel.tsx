@@ -1,13 +1,20 @@
 import { useRef, useEffect, useCallback } from 'react';
-import { useAtom } from 'jotai';
+import { useAtom, useStore } from 'jotai';
 import { ArrowUpRight, X } from 'lucide-react';
 import { cn, Button, Composer, useLocalize, useFocusTrap } from '@librechat/client';
 import type { ComposerStopProps, ComposerKeyVerdict } from '@librechat/client';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
+import type { FollowedGeneration, FollowedRunEnd } from '../../react/follow';
 import type { ChatContract } from '../../react/chat/contract';
 import type { SideChat } from '../../react/side/state';
 import type { SubmittedTurn } from '../../core';
+import {
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+} from '../../react/steer/atoms';
+import { runEndByIndex, drainAfterAbortByIndex } from '../../react/steer/queue';
 import { SIDE_CHAT_PANE, sideChatDraftFamily } from '../../react/side/state';
+import { clearMatchingDrainAfterAbort } from '../../core/steer/drain';
 import { useChatSurface } from '../../react/subagents/surface';
 import { resolveComposerKeyDown } from '../../core/shortcuts';
 import { useSideChatHost } from '../../react/side/host';
@@ -217,7 +224,44 @@ export default function SideChatPanel({
     },
     [setDraft],
   );
-  const followed = host.useChat(chat.conversation, { onWithdrawn: takeBack });
+  /**
+   * The run under this conversation, published where main chat's stream session publishes its
+   * own: the generation in flight, which a stop or a steer addresses, and each run's end, which
+   * lets the next queued message go. So the composer's controls for a run in flight work here.
+   */
+  const store = useStore();
+  const noteGeneration = useCallback(
+    (generation: FollowedGeneration | null) => {
+      store.set(activeGenerationCreatedAtByConvoId(conversationId), generation?.createdAt ?? null);
+      store.set(
+        activeGenerationProtocolVersionByConvoId(conversationId),
+        generation?.protocolVersion ?? 1,
+      );
+    },
+    [conversationId, store],
+  );
+  const noteRunEnd = useCallback(
+    ({ reconcileReason, ...end }: FollowedRunEnd) => {
+      /**
+       * Interrupt and send lets the queue go even on a stopped run. A run whose stop could not
+       * be saved has not been proven stopped, so that leave is taken back before the end is
+       * published; the queued words stay for the reader to send.
+       */
+      if (reconcileReason === 'abort_persistence_failed' && end.generationCreatedAt != null) {
+        const { generationCreatedAt } = end;
+        store.set(drainAfterAbortByIndex(SIDE_CHAT_PANE), (armed) =>
+          clearMatchingDrainAfterAbort(armed, conversationId, generationCreatedAt),
+        );
+      }
+      store.set(runEndByIndex(SIDE_CHAT_PANE), { ...end, conversationId, endedAt: Date.now() });
+    },
+    [conversationId, store],
+  );
+  const followed = host.useChat(chat.conversation, {
+    onWithdrawn: takeBack,
+    onGeneration: noteGeneration,
+    onRunEnd: noteRunEnd,
+  });
   const panelRef = useRef<HTMLDivElement>(null);
 
   /** The pane's conversation is what a turn is built from, so the pane is told which it holds. */

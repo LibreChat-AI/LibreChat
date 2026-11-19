@@ -140,6 +140,8 @@ interface ChatFormProps {
   stopGenerating: () => void;
   /** From ChatContext: the chat stops a reply whether or not its generation has been named. */
   stopsUnnamed: boolean;
+  /** From ChatContext: the chat takes the composer's during-run actions though not main chat. */
+  steers: boolean;
 }
 
 const ChatForm = memo(function ChatForm({
@@ -163,6 +165,7 @@ const ChatForm = memo(function ChatForm({
   handleStopGenerating,
   stopGenerating,
   stopsUnnamed,
+  steers,
 }: ChatFormProps) {
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -401,6 +404,7 @@ const ChatForm = memo(function ChatForm({
     consumeDraft,
     addedConversation: addedConvo,
     index,
+    duringRun: routed || steers,
     conversationId,
     conversation,
     codeEnvironmentMode: codeWorkspace.mode,
@@ -974,6 +978,7 @@ function ChatFormWrapper({
     handleStopGenerating,
     stopGenerating,
     stopsUnnamed = false,
+    steers = false,
   } = useChatContext();
 
   /**
@@ -1055,6 +1060,7 @@ function ChatFormWrapper({
       handleStopGenerating={stableHandleStop}
       stopGenerating={stableStop}
       stopsUnnamed={stopsUnnamed}
+      steers={steers}
     />
   );
 }

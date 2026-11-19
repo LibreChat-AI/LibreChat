@@ -14,6 +14,8 @@ import type {
 import type { ResumableUsage, ResumableSteers, ResumableEvents } from './resumable/host';
 import type { StepEvent, StepEffect, StepContext } from './reducer';
 import type { Placement, PlacementContext } from './parts/place';
+import type { GenerationProtocolVersion } from './protocol';
+import type { FinalSteers } from './resumable/steers';
 import type { ChatEventContext } from './chat';
 import {
   reduceStep,
@@ -34,6 +36,9 @@ import { buildResumeEventSubmission, buildSubmissionFromResumeState } from './re
 import { getStepEventId, isOAuthStepEvent, nameStepResponse } from './resumable/events';
 import { buildCreatedInitialResponse } from './resumable/messages';
 import { placeResumedResponse } from './resumable/placement';
+import { supportsGenerationProtocolV2 } from './protocol';
+import { settleFinalSteers } from './resumable/steers';
+import { ABORT_SWEEP_STATUSES } from './steer/chips';
 import { normalizeFrame } from './transport/frames';
 import { getEditPrefix } from './steps/content';
 import { withEditedPart } from './content';
@@ -60,10 +65,13 @@ export type EventApplierInit = {
   usage?: ResumableUsage;
   onAttachment?: ResumableEvents['attachmentHandler'];
   onTitle?: ResumableEvents['titleHandler'];
-  steers?: Pick<
-    ResumableSteers,
-    'resolve' | 'markLiveApplied' | 'update' | 'seed' | 'settleApplied'
-  >;
+  steers?: Pick<ResumableSteers, 'resolve' | 'markLiveApplied' | 'update' | 'seed'> & FinalSteers;
+  /**
+   * The protocol version of the generation whose frames are being applied, when the caller
+   * knows it: what main chat's session reads off its stream. It decides whether the steers a
+   * terminal frame carries are ones this client may turn into queued turns.
+   */
+  protocol?: () => GenerationProtocolVersion | undefined;
   /**
    * The turn this chat sent and drew rows for, while the stream it opened for it runs. The
    * server stores the turn's message under an id of its own and names that in its `created`
@@ -484,6 +492,38 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     }
   };
 
+  /** The conversation whose steers a terminal frame settles: the frame's, else the turn's. */
+  const steerTarget = (named?: string | null): string | undefined => {
+    const target = named ?? submission?.conversation?.conversationId;
+    return target == null || target === '' ? undefined : target;
+  };
+
+  /**
+   * A run that ends with no final frame leaves the reader's steers where main chat's session
+   * leaves them. An error the server wrote parks the ones it had accepted, so they are claimed
+   * as queued turns and a reload cannot bring their chips back. A stream the reader closed may
+   * still be running on the server, which will take the steers it holds: only the ones it
+   * refused are moved, so they are not drawn under the next reply. A dropped connection (an
+   * error with a status) ends nothing, and moves nothing.
+   */
+  const sweep = (event: Extract<ChatEvent, { type: 'abort' | 'error' }>): void => {
+    const target = steerTarget();
+    if (init.steers == null || target == null) {
+      return;
+    }
+    if (event.type === 'abort') {
+      init.steers.convertLocalToQueued(target, { statuses: ABORT_SWEEP_STATUSES });
+      return;
+    }
+    const generationProtocolVersion = init.protocol?.();
+    if (event.status != null) {
+      return;
+    }
+    if (generationProtocolVersion === 1 || supportsGenerationProtocolV2(event.data)) {
+      init.steers.convertLocalToQueued(target, { claimParked: true, generationProtocolVersion });
+    }
+  };
+
   /** Applies a frame for the state beside the list, or holds it until its turn is named. */
   const beside = (frame: BesideFrame): void => {
     if (frame.type === 'title') {
@@ -707,6 +747,19 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
           ),
         );
       }
+      /**
+       * The reader's steers are settled before the list is: one the run never took becomes a
+       * queued turn here, ahead of whoever is told the run ended and lets the queue go.
+       */
+      const ending = steerTarget(event.data.conversation?.conversationId);
+      /**
+       * Not for a frame that only says the run is over and carries none of it: no reply in it
+       * says which steers the run took, so one it took would be queued to be sent again. Those
+       * are settled against the stored rows, by whoever reads them.
+       */
+      if (init.steers != null && ending != null && event.data.reconcile !== true) {
+        settleFinalSteers(init.steers, ending, event.data, init.protocol?.());
+      }
       mergeFinalFrame(settledFinal(event.data, submission, ctx.messages), ctx);
       if (submission != null) {
         init.usage?.finalizeUsage(event.data, submission);
@@ -719,6 +772,7 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     } else if (event.type === 'abort' || event.type === 'error') {
       /** A turn that stops here keeps every token it streamed. */
       land();
+      sweep(event);
     }
     if (init.schedule == null) {
       land();

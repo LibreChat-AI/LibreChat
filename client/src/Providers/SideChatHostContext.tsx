@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import { useStore } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { createGenerationTransport } from '@librechat/chat';
@@ -14,13 +14,21 @@ import {
   SIDE_CHAT_PANE,
   useUsageHandler,
   toResumableUsage,
+  useOwedSuccessor,
+} from '@librechat/chat/react';
+import type {
+  FollowedChat,
+  SideChatHost,
+  FollowedRunEnd,
+  SideChatOptions,
+  FollowedGeneration,
 } from '@librechat/chat/react';
 import type { Agent, TMessage, TConversation, ChatFinalFrame } from 'librechat-data-provider';
-import type { FollowedChat, SideChatHost, FollowChatOptions } from '@librechat/chat/react';
 import { isTemporaryConversation, proveFetchedReplyByIdentity } from '~/utils';
 import { stagedForHandoff, handedComposerFilesFamily } from '~/store/handoff';
 import useNavigateToConvo from '~/hooks/Conversations/useNavigateToConvo';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
+import { addActiveJob, removeActiveJob } from '~/hooks/SSE/cache';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { createConversationCache } from '~/hooks/SSE/services';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
@@ -30,7 +38,9 @@ import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import { useChatTransport } from './ChatTransportContext';
 import { useChatSettings } from './ChatSettingsContext';
 import { useLiveAnnouncer } from './AnnouncerContext';
+import useResumableSteers from '~/hooks/SSE/steers';
 import { fetchStreamStatus } from '~/data-provider';
+import useSteerState from '~/hooks/SSE/steer';
 
 /**
  * A conversation of the reader's own as a chat they drive: its messages through the ordinary
@@ -42,7 +52,7 @@ function useChat(
     endpoint,
     agent_id,
   }: Pick<TConversation, 'conversationId' | 'endpoint' | 'agent_id'>,
-  options?: Pick<FollowChatOptions, 'onWithdrawn'>,
+  options?: SideChatOptions,
 ): FollowedChat {
   const id = conversationId ?? '';
   const { token } = useChatSettings().auth;
@@ -125,11 +135,41 @@ function useChat(
   );
   /** A turn here is said to a screen reader as main chat's is: started, still going, done. */
   const { announcePolite: announce } = useLiveAnnouncer();
+  /**
+   * The reader's steers, kept by main chat's own steer state: a steer the run takes resolves
+   * its chip, the ones still waiting are seeded from what the server holds, and one the run
+   * never took becomes a queued message when it ends.
+   */
+  const steers = useResumableSteers(useSteerState());
   const beside = useMemo(
-    () => ({ onAttachment, onSettled, announce, usage }),
-    [onAttachment, onSettled, announce, usage],
+    () => ({ onAttachment, onSettled, announce, usage, steers }),
+    [onAttachment, onSettled, announce, usage, steers],
   );
-  return useFollowChat({
+  /**
+   * The generation followed, kept where the app keeps main chat's: listed as running from the
+   * moment its stream names it, so the list does not announce it as one nobody is following,
+   * and taken off the list the moment it ends.
+   */
+  const [attached, setAttached] = useState<number | null>(null);
+  const { onGeneration: tellGeneration, onRunEnd: tellRunEnd } = options ?? {};
+  const onGeneration = useCallback(
+    (named: FollowedGeneration | null) => {
+      setAttached(named?.createdAt ?? null);
+      if (named != null) {
+        addActiveJob(queryClient, id);
+      }
+      tellGeneration?.(named);
+    },
+    [id, queryClient, tellGeneration],
+  );
+  const onRunEnd = useCallback(
+    (end: FollowedRunEnd) => {
+      removeActiveJob(queryClient, id);
+      tellRunEnd?.(end);
+    },
+    [id, queryClient, tellRunEnd],
+  );
+  const followed = useFollowChat({
     id,
     transport: generation,
     loadMessages,
@@ -137,7 +177,63 @@ function useChat(
     enabled: id !== '',
     beside,
     onWithdrawn: options?.onWithdrawn,
+    onGeneration,
+    onRunEnd,
   });
+  useAnnouncedRun(id, attached, followed);
+  return followed;
+}
+
+/**
+ * A run the server starts under the conversation without this chat asking for it is followed
+ * like one it did ask for: the turn the server takes from the reader's queue when a reply ends,
+ * or a run begun from another tab. Main chat learns of both the same way, from the receipts of
+ * the queued turns and the list of running generations, and so does this.
+ *
+ * Looking costs a status read, and a read of the stored rows when nothing is found. So it looks
+ * when a look can change what is shown: each time the list is fetched while it names the
+ * conversation, and when the receipts change (a turn was taken, or dropped) while one is owed.
+ * A turn that waits long before the server takes it is not looked for on every poll.
+ */
+function useAnnouncedRun(id: string, attached: number | null, followed: FollowedChat): void {
+  const { attach } = followed;
+  const busy =
+    followed.isLoading ||
+    followed.isFollowing ||
+    followed.status === 'submitted' ||
+    followed.status === 'streaming';
+  const { successorOwed, hasActiveJobForThisConvo, activeJobsUpdatedAt, receiptSignature } =
+    useOwedSuccessor({
+      conversationId: id === '' ? undefined : id,
+      resumableEnabled: id !== '',
+      attachedGenerationCreatedAt: attached,
+      hasLiveSubmissionForThisConvo: busy,
+    });
+  const announced = hasActiveJobForThisConvo || successorOwed;
+  /** What was last acted on while a run stays announced: the receipts, and the list's fetch. */
+  const seen = useRef<{ receipts: string | null; listed: number | null }>({
+    receipts: null,
+    listed: null,
+  });
+  useEffect(() => {
+    /** Nothing is decided while a run is in hand: a look ends by leaving this state. */
+    if (busy) {
+      return;
+    }
+    if (!announced) {
+      seen.current = { receipts: null, listed: null };
+      return;
+    }
+    const moved = seen.current.receipts !== receiptSignature;
+    const relisted = hasActiveJobForThisConvo && seen.current.listed !== activeJobsUpdatedAt;
+    seen.current = {
+      receipts: receiptSignature,
+      listed: hasActiveJobForThisConvo ? activeJobsUpdatedAt : seen.current.listed,
+    };
+    if (moved || relisted) {
+      attach();
+    }
+  }, [announced, busy, hasActiveJobForThisConvo, activeJobsUpdatedAt, receiptSignature, attach]);
 }
 
 /**

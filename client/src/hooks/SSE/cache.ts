@@ -8,6 +8,7 @@ import {
   buildOptimisticConversation,
 } from '@librechat/chat';
 import type { TMessage, TSubmission, TConversation } from 'librechat-data-provider';
+import type { QueryClient } from '@tanstack/react-query';
 import type { ResumableCache } from '@librechat/chat';
 import type { ActiveJobsResponse } from '~/data-provider';
 import {
@@ -25,6 +26,20 @@ import {
 import { transferFileSearchPreference } from '~/hooks/Files/search';
 import { fetchConvoSnapshot } from '~/utils/convos';
 
+/** Lists a generation as running before the active-job poll has seen it. */
+export function addActiveJob(queryClient: QueryClient, jobId: string): void {
+  queryClient.setQueryData<ActiveJobsResponse>([QueryKeys.activeJobs], (old) => ({
+    activeJobIds: [...new Set([...(old?.activeJobIds ?? []), jobId])],
+  }));
+}
+
+/** Takes a generation that ended off the list before the active-job poll has seen it end. */
+export function removeActiveJob(queryClient: QueryClient, jobId: string): void {
+  queryClient.setQueryData<ActiveJobsResponse>([QueryKeys.activeJobs], (old) => ({
+    activeJobIds: (old?.activeJobIds ?? []).filter((id) => id !== jobId),
+  }));
+}
+
 /** The app's query cache, as a resumable run reads and refreshes it. */
 export default function useResumableCache(
   getMessages: () => TMessage[] | undefined,
@@ -32,29 +47,12 @@ export default function useResumableCache(
 ): ResumableCache {
   const queryClient = useQueryClient();
 
-  /**
-   * Optimistically add a job ID to the active jobs cache.
-   * Called when generation starts.
-   */
-  const addActiveJob = useCallback(
-    (jobId: string) => {
-      queryClient.setQueryData<ActiveJobsResponse>([QueryKeys.activeJobs], (old) => ({
-        activeJobIds: [...new Set([...(old?.activeJobIds ?? []), jobId])],
-      }));
-    },
-    [queryClient],
-  );
+  /** Called when generation starts. */
+  const addJob = useCallback((jobId: string) => addActiveJob(queryClient, jobId), [queryClient]);
 
-  /**
-   * Optimistically remove a job ID from the active jobs cache.
-   * Called when generation completes, aborts, or errors.
-   */
-  const removeActiveJob = useCallback(
-    (jobId: string) => {
-      queryClient.setQueryData<ActiveJobsResponse>([QueryKeys.activeJobs], (old) => ({
-        activeJobIds: (old?.activeJobIds ?? []).filter((id) => id !== jobId),
-      }));
-    },
+  /** Called when generation completes, aborts, or errors. */
+  const removeJob = useCallback(
+    (jobId: string) => removeActiveJob(queryClient, jobId),
     [queryClient],
   );
 
@@ -130,8 +128,8 @@ export default function useResumableCache(
         queryClient.removeQueries({ queryKey: streamStatusQueryKey(conversationId) }),
       invalidateStreamStatus: (conversationId) =>
         queryClient.invalidateQueries({ queryKey: streamStatusQueryKey(conversationId) }),
-      addActiveJob,
-      removeActiveJob,
+      addActiveJob: addJob,
+      removeActiveJob: removeJob,
       fetchConversation: (conversationId) =>
         fetchConvoSnapshot(queryClient, conversationId, () =>
           dataService.getConversationById(conversationId),
@@ -151,6 +149,6 @@ export default function useResumableCache(
       queueTitleGeneration,
       addOptimisticConversation,
     }),
-    [addActiveJob, addOptimisticConversation, queryClient, removeActiveJob],
+    [addJob, addOptimisticConversation, queryClient, removeJob],
   );
 }

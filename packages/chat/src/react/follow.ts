@@ -3,13 +3,16 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { TMessage, ChatEvent, ChatFinalFrame } from 'librechat-data-provider';
 import type {
   ChatStatus,
+  ChatStream,
   ChatTransport,
   SubmittedTurn,
   ChatConnection,
   AnnounceOptions,
   ChatFinishResult,
+  ResumableSteers,
   EventApplierInit,
   EventApplierEffect,
+  GenerationProtocolVersion,
 } from '../core';
 import {
   Chat,
@@ -24,6 +27,16 @@ import {
   hasPendingAssistantParent,
   prepareSubmittedTurn,
   describeSubmittedTurn,
+  getRecoverySteerId,
+  settleStoredSteers,
+  settleFinishedSteers,
+  restoreRefusedStart,
+  toStartGenerationError,
+  restoreReleasedSource,
+  completedResponseMessageId,
+  GENERATION_PROTOCOL_VERSION,
+  supportsGenerationProtocolV2,
+  getPredecessorMismatchStartResponse,
 } from '../core';
 import { ReactQueryChatState } from './state';
 import { useSnapshot } from './snapshot';
@@ -70,6 +83,35 @@ export type FollowChatOptions = {
    * from the list; its words were the reader's and can be offered back to them.
    */
   onWithdrawn?: (turn: SubmittedTurn) => void;
+  /**
+   * The generation under the conversation as its stream names it, and `null` once it is over
+   * or lost. What addresses it for everything done to a run in flight: a stop, a steer.
+   */
+  onGeneration?: (generation: FollowedGeneration | null) => void;
+  /**
+   * A generation ended, and the list is what it left: after the stored rows were read back, or
+   * with a sent turn's own final frame in. Not for a stream that only dropped.
+   */
+  onRunEnd?: (end: FollowedRunEnd) => void;
+};
+
+/** A generation as a stream names it. */
+export type FollowedGeneration = {
+  createdAt: number;
+  protocolVersion: GenerationProtocolVersion;
+};
+
+/** How a generation ended. */
+export type FollowedRunEnd = {
+  outcome: 'completed' | 'aborted' | 'error';
+  generationCreatedAt?: number;
+  /** The reply it left, when it left one. */
+  responseMessageId?: string;
+  /**
+   * Why the run ended on a frame that carried none of it. `abort_persistence_failed` says the
+   * stop was not saved, so nothing queued behind the run may be sent on the strength of it.
+   */
+  reconcileReason?: ChatFinalFrame['reconcileReason'];
 };
 
 /** One page of stored messages, oldest first. */
@@ -81,7 +123,15 @@ export type FollowedPage = {
 
 type AppliedBeside = Pick<EventApplierInit, 'usage' | 'onAttachment' | 'onTitle' | 'steers'>;
 
-export type FollowBeside = AppliedBeside & {
+/**
+ * Main chat's steer bookkeeping as a followed chat reaches it: what the event applier calls for
+ * the frames it applies, and what a queued turn needs when its start is refused.
+ */
+type FollowedSteers = NonNullable<AppliedBeside['steers']> &
+  Pick<ResumableSteers, 'restoreQueued' | 'blockRecovery' | 'isRecoveryHeld'>;
+
+export type FollowBeside = Omit<AppliedBeside, 'steers'> & {
+  steers?: FollowedSteers;
   /**
    * The list now holds what the server stores of the conversation: its stored rows were just
    * read, or a turn sent from here ended on its own final frame. `final` is the frame the last
@@ -121,6 +171,10 @@ const forwardBeside = (read: () => FollowBeside | undefined): Required<AppliedBe
     update: (event) => read()?.steers?.update(event),
     seed: (...args) => read()?.steers?.seed(...args),
     settleApplied: (...args) => read()?.steers?.settleApplied(...args),
+    appliedIds: (values) => read()?.steers?.appliedIds(values) ?? [],
+    adoptPromoted: (...args) => read()?.steers?.adoptPromoted(...args) ?? [],
+    convertToQueued: (...args) => read()?.steers?.convertToQueued(...args),
+    convertLocalToQueued: (...args) => read()?.steers?.convertLocalToQueued(...args),
   },
 });
 
@@ -176,13 +230,20 @@ export type FollowedChat = {
    * conversation, and is not attached to again.
    */
   stop: () => Promise<void>;
+  /**
+   * Looks for a generation running under the conversation and follows it to its end, for a
+   * caller that learned of one this chat did not start: a turn the server took from the
+   * reader's queue, a run begun elsewhere. Nothing happens while one is already followed; asked
+   * during a turn sent from here, it looks once that turn is over.
+   */
+  attach: () => void;
 };
 
 type Entry = {
   id: string;
   chat: Chat;
   attach: () => Promise<void>;
-  settle: () => Promise<void>;
+  settle: () => Promise<boolean>;
   loadEarlier: () => Promise<void>;
   canSend: FollowedChat['canSend'];
   send: FollowedChat['send'];
@@ -203,6 +264,21 @@ type Attachment = {
   received: boolean;
   foreign?: boolean;
   withdrawn?: boolean;
+  /** The final frame it ended on, whether or not that frame carried the run's messages. */
+  terminal?: ChatFinalFrame;
+  /**
+   * It ended on an error the server wrote into the stream; `negotiated` says that error spoke
+   * the generation protocol whose parked steers this client may restore.
+   */
+  failure?: { negotiated: boolean };
+  /**
+   * For a turn sent from here that was never admitted, so nothing of it stays in the list:
+   * `behind` when another generation had taken the place it was queued for, which is then the
+   * one to follow; `held` when it would have replayed a steer the reader had already dealt with.
+   */
+  displaced?: 'behind' | 'held';
+  /** For a turn sent from here: its start failed in a way that may still have started it. */
+  unanswered?: boolean;
 };
 
 /**
@@ -254,6 +330,8 @@ export function useFollowChat({
   onEvent,
   onFinish,
   onWithdrawn,
+  onGeneration,
+  onRunEnd,
 }: FollowChatOptions): FollowedChat {
   const queryClient = useQueryClient();
   const host = useRef({
@@ -266,6 +344,8 @@ export function useFollowChat({
     onEvent,
     onFinish,
     onWithdrawn,
+    onGeneration,
+    onRunEnd,
   });
   host.current = {
     transport,
@@ -277,6 +357,8 @@ export function useFollowChat({
     onEvent,
     onFinish,
     onWithdrawn,
+    onGeneration,
+    onRunEnd,
   };
   const [attempt, setAttempt] = useState(0);
   const [entry, setEntry] = useState<Entry>();
@@ -315,6 +397,127 @@ export function useFollowChat({
     let reads = 0;
     /** The reader's stop in flight, which the turn it ends waits for instead of reattaching. */
     let stopping: Promise<void> | undefined;
+    /** The generation the stream in hand names, until it ends or is lost. */
+    let generation: FollowedGeneration | undefined;
+    const note = (stream: ChatStream | null | undefined): void => {
+      if (stream?.generationCreatedAt == null) {
+        return;
+      }
+      generation = {
+        createdAt: stream.generationCreatedAt,
+        protocolVersion:
+          stream.generationProtocolVersion === GENERATION_PROTOCOL_VERSION
+            ? GENERATION_PROTOCOL_VERSION
+            : 1,
+      };
+      host.current.onGeneration?.(generation);
+    };
+    /**
+     * Not said once this chat is let go of: the generation may be running on, and whoever shows
+     * the conversation next addresses it by the same name.
+     */
+    const forget = (): FollowedGeneration | undefined => {
+      const known = generation;
+      generation = undefined;
+      if (known != null && !stale) {
+        host.current.onGeneration?.(null);
+      }
+      return known;
+    };
+    /**
+     * How a generation ended, as main chat's stream session says it, since it decides whether
+     * what is queued behind the run is sent. A run that ended on a frame carrying none of it
+     * completed only if the server says so and its stored rows were read; a start the server
+     * answered as already settled is not a completion of this turn. A stop that lands just
+     * before the run completes can end it on a reply marked unfinished with no word of an
+     * abort: it was stopped all the same.
+     */
+    const outcomeOf = (current: Attachment, read: boolean): FollowedRunEnd['outcome'] => {
+      const { finished, terminal, withdrawn } = current;
+      if (finished?.isError === true) {
+        return 'error';
+      }
+      if (finished?.isSettled === true) {
+        if (terminal?.terminalStatus === 'complete') {
+          return read ? 'completed' : 'error';
+        }
+        return 'aborted';
+      }
+      if (
+        finished?.isAbort === true ||
+        withdrawn === true ||
+        finished?.message?.unfinished === true
+      ) {
+        return 'aborted';
+      }
+      return 'completed';
+    };
+    /**
+     * Tells the caller a generation ended, once the list holds what it left. `read` says the
+     * stored rows were read since it ended, and `turn` is the turn sent from here, if it was one.
+     */
+    const runEnded = (
+      current: Attachment | undefined,
+      read: boolean,
+      turn?: SubmittedTurn,
+    ): void => {
+      const known = forget();
+      const finished = current?.finished;
+      if (current == null || finished == null || finished.isDisconnect === true) {
+        return;
+      }
+      const outcome = outcomeOf(current, read);
+      /** A run with no reply of its own in hand is named by the reply the stored rows hold. */
+      const responseMessageId =
+        finished.isSettled === true
+          ? completedResponseMessageId(
+              outcome === 'completed' ? chat.messages : undefined,
+              turn?.submission.userMessage?.messageId ??
+                current.terminal?.requestMessage?.messageId,
+              turn?.submission.initialResponse?.messageId ?? finished.message?.messageId,
+            )
+          : finished.message?.messageId;
+      host.current.onRunEnd?.({
+        outcome,
+        generationCreatedAt: known?.createdAt,
+        responseMessageId,
+        ...(finished.reconcileReason != null && { reconcileReason: finished.reconcileReason }),
+      });
+    };
+    /**
+     * Whether the run's steers are still to be settled against the stored rows: it ended, and
+     * on nothing that carried its reply. A final frame with the reply in it settled them when
+     * it was applied, and so did an error the server wrote.
+     */
+    const unsettled = (current: Attachment | undefined): boolean =>
+      current?.finished != null &&
+      current.finished.isDisconnect !== true &&
+      current.failure == null &&
+      (current.terminal == null || current.terminal.reconcile === true);
+    /**
+     * Settles the reader's steers, for a run this chat followed to an end that carried no reply,
+     * against the rows just read and the run's last status. Nothing while a generation is
+     * running under the conversation: its own frames settle them.
+     */
+    const settleSteers = async (current: Attachment, turn?: SubmittedTurn): Promise<void> => {
+      const steers = host.current.beside?.steers;
+      if (steers == null) {
+        return;
+      }
+      const status = await Promise.resolve(host.current.transport.getStatus?.(id)).catch(
+        () => undefined,
+      );
+      if (stale || status?.active === true) {
+        return;
+      }
+      settleStoredSteers(steers, id, {
+        messages: chat.messages,
+        status,
+        promoted: current.terminal?.promotedSteers,
+        recoverySteerId: turn == null ? null : getRecoverySteerId(turn.submission),
+        generationProtocolVersion: generation?.protocolVersion,
+      });
+    };
     /** The final frame the last generation ended on, until the caller is told the list settled. */
     let ended: ChatFinalFrame | undefined;
     const settled = (): void => {
@@ -334,9 +537,61 @@ export function useFollowChat({
         host.current.onEffect?.(effect);
       },
       ...forwardBeside(() => host.current.beside),
+      protocol: () => generation?.protocolVersion,
       /** Not when the server answered the start with a generation that is not this turn. */
       turn: () => (attachment?.foreign === true ? undefined : sent?.submission),
     });
+    /**
+     * A start the server refused leaves a turn taken from the reader's queue where main chat
+     * leaves it: back in the queue, in its place. A turn another generation got ahead of (the
+     * place it was queued for was taken) was never admitted, so it goes back behind the
+     * generation that won, and is marked so that nothing of it stays in the list.
+     */
+    const refused = (
+      turn: SubmittedTurn | undefined,
+      current: Attachment | undefined,
+      error: unknown,
+    ): void => {
+      const steers = host.current.beside?.steers;
+      if (turn == null || steers == null) {
+        return;
+      }
+      const winner = getPredecessorMismatchStartResponse(error);
+      if (winner != null) {
+        steers.restoreQueued(turn.submission, winner.generationCreatedAt);
+        if (current != null) {
+          current.displaced = 'behind';
+        }
+        return;
+      }
+      const restored = restoreRefusedStart(steers, turn.submission, toStartGenerationError(error));
+      if (!restored && current != null) {
+        current.unanswered = true;
+      }
+    };
+    /**
+     * A turn that replays a parked steer ended without the server keeping it: its start failed
+     * in a way that may have started it, or the stream reported the failure. Only a status
+     * read now, after that end, can say the server let the steer go again, and so put it back.
+     */
+    const recoverSource = async (turn: SubmittedTurn, current: Attachment): Promise<void> => {
+      const steers = host.current.beside?.steers;
+      const recoverySteerId = getRecoverySteerId(turn.submission);
+      const ended =
+        current.unanswered === true ||
+        (current.failure?.negotiated === true &&
+          generation?.protocolVersion === GENERATION_PROTOCOL_VERSION);
+      if (steers == null || recoverySteerId == null || !ended) {
+        return;
+      }
+      const status = await Promise.resolve(host.current.transport.getStatus?.(id)).catch(
+        () => undefined,
+      );
+      if (stale || status == null) {
+        return;
+      }
+      restoreReleasedSource(steers, id, recoverySteerId, status, GENERATION_PROTOCOL_VERSION);
+    };
     const chat = new Chat({
       id,
       state: new ReactQueryChatState({ queryClient, key: id }),
@@ -344,15 +599,39 @@ export function useFollowChat({
       transport: {
         sendMessages: async (request) => {
           const turn = attachment;
-          const sent = await host.current.transport.sendMessages(request);
+          const asked = sent;
+          const steers = host.current.beside?.steers;
+          const replayed = asked == null ? null : getRecoverySteerId(asked.submission);
+          if (asked != null && replayed != null && steers?.isRecoveryHeld(id, replayed) === true) {
+            /** The reader removed or changed the steer this turn would replay: it is not sent. */
+            steers.restoreQueued(asked.submission);
+            if (turn != null) {
+              turn.displaced = 'held';
+            }
+            throw new Error('The steer this turn would replay is no longer the reader’s to send');
+          }
+          let answer: Awaited<ReturnType<ChatTransport['sendMessages']>>;
+          try {
+            answer = await host.current.transport.sendMessages(request);
+          } catch (error) {
+            refused(asked, turn, error);
+            throw error;
+          }
           if (turn != null) {
             turn.foreign =
-              sent.status === 'replaced' ||
-              (sent.status === 'stream' && sent.stream.resumed === true);
+              answer.status === 'replaced' ||
+              (answer.status === 'stream' && answer.stream.resumed === true);
           }
-          return sent;
+          if (answer.status === 'stream') {
+            note(answer.stream);
+          }
+          return answer;
         },
-        reconnectToStream: (request) => host.current.transport.reconnectToStream(request),
+        reconnectToStream: async (request) => {
+          const stream = await host.current.transport.reconnectToStream(request);
+          note(stream);
+          return stream;
+        },
         abort: (request) => host.current.transport.abort(request),
         getStatus: (conversationId) =>
           host.current.transport.getStatus?.(conversationId) ?? Promise.resolve({ active: false }),
@@ -370,6 +649,11 @@ export function useFollowChat({
       onEvent: (event) => {
         if (attachment != null && event.type !== 'error') {
           attachment.received = true;
+        }
+        if (attachment != null && event.type === 'final') {
+          attachment.terminal = event.data;
+        } else if (attachment != null && event.type === 'error' && event.status == null) {
+          attachment.failure = { negotiated: supportsGenerationProtocolV2(event.data) };
         }
         if (event.type === 'final' && event.data.earlyAbort === true) {
           /** Stopped before the server kept anything of it: there is no reply it ended on. */
@@ -508,9 +792,12 @@ export function useFollowChat({
       setUnattached(false);
       /** Whether a generation was reached and not lost for good. */
       let reached = false;
+      /** The last attachment, whose end is the generation's unless it dropped. */
+      let last: Attachment | undefined;
       try {
         for (let failures = 0, absences = 0; !stale; ) {
-          const { finished, received } = await follow();
+          last = await follow();
+          const { finished, received } = last;
           reached ||= received || finished != null;
           /**
            * The caller says a run is going and none was found. Its stream may not be open yet:
@@ -537,11 +824,20 @@ export function useFollowChat({
         }
         reading = true;
         await read();
+        if (last != null && unsettled(last)) {
+          await settleSteers(last);
+        }
+        if (stale) {
+          return;
+        }
+        runEnded(last, true);
       } catch {
         /** The chat reports a stream failure itself; a failed re-read leaves what it streamed. */
       } finally {
         attaching = false;
         reading = false;
+        /** Lost, or never read back: nothing is addressed as running any more. */
+        forget();
         if (!stale) {
           setFollowing(false);
           setUnattached(!reached);
@@ -553,15 +849,20 @@ export function useFollowChat({
       }
     };
 
-    /** The caller saw the run end. A stream still open reads the stored rows itself when it ends. */
-    const settle = async (): Promise<void> => {
+    /**
+     * The caller saw the run end. A stream still open reads the stored rows itself when it ends.
+     * Says whether the rows were read.
+     */
+    const settle = async (): Promise<boolean> => {
       if (stale || !loaded || attaching || driving) {
-        return;
+        return false;
       }
       try {
         await read();
+        return true;
       } catch {
         /** What is shown stays; the next open reads again. */
+        return false;
       }
     };
 
@@ -586,6 +887,15 @@ export function useFollowChat({
          */
         if (status === 'unknown' || status?.active === true || host.current.live) {
           await attach();
+          return;
+        }
+        /**
+         * Nothing is running, so a steer still shown as waiting is waiting on a run that ended
+         * while this conversation was not open: it is settled against what that run left.
+         */
+        const steers = host.current.beside?.steers;
+        if (status != null && steers != null) {
+          settleFinishedSteers(steers, id, status, chat.messages);
         }
       } catch {
         if (!stale) {
@@ -632,7 +942,7 @@ export function useFollowChat({
         }
         if (!stale && own) {
           let completed: TMessage[] | undefined;
-          if (current.withdrawn === true) {
+          if (current.withdrawn === true || current.displaced != null) {
             completed = withdrawnTurnMessages(turn, chat.messages);
           } else if (finished?.isError === true) {
             completed = failedTurnMessages(turn, chat.messages, chat.error);
@@ -661,26 +971,57 @@ export function useFollowChat({
       if (stale) {
         return;
       }
+      if (current.displaced != null) {
+        /**
+         * The turn was never admitted, and where it belongs it is back in the reader's queue.
+         * No run is said to have ended: that would send it again at once. When another
+         * generation took its place, that generation is followed to its end.
+         */
+        chat.clearError();
+        forget();
+        if (current.displaced === 'behind' || owed) {
+          owed = false;
+          await attach();
+        }
+        return;
+      }
+      await recoverSource(turn, current);
+      if (stale) {
+        return;
+      }
       if (dropped || owed) {
         owed = false;
+        /** A turn that ended is over even when another generation is waiting to be followed. */
+        if (!dropped) {
+          runEnded(current, false, turn);
+        }
         await attach();
         return;
       }
       if (!own) {
-        await settle();
+        const read = await settle();
+        if (read && unsettled(current)) {
+          await settleSteers(current, turn);
+        }
+        if (stale) {
+          return;
+        }
+        runEnded(current, read, turn);
         return;
       }
       /** The turn's own final frame is its result, and the list as it stands is what it left. */
       if (ended != null) {
         settled();
-        return;
+      } else {
+        /**
+         * It ended with no final frame: it failed, or was stopped before the server kept
+         * anything of it. Nothing settles what was counted for its reply, so that count is
+         * dropped here, as main chat drops it, instead of being added to the conversation's
+         * next reply.
+         */
+        host.current.beside?.usage?.resetLive?.(turn.submission);
       }
-      /**
-       * It ended with no final frame: it failed, or was stopped before the server kept anything
-       * of it. Nothing settles what was counted for its reply, so that count is dropped here, as
-       * main chat drops it, instead of being added to the conversation's next reply.
-       */
-      host.current.beside?.usage?.resetLive?.(turn.submission);
+      runEnded(current, false, turn);
     };
 
     /**
@@ -792,6 +1133,8 @@ export function useFollowChat({
   const canSend = current?.canSend ?? refuse;
   const send = current?.send ?? refuse;
   const stop = current?.stop ?? idle;
+  const look = current?.attach;
+  const attach = useCallback(() => void look?.(), [look]);
   const tracked = load.id === id && load.attempt === attempt ? load.state : 'loading';
   const state = enabled ? tracked : 'ready';
 
@@ -813,5 +1156,6 @@ export function useFollowChat({
     canSend,
     send,
     stop,
+    attach,
   };
 }

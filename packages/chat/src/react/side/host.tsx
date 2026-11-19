@@ -4,6 +4,9 @@ import type { TConversation } from 'librechat-data-provider';
 import type { FollowedChat, FollowChatOptions } from '../follow';
 import type { ChatContract } from '../chat/contract';
 
+/** What the panel asks to be told about the conversation's generations. */
+export type SideChatOptions = Pick<FollowChatOptions, 'onWithdrawn' | 'onGeneration' | 'onRunEnd'>;
+
 /** What a host's composer for a side chat is given. */
 export type SideChatSurfaceProps = {
   /** The conversation's chat contract: what main chat's composer reads from its own pane. */
@@ -51,7 +54,7 @@ export interface SideChatHost {
    */
   useChat: (
     conversation: Pick<TConversation, 'conversationId' | 'endpoint' | 'agent_id'>,
-    options?: Pick<FollowChatOptions, 'onWithdrawn'>,
+    options?: SideChatOptions,
   ) => FollowedChat;
   /** Opens the conversation as the page's main one. */
   useOpenConversation: () => (conversation: TConversation) => void;

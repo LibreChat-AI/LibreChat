@@ -1,6 +1,10 @@
 import type { ReactElement } from 'react';
+import type { ChatContract } from '../../react/chat/contract';
 import type { ChatScreenMessagesSlots } from './messages';
 import type { FollowedChat } from '../../react/follow';
+import useQueuedTurnReveal from '../../react/steering/useQueuedTurnReveal';
+import useQueueDrain from '../../react/steering/useQueueDrain';
+import { useOptionalSteerHost } from '../../react/steer/host';
 import { useDrivenContract } from '../../react/chat/driven';
 import { ContractThread } from './Followed';
 
@@ -31,6 +35,28 @@ export default function DrivenThread({
   children,
 }: DrivenThreadProps): ReactElement {
   const contract = useDrivenContract({ id, followed, index });
-  const thread = <ContractThread contract={contract} followed={followed} slots={slots} own />;
+  /** Only an app that hosts the steer hooks has a queue for the reader to fill. */
+  const queues = useOptionalSteerHost() != null;
+  const thread = (
+    <>
+      {queues && <QueueDrain id={id} index={index} ask={contract.ask} />}
+      <ContractThread contract={contract} followed={followed} slots={slots} own />
+    </>
+  );
   return children == null ? thread : children(contract, thread);
+}
+
+/**
+ * What the reader queued behind a run goes out when the run ends, as it does in main chat: the
+ * pane's run end, which whoever follows the chat publishes, lets the next queued message go
+ * through the contract's own `ask`.
+ */
+function QueueDrain({
+  id,
+  index,
+  ask,
+}: Pick<DrivenThreadProps, 'id' | 'index'> & { ask: ChatContract['ask'] }): null {
+  const revealQueuedTurn = useQueuedTurnReveal(id, index);
+  useQueueDrain(index, id, ask, revealQueuedTurn);
+  return null;
 }
