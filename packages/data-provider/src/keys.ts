@@ -122,6 +122,7 @@ export enum QueryKeys {
   /* Scheduled chats */
   schedules = 'schedules',
   scheduleMCPConsent = 'scheduleMCPConsent',
+  scheduleMCPOffer = 'scheduleMCPOffer',
   schedule = 'schedule',
   parentSubagents = 'parentSubagents',
   subagentThread = 'subagentThread',

@@ -4,6 +4,7 @@ import type {
   AgentTriggerDeliveryStatus,
   AgentTriggerDeliveryFailure,
 } from '@librechat/data-schemas';
+import type { ScheduledMCPEnrollment } from 'librechat-data-provider';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
@@ -363,6 +364,11 @@ export type ScheduleMCPPreflight = (
     stage?: 'activation' | 'invoke' | 'resume';
     /** Trusted fire host provenance, never a body-provided permission. */
     manual?: boolean;
+    /**
+     * The grant a schedule is being created with. Nothing is stored for it yet, so it is
+     * handed over: readiness then covers the MCP tools it allows, as for a stored grant.
+     */
+    grant?: Pick<ScheduledMCPEnrollment, 'consents'>;
   },
 ) => Promise<ScheduleMCPOutcome[]>;
 

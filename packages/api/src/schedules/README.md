@@ -136,6 +136,19 @@ A schedule whose agent uses an MCP server the operator has not declared under
 `mcpConsent.resources` cannot be authorized, so the deadline stops it until the server is
 declared. Declare every server scheduled agents rely on before setting the date.
 
+### A schedule authorized as it is created
+
+Where consent is on, the create form asks what the new schedule may use and the schedule is
+created with its grant. `POST /api/schedules/mcp-consent/offer` (`{ agent_id }`) answers what a
+schedule of that agent could be allowed before it exists; its digest is bound to the owner and
+the agent, not to a schedule id. `POST /api/schedules` takes the choice as `authorization`
+(`offerDigest`, `lifetimeHours`, `allow`, `ask`, `tools`), checks it against a fresh offer
+(`service.grant`), and writes the grant in the same insert as the schedule. A choice that no
+longer fits is refused and nothing is created.
+
+A schedule created without one, by another client for instance, is marked as needing
+authorization from the start, so none of its tools runs until its owner confirms.
+
 ### A tool that changes after it was allowed
 
 The owner allows a tool by name, so the grant also remembers what the tool was. The first

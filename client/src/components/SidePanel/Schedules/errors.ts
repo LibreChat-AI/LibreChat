@@ -99,6 +99,12 @@ export function scheduleMCPErrorMessage(
     : undefined;
 }
 
+/** The server turned down the authorization sent with a create, by one of its `consent_` codes. */
+export function scheduleAuthorizationRejected(error: Error): boolean {
+  const code = (error as Error & { response?: { data?: { code?: unknown } } }).response?.data?.code;
+  return typeof code === 'string' && code.startsWith('consent_');
+}
+
 /** Preserves the structured recovery projection for immediate create, update, and
  * Run Now failures. The message formatter and every recovery surface consume the
  * same parsed outcome rather than independently interpreting the response. */

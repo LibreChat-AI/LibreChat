@@ -832,6 +832,91 @@ describe('an owner whose role may not use MCP servers', () => {
   });
 });
 
+describe('a schedule being created with its grant', () => {
+  /** Nothing is stored for it yet: the grant comes with the readiness check. */
+  async function creating(
+    candidates: string[],
+    choice: { allow: Record<string, string[]>; tools?: string[] },
+  ) {
+    const f = await setup();
+    f.snapshot.enrollment = null;
+    f.setCandidates(candidates);
+    const offer = await f.host.consent.service.view(f.identity);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+      ...choice,
+    });
+    const grant = f.snapshot.enrollment!;
+    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    f.connect.mockClear();
+    const check = (withGrant = true) =>
+      f.preflight('root', f.user, {
+        scheduleId: 'sched_new',
+        stage: 'activation',
+        concurrency: 3,
+        ...(withGrant && { grant }),
+      });
+    return { ...f, check };
+  }
+
+  it('is ready on the MCP tools the grant allows, and connects to no server it leaves out', async () => {
+    const f = await setup();
+    const archive = { type: 'streamable-http' as const, url: 'https://archive.example/mcp' };
+    f.servers.archive = archive;
+    Object.assign(f.config.mcpConfig as object, { archive });
+    const consent = (f.config.interfaceConfig!.schedules as { mcpConsent: { resources: object } })
+      .mcpConsent;
+    Object.assign(consent.resources, {
+      archive: {
+        url: archive.url,
+        credentialMode: 'anonymous',
+        issuer: null,
+        audience: null,
+        scopes: [],
+      },
+    });
+    f.snapshot.enrollment = null;
+    f.setCandidates(['query_mcp_warehouse', 'purge_mcp_archive']);
+    const offer = await f.host.consent.service.view(f.identity);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
+    });
+    const grant = f.snapshot.enrollment!;
+    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    f.connect.mockClear();
+    const options = { scheduleId: 'sched_new', stage: 'activation' as const, concurrency: 3 };
+    await expect(f.preflight('root', f.user, { ...options, grant })).resolves.toEqual([
+      { server: 'warehouse', status: 'ready' },
+    ]);
+    expect(f.connect).toHaveBeenCalledTimes(1);
+    expect(f.connect).toHaveBeenCalledWith(expect.objectContaining({ serverName: 'warehouse' }));
+    // Without the grant, the same check reaches for both servers.
+    f.connect.mockClear();
+    await f.preflight('root', f.user, options).catch(() => undefined);
+    expect(f.connect).toHaveBeenCalledWith(expect.objectContaining({ serverName: 'archive' }));
+  });
+
+  it('is ready with nothing to connect when the grant allows no MCP tool, whatever the role', async () => {
+    const f = await creating(['web_search', 'query_mcp_warehouse'], {
+      allow: {},
+      tools: ['web_search'],
+    });
+    f.getRoleByName.mockResolvedValue({
+      permissions: {
+        [PermissionTypes.SCHEDULES]: { [Permissions.USE]: true, [Permissions.CREATE]: true },
+      },
+    } as IRole);
+    await expect(f.check()).resolves.toEqual([]);
+    expect(f.connect).not.toHaveBeenCalled();
+    await expect(f.check(false)).rejects.toMatchObject({ code: 'mcp_permission_denied' });
+  });
+});
+
 describe('a schedule its owner never authorized', () => {
   async function unauthorized() {
     const f = await setup();

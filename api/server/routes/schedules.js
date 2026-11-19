@@ -84,10 +84,15 @@ const handlers = createSchedulesHandlers({
   // Durable account-deletion barrier. A one-shot disable scan cannot close the
   // create race, so every scheduling WRITE consults the user-level flag instead.
   isUserDeleting,
+  // Where consent is on, a schedule is authorized in the same write that creates it.
+  grant: (identity, choice, options) =>
+    require('~/server/services/Schedules/consent').consent.service.grant(identity, choice, options),
 });
 
 const consentHost = require('~/server/services/Schedules/consent').consent;
 
+/** Before the `/:id` routes: what the owner could allow a schedule of an agent not yet created. */
+router.post('/mcp-consent/offer', checkSchedulesCreate, consentHost.handlers.draft);
 router.get('/:id/mcp-consent', consentHost.handlers.get);
 router.post('/:id/mcp-consent', checkSchedulesCreate, consentHost.handlers.confirm);
 router.delete('/:id/mcp-consent', consentHost.handlers.revoke);

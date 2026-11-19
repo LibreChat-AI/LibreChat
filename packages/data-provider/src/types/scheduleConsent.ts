@@ -223,40 +223,51 @@ export type MCPGrantEnrollment<Identity extends MCPGrantIdentity = ScheduledMCPI
   'consents'
 > & { consents: MCPGrantConsent<Identity>[] };
 
-export const confirmScheduleMCPConsentSchema = z
-  .object({
-    offerDigest: z.string().regex(/^[a-f0-9]{64}$/),
-    expectedRevision: identifier.nullable(),
-    lifetimeHours: z.number().int().min(1).max(8760),
-    /**
-     * The tools the owner allows, by server, chosen from the offer. A server left out, or
-     * listed with no tools, is not allowed. Anything not listed here is refused at run time.
-     */
-    allow: z
-      .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
-      .refine((value) => Object.keys(value).length <= 32),
-    /**
-     * Of the allowed tools, the ones the owner wants to approve call by call, by server.
-     * Each must also be listed in `allow`.
-     */
-    ask: z
-      .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
-      .refine((value) => Object.keys(value).length <= 32)
-      .optional(),
-    /**
-     * Of the offered tools that are not MCP tools, the ones the owner allows. Left out, the
-     * stored grant's choice is kept for the tools still on offer.
-     */
-    tools: z.array(identifier).max(MAX_AGENT_TOOLS).optional(),
-  })
-  .strict()
-  // Something must be allowed: an MCP tool, or one of the other tools.
-  .refine(
-    (value) =>
-      Object.values(value.allow).some((tools) => tools.length > 0) ||
-      (value.tools?.length ?? 0) > 0,
-  );
+const consentChoice = z.object({
+  offerDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  expectedRevision: identifier.nullable(),
+  lifetimeHours: z.number().int().min(1).max(8760),
+  /**
+   * The tools the owner allows, by server, chosen from the offer. A server left out, or
+   * listed with no tools, is not allowed. Anything not listed here is refused at run time.
+   */
+  allow: z
+    .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
+    .refine((value) => Object.keys(value).length <= 32),
+  /**
+   * Of the allowed tools, the ones the owner wants to approve call by call, by server.
+   * Each must also be listed in `allow`.
+   */
+  ask: z
+    .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
+    .refine((value) => Object.keys(value).length <= 32)
+    .optional(),
+  /**
+   * Of the offered tools that are not MCP tools, the ones the owner allows. Left out, the
+   * stored grant's choice is kept for the tools still on offer.
+   */
+  tools: z.array(identifier).max(MAX_AGENT_TOOLS).optional(),
+});
+
+/** Something must be allowed: an MCP tool, or one of the other tools. */
+const allowsSomething = (value: { allow: Record<string, string[]>; tools?: string[] }): boolean =>
+  Object.values(value.allow).some((tools) => tools.length > 0) || (value.tools?.length ?? 0) > 0;
+
+export const confirmScheduleMCPConsentSchema = consentChoice.strict().refine(allowsSomething);
 export type ConfirmScheduleMCPConsent = z.infer<typeof confirmScheduleMCPConsentSchema>;
+
+/**
+ * The owner's choice for a schedule that is being created, made from the offer for its agent.
+ * There is no stored grant yet, so no revision to expect.
+ */
+export const scheduleAuthorizationSchema = consentChoice
+  .omit({ expectedRevision: true })
+  .strict()
+  .refine(allowsSomething);
+export type ScheduleAuthorization = z.infer<typeof scheduleAuthorizationSchema>;
+
+/** Asks what the owner could allow a schedule of this agent, before the schedule exists. */
+export const scheduleOfferRequestSchema = z.object({ agent_id: identifier }).strict();
 
 export const revokeScheduleMCPConsentSchema = z.object({ expectedRevision: identifier }).strict();
 

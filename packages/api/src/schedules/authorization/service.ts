@@ -8,6 +8,7 @@ import type {
   ScheduledMCPResource,
   ScheduledMCPTarget,
   ScheduleMCPConsentView,
+  ScheduleAuthorization,
   ScheduledMCPToolSelection,
   ConfirmScheduleMCPConsent,
 } from 'librechat-data-provider';
@@ -85,8 +86,12 @@ export class ScheduleMCPConsentError extends Error {
   }
 }
 
-function canonicalTargets(targets: readonly ScheduledMCPTarget[]): ScheduledMCPTarget[] {
-  if (!targets.length || targets.length > 32)
+function canonicalTargets(
+  targets: readonly ScheduledMCPTarget[],
+  /** A grant for other tools only names no MCP server. */
+  options: { empty?: boolean } = {},
+): ScheduledMCPTarget[] {
+  if ((!targets.length && options.empty !== true) || targets.length > 32)
     throw new ScheduleMCPConsentError('consent_unavailable');
   const servers = new Set<string>();
   return targets
@@ -168,7 +173,7 @@ function selectAllowed(
     });
   }
   // No MCP tool chosen: the grant may still allow the agents' other tools.
-  return chosen.length > 0 ? canonicalTargets(chosen) : [];
+  return canonicalTargets(chosen, { empty: true });
 }
 
 /**
@@ -291,7 +296,8 @@ function carriedPins(
  * confirm past the mark; it is told the offer changed and reads it again.
  */
 function offerDigest(
-  identity: MCPGrantIdentity,
+  /** The subject, or for a schedule that is not stored yet, its owner and agent. */
+  identity: object,
   configRevision: number,
   targets: readonly ScheduledMCPTarget[],
   changed: Record<string, string[]>,
@@ -316,6 +322,17 @@ export interface ScheduleMCPConsentService<
   Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
 > {
   view: (identity: Identity, options?: { signal?: AbortSignal }) => Promise<ScheduleMCPConsentView>;
+  /** The offer for a subject that is not stored yet. */
+  draft: (
+    identity: Identity,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ScheduleMCPConsentView>;
+  /** The grant for a subject about to be created. Stores nothing. */
+  grant: (
+    identity: Identity,
+    input: ScheduleAuthorization,
+    options?: { signal?: AbortSignal },
+  ) => Promise<MCPGrantEnrollment<Identity>>;
   confirm: (
     identity: Identity,
     input: ConfirmScheduleMCPConsent,
@@ -442,7 +459,7 @@ export function createScheduleMCPConsentService<
           requireAfterMs,
           offer: null,
         };
-      targets = resolved.length > 0 ? canonicalTargets(resolved) : [];
+      targets = canonicalTargets(resolved, { empty: true });
       const digest = offerDigest(
         identity,
         snapshot.configRevision,
@@ -472,6 +489,141 @@ export function createScheduleMCPConsentService<
     return result;
   }
 
+  /** A grant for what the owner chose, from now for the lifetime they chose. */
+  function build(input: {
+    identity: Identity;
+    configRevision: number;
+    lifetimeHours: number;
+    chosen: readonly ScheduledMCPTarget[];
+    others: readonly ScheduledMCPToolSelection[];
+    asking: Record<string, string[]>;
+    prior?: readonly MCPGrantConsent<Identity>[];
+  }): MCPGrantEnrollment<Identity> {
+    const grantedAtMs = now();
+    const absoluteExpiresAtMs = grantedAtMs + input.lifetimeHours * 3_600_000;
+    const revision = randomUUID();
+    return {
+      version: 1,
+      revision,
+      scheduleRevision: input.configRevision,
+      consents: input.chosen.map((target) => ({
+        ...target,
+        ...carriedPins(
+          target,
+          input.prior?.find((prior) => prior.resource.serverName === target.resource.serverName),
+        ),
+        identity: input.identity,
+        id: randomUUID(),
+        revision,
+        grantedAtMs,
+        absoluteExpiresAtMs,
+        revokedAtMs: null,
+        ...(input.asking[target.resource.serverName] && {
+          askTools: input.asking[target.resource.serverName],
+        }),
+      })),
+      ...(input.others.length > 0 && { tools: [...input.others] }),
+      // The grant's own lifetime: one that allows no MCP server has no consent to carry it.
+      grantedAtMs,
+      absoluteExpiresAtMs,
+      revokedAtMs: null,
+    };
+  }
+
+  /** Within what the operator allows a grant to last. */
+  const validLifetime = (hours: number, maxLifetimeHours: number): boolean =>
+    Number.isInteger(hours) && hours >= 1 && hours <= maxLifetimeHours;
+
+  /**
+   * What the owner could allow a schedule that is not stored yet. There is no grant, edit or
+   * mark to read, so the offer is bound to the owner and the agent alone.
+   */
+  async function draft(
+    identity: Identity,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ScheduleMCPConsentView> {
+    options.signal?.throwIfAborted();
+    const [limits, allowed, approval] = await Promise.all([
+      deps.getLimits(identity),
+      deps.canUse(identity, options),
+      deps.canPause?.(identity) ?? false,
+    ]);
+    if (!allowed) throw new ScheduleMCPConsentError('consent_forbidden');
+    const none: ScheduleMCPConsentView = {
+      state: 'unsupported',
+      revision: null,
+      expiresAtMs: null,
+      targets: [],
+      allowed: {},
+      changed: {},
+      asking: {},
+      tools: { offered: [], allowed: [] },
+      approval,
+      required: false,
+      requireAfterMs: null,
+      offer: null,
+    };
+    if (!limits.enabled || !deps.resolveEnrollment) return none;
+    const [resolved, others] = await Promise.all([
+      deps.resolveEnrollment(identity, options),
+      deps.resolveTools?.(identity, options) ?? [],
+    ]);
+    if (resolved.length === 0 && others.length === 0) return none;
+    const targets = canonicalTargets(resolved, { empty: true });
+    const subject = {
+      ownerId: identity.ownerId,
+      tenantId: identity.tenantId,
+      agentId: identity.agentId,
+    };
+    const result: ScheduleMCPConsentView = {
+      ...none,
+      state: 'missing',
+      targets,
+      tools: { offered: toolNames(others), allowed: [] },
+      offer: {
+        digest: offerDigest(subject, 0, targets, {}, others),
+        maxLifetimeHours: limits.maxLifetimeHours,
+      },
+    };
+    offers.set(result, others);
+    return result;
+  }
+
+  /**
+   * The grant for a schedule about to be created, from the owner's choice of its draft offer.
+   * Nothing is stored: the caller writes it in the same insert as the schedule.
+   */
+  async function grant(
+    identity: Identity,
+    input: ScheduleAuthorization,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<MCPGrantEnrollment<Identity>> {
+    const current = await draft(identity, options);
+    if (!current.offer) throw new ScheduleMCPConsentError('consent_unavailable');
+    if (input.offerDigest !== current.offer.digest)
+      throw new ScheduleMCPConsentError('consent_changed');
+    if (!validLifetime(input.lifetimeHours, current.offer.maxLifetimeHours))
+      throw new ScheduleMCPConsentError('consent_invalid');
+    const chosen = selectAllowed(current.targets, input.allow);
+    const others = selectTools(offers.get(current) ?? [], input.tools ?? []);
+    const asking = selectAsking(chosen, input.ask ?? {}, {});
+    // Something must be allowed, and a tool nobody can approve would only ever be refused.
+    if (
+      (chosen.length === 0 && others.length === 0) ||
+      (!current.approval && Object.keys(asking).length > 0)
+    )
+      throw new ScheduleMCPConsentError('consent_invalid');
+    options.signal?.throwIfAborted();
+    return build({
+      identity,
+      configRevision: 0,
+      lifetimeHours: input.lifetimeHours,
+      chosen,
+      others,
+      asking,
+    });
+  }
+
   async function confirm(
     identity: Identity,
     input: ConfirmScheduleMCPConsent,
@@ -483,11 +635,7 @@ export function createScheduleMCPConsentService<
     if (!current.offer) throw new ScheduleMCPConsentError('consent_unavailable');
     if (input.offerDigest !== current.offer.digest || input.expectedRevision !== current.revision)
       throw new ScheduleMCPConsentError('consent_changed');
-    if (
-      !Number.isInteger(input.lifetimeHours) ||
-      input.lifetimeHours < 1 ||
-      input.lifetimeHours > current.offer.maxLifetimeHours
-    )
+    if (!validLifetime(input.lifetimeHours, current.offer.maxLifetimeHours))
       throw new ScheduleMCPConsentError('consent_invalid');
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (!snapshot) throw new ScheduleMCPConsentError('consent_not_found');
@@ -519,36 +667,15 @@ export function createScheduleMCPConsentService<
     )
       throw new ScheduleMCPConsentError('consent_invalid');
     options.signal?.throwIfAborted();
-    const grantedAtMs = now();
-    const revision = randomUUID();
-    const enrollment: MCPGrantEnrollment<Identity> = {
-      version: 1,
-      revision,
-      scheduleRevision: snapshot.configRevision,
-      consents: chosen.map((target) => ({
-        ...target,
-        ...carriedPins(
-          target,
-          snapshot.enrollment?.consents.find(
-            (prior) => prior.resource.serverName === target.resource.serverName,
-          ),
-        ),
-        identity,
-        id: randomUUID(),
-        revision,
-        grantedAtMs,
-        absoluteExpiresAtMs: grantedAtMs + input.lifetimeHours * 3_600_000,
-        revokedAtMs: null,
-        ...(asking[target.resource.serverName] && {
-          askTools: asking[target.resource.serverName],
-        }),
-      })),
-      ...(others.length > 0 && { tools: others }),
-      // The grant's own lifetime: one that allows no MCP server has no consent to carry it.
-      grantedAtMs,
-      absoluteExpiresAtMs: grantedAtMs + input.lifetimeHours * 3_600_000,
-      revokedAtMs: null,
-    };
+    const enrollment = build({
+      identity,
+      configRevision: snapshot.configRevision,
+      lifetimeHours: input.lifetimeHours,
+      chosen,
+      others,
+      asking,
+      prior: snapshot.enrollment?.consents,
+    });
     const committed = await deps.storage.confirmScheduleMCPConsent({
       identity,
       expectedRevision: input.expectedRevision,
@@ -722,5 +849,5 @@ export function createScheduleMCPConsentService<
       };
     },
   };
-  return { view, confirm, revoke, requiresGrant: requiresGrantFor, authority };
+  return { view, draft, grant, confirm, revoke, requiresGrant: requiresGrantFor, authority };
 }

@@ -332,9 +332,21 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         ),
       );
     };
+    /** The MCP tools a grant allows: the stored grant's, or the one a schedule is created with. */
+    const pending =
+      options.grant &&
+      new Map(
+        options.grant.consents.map(({ resource, permittedTools }) => [
+          resource.serverName,
+          new Map(permittedTools.map(({ agentId: owner, tools }) => [owner, new Set(tools)])),
+        ]),
+      );
+    const grants: ScheduleMCPExecution['grants'] | undefined = execution?.enrolled
+      ? execution.grants
+      : pending && ((owner, server, tool) => pending.get(server)?.get(owner)?.has(tool) === true);
     // A run under a grant needs the permission only for the MCP tools the grant allows, so
     // it is held to it below, once the tools the owner left out are set aside.
-    if (!permitted && !execution?.enrolled) refuse();
+    if (!permitted && !grants) refuse();
     // Resolve once more against the ACL-filtered registry before initializing config.
     // Exact accessible identities must beat normalized aliases from another tier, just
     // as they do in the interactive runtime.
@@ -354,13 +366,12 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       authoritativeAliases,
       new Set([...Object.keys(accessibleServers), ...configNames]),
     ));
-    if (execution?.enrolled) {
+    if (grants) {
       // The owner may have allowed only some of what the agents select. Readiness is about
       // what the run is allowed to use: a tool or a whole server left out of the grant is
       // refused when called, and must not keep the schedule from running.
-      const allowed = execution;
       const isGranted = (server: string, toolKey: string, owner: string): boolean =>
-        allowed.grants(owner, server, splitMCPToolKey(toolKey, authoritativeCandidates)[0]);
+        grants(owner, server, splitMCPToolKey(toolKey, authoritativeCandidates)[0]);
       for (const [server, serverTools] of toolAgentIds) {
         for (const [toolKey, owners] of serverTools) {
           for (const owner of owners) if (!isGranted(server, toolKey, owner)) owners.delete(owner);

@@ -1497,6 +1497,147 @@ it('allows repointing a disabled schedule without MCP preflight', async () => {
   expect(deps.methods.updateScheduleById).toHaveBeenCalled();
 });
 
+describe('createSchedule where the owner authorizes a schedule as it is created', () => {
+  const limits = (consent: boolean) => async () => ({
+    enabled: true,
+    maxPerUser: 10,
+    minIntervalMinutes: 60,
+    autoDisableAfterFailures: 5,
+    admissionConcurrency: 20,
+    fireConcurrency: 5,
+    mcpPreflightConcurrency: 3,
+    mcpPreflightTimeoutMs: 300_000,
+    requireProject: false,
+    ...(consent && { mcpConsent: { enabled: true, maxLifetimeHours: 24 } }),
+  });
+  const authorization = {
+    offerDigest: 'a'.repeat(64),
+    lifetimeHours: 1,
+    allow: { warehouse: ['query'] },
+    tools: ['web_search'],
+  };
+  const stored = { version: 1, revision: 'grant-1' } as unknown as NonNullable<
+    ISchedule['mcpConsent']
+  >;
+  const create = async (
+    body: Record<string, unknown>,
+    over: Partial<SchedulesHandlersDeps> = {},
+    consent = true,
+  ) => {
+    const deps = makeCreateDeps({
+      isUserDeleting: jest.fn(async () => false),
+      getLimits: limits(consent),
+      ...over,
+    });
+    const { res, captured } = makeRes();
+    await createSchedulesHandlers(deps).createSchedule(
+      { ...makeCreateReq(), body: { ...CREATE_BODY, ...body } } as unknown as ServerRequest,
+      res,
+    );
+    const insert = (deps.methods.createScheduleWithSlot as jest.Mock).mock.calls[0]?.[0] as
+      | (Partial<ISchedule> & { authorization?: unknown })
+      | undefined;
+    return { captured, insert };
+  };
+
+  it('writes the grant in the same insert as the schedule, for the schedule about to exist', async () => {
+    const grant = jest.fn(async () => stored);
+    const { insert } = await create({ authorization }, { grant });
+    expect(insert).toMatchObject({ mcpConsent: stored });
+    expect(insert).not.toHaveProperty('mcpConsentRequired');
+    // The owner's choice is not a field of the schedule.
+    expect(insert).not.toHaveProperty('authorization');
+    expect(grant).toHaveBeenCalledWith(
+      {
+        scheduleId: insert!.id,
+        ownerId: 'user-1',
+        tenantId: 't1',
+        agentId: CREATE_BODY.agent_id,
+        invocationMode: 'delegated',
+      },
+      authorization,
+      { signal: expect.any(AbortSignal) },
+    );
+  });
+
+  it('checks readiness for what the owner allowed, once the choice is accepted', async () => {
+    const order: string[] = [];
+    const grant = jest.fn(async () => {
+      order.push('grant');
+      return stored;
+    });
+    const preflightMCP = jest.fn(async () => {
+      order.push('readiness');
+      return [];
+    });
+    const { insert } = await create({ authorization }, { grant, preflightMCP });
+    expect(order).toEqual(['grant', 'readiness']);
+    expect(preflightMCP).toHaveBeenCalledWith(
+      CREATE_BODY.agent_id,
+      expect.anything(),
+      expect.objectContaining({ scheduleId: insert!.id, stage: 'activation', grant: stored }),
+    );
+    // A choice that is turned down is answered as that, with no server probed for it.
+    const { ScheduleMCPConsentError } = jest.requireActual('./authorization/service');
+    preflightMCP.mockClear();
+    await create(
+      { authorization },
+      {
+        grant: jest.fn().mockRejectedValue(new ScheduleMCPConsentError('consent_changed')),
+        preflightMCP,
+      },
+    );
+    expect(preflightMCP).not.toHaveBeenCalled();
+    // With no choice there is no grant to limit it: every selected MCP tool is checked.
+    await create({}, { grant, preflightMCP });
+    expect(preflightMCP).toHaveBeenLastCalledWith(
+      CREATE_BODY.agent_id,
+      expect.anything(),
+      expect.not.objectContaining({ grant: expect.anything() }),
+    );
+  });
+
+  it('creates a schedule that needs authorization when none came with it', async () => {
+    const grant = jest.fn();
+    const { insert } = await create({}, { grant });
+    expect(insert).toMatchObject({ mcpConsentRequired: true });
+    expect(insert).not.toHaveProperty('mcpConsent');
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it('creates nothing when the choice does not fit what can be offered', async () => {
+    const { ScheduleMCPConsentError } = jest.requireActual('./authorization/service');
+    for (const [code, status] of [
+      ['consent_changed', 409],
+      ['consent_invalid', 409],
+      ['consent_forbidden', 403],
+    ] as const) {
+      const { captured, insert } = await create(
+        { authorization },
+        { grant: jest.fn().mockRejectedValue(new ScheduleMCPConsentError(code)) },
+      );
+      expect(captured.status).toBe(status);
+      expect(captured.body).toMatchObject({ code });
+      expect(insert).toBeUndefined();
+    }
+  });
+
+  it('ignores the choice and marks nothing where consent is off', async () => {
+    const grant = jest.fn();
+    const { insert } = await create({ authorization }, { grant }, false);
+    expect(insert).not.toHaveProperty('mcpConsent');
+    expect(insert).not.toHaveProperty('mcpConsentRequired');
+    expect(insert).not.toHaveProperty('authorization');
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it('makes the choice part of what a retry must repeat, and leaves older retries matching', () => {
+    const base = { ...CREATE_BODY, target: 'new' as const, enabled: true };
+    expect(computeCreateDigest(base)).toBe(createBodyDigest());
+    expect(computeCreateDigest({ ...base, authorization })).not.toBe(createBodyDigest());
+  });
+});
+
 describe('updateSchedule on a schedule its owner never authorized', () => {
   const limits = (mcpConsent?: { enabled: boolean; maxLifetimeHours: number }) => async () => ({
     enabled: true,

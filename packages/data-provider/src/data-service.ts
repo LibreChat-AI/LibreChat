@@ -2263,6 +2263,9 @@ export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
 export function getScheduleMCPConsent(id: string): Promise<ScheduleMCPConsentView> {
   return request.get(endpoints.scheduleMCPConsent(id));
 }
+export function getScheduleMCPOffer(agentId: string): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.scheduleMCPOffer(), { agent_id: agentId });
+}
 export function confirmScheduleMCPConsent(
   id: string,
   payload: ConfirmScheduleMCPConsent,

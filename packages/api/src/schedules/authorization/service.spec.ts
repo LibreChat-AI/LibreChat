@@ -537,6 +537,99 @@ describe("the agents' tools that are not MCP tools", () => {
   });
 });
 
+describe('a schedule that is authorized as it is created', () => {
+  const draft = { ...identity, scheduleId: 'draft' };
+  const created = { ...identity, scheduleId: 'sched_new' };
+
+  it('offers what the agent could be allowed without any stored schedule', async () => {
+    const s = setup();
+    s.offerTools({ agentId: 'root', tools: ['web_search'] });
+    const offer = await s.service.draft(draft);
+    expect(offer).toMatchObject({
+      state: 'missing',
+      revision: null,
+      targets: [
+        expect.objectContaining({ resource: expect.objectContaining({ serverName: 'warehouse' }) }),
+      ],
+      tools: { offered: ['web_search'], allowed: [] },
+      offer: { maxLifetimeHours: 24 },
+    });
+    expect(s.storage.readScheduleMCPConsent).not.toHaveBeenCalled();
+    // Bound to the owner and the agent, so it holds for the id the schedule is then given.
+    expect((await s.service.draft(created)).offer!.digest).toBe(offer.offer!.digest);
+    expect((await s.service.draft({ ...draft, agentId: 'other' })).offer!.digest).not.toBe(
+      offer.offer!.digest,
+    );
+  });
+
+  it("builds the grant for the new schedule from the owner's choice, and stores nothing", async () => {
+    const s = setup();
+    s.offerTools({ agentId: 'root', tools: ['execute_code', 'web_search'] });
+    const offer = await s.service.draft(draft);
+    const grant = await s.service.grant(created, {
+      offerDigest: offer.offer!.digest,
+      lifetimeHours: 2,
+      allow: { warehouse: ['query'] },
+      tools: ['web_search'],
+    });
+    expect(grant).toMatchObject({
+      version: 1,
+      scheduleRevision: 0,
+      consents: [
+        {
+          identity: created,
+          permittedTools: [
+            { agentId: 'child', tools: ['query'] },
+            { agentId: 'root', tools: ['query'] },
+          ],
+          absoluteExpiresAtMs: 1000 + 2 * 3_600_000,
+        },
+      ],
+      tools: [{ agentId: 'root', tools: ['web_search'] }],
+      grantedAtMs: 1000,
+      absoluteExpiresAtMs: 1000 + 2 * 3_600_000,
+      revokedAtMs: null,
+    });
+    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an offer that has since changed', { offerDigest: 'b'.repeat(64) }, 'consent_changed'],
+    ['nothing allowed', { allow: {}, tools: [] }, 'consent_invalid'],
+    ['a tool that is not on offer', { tools: ['file_search'] }, 'consent_invalid'],
+    ["a lifetime past the operator's limit", { lifetimeHours: 25 }, 'consent_invalid'],
+  ])('refuses a choice with %s', async (_label, change, code) => {
+    const s = setup();
+    s.offerTools({ agentId: 'root', tools: ['web_search'] });
+    const offer = await s.service.draft(draft);
+    await expect(
+      s.service.grant(created, {
+        offerDigest: offer.offer!.digest,
+        lifetimeHours: 1,
+        allow: { warehouse: ['query'] },
+        tools: ['web_search'],
+        ...change,
+      }),
+    ).rejects.toMatchObject({ code });
+  });
+
+  it('offers nothing to an owner who may not use the agent, and refuses to ask first where a run cannot pause', async () => {
+    const s = setup();
+    s.cannotPause();
+    const offer = await s.service.draft(draft);
+    await expect(
+      s.service.grant(created, {
+        offerDigest: offer.offer!.digest,
+        lifetimeHours: 1,
+        allow: { warehouse: ['query'] },
+        ask: { warehouse: ['query'] },
+      }),
+    ).rejects.toMatchObject({ code: 'consent_invalid' });
+    s.deny();
+    await expect(s.service.draft(draft)).rejects.toMatchObject({ code: 'consent_forbidden' });
+  });
+});
+
 describe('definition pins', () => {
   const first = 'a'.repeat(64);
   const second = 'b'.repeat(64);

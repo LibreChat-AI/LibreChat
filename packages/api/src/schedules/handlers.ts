@@ -10,6 +10,9 @@ import type {
   TCreateSchedule,
   TUpdateSchedule,
   TSchedule,
+  ScheduledMCPIdentity,
+  ScheduleAuthorization,
+  ScheduledMCPEnrollment,
 } from 'librechat-data-provider';
 import type { ScheduleMethods, ISchedule, IScheduleRun } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -29,6 +32,7 @@ import {
   isValidTimezone,
 } from './cadence';
 import { ScheduleMCPError, getScheduleMCPFailureCode } from './mcp';
+import { ScheduleMCPConsentError } from './authorization/service';
 import { resolveScheduleProjectId } from './types';
 
 export interface SchedulesHandlersDeps {
@@ -37,6 +41,16 @@ export interface SchedulesHandlersDeps {
   getLimits: (user?: ScheduleUserContext) => Promise<ScheduleLimits>;
   /** Agent existence + VIEW access for the requesting user. */
   canViewAgent: (agentId: string, req: ServerRequest) => Promise<boolean>;
+  /**
+   * The grant for a schedule about to be created, from its owner's choice. Throws a
+   * `ScheduleMCPConsentError` when the choice does not fit what can be offered. Absent, a
+   * schedule cannot be authorized as it is created.
+   */
+  grant?: (
+    identity: ScheduledMCPIdentity,
+    choice: ScheduleAuthorization,
+    options: { signal?: AbortSignal },
+  ) => Promise<ScheduledMCPEnrollment>;
   /** Whether the requesting user owns this chat project. Projects are user-owned,
    *  so existence and authorization are the same question. */
   canUseProject: (projectId: string, userId: string) => Promise<boolean>;
@@ -156,6 +170,8 @@ export function computeCreateDigest(payload: TCreateSchedule): string {
     // for the pinned row, i.e. success for the opposite of what it asked. A pre-scope
     // client never sent the field at all, so nothing legacy can carry an explicit null.
     ...(payload.chatProjectId !== undefined && { chatProjectId: payload.chatProjectId }),
+    // Likewise omitted unless sent: what the owner allowed is part of what they asked for.
+    ...(payload.authorization !== undefined && { authorization: payload.authorization }),
   });
   return createHash('sha256').update(canonical).digest('hex');
 }
@@ -395,6 +411,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     signal: AbortSignal,
     limits: ScheduleLimits,
     scheduleId: string,
+    /** The grant a schedule is being created with: not stored yet, so not found by its id. */
+    grant?: ISchedule['mcpConsent'],
   ): Promise<boolean> {
     try {
       await deps.preflightMCP(agentId, requestUser(req), {
@@ -403,6 +421,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         signal,
         concurrency: limits.mcpPreflightConcurrency,
         deadlineMs: Date.now() + limits.mcpPreflightTimeoutMs,
+        ...(grant && { grant }),
       });
       return true;
     } catch (error) {
@@ -717,9 +736,48 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       return;
     }
     const id = `sched_${randomUUID()}`;
+    const { authorization, ...fields } = parsed.data;
+    /**
+     * Where consent is on, a schedule is authorized as it is created: the grant is written
+     * in the same insert. One created without a choice needs authorization from the start,
+     * so none of its tools runs until its owner confirms.
+     */
+    let consent: Pick<ISchedule, 'mcpConsent' | 'mcpConsentRequired'> = {};
+    if (limits.mcpConsent?.enabled === true) {
+      if (authorization == null || deps.grant == null) {
+        consent = { mcpConsentRequired: true };
+      } else {
+        try {
+          consent = {
+            mcpConsent: await deps.grant(
+              {
+                scheduleId: id,
+                ownerId: user.id,
+                tenantId: user.tenantId ?? null,
+                agentId: fields.agent_id,
+                invocationMode: 'delegated',
+              },
+              authorization,
+              { signal: mcpSignal },
+            ),
+          };
+        } catch (error) {
+          if (mcpSignal.aborted) return;
+          if (!(error instanceof ScheduleMCPConsentError)) throw error;
+          // The owner's choice no longer fits what can be offered, or never did.
+          const status = error.code === 'consent_forbidden' ? 403 : 409;
+          res
+            .status(status)
+            .json({ error: 'Schedule authorization was not accepted', code: error.code });
+          return;
+        }
+      }
+    }
+    // After the grant: readiness is about the MCP tools the owner allowed, and a server
+    // they left out is neither connected to nor a reason to refuse the schedule.
     if (
-      parsed.data.enabled &&
-      !(await validateMCP(parsed.data.agent_id, req, res, mcpSignal, limits, id))
+      fields.enabled &&
+      !(await validateMCP(fields.agent_id, req, res, mcpSignal, limits, id, consent.mcpConsent))
     )
       return;
     // Project policy applies to a NEW insert only, and is therefore resolved AFTER every
@@ -794,7 +852,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // a permanent state.
     const created = await deps.methods.createScheduleWithSlot(
       {
-        ...parsed.data,
+        ...fields,
+        ...consent,
         chatProjectId: chatProjectId ?? undefined,
         id,
         user: user.id as never,

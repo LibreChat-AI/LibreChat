@@ -3,6 +3,7 @@ import {
   EModelEndpoint,
   PermissionTypes,
   DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+  scheduleOfferRequestSchema,
 } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage, AppConfig, IUser } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity, TCheckpointerConfig } from 'librechat-data-provider';
@@ -124,6 +125,18 @@ export function createScheduleMCPConsentHost(deps: {
   });
   const handlers = createScheduleMCPConsentHandlers({
     service,
+    // A schedule being created has no id yet. The offer is bound to its owner and agent.
+    resolveDraft: async (req): Promise<ScheduledMCPIdentity | null> => {
+      const parsed = scheduleOfferRequestSchema.safeParse(req.body);
+      if (!req.user || !parsed.success) return null;
+      return {
+        scheduleId: 'draft',
+        ownerId: req.user.id,
+        tenantId: req.user.tenantId ?? null,
+        agentId: parsed.data.agent_id,
+        invocationMode: 'delegated',
+      };
+    },
     resolveIdentity: async (req): Promise<ScheduledMCPIdentity | null> => {
       const user = req.user;
       const { id } = req.params as { id: string };
