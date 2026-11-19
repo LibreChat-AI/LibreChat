@@ -12,7 +12,7 @@ import {
   OGDialogTemplate,
   useToastContext,
 } from '@librechat/client';
-import type { TPromptGroup } from 'librechat-data-provider';
+import type { ProductPromptReference, TPromptGroup } from 'librechat-data-provider';
 import {
   cn,
   detectVariables,
@@ -23,6 +23,7 @@ import {
   rowActionSlotClasses,
 } from '~/utils';
 import { useLocalize, useAuthContext, useSubmitMessage, usePromptContentResolver } from '~/hooks';
+import { getProductPromptReference, usePromptResolved } from '~/hooks/Prompts/usePromptTracking';
 import { useRecordPromptUsage, useDeletePromptGroup } from '~/data-provider';
 import useChatScopedRequest from '~/hooks/Prompts/useChatScopedRequest';
 import { useLiveAnnouncer, useChatContext } from '~/Providers';
@@ -49,6 +50,7 @@ function ChatGroupItem({
   const { submitPrompt } = useSubmitMessage();
   const recordUsage = useRecordPromptUsage();
   const resolvePromptContent = usePromptContentResolver();
+  const trackResolved = usePromptResolved('sidebar');
   const { announcePolite } = useLiveAnnouncer();
   const { index } = useChatContext();
 
@@ -59,6 +61,7 @@ function ChatGroupItem({
   const [isPreviewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [isVariableDialogOpen, setVariableDialogOpen] = useState(false);
   const [variablePromptText, setVariablePromptText] = useState<string | undefined>(undefined);
+  const [variableReference, setVariableReference] = useState<ProductPromptReference>();
   const [isResolving, setIsResolving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -118,7 +121,10 @@ function ChatGroupItem({
       setIsResolving(true);
     }
     try {
-      const text = await resolvePromptContent(group);
+      let reference = getProductPromptReference(group);
+      const text = await resolvePromptContent(group, (resolved) => {
+        reference = resolved;
+      });
       /** The row may have unmounted, or the active conversation may have
        *  changed, while the Langfuse resolve was in flight; a stale
        *  continuation must not submit, stage, or record for a chat the
@@ -132,10 +138,12 @@ function ChatGroupItem({
 
       if (detectVariables(text)) {
         setVariablePromptText(text);
+        setVariableReference(reference);
         setVariableDialogOpen(true);
         return;
       }
 
+      trackResolved(reference, false);
       submitPrompt(text);
       if (group._id) {
         recordUsage.mutate(group._id);
@@ -158,6 +166,7 @@ function ChatGroupItem({
     isResolving,
     isExternal,
     resolvePromptContent,
+    trackResolved,
     showToast,
     localize,
     begin,
@@ -326,6 +335,8 @@ function ChatGroupItem({
           onClose={() => setVariableDialogOpen(false)}
           group={group}
           promptText={variablePromptText}
+          promptReference={variableReference}
+          entryPoint="sidebar"
         />
       )}
       <OGDialog open={deleteOpen} onOpenChange={setDeleteOpen}>

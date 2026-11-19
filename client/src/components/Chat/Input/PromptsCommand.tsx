@@ -2,8 +2,13 @@ import { useState, useEffect, useMemo, memo, useCallback } from 'react';
 import { useToastContext } from '@librechat/client';
 import { useSetRecoilState, useRecoilValue } from 'recoil';
 import { PromptsPopover } from '@librechat/chat/components';
-import type { TPromptGroup } from 'librechat-data-provider';
+import type { ProductPromptReference, TPromptGroup } from 'librechat-data-provider';
 import type { PromptOption } from '~/common';
+import {
+  getProductPromptReference,
+  usePromptOpened,
+  usePromptResolved,
+} from '~/hooks/Prompts/usePromptTracking';
 import { detectVariables, isExternalPromptGroup, getPromptResolveErrorMessage } from '~/utils';
 import { activateCatalog, useLocalize, usePromptContentResolver } from '~/hooks';
 import useChatScopedRequest from '~/hooks/Prompts/useChatScopedRequest';
@@ -19,6 +24,7 @@ const PopoverContainer = memo(
     isVariableDialogOpen,
     variableGroup,
     variableText,
+    variableReference,
     setVariableDialogOpen,
     textAreaRef,
   }: {
@@ -27,6 +33,7 @@ const PopoverContainer = memo(
     isVariableDialogOpen: boolean;
     variableGroup: TPromptGroup | null;
     variableText: string | undefined;
+    variableReference?: ProductPromptReference;
     setVariableDialogOpen: (isOpen: boolean) => void;
     textAreaRef: React.MutableRefObject<HTMLTextAreaElement | null>;
   }) => {
@@ -44,6 +51,8 @@ const PopoverContainer = memo(
           }}
           group={variableGroup}
           promptText={variableText}
+          promptReference={variableReference}
+          entryPoint="picker"
         />
       </>
     );
@@ -63,14 +72,17 @@ function PromptsCommand({
   const { showToast } = useToastContext();
   const { mutate: recordUsage } = useRecordPromptUsage();
   const resolvePromptContent = usePromptContentResolver();
+  const trackResolved = usePromptResolved('picker');
   const promptGroupsContext = usePromptGroupsContext();
   const { allPromptGroups, hasAccess, requestAllPromptGroups } = promptGroupsContext ?? {};
   const { data, isLoading } = allPromptGroups ?? {};
   const showPromptsPopover = useRecoilValue(store.showPromptsPopoverFamily(index));
 
+  usePromptOpened('picker', hasAccess === true && showPromptsPopover);
   const [isVariableDialogOpen, setVariableDialogOpen] = useState(false);
   const [variableGroup, setVariableGroup] = useState<TPromptGroup | null>(null);
   const [variableText, setVariableText] = useState<string | undefined>(undefined);
+  const [variableReference, setVariableReference] = useState<ProductPromptReference>();
   const setShowPromptsPopover = useSetRecoilState(store.showPromptsPopoverFamily(index));
 
   /** A resolve that was started for one chat must not land on another; see
@@ -109,7 +121,10 @@ function PromptsCommand({
         showToast({ status: 'info', message: localize('com_ui_prompt_resolving') });
       }
       try {
-        const text = await resolvePromptContent(group);
+        let reference = getProductPromptReference(group);
+        const text = await resolvePromptContent(group, (resolved) => {
+          reference = resolved;
+        });
         /** The popover may have unmounted, or the active conversation may
          *  have changed, while the Langfuse resolve was in flight; a stale
          *  continuation must not submit, stage, or record for a chat the
@@ -124,9 +139,11 @@ function PromptsCommand({
         if (detectVariables(text)) {
           setVariableGroup(group);
           setVariableText(text);
+          setVariableReference(reference);
           setVariableDialogOpen(true);
           return;
         }
+        trackResolved(reference, false);
         submitPrompt(text);
         if (group._id) {
           recordUsage(group._id);
@@ -145,6 +162,7 @@ function PromptsCommand({
       submitPrompt,
       recordUsage,
       resolvePromptContent,
+      trackResolved,
       showToast,
       localize,
       begin,
@@ -180,6 +198,7 @@ function PromptsCommand({
       isVariableDialogOpen={isVariableDialogOpen}
       variableGroup={variableGroup}
       variableText={variableText}
+      variableReference={variableReference}
       setVariableDialogOpen={setVariableDialogOpen}
       textAreaRef={textAreaRef}
     >

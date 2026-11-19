@@ -274,7 +274,7 @@ export const useMakePromptProduction = (options?: t.MakePromptProductionOptions)
 
   return useMutation({
     mutationFn: (variables: t.TMakePromptProductionRequest) =>
-      dataService.makePromptProduction(variables.id),
+      dataService.makePromptProduction(variables.id, variables.deployment),
     onMutate: (variables: t.TMakePromptProductionRequest) => {
       const groupData = queryClient.getQueryData<t.TPromptGroup>([
         QueryKeys.promptGroup,

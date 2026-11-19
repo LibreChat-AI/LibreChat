@@ -1,6 +1,11 @@
 import { useCallback } from 'react';
-import type { TPromptGroup, TResolvedPromptResponse } from 'librechat-data-provider';
+import type {
+  ProductPromptReference,
+  TPromptGroup,
+  TResolvedPromptResponse,
+} from 'librechat-data-provider';
 import { useResolvePromptGroup, useResolvePromptGroupFn } from '~/data-provider';
+import { getProductPromptReference } from './reference';
 import { isExternalPromptGroup } from '~/utils';
 
 export interface PromptContent {
@@ -65,14 +70,24 @@ export default function usePromptContent(
  * group's text once (for example a slash-command submit) rather than
  * rendering against a query. Native resolution never requests the server.
  */
-export function usePromptContentResolver(): (group: TPromptGroup) => Promise<string> {
+export function usePromptContentResolver(): (
+  group: TPromptGroup,
+  onResolved?: (reference: ProductPromptReference | undefined) => void,
+) => Promise<string> {
   const fetchResolved = useResolvePromptGroupFn();
   return useCallback(
-    (group: TPromptGroup): Promise<string> => {
+    (
+      group: TPromptGroup,
+      onResolved?: (reference: ProductPromptReference | undefined) => void,
+    ): Promise<string> => {
       if (!isExternalPromptGroup(group)) {
+        onResolved?.(getProductPromptReference(group));
         return Promise.resolve(group.productionPrompt?.prompt ?? '');
       }
-      return fetchResolved(group._id ?? '').then((resolved) => resolved.prompt);
+      return fetchResolved(group._id ?? '').then((resolved) => {
+        onResolved?.(getProductPromptReference(group, resolved));
+        return resolved.prompt;
+      });
     },
     [fetchResolved],
   );

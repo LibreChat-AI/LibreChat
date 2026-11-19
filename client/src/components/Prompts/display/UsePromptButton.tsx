@@ -1,7 +1,8 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Send } from 'lucide-react';
 import { Button } from '@librechat/client';
-import type { TPromptGroup } from 'librechat-data-provider';
+import type { ProductPromptReference, TPromptGroup } from 'librechat-data-provider';
+import { getProductPromptReference, usePromptResolved } from '~/hooks/Prompts/usePromptTracking';
 import useChatScopedRequest from '~/hooks/Prompts/useChatScopedRequest';
 import { useLocalize, useSubmitMessage } from '~/hooks';
 import { useRecordPromptUsage } from '~/data-provider';
@@ -10,6 +11,7 @@ import { detectVariables } from '~/utils';
 
 interface UsePromptButtonProps {
   group: TPromptGroup;
+  promptReference?: ProductPromptReference;
   /** The prompt text to submit or detect variables in: production text for a
    *  native group, resolved text for an externally managed one. This button
    *  does not resolve content itself; the caller supplies it. */
@@ -44,6 +46,7 @@ const VariableDialogCanceller = ({
 
 const UsePromptButton = ({
   group,
+  promptReference,
   promptText,
   isLoading = false,
   hasError = false,
@@ -53,6 +56,7 @@ const UsePromptButton = ({
   const localize = useLocalize();
   const { submitPrompt } = useSubmitMessage();
   const { mutate: recordUsage } = useRecordPromptUsage();
+  const trackResolved = usePromptResolved('preview');
   const [showVariableDialog, setShowVariableDialog] = useState(false);
 
   const hasVariables = useMemo(() => detectVariables(promptText), [promptText]);
@@ -65,13 +69,24 @@ const UsePromptButton = ({
     if (hasVariables) {
       setShowVariableDialog(true);
     } else {
+      trackResolved(promptReference ?? getProductPromptReference(group), false);
       submitPrompt(promptText);
       if (group._id) {
         recordUsage(group._id);
       }
       onUsePrompt?.();
     }
-  }, [disabled, hasVariables, submitPrompt, promptText, onUsePrompt, group._id, recordUsage]);
+  }, [
+    disabled,
+    hasVariables,
+    submitPrompt,
+    promptText,
+    onUsePrompt,
+    group,
+    recordUsage,
+    promptReference,
+    trackResolved,
+  ]);
 
   const handleVariableDialogClose = useCallback(() => {
     setShowVariableDialog(false);
@@ -96,6 +111,8 @@ const UsePromptButton = ({
         onClose={handleVariableDialogClose}
         group={group}
         promptText={promptText}
+        promptReference={promptReference}
+        entryPoint="preview"
       />
 
       {chatIndex !== undefined && (
