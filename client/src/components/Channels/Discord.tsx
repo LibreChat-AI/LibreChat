@@ -8,6 +8,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import {
+  DISCORD_COMMAND_MANIFEST_VERSION,
   channelSnowflakeSchema,
   configureDiscordApplicationSchema,
   dataService,
@@ -35,9 +36,12 @@ import {
 } from '@librechat/client';
 import type {
   ConfigureDiscordApplication,
+  DiscordApplicationPage,
+  RegisterDiscordCommands,
   DiscordApplication,
   DiscordGuild,
 } from 'librechat-data-provider';
+import type { InfiniteData } from '@tanstack/react-query';
 import type { TranslationKeys } from '~/hooks';
 import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
 import { useAuthContext, useLocalize } from '~/hooks';
@@ -186,6 +190,36 @@ function Setup({
         restoreEditorFocus.current = true;
         setEditor(null);
       }
+    },
+  });
+  const commands = useMutation({
+    ...lifecycle,
+    retry: false,
+    mutationKey: [MutationKeys.discordSetup, principalKey, 'commands'],
+    mutationFn: async (input: RegisterDiscordCommands) => {
+      const current = client.getQueryData<InfiniteData<DiscordApplicationPage>>([
+        QueryKeys.discordApps,
+        principalKey,
+      ]);
+      if (
+        !mounted.current ||
+        input.manifestVersion !== DISCORD_COMMAND_MANIFEST_VERSION ||
+        !current?.pages.some((page) =>
+          page.applications.some(
+            (app) =>
+              app.applicationId === input.applicationId && app.revision === input.expectedRevision,
+          ),
+        )
+      )
+        throw Object.assign(new Error('Discord application changed'), {
+          code: 'application_changed',
+        });
+      const result = await dataService.registerDiscordCommands(input);
+      if (
+        result.applicationId !== input.applicationId ||
+        result.manifestVersion !== input.manifestVersion
+      )
+        throw new Error('Discord registration was not confirmed');
     },
   });
   const connect = useMutation({
@@ -360,6 +394,7 @@ function Setup({
     save.mutate();
   });
   const mutationError = save.error || connect.error || cancel.error;
+  const commandAppId = commands.variables?.applicationId;
   const retry = () => {
     if (apps.isError)
       void (failedNextPage.current.apps ? apps.fetchNextPage() : apps.refetch()).then((result) => {
@@ -557,6 +592,54 @@ function Setup({
               >
                 {localize('com_ui_discord_connect')}
               </Button>
+            </div>
+            <div className="space-y-2">
+              <Button
+                type="button"
+                variant="submit"
+                disabled={disabled || (commands.isError && commandAppId === app.applicationId)}
+                aria-label={localize('com_ui_discord_commands_named', {
+                  0: app.name || app.applicationId,
+                })}
+                aria-busy={commandAppId === app.applicationId && commands.isLoading}
+                onClick={() =>
+                  commands.mutate({
+                    applicationId: app.applicationId,
+                    expectedRevision: app.revision,
+                    manifestVersion: DISCORD_COMMAND_MANIFEST_VERSION,
+                  })
+                }
+              >
+                {localize(
+                  commandAppId === app.applicationId && commands.isLoading
+                    ? 'com_ui_discord_commands_registering'
+                    : 'com_ui_discord_commands_register',
+                )}
+              </Button>
+              <p className="text-text-secondary text-xs">
+                {localize('com_ui_discord_commands_help')}
+              </p>
+              {commands.isSuccess &&
+                commandAppId === app.applicationId &&
+                commands.variables?.expectedRevision === app.revision && (
+                  <p role="status">{localize('com_ui_discord_commands_success')}</p>
+                )}
+              {commandAppId === app.applicationId && commands.isError && (
+                <Alert variant="error">
+                  <p>{localize(errorLabel(commands.error))}</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => {
+                      commands.reset();
+                      void refresh();
+                    }}
+                  >
+                    {localize('com_ui_refresh')}
+                  </Button>
+                </Alert>
+              )}
             </div>
             {setup?.interactionBaseUrl ? (
               <div>

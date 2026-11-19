@@ -1,4 +1,9 @@
 {
+  "com_ui_discord_commands_register": "Register or update /librechat commands",
+  "com_ui_discord_commands_named": "Register or update /librechat commands for {{0}}",
+  "com_ui_discord_commands_registering": "Registering commands...",
+  "com_ui_discord_commands_help": "Commands work in servers only. Use /librechat link and /librechat ask in a bound text channel. Global updates may take time to appear in Discord.",
+  "com_ui_discord_commands_success": "Registered /librechat commands. Discord may take time to show the update.",
   "com_ui_discord_binding_description": "Connect this agent to a Discord server text channel.",
   "com_ui_discord_binding_help": "Each Discord text channel has one agent binding. People must link their own LibreChat account and grant consent before chatting.",
   "com_ui_discord_binding_server": "Discord server",
