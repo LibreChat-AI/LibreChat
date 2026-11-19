@@ -5,6 +5,7 @@ import {
   sendMessage,
   messagesView,
   NEW_CHAT_PATH,
+  conversationRow,
   MOCK_ENDPOINTS,
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
@@ -114,5 +115,47 @@ test.describe('resume stream body end', () => {
     expect(waits[2]).toBeGreaterThan(3_000);
     expect(waits[3]).toBeGreaterThan(6_500);
     expect(waits[4]).toBeGreaterThan(13_000);
+  });
+  test('reads back the first reply of a new conversation whose stream could never be reached @scenario:resume-new-conversation-is-read-back-after-the-last-retry', async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const label = `unreached-${Date.now()}`;
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+
+    /** The server takes the first turn of a new conversation and runs it to its end; no request
+     *  for its stream gets through, so the page never hears that the conversation was created. */
+    let reachable = false;
+    await page.route(STREAM_ROUTE, async (route) => {
+      if (reachable) {
+        await route.continue();
+        return;
+      }
+      await route.abort('connectionfailed');
+    });
+
+    const response = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
+    expect(response.ok()).toBeTruthy();
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    /** After the last retry the run is found over, and what it left is read from the server:
+     *  the reply, in a conversation that is the reader's to go on with. */
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+      timeout: 90_000,
+    });
+    const turns = messagesView(page).locator('.message-render');
+    await expect(turns).toHaveCount(2);
+    await expect(turns.nth(1)).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 15_000 });
+    await expect(conversationRow(page, page.url())).toBeVisible({ timeout: 15_000 });
+
+    reachable = true;
+    const next = await sendMessageAndWaitForCompletion(page, replyPrompt(label));
+    expect(next.ok()).toBeTruthy();
+    await expect(turns).toHaveCount(4);
+    await expect(turns.nth(3)).toContainText(replyText(label));
   });
 });
