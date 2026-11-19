@@ -1560,6 +1560,43 @@ describe('createSchedule where the owner authorizes a schedule as it is created'
     );
   });
 
+  it('checks readiness for what the owner allowed, once the choice is accepted', async () => {
+    const order: string[] = [];
+    const grant = jest.fn(async () => {
+      order.push('grant');
+      return stored;
+    });
+    const preflightMCP = jest.fn(async () => {
+      order.push('readiness');
+      return [];
+    });
+    const { insert } = await create({ authorization }, { grant, preflightMCP });
+    expect(order).toEqual(['grant', 'readiness']);
+    expect(preflightMCP).toHaveBeenCalledWith(
+      CREATE_BODY.agent_id,
+      expect.anything(),
+      expect.objectContaining({ scheduleId: insert!.id, stage: 'activation', grant: stored }),
+    );
+    // A choice that is turned down is answered as that, with no server probed for it.
+    const { ScheduleMCPConsentError } = jest.requireActual('./authorization/service');
+    preflightMCP.mockClear();
+    await create(
+      { authorization },
+      {
+        grant: jest.fn().mockRejectedValue(new ScheduleMCPConsentError('consent_changed')),
+        preflightMCP,
+      },
+    );
+    expect(preflightMCP).not.toHaveBeenCalled();
+    // With no choice there is no grant to limit it: every selected MCP tool is checked.
+    await create({}, { grant, preflightMCP });
+    expect(preflightMCP).toHaveBeenLastCalledWith(
+      CREATE_BODY.agent_id,
+      expect.anything(),
+      expect.not.objectContaining({ grant: expect.anything() }),
+    );
+  });
+
   it('creates a schedule that needs authorization when none came with it', async () => {
     const grant = jest.fn();
     const { insert } = await create({}, { grant });

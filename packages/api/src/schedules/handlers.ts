@@ -411,6 +411,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     signal: AbortSignal,
     limits: ScheduleLimits,
     scheduleId: string,
+    /** The grant a schedule is being created with: not stored yet, so not found by its id. */
+    grant?: ISchedule['mcpConsent'],
   ): Promise<boolean> {
     try {
       await deps.preflightMCP(agentId, requestUser(req), {
@@ -419,6 +421,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         signal,
         concurrency: limits.mcpPreflightConcurrency,
         deadlineMs: Date.now() + limits.mcpPreflightTimeoutMs,
+        ...(grant && { grant }),
       });
       return true;
     } catch (error) {
@@ -733,11 +736,6 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       return;
     }
     const id = `sched_${randomUUID()}`;
-    if (
-      parsed.data.enabled &&
-      !(await validateMCP(parsed.data.agent_id, req, res, mcpSignal, limits, id))
-    )
-      return;
     const { authorization, ...fields } = parsed.data;
     /**
      * Where consent is on, a schedule is authorized as it is created: the grant is written
@@ -775,6 +773,13 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         }
       }
     }
+    // After the grant: readiness is about the MCP tools the owner allowed, and a server
+    // they left out is neither connected to nor a reason to refuse the schedule.
+    if (
+      fields.enabled &&
+      !(await validateMCP(fields.agent_id, req, res, mcpSignal, limits, id, consent.mcpConsent))
+    )
+      return;
     // Project policy applies to a NEW insert only, and is therefore resolved AFTER every
     // replay lookup above. A committed create whose response was lost must still be
     // recoverable by an identical retry: applying today's policy first let a raised
