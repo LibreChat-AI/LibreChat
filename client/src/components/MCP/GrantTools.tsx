@@ -426,7 +426,15 @@ export default function GrantTools({
                   {!data.everything && (
                     <p className="text-text-secondary text-xs">
                       {localize('com_ui_schedule_consent_allowed', {
-                        tools: (data.allowed[target.resource.serverName] ?? []).join(', '),
+                        tools: (data.allowed[target.resource.serverName] ?? [])
+                          .map((tool) =>
+                            tool === Constants.mcp_all
+                              ? localize('com_ui_schedule_consent_server_every', {
+                                  server: target.resource.serverName,
+                                })
+                              : tool,
+                          )
+                          .join(', '),
                       })}
                     </p>
                   )}
@@ -527,24 +535,35 @@ function ToolChoice({
 }) {
   const localize = useLocalize();
   const groupId = useId();
+  /**
+   * A selection of the whole server is one item of its own, listed first: every tool there,
+   * including ones the server gains later. It is not what ticking each named tool means, so
+   * the shared box below leaves it as the owner set it.
+   */
+  const every: string = Constants.mcp_all;
+  const named = offered.filter((tool) => tool !== every);
+  const items = [...offered.filter((tool) => tool === every), ...named];
+  const kept = chosen.filter((tool) => tool === every);
   /** Checked only when every tool is: the shared box has no partly-selected appearance. */
-  const all = offered.length > 0 && offered.every((tool) => chosen.includes(tool));
+  const all = named.length > 0 && named.every((tool) => chosen.includes(tool));
   return (
     <fieldset className="mt-2 space-y-1" disabled={disabled}>
-      <div className="flex items-center gap-2">
-        <Checkbox
-          id={`${groupId}-all`}
-          checked={all}
-          disabled={disabled}
-          aria-label={localize('com_ui_schedule_consent_allow_server', { server: serverName })}
-          onCheckedChange={(checked) => onChange(checked === true ? offered : [])}
-        />
-        <Label htmlFor={`${groupId}-all`} className="text-xs">
-          {localize('com_ui_schedule_consent_allow_server', { server: serverName })}
-        </Label>
-      </div>
+      {named.length > 0 && (
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id={`${groupId}-all`}
+            checked={all}
+            disabled={disabled}
+            aria-label={localize('com_ui_schedule_consent_allow_server', { server: serverName })}
+            onCheckedChange={(checked) => onChange(checked === true ? [...kept, ...named] : kept)}
+          />
+          <Label htmlFor={`${groupId}-all`} className="text-xs">
+            {localize('com_ui_schedule_consent_allow_server', { server: serverName })}
+          </Label>
+        </div>
+      )}
       <ul className="space-y-1 pl-6">
-        {offered.map((tool) => (
+        {items.map((tool) => (
           <li key={tool}>
             <div className="flex items-center gap-2">
               <Checkbox
@@ -566,9 +585,11 @@ function ToolChoice({
                 htmlFor={`${groupId}-${tool}`}
                 className="text-xs break-all"
               >
-                {tool}
+                {tool === every
+                  ? localize('com_ui_schedule_consent_server_every', { server: serverName })
+                  : tool}
               </Label>
-              {askable.includes(tool) && chosen.includes(tool) && (
+              {tool !== every && askable.includes(tool) && chosen.includes(tool) && (
                 <span className="ml-auto flex shrink-0 items-center gap-2">
                   <Checkbox
                     id={`${groupId}-${tool}-ask`}

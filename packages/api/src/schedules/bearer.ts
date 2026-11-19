@@ -1,4 +1,5 @@
 import {
+  Constants,
   extractEnvVariable,
   scheduledMCPIdentitySchema,
   scheduledMCPTargetSchema,
@@ -145,10 +146,18 @@ export function createScheduledMCPBearerHost(deps: {
         // With no grant for the server, authorizing the whole selection reports why.
         // Nor is a whole-agent grant limited to the tools its agents had when it was made.
         if (lookup.state !== 'found' || lookup.everything === true) return target.permittedTools;
+        // The whole server, granted or selected, is `mcp_all`: it stands for every tool there.
+        const every: string = Constants.mcp_all;
         return lookup.consent.permittedTools
           .map(({ agentId, tools }) => {
-            const current = target.permittedTools.find((item) => item.agentId === agentId);
-            return { agentId, tools: tools.filter((tool) => current?.tools.includes(tool)) };
+            const current = target.permittedTools.find((item) => item.agentId === agentId)?.tools;
+            if (!current) return { agentId, tools: [] };
+            return {
+              agentId,
+              tools: tools.includes(every)
+                ? current
+                : tools.filter((tool) => current.includes(tool) || current.includes(every)),
+            };
           })
           .filter((item) => item.tools.length > 0);
       };

@@ -265,17 +265,18 @@ export function createScheduleMCPExecution<
     const serverSpellings = [...grantedServers, ...serverAliases.keys()];
     /**
      * Whether a run under the grant loads this MCP key for the agent. A key for one tool needs
-     * that tool listed. A key for every tool on a server names none of them, and the grant
-     * lists tools by name, so it is never loaded. A key for the server alone is kept only
-     * where the grant lists a tool on that server for the agent.
+     * that tool granted, by name or through a grant of the whole server. A key for every tool
+     * on a server needs the whole server granted. A key for the server alone is kept where
+     * the grant holds anything on that server for the agent.
      */
     const isGrantedKey = (agentId: string, toolKey: string): boolean => {
       const [selectionName, spelling] = splitMCPToolKey(toolKey, serverSpellings);
       const serverName =
         spelling != null && granted.has(spelling) ? spelling : serverAliases.get(spelling ?? '');
       const tools = serverName == null ? undefined : granted.get(serverName)?.get(agentId);
-      if (!tools || selectionName === Constants.mcp_all) return false;
-      return selectionName === Constants.mcp_server ? tools.size > 0 : tools.has(selectionName);
+      if (!tools) return false;
+      if (selectionName === Constants.mcp_server) return tools.size > 0;
+      return tools.has(selectionName) || tools.has(Constants.mcp_all);
     };
     const approved = new Set(options.approvedToolCalls ?? []);
     /** Every spelling a run may call an ask tool by, per agent. A miss is refused, not run. */
@@ -376,10 +377,15 @@ export function createScheduleMCPExecution<
         if (!observed.settled) throw new ScheduledMCPPolicyError('dependency_unavailable', '');
         return observed.value;
       },
-      grants: (agentId: string, serverName: string, selectionName: string) =>
-        whole ||
-        granted.get(serverName)?.get(agentId)?.has(selectionName) === true ||
-        lists(agentId, serverName, selectionName),
+      grants: (agentId: string, serverName: string, selectionName: string) => {
+        const tools = granted.get(serverName)?.get(agentId);
+        return (
+          whole ||
+          tools?.has(selectionName) === true ||
+          tools?.has(Constants.mcp_all) === true ||
+          lists(agentId, serverName, selectionName)
+        );
+      },
       narrow: (agentId: string, toolKeys: readonly string[]) =>
         enrolled ? toolKeys.filter((key) => loads(agentId, key)) : [...toolKeys],
       grantsTool: allows,

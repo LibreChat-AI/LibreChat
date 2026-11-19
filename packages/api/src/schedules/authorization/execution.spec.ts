@@ -736,6 +736,34 @@ describe('the tools a run loads under a grant', () => {
     expect(limited.execution.grants('root', 'notes', 'lookup')).toBe(false);
   });
 
+  it('loads every key on a declared server once the owner allowed the whole server', async () => {
+    const keys = [
+      'query_mcp_warehouse',
+      'export_mcp_warehouse',
+      'sys__all__sys_mcp_warehouse',
+      'sys__server__sys_mcp_warehouse',
+      'purge_mcp_archive',
+    ];
+    const whole = await executionFixture('invoke', readTool, undefined, {
+      offered: ['sys__all__sys'],
+      allow: ['sys__all__sys'],
+    });
+    // A grant that lists its tools, with one item ticked: every tool on that server.
+    expect(whole.snapshot.enrollment).not.toHaveProperty('everything');
+    expect(whole.execution.narrow('root', keys)).toEqual(keys.slice(0, 4));
+    expect(whole.execution.grants('root', 'warehouse', 'anything')).toBe(true);
+    expect(whole.execution.grants('stranger', 'warehouse', 'anything')).toBe(false);
+    // With only a tool named, the key for the whole server is still not loaded.
+    const named = await executionFixture('invoke', readTool, undefined, {
+      offered: ['sys__all__sys'],
+    });
+    expect(named.execution.narrow('root', keys)).toEqual([
+      'query_mcp_warehouse',
+      'sys__server__sys_mcp_warehouse',
+    ]);
+    expect(named.execution.grants('root', 'warehouse', 'export')).toBe(false);
+  });
+
   it('loads none of the other tools when the owner allowed none', async () => {
     const fixture = await executionFixture('invoke', readTool, undefined, {
       tools: ['execute_code', 'web_search'],

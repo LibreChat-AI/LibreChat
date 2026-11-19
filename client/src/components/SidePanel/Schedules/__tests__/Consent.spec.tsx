@@ -513,6 +513,50 @@ it('reads the tool and the server out of a key against the servers in use, not b
   expect(splitToolKey('send_action_mail.example', ['notes'])).toBeUndefined();
 });
 
+it('offers a selection of a whole server as its own item, apart from ticking each tool', async () => {
+  const whole: ScheduleMCPConsentView = {
+    ...view,
+    approval: true,
+    targets: [
+      {
+        ...view.targets[0],
+        permittedTools: [{ agentId: 'root', tools: ['query', 'sys__all__sys'] }],
+      },
+    ],
+  };
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(whole);
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(whole);
+  display();
+  const every = await screen.findByRole('checkbox', {
+    name: 'com_ui_schedule_consent_server_every',
+  });
+  expect(every).not.toBeChecked();
+  expect(screen.queryByRole('checkbox', { name: 'sys__all__sys' })).not.toBeInTheDocument();
+  // Ticking every named tool is not allowing whatever the server gains later.
+  await userEvent.click(
+    screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_allow_server' }),
+  );
+  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+  expect(every).not.toBeChecked();
+  await userEvent.click(every);
+  // It names no tool, so there is nothing to be asked about for it.
+  expect(
+    screen.getAllByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' }),
+  ).toHaveLength(1);
+  // Unticking the named tools leaves it as the owner set it.
+  await userEvent.click(
+    screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_allow_server' }),
+  );
+  expect(every).toBeChecked();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({ allow: { warehouse: ['sys__all__sys'] } }),
+    ),
+  );
+});
+
 it('authorizes a schedule whose agent uses no MCP server, once one of its tools is ticked', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,

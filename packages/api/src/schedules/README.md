@@ -144,6 +144,17 @@ does is done with tools that are items of their own (code execution for a skill'
   tool is registered, and manual or always-apply skills are not primed, so the model is not
   offered what it would be refused.
 
+### Every tool on a declared server
+
+An agent may select a declared server as a whole instead of naming its tools. That
+selection is offered as one item for the server (`sys__all__sys`) beside any tools the agents
+do name. Ticked, it stands for every tool on that server for that agent, including ones the
+server gains later: its key loads, any tool there is authorized, and a connection is admitted
+for whatever the agents select. Each tool used under it is still pinned on first use and
+refused once its definition changes. It names no tool, so it cannot be asked about call by
+call. A grant that names tools keeps meaning those tools when the agent later selects the
+whole server.
+
 ### Tools on a server the operator did not declare
 
 A server with nothing under `mcpConsent.resources` has no recipient to hold a consent for: a

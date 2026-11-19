@@ -906,11 +906,11 @@ describe('a grant of the whole agent', () => {
     expect(await s.service.authority.authorize(call('anything'), {})).toMatchObject({
       state: 'authorized',
     });
-    // Nothing to tick is offered for it, and the grant is not stale.
+    // The grant is not stale, and the selection is on offer as one item for the server.
     expect(await s.service.view(identity)).toMatchObject({
       state: 'active',
       everything: true,
-      targets: [],
+      targets: [{ permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }] }],
     });
     expect(await s.service.authority.lookupConsent(identity, target.resource, {})).toMatchObject({
       state: 'found',
@@ -926,23 +926,23 @@ describe('a grant of the whole agent', () => {
     };
     const s = setup();
     s.changeTarget(every);
-    // Nothing to tick is listed for it, and it is still part of the whole agent.
-    expect((await s.service.view(identity)).targets).toEqual([]);
-    expect(await whole(s)).toMatchObject({ state: 'active', everything: true, targets: [] });
+    const offered = [{ permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }] }];
+    expect((await s.service.view(identity)).targets).toMatchObject(offered);
+    expect(await whole(s)).toMatchObject({ state: 'active', everything: true });
     expect(s.snapshot.enrollment!.consents).toMatchObject([
       { resource: { serverName: 'warehouse', audience: 'warehouse' } },
     ]);
     expect(await s.service.authority.authorize(call('anything'), {})).toMatchObject({
       state: 'authorized',
     });
-    // It is not listed, and the view still notices when its recipient moves.
+    // The view notices when its recipient moves.
     s.changeTarget({ ...every, resource: { ...every.resource, audience: 'elsewhere' } });
     expect((await s.service.view(identity)).state).toBe('changed');
     s.changeTarget(every);
     expect((await s.service.view(identity)).state).toBe('active');
     // The same for a schedule that is being created.
     const offer = await s.service.draft(identity);
-    expect(offer.targets).toEqual([]);
+    expect(offer.targets).toMatchObject(offered);
     const grant = await s.service.grant(identity, {
       offerDigest: offer.offer!.digest,
       lifetimeHours: 1,
@@ -1046,7 +1046,95 @@ describe('a grant of the whole agent', () => {
       }),
     ).rejects.toMatchObject({ code: 'consent_invalid' });
   });
+});
 
+describe('a selection of every tool on a declared server, in a grant that lists its tools', () => {
+  const marker = 'sys__all__sys';
+  const every: ScheduledMCPTarget = {
+    ...target,
+    permittedTools: [{ agentId: 'root', tools: [marker] }],
+    policyRevision: 'p3',
+  };
+  const call = (tool: string, agentId = 'root', digest = 'a'.repeat(64)) => ({
+    ...request('invoke'),
+    selection: { agentId, tools: [tool] },
+    definitions: { [tool]: digest },
+  });
+  const refused = (reason: string) => ({ state: 'denied', failure: { reason } });
+
+  it('is one item the owner may tick, and then stands for every tool there', async () => {
+    const s = setup();
+    s.changeTarget(every);
+    expect((await s.service.view(identity)).targets[0].permittedTools).toEqual([
+      { agentId: 'root', tools: [marker] },
+    ]);
+    await s.enroll({ warehouse: [marker] });
+    expect(s.snapshot.enrollment).not.toHaveProperty('everything');
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    expect(await s.service.authority.authorize(call('anything'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    // For the agent it was ticked for, and no other.
+    expect(await s.service.authority.authorize(call('query', 'child'), {})).toMatchObject(
+      refused('tool_policy_denied'),
+    );
+    // A tool used under it is pinned like any other, and refused once it changes.
+    expect(s.snapshot.enrollment!.consents[0].definitions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ tool: 'query' })]),
+    );
+    expect(
+      await s.service.authority.authorize(call('query', 'root', 'b'.repeat(64)), {}),
+    ).toMatchObject(refused('binding_mismatch'));
+  });
+
+  it('still fits when the agents go back to naming their tools, and the reverse', async () => {
+    const s = setup();
+    s.changeTarget(every);
+    await s.enroll({ warehouse: [marker] });
+    // The owner allowed everything there: whatever the agent selects now is within it.
+    s.changeTarget(target);
+    expect((await s.service.view(identity)).state).toBe('active');
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    // A grant of one named tool, once the agent selects the whole server: that tool, no more.
+    const named = setup();
+    await named.enroll({ warehouse: ['query'] });
+    named.changeTarget({
+      ...every,
+      permittedTools: [
+        { agentId: 'root', tools: [marker] },
+        { agentId: 'child', tools: [marker] },
+      ],
+    });
+    expect((await named.service.view(identity)).state).toBe('active');
+    expect(await named.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    expect(await named.service.authority.authorize(call('export'), {})).toMatchObject(
+      refused('tool_policy_denied'),
+    );
+  });
+
+  it('cannot be asked about: it names no tool to pause for', async () => {
+    const s = setup();
+    s.changeTarget(every);
+    const view = await s.service.view(identity);
+    await expect(
+      s.service.confirm(identity, {
+        offerDigest: view.offer!.digest,
+        expectedRevision: view.revision,
+        lifetimeHours: 1,
+        allow: { warehouse: [marker] },
+        ask: { warehouse: [marker] },
+      }),
+    ).rejects.toMatchObject({ code: 'consent_invalid' });
+  });
+});
+
+describe('a grant of the whole agent, where it cannot be made', () => {
   it('is not offered, and is refused, where a grant limits MCP tools only', async () => {
     const s = setup();
     const service = createScheduleMCPConsentService({

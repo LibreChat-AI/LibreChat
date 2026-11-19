@@ -3942,6 +3942,7 @@
   "com_ui_schedule_consent_audience": "Audience: {{audience}}",
   "com_ui_schedule_consent_scopes": "Scopes: {{scopes}}",
   "com_ui_schedule_consent_allow_server": "Allow all tools on {{server}}",
+  "com_ui_schedule_consent_server_every": "Every tool on {{server}}, including ones added later",
   "com_ui_schedule_consent_allowed": "Allowed tools: {{tools}}",
   "com_ui_schedule_consent_none_selected": "Choose at least one tool to confirm.",
   "com_ui_schedule_consent_allow_all": "Allow everything",
