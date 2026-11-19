@@ -1137,6 +1137,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       const result: t.SharedMessagesResult = {
         shareId: resolvedShareId,
         title: share.title,
+        ...(share.spec && { spec: share.spec }),
         ...(hasConfiguredSender ? { hasConfiguredSender: true } : {}),
         createdAt: share.createdAt,
         updatedAt: share.updatedAt,
@@ -1398,6 +1399,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
 
       const conversation = (await Conversation.findOne({ conversationId, user }).lean()) as {
         title?: string;
+        spec?: string;
       } | null;
 
       // Check if user owns the conversation
@@ -1442,6 +1444,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         conversationId,
         messages: conversationMessages,
         title,
+        ...(conversation.spec && { spec: conversation.spec }),
         user,
         snapshotFiles,
         ...(targetMessageId && { targetMessageId }),

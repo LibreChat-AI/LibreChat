@@ -52,6 +52,9 @@ const shareSchema: Schema<ISharedLink> = new Schema(
       type: String,
       index: true,
     },
+    spec: {
+      type: String,
+    },
     user: {
       type: String,
       index: true,

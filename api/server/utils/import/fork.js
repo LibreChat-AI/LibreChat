@@ -471,6 +471,13 @@ async function forkSharedConversation({
     // can actually use; hard-coding OpenAI breaks the first follow-up message on
     // deployments that don't expose it.
     const { endpoint, model } = await resolveImportDefaultEndpoint({ requestUserId, userRole });
+    const specs = appConfig?.modelSpecs?.list ?? [];
+    const requestedSpec =
+      share.spec != null && specs.some((spec) => spec.name === share.spec)
+        ? share.spec
+        : appConfig?.modelSpecs?.enforce
+          ? specs[0]?.name
+          : undefined;
     const importBatchBuilder =
       appConfig?.messageFilter?.pii == null
         ? builderFactory(requestUserId, appConfig?.interfaceConfig, appConfig?.filters)
@@ -484,7 +491,12 @@ async function forkSharedConversation({
 
     cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder, { nativeCopy: true });
 
-    const result = importBatchBuilder.finishConversation(share.title, new Date(), {}, model);
+    const result = importBatchBuilder.finishConversation(
+      share.title,
+      new Date(),
+      requestedSpec == null ? {} : { spec: requestedSpec },
+      model,
+    );
     await importBatchBuilder.saveBatch();
     logger.debug('Shared conversation forked', {
       userId: requestUserId,

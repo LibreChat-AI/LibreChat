@@ -1148,6 +1148,28 @@ describe('forkSharedConversation', () => {
 
     expect(tenantDuringSave).toBe('tenant-viewer');
   });
+
+  test('should preserve the shared model spec when the viewer can still use it', async () => {
+    getSharedMessages.mockResolvedValue({ ...mockShare, spec: 'research' });
+    loadAppConfig.mockResolvedValue({
+      modelSpecs: { enforce: true, list: [{ name: 'default' }, { name: 'research' }] },
+    });
+
+    await forkSharedConversation({ shareId: 'share123', requestUserId: 'user1' });
+
+    expect(bulkSaveConvos.mock.calls[0][0][0].spec).toBe('research');
+  });
+
+  test('should use the default spec when the shared spec is no longer configured', async () => {
+    getSharedMessages.mockResolvedValue({ ...mockShare, spec: 'removed' });
+    loadAppConfig.mockResolvedValue({
+      modelSpecs: { enforce: true, list: [{ name: 'default' }] },
+    });
+
+    await forkSharedConversation({ shareId: 'share123', requestUserId: 'user1' });
+
+    expect(bulkSaveConvos.mock.calls[0][0][0].spec).toBe('default');
+  });
 });
 
 const mockMessagesComplex = [

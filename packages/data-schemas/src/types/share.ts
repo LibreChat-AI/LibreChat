@@ -38,6 +38,8 @@ export interface ISharedLink {
   _id?: Types.ObjectId;
   conversationId: string;
   title?: string;
+  /** Persisted model spec so a fork can retain the shared chat's selection. */
+  spec?: string;
   user?: string;
   messages?: Types.ObjectId[];
   shareId?: string;
@@ -119,6 +121,7 @@ export interface SharedMessagesResult {
   messages: Array<SharedMessage>;
   shareId: string;
   title?: string;
+  spec?: string;
   /** Whether the shared messages show a configured sender label, so the share view can
    * withhold the model on hover as the chat view does. */
   hasConfiguredSender?: boolean;
